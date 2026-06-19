@@ -4,6 +4,10 @@ use matrix_desktop_state::{
     SessionInfo, SessionState, SettingsPatch, UiEvent, reduce,
 };
 
+// Bring the Debug format in scope so assert! messages can print effects.
+#[allow(unused_imports)]
+use std::fmt::Debug;
+
 fn session_info() -> SessionInfo {
     SessionInfo {
         homeserver: "https://matrix.example.org".to_owned(),
@@ -365,6 +369,25 @@ fn toggle_include_media_captions_resets_completed_to_idle() {
         .iter()
         .any(|e| matches!(e, AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)));
     assert!(has_crawler_changed);
+
+    // Must also emit InvalidateSearchCrawlerCache so the actor drops its
+    // completed-room set before the subsequent re-enqueue (P1 fix).
+    let has_invalidate = effects
+        .iter()
+        .any(|e| matches!(e, AppEffect::InvalidateSearchCrawlerCache));
+    assert!(
+        has_invalidate,
+        "expected InvalidateSearchCrawlerCache on content-setting toggle; got {effects:?}"
+    );
+
+    // Must emit NotifySearchCrawlerRoomsAvailable for re-crawl with new settings.
+    let has_notify = effects
+        .iter()
+        .any(|e| matches!(e, AppEffect::NotifySearchCrawlerRoomsAvailable { room_ids, .. } if !room_ids.is_empty()));
+    assert!(
+        has_notify,
+        "expected NotifySearchCrawlerRoomsAvailable on content-setting toggle; got {effects:?}"
+    );
 }
 
 #[test]
@@ -375,7 +398,7 @@ fn toggle_include_filenames_resets_completed_to_idle() {
         .rooms
         .insert("room-a".to_owned(), SearchCrawlerRoomState::Completed { indexed: 7 });
 
-    reduce(
+    let effects = reduce(
         &mut state,
         AppAction::SettingsUpdateRequested {
             request_id: 1,
@@ -389,6 +412,22 @@ fn toggle_include_filenames_resets_completed_to_idle() {
     assert_eq!(
         state.search_crawler.rooms.get("room-a"),
         Some(&SearchCrawlerRoomState::Idle)
+    );
+
+    // Content-setting toggle must also emit cache invalidation + re-enqueue.
+    let has_invalidate = effects
+        .iter()
+        .any(|e| matches!(e, AppEffect::InvalidateSearchCrawlerCache));
+    assert!(
+        has_invalidate,
+        "expected InvalidateSearchCrawlerCache; got {effects:?}"
+    );
+    let has_notify = effects
+        .iter()
+        .any(|e| matches!(e, AppEffect::NotifySearchCrawlerRoomsAvailable { .. }));
+    assert!(
+        has_notify,
+        "expected NotifySearchCrawlerRoomsAvailable; got {effects:?}"
     );
 }
 
@@ -518,15 +557,43 @@ fn fresh_state_has_empty_crawler_rooms() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn crawler_state_debug_output_does_not_contain_raw_sdk_errors_or_matrix_ids() {
+fn crawler_state_debug_output_does_not_contain_room_ids_or_sdk_errors() {
+    // P11 fix: SearchCrawlerState has a custom Debug that emits only counts
+    // and coarse states — room ids (Matrix identifiers) must not appear.
     let mut crawler = SearchCrawlerState::default();
-    crawler
-        .rooms
-        .insert("room-a".to_owned(), SearchCrawlerRoomState::Failed { kind: SearchCrawlerFailureKind::Sdk });
+    crawler.rooms.insert(
+        "!secret-room:example.invalid".to_owned(),
+        SearchCrawlerRoomState::Running { processed: 10, indexed: 5 },
+    );
+    crawler.rooms.insert(
+        "!another-room:example.invalid".to_owned(),
+        SearchCrawlerRoomState::Failed { kind: SearchCrawlerFailureKind::Sdk },
+    );
+    crawler.rooms.insert(
+        "!third-room:example.invalid".to_owned(),
+        SearchCrawlerRoomState::Completed { indexed: 20 },
+    );
 
     let debug = format!("{crawler:?}");
-    // The coarse enum variant is acceptable; raw SDK error strings or Matrix ids must not appear.
-    assert!(!debug.contains("@"), "Matrix id leaked into crawler debug");
-    assert!(!debug.contains("$"), "Matrix event id leaked into crawler debug");
-    assert!(!debug.contains("error:"), "raw SDK error leaked into crawler debug");
+    // Room ids must NOT appear.
+    assert!(
+        !debug.contains("secret-room"),
+        "room id leaked into crawler Debug: {debug}"
+    );
+    assert!(
+        !debug.contains("another-room"),
+        "room id leaked into crawler Debug: {debug}"
+    );
+    assert!(
+        !debug.contains("third-room"),
+        "room id leaked into crawler Debug: {debug}"
+    );
+    // Coarse counts MUST appear so the debug output is still useful.
+    assert!(debug.contains("running"), "running count absent from Debug: {debug}");
+    assert!(debug.contains("failed"), "failed count absent from Debug: {debug}");
+    assert!(debug.contains("completed"), "completed count absent from Debug: {debug}");
+    // No raw SDK error strings.
+    assert!(!debug.contains("error:"), "raw SDK error in crawler Debug: {debug}");
+    assert!(!debug.contains("@"), "Matrix user id in crawler Debug: {debug}");
+    assert!(!debug.contains("$"), "Matrix event id in crawler Debug: {debug}");
 }

@@ -417,7 +417,8 @@ impl FakeDesktopBackend {
             | AppEffect::UnsubscribeThreadsList
             // The fake backend has no SearchActor; silently ignore crawler
             // notifications (there are no background crawls in tests).
-            | AppEffect::NotifySearchCrawlerRoomsAvailable { .. } => Vec::new(),
+            | AppEffect::NotifySearchCrawlerRoomsAvailable { .. }
+            | AppEffect::InvalidateSearchCrawlerCache => Vec::new(),
             AppEffect::RequestVerification { request_id, .. }
             | AppEffect::AcceptVerification { request_id }
             | AppEffect::ConfirmSasVerification { request_id } => {

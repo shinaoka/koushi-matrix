@@ -1553,6 +1553,11 @@ impl AppActor {
                         settings,
                     })
                     .await;
+            } else if let AppEffect::InvalidateSearchCrawlerCache = effect {
+                let _ = self
+                    .account_actor
+                    .send(crate::account::AccountMessage::InvalidateSearchCrawlerCache)
+                    .await;
             } else if let AppEffect::PersistSettings {
                 request_id: effect_request_id,
                 values,
@@ -1602,6 +1607,11 @@ impl AppActor {
                         room_ids: room_ids.clone(),
                         settings: settings.clone(),
                     })
+                    .await;
+            } else if let AppEffect::InvalidateSearchCrawlerCache = effect {
+                let _ = self
+                    .account_actor
+                    .send(crate::account::AccountMessage::InvalidateSearchCrawlerCache)
                     .await;
             }
         }

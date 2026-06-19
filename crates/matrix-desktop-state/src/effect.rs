@@ -91,11 +91,17 @@ pub enum AppEffect {
     UnsubscribeThreadsList,
     /// Tell the `SearchActor` to idempotently start background crawls for
     /// the given rooms.  Emitted when speed transitions from `Paused` to
-    /// active so the actor can enqueue all currently-known eligible rooms.
+    /// active, or when a content-indexing setting changes so rooms are
+    /// re-crawled with the new settings.
     NotifySearchCrawlerRoomsAvailable {
         room_ids: Vec<String>,
         settings: SearchCrawlerSettings,
     },
+    /// Tell the `SearchActor` to drop all rooms from its `completed_rooms`
+    /// cache.  Emitted alongside `NotifySearchCrawlerRoomsAvailable` when
+    /// content-indexing settings change so the actor re-crawls rooms that
+    /// it had previously recorded as done.
+    InvalidateSearchCrawlerCache,
     EmitUiEvent(UiEvent),
 }
 

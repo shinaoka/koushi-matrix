@@ -8,9 +8,38 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+/// Crawler state keyed by room id.
+///
+/// `Debug` is manually implemented to emit only counts and coarse states —
+/// room ids are Matrix identifiers and must not appear in logs
+/// (REPOSITORY_RULES privacy: no room IDs in Debug output).
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SearchCrawlerState {
     pub rooms: BTreeMap<String, SearchCrawlerRoomState>,
+}
+
+impl std::fmt::Debug for SearchCrawlerState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Emit per-state counts only; omit room ids.
+        let mut idle = 0u32;
+        let mut running = 0u32;
+        let mut completed = 0u32;
+        let mut failed = 0u32;
+        for state in self.rooms.values() {
+            match state {
+                SearchCrawlerRoomState::Idle => idle += 1,
+                SearchCrawlerRoomState::Running { .. } => running += 1,
+                SearchCrawlerRoomState::Completed { .. } => completed += 1,
+                SearchCrawlerRoomState::Failed { .. } => failed += 1,
+            }
+        }
+        f.debug_struct("SearchCrawlerState")
+            .field("idle", &idle)
+            .field("running", &running)
+            .field("completed", &completed)
+            .field("failed", &failed)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

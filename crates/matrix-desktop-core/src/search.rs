@@ -179,6 +179,11 @@ pub(crate) enum SearchActorMessage {
         room_id: String,
         completed: bool,
     },
+    /// Content-indexing settings changed (include_media_captions or
+    /// include_filenames toggled). The actor must drop all rooms from
+    /// `completed_rooms` so the next `RoomsAvailable` notification re-crawls
+    /// them with the updated settings.
+    InvalidateCrawlerCache,
     Shutdown,
 }
 
@@ -231,6 +236,9 @@ impl std::fmt::Debug for SearchActorMessage {
                 .field("room_id", &"RoomId(..)")
                 .field("completed", completed)
                 .finish(),
+            Self::InvalidateCrawlerCache => {
+                write!(f, "SearchActorMessage::InvalidateCrawlerCache")
+            }
             Self::Shutdown => write!(f, "SearchActorMessage::Shutdown"),
         }
     }
@@ -289,13 +297,32 @@ impl SearchActorHandle {
 
     /// Notify the actor that the set of joined rooms has changed.
     /// The actor idempotently starts background crawls for eligible rooms
-    /// when `settings.speed != Paused`. Fire-and-forget; returns immediately.
-    pub fn notify_rooms_available(
+    /// when `settings.speed != Paused`.
+    ///
+    /// Uses `send` (not `try_send`) for reliable delivery — a dropped
+    /// notification can leave rooms un-crawled until the next room-list
+    /// update (REPOSITORY_RULES L124-128).
+    pub async fn notify_rooms_available(
         &self,
         room_ids: Vec<String>,
         settings: SearchCrawlerSettings,
     ) {
-        let _ = self.tx.try_send(SearchActorMessage::RoomsAvailable { room_ids, settings });
+        let _ = self
+            .tx
+            .send(SearchActorMessage::RoomsAvailable { room_ids, settings })
+            .await;
+    }
+
+    /// Invalidate the actor's completed-room cache because content-indexing
+    /// settings changed.  The actor drops all rooms from `completed_rooms` so
+    /// the next `RoomsAvailable` notification triggers re-crawls.
+    ///
+    /// Uses `send` (not `try_send`) for reliable delivery.
+    pub async fn invalidate_crawler_cache(&self) {
+        let _ = self
+            .tx
+            .send(SearchActorMessage::InvalidateCrawlerCache)
+            .await;
     }
 
     /// Return a sender for forwarding timeline mutations (indexable events).
@@ -335,6 +362,11 @@ pub(crate) struct SearchActor {
     index_tx: mpsc::Sender<SearchIndexMessage>,
     /// Active per-room crawl cancellation flags.
     crawl_cancels: HashMap<String, Arc<AtomicBool>>,
+    /// JoinHandles for active crawl tasks, keyed by room id.
+    /// Retained so `shutdown` can await each task after setting its cancel flag,
+    /// preventing stale crawls from emitting actions into a signed-out reducer
+    /// (REPOSITORY_RULES: ordered shutdown — timelines → search → sync).
+    crawl_handles: HashMap<String, executor::JoinHandle<bool>>,
     /// Room ids whose history has been fully crawled at least once.  Used by
     /// `handle_rooms_available` to skip idempotent auto-start for rooms that
     /// have already reached the `Completed` state.
@@ -361,6 +393,7 @@ impl SearchActor {
             msg_tx: tx.clone(),
             index_tx: index_tx.clone(),
             crawl_cancels: HashMap::new(),
+            crawl_handles: HashMap::new(),
             completed_rooms: std::collections::HashSet::new(),
         };
 
@@ -377,7 +410,20 @@ impl SearchActor {
                 msg = self.msg_rx.recv() => {
                     let Some(msg) = msg else { break };
                     match msg {
-                        SearchActorMessage::Shutdown => break,
+                        SearchActorMessage::Shutdown => {
+                            // Set all cancel flags so crawl tasks exit their
+                            // inner loop, then await every handle so no task
+                            // emits `HistoryCrawl*` actions into the next
+                            // account's reducer (ordered-shutdown rule, canon
+                            // overview.md Async rule 12).
+                            for cancel in self.crawl_cancels.values() {
+                                cancel.store(true, Ordering::Relaxed);
+                            }
+                            for (_, handle) in self.crawl_handles.drain() {
+                                let _ = handle.await;
+                            }
+                            break;
+                        }
                         SearchActorMessage::Query { request_id, query, scope } => {
                             self.handle_query(request_id, &query, scope).await;
                         }
@@ -400,9 +446,18 @@ impl SearchActor {
                         }
                         SearchActorMessage::CrawlFinished { room_id, completed } => {
                             self.crawl_cancels.remove(&room_id);
+                            self.crawl_handles.remove(&room_id);
                             if completed {
                                 self.completed_rooms.insert(room_id);
                             }
+                        }
+                        SearchActorMessage::InvalidateCrawlerCache => {
+                            // Content-indexing settings changed — clear the
+                            // completed-room cache so the next RoomsAvailable
+                            // notification re-crawls all rooms with the new
+                            // settings.  Running crawls will complete first and
+                            // then be re-started on the next notify.
+                            self.completed_rooms.clear();
                         }
                     }
                 }
@@ -649,10 +704,9 @@ impl SearchActor {
 
         let cancel = Arc::new(AtomicBool::new(false));
         self.crawl_cancels.insert(room_id.clone(), cancel.clone());
-
-        crate::search_crawler::spawn_history_crawl(
+        let handle = crate::search_crawler::spawn_history_crawl(
             self.session.clone(),
-            room_id,
+            room_id.clone(),
             request_id,
             settings,
             self.index_tx.clone(),
@@ -661,6 +715,7 @@ impl SearchActor {
             cancel,
             self.msg_tx.clone(),
         );
+        self.crawl_handles.insert(room_id, handle);
     }
 
     async fn handle_stop_history_crawl(&mut self, _request_id: RequestId, room_id: String) {
@@ -704,9 +759,9 @@ impl SearchActor {
             // Enqueue the crawl with a synthetic request id (0 = auto-start).
             let cancel = Arc::new(AtomicBool::new(false));
             self.crawl_cancels.insert(room_id.clone(), cancel.clone());
-            crate::search_crawler::spawn_history_crawl(
+            let handle = crate::search_crawler::spawn_history_crawl(
                 self.session.clone(),
-                room_id,
+                room_id.clone(),
                 RequestId { connection_id: RuntimeConnectionId(0), sequence: 0 },
                 settings.clone(),
                 self.index_tx.clone(),
@@ -715,6 +770,7 @@ impl SearchActor {
                 cancel,
                 self.msg_tx.clone(),
             );
+            self.crawl_handles.insert(room_id, handle);
         }
     }
 

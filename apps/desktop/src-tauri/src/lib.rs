@@ -926,6 +926,8 @@ pub fn run() {
             commands::open_thread,
             commands::close_thread,
             commands::submit_search,
+            commands::start_room_crawl,
+            commands::stop_room_crawl,
             commands::query_directory,
             commands::create_room,
             commands::create_space,

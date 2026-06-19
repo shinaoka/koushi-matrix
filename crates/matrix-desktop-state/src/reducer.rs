@@ -1055,9 +1055,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                 AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
             ];
 
-            // Guard: if content-indexing settings changed, invalidate all rooms
-            // that have already been marked `Completed` so they will be
-            // re-crawled with the new settings.
+            // Guard: if content-indexing settings changed, invalidate the
+            // reducer state AND the actor's completed-room cache so rooms are
+            // re-crawled with the new settings.  Stale captions/filenames must
+            // not stay searchable after the user opts out (privacy rule).
             let content_changed = prev_crawler.include_media_captions
                 != new_crawler.include_media_captions
                 || prev_crawler.include_filenames != new_crawler.include_filenames;
@@ -1068,6 +1069,19 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
                     }
                 }
                 effects.push(AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged));
+                // Tell the actor to drop its completed-room cache so the
+                // following re-enqueue actually starts new crawls.
+                effects.push(AppEffect::InvalidateSearchCrawlerCache);
+                // Re-enqueue all currently-known joined rooms so the actor
+                // starts fresh crawls with the new content settings.
+                let room_ids: Vec<String> =
+                    state.rooms.iter().map(|r| r.room_id.clone()).collect();
+                if !room_ids.is_empty() {
+                    effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
+                        room_ids,
+                        settings: new_crawler.clone(),
+                    });
+                }
             }
 
             // Guard: if speed changed from Paused to active, enqueue all

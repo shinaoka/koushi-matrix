@@ -2189,17 +2189,19 @@ impl TimelineActor {
             event_id: event_id.clone(),
             progress: MediaTransferProgress { current: 0, total },
         }));
-        self.emit_action(AppAction::MediaDownloadUpdated {
+        self.emit_action_reliable(AppAction::MediaDownloadUpdated {
             room_id: self.key.room_id().to_owned(),
             event_id: event_id.clone(),
             state: TimelineMediaDownloadState::Pending {
                 progress: Some(MediaTransferProgress { current: 0, total }),
             },
-        });
+        })
+        .await;
 
         let Some(request) = media_request_for_download(&entry, selection) else {
             self.media_downloads_in_progress.remove(&event_id);
-            self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk);
+            self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk)
+                .await;
             return;
         };
 
@@ -2220,9 +2222,17 @@ impl TimelineActor {
                 };
 
                 if let Some(data_dir) = self.data_dir.as_deref() {
-                    let dir = data_dir.join("media_downloads").join(self.key.room_id());
+                    // Matrix IDs contain ':' which is not valid in Windows
+                    // path components.  Use a hex-encoded SHA-256 of the
+                    // room_id as the directory name and of the event_id as the
+                    // filename so the path is safe on all platforms.
+                    let dir_name =
+                        sanitize_matrix_id_for_path(self.key.room_id());
+                    let file_name =
+                        format!("{}.bin", sanitize_matrix_id_for_path(&event_id));
+                    let dir = data_dir.join("media_downloads").join(dir_name);
                     if tokio::fs::create_dir_all(&dir).await.is_ok() {
-                        let path = dir.join(format!("{event_id}.bin"));
+                        let path = dir.join(file_name);
                         if tokio::fs::write(&path, &bytes).await.is_ok() {
                             download_state = TimelineMediaDownloadState::Ready {
                                 source_url: path.to_string_lossy().into_owned(),
@@ -2243,7 +2253,8 @@ impl TimelineActor {
                     } => (source_url.clone(), *width, *height, mime_type.clone()),
                     _ => {
                         self.media_downloads_in_progress.remove(&event_id);
-                        self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk);
+                        self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk)
+                            .await;
                         return;
                     }
                 };
@@ -2258,21 +2269,23 @@ impl TimelineActor {
                     width,
                     height,
                 }));
-                self.emit_action(AppAction::MediaDownloadUpdated {
+                self.emit_action_reliable(AppAction::MediaDownloadUpdated {
                     room_id: self.key.room_id().to_owned(),
                     event_id: event_id.clone(),
                     state: download_state,
-                });
+                })
+                .await;
                 self.media_downloads_in_progress.remove(&event_id);
             }
             Err(_) => {
                 self.media_downloads_in_progress.remove(&event_id);
-                self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk);
+                self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk)
+                    .await;
             }
         }
     }
 
-    fn emit_download_failed(
+    async fn emit_download_failed(
         &self,
         request_id: RequestId,
         event_id: &str,
@@ -2284,7 +2297,9 @@ impl TimelineActor {
             event_id: event_id.to_owned(),
             kind,
         }));
-        self.emit_action(AppAction::MediaDownloadUpdated {
+        // Use reliable delivery — a dropped failure action leaves the UI stuck
+        // in a pending download state (REPOSITORY_RULES L124-128).
+        self.emit_action_reliable(AppAction::MediaDownloadUpdated {
             room_id: self.key.room_id().to_owned(),
             event_id: event_id.to_owned(),
             state: TimelineMediaDownloadState::Failed {
@@ -2296,7 +2311,8 @@ impl TimelineActor {
                     _ => OperationFailureKind::Sdk,
                 },
             },
-        });
+        })
+        .await;
     }
 
     async fn handle_edit_text(&mut self, request_id: RequestId, event_id: String, body: String) {
@@ -3399,8 +3415,13 @@ impl TimelineActor {
         let _ = self.event_tx.send(event);
     }
 
-    fn emit_action(&self, action: AppAction) {
-        let _ = self.action_tx.try_send(vec![action]);
+    /// Reliably deliver an `AppAction` to the reducer.  Uses `send` (not
+    /// `try_send`) so the action is not silently dropped when the channel is
+    /// momentarily full.  Required for state-machine transitions where a
+    /// dropped action would leave the UI stuck in a pending/inconsistent state
+    /// (REPOSITORY_RULES L124-128).
+    async fn emit_action_reliable(&self, action: AppAction) {
+        let _ = self.action_tx.send(vec![action]).await;
     }
 
     fn emit_failure(&self, request_id: RequestId, failure: CoreFailure) {
@@ -4895,6 +4916,24 @@ fn media_request_for_download(
             })
         }
     }
+}
+
+/// Produce a path-safe hex string from a Matrix identifier.
+///
+/// Matrix room ids and event ids contain `!`, `$`, `#`, `:`, `.`, and `/`
+/// which are illegal or ambiguous in file-system path components on Windows
+/// and some POSIX contexts.  We hash the identifier to a fixed-length hex
+/// string so the path component is always safe.  The original identifier is
+/// never written to the filesystem; it is only used as the hash input.
+fn sanitize_matrix_id_for_path(id: &str) -> String {
+    use std::hash::Hash;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut hasher);
+    std::hash::Hasher::finish(&hasher)
+        .to_string()
+        .chars()
+        .take(16)
+        .collect()
 }
 
 fn uint_to_u64(value: Option<&matrix_sdk::ruma::UInt>) -> Option<u64> {

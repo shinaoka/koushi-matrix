@@ -105,6 +105,9 @@ pub enum AccountMessage {
         room_ids: Vec<String>,
         settings: matrix_desktop_state::SearchCrawlerSettings,
     },
+    /// Forward `AppEffect::InvalidateSearchCrawlerCache` to the actor so it
+    /// drops its completed-room cache before the subsequent re-enqueue.
+    InvalidateSearchCrawlerCache,
     ThreadsListCommand(ThreadsListCommand),
     VerificationRequestProgress {
         request_id: RequestId,
@@ -377,7 +380,7 @@ impl AccountActor {
                 }
                 AccountMessage::NotifySearchCrawlerRoomsAvailable { room_ids, settings } => {
                     if let Some(handle) = &self.search_actor {
-                        handle.notify_rooms_available(room_ids, settings);
+                        handle.notify_rooms_available(room_ids, settings).await;
                     } else {
                         // Buffer the notification so it can be replayed once the
                         // SearchActor is spawned (e.g., a RoomListUpdated fires
@@ -386,6 +389,14 @@ impl AccountActor {
                         // deduplicates idempotently.
                         self.pending_crawler_notification = Some((room_ids, settings));
                     }
+                }
+                AccountMessage::InvalidateSearchCrawlerCache => {
+                    if let Some(handle) = &self.search_actor {
+                        handle.invalidate_crawler_cache().await;
+                    }
+                    // If the actor is not yet running there is no completed-room
+                    // cache to clear; the pending_crawler_notification is
+                    // already the latest settings so a new crawl will use them.
                 }
                 AccountMessage::ThreadsListCommand(threads_list_command) => {
                     self.route_threads_list_command(threads_list_command).await;
@@ -846,7 +857,7 @@ impl AccountActor {
         if self.sync_actor.is_none()
             && let Some(session) = &self.session
         {
-            self.spawn_sync_actor(session.clone());
+            self.spawn_sync_actor(session.clone()).await;
         }
 
         match &self.sync_actor {
@@ -868,7 +879,7 @@ impl AccountActor {
     /// notify the RoomActor so room operations become available.
     /// Also replace the TimelineManagerActor with one that holds the session.
     /// Also spawn the SearchActor (Phase 6).
-    fn spawn_sync_actor(&mut self, session: Arc<MatrixClientSession>) {
+    async fn spawn_sync_actor(&mut self, session: Arc<MatrixClientSession>) {
         // Give the RoomActor the session so room ops work even before sync
         // starts. The room-list observation starts later, on the SyncActor's
         // RoomMessage::SyncStarted (which carries the live RoomListService on
@@ -893,7 +904,7 @@ impl AccountActor {
         // rooms already known to the reducer at session-restore time are not
         // missed by the auto-start logic (AGENTS.md Task 4).
         if let Some((room_ids, settings)) = self.pending_crawler_notification.take() {
-            search_handle.notify_rooms_available(room_ids, settings);
+            search_handle.notify_rooms_available(room_ids, settings).await;
         }
         self.search_actor = Some(search_handle);
 
@@ -2646,7 +2657,7 @@ impl AccountActor {
 
         // Spawn the SyncActor now that we have a store-backed session
         // (store bootstrap invariant: sync only on the store-backed session).
-        self.spawn_sync_actor(session_arc.clone());
+        self.spawn_sync_actor(session_arc.clone()).await;
 
         // Project login success through the reducer (session → Ready), then
         // hydrate Rust-owned profile/account-data projections. Fetch failure is
@@ -3305,7 +3316,7 @@ impl AccountActor {
         self.pending_uia_operations.clear();
         self.session = Some(session_arc.clone());
         self.session_key_id = Some(key_id);
-        self.spawn_sync_actor(session_arc.clone());
+        self.spawn_sync_actor(session_arc.clone()).await;
 
         let mut actions = vec![AppAction::SoftLogoutReauthSucceeded {
             request_id: request_id.sequence,
@@ -3439,7 +3450,7 @@ impl AccountActor {
                 self.session_key_id = Some(key_id);
 
                 // Spawn the SyncActor for the newly restored store-backed session.
-                self.spawn_sync_actor(session_arc.clone());
+                self.spawn_sync_actor(session_arc.clone()).await;
                 let mut actions = vec![AppAction::RestoreSessionSucceeded(info)];
                 if let Some(profile_action) = own_profile_action_from_session(&session_arc).await {
                     actions.push(profile_action);

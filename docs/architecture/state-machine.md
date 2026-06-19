@@ -2137,14 +2137,23 @@ stateDiagram-v2
   `NotifySearchCrawlerRoomsAvailable`. No `SearchCrawlerChanged` event is
   emitted for a pure speed change.
 - **Content-setting toggle**: Changing `include_media_captions` or
-  `include_filenames` resets all `Completed` rooms to `Idle` and emits
-  `SearchCrawlerChanged`. Running rooms are not interrupted; they will re-crawl
-  when their current crawl ends and they are re-queued by the next
-  `NotifySearchCrawlerRoomsAvailable`.
-- **Reliable delivery**: `CrawlFinished` is delivered from the crawler task to
-  the `SearchActor` via `async send` (not `try_send`) so the state-machine
-  transition is never silently dropped (REPOSITORY_RULES reliable-delivery
-  rule).
+  `include_filenames` does three things atomically: resets all `Completed` rooms
+  to `Idle` in the reducer, emits `InvalidateSearchCrawlerCache` (actor drops
+  its `completed_rooms` set), and emits `NotifySearchCrawlerRoomsAvailable` with
+  all current joined rooms so fresh crawls start with the new settings. Stale
+  captions/filenames must not remain searchable after the user opts out (privacy
+  rule). Running rooms are not interrupted; they will restart from the next
+  `RoomsAvailable` notification after their current task ends.
+- **Index backpressure → failure**: The crawler sends index messages with
+  `channel.send(...).await` (not `try_send`). If the channel is closed
+  (e.g. actor shutdown during crawl), the crawler emits `HistoryCrawlFailed`
+  with `IndexUnavailable` and returns `false` so the room is NOT marked
+  `Completed`. A silently dropped index message producing a false `Completed`
+  is prohibited.
+- **Reliable delivery**: `CrawlFinished`, `NotifySearchCrawlerRoomsAvailable`,
+  and `InvalidateSearchCrawlerCache` are delivered via `async send` (not
+  `try_send`) so state-machine transitions are never silently dropped
+  (REPOSITORY_RULES L124-128).
 - **Restore gap**: A `NotifySearchCrawlerRoomsAvailable` that arrives before
   the `SearchActor` is spawned (e.g. `RoomListUpdated` fires between session
   establishment and `SearchActor` creation at restore time) is buffered in
@@ -2154,13 +2163,25 @@ stateDiagram-v2
   (`RoomNotFound | Sdk | Decryption | IndexUnavailable`). Raw SDK error text,
   room IDs, event IDs, and message bodies never appear in the state machine,
   logs, or QA output.
+- **Debug privacy**: `SearchCrawlerState` has a custom `Debug` implementation
+  that emits only per-state counts (`idle`, `running`, `completed`, `failed`).
+  Room ids (Matrix identifiers) must not appear in `Debug` output, logs,
+  screenshots, or issue evidence.
 - **No attachment bytes**: The crawler indexes body text, captions (if
   `include_media_captions`), and filenames (if `include_filenames`). It never
   downloads attachment binary content. Media events produce only
   `AttachmentDocument` metadata; blob bytes remain out of scope.
-- **Shutdown**: Crawl tasks hold an `Arc<AtomicBool>` cancel flag. On actor
-  shutdown, all flags are set via `StopHistoryCrawl` before the actor loop
-  exits. Completed rooms are NOT persisted across restarts; the actor uses an
+- **Redaction target**: In a backward crawl, the `m.room.redaction` event's
+  `redacts` field names the TARGET event to remove from the index (not the
+  redaction event itself). The crawler reads `redacts` (top-level or
+  `content.redacts` per MSC2174) and records the target in a
+  `pending_redactions` set so a later-crawled older original is not indexed
+  after its redaction.
+- **Shutdown**: On actor `Shutdown`, all per-room cancel flags are set
+  (`Ordering::Relaxed`) and every `JoinHandle` is awaited before the actor loop
+  exits. This prevents stale crawl tasks from emitting `HistoryCrawl*` actions
+  into the next account's reducer (ordered-shutdown rule, overview.md Async
+  rule 12). Completed rooms are NOT persisted across restarts; the actor uses an
   in-memory `completed_rooms: HashSet<String>` seeded fresh each session.
 
 ## Appearance / Theme Ownership

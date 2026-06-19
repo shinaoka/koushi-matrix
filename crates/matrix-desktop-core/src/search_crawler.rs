@@ -4,6 +4,7 @@
 //! Media file bytes are never fetched; only MXC URIs, filenames, captions and
 //! metadata are indexed. This keeps the crawler a text-only backfill worker.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -17,15 +18,19 @@ use serde_json::Value;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::event::{CoreEvent, SearchEvent};
+use crate::executor;
 use crate::ids::RequestId;
 use crate::search::{SearchActorMessage, SearchIndexMessage};
-use crate::executor;
 
 const BATCH_SIZE_FAST: u32 = 200;
 const BATCH_SIZE_STANDARD: u32 = 100;
 const BATCH_SIZE_SLOW: u32 = 50;
 
 /// Start a background crawl for the given room.
+///
+/// Returns the `JoinHandle` for the spawned task. Callers (SearchActor) store
+/// this handle so they can await it on shutdown and prevent stale crawl tasks
+/// from emitting actions into the next account's reducer (P4 fix).
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_history_crawl(
     session: Arc<matrix_desktop_sdk::MatrixClientSession>,
@@ -37,7 +42,7 @@ pub fn spawn_history_crawl(
     event_tx: broadcast::Sender<CoreEvent>,
     cancel: Arc<AtomicBool>,
     actor_tx: mpsc::Sender<SearchActorMessage>,
-) {
+) -> executor::JoinHandle<bool> {
     executor::spawn(run_history_crawl(
         session,
         room_id,
@@ -48,7 +53,7 @@ pub fn spawn_history_crawl(
         event_tx,
         cancel,
         actor_tx,
-    ));
+    ))
 }
 
 async fn run_history_crawl(
@@ -61,7 +66,7 @@ async fn run_history_crawl(
     event_tx: broadcast::Sender<CoreEvent>,
     cancel: Arc<AtomicBool>,
     actor_tx: mpsc::Sender<SearchActorMessage>,
-) {
+) -> bool {
     let completed = run_history_crawl_inner(
         &session,
         &room_id,
@@ -83,6 +88,7 @@ async fn run_history_crawl(
     let _ = actor_tx
         .send(SearchActorMessage::CrawlFinished { room_id, completed })
         .await;
+    completed
 }
 
 /// Core crawl logic.  Returns `true` if the room history was fully crawled
@@ -155,6 +161,10 @@ async fn run_history_crawl_inner(
     let mut from_token: Option<String> = None;
     let mut processed: u64 = 0;
     let mut indexed: u64 = 0;
+    // Track event ids that were redacted so a later-crawled (older) original
+    // is not indexed after its redaction.  This is a backward crawl, so
+    // redaction events arrive before the original message they target.
+    let mut pending_redactions: HashSet<String> = HashSet::new();
 
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -202,11 +212,40 @@ async fn run_history_crawl_inner(
 
             let raw = timeline_event.kind.raw();
             let json = raw.json().get();
-            let Some(message) = event_json_to_index_message(room_id, json, settings) else {
+            let Some(message) =
+                event_json_to_index_message(room_id, json, settings, &mut pending_redactions)
+            else {
                 continue;
             };
+
+            // If this upsert targets an event that was already redacted
+            // (seen earlier in this backward crawl), skip it.
+            let already_redacted = match &message {
+                SearchIndexMessage::Upsert { event_id, .. } => {
+                    pending_redactions.contains(event_id)
+                }
+                _ => false,
+            };
+            if already_redacted {
+                continue;
+            }
+
+            // Use `send(...).await` (not `try_send`) so dropped index updates
+            // are not silently counted as indexed and do not produce a
+            // spurious `Completed` state with missing terms.  On backpressure
+            // emit a coarse `IndexUnavailable` failure so the room is
+            // retryable (P3 fix; REPOSITORY_RULES L124-128).
+            if index_tx.send(message).await.is_err() {
+                send_failure(
+                    action_tx,
+                    room_id,
+                    SearchCrawlerFailureKind::IndexUnavailable,
+                    "index channel closed",
+                )
+                .await;
+                return false;
+            }
             indexed += 1;
-            let _ = index_tx.try_send(message);
         }
 
         send_action(
@@ -274,6 +313,7 @@ fn event_json_to_index_message(
     room_id: &str,
     json: &str,
     settings: &SearchCrawlerSettings,
+    pending_redactions: &mut HashSet<String>,
 ) -> Option<SearchIndexMessage> {
     let value: Value = serde_json::from_str(json).ok()?;
     let event_id = value.get("event_id")?.as_str()?.to_owned();
@@ -282,7 +322,25 @@ fn event_json_to_index_message(
 
     let event_type = value.get("type")?.as_str()?;
     match event_type {
-        "m.room.redaction" => Some(SearchIndexMessage::Redact { event_id }),
+        "m.room.redaction" => {
+            // The `redacts` field names the TARGET event to remove from the
+            // index, not the redaction event itself.  In a backward crawl the
+            // redaction arrives before the original, so record the target in
+            // `pending_redactions` to suppress it when the original is seen.
+            let target_id = value
+                .get("redacts")
+                .and_then(|v| v.as_str())
+                .or_else(|| {
+                    // MSC2174 / newer servers nest it inside content.
+                    value
+                        .get("content")
+                        .and_then(|c| c.get("redacts"))
+                        .and_then(|v| v.as_str())
+                })
+                .map(|s| s.to_owned())?;
+            pending_redactions.insert(target_id.clone());
+            Some(SearchIndexMessage::Redact { event_id: target_id })
+        }
         "m.room.message" => {
             let content = value.get("content")?;
             if is_edit_event(content) {
@@ -474,7 +532,9 @@ mod tests {
             include_media_captions: true,
             include_filenames: true,
         };
-        let message = event_json_to_index_message("!r:test", json, &settings).unwrap();
+        let mut pending = HashSet::new();
+        let message =
+            event_json_to_index_message("!r:test", json, &settings, &mut pending).unwrap();
         match message {
             SearchIndexMessage::Upsert { room_id, event_id, sender, body, attachment, .. } => {
                 assert_eq!(room_id, "!r:test");
@@ -508,7 +568,9 @@ mod tests {
             }
         }"#;
         let settings = SearchCrawlerSettings::default();
-        let message = event_json_to_index_message("!r:test", json, &settings).unwrap();
+        let mut pending = HashSet::new();
+        let message =
+            event_json_to_index_message("!r:test", json, &settings, &mut pending).unwrap();
         match message {
             SearchIndexMessage::Upsert { body, attachment_filename, attachment, .. } => {
                 assert_eq!(body.as_deref(), Some("sunset.png"));
@@ -542,7 +604,8 @@ mod tests {
             }
         }"#;
         let settings = SearchCrawlerSettings::default();
-        assert!(event_json_to_index_message("!r:test", json, &settings).is_none());
+        let mut pending = HashSet::new();
+        assert!(event_json_to_index_message("!r:test", json, &settings, &mut pending).is_none());
     }
 
     #[test]
@@ -562,7 +625,9 @@ mod tests {
         let mut settings = SearchCrawlerSettings::default();
         settings.include_media_captions = false;
         settings.include_filenames = true;
-        let message = event_json_to_index_message("!r:test", json, &settings).unwrap();
+        let mut pending = HashSet::new();
+        let message =
+            event_json_to_index_message("!r:test", json, &settings, &mut pending).unwrap();
         match message {
             SearchIndexMessage::Upsert { body, attachment_filename, .. } => {
                 assert!(body.is_none());
@@ -589,7 +654,9 @@ mod tests {
         let mut settings = SearchCrawlerSettings::default();
         settings.include_media_captions = true;
         settings.include_filenames = false;
-        let message = event_json_to_index_message("!r:test", json, &settings).unwrap();
+        let mut pending = HashSet::new();
+        let message =
+            event_json_to_index_message("!r:test", json, &settings, &mut pending).unwrap();
         match message {
             SearchIndexMessage::Upsert { body, attachment_filename, attachment, .. } => {
                 assert_eq!(body.as_deref(), Some("image.png"));
@@ -598,5 +665,65 @@ mod tests {
             }
             other => panic!("expected Upsert, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn crawler_redaction_targets_redacts_field_not_event_id() {
+        // A backward crawl sees the redaction first (newer), then the original
+        // (older).  The redaction must remove the TARGET event id, not itself,
+        // and must record the target in `pending_redactions` so a subsequent
+        // Upsert for the original is suppressed.
+        let redaction_json = r#"{
+            "event_id": "$redact:test",
+            "sender": "@alice:test",
+            "origin_server_ts": 9000,
+            "type": "m.room.redaction",
+            "redacts": "$original:test"
+        }"#;
+        let settings = SearchCrawlerSettings::default();
+        let mut pending = HashSet::new();
+        let msg =
+            event_json_to_index_message("!r:test", redaction_json, &settings, &mut pending)
+                .unwrap();
+        // Must Redact the TARGET, not the redaction event itself.
+        match msg {
+            SearchIndexMessage::Redact { event_id } => {
+                assert_eq!(event_id, "$original:test",
+                    "Redact must target the original event, not the redaction event");
+            }
+            other => panic!("expected Redact, got {other:?}"),
+        }
+        // The target must be in pending_redactions so a later Upsert is skipped.
+        assert!(pending.contains("$original:test"),
+            "target should be in pending_redactions set");
+        assert!(!pending.contains("$redact:test"),
+            "redaction event id itself must not be in pending_redactions");
+    }
+
+    #[test]
+    fn crawler_redaction_via_content_field() {
+        // MSC2174: some servers nest `redacts` inside `content`.
+        let redaction_json = r#"{
+            "event_id": "$redact2:test",
+            "sender": "@alice:test",
+            "origin_server_ts": 9001,
+            "type": "m.room.redaction",
+            "content": {
+                "redacts": "$original2:test",
+                "reason": "spam"
+            }
+        }"#;
+        let settings = SearchCrawlerSettings::default();
+        let mut pending = HashSet::new();
+        let msg =
+            event_json_to_index_message("!r:test", redaction_json, &settings, &mut pending)
+                .unwrap();
+        match msg {
+            SearchIndexMessage::Redact { event_id } => {
+                assert_eq!(event_id, "$original2:test");
+            }
+            other => panic!("expected Redact, got {other:?}"),
+        }
+        assert!(pending.contains("$original2:test"));
     }
 }
