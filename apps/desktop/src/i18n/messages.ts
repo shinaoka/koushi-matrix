@@ -39,6 +39,8 @@ export type MessageId =
   | "auth.encryptionRecovery"
   | "app.about"
   | "app.title"
+  | "app.versionMismatch.title"
+  | "app.versionMismatch.detail"
   | "auth.failureForbidden"
   | "auth.failureNetwork"
   | "auth.failureSdk"
@@ -840,6 +842,9 @@ const en: Catalog = {
   "auth.encryptionRecovery": "Encryption Recovery",
   "app.about": "About Koushi",
   "app.title": "Koushi",
+  "app.versionMismatch.title": "Koushi needs to restart",
+  "app.versionMismatch.detail":
+    "Koushi couldn't load this session because its components are out of sync. Please fully quit and reopen the app.",
   "auth.failureForbidden": "Login methods are not available for this account",
   "auth.failureNetwork": "Could not reach the homeserver",
   "auth.failureSdk": "Could not check login methods",
@@ -1552,6 +1557,9 @@ const ja: Catalog = {
   "auth.encryptionRecovery": "暗号化リカバリ",
   "app.about": "Koushi（光子・格子）について",
   "app.title": "Koushi（光子・格子）",
+  "app.versionMismatch.title": "Koushi の再起動が必要です",
+  "app.versionMismatch.detail":
+    "コンポーネントの同期が取れていないため、このセッションを読み込めませんでした。Koushi を完全に終了してから、もう一度開いてください。",
   "auth.matrixAccount": "Matrixアカウント",
   "auth.matrixDesktop": "Koushi（光子・格子）",
   "auth.noLoginMethods": "ログイン方法がありません",

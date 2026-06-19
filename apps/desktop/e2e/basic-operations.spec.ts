@@ -52,6 +52,8 @@
  *      mocked IPC without launching the native GUI.
  *  23. Keep sidebar navigation buttons wired by asserting Home and Threads
  *      dispatch their Rust-owned commands in headless browser mode.
+ *  24. Fail closed on a mismatched snapshot schema_version: show the explicit
+ *      recovery screen and refuse the normal shell (Phase 4 IPC contract guard).
  */
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
@@ -6656,4 +6658,26 @@ test("encrypted room suppresses link previews and shows privacy notice", async (
 
   await page.getByRole("button", { name: t("room.roomInfo") }).click();
   await expect(page.getByText(t("settings.urlPreviewsEncryptedNotice"))).toBeVisible();
+});
+
+test("a mismatched snapshot schema_version fails closed to a recovery screen, not the shell", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  // #87 Phase 4 IPC contract guard: a stale flat (v1) snapshot or a mismatched Rust/TS
+  // build carries an incompatible schema_version. The App must fail closed — show the
+  // explicit recovery screen and refuse to render the normal three-pane shell — instead
+  // of silently misprojecting the incompatible shape.
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: { ...snapshot.state, schema_version: 999 }
+    });
+    window.__harness.pushStateChanged();
+  });
+
+  await expect(page.getByRole("alert")).toContainText(t("app.versionMismatch.title"));
+  await expect(page.getByRole("alert")).toContainText(t("app.versionMismatch.detail"));
+  await expect(page.getByRole("main", { name: "Conversation timeline" })).toBeHidden();
 });
