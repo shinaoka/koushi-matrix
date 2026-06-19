@@ -1,0 +1,609 @@
+{
+  "sidebar": {
+    "account_home": {
+      "display_name": "Home",
+      "highlight_count": 1,
+      "is_active": false,
+      "unread_count": 3
+    },
+    "active_space_id": "!space:example.invalid",
+    "dm_highlight_count": 0,
+    "dm_unread_count": 0,
+    "global_dms": [],
+    "space_highlight_count": 1,
+    "space_rail": [
+      {
+        "avatar": null,
+        "display_name": "Fixture Space",
+        "highlight_count": 1,
+        "is_active": true,
+        "space_id": "!space:example.invalid",
+        "unread_count": 3
+      }
+    ],
+    "space_rooms": [
+      {
+        "avatar": {
+          "mxc_uri": "mxc://example.invalid/fixture-avatar",
+          "thumbnail": {
+            "height": 64,
+            "kind": "ready",
+            "mime_type": "image/png",
+            "source_url": "asset://fixture-avatar",
+            "width": 64
+          }
+        },
+        "display_name": "Fixture Room",
+        "highlight_count": 1,
+        "room_id": "!room:example.invalid",
+        "tags": {
+          "favourite": null,
+          "low_priority": null
+        },
+        "unread_count": 3
+      }
+    ],
+    "space_unread_count": 3
+  },
+  "state": {
+    "account_management": {
+      "kind": "idle"
+    },
+    "account_management_capabilities": {
+      "change_password": {
+        "kind": "unknown"
+      }
+    },
+    "activity": {
+      "active_tab": "recent",
+      "kind": "open",
+      "mark_read": {
+        "kind": "idle"
+      },
+      "recent": {
+        "next_batch": null,
+        "rows": [
+          {
+            "event_id": "$act:example.invalid",
+            "highlight": false,
+            "preview": "Activity preview",
+            "room_id": "!room:example.invalid",
+            "room_label": "Fixture Room",
+            "sender_label": "Fixture User",
+            "timestamp_ms": 500000,
+            "unread": false
+          }
+        ]
+      },
+      "unread": {
+        "next_batch": null,
+        "rows": []
+      }
+    },
+    "auth": {
+      "kind": "unknown"
+    },
+    "basic_operation": {
+      "kind": "creatingRoom",
+      "name": "Fixture New Room",
+      "request_id": 1
+    },
+    "cjk_text_policy": {
+      "collation": {
+        "case_first": null,
+        "locale": "ja",
+        "numeric": true
+      },
+      "japanese_catalog": {
+        "catalog_locale": "en",
+        "complete": true,
+        "missing_message_ids": []
+      },
+      "normalization": {
+        "form": "nfkc",
+        "kana_fold": true,
+        "width_fold": true
+      }
+    },
+    "device_sessions": {
+      "kind": "idle"
+    },
+    "directory": {
+      "join": {
+        "alias": "#fixture:example.invalid",
+        "kind": "joining",
+        "request_id": 8,
+        "via_server": null
+      },
+      "query": {
+        "kind": "results",
+        "next_batch": null,
+        "query": {
+          "limit": 20,
+          "server_name": null,
+          "since": null,
+          "term": "fixture"
+        },
+        "request_id": 7,
+        "rooms": [
+          {
+            "avatar_url": null,
+            "canonical_alias": "#fixture:example.invalid",
+            "guest_can_join": false,
+            "joined_members": 42,
+            "name": "Fixture Public Room",
+            "room_id": "!dir:example.invalid",
+            "topic": "Fixture topic",
+            "world_readable": true
+          }
+        ]
+      }
+    },
+    "e2ee_trust": {
+      "cross_signing": {
+        "kind": "trusted"
+      },
+      "devices": [],
+      "identity_reset": {
+        "kind": "idle"
+      },
+      "key_backup": {
+        "kind": "enabled",
+        "version": "v1"
+      },
+      "key_management": {
+        "passphrase_change": {
+          "kind": "idle"
+        },
+        "room_key_export": {
+          "kind": "idle"
+        },
+        "room_key_import": {
+          "kind": "idle"
+        },
+        "secure_backup_setup": {
+          "kind": "idle"
+        }
+      },
+      "verification": {
+        "kind": "idle"
+      }
+    },
+    "errors": [],
+    "files_view": {
+      "filter": {
+        "filename_query": null,
+        "kinds": [
+          "image"
+        ]
+      },
+      "items": [
+        {
+          "encrypted": false,
+          "encryption_version": null,
+          "event_id": "$attach:example.invalid",
+          "filename": "fixture.png",
+          "height": 128,
+          "is_edited": false,
+          "kind": "image",
+          "mimetype": "image/png",
+          "room_id": "!room:example.invalid",
+          "sender": "@fixture:example.invalid",
+          "size": 1024,
+          "source_mxc": "mxc://example.invalid/attach",
+          "thread_root": null,
+          "thumbnail_mxc": null,
+          "timestamp_ms": 700000,
+          "width": 128
+        }
+      ],
+      "kind": "open",
+      "request_id": 10,
+      "scope": {
+        "kind": "room",
+        "room_id": "!room:example.invalid"
+      },
+      "selected_event_id": "$attach:example.invalid",
+      "sort": "newestFirst"
+    },
+    "focused_context": {
+      "event_id": "$focused:example.invalid",
+      "is_subscribed": true,
+      "kind": "open",
+      "room_id": "!room:example.invalid"
+    },
+    "invites": [
+      {
+        "avatar": null,
+        "display_name": "Fixture Invite",
+        "inviter_display_name": "Inviter",
+        "inviter_user_id": "@inviter:example.invalid",
+        "is_dm": false,
+        "room_id": "!invite:example.invalid",
+        "topic": "Fixture invite topic"
+      }
+    ],
+    "link_preview_settings": {
+      "room_overrides": {}
+    },
+    "live_signals": {
+      "presence": {
+        "@fixture:example.invalid": "online"
+      },
+      "rooms": {
+        "!room:example.invalid": {
+          "fully_read_event_id": "$read:example.invalid",
+          "receipts_by_event": {},
+          "typing_user_ids": [
+            "@other:example.invalid"
+          ]
+        }
+      }
+    },
+    "local_encryption": {
+      "kind": "healthy"
+    },
+    "locale_profile": {
+      "catalog_locale": "en",
+      "dir": "ltr",
+      "lang": "en",
+      "modifier_labels": {
+        "primary": "Ctrl"
+      },
+      "platform": "linux",
+      "pseudo_locale": "none"
+    },
+    "native_attention": {
+      "dispatch": {
+        "kind": "idle"
+      },
+      "summary": {
+        "badge_count": 5,
+        "candidate": {
+          "highlight_count": 1,
+          "kind": "message",
+          "room_display_name": "Fixture Room",
+          "unread_count": 1
+        },
+        "capabilities": {
+          "activation": "available",
+          "badge": "available",
+          "notifications": "available",
+          "overlay_icon": "unavailable",
+          "sound": "available",
+          "tray": "unknown"
+        },
+        "highlight_count": 2,
+        "unread_count": 5
+      }
+    },
+    "navigation": {
+      "active_room_id": "!room:example.invalid",
+      "active_space_id": "!space:example.invalid",
+      "last_room_by_space_id": {},
+      "space_order": [
+        "!space:example.invalid"
+      ]
+    },
+    "profile": {
+      "ignored_user_ids": [],
+      "ignored_user_update": {
+        "kind": "idle"
+      },
+      "local_alias_update": {
+        "kind": "idle"
+      },
+      "local_aliases": {},
+      "own": {
+        "avatar": {
+          "mxc_uri": "mxc://example.invalid/fixture-avatar",
+          "thumbnail": {
+            "height": 64,
+            "kind": "ready",
+            "mime_type": "image/png",
+            "source_url": "asset://fixture-avatar",
+            "width": 64
+          }
+        },
+        "display_name": "Fixture User"
+      },
+      "update": {
+        "kind": "idle"
+      },
+      "users": {
+        "@other:example.invalid": {
+          "avatar": {
+            "mxc_uri": "mxc://example.invalid/fixture-avatar",
+            "thumbnail": {
+              "height": 64,
+              "kind": "ready",
+              "mime_type": "image/png",
+              "source_url": "asset://fixture-avatar",
+              "width": 64
+            }
+          },
+          "display_label": "Other Fixture",
+          "display_name": "Other Fixture",
+          "mention_search_terms": [
+            "other"
+          ],
+          "original_display_label": "Other Fixture",
+          "user_id": "@other:example.invalid"
+        }
+      }
+    },
+    "qr_login": {
+      "kind": "idle"
+    },
+    "room_interactions": {
+      "!room:example.invalid": {
+        "pin_operation": {
+          "event_id": "$pinned:example.invalid",
+          "kind": "pending",
+          "op": "pin",
+          "request_id": 42,
+          "room_id": "!room:example.invalid"
+        },
+        "pinned_events": [
+          {
+            "body_preview": "Pinned fixture message",
+            "event_id": "$pinned:example.invalid",
+            "redacted": false,
+            "sender": "@fixture:example.invalid"
+          }
+        ]
+      }
+    },
+    "room_list": {
+      "active_filter": {
+        "kind": "rooms"
+      },
+      "items": [],
+      "sort": {
+        "kind": "activity"
+      }
+    },
+    "room_management": {
+      "operation": {
+        "kind": "idle"
+      },
+      "selected_room_id": "!room:example.invalid",
+      "settings": {
+        "avatar_url": "mxc://example.invalid/room-avatar",
+        "history_visibility": "shared",
+        "join_rule": "invite",
+        "members": [
+          {
+            "avatar_url": null,
+            "display_label": "Fixture User",
+            "display_name": "Fixture User",
+            "original_display_label": "Fixture User",
+            "power_level": 100,
+            "role": "administrator",
+            "user_id": "@fixture:example.invalid"
+          }
+        ],
+        "name": "Fixture Room",
+        "permissions": {
+          "can_ban": true,
+          "can_edit_roles": true,
+          "can_edit_settings": true,
+          "can_kick": true,
+          "can_unban": true
+        },
+        "room_id": "!room:example.invalid",
+        "topic": "Fixture room topic"
+      }
+    },
+    "room_notification_settings": {
+      "!room:example.invalid": {
+        "mode": {
+          "kind": "all"
+        },
+        "operation": {
+          "kind": "idle"
+        }
+      }
+    },
+    "rooms": [
+      {
+        "avatar": {
+          "mxc_uri": "mxc://example.invalid/fixture-avatar",
+          "thumbnail": {
+            "height": 64,
+            "kind": "ready",
+            "mime_type": "image/png",
+            "source_url": "asset://fixture-avatar",
+            "width": 64
+          }
+        },
+        "display_label": "Fixture Room",
+        "display_name": "Fixture Room",
+        "dm_user_ids": [],
+        "highlight_count": 1,
+        "is_dm": false,
+        "is_encrypted": true,
+        "joined_members": 4,
+        "last_activity_ms": 1000000,
+        "marked_unread": false,
+        "notification_count": 2,
+        "original_display_label": "Fixture Room",
+        "parent_space_ids": [
+          "!space:example.invalid"
+        ],
+        "room_id": "!room:example.invalid",
+        "tags": {
+          "favourite": null,
+          "low_priority": null
+        },
+        "unread_count": 3
+      }
+    ],
+    "search": {
+      "kind": "results",
+      "query": "fixture query",
+      "request_id": 9,
+      "results": [
+        {
+          "event_id": "$search:example.invalid",
+          "highlights": [
+            {
+              "end_utf16": 14,
+              "start_utf16": 8
+            }
+          ],
+          "match_field": "messageBody",
+          "match_kind": "exact",
+          "room_id": "!room:example.invalid",
+          "score_millis": 950,
+          "sender": "@fixture:example.invalid",
+          "snippet": "Fixture search snippet",
+          "timestamp_ms": 600000
+        }
+      ],
+      "scope": "allRooms"
+    },
+    "search_crawler": {
+      "rooms": {}
+    },
+    "session": {
+      "device_id": "FIXTURE_DEVICE",
+      "homeserver": "https://matrix.example.invalid",
+      "kind": "ready",
+      "user_id": "@fixture:example.invalid"
+    },
+    "settings": {
+      "persistence": {
+        "kind": "idle"
+      },
+      "values": {
+        "appearance": {
+          "theme": "system"
+        },
+        "display": {
+          "code_block_wrap": true,
+          "encrypted_url_previews_enabled": false,
+          "hide_redacted": true,
+          "url_previews_enabled": true
+        },
+        "keyboard": {
+          "composer_send_shortcut": "enter"
+        },
+        "locale": {
+          "language_tag": null,
+          "text_direction": "auto"
+        },
+        "media": {
+          "image_upload_compression": "ask",
+          "image_upload_compression_policy": {
+            "quality_percent": 82,
+            "target_long_edge": 2048,
+            "threshold_bytes": 1048576,
+            "threshold_long_edge": 2560
+          }
+        },
+        "notifications": {
+          "badges": true,
+          "desktop_notifications": true,
+          "send_read_receipts": true,
+          "send_typing_notifications": true,
+          "sound": true
+        },
+        "search_crawler": {
+          "include_filenames": true,
+          "include_media_captions": true,
+          "speed": "standard"
+        },
+        "timeline": {
+          "auto_load_older_messages": false
+        },
+        "typography": {
+          "emoji": "system",
+          "font": "system"
+        }
+      }
+    },
+    "soft_logout_reauth": {
+      "kind": "idle"
+    },
+    "spaces": [
+      {
+        "avatar": null,
+        "child_room_ids": [
+          "!room:example.invalid"
+        ],
+        "display_name": "Fixture Space",
+        "space_id": "!space:example.invalid"
+      }
+    ],
+    "sync": "running",
+    "sync_mode": {
+      "kind": "unsupported"
+    },
+    "thread": {
+      "kind": "closed"
+    },
+    "thread_attention": {
+      "highlight_count": 1,
+      "kind": "tracking",
+      "live_event_marker_count": 2,
+      "notification_count": 4,
+      "room_id": "!room:example.invalid",
+      "root_event_id": "$thread-root:example.invalid"
+    },
+    "threads_list": {
+      "end_reached": false,
+      "is_paginating": false,
+      "items": [
+        {
+          "latest_body_preview": "Latest reply preview",
+          "latest_event_id": "$thread-reply:example.invalid",
+          "latest_sender": "@other:example.invalid",
+          "latest_sender_label": "Other Fixture",
+          "latest_timestamp_ms": 810000,
+          "reply_count": 3,
+          "root_body_preview": "Thread root preview",
+          "root_event_id": "$thread-root:example.invalid",
+          "root_sender": "@fixture:example.invalid",
+          "root_sender_label": "Fixture User",
+          "root_timestamp_ms": 800000
+        }
+      ],
+      "kind": "open",
+      "request_id": 11,
+      "room_id": "!room:example.invalid"
+    },
+    "timeline": {
+      "composer": {
+        "draft": "",
+        "mode": "Plain",
+        "pending_transaction_id": null
+      },
+      "is_paginating_backwards": false,
+      "is_subscribed": true,
+      "media_downloads": {
+        "$media:example.invalid": {
+          "kind": "pending",
+          "progress": {
+            "current": 10,
+            "total": 100
+          }
+        }
+      },
+      "media_gallery": [],
+      "room_id": "!room:example.invalid",
+      "scheduled_send_capability": "unknown",
+      "scheduled_sends": [],
+      "staged_uploads": []
+    },
+    "typography_profile": {
+      "emoji": "system",
+      "emoji_asset": "systemFallback",
+      "font": "system",
+      "font_asset": "systemFallback",
+      "platform": "linux"
+    }
+  },
+  "thread": null,
+  "timeline": []
+}

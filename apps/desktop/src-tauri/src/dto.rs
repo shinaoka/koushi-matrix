@@ -986,4 +986,447 @@ mod tests {
             json!({ "reconnecting": "limited network" })
         );
     }
+
+    /// Characterization / golden test for the complete `FrontendAppState` DTO wire shape.
+    ///
+    /// Purpose: lock in the exact JSON serialization of `FrontendDesktopSnapshot` so any
+    /// later Phase 2 (file splits) or Phase 4 (domain/ui DTO reorg) that silently drops,
+    /// renames, or reorders a field is caught immediately.
+    ///
+    /// The golden artifact lives at `tests/golden/frontend_app_state.json`.
+    ///
+    /// To regenerate: `UPDATE_GOLDEN=1 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml frontend_app_state_golden_matches_maximally_populated_state`
+    ///
+    /// When to regenerate: ONLY after an intentional, reviewed DTO change (Phase 4 etc.).
+    /// A failing golden test with no intentional change signals an accidental field loss —
+    /// investigate before regenerating.
+    #[test]
+    fn frontend_app_state_golden_matches_maximally_populated_state() {
+        use std::collections::BTreeMap;
+        use matrix_desktop_state::{
+            ActivityMarkReadState, ActivityRow, ActivityState, ActivityStream, ActivityTab,
+            AttachmentFilter, AttachmentKind, AttachmentResult, AttachmentScope, AttachmentSort,
+            AvatarImage, AvatarThumbnailState, BasicOperationState,
+            CrossSigningStatus, DirectoryJoinState, DirectoryQuery, DirectoryQueryState,
+            DirectoryRoomSummary, DirectoryState,
+            E2eeKeyManagementState, E2eeTrustState, FilesViewState, FocusedContextState,
+            IdentityResetState, InvitePreview, KeyBackupStatus,
+            LiveSignalsState, LocalEncryptionState, MediaTransferProgress,
+            NativeAttentionCandidate, NativeAttentionCapabilities, NativeAttentionCapability,
+            NativeAttentionDispatchState, NativeAttentionState, NativeAttentionSummary,
+            NavigationState, OwnProfile, PinOp, PinOperationState, PinnedEvent,
+            RoomAttentionKind, RoomInteractionState,
+            RoomJoinRule, RoomHistoryVisibility, RoomLiveSignals, RoomManagementOperationState,
+            RoomManagementState, RoomMemberRole, RoomMemberSummary,
+            RoomNotificationSettings, RoomPermissionFacts, RoomSettingsSnapshot, RoomSummary,
+            RoomTags, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
+            SessionInfo, SessionState, SpaceSummary, SyncState,
+            TextRange, ThreadAttentionState, ThreadsListItem, ThreadsListState,
+            TimelineMediaDownloadState, TimelinePaneState,
+            UserProfile, VerificationFlowState,
+        };
+
+        // Construct a maximally-populated AppState. Every section gets at least one
+        // non-default field so that Phase 2/4 refactors cannot silently drop it.
+        // All identifiers are synthetic (example.invalid / fixture pattern).
+        let session_info = SessionInfo {
+            homeserver: "https://matrix.example.invalid".to_owned(),
+            user_id: "@fixture:example.invalid".to_owned(),
+            device_id: "FIXTURE_DEVICE".to_owned(),
+        };
+        let avatar = AvatarImage {
+            mxc_uri: "mxc://example.invalid/fixture-avatar".to_owned(),
+            thumbnail: AvatarThumbnailState::Ready {
+                source_url: "asset://fixture-avatar".to_owned(),
+                width: Some(64),
+                height: Some(64),
+                mime_type: Some("image/png".to_owned()),
+            },
+        };
+
+        let mut state = AppState {
+            session: SessionState::Ready(session_info.clone()),
+            sync: SyncState::Running,
+            ..AppState::default()
+        };
+
+        // profile — own + one cached user
+        state.profile.own = OwnProfile {
+            display_name: Some("Fixture User".to_owned()),
+            avatar: Some(avatar.clone()),
+        };
+        state.profile.users.insert(
+            "@other:example.invalid".to_owned(),
+            UserProfile {
+                user_id: "@other:example.invalid".to_owned(),
+                display_name: Some("Other Fixture".to_owned()),
+                display_label: "Other Fixture".to_owned(),
+                original_display_label: "Other Fixture".to_owned(),
+                mention_search_terms: vec!["other".to_owned()],
+                avatar: Some(avatar.clone()),
+            },
+        );
+
+        // spaces + rooms
+        state.spaces.push(SpaceSummary {
+            space_id: "!space:example.invalid".to_owned(),
+            display_name: "Fixture Space".to_owned(),
+            avatar: None,
+            child_room_ids: vec!["!room:example.invalid".to_owned()],
+        });
+        state.rooms.push(RoomSummary {
+            room_id: "!room:example.invalid".to_owned(),
+            display_name: "Fixture Room".to_owned(),
+            display_label: "Fixture Room".to_owned(),
+            original_display_label: "Fixture Room".to_owned(),
+            avatar: Some(avatar.clone()),
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: RoomTags::default(),
+            unread_count: 3,
+            notification_count: 2,
+            highlight_count: 1,
+            marked_unread: false,
+            last_activity_ms: 1_000_000,
+            parent_space_ids: vec!["!space:example.invalid".to_owned()],
+            is_encrypted: true,
+            joined_members: 4,
+        });
+
+        // invites
+        state.invites.push(InvitePreview {
+            room_id: "!invite:example.invalid".to_owned(),
+            display_name: "Fixture Invite".to_owned(),
+            avatar: None,
+            topic: Some("Fixture invite topic".to_owned()),
+            inviter_display_name: Some("Inviter".to_owned()),
+            inviter_user_id: Some("@inviter:example.invalid".to_owned()),
+            is_dm: false,
+        });
+
+        // navigation — active room + space
+        state.navigation = NavigationState {
+            active_room_id: Some("!room:example.invalid".to_owned()),
+            active_space_id: Some("!space:example.invalid".to_owned()),
+            space_order: vec!["!space:example.invalid".to_owned()],
+            last_room_by_space_id: BTreeMap::new(),
+        };
+
+        // room_interactions
+        state.room_interactions.insert(
+            "!room:example.invalid".to_owned(),
+            RoomInteractionState {
+                pinned_events: vec![PinnedEvent {
+                    event_id: "$pinned:example.invalid".to_owned(),
+                    sender: Some("@fixture:example.invalid".to_owned()),
+                    body_preview: Some("Pinned fixture message".to_owned()),
+                    redacted: false,
+                }],
+                pin_operation: PinOperationState::Pending {
+                    request_id: 42,
+                    room_id: "!room:example.invalid".to_owned(),
+                    event_id: "$pinned:example.invalid".to_owned(),
+                    op: PinOp::Pin,
+                },
+            },
+        );
+
+        // room_notification_settings
+        state.room_notification_settings.insert(
+            "!room:example.invalid".to_owned(),
+            RoomNotificationSettings::default(),
+        );
+
+        // room_management — with settings snapshot
+        state.room_management = RoomManagementState {
+            selected_room_id: Some("!room:example.invalid".to_owned()),
+            settings: Some(RoomSettingsSnapshot {
+                room_id: "!room:example.invalid".to_owned(),
+                name: Some("Fixture Room".to_owned()),
+                topic: Some("Fixture room topic".to_owned()),
+                avatar_url: Some("mxc://example.invalid/room-avatar".to_owned()),
+                join_rule: RoomJoinRule::Invite,
+                history_visibility: RoomHistoryVisibility::Shared,
+                permissions: RoomPermissionFacts {
+                    can_edit_settings: true,
+                    can_edit_roles: true,
+                    can_kick: true,
+                    can_ban: true,
+                    can_unban: true,
+                },
+                members: vec![RoomMemberSummary {
+                    user_id: "@fixture:example.invalid".to_owned(),
+                    display_name: Some("Fixture User".to_owned()),
+                    display_label: "Fixture User".to_owned(),
+                    original_display_label: "Fixture User".to_owned(),
+                    avatar_url: None,
+                    power_level: Some(100),
+                    role: RoomMemberRole::Administrator,
+                }],
+            }),
+            operation: RoomManagementOperationState::Idle,
+        };
+
+        // activity — open with populated streams
+        state.activity = ActivityState::Open {
+            active_tab: ActivityTab::Recent,
+            recent: ActivityStream {
+                rows: vec![ActivityRow {
+                    room_id: "!room:example.invalid".to_owned(),
+                    event_id: "$act:example.invalid".to_owned(),
+                    room_label: "Fixture Room".to_owned(),
+                    sender_label: Some("Fixture User".to_owned()),
+                    preview: Some("Activity preview".to_owned()),
+                    timestamp_ms: 500_000,
+                    unread: false,
+                    highlight: false,
+                }],
+                next_batch: None,
+            },
+            unread: ActivityStream {
+                rows: vec![],
+                next_batch: None,
+            },
+            mark_read: ActivityMarkReadState::Idle,
+        };
+
+        // timeline — composer + media_downloads populated
+        state.timeline = TimelinePaneState {
+            room_id: Some("!room:example.invalid".to_owned()),
+            is_subscribed: true,
+            is_paginating_backwards: false,
+            composer: matrix_desktop_state::ComposerState::default(),
+            scheduled_send_capability: Default::default(),
+            scheduled_sends: Vec::new(),
+            staged_uploads: Vec::new(),
+            media_gallery: Vec::new(),
+            media_downloads: {
+                let mut m = BTreeMap::new();
+                m.insert(
+                    "$media:example.invalid".to_owned(),
+                    TimelineMediaDownloadState::Pending {
+                        progress: Some(MediaTransferProgress { current: 10, total: 100 }),
+                    },
+                );
+                m
+            },
+        };
+
+        // live_signals — one room entry
+        state.live_signals = LiveSignalsState {
+            rooms: {
+                let mut m = BTreeMap::new();
+                m.insert(
+                    "!room:example.invalid".to_owned(),
+                    RoomLiveSignals {
+                        receipts_by_event: BTreeMap::new(),
+                        fully_read_event_id: Some("$read:example.invalid".to_owned()),
+                        typing_user_ids: vec!["@other:example.invalid".to_owned()],
+                    },
+                );
+                m
+            },
+            presence: {
+                let mut m = BTreeMap::new();
+                m.insert(
+                    "@fixture:example.invalid".to_owned(),
+                    matrix_desktop_state::PresenceKind::Online,
+                );
+                m
+            },
+        };
+
+        // e2ee_trust — non-default fields
+        state.e2ee_trust = E2eeTrustState {
+            verification: VerificationFlowState::Idle,
+            cross_signing: CrossSigningStatus::Trusted,
+            key_backup: KeyBackupStatus::Enabled {
+                version: "v1".to_owned(),
+            },
+            identity_reset: IdentityResetState::Idle,
+            key_management: E2eeKeyManagementState::default(),
+            devices: Vec::new(),
+        };
+
+        // local_encryption
+        state.local_encryption = LocalEncryptionState::Healthy;
+
+        // native_attention — non-default capabilities
+        state.native_attention = NativeAttentionState {
+            summary: NativeAttentionSummary {
+                unread_count: 5,
+                highlight_count: 2,
+                badge_count: 5,
+                candidate: Some(NativeAttentionCandidate {
+                    room_display_name: "Fixture Room".to_owned(),
+                    kind: RoomAttentionKind::Message,
+                    unread_count: 1,
+                    highlight_count: 1,
+                }),
+                capabilities: NativeAttentionCapabilities {
+                    notifications: NativeAttentionCapability::Available,
+                    badge: NativeAttentionCapability::Available,
+                    overlay_icon: NativeAttentionCapability::Unavailable,
+                    sound: NativeAttentionCapability::Available,
+                    tray: NativeAttentionCapability::Unknown,
+                    activation: NativeAttentionCapability::Available,
+                },
+            },
+            dispatch: NativeAttentionDispatchState::Idle,
+        };
+
+        // directory — Results with one entry + Joining join state
+        state.directory = DirectoryState {
+            query: DirectoryQueryState::Results {
+                request_id: 7,
+                query: DirectoryQuery {
+                    term: Some("fixture".to_owned()),
+                    server_name: None,
+                    limit: Some(20),
+                    since: None,
+                },
+                rooms: vec![DirectoryRoomSummary {
+                    room_id: "!dir:example.invalid".to_owned(),
+                    canonical_alias: Some("#fixture:example.invalid".to_owned()),
+                    name: "Fixture Public Room".to_owned(),
+                    topic: Some("Fixture topic".to_owned()),
+                    avatar_url: None,
+                    joined_members: 42,
+                    world_readable: true,
+                    guest_can_join: false,
+                }],
+                next_batch: None,
+            },
+            join: DirectoryJoinState::Joining {
+                request_id: 8,
+                alias: "#fixture:example.invalid".to_owned(),
+                via_server: None,
+            },
+        };
+
+        // focused_context — Open referencing a synthetic event
+        state.focused_context = FocusedContextState::Open {
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$focused:example.invalid".to_owned(),
+            is_subscribed: true,
+        };
+
+        // search — Results with one entry
+        state.search = SearchState::Results {
+            request_id: 9,
+            query: "fixture query".to_owned(),
+            scope: SearchScope::AllRooms,
+            results: vec![SearchResult {
+                room_id: "!room:example.invalid".to_owned(),
+                event_id: "$search:example.invalid".to_owned(),
+                sender: "@fixture:example.invalid".to_owned(),
+                timestamp_ms: 600_000,
+                score_millis: 950,
+                snippet: "Fixture search snippet".to_owned(),
+                match_field: SearchMatchField::MessageBody,
+                highlights: vec![TextRange { start_utf16: 8, end_utf16: 14 }],
+                match_kind: SearchMatchKind::Exact,
+            }],
+        };
+
+        // files_view — Open with one attachment entry
+        state.files_view = FilesViewState::Open {
+            request_id: 10,
+            scope: AttachmentScope::Room {
+                room_id: "!room:example.invalid".to_owned(),
+            },
+            filter: AttachmentFilter {
+                kinds: vec![AttachmentKind::Image],
+                filename_query: None,
+            },
+            sort: AttachmentSort::NewestFirst,
+            items: vec![AttachmentResult {
+                event_id: "$attach:example.invalid".to_owned(),
+                filename: "fixture.png".to_owned(),
+                kind: AttachmentKind::Image,
+                mimetype: Some("image/png".to_owned()),
+                room_id: "!room:example.invalid".to_owned(),
+                sender: "@fixture:example.invalid".to_owned(),
+                size: Some(1024),
+                source_mxc: "mxc://example.invalid/attach".to_owned(),
+                thumbnail_mxc: None,
+                timestamp_ms: 700_000,
+                thread_root: None,
+                encrypted: false,
+                encryption_version: None,
+                width: Some(128),
+                height: Some(128),
+                is_edited: false,
+            }],
+            selected_event_id: Some("$attach:example.invalid".to_owned()),
+        };
+
+        // threads_list — Open with one thread row
+        state.threads_list = ThreadsListState::Open {
+            room_id: "!room:example.invalid".to_owned(),
+            request_id: 11,
+            items: vec![ThreadsListItem {
+                root_event_id: "$thread-root:example.invalid".to_owned(),
+                root_sender: "@fixture:example.invalid".to_owned(),
+                root_sender_label: Some("Fixture User".to_owned()),
+                root_body_preview: Some("Thread root preview".to_owned()),
+                root_timestamp_ms: Some(800_000),
+                latest_event_id: Some("$thread-reply:example.invalid".to_owned()),
+                latest_sender: Some("@other:example.invalid".to_owned()),
+                latest_sender_label: Some("Other Fixture".to_owned()),
+                latest_body_preview: Some("Latest reply preview".to_owned()),
+                latest_timestamp_ms: Some(810_000),
+                reply_count: 3,
+            }],
+            is_paginating: false,
+            end_reached: false,
+        };
+
+        // thread_attention — Tracking with non-zero counts
+        state.thread_attention = ThreadAttentionState::Tracking {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$thread-root:example.invalid".to_owned(),
+            notification_count: 4,
+            highlight_count: 1,
+            live_event_marker_count: 2,
+        };
+
+        // basic_operation — non-default (creating room)
+        state.basic_operation = BasicOperationState::CreatingRoom {
+            request_id: 1,
+            name: "Fixture New Room".to_owned(),
+        };
+
+        // Serialize
+        let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))
+            .expect("maximally-populated state should serialize to JSON");
+
+        let golden_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/golden/frontend_app_state.json"
+        );
+
+        if std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1") {
+            let pretty = serde_json::to_string_pretty(&value)
+                .expect("should format golden JSON");
+            std::fs::create_dir_all(std::path::Path::new(golden_path).parent().unwrap())
+                .expect("golden directory should be creatable");
+            std::fs::write(golden_path, pretty).expect("golden artifact should be writable");
+            return;
+        }
+
+        let golden_bytes = std::fs::read(golden_path).unwrap_or_else(|_| {
+            panic!(
+                "golden artifact not found at {golden_path}. \
+                Run with UPDATE_GOLDEN=1 to generate it."
+            )
+        });
+        let golden: serde_json::Value =
+            serde_json::from_slice(&golden_bytes).expect("golden artifact must be valid JSON");
+
+        assert_eq!(
+            value, golden,
+            "FrontendAppState wire shape changed — if intentional, regenerate with UPDATE_GOLDEN=1"
+        );
+    }
 }

@@ -2466,4 +2466,116 @@ mod tests {
                 .expect("checked-in core event contract artifact must be valid JSON");
         assert_eq!(actual_contract, checked_in_contract);
     }
+
+    /// CoreEvent IPC-contract key-completeness guard.
+    ///
+    /// The `core_event_wire_format_matches_checked_in_contract_artifact` test
+    /// proves the Rust-serialized shapes equal the checked-in JSON. This
+    /// companion test locks in the EXACT SET of keys so a later refactor
+    /// cannot accidentally remove a variant from the artifact without being
+    /// caught — even if the remaining keys still match.
+    ///
+    /// If a new `CoreEvent` variant is added, extend `core_event_wire_format_...`
+    /// first (to produce the serialized form), update the artifact, then this
+    /// expected set gains the new key automatically (it reads the artifact). The
+    /// test therefore functions as a "no-shrink" guard: the key count must not
+    /// decrease, and every key must remain in the known-valid set derived from
+    /// the Rust contract test above.
+    #[test]
+    fn core_event_contract_artifact_key_set_does_not_shrink() {
+        // This set is the canonical key list produced by the Rust contract
+        // test. It is spelled out here so that deleting a key from the artifact
+        // (or from the contract test's `actual_contract` object) fails this test
+        // immediately, requiring a deliberate update in both places.
+        let expected_keys: std::collections::BTreeSet<&str> = [
+            "accountProfileUpdated",
+            "accountReportCompleted",
+            "accountSavedSessionsListed",
+            "activityMarkedRead",
+            "activityOpened",
+            "activitySnapshotLoaded",
+            "cjkTextPolicyJapaneseCatalogProfileChanged",
+            "e2eeTrustIdentityResetChanged",
+            "e2eeTrustVerificationProgress",
+            "liveSignalsPresenceSet",
+            "liveSignalsRoomSignalsUpdated",
+            "localEncryptionHealthChanged",
+            "nativeAttentionSummaryUpdated",
+            "operationFailedSessionNotFound",
+            "roomDirectMessageStarted",
+            "roomDirectoryQueryCompleted",
+            "roomInviteAccepted",
+            "roomInviteDeclined",
+            "roomLeft",
+            "roomMarkedAsRead",
+            "roomMarkedAsUnread",
+            "roomMemberModerated",
+            "roomMemberRoleUpdated",
+            "roomReportCompleted",
+            "roomSettingUpdated",
+            "roomSettingsLoaded",
+            "roomTagRemoved",
+            "roomTagSet",
+            "searchAttachmentsFailed",
+            "searchAttachmentsResults",
+            "searchCrawlCompleted",
+            "searchCrawlFailed",
+            "searchCrawlProgress",
+            "syncModeChanged",
+            "threadsListOpened",
+            "timelineDisplayLabelsUpdated",
+            "timelineDisplayPolicyUpdated",
+            "timelineInitialItems",
+            "timelineItemsUpdated",
+            "timelineLinkPreviewInitialItems",
+            "timelineMediaDownloadCompleted",
+            "timelineMediaDownloadFailed",
+            "timelineMediaDownloadProgress",
+            "timelineMediaInitialItems",
+            "timelineMediaUploadProgress",
+            "timelineMessageForwarded",
+            "timelineMessageSourceLoaded",
+            "timelineNavigationUpdated",
+            "timelinePaginationEndReached",
+            "timelineReplyQuoteInitialItems",
+            "timelineResyncRequired",
+            "timelineSendStateInitialItems",
+        ]
+        .iter()
+        .copied()
+        .collect();
+
+        let artifact: serde_json::Value =
+            serde_json::from_str(include_str!("../../src/domain/coreEvents.generated.json"))
+                .expect("contract artifact must be valid JSON");
+
+        let artifact_keys: std::collections::BTreeSet<&str> = artifact
+            .as_object()
+            .expect("contract artifact must be a JSON object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+
+        let missing_from_artifact: Vec<&&str> = expected_keys
+            .iter()
+            .filter(|k| !artifact_keys.contains(*k))
+            .collect();
+        assert!(
+            missing_from_artifact.is_empty(),
+            "CoreEvent contract artifact is missing keys that were previously present: {missing_from_artifact:?}. \
+            If a variant was intentionally removed, update the expected set in this test \
+            AND the coreEvents.ts TypeScript types in the same PR."
+        );
+
+        let unexpected_in_artifact: Vec<&&str> = artifact_keys
+            .iter()
+            .filter(|k| !expected_keys.contains(*k))
+            .collect();
+        assert!(
+            unexpected_in_artifact.is_empty(),
+            "CoreEvent contract artifact contains keys not present in the expected set: {unexpected_in_artifact:?}. \
+            Add the new key to the expected set in this test after adding the corresponding \
+            Rust serialization entry in core_event_wire_format_matches_checked_in_contract_artifact."
+        );
+    }
 }

@@ -2885,11 +2885,8 @@ name = "koushi-desktop"
 version = "0.1.0"
 dependencies = [
  "dirs",
- "futures-util",
  "matrix-desktop-backend",
  "matrix-desktop-core",
- "matrix-desktop-key",
- "matrix-desktop-sdk",
  "matrix-desktop-state",
  "serde",
  "serde_json",
