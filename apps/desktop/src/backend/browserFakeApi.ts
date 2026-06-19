@@ -203,6 +203,8 @@ export interface DesktopApi {
     mentions?: MentionIntent
   ): Promise<DesktopSnapshot>;
   setRoomListProjection(projection: RoomListProjection): void;
+  startRoomCrawl(roomId: string): Promise<DesktopSnapshot>;
+  stopRoomCrawl(roomId: string): Promise<DesktopSnapshot>;
 }
 
 export interface BrowserFakeApiOptions {
@@ -2249,6 +2251,31 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.timeline.composer.draft = "";
     this.snapshot.state.timeline.composer.mode = "Plain";
     this.composerDrafts.delete(roomId);
+    return this.getSnapshot();
+  }
+
+  async startRoomCrawl(roomId: string): Promise<DesktopSnapshot> {
+    // Browser fake: transition the room to running state so tests can observe state changes.
+    if (!this.canUseSyncedViews() || !roomId.trim()) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.search_crawler = {
+      rooms: {
+        ...this.snapshot.state.search_crawler.rooms,
+        [roomId]: { kind: "running", processed: 0, indexed: 0 }
+      }
+    };
+    return this.getSnapshot();
+  }
+
+  async stopRoomCrawl(roomId: string): Promise<DesktopSnapshot> {
+    // Browser fake: transition the room back to idle state so tests can observe state changes.
+    if (!this.canUseSyncedViews() || !roomId.trim()) {
+      return this.getSnapshot();
+    }
+    const rooms = { ...this.snapshot.state.search_crawler.rooms };
+    delete rooms[roomId];
+    this.snapshot.state.search_crawler = { rooms };
     return this.getSnapshot();
   }
 

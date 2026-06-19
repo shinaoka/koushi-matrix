@@ -11,6 +11,10 @@
  *  6. A room in "failed" state shows the coarse kind label, not raw SDK errors.
  *  7. A room in "running" state shows the Stop button; "idle" shows Start.
  *  8. React does not apply the setting immediately — it waits for the snapshot.
+ *  9. Clicking Start dispatches start_room_crawl; row state updates only after
+ *     the Rust snapshot changes.
+ * 10. Clicking Stop dispatches stop_room_crawl; row state updates only after
+ *     the Rust snapshot changes.
  */
 
 import { expect, test } from "@playwright/test";
@@ -471,4 +475,178 @@ test("no rooms in search_crawler.rooms hides the Room index status section", asy
     `[aria-label="${t("settings.searchHistoryRoomStatus")}"]`
   );
   await expect(statusSection).not.toBeVisible();
+});
+
+// ─────────────────────────────────────────────────────────────
+//  start_room_crawl / stop_room_crawl command dispatch
+// ─────────────────────────────────────────────────────────────
+
+test("clicking Start dispatches start_room_crawl with the correct roomId and row updates only after snapshot", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  // Seed an idle room so the Start button is visible
+  await page.evaluate((roomId) => {
+    const snap = (
+      window as unknown as {
+        __harness: {
+          currentSnapshot(): DesktopSnapshot;
+          setSnapshot(s: DesktopSnapshot): void;
+        };
+      }
+    ).__harness.currentSnapshot();
+    (
+      window as unknown as {
+        __harness: { setSnapshot(s: DesktopSnapshot): void };
+      }
+    ).__harness.setSnapshot({
+      ...snap,
+      state: {
+        ...snap.state,
+        search_crawler: {
+          rooms: {
+            [roomId]: { kind: "idle" }
+          }
+        }
+      }
+    });
+  }, HARNESS_ROOM_ID);
+
+  // Override start_room_crawl to be a no-op (returns the current snapshot
+  // unchanged) so we can verify the UI does NOT change before the snapshot does.
+  await page.evaluate(() => {
+    (
+      window as unknown as {
+        __harness: {
+          setCommandResponse(cmd: string, handler: () => unknown): void;
+          currentSnapshot(): unknown;
+        };
+      }
+    ).__harness.setCommandResponse("start_room_crawl", () =>
+      (
+        window as unknown as {
+          __harness: { currentSnapshot(): unknown };
+        }
+      ).__harness.currentSnapshot()
+    );
+  });
+
+  await page.evaluate(() =>
+    (
+      window as unknown as { __harness: { clearInvocations(): void } }
+    ).__harness.clearInvocations()
+  );
+
+  await openUserSettings(page);
+
+  const statusSection = page.getByRole("region", { name: t("settings.searchHistoryRoomStatus") });
+  const startButton = statusSection.getByRole("button", {
+    name: t("settings.searchHistoryStartRoom")
+  });
+  await expect(startButton).toBeVisible();
+  await startButton.click();
+
+  // Verify the command was dispatched
+  await expect.poll(() => invocationCount(page, "start_room_crawl")).toBeGreaterThanOrEqual(1);
+
+  const dispatched = await page.evaluate(
+    (cmd) =>
+      (
+        window as unknown as {
+          __harness: { invocationsOf(c: string): { args: { roomId: string } }[] };
+        }
+      ).__harness.invocationsOf(cmd).at(-1)?.args,
+    "start_room_crawl"
+  );
+  expect(dispatched).toEqual({ roomId: HARNESS_ROOM_ID });
+
+  // Because start_room_crawl returned the unchanged snapshot, the Start
+  // button must still be visible (state did not change in React before
+  // the Rust snapshot was updated).
+  await expect(startButton).toBeVisible();
+});
+
+test("clicking Stop dispatches stop_room_crawl with the correct roomId and row updates only after snapshot", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  // Seed a running room so the Stop button is visible
+  await page.evaluate((roomId) => {
+    const snap = (
+      window as unknown as {
+        __harness: {
+          currentSnapshot(): DesktopSnapshot;
+          setSnapshot(s: DesktopSnapshot): void;
+        };
+      }
+    ).__harness.currentSnapshot();
+    (
+      window as unknown as {
+        __harness: { setSnapshot(s: DesktopSnapshot): void };
+      }
+    ).__harness.setSnapshot({
+      ...snap,
+      state: {
+        ...snap.state,
+        search_crawler: {
+          rooms: {
+            [roomId]: { kind: "running", processed: 5, indexed: 3 }
+          }
+        }
+      }
+    });
+  }, HARNESS_ROOM_ID);
+
+  // Override stop_room_crawl to be a no-op so the row stays in running state
+  await page.evaluate(() => {
+    (
+      window as unknown as {
+        __harness: {
+          setCommandResponse(cmd: string, handler: () => unknown): void;
+          currentSnapshot(): unknown;
+        };
+      }
+    ).__harness.setCommandResponse("stop_room_crawl", () =>
+      (
+        window as unknown as {
+          __harness: { currentSnapshot(): unknown };
+        }
+      ).__harness.currentSnapshot()
+    );
+  });
+
+  await page.evaluate(() =>
+    (
+      window as unknown as { __harness: { clearInvocations(): void } }
+    ).__harness.clearInvocations()
+  );
+
+  await openUserSettings(page);
+
+  const statusSection = page.getByRole("region", { name: t("settings.searchHistoryRoomStatus") });
+  const stopButton = statusSection.getByRole("button", {
+    name: t("settings.searchHistoryStopRoom")
+  });
+  await expect(stopButton).toBeVisible();
+  await stopButton.click();
+
+  // Verify the command was dispatched with the correct roomId
+  await expect.poll(() => invocationCount(page, "stop_room_crawl")).toBeGreaterThanOrEqual(1);
+
+  const dispatched = await page.evaluate(
+    (cmd) =>
+      (
+        window as unknown as {
+          __harness: { invocationsOf(c: string): { args: { roomId: string } }[] };
+        }
+      ).__harness.invocationsOf(cmd).at(-1)?.args,
+    "stop_room_crawl"
+  );
+  expect(dispatched).toEqual({ roomId: HARNESS_ROOM_ID });
+
+  // Because stop_room_crawl returned the unchanged snapshot (still running),
+  // the Stop button must still be visible — state didn't change in React.
+  await expect(stopButton).toBeVisible();
 });

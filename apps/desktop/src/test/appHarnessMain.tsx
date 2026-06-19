@@ -1425,6 +1425,28 @@ mock.setCommandResponse("load_room_settings", ({ roomId }: { roomId: string }) =
   };
   return setCurrentSnapshot(next);
 });
+mock.setCommandResponse("start_room_crawl", ({ roomId }: { roomId: string }) => {
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      search_crawler: {
+        rooms: {
+          ...currentSnapshot.state.search_crawler.rooms,
+          [roomId]: { kind: "running", processed: 0, indexed: 0 }
+        }
+      }
+    }
+  });
+});
+mock.setCommandResponse("stop_room_crawl", ({ roomId }: { roomId: string }) => {
+  const rooms = { ...currentSnapshot.state.search_crawler.rooms };
+  delete rooms[roomId];
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: { ...currentSnapshot.state, search_crawler: { rooms } }
+  });
+});
 mock.setCommandResponse("update_room_setting", () => currentSnapshot);
 mock.setCommandResponse("moderate_room_member", () => currentSnapshot);
 mock.setCommandResponse("update_room_member_role", () => currentSnapshot);

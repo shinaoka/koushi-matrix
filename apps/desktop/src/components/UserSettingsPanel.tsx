@@ -47,6 +47,7 @@ import type {
   MediaSettings,
   NotificationSettings,
   RecoveryKeyDeliveryState,
+  RoomSummary,
   SavedSessionInfo,
   SearchCrawlerFailureKind,
   SearchCrawlerRoomState,
@@ -106,7 +107,8 @@ export function UserSettingsPanel({
   onDeactivateAccount,
   onSubmitAccountManagementUia,
   onStartCrawlRoom,
-  onStopCrawlRoom
+  onStopCrawlRoom,
+  rooms
 }: {
   currentSession: SavedSessionInfo | null;
   savedSessions: SavedSessionInfo[];
@@ -156,6 +158,7 @@ export function UserSettingsPanel({
   onSubmitAccountManagementUia: (flowId: number, password: string) => void;
   onStartCrawlRoom?: (roomId: string) => void;
   onStopCrawlRoom?: (roomId: string) => void;
+  rooms?: RoomSummary[];
 }) {
   useEffect(() => {
     if (deviceSessions.kind === "idle" && currentSession) {
@@ -597,6 +600,7 @@ export function UserSettingsPanel({
         <SearchHistorySection
           crawlerSettings={settings.values.search_crawler}
           crawlerState={searchCrawlerState ?? { rooms: {} }}
+          rooms={rooms}
           isSaving={isSaving}
           onUpdateSettings={onUpdateSettings}
           onStartCrawlRoom={onStartCrawlRoom}
@@ -1618,6 +1622,7 @@ function VerificationDialog({
 function SearchHistorySection({
   crawlerSettings,
   crawlerState,
+  rooms,
   isSaving,
   onUpdateSettings,
   onStartCrawlRoom,
@@ -1625,6 +1630,7 @@ function SearchHistorySection({
 }: {
   crawlerSettings: SearchCrawlerSettings;
   crawlerState: SearchCrawlerState;
+  rooms?: RoomSummary[];
   isSaving: boolean;
   onUpdateSettings: (patch: SettingsPatch) => void;
   onStartCrawlRoom?: (roomId: string) => void;
@@ -1674,15 +1680,20 @@ function SearchHistorySection({
         >
           <h4 className="settings-subheading">{t("settings.searchHistoryRoomStatus")}</h4>
           <div className="settings-detail-list">
-            {roomEntries.map(([roomId, roomState]) => (
-              <CrawlerRoomRow
-                key={roomId}
-                roomId={roomId}
-                roomState={roomState}
-                onStart={onStartCrawlRoom}
-                onStop={onStopCrawlRoom}
-              />
-            ))}
+            {roomEntries.map(([roomId, roomState]) => {
+              const displayLabel =
+                rooms?.find((r) => r.room_id === roomId)?.display_label ?? null;
+              return (
+                <CrawlerRoomRow
+                  key={roomId}
+                  roomId={roomId}
+                  displayLabel={displayLabel}
+                  roomState={roomState}
+                  onStart={onStartCrawlRoom}
+                  onStop={onStopCrawlRoom}
+                />
+              );
+            })}
           </div>
         </section>
       ) : null}
@@ -1758,21 +1769,27 @@ function CrawlerToggle({
 
 function CrawlerRoomRow({
   roomId,
+  displayLabel,
   roomState,
   onStart,
   onStop
 }: {
   roomId: string;
+  /** Rust-projected display label from RoomSummary; never render the raw roomId. */
+  displayLabel: string | null;
   roomState: SearchCrawlerRoomState;
   onStart?: (roomId: string) => void;
   onStop?: (roomId: string) => void;
 }) {
   const statusLabel = crawlerRoomStatusLabel(roomState);
   const isRunning = roomState.kind === "running";
+  // displayLabel is the Rust-projected label; fall back to a neutral placeholder
+  // (never the raw room id, which is a private identifier).
+  const visibleLabel = displayLabel ?? t("settings.searchHistoryRoomUnknown");
 
   return (
     <div className="settings-detail-row">
-      <span dir="auto">{roomId}</span>
+      <span dir="auto">{visibleLabel}</span>
       <small data-crawler-room-kind={roomState.kind}>{statusLabel}</small>
       {isRunning && onStop ? (
         <button

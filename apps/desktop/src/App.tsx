@@ -1420,6 +1420,14 @@ export function App() {
     setSnapshot(await api.updateSettings(patch));
   }
 
+  async function startRoomCrawl(roomId: string) {
+    setSnapshot(await api.startRoomCrawl(roomId));
+  }
+
+  async function stopRoomCrawl(roomId: string) {
+    setSnapshot(await api.stopRoomCrawl(roomId));
+  }
+
   async function setRoomUrlPreviewOverride(roomId: string, enabled: boolean) {
     setSnapshot(await api.setRoomUrlPreviewOverride(roomId, enabled));
   }
@@ -2735,6 +2743,12 @@ export function App() {
           }}
           onReportUser={(userId) => {
             openReportDialog({ kind: "user", userId });
+          }}
+          onStartCrawlRoom={(roomId) => {
+            void startRoomCrawl(roomId);
+          }}
+          onStopCrawlRoom={(roomId) => {
+            void stopRoomCrawl(roomId);
           }}
         />
       </div>
@@ -5966,6 +5980,8 @@ export function ContextualRightPanel({
   onChangePassword = () => undefined,
   onDeactivateAccount = () => undefined,
   onSubmitAccountManagementUia = () => undefined,
+  onStartCrawlRoom = () => undefined,
+  onStopCrawlRoom = () => undefined,
   onThreadComposerDraftChange,
   onThreadReplySend
 }: {
@@ -6042,6 +6058,8 @@ export function ContextualRightPanel({
   onChangePassword?: (newPassword: string) => void;
   onDeactivateAccount?: (eraseData: boolean) => void;
   onSubmitAccountManagementUia?: (flowId: number, password: string) => void;
+  onStartCrawlRoom?: (roomId: string) => void;
+  onStopCrawlRoom?: (roomId: string) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
   onIgnoreUser?: (userId: string) => void;
   onUnignoreUser?: (userId: string) => void;
@@ -6130,12 +6148,9 @@ export function ContextualRightPanel({
           onChangePassword={onChangePassword ?? (() => undefined)}
           onDeactivateAccount={onDeactivateAccount ?? (() => undefined)}
           onSubmitAccountManagementUia={onSubmitAccountManagementUia ?? (() => undefined)}
-          onStartCrawlRoom={(_roomId) => {
-            // TODO: dispatch start_room_crawl command when Rust command is wired
-          }}
-          onStopCrawlRoom={(_roomId) => {
-            // TODO: dispatch stop_room_crawl command when Rust command is wired
-          }}
+          onStartCrawlRoom={onStartCrawlRoom}
+          onStopCrawlRoom={onStopCrawlRoom}
+          rooms={snapshot.state.rooms}
         />
       </aside>
     );

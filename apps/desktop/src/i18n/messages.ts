@@ -696,6 +696,7 @@ export type MessageId =
   | "settings.searchHistoryRoomFailed"
   | "settings.searchHistoryStartRoom"
   | "settings.searchHistoryStopRoom"
+  | "settings.searchHistoryRoomUnknown"
   | "settings.urlPreviews"
   | "settings.urlPreviewsEnabled"
   | "settings.urlPreviewsDescription"
@@ -1507,7 +1508,8 @@ const en: Catalog = {
   "settings.searchHistoryRoomCompleted": "Complete ({indexed} indexed)",
   "settings.searchHistoryRoomFailed": "Failed",
   "settings.searchHistoryStartRoom": "Start",
-  "settings.searchHistoryStopRoom": "Stop"
+  "settings.searchHistoryStopRoom": "Stop",
+  "settings.searchHistoryRoomUnknown": "Room"
 };
 
 const ja: Catalog = {
@@ -2205,7 +2207,8 @@ const ja: Catalog = {
   "settings.searchHistoryRoomCompleted": "完了（{indexed}件インデックス済み）",
   "settings.searchHistoryRoomFailed": "失敗",
   "settings.searchHistoryStartRoom": "開始",
-  "settings.searchHistoryStopRoom": "停止"
+  "settings.searchHistoryStopRoom": "停止",
+  "settings.searchHistoryRoomUnknown": "ルーム"
 };
 
 const pseudo: Catalog = Object.fromEntries(

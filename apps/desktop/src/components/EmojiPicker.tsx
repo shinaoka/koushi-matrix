@@ -1,5 +1,6 @@
 import { Search, X } from "lucide-react";
 import {
+  type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
   useCallback,
   useEffect,
@@ -270,6 +271,9 @@ export function EmojiPicker({ onSelect, onClose, anchorRef }: EmojiPickerProps) 
   );
 }
 
+/** Number of emoji columns in the grid — must match the CSS repeat count. */
+const GRID_COLS = 8;
+
 function EmojiGrid({
   entries,
   onSelect,
@@ -277,15 +281,58 @@ function EmojiGrid({
   entries: EmojiEntry[];
   onSelect: (emoji: string) => void;
 }) {
+  // focusedIndex drives tabIndex so the roving-tabindex pattern is consistent;
+  // actual DOM focus is moved synchronously in handleKeyDown so no async
+  // React-cycle races arise during Playwright keyboard events.
+  const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  // Sync itemRefs array length with entries
+  itemRefs.current = itemRefs.current.slice(0, entries.length);
+
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, index: number) {
+    let next: number | null = null;
+    if (event.key === "ArrowRight") {
+      next = index + 1 < entries.length ? index + 1 : index;
+    } else if (event.key === "ArrowLeft") {
+      next = index - 1 >= 0 ? index - 1 : index;
+    } else if (event.key === "ArrowDown") {
+      const candidate = index + GRID_COLS;
+      next = candidate < entries.length ? candidate : index;
+    } else if (event.key === "ArrowUp") {
+      const candidate = index - GRID_COLS;
+      next = candidate >= 0 ? candidate : index;
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onSelect(entries[index].emoji);
+      return;
+    }
+    if (next !== null && next !== index) {
+      event.preventDefault();
+      // Update tabIndex state and focus synchronously so the DOM reflects the
+      // change before any Playwright assertion runs.
+      setFocusedIndex(next);
+      itemRefs.current[next]?.focus();
+    }
+  }
+
   return (
     <div className="emoji-picker-grid" role="grid">
-      {entries.map((entry) => (
+      {entries.map((entry, index) => (
         <button
           key={entry.emoji}
+          ref={(node) => {
+            itemRefs.current[index] = node;
+          }}
           className="emoji-picker-item"
           type="button"
           title={entry.label}
           aria-label={entry.label}
+          // Roving tabindex: only the active cell participates in the tab
+          // sequence; all others are skipped by Tab.
+          tabIndex={index === (focusedIndex ?? 0) ? 0 : -1}
+          onFocus={() => setFocusedIndex(index)}
+          onKeyDown={(e) => handleKeyDown(e, index)}
           onClick={() => onSelect(entry.emoji)}
         >
           {entry.emoji}

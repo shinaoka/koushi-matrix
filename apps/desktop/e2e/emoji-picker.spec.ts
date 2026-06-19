@@ -13,6 +13,7 @@
  *  6. "No results" message shown when search yields nothing.
  *  7. Picker does not make any network fetch request.
  *  8. Picker does not obstruct the send button (both visible simultaneously).
+ *  9. Arrow key navigation then Enter inserts the highlighted emoji.
  */
 
 import { expect, test } from "@playwright/test";
@@ -146,4 +147,39 @@ test("send button and emoji picker are simultaneously visible", async ({ page })
   const picker = page.getByRole("dialog", { name: t("composer.emoji") });
   await expect(sendButton).toBeVisible();
   await expect(picker).toBeVisible();
+});
+
+test("arrow key navigation then Enter inserts the highlighted emoji", async ({ page }) => {
+  await gotoReadyShell(page);
+  await openEmojiPicker(page);
+
+  const picker = page.getByRole("dialog", { name: t("composer.emoji") });
+
+  // Read what the first and third emoji in the grid are before interacting
+  const firstItem = picker.locator(".emoji-picker-item").nth(0);
+  const thirdItem = picker.locator(".emoji-picker-item").nth(2);
+  await expect(firstItem).toBeVisible();
+  const thirdEmojiChar = await thirdItem.textContent();
+
+  // Focus the first grid item via the Playwright focus method (no click,
+  // so onSelect is not triggered).
+  await firstItem.focus();
+  await expect(firstItem).toBeFocused();
+
+  // Move two positions to the right with arrow keys
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+
+  // Confirm the third item is focused
+  await expect(thirdItem).toBeFocused();
+
+  // Press Enter to select the focused emoji
+  await page.keyboard.press("Enter");
+
+  // Picker closes after selection
+  await expect(picker).not.toBeVisible();
+
+  // The emoji at position 2 appears in the composer textarea
+  const composer = page.getByRole("textbox", { name: t("composer.messageComposer") });
+  await expect(composer).toHaveValue(thirdEmojiChar ?? "");
 });
