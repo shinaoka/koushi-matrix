@@ -1005,8 +1005,10 @@ mod tests {
         use std::collections::BTreeMap;
         use matrix_desktop_state::{
             ActivityMarkReadState, ActivityRow, ActivityState, ActivityStream, ActivityTab,
+            AttachmentFilter, AttachmentKind, AttachmentResult, AttachmentScope, AttachmentSort,
             AvatarImage, AvatarThumbnailState, BasicOperationState,
-            CrossSigningStatus, DirectoryJoinState, DirectoryQueryState, DirectoryState,
+            CrossSigningStatus, DirectoryJoinState, DirectoryQuery, DirectoryQueryState,
+            DirectoryRoomSummary, DirectoryState,
             E2eeKeyManagementState, E2eeTrustState, FilesViewState, FocusedContextState,
             IdentityResetState, InvitePreview, KeyBackupStatus,
             LiveSignalsState, LocalEncryptionState, MediaTransferProgress,
@@ -1017,8 +1019,10 @@ mod tests {
             RoomJoinRule, RoomHistoryVisibility, RoomLiveSignals, RoomManagementOperationState,
             RoomManagementState, RoomMemberRole, RoomMemberSummary,
             RoomNotificationSettings, RoomPermissionFacts, RoomSettingsSnapshot, RoomSummary,
-            RoomTags, SearchState, SessionInfo, SessionState, SpaceSummary, SyncState,
-            ThreadAttentionState, ThreadsListState, TimelineMediaDownloadState, TimelinePaneState,
+            RoomTags, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
+            SessionInfo, SessionState, SpaceSummary, SyncState,
+            TextRange, ThreadAttentionState, ThreadsListItem, ThreadsListState,
+            TimelineMediaDownloadState, TimelinePaneState,
             UserProfile, VerificationFlowState,
         };
 
@@ -1271,26 +1275,121 @@ mod tests {
             dispatch: NativeAttentionDispatchState::Idle,
         };
 
-        // directory — query state open
+        // directory — Results with one entry + Joining join state
         state.directory = DirectoryState {
-            query: DirectoryQueryState::Closed,
-            join: DirectoryJoinState::Idle,
+            query: DirectoryQueryState::Results {
+                request_id: 7,
+                query: DirectoryQuery {
+                    term: Some("fixture".to_owned()),
+                    server_name: None,
+                    limit: Some(20),
+                    since: None,
+                },
+                rooms: vec![DirectoryRoomSummary {
+                    room_id: "!dir:example.invalid".to_owned(),
+                    canonical_alias: Some("#fixture:example.invalid".to_owned()),
+                    name: "Fixture Public Room".to_owned(),
+                    topic: Some("Fixture topic".to_owned()),
+                    avatar_url: None,
+                    joined_members: 42,
+                    world_readable: true,
+                    guest_can_join: false,
+                }],
+                next_batch: None,
+            },
+            join: DirectoryJoinState::Joining {
+                request_id: 8,
+                alias: "#fixture:example.invalid".to_owned(),
+                via_server: None,
+            },
         };
 
-        // focused_context — closed (default)
-        state.focused_context = FocusedContextState::Closed;
+        // focused_context — Open referencing a synthetic event
+        state.focused_context = FocusedContextState::Open {
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$focused:example.invalid".to_owned(),
+            is_subscribed: true,
+        };
 
-        // search — closed (default); search_crawler default (covered by other tests)
-        state.search = SearchState::Closed;
+        // search — Results with one entry
+        state.search = SearchState::Results {
+            request_id: 9,
+            query: "fixture query".to_owned(),
+            scope: SearchScope::AllRooms,
+            results: vec![SearchResult {
+                room_id: "!room:example.invalid".to_owned(),
+                event_id: "$search:example.invalid".to_owned(),
+                sender: "@fixture:example.invalid".to_owned(),
+                timestamp_ms: 600_000,
+                score_millis: 950,
+                snippet: "Fixture search snippet".to_owned(),
+                match_field: SearchMatchField::MessageBody,
+                highlights: vec![TextRange { start_utf16: 8, end_utf16: 14 }],
+                match_kind: SearchMatchKind::Exact,
+            }],
+        };
 
-        // files_view — closed (default)
-        state.files_view = FilesViewState::Closed;
+        // files_view — Open with one attachment entry
+        state.files_view = FilesViewState::Open {
+            request_id: 10,
+            scope: AttachmentScope::Room {
+                room_id: "!room:example.invalid".to_owned(),
+            },
+            filter: AttachmentFilter {
+                kinds: vec![AttachmentKind::Image],
+                filename_query: None,
+            },
+            sort: AttachmentSort::NewestFirst,
+            items: vec![AttachmentResult {
+                event_id: "$attach:example.invalid".to_owned(),
+                filename: "fixture.png".to_owned(),
+                kind: AttachmentKind::Image,
+                mimetype: Some("image/png".to_owned()),
+                room_id: "!room:example.invalid".to_owned(),
+                sender: "@fixture:example.invalid".to_owned(),
+                size: Some(1024),
+                source_mxc: "mxc://example.invalid/attach".to_owned(),
+                thumbnail_mxc: None,
+                timestamp_ms: 700_000,
+                thread_root: None,
+                encrypted: false,
+                encryption_version: None,
+                width: Some(128),
+                height: Some(128),
+                is_edited: false,
+            }],
+            selected_event_id: Some("$attach:example.invalid".to_owned()),
+        };
 
-        // threads_list — closed (default)
-        state.threads_list = ThreadsListState::Closed;
+        // threads_list — Open with one thread row
+        state.threads_list = ThreadsListState::Open {
+            room_id: "!room:example.invalid".to_owned(),
+            request_id: 11,
+            items: vec![ThreadsListItem {
+                root_event_id: "$thread-root:example.invalid".to_owned(),
+                root_sender: "@fixture:example.invalid".to_owned(),
+                root_sender_label: Some("Fixture User".to_owned()),
+                root_body_preview: Some("Thread root preview".to_owned()),
+                root_timestamp_ms: Some(800_000),
+                latest_event_id: Some("$thread-reply:example.invalid".to_owned()),
+                latest_sender: Some("@other:example.invalid".to_owned()),
+                latest_sender_label: Some("Other Fixture".to_owned()),
+                latest_body_preview: Some("Latest reply preview".to_owned()),
+                latest_timestamp_ms: Some(810_000),
+                reply_count: 3,
+            }],
+            is_paginating: false,
+            end_reached: false,
+        };
 
-        // thread_attention — closed (default)
-        state.thread_attention = ThreadAttentionState::Closed;
+        // thread_attention — Tracking with non-zero counts
+        state.thread_attention = ThreadAttentionState::Tracking {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$thread-root:example.invalid".to_owned(),
+            notification_count: 4,
+            highlight_count: 1,
+            live_event_marker_count: 2,
+        };
 
         // basic_operation — non-default (creating room)
         state.basic_operation = BasicOperationState::CreatingRoom {

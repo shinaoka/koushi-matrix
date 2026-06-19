@@ -110,10 +110,33 @@
     },
     "directory": {
       "join": {
-        "kind": "idle"
+        "alias": "#fixture:example.invalid",
+        "kind": "joining",
+        "request_id": 8,
+        "via_server": null
       },
       "query": {
-        "kind": "closed"
+        "kind": "results",
+        "next_batch": null,
+        "query": {
+          "limit": 20,
+          "server_name": null,
+          "since": null,
+          "term": "fixture"
+        },
+        "request_id": 7,
+        "rooms": [
+          {
+            "avatar_url": null,
+            "canonical_alias": "#fixture:example.invalid",
+            "guest_can_join": false,
+            "joined_members": 42,
+            "name": "Fixture Public Room",
+            "room_id": "!dir:example.invalid",
+            "topic": "Fixture topic",
+            "world_readable": true
+          }
+        ]
       }
     },
     "e2ee_trust": {
@@ -148,10 +171,46 @@
     },
     "errors": [],
     "files_view": {
-      "kind": "closed"
+      "filter": {
+        "filename_query": null,
+        "kinds": [
+          "image"
+        ]
+      },
+      "items": [
+        {
+          "encrypted": false,
+          "encryption_version": null,
+          "event_id": "$attach:example.invalid",
+          "filename": "fixture.png",
+          "height": 128,
+          "is_edited": false,
+          "kind": "image",
+          "mimetype": "image/png",
+          "room_id": "!room:example.invalid",
+          "sender": "@fixture:example.invalid",
+          "size": 1024,
+          "source_mxc": "mxc://example.invalid/attach",
+          "thread_root": null,
+          "thumbnail_mxc": null,
+          "timestamp_ms": 700000,
+          "width": 128
+        }
+      ],
+      "kind": "open",
+      "request_id": 10,
+      "scope": {
+        "kind": "room",
+        "room_id": "!room:example.invalid"
+      },
+      "selected_event_id": "$attach:example.invalid",
+      "sort": "newestFirst"
     },
     "focused_context": {
-      "kind": "closed"
+      "event_id": "$focused:example.invalid",
+      "is_subscribed": true,
+      "kind": "open",
+      "room_id": "!room:example.invalid"
     },
     "invites": [
       {
@@ -381,7 +440,28 @@
       }
     ],
     "search": {
-      "kind": "closed"
+      "kind": "results",
+      "query": "fixture query",
+      "request_id": 9,
+      "results": [
+        {
+          "event_id": "$search:example.invalid",
+          "highlights": [
+            {
+              "end_utf16": 14,
+              "start_utf16": 8
+            }
+          ],
+          "match_field": "messageBody",
+          "match_kind": "exact",
+          "room_id": "!room:example.invalid",
+          "score_millis": 950,
+          "sender": "@fixture:example.invalid",
+          "snippet": "Fixture search snippet",
+          "timestamp_ms": 600000
+        }
+      ],
+      "scope": "allRooms"
     },
     "search_crawler": {
       "rooms": {}
@@ -464,10 +544,34 @@
       "kind": "closed"
     },
     "thread_attention": {
-      "kind": "closed"
+      "highlight_count": 1,
+      "kind": "tracking",
+      "live_event_marker_count": 2,
+      "notification_count": 4,
+      "room_id": "!room:example.invalid",
+      "root_event_id": "$thread-root:example.invalid"
     },
     "threads_list": {
-      "kind": "closed"
+      "end_reached": false,
+      "is_paginating": false,
+      "items": [
+        {
+          "latest_body_preview": "Latest reply preview",
+          "latest_event_id": "$thread-reply:example.invalid",
+          "latest_sender": "@other:example.invalid",
+          "latest_sender_label": "Other Fixture",
+          "latest_timestamp_ms": 810000,
+          "reply_count": 3,
+          "root_body_preview": "Thread root preview",
+          "root_event_id": "$thread-root:example.invalid",
+          "root_sender": "@fixture:example.invalid",
+          "root_sender_label": "Fixture User",
+          "root_timestamp_ms": 800000
+        }
+      ],
+      "kind": "open",
+      "request_id": 11,
+      "room_id": "!room:example.invalid"
     },
     "timeline": {
       "composer": {
