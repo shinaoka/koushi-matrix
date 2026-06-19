@@ -48,6 +48,21 @@ const QA_RECOVERY_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::fro
 const QA_TITLE_ENV: &str = "MATRIX_DESKTOP_QA_TITLE";
 const TIMELINE_BACKWARDS_PAGE_EVENT_COUNT: u16 = 30;
 
+pub(crate) mod account;
+pub(crate) mod activity;
+pub(crate) mod directory;
+pub(crate) mod e2ee;
+pub(crate) mod live_signals;
+pub(crate) mod local_encryption;
+pub(crate) mod navigation;
+pub(crate) mod profile;
+pub(crate) mod room;
+pub(crate) mod search;
+pub(crate) mod session;
+pub(crate) mod settings;
+pub(crate) mod timeline;
+pub(crate) mod views;
+
 // ---- Core command dispatch helpers ----
 
 /// Submit a `CoreCommand` over the command-dispatch connection.
@@ -151,48 +166,8 @@ fn qa_sync_label(sync: &matrix_desktop_state::SyncState) -> &'static str {
 
 // ---- Tauri commands ----
 
-#[tauri::command]
-pub async fn get_snapshot(
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn discover_login_methods(
-    homeserver: String,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let mut event_conn = state.inner().runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_discover_login_command(request_id, homeserver))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_auth_changed(&mut event_conn, LOGIN_EVENT_TIMEOUT).await?;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn submit_login(
-    homeserver: String,
-    username: String,
-    password: String,
-    device_display_name: Option<String>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let login_request = LoginRequest {
-        homeserver,
-        username,
-        password: AuthSecret::new(password),
-        device_display_name,
-    };
-    submit_login_request(app, state.inner(), login_request).await?;
-    current_snapshot(state.inner()).await
-}
 
 pub(crate) async fn submit_login_request(
     app: AppHandle,
@@ -424,79 +399,8 @@ async fn wait_for_upload_staging_snapshot(
 /// core, so 5 seconds is generous.
 const SAVED_SESSIONS_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-#[tauri::command]
-pub async fn list_saved_sessions(
-    state: State<'_, CoreRuntimeState>,
-) -> Result<Vec<SessionInfo>, String> {
-    // GUI-smoke toggle: skip the keychain-backed query entirely.
-    if crate::saved_sessions_disabled_from_env() {
-        return Ok(Vec::new());
-    }
 
-    // Attach a dedicated connection so (a) the request id belongs to this
-    // connection and (b) the broadcast cursor starts BEFORE the command is
-    // submitted — the correlated answer cannot be missed.
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(CoreCommand::Account(AccountCommand::QuerySavedSessions {
-            request_id,
-        }))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
 
-    let deadline = tokio::time::Instant::now() + SAVED_SESSIONS_EVENT_TIMEOUT;
-    loop {
-        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
-            .await
-            .map_err(|_| "saved sessions could not be loaded".to_owned())?;
-        match event {
-            Ok(matrix_desktop_core::CoreEvent::Account(
-                matrix_desktop_core::AccountEvent::SavedSessionsListed {
-                    request_id: ev_id,
-                    sessions,
-                },
-            )) if ev_id == request_id => return Ok(sessions),
-            Ok(matrix_desktop_core::CoreEvent::OperationFailed {
-                request_id: ev_id, ..
-            }) if ev_id == request_id => {
-                return Err("saved sessions could not be loaded".to_owned());
-            }
-            // Unrelated events / lag: keep waiting until the deadline.
-            _ => {}
-        }
-    }
-}
-
-#[tauri::command]
-pub async fn switch_account(
-    homeserver: String,
-    user_id: String,
-    device_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_switch_account_command(request_id, user_id),
-    )
-    .await?;
-    // AccountKey canonically identifies the account by user_id.
-    let _ = (homeserver, device_id);
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn submit_recovery(
-    secret: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    submit_recovery_request(app, state.inner(), AuthSecret::new(secret)).await?;
-    current_snapshot(state.inner()).await
-}
 
 pub(crate) async fn submit_recovery_request(
     app: AppHandle,
@@ -509,775 +413,46 @@ pub(crate) async fn submit_recovery_request(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn logout(
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(state.inner(), build_logout_command(request_id)).await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn restart_sync(
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(state.inner(), build_restart_sync_command(request_id)).await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn update_settings(
-    patch: SettingsPatch,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_update_settings_command(request_id, patch),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn set_room_url_preview_override(
-    room_id: String,
-    enabled: bool,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_set_room_url_preview_override_command(request_id, room_id, enabled),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn select_room_list_filter(
-    filter: RoomListFilter,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::App(AppCommand::SelectRoomListFilter { request_id, filter }),
-    )
-    .await?;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn mark_room_as_read(
-    room_id: String,
-    event_id: String,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Room(RoomCommand::MarkRoomAsRead {
-            request_id,
-            room_id,
-            event_id,
-        }),
-    )
-    .await?;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn mark_room_as_unread(
-    room_id: String,
-    unread: bool,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Room(RoomCommand::MarkRoomAsUnread {
-            request_id,
-            room_id,
-            unread,
-        }),
-    )
-    .await?;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn set_room_notification_mode(
-    room_id: String,
-    mode: RoomNotificationMode,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Room(RoomCommand::SetRoomNotificationMode {
-            request_id,
-            room_id,
-            mode,
-        }),
-    )
-    .await?;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn query_devices(
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Account(AccountCommand::QueryDevices { request_id }),
-    )
-    .await?;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn rename_device(
-    device_ordinal: u64,
-    display_name: String,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Account(AccountCommand::RenameDevice {
-            request_id,
-            device_ordinal,
-            display_name,
-        }),
-    )
-    .await?;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn delete_devices(
-    device_ordinals: Vec<u64>,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Account(AccountCommand::DeleteDevices {
-            request_id,
-            device_ordinals,
-            auth: None,
-        }),
-    )
-    .await?;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn load_account_management_capabilities(
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Account(AccountCommand::LoadAccountManagementCapabilities { request_id }),
-    )
-    .await?;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn change_password(
-    new_password: String,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Account(AccountCommand::ChangePassword {
-            request_id,
-            new_password: AuthSecret::new(new_password),
-        }),
-    )
-    .await?;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn deactivate_account(
-    erase_data: bool,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Account(AccountCommand::DeactivateAccount {
-            request_id,
-            erase_data,
-        }),
-    )
-    .await?;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn submit_account_management_uia(
-    flow_id: u64,
-    password: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_submit_account_management_uia_command(request_id, flow_id, AuthSecret::new(password)),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn probe_local_encryption_health(
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_probe_local_encryption_health_command(request_id),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn reset_local_data(
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(state.inner(), build_reset_local_data_command(request_id)).await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn bootstrap_cross_signing(
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_bootstrap_cross_signing_command(request_id, None),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn enable_key_backup(
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(state.inner(), build_enable_key_backup_command(request_id)).await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn bootstrap_secure_backup(
-    passphrase: Option<String>,
-    recovery_key_destination_path: Option<String>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_bootstrap_secure_backup_command(
-            request_id,
-            passphrase.map(AuthSecret::new),
-            recovery_key_destination_path,
-        ),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn change_secure_backup_passphrase(
-    old_secret: String,
-    new_passphrase: String,
-    recovery_key_destination_path: Option<String>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_change_secure_backup_passphrase_command(
-            request_id,
-            AuthSecret::new(old_secret),
-            AuthSecret::new(new_passphrase),
-            recovery_key_destination_path,
-        ),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn export_room_keys(
-    destination_path: String,
-    passphrase: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_export_room_keys_command(request_id, destination_path, AuthSecret::new(passphrase)),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn import_room_keys(
-    source_path: String,
-    passphrase: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_import_room_keys_command(request_id, source_path, AuthSecret::new(passphrase)),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn accept_verification(
-    flow_id: u64,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_accept_verification_command(request_id, flow_id),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn confirm_sas_verification(
-    flow_id: u64,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_confirm_sas_verification_command(request_id, flow_id),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn cancel_verification(
-    flow_id: u64,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_cancel_verification_command(request_id, flow_id, VerificationCancelReason::User),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn reset_identity(
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(state.inner(), build_reset_identity_command(request_id)).await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn submit_identity_reset_password(
-    flow_id: u64,
-    password: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_submit_identity_reset_password_command(
-            request_id,
-            flow_id,
-            AuthSecret::new(password),
-        ),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn submit_identity_reset_oauth(
-    flow_id: u64,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_submit_identity_reset_oauth_command(request_id, flow_id),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn resolve_composer_key_action(
-    surface: ComposerSurface,
-    key_event: ComposerKeyEvent,
-    autocomplete_open: bool,
-    send_enabled: bool,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<ComposerResolvedAction, String> {
-    let snapshot = state.connection.lock().await.snapshot();
-    Ok(matrix_desktop_state::resolve_composer_key_action(
-        key_event,
-        ComposerResolverContext {
-            surface,
-            send_shortcut: snapshot.settings.values.keyboard.composer_send_shortcut,
-            autocomplete_open,
-            send_enabled,
-        },
-    ))
-}
 
-#[tauri::command]
-pub async fn select_space(
-    space_id: Option<String>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_select_space_command(request_id, space_id),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn reorder_spaces(
-    space_ids: Vec<String>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_reorder_spaces_command(request_id, space_ids),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn select_room(
-    room_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let selected_room_id = room_id.clone();
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_select_room_command(request_id, room_id))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_selected_room(
-        &mut event_conn,
-        request_id,
-        &selected_room_id,
-        SELECT_ROOM_EVENT_TIMEOUT,
-    )
-    .await?;
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let subscribe_request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_subscribe_timeline_command(
-            subscribe_request_id,
-            account_key,
-            selected_room_id,
-        ))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn select_search_result(
-    room_id: String,
-    event_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let selected_room_id = room_id.clone();
-    let mut event_conn = state.runtime.attach();
 
-    let close_request_id = event_conn.next_request_id();
-    event_conn
-        .command(CoreCommand::App(AppCommand::CloseFocusedContext {
-            request_id: close_request_id,
-        }))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
 
-    let select_request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_select_room_command(
-            select_request_id,
-            room_id.clone(),
-        ))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_selected_room(
-        &mut event_conn,
-        select_request_id,
-        &selected_room_id,
-        SELECT_ROOM_EVENT_TIMEOUT,
-    )
-    .await?;
 
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let subscribe_request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_subscribe_timeline_command(
-            subscribe_request_id,
-            account_key,
-            selected_room_id,
-        ))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
 
-    let open_request_id = event_conn.next_request_id();
-    event_conn
-        .command(CoreCommand::App(AppCommand::OpenFocusedContext {
-            request_id: open_request_id,
-            room_id,
-            event_id,
-        }))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
 
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn close_focused_context(
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::App(AppCommand::CloseFocusedContext { request_id }),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn open_timeline_at_timestamp(
-    room_id: String,
-    timestamp_ms: u64,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let focused_room_id = room_id.clone();
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_open_timeline_at_timestamp_command(
-            request_id,
-            room_id,
-            timestamp_ms,
-        ))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_focused_context(
-        &mut event_conn,
-        request_id,
-        &focused_room_id,
-        FOCUSED_CONTEXT_EVENT_TIMEOUT,
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn observe_timeline_viewport(
-    room_id: String,
-    first_visible_event_id: Option<String>,
-    last_visible_event_id: Option<String>,
-    at_bottom: bool,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_observe_timeline_viewport_command(
-            request_id,
-            account_key,
-            room_id,
-            first_visible_event_id,
-            last_visible_event_id,
-            at_bottom,
-        ),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn paginate_timeline_backwards(
-    room_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_paginate_timeline_backwards_command(request_id, account_key, room_id),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn paginate_thread_timeline_backwards(
-    room_id: String,
-    root_event_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_paginate_thread_timeline_backwards_command(
-            request_id,
-            account_key,
-            room_id,
-            root_event_id,
-        ),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn send_text(
-    room_id: String,
-    body: String,
-    mentions: Option<matrix_desktop_state::MentionIntent>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    if body.trim().is_empty() {
-        return current_snapshot(state.inner()).await;
-    }
-
-    let transaction_id = format!(
-        "desktop-{}",
-        NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
-    );
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_send_text_command(
-        request_id,
-        account_key,
-        room_id,
-        transaction_id,
-        body,
-        mentions.unwrap_or_default(),
-    ) {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn schedule_send(
-    room_id: String,
-    body: String,
-    send_at_ms: u64,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_schedule_send_command(request_id, room_id, body, send_at_ms) {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1291,1254 +466,62 @@ pub struct StageUploadInputItem {
     compression_choice: StagedUploadCompressionChoice,
 }
 
-#[tauri::command]
-pub async fn stage_uploads(
-    room_id: String,
-    items: Vec<StageUploadInputItem>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    if room_id.trim().is_empty() {
-        return current_snapshot(state.inner()).await;
-    }
-
-    let room_id_for_wait = room_id.trim().to_owned();
-    let expected_ids = items
-        .iter()
-        .filter(|item| !item.staged_id.trim().is_empty())
-        .map(|item| item.staged_id.clone())
-        .collect::<Vec<_>>();
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_set_upload_staging_command(request_id, room_id, items))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_upload_staging_snapshot(
-        &mut event_conn,
-        request_id,
-        |snapshot| {
-            snapshot.timeline.room_id.as_deref() == Some(room_id_for_wait.as_str())
-                && snapshot.timeline.staged_uploads.len() == expected_ids.len()
-                && expected_ids.iter().all(|expected_id| {
-                    snapshot
-                        .timeline
-                        .staged_uploads
-                        .iter()
-                        .any(|item| item.staged_id == *expected_id)
-                })
-        },
-        "upload staging did not update",
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn update_staged_upload_caption(
-    staged_id: String,
-    caption: Option<String>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    if staged_id.trim().is_empty() {
-        return current_snapshot(state.inner()).await;
-    }
-
-    let expected_caption = caption.as_ref().and_then(|body| {
-        let trimmed = body.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_owned())
-        }
-    });
-    let caption = caption.and_then(|body| {
-        let trimmed = body.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(build_formatted_message_draft(
-                trimmed.to_owned(),
-                MentionIntent::default(),
-            ))
-        }
-    });
-    let staged_id_for_wait = staged_id.clone();
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(CoreCommand::App(AppCommand::UpdateStagedUploadCaption {
-            request_id,
-            staged_id,
-            caption,
-        }))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_upload_staging_snapshot(
-        &mut event_conn,
-        request_id,
-        |snapshot| {
-            snapshot
-                .timeline
-                .staged_uploads
-                .iter()
-                .find(|item| item.staged_id == staged_id_for_wait)
-                .map(|item| {
-                    item.caption
-                        .as_ref()
-                        .map(|caption| caption.plain_body.as_str())
-                })
-                == Some(expected_caption.as_deref())
-        },
-        "staged upload caption did not update",
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn update_staged_upload_compression(
-    staged_id: String,
-    compression_choice: StagedUploadCompressionChoice,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    if staged_id.trim().is_empty() {
-        return current_snapshot(state.inner()).await;
-    }
-
-    let staged_id_for_wait = staged_id.clone();
-    let expected_choice = compression_choice;
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(CoreCommand::App(
-            AppCommand::UpdateStagedUploadCompression {
-                request_id,
-                staged_id,
-                compression_choice,
-            },
-        ))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_upload_staging_snapshot(
-        &mut event_conn,
-        request_id,
-        |snapshot| {
-            snapshot
-                .timeline
-                .staged_uploads
-                .iter()
-                .find(|item| item.staged_id == staged_id_for_wait)
-                .map(|item| item.compression_choice)
-                == Some(expected_choice)
-        },
-        "staged upload compression did not update",
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn clear_upload_staging(
-    room_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    if room_id.trim().is_empty() {
-        return current_snapshot(state.inner()).await;
-    }
-
-    let room_id_for_wait = room_id.trim().to_owned();
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(CoreCommand::App(AppCommand::ClearUploadStaging {
-            request_id,
-            room_id,
-        }))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_upload_staging_snapshot(
-        &mut event_conn,
-        request_id,
-        |snapshot| {
-            snapshot.timeline.room_id.as_deref() == Some(room_id_for_wait.as_str())
-                && snapshot.timeline.staged_uploads.is_empty()
-        },
-        "upload staging did not clear",
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn cancel_scheduled_send(
-    scheduled_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_cancel_scheduled_send_command(request_id, scheduled_id) {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn reschedule_scheduled_send(
-    scheduled_id: String,
-    send_at_ms: u64,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) =
-        build_reschedule_scheduled_send_command(request_id, scheduled_id, send_at_ms)
-    {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn retry_send(
-    room_id: String,
-    transaction_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) =
-        build_retry_send_command(request_id, account_key, room_id, transaction_id)
-    {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn cancel_send(
-    room_id: String,
-    transaction_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) =
-        build_cancel_send_command(request_id, account_key, room_id, transaction_id)
-    {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn upload_media(
-    room_id: String,
-    filename: String,
-    mime_type: String,
-    bytes: Vec<u8>,
-    caption: Option<String>,
-    image_dimensions: Option<ImageUploadDimensions>,
-    image_compression: Option<ImageUploadCompressionState>,
-    thumbnail: Option<UploadMediaThumbnail>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    if bytes.is_empty() {
-        return current_snapshot(state.inner()).await;
-    }
-
-    let transaction_id = format!(
-        "desktop-media-{}",
-        NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
-    );
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let (image_compression_mode, image_compression_policy) =
-        image_upload_compression_contract_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_upload_media_command(
-        request_id,
-        account_key,
-        room_id,
-        transaction_id,
-        filename,
-        mime_type,
-        bytes,
-        caption,
-        image_compression_mode,
-        image_compression_policy,
-        image_dimensions,
-        image_compression,
-        thumbnail,
-    ) {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn download_media(
-    room_id: String,
-    event_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    if event_id.trim().is_empty() {
-        return current_snapshot(state.inner()).await;
-    }
-
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_download_media_command(request_id, account_key, room_id, event_id)
-    {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn load_message_source(
-    room_id: String,
-    event_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) =
-        build_load_message_source_command(request_id, account_key, room_id, event_id)
-    {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn load_link_previews(
-    room_id: String,
-    event_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) =
-        build_load_link_previews_command(request_id, account_key, room_id, event_id)
-    {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn hide_link_preview(
-    room_id: String,
-    event_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) =
-        build_hide_link_preview_command(request_id, account_key, room_id, event_id)
-    {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn forward_message(
-    room_id: String,
-    source_event_id: String,
-    destination_room_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let transaction_id = format!(
-        "desktop-forward-{}",
-        NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
-    );
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_forward_message_command(
-        request_id,
-        account_key,
-        room_id,
-        source_event_id,
-        destination_room_id,
-        transaction_id,
-    ) {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn edit_message(
-    room_id: String,
-    event_id: String,
-    body: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    if body.trim().is_empty() {
-        return current_snapshot(state.inner()).await;
-    }
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) =
-        build_edit_message_command(request_id, account_key, room_id, event_id, body)
-    {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn redact_message(
-    room_id: String,
-    event_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_redact_message_command(request_id, account_key, room_id, event_id),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn toggle_reaction(
-    room_id: String,
-    event_id: String,
-    reaction_key: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    if reaction_key.is_empty() {
-        return current_snapshot(state.inner()).await;
-    }
-
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) =
-        build_toggle_reaction_command(request_id, account_key, room_id, event_id, reaction_key)
-    {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn send_reaction(
-    room_id: String,
-    event_id: String,
-    reaction_key: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    if reaction_key.trim().is_empty() || event_id.trim().is_empty() {
-        return current_snapshot(state.inner()).await;
-    }
-
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) =
-        build_send_reaction_command(request_id, account_key, room_id, event_id, reaction_key)
-    {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn redact_reaction(
-    room_id: String,
-    event_id: String,
-    reaction_key: String,
-    reaction_event_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    if reaction_key.trim().is_empty()
-        || event_id.trim().is_empty()
-        || reaction_event_id.trim().is_empty()
-    {
-        return current_snapshot(state.inner()).await;
-    }
-
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_redact_reaction_command(
-        request_id,
-        account_key,
-        room_id,
-        event_id,
-        reaction_key,
-        reaction_event_id,
-    ) {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn send_read_receipt(
-    room_id: String,
-    event_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) =
-        build_send_read_receipt_command(request_id, account_key, room_id, event_id)
-    {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn set_fully_read(
-    room_id: String,
-    event_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_set_fully_read_command(request_id, account_key, room_id, event_id)
-    {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn set_typing(
-    room_id: String,
-    is_typing: bool,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_set_typing_command(request_id, account_key, room_id, is_typing),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn set_presence(
-    presence: PresenceKind,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_set_presence_command(request_id, presence),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn set_display_name(
-    display_name: Option<String>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_set_display_name_command(request_id, display_name),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn set_local_user_alias(
-    user_id: String,
-    alias: Option<String>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_set_local_user_alias_command(request_id, user_id, alias),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn ignore_user(
-    user_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_ignore_user_command(request_id, user_id),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn unignore_user(
-    user_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_unignore_user_command(request_id, user_id),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn report_user(
-    user_id: String,
-    reason: Option<String>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_report_user_command(request_id, user_id, optional_non_blank(reason)),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn report_content(
-    room_id: String,
-    event_id: String,
-    reason: Option<String>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_report_content_command(request_id, room_id, event_id, optional_non_blank(reason)),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn report_room(
-    room_id: String,
-    reason: Option<String>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_report_room_command(request_id, room_id, optional_non_blank(reason)),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn set_avatar(
-    mime_type: String,
-    bytes: Vec<u8>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    if bytes.is_empty() {
-        return current_snapshot(state.inner()).await;
-    }
-
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_set_avatar_command(request_id, mime_type, bytes),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn leave_room(
-    room_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(state.inner(), build_leave_room_command(request_id, room_id)).await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn forget_room(
-    room_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_forget_room_command(request_id, room_id),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn set_room_tag(
-    room_id: String,
-    tag: RoomTagKind,
-    order: Option<f64>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_set_room_tag_command(request_id, room_id, tag, order),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn remove_room_tag(
-    room_id: String,
-    tag: RoomTagKind,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_remove_room_tag_command(request_id, room_id, tag),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn pin_event(
-    room_id: String,
-    event_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_pin_event_command(request_id, room_id, event_id),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn unpin_event(
-    room_id: String,
-    event_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_unpin_event_command(request_id, room_id, event_id),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn load_room_settings(
-    room_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_load_room_settings_command(request_id, room_id))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_room_operation(
-        &mut event_conn,
-        request_id,
-        ROOM_OPERATION_EVENT_TIMEOUT,
-        |event, expected_request_id| {
-            matches!(
-                event,
-                RoomEvent::RoomSettingsLoaded { request_id, .. } if *request_id == expected_request_id
-            )
-        },
-        "room settings load did not complete",
-        "room settings load failed",
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn update_room_setting(
-    room_id: String,
-    change: RoomSettingChange,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_update_room_setting_command(
-            request_id, room_id, change,
-        ))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_room_operation(
-        &mut event_conn,
-        request_id,
-        ROOM_OPERATION_EVENT_TIMEOUT,
-        |event, expected_request_id| {
-            matches!(
-                event,
-                RoomEvent::RoomSettingUpdated { request_id, .. } if *request_id == expected_request_id
-            )
-        },
-        "room setting update did not complete",
-        "room setting update failed",
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn moderate_room_member(
-    room_id: String,
-    target_user_id: String,
-    action: RoomModerationAction,
-    reason: Option<String>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_moderate_room_member_command(
-            request_id,
-            room_id,
-            target_user_id,
-            action,
-            optional_non_blank(reason),
-        ))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_room_operation(
-        &mut event_conn,
-        request_id,
-        ROOM_OPERATION_EVENT_TIMEOUT,
-        |event, expected_request_id| {
-            matches!(
-                event,
-                RoomEvent::RoomMemberModerated { request_id, .. } if *request_id == expected_request_id
-            )
-        },
-        "room member moderation did not complete",
-        "room member moderation failed",
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn update_room_member_role(
-    room_id: String,
-    target_user_id: String,
-    power_level: i64,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_update_room_member_role_command(
-            request_id,
-            room_id,
-            target_user_id,
-            power_level,
-        ))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_room_operation(
-        &mut event_conn,
-        request_id,
-        ROOM_OPERATION_EVENT_TIMEOUT,
-        |event, expected_request_id| {
-            matches!(
-                event,
-                RoomEvent::RoomMemberRoleUpdated { request_id, .. } if *request_id == expected_request_id
-            )
-        },
-        "room member role update did not complete",
-        "room member role update failed",
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn open_activity(
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(state.inner(), build_open_activity_command(request_id)).await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn close_activity(
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(state.inner(), build_close_activity_command(request_id)).await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn set_activity_tab(
-    tab: ActivityTab,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_set_activity_tab_command(request_id, tab),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn paginate_activity(
-    tab: ActivityTab,
-    cursor: Option<String>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_paginate_activity_command(request_id, tab, cursor),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn mark_activity_read(
-    target: ActivityMarkReadTarget,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_mark_activity_read_command(request_id, target),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn open_files_view(
-    scope: FilesViewScope,
-    filter: AttachmentFilter,
-    sort: AttachmentSort,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_open_files_view_command(request_id, scope, filter, sort),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn close_files_view(
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(state.inner(), build_close_files_view_command(request_id)).await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn open_threads_list(
-    room_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_open_threads_list_command(request_id, room_id),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn close_threads_list(
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(state.inner(), build_close_threads_list_command(request_id)).await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn paginate_threads_list(
-    room_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_paginate_threads_list_command(request_id, room_id),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn open_thread(
-    room_id: String,
-    root_event_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    // Thread open/close is Rust-owned product state: drive the reducer's
-    // ThreadPaneState through a first-class core command instead of discarding
-    // the inputs in a snapshot-only shim.
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::App(AppCommand::OpenThread {
-            request_id,
-            room_id,
-            root_event_id,
-        }),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn close_thread(
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::App(AppCommand::CloseThread { request_id }),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn submit_search(
-    query: String,
-    scope: SearchScopeKind,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let search_scope = resolve_search_scope(scope, state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_submit_search_command(request_id, query, search_scope),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn start_room_crawl(
-    room_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    // Read current crawler settings from the Rust-owned snapshot so this
-    // command doesn't duplicate settings state in the TypeScript layer.
-    let settings = state
-        .connection
-        .lock()
-        .await
-        .snapshot()
-        .settings
-        .values
-        .search_crawler
-        .clone();
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Search(SearchCommand::StartHistoryCrawl {
-            request_id,
-            room_id,
-            settings,
-        }),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn stop_room_crawl(
-    room_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::Search(SearchCommand::StopHistoryCrawl { request_id, room_id }),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn query_directory(
-    term: Option<String>,
-    server_name: Option<String>,
-    limit: Option<u32>,
-    since: Option<String>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_query_directory_command(
-            request_id,
-            term,
-            server_name,
-            limit,
-            since,
-        ))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_room_operation(
-        &mut event_conn,
-        request_id,
-        ROOM_OPERATION_EVENT_TIMEOUT,
-        |event, expected_request_id| {
-            matches!(
-                event,
-                RoomEvent::DirectoryQueryCompleted { request_id, .. } if *request_id == expected_request_id
-            )
-        },
-        "directory query did not complete",
-        "directory query failed",
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const CREATE_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -2655,350 +638,19 @@ async fn wait_for_room_joined(
     }
 }
 
-#[tauri::command]
-pub async fn create_room(
-    name: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_create_room_command(request_id, name))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_room_created(&mut event_conn, request_id, CREATE_EVENT_TIMEOUT).await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn create_space(
-    name: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_create_space_command(request_id, name))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_space_created(&mut event_conn, request_id, CREATE_EVENT_TIMEOUT).await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn join_directory_room(
-    alias: String,
-    via_server: Option<String>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    let Some(command) = build_join_directory_room_command(request_id, alias, via_server) else {
-        update_qa_window_title_from_state(&app, state.inner()).await;
-        return current_snapshot(state.inner()).await;
-    };
 
-    event_conn
-        .command(command)
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    let joined_room_id = wait_for_room_joined(
-        &mut event_conn,
-        request_id,
-        ROOM_OPERATION_EVENT_TIMEOUT,
-    )
-    .await?;
-    wait_for_selected_room(
-        &mut event_conn,
-        request_id,
-        &joined_room_id,
-        SELECT_ROOM_EVENT_TIMEOUT,
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn set_space_child(
-    space_id: String,
-    child_room_id: String,
-    via_server: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_set_space_child_command(request_id, space_id, child_room_id, via_server),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn accept_invite(
-    room_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_accept_invite_command(request_id, room_id))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_room_operation(
-        &mut event_conn,
-        request_id,
-        ROOM_OPERATION_EVENT_TIMEOUT,
-        |event, expected_request_id| {
-            matches!(
-                event,
-                RoomEvent::InviteAccepted { request_id, .. } if *request_id == expected_request_id
-            )
-        },
-        "invite acceptance did not complete",
-        "invite acceptance failed",
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn decline_invite(
-    room_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_decline_invite_command(request_id, room_id))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_room_operation(
-        &mut event_conn,
-        request_id,
-        ROOM_OPERATION_EVENT_TIMEOUT,
-        |event, expected_request_id| {
-            matches!(
-                event,
-                RoomEvent::InviteDeclined { request_id, .. } if *request_id == expected_request_id
-            )
-        },
-        "invite decline did not complete",
-        "invite decline failed",
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn start_direct_message(
-    user_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_start_direct_message_command(request_id, user_id))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_room_operation(
-        &mut event_conn,
-        request_id,
-        ROOM_OPERATION_EVENT_TIMEOUT,
-        |event, expected_request_id| {
-            matches!(
-                event,
-                RoomEvent::DirectMessageStarted { request_id, .. } if *request_id == expected_request_id
-            )
-        },
-        "direct message start did not complete",
-        "direct message start failed",
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn invite_user(
-    room_id: String,
-    user_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_invite_user_command(request_id, room_id, user_id))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_room_operation(
-        &mut event_conn,
-        request_id,
-        ROOM_OPERATION_EVENT_TIMEOUT,
-        |event, expected_request_id| {
-            matches!(
-                event,
-                RoomEvent::UserInvited { request_id, .. } if *request_id == expected_request_id
-            )
-        },
-        "user invite did not complete",
-        "user invite failed",
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn set_composer_reply_target(
-    room_id: String,
-    event_id: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::App(AppCommand::SetComposerReplyTarget {
-            request_id,
-            room_id,
-            event_id,
-        }),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn cancel_composer_reply(
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::App(AppCommand::CancelComposerReply { request_id }),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn set_composer_draft(
-    room_id: String,
-    draft: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_set_composer_draft_command(request_id, room_id, draft),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn set_thread_composer_draft(
-    room_id: String,
-    root_event_id: String,
-    draft: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        build_set_thread_composer_draft_command(request_id, room_id, root_event_id, draft),
-    )
-    .await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
-#[tauri::command]
-pub async fn send_reply(
-    room_id: String,
-    in_reply_to_event_id: String,
-    body: String,
-    mentions: Option<matrix_desktop_state::MentionIntent>,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    if body.trim().is_empty() {
-        return current_snapshot(state.inner()).await;
-    }
-
-    let transaction_id = format!(
-        "desktop-{}",
-        NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
-    );
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_send_reply_command(
-        request_id,
-        account_key,
-        room_id,
-        transaction_id,
-        in_reply_to_event_id,
-        body,
-        mentions.unwrap_or_default(),
-    ) {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
-
-#[tauri::command]
-pub async fn send_thread_reply(
-    room_id: String,
-    root_event_id: String,
-    body: String,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    if body.trim().is_empty() {
-        return current_snapshot(state.inner()).await;
-    }
-
-    let transaction_id = format!(
-        "desktop-{}",
-        NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
-    );
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_send_thread_reply_command(
-        request_id,
-        account_key,
-        room_id,
-        root_event_id,
-        transaction_id,
-        body,
-    ) {
-        submit_core_command(state.inner(), command).await?;
-    }
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
-}
 
 // ---- Helpers ----
 
@@ -4661,6 +2313,39 @@ async fn read_qa_control_pipe(pipe_path: PathBuf) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+
+    // Phase 2c: handlers were split into commands/<feature>.rs submodules. The
+    // source-characterization tests below read the combined command source so handler
+    // bodies/signatures stay findable after the move.
+    //
+    // Ordering matters and mirrors the pre-split layout (production code, then this
+    // test module): the per-feature handler files come first and `mod.rs` (which holds
+    // the builder/helper defs AND this test module's own string literals) comes LAST.
+    // That way `source.find("pub async fn X")` and the `"pub async fn Y"` end-markers
+    // resolve to the real handlers, not to literals in this test module. The cross-file
+    // end-markers require: navigation before timeline (select_*/close_focused_context
+    // bound by `paginate_timeline_backwards`) and directory before room
+    // (`join_directory_room` bound by `set_space_child`).
+    fn commands_source() -> String {
+        [
+            include_str!("session.rs"),
+            include_str!("settings.rs"),
+            include_str!("account.rs"),
+            include_str!("local_encryption.rs"),
+            include_str!("e2ee.rs"),
+            include_str!("navigation.rs"),
+            include_str!("timeline.rs"),
+            include_str!("live_signals.rs"),
+            include_str!("profile.rs"),
+            include_str!("directory.rs"),
+            include_str!("room.rs"),
+            include_str!("activity.rs"),
+            include_str!("views.rs"),
+            include_str!("search.rs"),
+            include_str!("mod.rs"),
+        ]
+        .concat()
+    }
     use matrix_desktop_core::AccountKey;
     use matrix_desktop_core::{
         AccountCommand, AppCommand, CoreCommand, ImageUploadCompressionPolicy,
@@ -6735,11 +4420,11 @@ mod tests {
 
     #[test]
     fn thread_timeline_backwards_pagination_contract_is_present() {
-        let commands_source = include_str!("commands.rs");
-        let lib_source = include_str!("lib.rs");
+        let commands_source = commands_source();
+        let lib_source = include_str!("../lib.rs");
         let helper_name = "build_paginate_thread_timeline_backwards_command";
         let command_name = "pub async fn paginate_thread_timeline_backwards";
-        let registration_name = "commands::paginate_thread_timeline_backwards";
+        let registration_name = "commands::timeline::paginate_thread_timeline_backwards";
 
         let helper_offset = commands_source
             .find(helper_name)
@@ -6774,18 +4459,18 @@ mod tests {
 
     #[test]
     fn reaction_tauri_command_contracts_are_present() {
-        let commands_source = include_str!("commands.rs");
-        let lib_source = include_str!("lib.rs");
+        let commands_source = commands_source();
+        let lib_source = include_str!("../lib.rs");
         for (command_name, route_name, registration_name) in [
             (
                 "pub async fn send_reaction",
                 "build_send_reaction_command",
-                "commands::send_reaction",
+                "commands::timeline::send_reaction",
             ),
             (
                 "pub async fn redact_reaction",
                 "build_redact_reaction_command",
-                "commands::redact_reaction",
+                "commands::timeline::redact_reaction",
             ),
         ] {
             assert!(
@@ -6805,18 +4490,18 @@ mod tests {
 
     #[test]
     fn send_queue_tauri_command_contracts_are_present() {
-        let commands_source = include_str!("commands.rs");
-        let lib_source = include_str!("lib.rs");
+        let commands_source = commands_source();
+        let lib_source = include_str!("../lib.rs");
         for (command_name, route_name, registration_name) in [
             (
                 "pub async fn retry_send",
                 "build_retry_send_command",
-                "commands::retry_send",
+                "commands::timeline::retry_send",
             ),
             (
                 "pub async fn cancel_send",
                 "build_cancel_send_command",
-                "commands::cancel_send",
+                "commands::timeline::cancel_send",
             ),
         ] {
             assert!(
@@ -6836,23 +4521,23 @@ mod tests {
 
     #[test]
     fn scheduled_send_tauri_command_contracts_are_present() {
-        let commands_source = include_str!("commands.rs");
-        let lib_source = include_str!("lib.rs");
+        let commands_source = commands_source();
+        let lib_source = include_str!("../lib.rs");
         for (command_name, route_name, registration_name) in [
             (
                 "pub async fn schedule_send",
                 "build_schedule_send_command",
-                "commands::schedule_send",
+                "commands::timeline::schedule_send",
             ),
             (
                 "pub async fn cancel_scheduled_send",
                 "build_cancel_scheduled_send_command",
-                "commands::cancel_scheduled_send",
+                "commands::timeline::cancel_scheduled_send",
             ),
             (
                 "pub async fn reschedule_scheduled_send",
                 "build_reschedule_scheduled_send_command",
-                "commands::reschedule_scheduled_send",
+                "commands::timeline::reschedule_scheduled_send",
             ),
         ] {
             assert!(
@@ -6872,43 +4557,43 @@ mod tests {
 
     #[test]
     fn activity_tauri_command_contracts_are_present() {
-        let commands_source = include_str!("commands.rs");
-        let lib_source = include_str!("lib.rs");
+        let commands_source = commands_source();
+        let lib_source = include_str!("../lib.rs");
         for (command_name, route_name, registration_name) in [
             (
                 "pub async fn open_activity",
                 "build_open_activity_command",
-                "commands::open_activity",
+                "commands::activity::open_activity",
             ),
             (
                 "pub async fn close_activity",
                 "build_close_activity_command",
-                "commands::close_activity",
+                "commands::activity::close_activity",
             ),
             (
                 "pub async fn set_activity_tab",
                 "build_set_activity_tab_command",
-                "commands::set_activity_tab",
+                "commands::activity::set_activity_tab",
             ),
             (
                 "pub async fn paginate_activity",
                 "build_paginate_activity_command",
-                "commands::paginate_activity",
+                "commands::activity::paginate_activity",
             ),
             (
                 "pub async fn mark_activity_read",
                 "build_mark_activity_read_command",
-                "commands::mark_activity_read",
+                "commands::activity::mark_activity_read",
             ),
             (
                 "pub async fn open_files_view",
                 "build_open_files_view_command",
-                "commands::open_files_view",
+                "commands::views::open_files_view",
             ),
             (
                 "pub async fn close_files_view",
                 "build_close_files_view_command",
-                "commands::close_files_view",
+                "commands::views::close_files_view",
             ),
         ] {
             assert!(
@@ -7108,20 +4793,20 @@ mod tests {
 
     #[test]
     fn update_settings_tauri_command_contract_is_present() {
-        let commands_source = include_str!("commands.rs");
-        let lib_source = include_str!("lib.rs");
+        let commands_source = commands_source();
+        let lib_source = include_str!("../lib.rs");
         for (command_name, builder_name, route_name, registration_name) in [
             (
                 "pub async fn update_settings",
                 "build_update_settings_command",
                 "AppCommand::UpdateSettings",
-                "commands::update_settings",
+                "commands::settings::update_settings",
             ),
             (
                 "pub async fn set_room_url_preview_override",
                 "build_set_room_url_preview_override_command",
                 "AppCommand::SetRoomUrlPreviewOverride",
-                "commands::set_room_url_preview_override",
+                "commands::settings::set_room_url_preview_override",
             ),
         ] {
             assert!(
@@ -7165,12 +4850,12 @@ mod tests {
 
     #[test]
     fn credential_health_tauri_command_contract_is_present() {
-        let commands_source = include_str!("commands.rs");
-        let lib_source = include_str!("lib.rs");
+        let commands_source = commands_source();
+        let lib_source = include_str!("../lib.rs");
         let command_name = "pub async fn probe_local_encryption_health";
         let builder_name = "build_probe_local_encryption_health_command";
         let route_name = "AccountCommand::ProbeLocalEncryptionHealth";
-        let registration_name = "commands::probe_local_encryption_health";
+        let registration_name = "commands::local_encryption::probe_local_encryption_health";
 
         assert!(
             commands_source.contains(command_name),
@@ -7192,12 +4877,12 @@ mod tests {
 
     #[test]
     fn reset_local_data_tauri_command_contract_is_present() {
-        let commands_source = include_str!("commands.rs");
-        let lib_source = include_str!("lib.rs");
+        let commands_source = commands_source();
+        let lib_source = include_str!("../lib.rs");
         let command_name = "pub async fn reset_local_data";
         let builder_name = "build_reset_local_data_command";
         let route_name = "AccountCommand::ResetLocalData";
-        let registration_name = "commands::reset_local_data";
+        let registration_name = "commands::local_encryption::reset_local_data";
 
         assert!(
             commands_source.contains(command_name),
@@ -7219,68 +4904,68 @@ mod tests {
 
     #[test]
     fn e2ee_trust_tauri_command_contracts_are_present() {
-        let commands_source = include_str!("commands.rs");
-        let lib_source = include_str!("lib.rs");
+        let commands_source = commands_source();
+        let lib_source = include_str!("../lib.rs");
         for (command_name, route_name, registration_name) in [
             (
                 "pub async fn bootstrap_cross_signing",
                 "build_bootstrap_cross_signing_command",
-                "commands::bootstrap_cross_signing",
+                "commands::e2ee::bootstrap_cross_signing",
             ),
             (
                 "pub async fn enable_key_backup",
                 "build_enable_key_backup_command",
-                "commands::enable_key_backup",
+                "commands::e2ee::enable_key_backup",
             ),
             (
                 "pub async fn export_room_keys",
                 "build_export_room_keys_command",
-                "commands::export_room_keys",
+                "commands::e2ee::export_room_keys",
             ),
             (
                 "pub async fn import_room_keys",
                 "build_import_room_keys_command",
-                "commands::import_room_keys",
+                "commands::e2ee::import_room_keys",
             ),
             (
                 "pub async fn bootstrap_secure_backup",
                 "build_bootstrap_secure_backup_command",
-                "commands::bootstrap_secure_backup",
+                "commands::e2ee::bootstrap_secure_backup",
             ),
             (
                 "pub async fn change_secure_backup_passphrase",
                 "build_change_secure_backup_passphrase_command",
-                "commands::change_secure_backup_passphrase",
+                "commands::e2ee::change_secure_backup_passphrase",
             ),
             (
                 "pub async fn accept_verification",
                 "build_accept_verification_command",
-                "commands::accept_verification",
+                "commands::e2ee::accept_verification",
             ),
             (
                 "pub async fn confirm_sas_verification",
                 "build_confirm_sas_verification_command",
-                "commands::confirm_sas_verification",
+                "commands::e2ee::confirm_sas_verification",
             ),
             (
                 "pub async fn cancel_verification",
                 "build_cancel_verification_command",
-                "commands::cancel_verification",
+                "commands::e2ee::cancel_verification",
             ),
             (
                 "pub async fn reset_identity",
                 "build_reset_identity_command",
-                "commands::reset_identity",
+                "commands::e2ee::reset_identity",
             ),
             (
                 "pub async fn submit_identity_reset_password",
                 "build_submit_identity_reset_password_command",
-                "commands::submit_identity_reset_password",
+                "commands::e2ee::submit_identity_reset_password",
             ),
             (
                 "pub async fn submit_identity_reset_oauth",
                 "build_submit_identity_reset_oauth_command",
-                "commands::submit_identity_reset_oauth",
+                "commands::e2ee::submit_identity_reset_oauth",
             ),
         ] {
             assert!(
@@ -7300,23 +4985,23 @@ mod tests {
 
     #[test]
     fn profile_tauri_command_contracts_are_present() {
-        let commands_source = include_str!("commands.rs");
-        let lib_source = include_str!("lib.rs");
+        let commands_source = commands_source();
+        let lib_source = include_str!("../lib.rs");
         for (command_name, route_name, registration_name) in [
             (
                 "pub async fn set_display_name",
                 "build_set_display_name_command",
-                "commands::set_display_name",
+                "commands::profile::set_display_name",
             ),
             (
                 "pub async fn set_local_user_alias",
                 "build_set_local_user_alias_command",
-                "commands::set_local_user_alias",
+                "commands::profile::set_local_user_alias",
             ),
             (
                 "pub async fn set_avatar",
                 "build_set_avatar_command",
-                "commands::set_avatar",
+                "commands::profile::set_avatar",
             ),
         ] {
             assert!(
@@ -7336,12 +5021,12 @@ mod tests {
 
     #[test]
     fn composer_key_resolver_command_contract_is_present() {
-        let commands_source = include_str!("commands.rs");
-        let lib_source = include_str!("lib.rs");
+        let commands_source = commands_source();
+        let lib_source = include_str!("../lib.rs");
         let command_name = "pub async fn resolve_composer_key_action";
         let route_name = "matrix_desktop_state::resolve_composer_key_action";
         let settings_token = "settings.values.keyboard.composer_send_shortcut";
-        let registration_name = "commands::resolve_composer_key_action";
+        let registration_name = "commands::timeline::resolve_composer_key_action";
 
         assert!(
             commands_source.contains(command_name),
@@ -7363,7 +5048,7 @@ mod tests {
 
     #[test]
     fn select_room_submits_timeline_subscribe_after_room_selection() {
-        let source = include_str!("commands.rs");
+        let source = commands_source();
         let fn_name = concat!("pub async fn select", "_room");
         let select_token = concat!("build_select", "_room_command");
         let attach_token = concat!("state.runtime.", "attach");
@@ -7412,7 +5097,7 @@ mod tests {
 
     #[test]
     fn select_search_result_submits_room_selection_then_focused_timeline_subscription() {
-        let source = include_str!("commands.rs");
+        let source = commands_source();
         let fn_name = "pub async fn select_search_result";
         let select_token = "select_search_result";
         let close_token = "CloseFocusedContext";
@@ -7472,7 +5157,7 @@ mod tests {
 
     #[test]
     fn close_focused_context_command_routes_to_app_close_focused_context() {
-        let source = include_str!("commands.rs");
+        let source = commands_source();
         let fn_name = concat!("pub async fn close", "_focused_context");
         let command_token = concat!("Close", "FocusedContext");
         let submit_token = "submit_core_command";
@@ -7581,7 +5266,7 @@ mod tests {
 
     #[test]
     fn room_management_tauri_commands_wait_for_correlated_core_events() {
-        let source = include_str!("commands.rs");
+        let source = commands_source();
 
         for (fn_name, event_token) in [
             ("pub async fn load_room_settings", "RoomSettingsLoaded"),
@@ -7646,7 +5331,7 @@ mod tests {
 
     #[test]
     fn wait_for_selected_room_observes_state_changed_failures_and_timeout() {
-        let source = include_str!("commands.rs");
+        let source = commands_source();
         let helper_name = concat!("async fn wait_for_selected", "_room");
         let helper_offset = source
             .find(helper_name)
@@ -7665,7 +5350,7 @@ mod tests {
 
     #[test]
     fn join_directory_room_waits_for_backend_selected_room() {
-        let source = include_str!("commands.rs");
+        let source = commands_source();
         let fn_name = "pub async fn join_directory_room";
         let fn_offset = source
             .find(fn_name)
@@ -7810,7 +5495,7 @@ mod tests {
 
     #[test]
     fn submit_login_request_waits_for_logged_in_then_starts_sync() {
-        let source = include_str!("commands.rs");
+        let source = commands_source();
         let helper_name = concat!("async fn submit_login", "_and_start_sync");
         let wait_call_token = concat!("wait_for_logged", "_in_ready");
         let logged_in_token = concat!("AccountEvent::", "LoggedIn");

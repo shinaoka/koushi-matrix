@@ -1,0 +1,481 @@
+use super::*;
+
+#[tauri::command]
+pub async fn select_room_list_filter(
+    filter: RoomListFilter,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::App(AppCommand::SelectRoomListFilter { request_id, filter }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn mark_room_as_read(
+    room_id: String,
+    event_id: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Room(RoomCommand::MarkRoomAsRead {
+            request_id,
+            room_id,
+            event_id,
+        }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn mark_room_as_unread(
+    room_id: String,
+    unread: bool,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Room(RoomCommand::MarkRoomAsUnread {
+            request_id,
+            room_id,
+            unread,
+        }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn set_room_notification_mode(
+    room_id: String,
+    mode: RoomNotificationMode,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        CoreCommand::Room(RoomCommand::SetRoomNotificationMode {
+            request_id,
+            room_id,
+            mode,
+        }),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn leave_room(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(state.inner(), build_leave_room_command(request_id, room_id)).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn forget_room(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_forget_room_command(request_id, room_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn set_room_tag(
+    room_id: String,
+    tag: RoomTagKind,
+    order: Option<f64>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_set_room_tag_command(request_id, room_id, tag, order),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn remove_room_tag(
+    room_id: String,
+    tag: RoomTagKind,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_remove_room_tag_command(request_id, room_id, tag),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn pin_event(
+    room_id: String,
+    event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_pin_event_command(request_id, room_id, event_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn unpin_event(
+    room_id: String,
+    event_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_unpin_event_command(request_id, room_id, event_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn load_room_settings(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_load_room_settings_command(request_id, room_id))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::RoomSettingsLoaded { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "room settings load did not complete",
+        "room settings load failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn update_room_setting(
+    room_id: String,
+    change: RoomSettingChange,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_update_room_setting_command(
+            request_id, room_id, change,
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::RoomSettingUpdated { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "room setting update did not complete",
+        "room setting update failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn moderate_room_member(
+    room_id: String,
+    target_user_id: String,
+    action: RoomModerationAction,
+    reason: Option<String>,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_moderate_room_member_command(
+            request_id,
+            room_id,
+            target_user_id,
+            action,
+            optional_non_blank(reason),
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::RoomMemberModerated { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "room member moderation did not complete",
+        "room member moderation failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn update_room_member_role(
+    room_id: String,
+    target_user_id: String,
+    power_level: i64,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_update_room_member_role_command(
+            request_id,
+            room_id,
+            target_user_id,
+            power_level,
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::RoomMemberRoleUpdated { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "room member role update did not complete",
+        "room member role update failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn create_room(
+    name: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_create_room_command(request_id, name))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_created(&mut event_conn, request_id, CREATE_EVENT_TIMEOUT).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn create_space(
+    name: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_create_space_command(request_id, name))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_space_created(&mut event_conn, request_id, CREATE_EVENT_TIMEOUT).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn set_space_child(
+    space_id: String,
+    child_room_id: String,
+    via_server: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_set_space_child_command(request_id, space_id, child_room_id, via_server),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn accept_invite(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_accept_invite_command(request_id, room_id))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::InviteAccepted { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "invite acceptance did not complete",
+        "invite acceptance failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn decline_invite(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_decline_invite_command(request_id, room_id))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::InviteDeclined { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "invite decline did not complete",
+        "invite decline failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn start_direct_message(
+    user_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_start_direct_message_command(request_id, user_id))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::DirectMessageStarted { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "direct message start did not complete",
+        "direct message start failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn invite_user(
+    room_id: String,
+    user_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_invite_user_command(request_id, room_id, user_id))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::UserInvited { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "user invite did not complete",
+        "user invite failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
