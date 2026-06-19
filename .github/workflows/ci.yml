@@ -6,9 +6,11 @@ on:
   pull_request:
     branches: [main]
 
-# Newer runs on the same ref supersede in-flight ones.
+# Newer runs supersede in-flight ones. Key off head_ref for PRs so that GitHub
+# recomputing refs/pull/N/merge (on mergeability changes) does not spuriously
+# cancel an in-flight PR run; fall back to github.ref for push events.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 permissions:
