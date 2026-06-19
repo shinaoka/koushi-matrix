@@ -64,7 +64,7 @@ console.log("release gate check: structural ok");
 
 if (!noCompile) {
   console.log("release gate check: cargo check --release (gated refs must not leak) ...");
-  execFileSync("cargo", ["check", "--release", "--quiet", "-p", "matrix-desktop-key"], {
+  execFileSync("cargo", ["check", "--release", "--quiet", "-p", "koushi-key"], {
     cwd: repoRoot,
     stdio: "inherit",
   });

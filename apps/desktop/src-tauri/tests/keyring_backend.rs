@@ -1,4 +1,4 @@
-use matrix_desktop_key::{
+use koushi_key::{
     CredentialBackendErrorKind, CredentialStore, InMemoryCredentialBackend, LocalSecretError,
     LocalUnlockSecret, SessionKeyId, is_locked_or_inaccessible_error, is_missing_credential_error,
 };

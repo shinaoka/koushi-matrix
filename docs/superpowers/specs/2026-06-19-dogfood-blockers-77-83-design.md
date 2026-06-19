@@ -18,8 +18,8 @@ WIP).
 Verified ground truth (not the prior agent's optimistic self-report):
 
 - **Rust does not compile.** `cargo check --workspace` fails (exit 101) with 6
-  errors, all in `matrix-desktop-core` from the unfinished #77 crawler wiring:
-  1. `unresolved import matrix_desktop_search::AttachmentKind`
+  errors, all in `koushi-core` from the unfinished #77 crawler wiring:
+  1. `unresolved import koushi_search::AttachmentKind`
   2. `unresolved import matrix_sdk::ruma::api::client::direction`
   3. + 4. non-exhaustive `match` on `SearchCommand` (the two new
      `StartHistoryCrawl` / `StopHistoryCrawl` variants) — in `search.rs`
@@ -76,10 +76,10 @@ with #87 instead of fighting it.
    "don't mix mechanical move with semantic change" rule.
    - Rust: crawler logic stays in `search_crawler.rs`. The new state-type
      clusters move out of `state.rs` into dedicated modules and are re-exported:
-     - `crates/matrix-desktop-state/src/state/search_crawler.rs` —
+     - `crates/koushi-state/src/state/search_crawler.rs` —
        `SearchCrawlerState`, `SearchCrawlerRoomState`, `SearchCrawlerSettings`,
        `SearchCrawlerSpeed`, `SearchCrawlerFailureKind`.
-     - `crates/matrix-desktop-state/src/state/media_download.rs` —
+     - `crates/koushi-state/src/state/media_download.rs` —
        `TimelineMediaDownloadState`, `MediaTransferProgress`.
      - `state.rs` keeps the `AppState` / `SettingsValues` / `TimelinePaneState`
        fields; callers import the new types via `state::search_crawler` /
@@ -139,7 +139,7 @@ reaches the snapshot DTO.
 
 **Compile fixes (WP1).**
 
-- `AttachmentKind`: export it from `matrix-desktop-search`'s public API (or use
+- `AttachmentKind`: export it from `koushi-search`'s public API (or use
   the existing search document type) rather than importing a private/absent
   symbol.
 - `Direction`: import the correct ruma path for backward paging

@@ -12,12 +12,12 @@ Evidence:
 - `cargo test --manifest-path vendor/matrix-rust-sdk/crates/matrix-sdk/Cargo.toml search_index --features experimental-search -- --nocapture`
 
 Remaining implementation work:
-- SDK event-cache integration with `matrix-desktop-search`;
+- SDK event-cache integration with `koushi-search`;
 - full late-decryption reindex path connected to the adapter;
 - full index rebuild UI and progress reporting.
 
 Follow-up completed:
-- `matrix-desktop-search` provides in-memory exact verification, UTF-16
+- `koushi-search` provides in-memory exact verification, UTF-16
   highlights, attachment filename matches, pending edit handling, and redaction
   cleanup before results are sent to the UI.
 

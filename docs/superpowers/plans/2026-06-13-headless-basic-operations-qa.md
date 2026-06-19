@@ -6,15 +6,15 @@
 
 **Architecture:** Headless QA is the contract layer: Conduit and Tuwunel, probed SyncService plus forced LegacySync, two synthetic users, all cleanup local. matrix.org QA is the slow compatibility lane: one login per run, file credential store only, unique synthetic rooms/spaces, aggressive cleanup, bounded retries, and no repeated destructive cycles. Linux virtual-display QA is the product-integration lane: launch the actual Tauri client under Xvfb/tauri-driver, drive the UI with WebDriver, and assert the same operation tokens that headless already proved.
 
-**Tech Stack:** Rust `matrix-desktop-core` QA binaries, vendored `matrix-rust-sdk`/`matrix-sdk-ui`, Node QA runners, Conduit, Tuwunel, matrix.org credentials in `.local-secrets`, existing secret scan and release-gate scripts.
+**Tech Stack:** Rust `koushi-core` QA binaries, vendored `matrix-rust-sdk`/`matrix-sdk-ui`, Node QA runners, Conduit, Tuwunel, matrix.org credentials in `.local-secrets`, existing secret scan and release-gate scripts.
 
 ---
 
 ## Current Baseline
 
-- `crates/matrix-desktop-core/src/bin/headless-core-qa.rs` already covers local login/sync, room creation, space creation, `SetSpaceChild`, invite/join, room list normalization, send/receive, a plain B response, edit, redact, backward pagination, CJK search, restore, logout, and cleanup.
+- `crates/koushi-core/src/bin/headless-core-qa.rs` already covers local login/sync, room creation, space creation, `SetSpaceChild`, invite/join, room list normalization, send/receive, a plain B response, edit, redact, backward pagination, CJK search, restore, logout, and cleanup.
 - `scripts/desktop-headless-local-qa.mjs` already starts disposable local Conduit/Tuwunel servers, registers two synthetic users, and can run both the SDK-level and core-level local QA.
-- `crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs` already covers matrix.org login/recovery/sync, synthetic room operations, send/edit/redact/search, restore, leave/forget, logout, and transcript redaction.
+- `crates/koushi-core/src/bin/real-homeserver-qa.rs` already covers matrix.org login/recovery/sync, synthetic room operations, send/edit/redact/search, restore, leave/forget, logout, and transcript redaction.
 - Missing pieces for the requested next phase:
   - staged scenario selection rather than one large all-or-nothing QA flow,
   - explicit token contracts per operation group,
@@ -168,7 +168,7 @@ git commit -m "docs: define headless basic operations QA"
 
 **Files:**
 - Modify: `scripts/desktop-headless-local-qa.mjs`
-- Modify: `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`
+- Modify: `crates/koushi-core/src/bin/headless-core-qa.rs`
 - Test: `apps/desktop/src/scripts/releaseScripts.test.ts`
 
 - [ ] **Step 1: Add failing script tests**
@@ -233,7 +233,7 @@ MATRIX_DESKTOP_QA_SCENARIO: scenarioOption
 
 - [ ] **Step 4: Implement Rust scenario parsing**
 
-In `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`, add:
+In `crates/koushi-core/src/bin/headless-core-qa.rs`, add:
 
 ```rust
 const ENV_QA_SCENARIO: &str = "MATRIX_DESKTOP_QA_SCENARIO";
@@ -285,7 +285,7 @@ if config.scenario != QaScenario::All {
 
 ```bash
 npm --prefix apps/desktop run test -- src/scripts/releaseScripts.test.ts
-cargo test -p matrix-desktop-core --lib
+cargo test -p koushi-core --lib
 ```
 
 Expected: both pass.
@@ -293,7 +293,7 @@ Expected: both pass.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add scripts/desktop-headless-local-qa.mjs crates/matrix-desktop-core/src/bin/headless-core-qa.rs apps/desktop/src/scripts/releaseScripts.test.ts
+git add scripts/desktop-headless-local-qa.mjs crates/koushi-core/src/bin/headless-core-qa.rs apps/desktop/src/scripts/releaseScripts.test.ts
 git commit -m "qa: add headless local scenario selection"
 ```
 
@@ -304,7 +304,7 @@ scenario-aware early exits and cleanup reuse. `reply` and `thread` stay
 explicitly unsupported until the true Matrix reply relation exists.
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`
+- Modify: `crates/koushi-core/src/bin/headless-core-qa.rs`
 
 - [x] **Step 1: Introduce staged scenario helpers**
 
@@ -353,21 +353,21 @@ Expected: all four local legs pass and include the stage tokens.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/matrix-desktop-core/src/bin/headless-core-qa.rs
+git add crates/koushi-core/src/bin/headless-core-qa.rs
 git commit -m "qa: split headless local operations into stages"
 ```
 
 ## Task 4: Add True Matrix Reply Command
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/timeline.rs`
-- Modify: `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`
-- Test: `crates/matrix-desktop-core/src/timeline.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/timeline.rs`
+- Modify: `crates/koushi-core/src/bin/headless-core-qa.rs`
+- Test: `crates/koushi-core/src/timeline.rs`
 
 - [ ] **Step 1: Add failing command redaction test**
 
-In `crates/matrix-desktop-core/src/timeline.rs` tests, add:
+In `crates/koushi-core/src/timeline.rs` tests, add:
 
 ```rust
 #[test]
@@ -390,14 +390,14 @@ fn send_reply_debug_redacts_body_and_event_ids() {
 - [ ] **Step 2: Run test to verify RED**
 
 ```bash
-cargo test -p matrix-desktop-core send_reply_debug_redacts_body_and_event_ids
+cargo test -p koushi-core send_reply_debug_redacts_body_and_event_ids
 ```
 
 Expected: fails because `SendReply` does not exist.
 
 - [x] **Step 3: Add `TimelineCommand::SendReply`**
 
-In `crates/matrix-desktop-core/src/command.rs`:
+In `crates/koushi-core/src/command.rs`:
 
 ```rust
 SendReply {
@@ -413,7 +413,7 @@ Update `CoreCommand::request_id()` and the custom `Debug` impl so `body` and `in
 
 - [x] **Step 4: Route the command through TimelineActor**
 
-In `crates/matrix-desktop-core/src/timeline.rs`, add a `TimelineActorMessage::SendReply` variant:
+In `crates/koushi-core/src/timeline.rs`, add a `TimelineActorMessage::SendReply` variant:
 
 ```rust
 SendReply {
@@ -465,7 +465,7 @@ println!("reply=ok");
 - [x] **Step 7: Verify local lane**
 
 ```bash
-cargo test -p matrix-desktop-core send_reply
+cargo test -p koushi-core send_reply
 npm --prefix apps/desktop run qa:headless-local -- --server=both --core --scenario=all
 ```
 
@@ -474,15 +474,15 @@ Expected: all local legs pass and print `reply=ok`.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/matrix-desktop-core/src/command.rs crates/matrix-desktop-core/src/timeline.rs crates/matrix-desktop-core/src/bin/headless-core-qa.rs
+git add crates/koushi-core/src/command.rs crates/koushi-core/src/timeline.rs crates/koushi-core/src/bin/headless-core-qa.rs
 git commit -m "feat: add headless Matrix reply command"
 ```
 
 ## Task 5: Add Thread Reply Local Scenario
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`
-- Modify if needed: `crates/matrix-desktop-core/src/timeline.rs`
+- Modify: `crates/koushi-core/src/bin/headless-core-qa.rs`
+- Modify if needed: `crates/koushi-core/src/timeline.rs`
 
 - [x] **Step 1: Write a local thread scenario using existing `TimelineKind::Thread`**
 
@@ -491,7 +491,7 @@ After the root event id is known, build:
 ```rust
 let thread_key_b = TimelineKey {
     account_key: account_key_b.clone(),
-    kind: matrix_desktop_core::ids::TimelineKind::Thread {
+    kind: koushi_core::ids::TimelineKind::Thread {
         room_id: room_id.clone(),
         root_event_id: event1_id.clone(),
     },
@@ -525,14 +525,14 @@ Expected: all local legs pass and print `thread=ok`.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add crates/matrix-desktop-core/src/bin/headless-core-qa.rs crates/matrix-desktop-core/src/timeline.rs
+git add crates/koushi-core/src/bin/headless-core-qa.rs crates/koushi-core/src/timeline.rs
 git commit -m "qa: verify thread replies headlessly"
 ```
 
 ## Task 6: Add matrix.org Space Compatibility Stage
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs`
+- Modify: `crates/koushi-core/src/bin/real-homeserver-qa.rs`
 - Modify: `scripts/desktop-real-homeserver-qa.mjs`
 
 - [ ] **Step 1: Add `--scenario` forwarding to real runner**
@@ -592,7 +592,7 @@ Expected: one login, cleanup on success, no secret leakage, final summary still 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/desktop-real-homeserver-qa.mjs crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs
+git add scripts/desktop-real-homeserver-qa.mjs crates/koushi-core/src/bin/real-homeserver-qa.rs
 git commit -m "qa: add real homeserver space compatibility stage"
 ```
 
@@ -926,10 +926,10 @@ Task 10 was accepted without launching the GUI.
 Before claiming the plan complete, run:
 
 ```bash
-cargo test -p matrix-desktop-core --lib
-cargo test -p matrix-desktop-sdk -p matrix-desktop-state -p matrix-desktop-search -p matrix-desktop-key
+cargo test -p koushi-core --lib
+cargo test -p koushi-sdk -p koushi-state -p koushi-search -p koushi-key
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
-cargo check --target wasm32-unknown-unknown -p matrix-desktop-state -p matrix-desktop-search
+cargo check --target wasm32-unknown-unknown -p koushi-state -p koushi-search
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run test
 npm --prefix apps/desktop run test:ui-headless

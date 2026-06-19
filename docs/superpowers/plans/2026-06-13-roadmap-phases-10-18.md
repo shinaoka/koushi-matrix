@@ -52,10 +52,10 @@ themselves.
 ## Standing gates (every phase exit, executed by the reviewer)
 
 ```bash
-cargo test -p matrix-desktop-core --lib
-cargo test -p matrix-desktop-sdk -p matrix-desktop-state -p matrix-desktop-search -p matrix-desktop-key
+cargo test -p koushi-core --lib
+cargo test -p koushi-sdk -p koushi-state -p koushi-search -p koushi-key
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
-cargo check --target wasm32-unknown-unknown -p matrix-desktop-state -p matrix-desktop-search
+cargo check --target wasm32-unknown-unknown -p koushi-state -p koushi-search
 npm --prefix apps/desktop run typecheck && npm --prefix apps/desktop run test
 npm --prefix apps/desktop run test:ui-headless
 npm --prefix apps/desktop run test:ipc-contract
@@ -163,7 +163,7 @@ render-only over existing commands/events, verified headless.
   focus management (focus returns on panel close).
 - [ ] Left nav: space rail (space-filtered lists per reducer semantics),
   room list with unread badges and DM section (compose_sidebar exists in
-  matrix-desktop-state — reuse), account switcher entry
+  koushi-state — reuse), account switcher entry
   (`QuerySavedSessions`/`SwitchAccount`).
 - [ ] Center: timeline (Phase 7/11 component), composer with drafts
   (reducer `ComposerDraftChanged`), edit/redact affordances on own

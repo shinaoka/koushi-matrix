@@ -16,7 +16,7 @@ Canon consulted:
 1. Add RED Rust tests for a Rust-owned locale/display profile resolver.
 2. Add RED catalog tests for pseudo-locale expansion, placeholder
    preservation, and RTL/CJK/combining samples.
-3. Implement the pure `matrix-desktop-state` resolver and catalog helper.
+3. Implement the pure `koushi-state` resolver and catalog helper.
 4. Document the canonical profile and rules in durable architecture docs.
 5. Run focused headless verification and leave a GitHub issue work record.
 
@@ -31,7 +31,7 @@ to logical properties, or add browser layout assertions. Those are Phase B.
 Run at minimum:
 
 ```bash
-cargo test -p matrix-desktop-state --test locale_display_profile
+cargo test -p koushi-state --test locale_display_profile
 npm --prefix apps/desktop run test -- --run src/i18n/messages.test.ts
 ```
 

@@ -4,9 +4,9 @@
 
 **Goal:** Complete Issue #6 Phase A by adding Rust-owned non-secret settings state, reducer transitions, typed command/effect contracts, and a non-secret persistence store before any Settings UI or composer-key GUI behavior is built.
 
-**Architecture:** Settings are product state and live in `matrix-desktop-state::AppState.settings`. React may render these values and dispatch typed updates later, but it must not own locale, theme, font/emoji choice, or composer send shortcut semantics. The production runtime persists settings through a new non-secret JSON settings store under the app data directory; it never uses the credential store and never stores Matrix credentials, tokens, recovery material, SDK store keys, or search index keys.
+**Architecture:** Settings are product state and live in `koushi-state::AppState.settings`. React may render these values and dispatch typed updates later, but it must not own locale, theme, font/emoji choice, or composer send shortcut semantics. The production runtime persists settings through a new non-secret JSON settings store under the app data directory; it never uses the credential store and never stores Matrix credentials, tokens, recovery material, SDK store keys, or search index keys.
 
-**Tech Stack:** Rust reducer/state tests first; serde DTO contract tests; `matrix-desktop-core` runtime command/effect tests; Tauri serialization tests; docs sync in `docs/architecture/state-machine.md`, `docs/architecture/overview.md`, and `docs/policies/engineering-rules.md` when implementation discoveries harden into durable rules.
+**Tech Stack:** Rust reducer/state tests first; serde DTO contract tests; `koushi-core` runtime command/effect tests; Tauri serialization tests; docs sync in `docs/architecture/state-machine.md`, `docs/architecture/overview.md`, and `docs/policies/engineering-rules.md` when implementation discoveries harden into durable rules.
 
 ---
 
@@ -39,7 +39,7 @@ Out of scope for this Phase A plan:
 
 ## Settings Data Contract
 
-Add these app-owned types to `crates/matrix-desktop-state/src/state.rs` or a new `settings.rs` module re-exported from `lib.rs`:
+Add these app-owned types to `crates/koushi-state/src/state.rs` or a new `settings.rs` module re-exported from `lib.rs`:
 
 ```rust
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -157,19 +157,19 @@ SettingsValues {
 ### Task 1: Reducer state machine and serialization tests
 
 **Files:**
-- Create: `crates/matrix-desktop-state/tests/settings_state.rs`
-- Modify: `crates/matrix-desktop-state/src/state.rs`
-- Modify: `crates/matrix-desktop-state/src/action.rs`
-- Modify: `crates/matrix-desktop-state/src/effect.rs`
-- Modify: `crates/matrix-desktop-state/src/reducer.rs`
-- Modify: `crates/matrix-desktop-state/src/lib.rs`
+- Create: `crates/koushi-state/tests/settings_state.rs`
+- Modify: `crates/koushi-state/src/state.rs`
+- Modify: `crates/koushi-state/src/action.rs`
+- Modify: `crates/koushi-state/src/effect.rs`
+- Modify: `crates/koushi-state/src/reducer.rs`
+- Modify: `crates/koushi-state/src/lib.rs`
 
 - [x] **Step 1: Write the failing tests**
 
-Create `crates/matrix-desktop-state/tests/settings_state.rs`:
+Create `crates/koushi-state/tests/settings_state.rs`:
 
 ```rust
-use matrix_desktop_state::{
+use koushi_state::{
     AppAction, AppEffect, AppState, AppearanceSettings, ComposerSendShortcut, EmojiPreference,
     FontPreference, KeyboardSettings, LocaleSettings, SettingsPatch, SettingsPersistenceState,
     SettingsValues, TextDirectionPreference, ThemePreference, UiEvent, reduce,
@@ -214,7 +214,7 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
         appearance: AppearanceSettings {
             theme: ThemePreference::Light,
         },
-        typography: matrix_desktop_state::TypographySettings {
+        typography: koushi_state::TypographySettings {
             font: FontPreference::Inter,
             emoji: EmojiPreference::TwemojiColr,
         },
@@ -325,7 +325,7 @@ fn settings_load_and_persist_failures_are_private_data_free() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state settings
+cargo test -p koushi-state settings
 ```
 
 Expected: compile failure because the settings types and actions do not exist.
@@ -362,7 +362,7 @@ Reducer rules:
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state settings
+cargo test -p koushi-state settings
 ```
 
 Expected: all settings tests pass.
@@ -422,7 +422,7 @@ In `docs/architecture/overview.md`, add settings ownership under layer/runtime r
 
 ```markdown
 - `SettingsState` is serializable Rust product state owned by
-  `matrix-desktop-state` and persisted by `matrix-desktop-core` through a
+  `koushi-state` and persisted by `koushi-core` through a
   non-secret settings store. React may apply settings to presentation, but it
   must not be the source of truth for locale, theme, font/emoji choice, or
   composer send shortcut semantics.
@@ -456,7 +456,7 @@ Closing an issue without syncing the learned rule is a process defect.
 Run:
 
 ```bash
-rg -n "SettingsLoaded|SettingsUpdateRequested|SettingsPersisted|SettingsPersistFailed" docs/architecture/state-machine.md crates/matrix-desktop-state/src
+rg -n "SettingsLoaded|SettingsUpdateRequested|SettingsPersisted|SettingsPersistFailed" docs/architecture/state-machine.md crates/koushi-state/src
 ```
 
 Expected: matching transition names appear in both docs and reducer/action source.
@@ -532,15 +532,15 @@ Expected: DTO and mock snapshot tests pass.
 ### Task 4: Core command/effect contract and non-secret settings store
 
 **Files:**
-- Create: `crates/matrix-desktop-core/src/settings.rs`
-- Modify: `crates/matrix-desktop-core/src/lib.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
-- Modify: `crates/matrix-desktop-core/src/tests.rs`
+- Create: `crates/koushi-core/src/settings.rs`
+- Modify: `crates/koushi-core/src/lib.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
+- Modify: `crates/koushi-core/src/tests.rs`
 
 - [x] **Step 1: Write failing core tests**
 
-Add tests to `crates/matrix-desktop-core/src/tests.rs`:
+Add tests to `crates/koushi-core/src/tests.rs`:
 
 ```rust
 #[tokio::test]
@@ -553,11 +553,11 @@ async fn app_update_settings_projects_state_and_persists() {
     connection
         .command(CoreCommand::App(AppCommand::UpdateSettings {
             request_id,
-            patch: matrix_desktop_state::SettingsPatch {
-                appearance: Some(matrix_desktop_state::AppearanceSettings {
-                    theme: matrix_desktop_state::ThemePreference::Dark,
+            patch: koushi_state::SettingsPatch {
+                appearance: Some(koushi_state::AppearanceSettings {
+                    theme: koushi_state::ThemePreference::Dark,
                 }),
-                ..matrix_desktop_state::SettingsPatch::default()
+                ..koushi_state::SettingsPatch::default()
             },
         }))
         .await
@@ -568,7 +568,7 @@ async fn app_update_settings_projects_state_and_persists() {
             match connection.recv_event().await.expect("event") {
                 CoreEvent::StateChanged(snapshot)
                     if snapshot.settings.values.appearance.theme
-                        == matrix_desktop_state::ThemePreference::Dark =>
+                        == koushi_state::ThemePreference::Dark =>
                 {
                     return snapshot;
                 }
@@ -579,7 +579,7 @@ async fn app_update_settings_projects_state_and_persists() {
     .await
     .expect("settings state should change");
 
-    assert_eq!(snapshot.settings.persistence, matrix_desktop_state::SettingsPersistenceState::Idle);
+    assert_eq!(snapshot.settings.persistence, koushi_state::SettingsPersistenceState::Idle);
 }
 
 #[test]
@@ -600,12 +600,12 @@ Expected RED: `AppCommand::UpdateSettings`, `SettingsStore`, and settings types 
 
 - [x] **Step 2: Implement `SettingsStore`**
 
-Create `crates/matrix-desktop-core/src/settings.rs`:
+Create `crates/koushi-core/src/settings.rs`:
 
 ```rust
 use std::path::{Path, PathBuf};
 
-use matrix_desktop_state::SettingsValues;
+use koushi_state::SettingsValues;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SettingsStoreErrorKind {
@@ -670,7 +670,7 @@ Add to `CoreCommand::request_id` and `AppCommand`:
 ```rust
 UpdateSettings {
     request_id: RequestId,
-    patch: matrix_desktop_state::SettingsPatch,
+    patch: koushi_state::SettingsPatch,
 },
 ```
 
@@ -687,8 +687,8 @@ In `AppCommand::UpdateSettings`, call `reduce(SettingsUpdateRequested { request_
 Run:
 
 ```bash
-cargo test -p matrix-desktop-core settings
-cargo test -p matrix-desktop-core app_update_settings_projects_state_and_persists
+cargo test -p koushi-core settings
+cargo test -p koushi-core app_update_settings_projects_state_and_persists
 ```
 
 Expected: pass.
@@ -740,8 +740,8 @@ If the implementation reveals a durable rule, update `REPOSITORY_RULES.md` or `d
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state settings
-cargo test -p matrix-desktop-core settings
+cargo test -p koushi-state settings
+cargo test -p koushi-core settings
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml dto
 npm --prefix apps/desktop run test -- src/test/tauriIpcMock.test.ts src/domain/shortcuts.test.ts
 git diff --check
@@ -750,9 +750,9 @@ git diff --check
 ### Task 7: Shared composer shortcut resolver foundation
 
 **Files:**
-- Create: `crates/matrix-desktop-state/src/composer_shortcuts.rs`
-- Create: `crates/matrix-desktop-state/tests/composer_shortcut_resolver.rs`
-- Modify: `crates/matrix-desktop-state/src/lib.rs`
+- Create: `crates/koushi-state/src/composer_shortcuts.rs`
+- Create: `crates/koushi-state/tests/composer_shortcut_resolver.rs`
+- Modify: `crates/koushi-state/src/lib.rs`
 - Modify: `docs/architecture/overview.md`
 - Modify: `docs/architecture/state-machine.md`
 - Modify: `AGENTS.md`
@@ -766,7 +766,7 @@ disabled sends, IME composition, and Escape cancel.
 - [x] **Step 2: Implement pure Rust resolver**
 
 Added `resolve_composer_key_action` and typed, platform-generic key/context
-facts in `matrix-desktop-state`. GUI code remains a future Phase B consumer
+facts in `koushi-state`. GUI code remains a future Phase B consumer
 that normalizes DOM/native key input into these facts.
 
 - [x] **Step 3: Sync docs/AGENTS**
@@ -797,9 +797,9 @@ Done:
   React is not source of truth.
 
 Verification:
-- cargo test -p matrix-desktop-state settings
-- cargo test -p matrix-desktop-state --test composer_shortcut_resolver
-- cargo test -p matrix-desktop-core settings
+- cargo test -p koushi-state settings
+- cargo test -p koushi-state --test composer_shortcut_resolver
+- cargo test -p koushi-core settings
 - cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml dto
 - npm --prefix apps/desktop run test -- src/test/tauriIpcMock.test.ts src/domain/shortcuts.test.ts
 - git diff --check

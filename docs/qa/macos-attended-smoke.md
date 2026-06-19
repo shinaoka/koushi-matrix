@@ -14,8 +14,8 @@ behavior on macOS:
 Credential-store verification is split by tier:
 
 - Tier 1 is generic and headless on any OS:
-  `cargo test -p matrix-desktop-key credential_backend`,
-  `cargo test -p matrix-desktop-state --test local_encryption_state`, and the
+  `cargo test -p koushi-key credential_backend`,
+  `cargo test -p koushi-state --test local_encryption_state`, and the
   core StoreActor health tests. This tier uses the in-memory/fake credential
   backend and does not touch the OS keychain.
 - Tier 2 is macOS-only, opt-in, and currently manual-session-only. The previous
@@ -27,7 +27,7 @@ Credential-store verification is split by tier:
   performs one synthetic set/get/delete through the normal `keyring` backend,
   and verifies locked-keychain failure maps to a coarse fail-closed state. It is
   not an Xvfb-style headless lane; macOS has no equivalent. Manual local runs
-  without an initialized vendor submodule should copy `crates/matrix-desktop-key`
+  without an initialized vendor submodule should copy `crates/koushi-key`
   to a temporary directory and run `cargo test --manifest-path` there before
   setting `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1`. On hosted runners,
   `security set-key-partition-list` is best-effort because generic-password-only

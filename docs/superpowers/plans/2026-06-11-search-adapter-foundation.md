@@ -4,9 +4,9 @@
 
 **Goal:** Build a pure Rust search adapter foundation that verifies Matrix search candidates before the UI sees snippets or highlights.
 
-**Architecture:** Add a `matrix-desktop-search` crate that depends on `matrix-desktop-state` but not on Tauri or Matrix SDK. The crate owns local resolved-search document state, pending edit handling, redaction cleanup, exact span verification, UTF-16 highlight range generation, and conversion into `SearchResult` DTOs. Future backend code will map Matrix SDK event-cache events and `matrix-sdk-search` event-id candidates into this crate.
+**Architecture:** Add a `koushi-search` crate that depends on `koushi-state` but not on Tauri or Matrix SDK. The crate owns local resolved-search document state, pending edit handling, redaction cleanup, exact span verification, UTF-16 highlight range generation, and conversion into `SearchResult` DTOs. Future backend code will map Matrix SDK event-cache events and `matrix-sdk-search` event-id candidates into this crate.
 
-**Tech Stack:** Rust 2024, serde, `matrix-desktop-state`, table-driven tests, TDD.
+**Tech Stack:** Rust 2024, serde, `koushi-state`, table-driven tests, TDD.
 
 ---
 
@@ -26,7 +26,7 @@ This plan does not wire Tauri, React, live Matrix SDK clients, or the encrypted 
 matrix-desktop/
   Cargo.toml
   crates/
-    matrix-desktop-search/
+    koushi-search/
       Cargo.toml
       src/
         document.rs
@@ -40,21 +40,21 @@ matrix-desktop/
       2026-06-11-search-adapter-foundation.md
 ```
 
-`matrix-desktop-search` is intentionally SDK-free. It must not open files, call keyrings, start network work, or own a long-lived SDK client.
+`koushi-search` is intentionally SDK-free. It must not open files, call keyrings, start network work, or own a long-lived SDK client.
 
 ## Task 1: Scaffold the Search Adapter Crate
 
 **Files:**
 - Modify: `Cargo.toml`
-- Create: `crates/matrix-desktop-search/Cargo.toml`
-- Create: `crates/matrix-desktop-search/src/lib.rs`
+- Create: `crates/koushi-search/Cargo.toml`
+- Create: `crates/koushi-search/src/lib.rs`
 
 - [ ] **Step 1: Add a failing crate import test**
 
-Create `crates/matrix-desktop-search/tests/search_adapter.rs`:
+Create `crates/koushi-search/tests/search_adapter.rs`:
 
 ```rust
-use matrix_desktop_search::SearchDocumentStore;
+use koushi_search::SearchDocumentStore;
 
 #[test]
 fn search_document_store_can_be_created() {
@@ -69,7 +69,7 @@ fn search_document_store_can_be_created() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-search search_document_store_can_be_created
+cargo test -p koushi-search search_document_store_can_be_created
 ```
 
 Expected: FAIL because the package or `SearchDocumentStore` does not exist.
@@ -81,30 +81,30 @@ Modify root `Cargo.toml`:
 ```toml
 [workspace]
 members = [
-    "crates/matrix-desktop-state",
-    "crates/matrix-desktop-search",
+    "crates/koushi-state",
+    "crates/koushi-search",
     "spikes/sidebar-composition",
     "spikes/key-management",
 ]
 resolver = "2"
 ```
 
-Create `crates/matrix-desktop-search/Cargo.toml`:
+Create `crates/koushi-search/Cargo.toml`:
 
 ```toml
 [package]
-name = "matrix-desktop-search"
+name = "koushi-search"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
 [dependencies]
-matrix-desktop-state = { path = "../matrix-desktop-state" }
+koushi-state = { path = "../koushi-state" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 ```
 
-Create `crates/matrix-desktop-search/src/lib.rs`:
+Create `crates/koushi-search/src/lib.rs`:
 
 ```rust
 mod document;
@@ -118,7 +118,7 @@ pub use verify::{SearchVerificationError, verify_candidate};
 
 - [ ] **Step 4: Add the minimal store implementation**
 
-Create `crates/matrix-desktop-search/src/document.rs`:
+Create `crates/koushi-search/src/document.rs`:
 
 ```rust
 use std::collections::BTreeMap;
@@ -139,14 +139,14 @@ pub struct SearchCandidate;
 pub struct SearchEdit;
 ```
 
-Create `crates/matrix-desktop-search/src/sensitive.rs`:
+Create `crates/koushi-search/src/sensitive.rs`:
 
 ```rust
 #[derive(Clone, Eq, PartialEq)]
 pub struct SensitiveString(String);
 ```
 
-Create `crates/matrix-desktop-search/src/verify.rs`:
+Create `crates/koushi-search/src/verify.rs`:
 
 ```rust
 use thiserror::Error;
@@ -167,7 +167,7 @@ pub fn verify_candidate() -> Result<(), SearchVerificationError> {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-search search_document_store_can_be_created
+cargo test -p koushi-search search_document_store_can_be_created
 ```
 
 Expected: PASS.
@@ -177,7 +177,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add Cargo.toml crates/matrix-desktop-search docs/superpowers/plans/2026-06-11-search-adapter-foundation.md
+git add Cargo.toml crates/koushi-search docs/superpowers/plans/2026-06-11-search-adapter-foundation.md
 git commit -m "Add search adapter crate scaffold"
 ```
 
@@ -186,16 +186,16 @@ Expected: commit succeeds.
 ## Task 2: Add Redacted Sensitive Text Types
 
 **Files:**
-- Modify: `crates/matrix-desktop-search/src/sensitive.rs`
-- Modify: `crates/matrix-desktop-search/src/document.rs`
-- Test: `crates/matrix-desktop-search/tests/search_adapter.rs`
+- Modify: `crates/koushi-search/src/sensitive.rs`
+- Modify: `crates/koushi-search/src/document.rs`
+- Test: `crates/koushi-search/tests/search_adapter.rs`
 
 - [ ] **Step 1: Write the failing redaction test**
 
-Append to `crates/matrix-desktop-search/tests/search_adapter.rs`:
+Append to `crates/koushi-search/tests/search_adapter.rs`:
 
 ```rust
-use matrix_desktop_search::{SearchableEvent, SensitiveString};
+use koushi_search::{SearchableEvent, SensitiveString};
 
 #[test]
 fn debug_output_redacts_decrypted_search_text() {
@@ -221,14 +221,14 @@ fn debug_output_redacts_decrypted_search_text() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-search debug_output_redacts_decrypted_search_text
+cargo test -p koushi-search debug_output_redacts_decrypted_search_text
 ```
 
 Expected: FAIL because `SearchableEvent` does not have those fields and `SensitiveString::new` does not exist.
 
 - [ ] **Step 3: Implement redacted sensitive text and event DTO**
 
-Replace `crates/matrix-desktop-search/src/sensitive.rs`:
+Replace `crates/koushi-search/src/sensitive.rs`:
 
 ```rust
 use std::fmt;
@@ -255,7 +255,7 @@ impl fmt::Debug for SensitiveString {
 }
 ```
 
-Replace the placeholder event structs in `crates/matrix-desktop-search/src/document.rs` with:
+Replace the placeholder event structs in `crates/koushi-search/src/document.rs` with:
 
 ```rust
 use std::collections::BTreeMap;
@@ -294,7 +294,7 @@ pub struct SearchEdit;
 Run:
 
 ```bash
-cargo test -p matrix-desktop-search debug_output_redacts_decrypted_search_text
+cargo test -p koushi-search debug_output_redacts_decrypted_search_text
 ```
 
 Expected: PASS.
@@ -304,7 +304,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add crates/matrix-desktop-search
+git add crates/koushi-search
 git commit -m "Add redacted search text types"
 ```
 
@@ -313,17 +313,17 @@ Expected: commit succeeds.
 ## Task 3: Verify Exact Message Body And Filename Matches
 
 **Files:**
-- Modify: `crates/matrix-desktop-search/src/document.rs`
-- Modify: `crates/matrix-desktop-search/src/verify.rs`
-- Test: `crates/matrix-desktop-search/tests/search_adapter.rs`
+- Modify: `crates/koushi-search/src/document.rs`
+- Modify: `crates/koushi-search/src/verify.rs`
+- Test: `crates/koushi-search/tests/search_adapter.rs`
 
 - [ ] **Step 1: Write failing exact verification tests**
 
-Append to `crates/matrix-desktop-search/tests/search_adapter.rs`:
+Append to `crates/koushi-search/tests/search_adapter.rs`:
 
 ```rust
-use matrix_desktop_state::{SearchMatchField, SearchMatchKind, TextRange};
-use matrix_desktop_search::SearchCandidate;
+use koushi_state::{SearchMatchField, SearchMatchKind, TextRange};
+use koushi_search::SearchCandidate;
 
 #[test]
 fn exact_message_body_match_returns_utf16_highlight() {
@@ -402,14 +402,14 @@ fn ngram_false_positive_without_exact_span_is_dropped() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-search --test search_adapter
+cargo test -p koushi-search --test search_adapter
 ```
 
 Expected: FAIL because `upsert_message`, `verify_candidate`, and `SearchCandidate` fields are missing.
 
 - [ ] **Step 3: Implement exact candidate verification**
 
-Update `crates/matrix-desktop-search/src/document.rs` to define `SearchCandidate`, `upsert_message`, and `verify_candidate`. Update `crates/matrix-desktop-search/src/verify.rs` to find the first exact byte span, convert it to UTF-16 offsets, and produce a `SearchResult`. Body matches take precedence over filename matches.
+Update `crates/koushi-search/src/document.rs` to define `SearchCandidate`, `upsert_message`, and `verify_candidate`. Update `crates/koushi-search/src/verify.rs` to find the first exact byte span, convert it to UTF-16 offsets, and produce a `SearchResult`. Body matches take precedence over filename matches.
 
 Required behavior:
 - Return `None` if the event is missing.
@@ -423,7 +423,7 @@ Required behavior:
 Run:
 
 ```bash
-cargo test -p matrix-desktop-search --test search_adapter
+cargo test -p koushi-search --test search_adapter
 ```
 
 Expected: PASS.
@@ -433,7 +433,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add crates/matrix-desktop-search
+git add crates/koushi-search
 git commit -m "Add exact search candidate verification"
 ```
 
@@ -442,15 +442,15 @@ Expected: commit succeeds.
 ## Task 4: Handle Edit-Before-Target And Redaction
 
 **Files:**
-- Modify: `crates/matrix-desktop-search/src/document.rs`
-- Test: `crates/matrix-desktop-search/tests/search_adapter.rs`
+- Modify: `crates/koushi-search/src/document.rs`
+- Test: `crates/koushi-search/tests/search_adapter.rs`
 
 - [ ] **Step 1: Write failing edit and redaction tests**
 
-Append to `crates/matrix-desktop-search/tests/search_adapter.rs`:
+Append to `crates/koushi-search/tests/search_adapter.rs`:
 
 ```rust
-use matrix_desktop_search::SearchEdit;
+use koushi_search::SearchEdit;
 
 #[test]
 fn edit_before_target_is_pending_until_original_arrives() {
@@ -516,7 +516,7 @@ fn redacted_event_is_not_returned() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-search --test search_adapter
+cargo test -p koushi-search --test search_adapter
 ```
 
 Expected: FAIL because edit and redaction APIs are missing.
@@ -538,7 +538,7 @@ When multiple edits target the same event, choose the greatest `(timestamp_ms, e
 Run:
 
 ```bash
-cargo test -p matrix-desktop-search --test search_adapter
+cargo test -p koushi-search --test search_adapter
 ```
 
 Expected: PASS.
@@ -548,7 +548,7 @@ Expected: PASS.
 Run:
 
 ```bash
-cargo test -p matrix-desktop-search
+cargo test -p koushi-search
 ```
 
 Expected: PASS.
@@ -558,7 +558,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add crates/matrix-desktop-search
+git add crates/koushi-search
 git commit -m "Handle pending edits and redactions in search adapter"
 ```
 
@@ -580,7 +580,7 @@ The search adapter verifies local search candidates before the UI receives any
 snippet or highlight.
 
 `matrix-sdk-search` owns encrypted Tantivy indexes and returns candidate event
-IDs. `matrix-desktop-search` owns deterministic verification over resolved
+IDs. `koushi-search` owns deterministic verification over resolved
 visible event content. The Tauri backend will map Matrix SDK event-cache updates
 into the adapter and map verified adapter results into reducer actions.
 
@@ -603,8 +603,8 @@ Security rules:
 Run:
 
 ```bash
-cargo test -p matrix-desktop-search
-cargo test -p matrix-desktop-state
+cargo test -p koushi-search
+cargo test -p koushi-state
 ```
 
 Expected: both PASS.

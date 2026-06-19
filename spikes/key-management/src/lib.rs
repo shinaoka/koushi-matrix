@@ -325,7 +325,7 @@ mod tests {
     #[test]
     #[ignore = "uses the live operating-system credential store"]
     fn credential_store_round_trip() {
-        let store = CredentialStore::new("matrix-desktop-key-management-spike-test");
+        let store = CredentialStore::new("koushi-key-management-spike-test");
         let id = SessionKeyId {
             homeserver: "https://matrix.example".into(),
             user_id: "@alice:example.com".into(),

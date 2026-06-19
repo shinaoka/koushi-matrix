@@ -2,19 +2,19 @@
 /**
  * check-domain-crate-platform-deps.mjs
  *
- * Verifies that the pure domain crate matrix-desktop-state does NOT directly
+ * Verifies that the pure domain crate koushi-state does NOT directly
  * depend on platform/OS crates (keyring, windows-*, winapi, libc, tokio, etc.)
  * in ANY dependency table.
  *
  * Rule (from REPOSITORY_RULES.md and #87 Phase 0):
- *   matrix-desktop-state is the pure domain/serialization layer. It must
+ *   koushi-state is the pure domain/serialization layer. It must
  *   remain free of platform OS crates so it can target WASM and future mobile.
  *
  * Grandfathered set (as of 2026-06-19, #87 Phase 0):
- *   matrix-desktop-core depends on keyring (apple-native, windows-native) —
+ *   koushi-core depends on keyring (apple-native, windows-native) —
  *   this is a known Phase 5 target for removal via SecretStore inversion.
- *   matrix-desktop-key also depends on keyring for the same reason.
- *   These are NOT checked here; only matrix-desktop-state's deps are.
+ *   koushi-key also depends on keyring for the same reason.
+ *   These are NOT checked here; only koushi-state's deps are.
  *
  * Coverage: ALL dependency tables are scanned to prevent a platform crate from
  * sneaking in through a target-specific or build dep:
@@ -44,15 +44,18 @@ const repoRoot = join(__dirname, "..");
 
 /**
  * Platform/OS crate names that must not appear as direct dependencies of the
- * pure domain crates. matrix-desktop-state forbids the full list (incl. tokio);
- * matrix-desktop-core forbids the same list EXCEPT tokio, which it confines to
- * executor.rs per Platform Portability rule 2. keyring left core in #87 Phase 5
- * (credential errors are abstracted into CredentialBackendErrorKind in the key
- * adapter crate), so core is now enforced keyring-free too.
+ * pure domain crates. koushi-state forbids the full list (incl. tokio);
+ * koushi-core forbids the same list EXCEPT tokio, which it confines to
+ * executor.rs per Platform Portability rule 2. #87 Phase 5 removed keyring from
+ * core AND key: credential errors are abstracted into CredentialBackendErrorKind
+ * (koushi-key is a pure port) and the keyring adapter now lives only in the
+ * apps/desktop/src-tauri platform binary, so all three domain crates are
+ * enforced keyring-free here.
  *
  * Rationale per crate:
- *   keyring        — OS credential store (apple-native, windows-native); must
- *                    stay behind SecretStore port (tracked: #87 Phase 5).
+ *   keyring        — OS credential store (apple-native, windows-native); lives
+ *                    only in the src-tauri platform binary, injected via the
+ *                    CredentialBackend port (#87 Phase 5).
  *   tokio          — async runtime; confined to executor.rs in core per
  *                    Platform Portability rule 2. State must be sync/pure.
  *   libc           — C FFI for OS calls; not allowed in pure domain layer.
@@ -83,15 +86,15 @@ const BANNED_PLATFORM_DEPS = [
 
 // Pure domain crates and the platform deps each forbids. State is sync/pure and
 // forbids everything; core may use tokio (executor.rs only) but nothing else.
-// matrix-desktop-key is now a pure port crate (keyring-free) and forbids the
+// koushi-key is now a pure port crate (keyring-free) and forbids the
 // full list including keyring.
 const DOMAIN_CRATES = [
-  { name: "matrix-desktop-state", banned: BANNED_PLATFORM_DEPS },
+  { name: "koushi-state", banned: BANNED_PLATFORM_DEPS },
   {
-    name: "matrix-desktop-core",
+    name: "koushi-core",
     banned: BANNED_PLATFORM_DEPS.filter((dep) => dep !== "tokio"),
   },
-  { name: "matrix-desktop-key", banned: BANNED_PLATFORM_DEPS },
+  { name: "koushi-key", banned: BANNED_PLATFORM_DEPS },
 ];
 
 /**
@@ -176,7 +179,7 @@ for (const crate of DOMAIN_CRATES) {
     "Pure domain crates must target WASM and future mobile; platform access goes behind a port."
   );
   console.error(
-    "See REPOSITORY_RULES.md and #87 Phase 5 (SecretStore / keyring confined to the key adapter).\n"
+    "See REPOSITORY_RULES.md and #87 Phase 5 (keyring lives only in the src-tauri platform binary, behind the CredentialBackend port).\n"
   );
   console.error(`Banned deps found in ${crate.name} (all dependency tables scanned):`);
   for (const v of violations) {

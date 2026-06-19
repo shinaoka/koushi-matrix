@@ -4,7 +4,7 @@
 
 **Goal:** Complete Issue #5 Phase A by exposing a Rust-owned font/emoji display profile, documenting the asset/fallback policy, and keeping frontend snapshots React-independent.
 
-**Architecture:** `matrix-desktop-state` owns typography settings and resolves a pure `TypographyDisplayProfile` from those settings plus a platform profile. Tauri serializes that profile into the frontend snapshot; React will later consume it as data for root attributes and CSS tokens, without choosing font or emoji semantics locally.
+**Architecture:** `koushi-state` owns typography settings and resolves a pure `TypographyDisplayProfile` from those settings plus a platform profile. Tauri serializes that profile into the frontend snapshot; React will later consume it as data for root attributes and CSS tokens, without choosing font or emoji semantics locally.
 
 **Tech Stack:** Rust reducer/state crate tests first; Tauri DTO serialization tests; TypeScript domain/fake snapshots kept in sync; docs updates in architecture/policy/AGENTS.
 
@@ -14,7 +14,7 @@
 
 In scope for Phase A:
 
-- Add a pure `resolve_typography_display_profile()` helper in `matrix-desktop-state`.
+- Add a pure `resolve_typography_display_profile()` helper in `koushi-state`.
 - Expose `typography_profile` in the Tauri frontend snapshot next to `locale_profile`.
 - Mirror the profile in TypeScript domain types, browser fake snapshots, app harness snapshots, and the Tauri IPC mock.
 - Document asset policy and cross-platform fallback behavior.
@@ -62,16 +62,16 @@ The profile must never include Matrix identifiers, homeserver URLs, device IDs, 
 ### Task 1: Rust Typography Profile
 
 **Files:**
-- Create: `crates/matrix-desktop-state/src/typography_profile.rs`
-- Create: `crates/matrix-desktop-state/tests/typography_display_profile.rs`
-- Modify: `crates/matrix-desktop-state/src/lib.rs`
+- Create: `crates/koushi-state/src/typography_profile.rs`
+- Create: `crates/koushi-state/tests/typography_display_profile.rs`
+- Modify: `crates/koushi-state/src/lib.rs`
 
 - [x] **Step 1: Write the failing profile tests**
 
-Create `crates/matrix-desktop-state/tests/typography_display_profile.rs`:
+Create `crates/koushi-state/tests/typography_display_profile.rs`:
 
 ```rust
-use matrix_desktop_state::{
+use koushi_state::{
     DisplayPlatform, EmojiPreference, FontPreference, TypographyAssetStatus,
     TypographySettings, resolve_typography_display_profile,
 };
@@ -139,14 +139,14 @@ fn typography_profile_serializes_as_the_frontend_contract() {
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test typography_display_profile
+cargo test -p koushi-state --test typography_display_profile
 ```
 
 Expected: FAIL because `TypographyAssetStatus` and `resolve_typography_display_profile` do not exist.
 
 - [x] **Step 3: Implement the minimal profile resolver**
 
-Create `crates/matrix-desktop-state/src/typography_profile.rs` with the data contract above and:
+Create `crates/koushi-state/src/typography_profile.rs` with the data contract above and:
 
 ```rust
 pub fn resolve_typography_display_profile(
@@ -169,14 +169,14 @@ pub fn resolve_typography_display_profile(
 }
 ```
 
-Export the module and public types from `crates/matrix-desktop-state/src/lib.rs`.
+Export the module and public types from `crates/koushi-state/src/lib.rs`.
 
 - [x] **Step 4: Run the focused test to verify GREEN**
 
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test typography_display_profile
+cargo test -p koushi-state --test typography_display_profile
 ```
 
 Expected: PASS.
@@ -241,7 +241,7 @@ Record that typography profile resolution is Rust-owned, carries only non-secret
 Run:
 
 ```bash
-cargo test -p matrix-desktop-state --test typography_display_profile
+cargo test -p koushi-state --test typography_display_profile
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml frontend_snapshot_typography
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run qa:secret-scan

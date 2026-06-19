@@ -27,14 +27,14 @@ This design does not define Element-style visual layout, shortcut mapping, setti
 
 ## Architecture
 
-The final runtime is an in-process actor system exposed by `matrix-desktop-core`.
+The final runtime is an in-process actor system exposed by `koushi-core`.
 
 ```mermaid
 flowchart LR
   UI["React UI"]
   Tauri["Tauri command adapter"]
   CLI["Headless QA / CLI"]
-  Core["matrix-desktop-core Runtime"]
+  Core["koushi-core Runtime"]
   AppActor["AppActor"]
   AccountActor["AccountActor per account/device"]
   SyncActor["SyncActor"]
@@ -66,17 +66,17 @@ flowchart LR
   Events --> CLI
 ```
 
-`matrix-desktop-core` owns runtime state and Matrix side effects. React sends commands and renders snapshots. Tauri adapts frontend calls to core commands and forwards core events. Headless QA starts the same runtime and asserts on the same events and snapshots.
+`koushi-core` owns runtime state and Matrix side effects. React sends commands and renders snapshots. Tauri adapts frontend calls to core commands and forwards core events. Headless QA starts the same runtime and asserts on the same events and snapshots.
 
 ## Crate Boundaries
 
-`matrix-desktop-state` remains the pure state crate. It owns `AppState`, `AppAction`, reducer logic, and serializable UI snapshot DTOs. It does not know about Matrix SDK handles, Tauri, or async tasks.
+`koushi-state` remains the pure state crate. It owns `AppState`, `AppAction`, reducer logic, and serializable UI snapshot DTOs. It does not know about Matrix SDK handles, Tauri, or async tasks.
 
-`matrix-desktop-sdk` is the Matrix SDK adapter. It owns low-level login, restore, recovery, sync, room operation, timeline, and search primitives. It should not own app state or QA orchestration. The adapter rename from `matrix-desktop-auth` was completed in the Phase 9 cleanup follow-up.
+`koushi-sdk` is the Matrix SDK adapter. It owns low-level login, restore, recovery, sync, room operation, timeline, and search primitives. It should not own app state or QA orchestration. The adapter rename from `matrix-desktop-auth` was completed in the Phase 9 cleanup follow-up.
 
-`matrix-desktop-core` becomes the only production runtime owner. It owns actor lifecycle, command routing, event emission, SDK session handles, background tasks, AppState projection, and headless QA binaries.
+`koushi-core` becomes the only production runtime owner. It owns actor lifecycle, command routing, event emission, SDK session handles, background tasks, AppState projection, and headless QA binaries.
 
-`matrix-desktop-backend` becomes fixture/demo infrastructure only. It can keep browser fake data and UI preview behavior, but production Tauri paths should not use it to execute Matrix SDK behavior.
+`koushi-backend` becomes fixture/demo infrastructure only. It can keep browser fake data and UI preview behavior, but production Tauri paths should not use it to execute Matrix SDK behavior.
 
 `apps/desktop/src-tauri` becomes a transport adapter. It should not call Matrix SDK wrappers directly after the migration. It should hold or access a `CoreRuntime`, send commands, and expose snapshots/events to the frontend.
 
@@ -645,9 +645,9 @@ correlation IDs.
 Required local gates:
 
 ```bash
-cargo test -p matrix-desktop-state
-cargo test -p matrix-desktop-sdk
-cargo test -p matrix-desktop-core
+cargo test -p koushi-state
+cargo test -p koushi-sdk
+cargo test -p koushi-core
 npm --prefix apps/desktop test
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run qa:headless-local -- --server=both
@@ -665,7 +665,7 @@ A secret scan gate must run before commits and release preflight. It should excl
 
 ## Migration Milestones
 
-Milestone A: Core boundary. Create `matrix-desktop-core`, define `CoreCommand`, `CoreEvent`, `CoreRuntime`, redacted errors, and initial state ownership. Add redaction and unauthenticated command tests.
+Milestone A: Core boundary. Create `koushi-core`, define `CoreCommand`, `CoreEvent`, `CoreRuntime`, redacted errors, and initial state ownership. Add redaction and unauthenticated command tests.
 
 Milestone B: Headless QA port. Move `headless-local-qa` from auth to core. Replace direct SDK wrapper calls with `CoreCommand` and event waits. Re-run Conduit/Tuwunel QA.
 
@@ -711,7 +711,7 @@ Implementation should keep `AGENTS.md` current with:
 ## Design Decisions
 
 - The final runtime is in-process, not a daemon.
-- `matrix-desktop-core` owns production Matrix runtime behavior.
+- `koushi-core` owns production Matrix runtime behavior.
 - GUI, Tauri, CLI, and QA all use the same command/event boundary.
 - Timeline commands are addressed by `TimelineKey`; room, thread, and focused
   timelines share the same lifecycle and pagination model.

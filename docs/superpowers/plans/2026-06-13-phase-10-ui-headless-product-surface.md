@@ -17,7 +17,7 @@
 
 ## Preconditions
 
-- Phase 9 cleanup is complete: the SDK adapter is `matrix-desktop-sdk`, runtime IPC drift is checked by `coreEvents.generated.json`, room lifecycle cleanup commands exist, and real-homeserver QA reports `leave_room=ok forget_room=ok`.
+- Phase 9 cleanup is complete: the SDK adapter is `koushi-sdk`, runtime IPC drift is checked by `coreEvents.generated.json`, room lifecycle cleanup commands exist, and real-homeserver QA reports `leave_room=ok forget_room=ok`.
 - `docs/architecture/overview.md` and `docs/policies/engineering-rules.md` are the canon. If implementation discovers a contradiction, stop and amend those documents before code continues.
 - Native GUI work is not the default path. Unattended agents do not launch the real Tauri app on macOS.
 
@@ -109,8 +109,8 @@ Purpose: prove that the frontend contract and the Tauri adapter stay aligned wit
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
 - Modify: `apps/desktop/src/domain/coreEvents.ts`
 - Modify: `apps/desktop/src/domain/coreEvents.generated.json`
-- Modify: `crates/matrix-desktop-core/src/**/*.rs`
-- Modify: `crates/matrix-desktop-state/src/**/*.rs`
+- Modify: `crates/koushi-core/src/**/*.rs`
+- Modify: `crates/koushi-state/src/**/*.rs`
 
 - [ ] Add or update Rust tests for every Tauri command that forwards to `CoreRuntime`; assert the command routes to the intended `CoreCommand` and returns redacted/coarse failures.
 - [ ] Add or update frontend tests that consume the same serialized event shapes as `coreEvents.generated.json`.
@@ -171,8 +171,8 @@ Purpose: finish the work that blocks signed desktop distribution and E2EE trust 
 
 - Modify: `apps/desktop/src-tauri/tauri.conf.json`
 - Modify: `apps/desktop/src-tauri/src/*.rs`
-- Modify: `crates/matrix-desktop-core/src/**/*.rs`
-- Modify: `crates/matrix-desktop-sdk/src/**/*.rs`
+- Modify: `crates/koushi-core/src/**/*.rs`
+- Modify: `crates/koushi-sdk/src/**/*.rs`
 - Modify: `docs/upstream/matrix-rust-sdk-feedback.md`
 - Modify: `docs/qa/*.md`
 
@@ -212,7 +212,7 @@ improvising. Phase exits require the reviewer to re-execute the gates.
 ## Phase 10+ Gate Summary
 
 ```bash
-cargo test -p matrix-desktop-core --lib
+cargo test -p koushi-core --lib
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run test

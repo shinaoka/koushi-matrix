@@ -14,9 +14,9 @@ timeline events carry media metadata, media upload uses core commands/effects
 with progress, and headless local QA proves send/receive/download without
 putting media logic in React.
 
-**Architecture:** `matrix-desktop-core` owns media commands, SDK effects,
+**Architecture:** `koushi-core` owns media commands, SDK effects,
 upload progress, download completion, and timeline media projection.
-`matrix-desktop-state` remains serializable product state. React may later
+`koushi-state` remains serializable product state. React may later
 render file pickers, progress, bubbles, and download controls, but it must not
 infer Matrix media semantics.
 
@@ -105,7 +105,7 @@ infer Matrix media semantics.
 Focused checks before committing:
 
 ```bash
-cargo test -p matrix-desktop-core --lib
+cargo test -p koushi-core --lib
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml core_event_wire_format_matches_checked_in_contract_artifact
 npm --prefix apps/desktop test -- src/App.test.tsx src/domain/timelineStore.test.ts
 npm --prefix apps/desktop run test:ui-headless -- e2e/basic-operations.spec.ts --grep "attach control"

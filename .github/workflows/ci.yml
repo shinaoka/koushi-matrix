@@ -44,10 +44,10 @@ jobs:
       # directly; no file may path-escape into src-tauri.
       - name: ESLint import boundaries
         run: npm run lint
-      # Tauri adapter boundary: src-tauri must not call matrix_desktop_sdk directly.
+      # Tauri adapter boundary: src-tauri must not call koushi_sdk directly.
       - name: Tauri adapter boundary check
         run: npm run lint:tauri-boundary
-      # Domain-crate platform-dep deny-list: matrix-desktop-state must not gain
+      # Domain-crate platform-dep deny-list: koushi-state must not gain
       # platform/OS deps (pre-seeds Phase 5 SecretStore port).
       - name: Domain-crate platform-dep check
         run: npm run lint:domain-deps
@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # Share one target dir across the workspace and the separate src-tauri
-      # cargo project so the vendored Matrix SDK / matrix-desktop-core compile
+      # cargo project so the vendored Matrix SDK / koushi-core compile
       # ONCE and are reused, instead of once per project (per
       # tensor4all/tenferro-rs CI). See #93.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target-ci
@@ -92,7 +92,7 @@ jobs:
       - name: Tauri DTO + IPC contract tests
         run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
       - name: wasm build check (state + search)
-        run: cargo check --target wasm32-unknown-unknown -p matrix-desktop-state -p matrix-desktop-search
+        run: cargo check --target wasm32-unknown-unknown -p koushi-state -p koushi-search
       # --- Dependency hygiene (#87 Phase 0) ---
       # cargo-deny: license compliance + advisory check + bans.
       - name: Install cargo-deny

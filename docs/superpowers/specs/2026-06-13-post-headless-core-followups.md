@@ -11,14 +11,14 @@ plan. They were completed before Phase 10 GUI design work.
 
 ## SDK Adapter Rename
 
-Completed: `matrix-desktop-auth` was renamed to `matrix-desktop-sdk`.
+Completed: `matrix-desktop-auth` was renamed to `koushi-sdk`.
 
 Scope:
 
 - crate directory and package name
 - workspace membership and Cargo dependencies
 - Tauri lockfile updates
-- imports in `matrix-desktop-core`, `matrix-desktop-backend`, and Tauri
+- imports in `koushi-core`, `koushi-backend`, and Tauri
 - docs that describe crate responsibilities
 
 Constraint satisfied: no behavior changes in the rename patch.

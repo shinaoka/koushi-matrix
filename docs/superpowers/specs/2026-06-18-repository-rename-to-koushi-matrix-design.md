@@ -16,8 +16,8 @@ the name intentionally does not contain `desktop`.
 - Update local `origin` remote URL.
 - Update the README note that currently says the repository codename remains
   `matrix-desktop`.
-- No crate/package renames: internal identifiers such as `matrix-desktop-core`,
-  `matrix-desktop-state`, and the `koushi-desktop` package name keep their
+- No crate/package renames: internal identifiers such as `koushi-core`,
+  `koushi-state`, and the `koushi-desktop` package name keep their
   current values. Those are product-internal identifiers and out of scope for
   this remote rename.
 - No source code refactoring beyond the README note.

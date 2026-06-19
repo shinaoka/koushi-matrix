@@ -1,11 +1,11 @@
 [workspace]
 members = [
-    "crates/matrix-desktop-state",
-    "crates/matrix-desktop-search",
-    "crates/matrix-desktop-key",
-    "crates/matrix-desktop-sdk",
-    "crates/matrix-desktop-backend",
-    "crates/matrix-desktop-core",
+    "crates/koushi-state",
+    "crates/koushi-search",
+    "crates/koushi-key",
+    "crates/koushi-sdk",
+    "crates/koushi-backend",
+    "crates/koushi-core",
     "spikes/sidebar-composition",
     "spikes/key-management",
 ]

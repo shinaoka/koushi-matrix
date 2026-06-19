@@ -4,7 +4,7 @@ The search adapter verifies local search candidates before the UI receives any
 snippet or highlight.
 
 `matrix-sdk-search` owns encrypted Tantivy indexes and returns candidate event
-IDs. `matrix-desktop-search` owns deterministic verification over resolved
+IDs. `koushi-search` owns deterministic verification over resolved
 visible event content. The Tauri backend will map Matrix SDK event-cache updates
 into the adapter and map verified adapter results into reducer actions.
 

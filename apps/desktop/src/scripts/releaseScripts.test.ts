@@ -177,10 +177,10 @@ describe("desktop release scripts", () => {
       "runs-on: macos-latest",
       "uses: actions/checkout@v6",
       "Prepare standalone key crate",
-      'cp -R crates/matrix-desktop-key/. "$RUNNER_TEMP/matrix-desktop-key/"',
+      'cp -R crates/koushi-key/. "$RUNNER_TEMP/koushi-key/"',
       'MATRIX_DESKTOP_MACOS_KEYCHAIN_QA: "1"',
-      'cargo test --manifest-path "$RUNNER_TEMP/matrix-desktop-key/Cargo.toml" credential_backend_macos_temporary_keychain_round_trip_is_env_gated -- --nocapture',
-      'cargo test --manifest-path "$RUNNER_TEMP/matrix-desktop-key/Cargo.toml" credential_backend'
+      'cargo test --manifest-path "$RUNNER_TEMP/koushi-key/Cargo.toml" credential_backend_macos_temporary_keychain_round_trip_is_env_gated -- --nocapture',
+      'cargo test --manifest-path "$RUNNER_TEMP/koushi-key/Cargo.toml" credential_backend'
     ]) {
       expect(workflow).toContain(token);
     }
@@ -214,7 +214,7 @@ describe("desktop release scripts", () => {
 
   test("real homeserver QA binary names the staged real-server scenarios", () => {
     const source = readFileSync(
-      new URL("../../../../crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs", import.meta.url),
+      new URL("../../../../crates/koushi-core/src/bin/real-homeserver-qa.rs", import.meta.url),
       "utf8"
     );
 
@@ -226,7 +226,7 @@ describe("desktop release scripts", () => {
 
   test("real homeserver QA treats space projection as an observation token", () => {
     const source = readFileSync(
-      new URL("../../../../crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs", import.meta.url),
+      new URL("../../../../crates/koushi-core/src/bin/real-homeserver-qa.rs", import.meta.url),
       "utf8"
     );
 
@@ -282,7 +282,7 @@ describe("desktop release scripts", () => {
 
   test("real homeserver QA binary emits private-data-free tokens (no Matrix ids)", () => {
     const source = readFileSync(
-      new URL("../../../../crates/matrix-desktop-core/src/bin/real-homeserver-qa.rs", import.meta.url),
+      new URL("../../../../crates/koushi-core/src/bin/real-homeserver-qa.rs", import.meta.url),
       "utf8"
     );
 
@@ -1343,12 +1343,12 @@ describe("desktop release scripts", () => {
   });
 
   test("QA file credential store is gated to debug and test builds in core", () => {
-    // The credential store moved into matrix-desktop-core (StoreActor) when
+    // The credential store moved into koushi-core (StoreActor) when
     // src-tauri became a pure transport adapter; the compile-time gate lives
     // there now.
     const coreStore = readFileSync(
       new URL(
-        "../../../../crates/matrix-desktop-core/src/store.rs",
+        "../../../../crates/koushi-core/src/store.rs",
         import.meta.url
       ),
       "utf8"

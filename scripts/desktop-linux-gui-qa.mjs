@@ -1924,7 +1924,7 @@ async function runLocalE2eeKeyManagementScenario() {
 
     const keyFilePath = join(session.runDir, "room-keys.txt");
     const recoveryKeyPath = join(session.runDir, "secure-backup-recovery.txt");
-    const keyFilePassphrase = `matrix-desktop-key-transfer-${safeTimestamp()}`;
+    const keyFilePassphrase = `koushi-key-transfer-${safeTimestamp()}`;
     const secureBackupPassphrase = `matrix-desktop-secure-backup-${safeTimestamp()}`;
 
     await setKeyManagementFormInput(

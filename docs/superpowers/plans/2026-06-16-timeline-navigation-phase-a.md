@@ -6,15 +6,15 @@
 
 **Architecture:** Timeline item lists remain event-driven CoreEvent data; they must not be copied into `AppState`. The Rust timeline actor owns item order and combines it with GUI-reported viewport observations plus the fully-read marker to emit a typed navigation projection. The GUI may observe visible item ids and scroll, but it must render only the Rust projection and dispatch typed commands.
 
-**Tech Stack:** Rust (`matrix-desktop-state`, `matrix-desktop-core`, Tauri command adapter), TypeScript wire types/timeline store, local headless core QA, Vitest/Playwright in Phase B.
+**Tech Stack:** Rust (`koushi-state`, `koushi-core`, Tauri command adapter), TypeScript wire types/timeline store, local headless core QA, Vitest/Playwright in Phase B.
 
 ---
 
 ### Task 1: Rust State Contract For Timeline Navigation
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/event.rs`
-- Modify: `crates/matrix-desktop-core/src/command.rs`
+- Modify: `crates/koushi-core/src/event.rs`
+- Modify: `crates/koushi-core/src/command.rs`
 - Modify: `apps/desktop/src/domain/coreEvents.ts`
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
 
@@ -29,8 +29,8 @@
 ### Task 2: Timeline Actor Derivation
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/timeline.rs`
-- Test: `crates/matrix-desktop-core/src/timeline.rs`
+- Modify: `crates/koushi-core/src/timeline.rs`
+- Test: `crates/koushi-core/src/timeline.rs`
 
 - [x] Write RED unit tests for:
   - first unread inside viewport reports `InsideViewport`.
@@ -41,27 +41,27 @@
 - [x] Recompute navigation after `ItemsUpdated`, fully-read marker changes, and viewport observations.
 - [x] Emit `TimelineEvent::NavigationUpdated` only when the projection changes.
 - [x] Run:
-  `cargo test -p matrix-desktop-core --lib timeline_navigation`
+  `cargo test -p koushi-core --lib timeline_navigation`
 
 ### Task 3: Fully-Read Marker Flow Into The Actor
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/timeline.rs`
-- Modify: `crates/matrix-desktop-core/src/event.rs`
+- Modify: `crates/koushi-core/src/timeline.rs`
+- Modify: `crates/koushi-core/src/event.rs`
 
 - [x] Ensure the actor records `room.fully_read_event_id()` during subscribe.
 - [x] Ensure `handle_set_fully_read` updates the actor-local marker before emitting navigation.
 - [x] Keep `LiveSignalsEvent::FullyReadSet` and `AppAction::FullyReadMarkerUpdated` behavior unchanged.
 - [x] Run:
-  `cargo test -p matrix-desktop-core --lib fully_read`
+  `cargo test -p koushi-core --lib fully_read`
 
 ### Task 4: Jump-To-Date Command Contract
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/command.rs`
-- Modify: `crates/matrix-desktop-core/src/runtime.rs`
+- Modify: `crates/koushi-core/src/command.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
 - Modify: `apps/desktop/src-tauri/src/commands.rs`
-- Test: `crates/matrix-desktop-core/src/runtime.rs`
+- Test: `crates/koushi-core/src/runtime.rs`
 - Test: `apps/desktop/src-tauri/src/commands.rs`
 
 - [x] Add `AppCommand::OpenTimelineAtTimestamp { request_id, room_id, timestamp_ms }`.
@@ -70,13 +70,13 @@
 - [x] Add a Tauri command `open_timeline_at_timestamp(room_id, timestamp_ms)`.
 - [x] Redact room/event ids in `Debug`.
 - [x] Run:
-  `cargo test -p matrix-desktop-core --lib open_timeline_at_timestamp`
+  `cargo test -p koushi-core --lib open_timeline_at_timestamp`
   `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib open_timeline_at_timestamp`
 
 ### Task 5: Private QA Token
 
 **Files:**
-- Modify: `crates/matrix-desktop-core/src/bin/headless-core-qa.rs`
+- Modify: `crates/koushi-core/src/bin/headless-core-qa.rs`
 - Modify: `AGENTS.md`
 - Modify: `docs/architecture/state-machine.md`
 
@@ -84,7 +84,7 @@
 - [x] Print `timeline_nav=ok` when the navigation projection is observed.
 - [x] Document that GUI viewport observations are facts, while marker/unread/bottom/date semantics are Rust-owned.
 - [x] Run:
-  `cargo test -p matrix-desktop-core --features qa-bin --bin headless-core-qa`
+  `cargo test -p koushi-core --features qa-bin --bin headless-core-qa`
 
 ### Task 6: Phase A Commit And Issue Evidence
 
@@ -92,8 +92,8 @@
 - Commit only Phase A Rust/state-machine/headless/wire contract files.
 
 - [x] Run:
-  `cargo test -p matrix-desktop-core --lib`
-  `cargo test -p matrix-desktop-core --features qa-bin --bin headless-core-qa`
+  `cargo test -p koushi-core --lib`
+  `cargo test -p koushi-core --features qa-bin --bin headless-core-qa`
   `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib`
   `npm --prefix apps/desktop run typecheck`
   `npm --prefix apps/desktop run test -- --run`

@@ -41,10 +41,10 @@ cache.
 ## Verify
 
 ```bash
-cargo test -p matrix-desktop-state
-cargo test -p matrix-desktop-search
-cargo test -p matrix-desktop-key
-cargo test -p matrix-desktop-backend
+cargo test -p koushi-state
+cargo test -p koushi-search
+cargo test -p koushi-key
+cargo test -p koushi-backend
 ```
 
 For the desktop app:
