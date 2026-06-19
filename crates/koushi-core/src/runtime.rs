@@ -182,6 +182,7 @@ impl CoreRuntime {
             settings_store,
             composer_draft_store_actor,
             composer_draft_loaded_for: None,
+            scheduled_sends_loaded_for: None,
             pending_composer_draft_persist: None,
             account_actor,
             activity_projection: ActivityProjection::default(),
@@ -321,6 +322,7 @@ struct AppActor {
     settings_store: SettingsStore,
     composer_draft_store_actor: StoreActor,
     composer_draft_loaded_for: Option<koushi_key::SessionKeyId>,
+    scheduled_sends_loaded_for: Option<koushi_key::SessionKeyId>,
     pending_composer_draft_persist: Option<PendingComposerDraftPersist>,
     account_actor: AccountActorHandle,
     activity_projection: ActivityProjection,
@@ -612,6 +614,7 @@ impl AppActor {
                         }
                         self.handle_ui_event_effects(&_post_projection_effects).await;
                         self.load_composer_drafts_for_current_session().await;
+                        self.load_scheduled_sends_for_current_session().await;
                         state_changed = true;
                     }
                     if state_changed {
@@ -628,12 +631,21 @@ impl AppActor {
     async fn reduce_app_action(&mut self, action: AppAction) -> Vec<AppEffect> {
         let previous_session = composer_draft_session_key(&self.state);
         let previous_drafts = self.state.composer_drafts.clone();
+        let previous_scheduled_session = scheduled_send_session_key(&self.state);
+        let previous_scheduled_sends = self.state.scheduled_sends.clone();
         let effects = reduce(&mut self.state, action);
         if previous_drafts != self.state.composer_drafts {
             let target_session = composer_draft_session_key(&self.state).or(previous_session);
             if let Some(key_id) = target_session {
                 self.schedule_composer_draft_persist(key_id, self.state.composer_drafts.clone())
                     .await;
+            }
+        }
+        if previous_scheduled_sends != self.state.scheduled_sends {
+            let target_session =
+                scheduled_send_session_key(&self.state).or(previous_scheduled_session);
+            if let Some(key_id) = target_session {
+                self.persist_scheduled_sends(key_id).await;
             }
         }
         effects
@@ -655,6 +667,33 @@ impl AppActor {
         let effects = reduce(&mut self.state, AppAction::ComposerDraftsLoaded { drafts });
         self.composer_draft_loaded_for = Some(key_id);
         self.handle_ui_event_effects(&effects).await;
+    }
+
+    async fn load_scheduled_sends_for_current_session(&mut self) {
+        let Some(key_id) = scheduled_send_session_key(&self.state) else {
+            self.scheduled_sends_loaded_for = None;
+            return;
+        };
+        if self.scheduled_sends_loaded_for.as_ref() == Some(&key_id) {
+            return;
+        }
+
+        let scheduled_sends = self
+            .composer_draft_store_actor
+            .load_scheduled_sends(&key_id)
+            .unwrap_or_default();
+        let effects = reduce(
+            &mut self.state,
+            AppAction::ScheduledSendsLoaded { scheduled_sends },
+        );
+        self.scheduled_sends_loaded_for = Some(key_id);
+        self.handle_ui_event_effects(&effects).await;
+    }
+
+    async fn persist_scheduled_sends(&mut self, key_id: koushi_key::SessionKeyId) {
+        let _ = self
+            .composer_draft_store_actor
+            .save_scheduled_sends(&key_id, &self.state.scheduled_sends);
     }
 
     async fn schedule_composer_draft_persist(
@@ -1853,6 +1892,10 @@ fn composer_draft_session_key(state: &AppState) -> Option<koushi_key::SessionKey
         | SessionState::LoggingOut
         | SessionState::Locked(_) => None,
     }
+}
+
+fn scheduled_send_session_key(state: &AppState) -> Option<koushi_key::SessionKeyId> {
+    composer_draft_session_key(state)
 }
 
 fn effects_open_thread_timeline(effects: &[AppEffect]) -> bool {

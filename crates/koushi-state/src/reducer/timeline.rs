@@ -104,6 +104,27 @@ pub(crate) fn handle_scheduled_send_capability_changed(
         .unwrap_or_default()
 }
 
+pub(crate) fn handle_scheduled_sends_loaded(
+    state: &mut AppState,
+    scheduled_sends: crate::state::ScheduledSendStore,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    if state.scheduled_sends == scheduled_sends {
+        return Vec::new();
+    }
+
+    state.scheduled_sends = scheduled_sends;
+    let Some(room_id) = state.timeline.room_id.clone() else {
+        return Vec::new();
+    };
+
+    refresh_timeline_scheduled_sends(state);
+    vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })]
+}
+
 pub(crate) fn handle_scheduled_send_created(
     state: &mut AppState,
     item: crate::state::ScheduledSendItem,

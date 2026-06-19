@@ -16,17 +16,28 @@ fn namespaced_derivations_are_distinct() {
     let sdk_store_key = secret.derive_sdk_store_key();
     let search_key = secret.derive_search_index_key();
     let composer_drafts_key = secret.derive_composer_drafts_key();
+    let scheduled_sends_key = secret.derive_scheduled_sends_key();
 
     assert_eq!(sdk_store_key.as_bytes().len(), 32);
     assert_eq!(composer_drafts_key.as_bytes().len(), 32);
+    assert_eq!(scheduled_sends_key.as_bytes().len(), 32);
     assert_ne!(
         STANDARD.encode(sdk_store_key.as_bytes()),
         search_key.as_str()
     );
     assert_ne!(sdk_store_key.as_bytes(), composer_drafts_key.as_bytes());
+    assert_ne!(sdk_store_key.as_bytes(), scheduled_sends_key.as_bytes());
+    assert_ne!(
+        composer_drafts_key.as_bytes(),
+        scheduled_sends_key.as_bytes()
+    );
     assert_ne!(
         search_key.as_str(),
         STANDARD.encode(composer_drafts_key.as_bytes())
+    );
+    assert_ne!(
+        search_key.as_str(),
+        STANDARD.encode(scheduled_sends_key.as_bytes())
     );
 }
 
@@ -36,11 +47,13 @@ fn derived_and_stored_secrets_have_redacted_debug() {
     let sdk_store_key = secret.derive_sdk_store_key();
     let search_key = secret.derive_search_index_key();
     let composer_drafts_key = secret.derive_composer_drafts_key();
+    let scheduled_sends_key = secret.derive_scheduled_sends_key();
     let stored_secret = secret.to_storage_string();
 
     assert_eq!(format!("{sdk_store_key:?}"), "SdkStoreKey(..)");
     assert_eq!(format!("{search_key:?}"), "SearchIndexKey(..)");
     assert_eq!(format!("{composer_drafts_key:?}"), "ComposerDraftsKey(..)");
+    assert_eq!(format!("{scheduled_sends_key:?}"), "ScheduledSendsKey(..)");
     assert_eq!(format!("{stored_secret:?}"), "StoredLocalUnlockSecret(..)");
     assert!(!format!("{secret:?}").contains(stored_secret.as_str()));
 }
@@ -171,6 +184,10 @@ fn storage_round_trip_preserves_derivations() {
     assert_eq!(
         original.derive_search_index_key().as_str(),
         restored.derive_search_index_key().as_str()
+    );
+    assert_eq!(
+        original.derive_scheduled_sends_key().as_bytes(),
+        restored.derive_scheduled_sends_key().as_bytes()
     );
 }
 

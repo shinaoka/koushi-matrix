@@ -19,6 +19,7 @@ pub const LOCAL_UNLOCK_SECRET_LEN: usize = 32;
 const SDK_STORE_INFO: &[u8] = b"matrix-desktop:sdk-store";
 const SEARCH_INDEX_INFO: &[u8] = b"matrix-desktop:search-index";
 const COMPOSER_DRAFTS_INFO: &[u8] = b"matrix-desktop:composer-drafts";
+const SCHEDULED_SENDS_INFO: &[u8] = b"matrix-desktop:scheduled-sends";
 const LAST_SESSION_ACCOUNT_NAME: &str = "matrix-desktop:last-session:v1";
 const SAVED_SESSIONS_ACCOUNT_NAME: &str = "matrix-desktop:saved-sessions:v1";
 
@@ -364,6 +365,22 @@ impl fmt::Debug for ComposerDraftsKey {
     }
 }
 
+pub struct ScheduledSendsKey {
+    key: Zeroizing<[u8; LOCAL_UNLOCK_SECRET_LEN]>,
+}
+
+impl ScheduledSendsKey {
+    pub fn as_bytes(&self) -> &[u8; LOCAL_UNLOCK_SECRET_LEN] {
+        &self.key
+    }
+}
+
+impl fmt::Debug for ScheduledSendsKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ScheduledSendsKey(..)")
+    }
+}
+
 pub struct StoredLocalUnlockSecret {
     value: Zeroizing<String>,
 }
@@ -473,6 +490,14 @@ impl LocalUnlockSecret {
         ComposerDraftsKey {
             key: self
                 .derive_key(COMPOSER_DRAFTS_INFO)
+                .expect("32-byte HKDF output length is valid"),
+        }
+    }
+
+    pub fn derive_scheduled_sends_key(&self) -> ScheduledSendsKey {
+        ScheduledSendsKey {
+            key: self
+                .derive_key(SCHEDULED_SENDS_INFO)
                 .expect("32-byte HKDF output length is valid"),
         }
     }

@@ -608,6 +608,9 @@ pub enum AppAction {
     ScheduledSendCapabilityChanged {
         capability: ScheduledSendCapability,
     },
+    ScheduledSendsLoaded {
+        scheduled_sends: crate::state::ScheduledSendStore,
+    },
     ScheduledSendCreated {
         item: ScheduledSendItem,
     },

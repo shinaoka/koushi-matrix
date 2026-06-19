@@ -619,6 +619,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::ScheduledSendCapabilityChanged { capability } => {
             timeline::handle_scheduled_send_capability_changed(state, capability)
         }
+        AppAction::ScheduledSendsLoaded { scheduled_sends } => {
+            timeline::handle_scheduled_sends_loaded(state, scheduled_sends)
+        }
         AppAction::ScheduledSendCreated { item } => {
             timeline::handle_scheduled_send_created(state, item)
         }

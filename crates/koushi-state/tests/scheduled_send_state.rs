@@ -1,7 +1,7 @@
 use koushi_state::{
     AppAction, AppState, ComposerState, RoomSummary, RoomTags, ScheduledSendCapability,
-    ScheduledSendHandle, ScheduledSendItem, SessionInfo, SessionState, TimelinePaneState, UiEvent,
-    reduce,
+    ScheduledSendHandle, ScheduledSendItem, ScheduledSendStore, SessionInfo, SessionState,
+    TimelinePaneState, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -193,6 +193,38 @@ fn scheduled_send_capability_is_rust_owned() {
     assert_eq!(
         state.scheduled_sends.capability,
         ScheduledSendCapability::LocalFallback
+    );
+}
+
+#[test]
+fn loaded_scheduled_sends_keep_unlisted_rooms_and_project_selected_room() {
+    let mut state = selected_room_state("room-a");
+    let mut scheduled_sends = ScheduledSendStore {
+        capability: ScheduledSendCapability::LocalFallback,
+        ..ScheduledSendStore::default()
+    };
+    scheduled_sends.insert(scheduled_item("sched-a", "room-a", 1_900_000_000_000));
+    scheduled_sends.insert(scheduled_item("sched-c", "room-c", 1_900_000_030_000));
+
+    let effects = reduce(
+        &mut state,
+        AppAction::ScheduledSendsLoaded { scheduled_sends },
+    );
+
+    assert!(state.scheduled_sends.items.contains_key("sched-c"));
+    assert_eq!(
+        state.scheduled_sends.capability,
+        ScheduledSendCapability::LocalFallback
+    );
+    assert_eq!(state.timeline.scheduled_sends.len(), 1);
+    assert_eq!(state.timeline.scheduled_sends[0].scheduled_id, "sched-a");
+    assert_eq!(
+        effects,
+        vec![koushi_state::AppEffect::EmitUiEvent(
+            UiEvent::TimelineChanged {
+                room_id: "room-a".to_owned(),
+            }
+        )]
     );
 }
 

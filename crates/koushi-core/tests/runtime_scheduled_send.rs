@@ -181,3 +181,207 @@ async fn server_scheduled_send_items_are_not_dispatched_by_local_fallback_timer(
         }
     );
 }
+
+#[tokio::test]
+async fn local_fallback_scheduled_sends_persist_and_load_on_restart() {
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let credential_dir = tempfile::tempdir().expect("credential dir");
+    let send_at_ms = future_epoch_ms(Duration::from_secs(120));
+
+    {
+        let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+            data_dir.path().to_path_buf(),
+            credential_dir.path().to_path_buf(),
+        );
+        let mut conn = runtime.attach();
+        inject_ready_local_fallback_room(&runtime, "!room:example.test").await;
+        wait_for_state(&mut conn, |state| {
+            matches!(state.session, SessionState::Ready(_))
+                && state.timeline.room_id.as_deref() == Some("!room:example.test")
+                && state.timeline.scheduled_send_capability
+                    == ScheduledSendCapability::LocalFallback
+        })
+        .await;
+
+        conn.command(CoreCommand::App(AppCommand::ScheduleSend {
+            request_id: conn.next_request_id(),
+            room_id: "!room:example.test".to_owned(),
+            body: "survives restart".to_owned(),
+            send_at_ms,
+        }))
+        .await
+        .expect("schedule send");
+
+        wait_for_state(&mut conn, |state| state.timeline.scheduled_sends.len() == 1).await;
+    }
+
+    let restarted = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    let mut conn = restarted.attach();
+    inject_ready_local_fallback_room(&restarted, "!room:example.test").await;
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        state
+            .timeline
+            .scheduled_sends
+            .first()
+            .is_some_and(|item| item.body == "survives restart")
+    })
+    .await;
+    assert_eq!(snapshot.timeline.scheduled_sends[0].send_at_ms, send_at_ms);
+}
+
+#[tokio::test]
+async fn due_local_fallback_scheduled_send_dispatches_after_restart() {
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let credential_dir = tempfile::tempdir().expect("credential dir");
+    let send_at_ms = future_epoch_ms(Duration::from_millis(1_500));
+
+    {
+        let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+            data_dir.path().to_path_buf(),
+            credential_dir.path().to_path_buf(),
+        );
+        let mut conn = runtime.attach();
+        inject_ready_local_fallback_room(&runtime, "!room:example.test").await;
+        wait_for_state(&mut conn, |state| {
+            matches!(state.session, SessionState::Ready(_))
+                && state.timeline.room_id.as_deref() == Some("!room:example.test")
+                && state.timeline.scheduled_send_capability
+                    == ScheduledSendCapability::LocalFallback
+        })
+        .await;
+
+        conn.command(CoreCommand::App(AppCommand::ScheduleSend {
+            request_id: conn.next_request_id(),
+            room_id: "!room:example.test".to_owned(),
+            body: "dispatch after restart".to_owned(),
+            send_at_ms,
+        }))
+        .await
+        .expect("schedule send");
+
+        wait_for_state(&mut conn, |state| state.timeline.scheduled_sends.len() == 1).await;
+    }
+
+    let restarted = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    let mut conn = restarted.attach();
+    inject_ready_local_fallback_room(&restarted, "!room:example.test").await;
+
+    wait_for_state(&mut conn, |state| {
+        state
+            .timeline
+            .scheduled_sends
+            .first()
+            .is_some_and(|item| item.body == "dispatch after restart")
+    })
+    .await;
+
+    let snapshot = wait_for_state_for(&mut conn, Duration::from_secs(3), |state| {
+        state.timeline.scheduled_sends.is_empty() && state.scheduled_sends.items.is_empty()
+    })
+    .await;
+    assert!(snapshot.scheduled_sends.items.is_empty());
+}
+
+#[tokio::test]
+async fn cancelled_local_fallback_scheduled_send_does_not_resurrect_on_restart() {
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let credential_dir = tempfile::tempdir().expect("credential dir");
+
+    {
+        let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+            data_dir.path().to_path_buf(),
+            credential_dir.path().to_path_buf(),
+        );
+        let mut conn = runtime.attach();
+        inject_ready_local_fallback_room(&runtime, "!room:example.test").await;
+        wait_for_state(&mut conn, |state| {
+            matches!(state.session, SessionState::Ready(_))
+                && state.timeline.room_id.as_deref() == Some("!room:example.test")
+                && state.timeline.scheduled_send_capability
+                    == ScheduledSendCapability::LocalFallback
+        })
+        .await;
+
+        conn.command(CoreCommand::App(AppCommand::ScheduleSend {
+            request_id: conn.next_request_id(),
+            room_id: "!room:example.test".to_owned(),
+            body: "cancel before restart".to_owned(),
+            send_at_ms: future_epoch_ms(Duration::from_secs(120)),
+        }))
+        .await
+        .expect("schedule send");
+
+        let scheduled =
+            wait_for_state(&mut conn, |state| state.timeline.scheduled_sends.len() == 1).await;
+        conn.command(CoreCommand::App(AppCommand::CancelScheduledSend {
+            request_id: conn.next_request_id(),
+            scheduled_id: scheduled.timeline.scheduled_sends[0].scheduled_id.clone(),
+        }))
+        .await
+        .expect("cancel scheduled send");
+        wait_for_state(&mut conn, |state| state.timeline.scheduled_sends.is_empty()).await;
+    }
+
+    let restarted = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
+    let mut conn = restarted.attach();
+    inject_ready_local_fallback_room(&restarted, "!room:example.test").await;
+
+    let snapshot = wait_for_state_for(&mut conn, Duration::from_millis(200), |state| {
+        matches!(state.session, SessionState::Ready(_))
+            && state.timeline.room_id.as_deref() == Some("!room:example.test")
+            && state.timeline.scheduled_sends.is_empty()
+            && state.scheduled_sends.items.is_empty()
+    })
+    .await;
+    assert!(snapshot.scheduled_sends.items.is_empty());
+}
+
+async fn inject_ready_local_fallback_room(runtime: &CoreRuntime, room_id: &str) {
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary(room_id)],
+            },
+            AppAction::SelectRoom {
+                room_id: room_id.to_owned(),
+            },
+            AppAction::TimelineSubscribed {
+                room_id: room_id.to_owned(),
+            },
+            AppAction::ScheduledSendCapabilityChanged {
+                capability: ScheduledSendCapability::LocalFallback,
+            },
+        ])
+        .await;
+}
+
+async fn wait_for_state_for<F>(
+    connection: &mut koushi_core::runtime::CoreConnection,
+    timeout: Duration,
+    predicate: F,
+) -> koushi_state::AppState
+where
+    F: Fn(&koushi_state::AppState) -> bool,
+{
+    let attempts = (timeout.as_millis() / 5).max(1) as usize;
+    for _ in 0..attempts {
+        let snapshot = connection.snapshot();
+        if predicate(&snapshot) {
+            return snapshot;
+        }
+        executor::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("state predicate was not satisfied within {timeout:?}");
+}
