@@ -1124,7 +1124,7 @@ describe("ContextualRightPanel", () => {
   });
 
   test("thread render path keeps Tauri transport ahead of browser fixture fallback", () => {
-    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const source = readFileSync(new URL("./components/rightPanel.tsx", import.meta.url), "utf8");
     const threadBranchStart = source.indexOf("const threadState = snapshot.state.thread;");
     const threadBranchEnd = source.indexOf("function PanelHeader", threadBranchStart);
     const threadBranch = source.slice(threadBranchStart, threadBranchEnd);
@@ -1206,7 +1206,7 @@ describe("Tauri state refresh wiring", () => {
   });
 
   test("browser fixture messages use a natural-flow wrapper", () => {
-    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const source = readFileSync(new URL("./components/panes.tsx", import.meta.url), "utf8");
     const fallbackStart = source.indexOf("Browser fixture preview only");
     const fallbackEnd = source.indexOf("</div>", fallbackStart);
     const fallbackSource = source.slice(fallbackStart, fallbackEnd);
@@ -1292,7 +1292,9 @@ describe("Tauri state refresh wiring", () => {
     expect(transportSource).toContain("setSnapshot(nextSnapshot)");
     expect(transportSource).toContain('setRightPanelMode("focusedContext")');
     expect(source).toContain("timelineTransport={appTimelineTransport}");
-    expect(source).toContain("transport={timelineTransport}");
+    expect(
+      readFileSync(new URL("./components/rightPanel.tsx", import.meta.url), "utf8")
+    ).toContain("transport={timelineTransport}");
   });
 
   test("closing an active focused context goes through Rust before hiding the panel", () => {

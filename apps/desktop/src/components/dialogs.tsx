@@ -1,0 +1,437 @@
+// Dialog components extracted from App.tsx.
+// Imports: React, lucide-react, i18n, domain types, uiShared.
+
+import {
+  type KeyboardEvent,
+  useState
+} from "react";
+import {
+  FileText,
+  Image as ImageIcon,
+  X
+} from "lucide-react";
+import { t } from "../i18n/messages";
+import type {
+  StagedUploadCompressionChoice,
+  StagedUploadItem
+} from "../domain/types";
+import {
+  ICON_SIZE,
+  formatUploadBytes,
+  formatUploadDimensions,
+  captionBody,
+  type ImageUploadVariantKindPayload,
+  type ImageCompressionPlan
+} from "../app/uiShared";
+
+// ===== CreateEntityDialog =====
+
+export function CreateEntityDialog({
+  isBusy,
+  kind,
+  value,
+  onCancel,
+  onSubmit,
+  onValueChange
+}: {
+  isBusy: boolean;
+  kind: "room" | "space";
+  value: string;
+  onCancel: () => void;
+  onSubmit: () => void;
+  onValueChange: (value: string) => void;
+}) {
+  const isSpace = kind === "space";
+  const title = isSpace ? t("dialog.createSpaceTitle") : t("dialog.createRoomTitle");
+  const inputLabel = isSpace ? t("dialog.spaceName") : t("dialog.roomName");
+  const submitLabel = isSpace
+    ? t("dialog.submitCreateSpace")
+    : t("dialog.submitCreateRoom");
+  const canSubmit = value.trim().length > 0 && !isBusy;
+
+  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+    }
+  }
+
+  return (
+    <div
+      className="dialog-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onKeyDown={onDialogKeyDown}
+    >
+      <form
+        className="dialog-box"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canSubmit) {
+            onSubmit();
+          }
+        }}
+      >
+        <div className="dialog-title">{title}</div>
+        <input
+          className="dialog-input"
+          type="text"
+          autoFocus
+          aria-label={inputLabel}
+          placeholder={inputLabel}
+          value={value}
+          onChange={(event) => onValueChange(event.target.value)}
+        />
+        <div className="dialog-actions">
+          <button
+            className="dialog-button"
+            type="button"
+            aria-label={t("dialog.cancelCreate")}
+            onClick={onCancel}
+          >
+            {t("action.cancel")}
+          </button>
+          <button
+            className="dialog-button is-primary"
+            type="submit"
+            aria-label={submitLabel}
+            disabled={!canSubmit}
+          >
+            {isSpace ? t("action.createSpace") : t("action.createRoom")}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// ===== ImageCompressionDialog =====
+
+export function ImageCompressionDialog({
+  plan,
+  onCancel,
+  onChoose
+}: {
+  plan: ImageCompressionPlan;
+  onCancel: () => void;
+  onChoose: (choice: ImageUploadVariantKindPayload, saveDefault: boolean) => void;
+}) {
+  const [saveDefault, setSaveDefault] = useState(false);
+
+  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+    }
+  }
+
+  return (
+    <div
+      className="dialog-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("composer.imageCompressionTitle")}
+      onKeyDown={onDialogKeyDown}
+    >
+      <div className="dialog-box image-compression-dialog">
+        <div className="dialog-title">{t("composer.imageCompressionTitle")}</div>
+        <div className="image-compression-preview">
+          <img src={plan.compressed.previewUrl} alt={t("composer.imageCompressionPreviewAlt")} />
+        </div>
+        <div className="image-compression-options">
+          <button
+            className="image-compression-option"
+            type="button"
+            onClick={() => onChoose("Original", saveDefault)}
+          >
+            <span>{t("composer.imageCompressionOriginal")}</span>
+            <strong>
+              {formatUploadBytes(plan.original.byteCount)} · {formatUploadDimensions(plan.original.dimensions)}
+            </strong>
+          </button>
+          <button
+            className="image-compression-option is-preferred"
+            type="button"
+            autoFocus
+            onClick={() => onChoose("Compressed", saveDefault)}
+          >
+            <span>{t("composer.imageCompressionCompressed")}</span>
+            <strong>
+              {formatUploadBytes(plan.compressed.byteCount)} · {formatUploadDimensions(plan.compressed.dimensions)}
+            </strong>
+          </button>
+        </div>
+        <label className="dialog-checkbox">
+          <input
+            type="checkbox"
+            checked={saveDefault}
+            onChange={(event) => setSaveDefault(event.currentTarget.checked)}
+          />
+          <span>{t("composer.imageCompressionSaveDefault")}</span>
+        </label>
+        <div className="dialog-actions">
+          <button className="dialog-button" type="button" onClick={onCancel}>
+            {t("dialog.cancel")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ===== UserIdDialog =====
+
+export function UserIdDialog({
+  inputLabel,
+  isBusy,
+  submitLabel,
+  title,
+  value,
+  onCancel,
+  onSubmit,
+  onValueChange
+}: {
+  inputLabel: string;
+  isBusy: boolean;
+  submitLabel: string;
+  title: string;
+  value: string;
+  onCancel: () => void;
+  onSubmit: () => void;
+  onValueChange: (value: string) => void;
+}) {
+  const canSubmit = value.trim().length > 0 && !isBusy;
+
+  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+    }
+  }
+
+  return (
+    <div
+      className="dialog-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onKeyDown={onDialogKeyDown}
+    >
+      <form
+        className="dialog-box"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canSubmit) {
+            onSubmit();
+          }
+        }}
+      >
+        <div className="dialog-title">{title}</div>
+        <input
+          className="dialog-input"
+          type="text"
+          autoFocus
+          aria-label={inputLabel}
+          placeholder={inputLabel}
+          spellCheck={false}
+          value={value}
+          onChange={(event) => onValueChange(event.target.value)}
+        />
+        <div className="dialog-actions">
+          <button
+            className="dialog-button"
+            type="button"
+            aria-label={t("action.cancel")}
+            onClick={onCancel}
+          >
+            {t("action.cancel")}
+          </button>
+          <button
+            className="dialog-button is-primary"
+            type="submit"
+            aria-label={submitLabel}
+            disabled={!canSubmit}
+          >
+            {submitLabel}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// ===== ReportReasonDialog =====
+
+export function ReportReasonDialog({
+  reason,
+  title,
+  onCancel,
+  onReasonChange,
+  onSubmit
+}: {
+  reason: string;
+  title: string;
+  onCancel: () => void;
+  onReasonChange: (reason: string) => void;
+  onSubmit: () => void;
+}) {
+  const canSubmit = reason.trim().length > 0;
+
+  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+    }
+  }
+
+  return (
+    <div
+      className="dialog-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onKeyDown={onDialogKeyDown}
+    >
+      <form
+        className="dialog-box"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canSubmit) {
+            onSubmit();
+          }
+        }}
+      >
+        <div className="dialog-title">{title}</div>
+        <label className="dialog-input-label">
+          <span>{t("dialog.reportReasonLabel")}</span>
+          <input
+            className="dialog-input"
+            type="text"
+            autoFocus
+            aria-label={t("dialog.reportReasonLabel")}
+            placeholder={t("dialog.reportReasonPlaceholder")}
+            value={reason}
+            onChange={(event) => onReasonChange(event.target.value)}
+          />
+        </label>
+        <div className="dialog-actions">
+          <button
+            className="dialog-button"
+            type="button"
+            aria-label={t("action.cancel")}
+            onClick={onCancel}
+          >
+            {t("action.cancel")}
+          </button>
+          <button
+            className="dialog-button is-primary"
+            type="submit"
+            aria-label={t("action.report")}
+            disabled={!canSubmit}
+          >
+            {t("action.report")}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// ===== UploadStagingDialog =====
+
+export function UploadStagingDialog({
+  items,
+  onClear,
+  onUpdateCaption,
+  onUpdateCompression
+}: {
+  items: StagedUploadItem[];
+  onClear: () => void | Promise<void>;
+  onUpdateCaption: (stagedId: string, caption: string) => void | Promise<void>;
+  onUpdateCompression: (
+    stagedId: string,
+    compressionChoice: StagedUploadCompressionChoice
+  ) => void | Promise<void>;
+}) {
+  return (
+    <section
+      className="upload-staging-dialog"
+      role="dialog"
+      aria-label={t("upload.dialogTitle")}
+    >
+      <div className="upload-staging-header">
+        <h2>{t("upload.dialogTitle")}</h2>
+        <button className="icon-button" type="button" aria-label={t("upload.clear")} onClick={onClear}>
+          <X size={ICON_SIZE.small} />
+        </button>
+      </div>
+      <div className="upload-staging-list">
+        {items.map((item) => (
+          <article className="upload-staging-item" key={item.staged_id}>
+            <div className="upload-staging-file">
+              {item.kind.kind === "image" ? (
+                <ImageIcon size={ICON_SIZE.control} aria-hidden="true" />
+              ) : (
+                <FileText size={ICON_SIZE.control} aria-hidden="true" />
+              )}
+              <span className="upload-staging-name" dir="auto">
+                {item.filename || t("composer.attachmentFallback")}
+              </span>
+              <span className="upload-staging-meta">
+                {formatUploadBytes(item.byte_count)}
+              </span>
+            </div>
+            <label className="upload-staging-caption">
+              <span>{t("upload.captionForFile", { filename: item.filename })}</span>
+              <input
+                value={captionBody(item)}
+                aria-label={t("upload.captionForFile", { filename: item.filename })}
+                onChange={(event) => {
+                  void onUpdateCaption(item.staged_id, event.currentTarget.value);
+                }}
+              />
+            </label>
+            {item.kind.kind === "image" ? (
+              <div className="upload-staging-choice" role="group" aria-label={t("upload.sizeChoice")}>
+                <button
+                  className="dialog-button"
+                  type="button"
+                  aria-pressed={item.compression_choice.kind === "original"}
+                  onClick={() => {
+                    void onUpdateCompression(item.staged_id, { kind: "original" });
+                  }}
+                >
+                  {t("upload.original")}
+                </button>
+                <button
+                  className="dialog-button"
+                  type="button"
+                  aria-pressed={item.compression_choice.kind === "ask"}
+                  onClick={() => {
+                    void onUpdateCompression(item.staged_id, { kind: "ask" });
+                  }}
+                >
+                  {t("upload.ask")}
+                </button>
+                <button
+                  className="dialog-button"
+                  type="button"
+                  aria-pressed={item.compression_choice.kind === "compressed"}
+                  onClick={() => {
+                    void onUpdateCompression(item.staged_id, {
+                      kind: "compressed",
+                      mode: "always"
+                    });
+                  }}
+                >
+                  {t("upload.compressed")}
+                </button>
+              </div>
+            ) : null}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}

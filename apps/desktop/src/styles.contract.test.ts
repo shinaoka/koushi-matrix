@@ -4,6 +4,7 @@ import { describe, expect, test } from "vitest";
 
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const uiSharedSource = readFileSync(new URL("./app/uiShared.ts", import.meta.url), "utf8");
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -261,7 +262,7 @@ describe("styles.css token system", () => {
   });
 
   test("App.tsx centralizes fixed Lucide icon sizes", () => {
-    expect(appSource).toContain("const ICON_SIZE");
+    expect(uiSharedSource).toContain("const ICON_SIZE");
     expect(appSource).not.toMatch(/size=\{\d+\}/);
   });
 });
