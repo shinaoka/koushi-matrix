@@ -26,6 +26,7 @@ import { createDesktopApi } from "./backend/client";
 import { setActiveLocaleProfile, t } from "./i18n/messages";
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
 import {
+  type TimelineDiagnosticLogEntry,
   type TimelineDiagnostics,
   type TimelineTransport
 } from "./components/TimelineView";
@@ -41,10 +42,6 @@ import {
   shortcutActionFromMenuPayload,
   shortcutIdForKeyboardEvent
 } from "./domain/shortcuts";
-import {
-  restoreTimelineAnchor,
-  timelinePaginationAnchorEventId
-} from "./domain/timelineAnchor";
 import {
   effectiveRightPanelModeForSnapshot,
   type RightPanelContextMenuTarget,
@@ -71,7 +68,17 @@ import {
   type QaDomDiagnostics,
   type QaTimelineDiagnostics
 } from "./domain/qaTitle";
-import { diagnosticReport } from "./domain/diagnostics";
+import {
+  appendDiagnosticLogEntry,
+  diagnosticReport,
+  type DiagnosticLogEntry,
+  type SecurityDiagnostics
+} from "./domain/diagnostics";
+import {
+  createUiLatencySampler,
+  EMPTY_UI_LATENCY_DIAGNOSTICS,
+  type UiLatencyDiagnostics
+} from "./domain/uiLatency";
 import {
   type QaSendSmokeStatus,
   qaSendCompletionStatusFromCoreEvent,
@@ -153,6 +160,19 @@ const DEFAULT_HOMESERVER = "https://matrix.org";
 const MENU_EVENT_NAME = "koushi-desktop://menu";
 const STATE_EVENT_NAME = "koushi-desktop://state";
 const CORE_EVENT_NAME = "koushi-desktop://event";
+const STATE_EVENT_REFRESH_DEBOUNCE_MS = 250;
+const INITIAL_TIMELINE_DIAGNOSTICS: QaTimelineDiagnostics = {
+  visibleItems: 0,
+  downloadedItems: 0,
+  backfill: "unknown",
+  avatarMxcItems: 0,
+  avatarReadyItems: 0,
+  avatarPendingItems: 0,
+  avatarFailedItems: 0,
+  avatarMissingItems: 0,
+  avatarRenderedImages: 0,
+  avatarBrokenImages: 0
+};
 let tauriCoreEventListenerReady: Promise<void> = Promise.resolve();
 
 declare global {
@@ -266,6 +286,9 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
       },
       async downloadMedia(roomId: string, eventId: string) {
         await invoke("download_media", { roomId, eventId });
+      },
+      async downloadAvatarThumbnail(mxcUri: string) {
+        await invoke("download_avatar_thumbnail", { mxcUri });
       },
       async loadMessageSource(roomId: string, eventId: string) {
         await invoke("load_message_source", { roomId, eventId });
@@ -680,6 +703,10 @@ function qaSendSmokeTargetUserId(): string | null {
   );
 }
 
+function verboseDiagnosticsEnabled(): boolean {
+  return import.meta.env.VITE_KOUSHI_VERBOSE_DIAGNOSTICS === "1";
+}
+
 function qaRenderedDomDiagnostics(): QaDomDiagnostics {
   const root = document.getElementById("root");
   const screen = document.querySelector('[data-testid="boot-error"]')
@@ -699,6 +726,90 @@ function qaRenderedDomDiagnostics(): QaDomDiagnostics {
     rootChildren: root?.childElementCount ?? 0,
     bodyTextLength: document.body.innerText.length
   };
+}
+
+function qaSecurityDiagnostics(): SecurityDiagnostics {
+  const avatarImages = Array.from(
+    document.querySelectorAll<HTMLImageElement>(
+      ".avatar img, .room-avatar img, .space-avatar img, .receipt-reader-avatar img"
+    )
+  );
+  return {
+    secureContext: window.isSecureContext,
+    locationProtocol: window.location.protocol,
+    locationOrigin: window.location.origin,
+    avatarImageSchemes: avatarImages.reduce<Record<string, number>>((counts, image) => {
+      const scheme = imageSrcScheme(image.currentSrc || image.src);
+      counts[scheme] = (counts[scheme] ?? 0) + 1;
+      return counts;
+    }, {}),
+    avatarBrokenImages: avatarImages.filter((image) => !image.complete || image.naturalWidth === 0)
+      .length
+  };
+}
+
+function imageSrcScheme(src: string): string {
+  try {
+    const protocol = new URL(src, window.location.href).protocol;
+    return protocol.endsWith(":") ? protocol.slice(0, -1) : protocol;
+  } catch {
+    return "invalid";
+  }
+}
+
+function useUiLatencyDiagnostics(): UiLatencyDiagnostics {
+  const [diagnostics, setDiagnostics] = useState<UiLatencyDiagnostics>(
+    EMPTY_UI_LATENCY_DIAGNOSTICS
+  );
+
+  useEffect(() => {
+    if (typeof window.requestAnimationFrame !== "function") {
+      return;
+    }
+    const sampler = createUiLatencySampler();
+    let frameId = 0;
+    let lastFrameAt = 0;
+    let lastPublishedAt = 0;
+    let cancelled = false;
+
+    const publishIfChanged = (next: UiLatencyDiagnostics) => {
+      setDiagnostics((current) =>
+        current.samples === next.samples &&
+        current.lastFrameGapMs === next.lastFrameGapMs &&
+        current.averageFrameGapMs === next.averageFrameGapMs &&
+        current.maxFrameGapMs === next.maxFrameGapMs &&
+        current.longFrameCount === next.longFrameCount
+          ? current
+          : next
+      );
+    };
+
+    const tick = (now: number) => {
+      if (cancelled) {
+        return;
+      }
+      if (lastFrameAt === 0) {
+        lastFrameAt = now;
+        lastPublishedAt = now;
+      } else {
+        const next = sampler.recordFrame(now - lastFrameAt);
+        lastFrameAt = now;
+        if (now - lastPublishedAt >= 1000) {
+          lastPublishedAt = now;
+          publishIfChanged(next);
+        }
+      }
+      frameId = window.requestAnimationFrame(tick);
+    };
+
+    frameId = window.requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frameId);
+    };
+  }, []);
+
+  return diagnostics;
 }
 
 export function App() {
@@ -738,11 +849,10 @@ export function App() {
   const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>("closed");
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [qaSendStatus, setQaSendStatus] = useState<QaSendSmokeStatus>("idle");
-  const [timelineDiagnostics, setTimelineDiagnostics] = useState<QaTimelineDiagnostics>({
-    visibleItems: 0,
-    downloadedItems: 0,
-    backfill: "unknown"
-  });
+  const [timelineDiagnostics, setTimelineDiagnostics] =
+    useState<QaTimelineDiagnostics>(INITIAL_TIMELINE_DIAGNOSTICS);
+  const timelineDiagnosticsRef = useRef<QaTimelineDiagnostics>(INITIAL_TIMELINE_DIAGNOSTICS);
+  const [diagnosticLogEntries, setDiagnosticLogEntries] = useState<DiagnosticLogEntry[]>([]);
   const [savedSessions, setSavedSessions] = useState<SavedSessionInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<ActiveContextMenu | null>(null);
   const [isBusy, setIsBusy] = useState(false);
@@ -760,6 +870,8 @@ export function App() {
   const [createDraftName, setCreateDraftName] = useState("");
   const [reportDialog, setReportDialog] = useState<ReportDialogState | null>(null);
   const [reportReasonDraft, setReportReasonDraft] = useState("");
+  const uiLatencyDiagnostics = useUiLatencyDiagnostics();
+  const verboseDiagnosticBuild = verboseDiagnosticsEnabled();
   const searchTimer = useRef<number | null>(null);
   const qaSendStarted = useRef(false);
   const qaSendPending = useRef(false);
@@ -767,6 +879,8 @@ export function App() {
   const qaSendTargetSelectionRequested = useRef<string | null>(null);
   const qaSendBaselineErrorCount = useRef(0);
   const qaSendBaselineTimelineItems = useRef(0);
+  const stateRefreshTimerRef = useRef<number | null>(null);
+  const panelDiagnosticRef = useRef<string | null>(null);
   const typingSignalRef = useRef<{ roomId: string | null; isTyping: boolean }>({
     roomId: null,
     isTyping: false
@@ -796,18 +910,28 @@ export function App() {
       }
     };
   }, []);
-  const updateTimelineDiagnostics = useCallback((diagnostics: TimelineDiagnostics) => {
-    setTimelineDiagnostics((current) => {
-      if (
-        current.visibleItems === diagnostics.visibleItems &&
-        current.downloadedItems === diagnostics.downloadedItems &&
-        current.backfill === diagnostics.backfill
-      ) {
-        return current;
-      }
-      return diagnostics;
-    });
+  const appendDiagnosticLog = useCallback((entry: TimelineDiagnosticLogEntry) => {
+    setDiagnosticLogEntries((current) => appendDiagnosticLogEntry(current, entry));
   }, []);
+  const updateTimelineDiagnostics = useCallback((diagnostics: TimelineDiagnostics) => {
+    if (timelineDiagnosticsEqual(timelineDiagnosticsRef.current, diagnostics)) {
+      return;
+    }
+    timelineDiagnosticsRef.current = diagnostics;
+    appendDiagnosticLog({
+      timestampMs: Date.now(),
+      source: "timeline",
+      message: timelineDiagnosticsLogMessage(diagnostics)
+    });
+    setTimelineDiagnostics(diagnostics);
+  }, [appendDiagnosticLog]);
+  const appendPanelDiagnosticLog = useCallback((message: string) => {
+    appendDiagnosticLog({
+      timestampMs: Date.now(),
+      source: "panel",
+      message
+    });
+  }, [appendDiagnosticLog]);
   const attentionSummary = snapshot
     ? desktopAttentionSummary(snapshot.state.domain.native_attention)
     : null;
@@ -824,15 +948,46 @@ export function App() {
   const stagedUploadIdKey = stagedUploads.map((item) => item.staged_id).join("\n");
 
   useEffect(() => {
+    if (!snapshot) {
+      return;
+    }
+    const effectiveMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
+    const token = [
+      `mode=${effectiveMode}`,
+      `requested=${rightPanelMode}`,
+      `thread=${snapshot.state.ui.thread.kind}`,
+      `threads=${snapshot.state.ui.threads_list.kind}`
+    ].join(" ");
+    if (panelDiagnosticRef.current === token) {
+      return;
+    }
+    panelDiagnosticRef.current = token;
+    appendPanelDiagnosticLog(token);
+  }, [
+    appendPanelDiagnosticLog,
+    rightPanelMode,
+    snapshot?.state.ui.thread.kind,
+    snapshot?.state.ui.threads_list.kind
+  ]);
+
+  useEffect(() => {
     if (snapshot?.state.ui.timeline.room_id) {
       return;
     }
+    timelineDiagnosticsRef.current = INITIAL_TIMELINE_DIAGNOSTICS;
     setTimelineDiagnostics((current) =>
       current.visibleItems === 0 &&
       current.downloadedItems === 0 &&
-      current.backfill === "unknown"
+      current.backfill === "unknown" &&
+      current.avatarMxcItems === 0 &&
+      current.avatarReadyItems === 0 &&
+      current.avatarPendingItems === 0 &&
+      current.avatarFailedItems === 0 &&
+      current.avatarMissingItems === 0 &&
+      current.avatarRenderedImages === 0 &&
+      current.avatarBrokenImages === 0
         ? current
-        : { visibleItems: 0, downloadedItems: 0, backfill: "unknown" }
+        : INITIAL_TIMELINE_DIAGNOSTICS
     );
   }, [snapshot?.state.ui.timeline.room_id]);
 
@@ -1239,7 +1394,13 @@ export function App() {
     let disposed = false;
     let unlisten: (() => void) | null = null;
     void listen<string>(STATE_EVENT_NAME, () => {
-      void refresh();
+      if (stateRefreshTimerRef.current !== null) {
+        return;
+      }
+      stateRefreshTimerRef.current = window.setTimeout(() => {
+        stateRefreshTimerRef.current = null;
+        void refresh();
+      }, STATE_EVENT_REFRESH_DEBOUNCE_MS);
     }).then((dispose) => {
       if (disposed) {
         dispose();
@@ -1250,6 +1411,10 @@ export function App() {
 
     return () => {
       disposed = true;
+      if (stateRefreshTimerRef.current !== null) {
+        window.clearTimeout(stateRefreshTimerRef.current);
+        stateRefreshTimerRef.current = null;
+      }
       unlisten?.();
     };
   }, []);
@@ -1824,14 +1989,6 @@ export function App() {
 
   async function cancelComposerReply() {
     setSnapshot(await api.cancelComposerReply());
-  }
-
-  async function paginateTimelineBackwards(roomId: string) {
-    const anchorEventId = timelinePaginationAnchorEventId(snapshot?.timeline ?? []);
-    setSnapshot(await api.paginateTimelineBackwards(roomId));
-    requestAnimationFrame(() => {
-      restoreTimelineAnchor(document, anchorEventId);
-    });
   }
 
   async function sendText() {
@@ -2561,6 +2718,7 @@ export function App() {
             showSearchResults={effectiveRightPanelMode !== "search"}
             snapshot={snapshot}
             rightPanelOpen={rightPanelOpen}
+            timelineBackfill={timelineDiagnostics.backfill}
             timelineTransport={appTimelineTransport}
             onCancelReply={() => {
               void cancelComposerReply();
@@ -2583,7 +2741,6 @@ export function App() {
             }}
             onMentionIntentChange={setComposerMentions}
             onOpenThread={openThread}
-            onPaginateBackwards={paginateTimelineBackwards}
             onReply={(roomId, eventId) => {
               void setComposerReplyTarget(roomId, eventId);
             }}
@@ -2627,6 +2784,7 @@ export function App() {
               }
             }}
             onTimelineDiagnosticsChange={updateTimelineDiagnostics}
+            onTimelineDiagnosticLogEntry={appendDiagnosticLog}
           />
         )}
         <ContextualRightPanel
@@ -2711,6 +2869,7 @@ export function App() {
           onThreadReplySend={(roomId, rootEventId, body) => {
             void sendThreadReply(roomId, rootEventId, body);
           }}
+          onTimelineDiagnosticLogEntry={appendDiagnosticLog}
           onResolveComposerKeyAction={resolveComposerKeyAction}
           onAcceptVerification={(flowId) => {
             void acceptVerification(flowId);
@@ -2883,13 +3042,52 @@ export function App() {
             panelMode: effectiveRightPanelMode,
             sendStatus: qaSendStatus,
             timelineDiagnostics,
-            domDiagnostics: qaRenderedDomDiagnostics()
+            domDiagnostics: qaRenderedDomDiagnostics(),
+            uiLatencyDiagnostics,
+            logEntries: diagnosticLogEntries,
+            verboseDiagnostics: {
+              enabled: verboseDiagnosticBuild,
+              security: verboseDiagnosticBuild ? qaSecurityDiagnostics() : undefined
+            }
           })}
           onClose={() => setDiagnosticsOpen(false)}
         />
       ) : null}
     </div>
   );
+}
+
+function timelineDiagnosticsEqual(
+  left: QaTimelineDiagnostics,
+  right: QaTimelineDiagnostics
+): boolean {
+  return (
+    left.visibleItems === right.visibleItems &&
+    left.downloadedItems === right.downloadedItems &&
+    left.backfill === right.backfill &&
+    left.avatarMxcItems === right.avatarMxcItems &&
+    left.avatarReadyItems === right.avatarReadyItems &&
+    left.avatarPendingItems === right.avatarPendingItems &&
+    left.avatarFailedItems === right.avatarFailedItems &&
+    left.avatarMissingItems === right.avatarMissingItems &&
+    left.avatarRenderedImages === right.avatarRenderedImages &&
+    left.avatarBrokenImages === right.avatarBrokenImages
+  );
+}
+
+function timelineDiagnosticsLogMessage(diagnostics: QaTimelineDiagnostics): string {
+  return [
+    `items visible=${diagnostics.visibleItems}`,
+    `downloaded=${diagnostics.downloadedItems}`,
+    `backfill=${diagnostics.backfill}`,
+    `avatars mxc=${diagnostics.avatarMxcItems}`,
+    `ready=${diagnostics.avatarReadyItems}`,
+    `pending=${diagnostics.avatarPendingItems}`,
+    `failed=${diagnostics.avatarFailedItems}`,
+    `missing=${diagnostics.avatarMissingItems}`,
+    `rendered=${diagnostics.avatarRenderedImages}`,
+    `broken=${diagnostics.avatarBrokenImages}`
+  ].join(" ");
 }
 
 // Preserve App.tsx's original public export surface; these components now live in

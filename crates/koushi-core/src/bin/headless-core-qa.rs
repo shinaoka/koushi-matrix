@@ -5649,6 +5649,7 @@ async fn wait_for_operation_failed(
                     | AccountEvent::SavedSessionsListed { request_id: id, .. }
                     | AccountEvent::RecoveryCompleted { request_id: id, .. }
                     | AccountEvent::ProfileUpdated { request_id: id, .. }
+                    | AccountEvent::AvatarThumbnailDownloaded { request_id: id, .. }
                     | AccountEvent::ReportCompleted { request_id: id, .. }
                     | AccountEvent::LoggedOut { request_id: id, .. }
                     | AccountEvent::AccountSwitched { request_id: id, .. } => *id == request_id,
@@ -10178,11 +10179,13 @@ fn projection_timeline_item(event_id: &str, is_redacted: bool) -> TimelineItem {
         },
         sender: Some("@projection:example.invalid".to_owned()),
         sender_label: None,
+        sender_avatar: None,
         body: if is_redacted {
             None
         } else {
             Some("projection body".to_owned())
         },
+        notice_i18n_key: None,
         message_kind: Default::default(),
         spoiler_spans: Vec::new(),
         timestamp_ms: None,
@@ -10599,7 +10602,9 @@ mod tests {
                 },
                 sender: None,
                 sender_label: None,
+                sender_avatar: None,
                 body: Some("first item".to_owned()),
+                notice_i18n_key: None,
                 message_kind: Default::default(),
                 spoiler_spans: Vec::new(),
                 timestamp_ms: None,
@@ -10626,7 +10631,9 @@ mod tests {
                 },
                 sender: Some("@b:test".to_owned()),
                 sender_label: None,
+                sender_avatar: None,
                 body: Some("Phase 5 QA thread reply from B".to_owned()),
+                notice_i18n_key: None,
                 message_kind: Default::default(),
                 spoiler_spans: Vec::new(),
                 timestamp_ms: None,
@@ -10664,7 +10671,9 @@ mod tests {
             },
             sender: None,
             sender_label: None,
+            sender_avatar: None,
             body: Some("Phase 5 QA message 1".to_owned()),
+            notice_i18n_key: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: None,
@@ -10700,7 +10709,9 @@ mod tests {
             },
             sender: Some("@b:test".to_owned()),
             sender_label: None,
+            sender_avatar: None,
             body: Some("Phase 5 QA thread reply from B".to_owned()),
+            notice_i18n_key: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: None,
@@ -10747,7 +10758,9 @@ mod tests {
             },
             sender: Some("@member:test".to_owned()),
             sender_label: None,
+            sender_avatar: None,
             body: body.map(str::to_owned),
+            notice_i18n_key: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: None,
@@ -10973,7 +10986,9 @@ mod tests {
             },
             sender: Some("@b:test".to_owned()),
             sender_label: None,
+            sender_avatar: None,
             body: Some("Phase 5 QA thread reply from B".to_owned()),
+            notice_i18n_key: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: None,
@@ -11011,7 +11026,9 @@ mod tests {
             },
             sender: None,
             sender_label: None,
+            sender_avatar: None,
             body: Some("Phase 5 QA message 1".to_owned()),
+            notice_i18n_key: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: None,
@@ -11076,7 +11093,9 @@ mod tests {
                         },
                         sender: Some("@alice:test".to_owned()),
                         sender_label: None,
+                        sender_avatar: None,
                         body: Some("Phase 5 QA message 1".to_owned()),
+                        notice_i18n_key: None,
                         message_kind: Default::default(),
                         spoiler_spans: Vec::new(),
                         timestamp_ms: None,

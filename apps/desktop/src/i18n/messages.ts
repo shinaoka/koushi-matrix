@@ -590,6 +590,14 @@ export type MessageId =
   | "shortcut.uploadFile"
   | "timeline.conversation"
   | "timeline.conversationStart"
+  | "timeline.notice.roomCreate"
+  | "timeline.notice.roomPowerLevels"
+  | "timeline.notice.roomGuestAccess"
+  | "timeline.notice.roomEncryption"
+  | "timeline.notice.spaceParent"
+  | "timeline.notice.roomJoinRules"
+  | "timeline.notice.roomHistoryVisibility"
+  | "timeline.notice.roomPinnedEvents"
   | "timeline.editedMessage"
   | "timeline.editMessage"
   | "timeline.editBody"
@@ -635,6 +643,10 @@ export type MessageId =
   | "timeline.forwardMessage"
   | "timeline.messageSource"
   | "timeline.closeMessageSource"
+  | "timeline.sourceEventId"
+  | "timeline.copyEventId"
+  | "timeline.originalEventSource"
+  | "timeline.copyOriginalEventSource"
   | "timeline.sourceSender"
   | "timeline.sourceBody"
   | "timeline.sourceMetadata"
@@ -1419,6 +1431,14 @@ const en: Catalog = {
   "shortcut.uploadFile": "Upload file",
   "timeline.conversation": "Conversation timeline",
   "timeline.conversationStart": "Start of conversation",
+  "timeline.notice.roomCreate": "created the room",
+  "timeline.notice.roomPowerLevels": "updated room permissions",
+  "timeline.notice.roomGuestAccess": "updated guest access",
+  "timeline.notice.roomEncryption": "enabled room encryption",
+  "timeline.notice.spaceParent": "updated the parent space",
+  "timeline.notice.roomJoinRules": "updated join rules",
+  "timeline.notice.roomHistoryVisibility": "updated history visibility",
+  "timeline.notice.roomPinnedEvents": "updated pinned messages",
   "timeline.editedMessage": "Edited",
   "timeline.editMessage": "Edit message",
   "timeline.editBody": "Edit message body",
@@ -1464,6 +1484,10 @@ const en: Catalog = {
   "timeline.forwardMessage": "Forward",
   "timeline.messageSource": "Message source",
   "timeline.closeMessageSource": "Close message source",
+  "timeline.sourceEventId": "Event ID:",
+  "timeline.copyEventId": "Copy event ID",
+  "timeline.originalEventSource": "Original event source",
+  "timeline.copyOriginalEventSource": "Copy original event source",
   "timeline.sourceSender": "Sender",
   "timeline.sourceBody": "Body",
   "timeline.sourceMetadata": "State",
@@ -2138,6 +2162,14 @@ const ja: Catalog = {
   "shortcut.uploadFile": "ファイルをアップロード",
   "timeline.conversation": "会話タイムライン",
   "timeline.conversationStart": "会話の開始",
+  "timeline.notice.roomCreate": "ルームを作成しました",
+  "timeline.notice.roomPowerLevels": "ルーム権限を更新しました",
+  "timeline.notice.roomGuestAccess": "ゲストアクセスを更新しました",
+  "timeline.notice.roomEncryption": "ルームの暗号化を有効にしました",
+  "timeline.notice.spaceParent": "親スペースを更新しました",
+  "timeline.notice.roomJoinRules": "参加ルールを更新しました",
+  "timeline.notice.roomHistoryVisibility": "履歴の表示範囲を更新しました",
+  "timeline.notice.roomPinnedEvents": "ピン留めメッセージを更新しました",
   "timeline.editedMessage": "編集済み",
   "timeline.editMessage": "メッセージを編集",
   "timeline.editBody": "メッセージ本文を編集",
@@ -2183,6 +2215,10 @@ const ja: Catalog = {
   "timeline.forwardMessage": "転送",
   "timeline.messageSource": "メッセージソース",
   "timeline.closeMessageSource": "メッセージソースを閉じる",
+  "timeline.sourceEventId": "イベントID:",
+  "timeline.copyEventId": "イベントIDをコピー",
+  "timeline.originalEventSource": "元イベントソース",
+  "timeline.copyOriginalEventSource": "元イベントソースをコピー",
   "timeline.sourceSender": "送信者",
   "timeline.sourceBody": "本文",
   "timeline.sourceMetadata": "状態",

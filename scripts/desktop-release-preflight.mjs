@@ -53,6 +53,23 @@ requireCheck(Boolean(windows.wix), "windows.wix", "MSI/WiX configuration present
 requireCheck(Boolean(windows.wix?.upgradeCode), "windows.wix.upgradeCode", "stable MSI upgrade code fixed");
 requireCheck(Boolean(windows.nsis), "windows.nsis", "NSIS configuration present");
 
+const security = tauriConfig.app?.security ?? {};
+for (const [label, csp] of [
+  ["security.csp", security.csp],
+  ["security.devCsp", security.devCsp]
+]) {
+  requireCheck(
+    typeof csp === "string" && csp.includes("img-src") && csp.includes("asset:"),
+    `${label}.img-src.asset`,
+    "Tauri asset protocol allowed for local media/avatar images"
+  );
+  requireCheck(
+    typeof csp === "string" && csp.includes("http://asset.localhost"),
+    `${label}.img-src.assetLocalhost`,
+    "Tauri asset localhost allowed for WebView local media/avatar images"
+  );
+}
+
 requireCheck(
   packageJson.scripts?.["release:preflight"]?.includes("desktop-release-preflight"),
   "package.scripts.release:preflight",

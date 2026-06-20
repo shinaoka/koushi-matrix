@@ -107,7 +107,6 @@ export interface DesktopApi {
   selectSearchResult(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   openTimelineAtTimestamp(roomId: string, timestampMs: number): Promise<DesktopSnapshot>;
   closeFocusedContext(): Promise<DesktopSnapshot>;
-  paginateTimelineBackwards(roomId: string): Promise<DesktopSnapshot>;
   sendText(roomId: string, body: string, mentions?: MentionIntent): Promise<DesktopSnapshot>;
   scheduleSend(roomId: string, body: string, sendAtMs: number): Promise<DesktopSnapshot>;
   stageUploads(roomId: string, items: UploadStagingRequestItem[]): Promise<DesktopSnapshot>;
@@ -864,25 +863,6 @@ class BrowserFakeApi implements DesktopApi {
     }
 
     this.snapshot.state.ui.focused_context = { kind: "closed" };
-    return this.getSnapshot();
-  }
-
-  async paginateTimelineBackwards(roomId: string): Promise<DesktopSnapshot> {
-    if (
-      !this.canUseSyncedViews() ||
-      this.snapshot.state.ui.timeline.room_id !== roomId ||
-      this.snapshot.state.ui.timeline.is_paginating_backwards
-    ) {
-      return this.getSnapshot();
-    }
-
-    this.snapshot.state.ui.timeline.is_paginating_backwards = true;
-    const existingEventIds = new Set(this.snapshot.timeline.map((message) => message.event_id));
-    const olderMessages = backwardTimelineMessages.filter(
-      (message) => message.room_id === roomId && !existingEventIds.has(message.event_id)
-    );
-    this.snapshot.timeline = [...olderMessages, ...this.snapshot.timeline];
-    this.snapshot.state.ui.timeline.is_paginating_backwards = false;
     return this.getSnapshot();
   }
 

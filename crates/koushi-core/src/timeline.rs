@@ -47,18 +47,19 @@
 //! Message bodies appear in `TimelineItem.body` (visible UI state per canon)
 //! but never in error messages, log strings, or Debug output of error types.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use koushi_sdk::MatrixClientSession;
 use koushi_search::{AttachmentDocument, SensitiveString};
 use koushi_state::{
-    ActivityRow, AppAction, AttachmentKind, ComposerSendIntent, FormattedMessageDraft,
-    LiveEventReceipts, LiveReadReceipt, MediaTransferProgress, MentionIntent, OperationFailureKind,
-    ReplyQuote, ReplyQuoteState, SlashCommandIntent, TimelineMediaDownloadState,
-    TimelineMediaGalleryItem, TimelineMediaGalleryMedia, TimelineMediaGallerySource,
-    TimelineMediaGalleryThumbnail, TimelineMediaKind as GalleryTimelineMediaKind,
-    resolve_composer_send_intent,
+    ActivityRow, AppAction, AttachmentKind, AvatarImage, AvatarThumbnailState, ComposerSendIntent,
+    FormattedMessageDraft, LiveEventReceipts, LiveReadReceipt, MediaTransferProgress,
+    MentionIntent, OperationFailureKind, ReplyQuote, ReplyQuoteState, SlashCommandIntent,
+    TimelineMediaDownloadState, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
+    TimelineMediaGallerySource, TimelineMediaGalleryThumbnail,
+    TimelineMediaKind as GalleryTimelineMediaKind, resolve_composer_send_intent,
 };
 use matrix_sdk::attachment::{
     AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo, Thumbnail,
@@ -79,8 +80,9 @@ use matrix_sdk::ruma::html::{Html, SanitizerConfig};
 use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, RoomSendQueueUpdate, SendHandle};
 use matrix_sdk_ui::timeline::{
     EmbeddedEvent, EventSendState as SdkEventSendState, EventTimelineItem, InReplyToDetails,
-    ReactionStatus, ReactionsByKeyBySender, Timeline, TimelineDetails, TimelineEventItemId,
-    TimelineFocus, TimelineItem as SdkTimelineItem, TimelineItemContent, TimelineItemKind,
+    MembershipChange, Profile, ReactionStatus, ReactionsByKeyBySender, Timeline, TimelineDetails,
+    TimelineEventItemId, TimelineFocus, TimelineItem as SdkTimelineItem, TimelineItemContent,
+    TimelineItemKind,
 };
 use tokio::sync::{broadcast, mpsc};
 
@@ -685,7 +687,8 @@ impl TimelineManagerActor {
         };
 
         // If already subscribed, resubscribe: drop old actor, create new one.
-        // The old relay task's sender is dropped, cancelling it.
+        // TimelineView calls ensure after registering its listener so the
+        // freshly mounted view receives a fresh InitialItems batch.
         if self.timelines.contains_key(&key) {
             self.timelines.remove(&key);
         }
@@ -1240,11 +1243,22 @@ enum TimelineActorMessage {
 
 struct TimelineActorHandle {
     tx: mpsc::Sender<TimelineActorMessage>,
+    task: executor::JoinHandle<()>,
+    auxiliary_tasks: Vec<executor::JoinHandle<()>>,
 }
 
 impl TimelineActorHandle {
     async fn send(&self, msg: TimelineActorMessage) -> bool {
         self.tx.send(msg).await.is_ok()
+    }
+}
+
+impl Drop for TimelineActorHandle {
+    fn drop(&mut self) {
+        self.task.abort();
+        for task in &self.auxiliary_tasks {
+            task.abort();
+        }
     }
 }
 
@@ -1387,10 +1401,16 @@ impl TimelineActor {
             let _ = action_tx.try_send(vec![action]);
         }
 
+        let mut auxiliary_tasks = Vec::new();
+
         // Spawn the diff relay task: converts SDK VectorDiff stream into actor messages.
         let relay_tx = actor_tx.clone();
         let relay_timeline = timeline.clone();
-        executor::spawn(run_diff_relay(relay_tx, diff_stream, relay_timeline));
+        auxiliary_tasks.push(executor::spawn(run_diff_relay(
+            relay_tx,
+            diff_stream,
+            relay_timeline,
+        )));
 
         // Spawn the send queue monitor task: forwards RoomSendQueueUpdate to actor.
         let room_id_str = match &key.kind {
@@ -1406,12 +1426,16 @@ impl TimelineActor {
                     for echo in &local_echoes {
                         remember_local_echo(&mut send_statuses, &mut send_handles, echo);
                     }
-                    executor::spawn(run_send_queue_monitor(sq_tx, update_rx));
+                    auxiliary_tasks.push(executor::spawn(run_send_queue_monitor(sq_tx, update_rx)));
                 }
 
                 let (typing_guard, typing_rx) = room.subscribe_to_typing_notifications();
                 let typing_tx = actor_tx.clone();
-                executor::spawn(run_typing_notifications(typing_tx, typing_guard, typing_rx));
+                auxiliary_tasks.push(executor::spawn(run_typing_notifications(
+                    typing_tx,
+                    typing_guard,
+                    typing_rx,
+                )));
 
                 let mut actions = Vec::new();
                 let room_id = room_id_str.clone();
@@ -1463,9 +1487,13 @@ impl TimelineActor {
             messages_backpressure,
         };
 
-        executor::spawn(actor.run());
+        let task = executor::spawn(actor.run());
 
-        TimelineActorHandle { tx: actor_tx }
+        TimelineActorHandle {
+            tx: actor_tx,
+            task,
+            auxiliary_tasks,
+        }
     }
 
     async fn run(mut self) {
@@ -3225,7 +3253,9 @@ impl TimelineActor {
             }
 
             let projected = sdk_item_to_timeline_item(&self.key, item, self.own_user_id.as_deref());
-            return message_source_for_timeline_item(&projected);
+            let mut source = message_source_for_timeline_item(&projected)?;
+            source.original_json = original_json_for_event_item(event_item);
+            return Some(source);
         }
         None
     }
@@ -3793,14 +3823,13 @@ fn derive_timeline_navigation_snapshot(
     observation: &TimelineViewportObservation,
     own_user_id: Option<&str>,
 ) -> TimelineNavigationSnapshot {
-    let newer_event_count = newer_event_count(items, observation, own_user_id);
     let mut snapshot = TimelineNavigationSnapshot {
         read_marker_event_id: fully_read_event_id.map(ToOwned::to_owned),
         first_unread_event_id: None,
         unread_event_count: 0,
         unread_position: TimelineUnreadPosition::None,
-        newer_event_count,
-        can_jump_to_bottom: newer_event_count > 0,
+        newer_event_count: 0,
+        can_jump_to_bottom: false,
     };
 
     let Some(read_marker_event_id) = fully_read_event_id else {
@@ -3810,6 +3839,9 @@ fn derive_timeline_navigation_snapshot(
         snapshot.unread_position = TimelineUnreadPosition::Unknown;
         return snapshot;
     };
+    snapshot.newer_event_count =
+        newer_unread_event_count(items, observation, own_user_id, read_marker_index);
+    snapshot.can_jump_to_bottom = snapshot.newer_event_count > 0;
 
     let unread_items: Vec<(usize, &TimelineItem)> = items
         .iter()
@@ -3827,10 +3859,11 @@ fn derive_timeline_navigation_snapshot(
     snapshot
 }
 
-fn newer_event_count(
+fn newer_unread_event_count(
     items: &[TimelineItem],
     observation: &TimelineViewportObservation,
     own_user_id: Option<&str>,
+    read_marker_index: usize,
 ) -> u64 {
     if observation.at_bottom {
         return 0;
@@ -3841,9 +3874,10 @@ fn newer_event_count(
     let Some(last_visible_index) = item_index_for_event_id(items, last_visible_event_id) else {
         return 0;
     };
+    let first_newer_unread_index = last_visible_index.max(read_marker_index).saturating_add(1);
     items
         .iter()
-        .skip(last_visible_index.saturating_add(1))
+        .skip(first_newer_unread_index)
         .filter(|item| is_unread_navigation_item(item, own_user_id))
         .count() as u64
 }
@@ -4004,6 +4038,34 @@ fn timeline_formatted_body_is_renderable(formatted: &crate::event::TimelineForma
             .any(|block| !block.body.trim().is_empty())
 }
 
+fn timeline_sender_label_from_profile(profile: &TimelineDetails<Profile>) -> Option<String> {
+    match profile {
+        TimelineDetails::Ready(profile) => profile.display_name.clone(),
+        TimelineDetails::Unavailable | TimelineDetails::Pending | TimelineDetails::Error(_) => None,
+    }
+}
+
+fn timeline_sender_avatar_from_profile(profile: &TimelineDetails<Profile>) -> Option<AvatarImage> {
+    let TimelineDetails::Ready(profile) = profile else {
+        return None;
+    };
+    let avatar_url = profile.avatar_url.as_ref()?;
+    Some(AvatarImage {
+        mxc_uri: avatar_url.to_string(),
+        thumbnail: AvatarThumbnailState::NotRequested,
+    })
+}
+
+fn original_json_for_event_item(event_item: &EventTimelineItem) -> Option<serde_json::Value> {
+    event_item
+        .original_json()
+        .and_then(|raw| serde_json::from_str(raw.json().get()).ok())
+}
+
+fn timeline_item_should_be_hidden(has_renderable_content: bool, is_redacted: bool) -> bool {
+    !has_renderable_content && !is_redacted
+}
+
 fn item_index_for_event_id(items: &[TimelineItem], event_id: &str) -> Option<usize> {
     items
         .iter()
@@ -4123,6 +4185,9 @@ fn sdk_item_to_timeline_item_with_send_states(
             };
 
             let sender = Some(event_item.sender().to_string());
+            let sender_profile = event_item.sender_profile();
+            let sender_label = timeline_sender_label_from_profile(sender_profile);
+            let sender_avatar = timeline_sender_avatar_from_profile(sender_profile);
             let timestamp_ms = Some(event_item.timestamp().0.into());
 
             let content = event_item.content();
@@ -4130,6 +4195,10 @@ fn sdk_item_to_timeline_item_with_send_states(
             let body = message_projection
                 .as_ref()
                 .and_then(|projection| projection.body.clone());
+            let notice_i18n_key = message_projection
+                .as_ref()
+                .and_then(|projection| projection.notice_i18n_key)
+                .map(str::to_owned);
             let actionable_body = message_projection
                 .as_ref()
                 .filter(|projection| projection.body_is_user_content)
@@ -4150,11 +4219,12 @@ fn sdk_item_to_timeline_item_with_send_states(
                 .and_then(|projection| projection.formatted.clone());
             let has_renderable_content =
                 timeline_content_is_renderable(body.as_deref(), media.as_ref(), formatted.as_ref());
+            let is_redacted = content.is_redacted();
             let can_hold_reactions = content.reactions().is_some();
             let can_react = timeline_item_can_react(
                 event_item.event_id().is_some(),
                 can_hold_reactions,
-                content.is_redacted(),
+                is_redacted,
                 has_renderable_content,
             );
             let can_redact = timeline_item_can_redact(
@@ -4162,7 +4232,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 own_user_id
                     .map(|user_id| event_item.sender().as_str() == user_id.as_str())
                     .unwrap_or(false),
-                content.is_redacted(),
+                is_redacted,
                 has_renderable_content,
             );
             let can_edit = timeline_item_can_edit(
@@ -4170,7 +4240,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 own_user_id
                     .map(|user_id| event_item.sender().as_str() == user_id.as_str())
                     .unwrap_or(false),
-                content.is_redacted(),
+                is_redacted,
                 actionable_body.is_some(),
             );
             let in_reply_to = content.in_reply_to();
@@ -4204,14 +4274,16 @@ fn sdk_item_to_timeline_item_with_send_states(
                 &id,
                 actionable_body,
                 media.is_some(),
-                content.is_redacted(),
+                is_redacted,
             );
 
             TimelineItem {
                 id,
                 sender,
-                sender_label: None,
+                sender_label,
+                sender_avatar,
                 body,
+                notice_i18n_key,
                 message_kind,
                 spoiler_spans,
                 timestamp_ms,
@@ -4224,8 +4296,8 @@ fn sdk_item_to_timeline_item_with_send_states(
                 link_previews: None,
                 reactions,
                 can_react,
-                is_redacted: content.is_redacted(),
-                is_hidden: false,
+                is_redacted,
+                is_hidden: timeline_item_should_be_hidden(has_renderable_content, is_redacted),
                 can_redact,
                 is_edited,
                 can_edit,
@@ -4234,19 +4306,23 @@ fn sdk_item_to_timeline_item_with_send_states(
             }
         }
         TimelineItemKind::Virtual(virtual_item) => {
-            let synthetic_id = match virtual_item {
-                VirtualTimelineItem::DateDivider(ts) => format!("date-divider-{}", ts.0),
-                VirtualTimelineItem::ReadMarker => "read-marker".to_owned(),
-                VirtualTimelineItem::TimelineStart => "timeline-start".to_owned(),
+            let (synthetic_id, timestamp_ms, is_hidden) = match virtual_item {
+                VirtualTimelineItem::DateDivider(ts) => {
+                    (format!("date-divider-{}", ts.0), Some(ts.0.into()), false)
+                }
+                VirtualTimelineItem::ReadMarker => ("read-marker".to_owned(), None, true),
+                VirtualTimelineItem::TimelineStart => ("timeline-start".to_owned(), None, true),
             };
             TimelineItem {
                 id: TimelineItemId::Synthetic { synthetic_id },
                 sender: None,
                 sender_label: None,
+                sender_avatar: None,
                 body: None,
+                notice_i18n_key: None,
                 message_kind: TimelineMessageKind::default(),
                 spoiler_spans: Vec::new(),
-                timestamp_ms: None,
+                timestamp_ms,
                 in_reply_to_event_id: None,
                 formatted: None,
                 reply_quote: None,
@@ -4257,7 +4333,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 reactions: Vec::new(),
                 can_react: false,
                 is_redacted: false,
-                is_hidden: false,
+                is_hidden,
                 can_redact: false,
                 is_edited: false,
                 can_edit: false,
@@ -4292,6 +4368,7 @@ fn thread_summary_from_sdk(summary: matrix_sdk_ui::timeline::ThreadSummary) -> T
 
 struct MessageProjection {
     body: Option<String>,
+    notice_i18n_key: Option<&'static str>,
     body_is_user_content: bool,
     message_kind: TimelineMessageKind,
     spoiler_spans: Vec<TimelineSpoilerSpan>,
@@ -4360,10 +4437,26 @@ fn message_projection_from_timeline_content(content: &TimelineItemContent) -> Me
         return message_projection_from_msgtype(message.msgtype(), message.body());
     }
 
+    match content {
+        TimelineItemContent::MembershipChange(change) => {
+            return membership_change_projection(
+                &change
+                    .display_name()
+                    .unwrap_or_else(|| change.user_id().to_string()),
+                change.change(),
+            );
+        }
+        TimelineItemContent::ProfileChange(change) => {
+            return profile_change_projection(change);
+        }
+        _ => {}
+    }
+
     if let Some(sticker) = content.as_sticker() {
         let body = sticker.content().body.trim();
         return MessageProjection {
             body: (!body.is_empty()).then(|| body.to_owned()),
+            notice_i18n_key: None,
             body_is_user_content: true,
             message_kind: TimelineMessageKind::Text,
             spoiler_spans: Vec::new(),
@@ -4383,6 +4476,7 @@ fn message_projection_from_timeline_content(content: &TimelineItemContent) -> Me
     if content.is_redacted() {
         return MessageProjection {
             body: None,
+            notice_i18n_key: None,
             body_is_user_content: false,
             message_kind: TimelineMessageKind::Text,
             spoiler_spans: Vec::new(),
@@ -4394,12 +4488,96 @@ fn message_projection_from_timeline_content(content: &TimelineItemContent) -> Me
     let event_type = content
         .event_type_str()
         .unwrap_or_else(|| "unsupported Matrix event".to_owned());
-    non_user_content_projection(&format!("Unsupported event: {event_type}"))
+    state_event_notice_projection(&event_type)
+}
+
+fn state_event_notice_projection(event_type: &str) -> MessageProjection {
+    MessageProjection {
+        body: Some(state_event_notice_body(event_type).into_owned()),
+        notice_i18n_key: state_event_notice_i18n_key(event_type),
+        body_is_user_content: false,
+        message_kind: TimelineMessageKind::Notice,
+        spoiler_spans: Vec::new(),
+        media: None,
+        formatted: None,
+    }
+}
+
+fn state_event_notice_body(event_type: &str) -> Cow<'_, str> {
+    match event_type {
+        "m.room.create" => Cow::Borrowed("created the room"),
+        "m.room.power_levels" => Cow::Borrowed("updated room permissions"),
+        "m.room.guest_access" => Cow::Borrowed("updated guest access"),
+        "m.room.encryption" => Cow::Borrowed("enabled room encryption"),
+        "m.space.parent" => Cow::Borrowed("updated the parent space"),
+        "m.room.join_rules" => Cow::Borrowed("updated join rules"),
+        "m.room.history_visibility" => Cow::Borrowed("updated history visibility"),
+        "m.room.pinned_events" => Cow::Borrowed("updated pinned messages"),
+        _ => Cow::Owned(format!("Unsupported event: {event_type}")),
+    }
+}
+
+fn state_event_notice_i18n_key(event_type: &str) -> Option<&'static str> {
+    match event_type {
+        "m.room.create" => Some("timeline.notice.roomCreate"),
+        "m.room.power_levels" => Some("timeline.notice.roomPowerLevels"),
+        "m.room.guest_access" => Some("timeline.notice.roomGuestAccess"),
+        "m.room.encryption" => Some("timeline.notice.roomEncryption"),
+        "m.space.parent" => Some("timeline.notice.spaceParent"),
+        "m.room.join_rules" => Some("timeline.notice.roomJoinRules"),
+        "m.room.history_visibility" => Some("timeline.notice.roomHistoryVisibility"),
+        "m.room.pinned_events" => Some("timeline.notice.roomPinnedEvents"),
+        _ => None,
+    }
+}
+
+fn membership_change_projection(
+    display_name: &str,
+    change: Option<MembershipChange>,
+) -> MessageProjection {
+    let action = match change {
+        Some(MembershipChange::Joined) | Some(MembershipChange::InvitationAccepted) => {
+            "joined the room"
+        }
+        Some(MembershipChange::Left) => "left the room",
+        Some(MembershipChange::Banned) => "was banned",
+        Some(MembershipChange::Unbanned) => "was unbanned",
+        Some(MembershipChange::Kicked) => "was kicked",
+        Some(MembershipChange::Invited) => "was invited",
+        Some(MembershipChange::InvitationRejected) => "rejected the invite",
+        Some(MembershipChange::InvitationRevoked) => "had their invite revoked",
+        Some(MembershipChange::Knocked) => "knocked",
+        Some(MembershipChange::KnockAccepted) => "had their knock accepted",
+        Some(MembershipChange::KnockRetracted) => "retracted their knock",
+        Some(MembershipChange::KnockDenied) => "had their knock denied",
+        Some(MembershipChange::KickedAndBanned) => "was kicked and banned",
+        Some(MembershipChange::None) => "had a membership update",
+        Some(MembershipChange::Error) | Some(MembershipChange::NotImplemented) | None => {
+            "had a membership change"
+        }
+    };
+    non_user_content_projection(&format!("{display_name} {action}"))
+}
+
+fn profile_change_projection(
+    change: &matrix_sdk_ui::timeline::MemberProfileChange,
+) -> MessageProjection {
+    let body = match (
+        change.displayname_change().is_some(),
+        change.avatar_url_change().is_some(),
+    ) {
+        (false, true) => "changed their profile picture",
+        (true, false) => "changed their display name",
+        (true, true) => "changed their display name and profile picture",
+        (false, false) => "updated their room profile",
+    };
+    non_user_content_projection(body)
 }
 
 fn non_user_content_projection(body: &str) -> MessageProjection {
     MessageProjection {
         body: Some(body.to_owned()),
+        notice_i18n_key: None,
         body_is_user_content: false,
         message_kind: TimelineMessageKind::Notice,
         spoiler_spans: Vec::new(),
@@ -4472,6 +4650,7 @@ fn message_projection_from_msgtype(
         ),
         _ => MessageProjection {
             body: Some(fallback_body.to_owned()),
+            notice_i18n_key: None,
             body_is_user_content: true,
             message_kind: TimelineMessageKind::Text,
             spoiler_spans: Vec::new(),
@@ -4504,6 +4683,7 @@ fn message_projection_from_body_and_formatted(
 
     MessageProjection {
         body,
+        notice_i18n_key: None,
         body_is_user_content: true,
         message_kind,
         spoiler_spans,
@@ -5384,7 +5564,8 @@ impl SendCompletionTracker {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::time::Duration;
 
     use koushi_state::{
@@ -5395,7 +5576,9 @@ mod tests {
         EmoteMessageEventContent, MessageType, NoticeMessageEventContent, TextMessageEventContent,
     };
     use matrix_sdk::ruma::{OwnedUserId, uint};
-    use matrix_sdk_ui::timeline::{ReactionInfo, ReactionStatus, ReactionsByKeyBySender};
+    use matrix_sdk_ui::timeline::{
+        MembershipChange, ReactionInfo, ReactionStatus, ReactionsByKeyBySender,
+    };
     use tokio::sync::broadcast;
 
     use super::*;
@@ -5422,6 +5605,55 @@ mod tests {
         TimelineKey::room(AccountKey("@a:test".to_owned()), "!r:test")
     }
 
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn timeline_actor_handle_drop_aborts_actor_and_auxiliary_tasks() {
+        let actor_alive = Arc::new(AtomicBool::new(true));
+        let auxiliary_alive = Arc::new(AtomicBool::new(true));
+        let (tx, mut rx) = mpsc::channel(1);
+        let (actor_started_tx, actor_started_rx) = tokio::sync::oneshot::channel();
+        let (auxiliary_started_tx, auxiliary_started_rx) = tokio::sync::oneshot::channel();
+        let actor_alive_for_task = actor_alive.clone();
+        let actor_task = executor::spawn(async move {
+            let _guard = DropFlag(actor_alive_for_task);
+            let _ = actor_started_tx.send(());
+            while rx.recv().await.is_some() {}
+        });
+        let auxiliary_alive_for_task = auxiliary_alive.clone();
+        let auxiliary_task = executor::spawn(async move {
+            let _guard = DropFlag(auxiliary_alive_for_task);
+            let _ = auxiliary_started_tx.send(());
+            futures_util::future::pending::<()>().await;
+        });
+        let auxiliary_sender = tx.clone();
+
+        actor_started_rx.await.expect("actor task should start");
+        auxiliary_started_rx
+            .await
+            .expect("auxiliary task should start");
+
+        let handle = TimelineActorHandle {
+            tx,
+            task: actor_task,
+            auxiliary_tasks: vec![auxiliary_task],
+        };
+        drop(handle);
+        executor::sleep(Duration::from_millis(25)).await;
+
+        assert!(!actor_alive.load(Ordering::SeqCst));
+        assert!(!auxiliary_alive.load(Ordering::SeqCst));
+        assert!(auxiliary_sender
+            .try_send(TimelineActorMessage::RelayOverflow)
+            .is_err());
+    }
+
     fn timeline_item(
         event_id: &str,
         body: Option<&str>,
@@ -5434,7 +5666,9 @@ mod tests {
             },
             sender: Some(sender.to_owned()),
             sender_label: None,
+            sender_avatar: None,
             body: body.map(ToOwned::to_owned),
+            notice_i18n_key: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1),
@@ -5638,6 +5872,61 @@ mod tests {
             TimelineUnreadPosition::BelowViewport
         );
         assert_eq!(snapshot.newer_event_count, 2);
+    }
+
+    #[test]
+    fn timeline_navigation_does_not_count_read_history_below_viewport_as_newer() {
+        let items = vec![
+            timeline_item("$visible:test", Some("visible"), "@alice:test", false),
+            timeline_item("$read-a:test", Some("read a"), "@alice:test", false),
+            timeline_item("$read-b:test", Some("read b"), "@alice:test", false),
+            timeline_item(
+                "$read-marker:test",
+                Some("read marker"),
+                "@alice:test",
+                false,
+            ),
+        ];
+
+        let snapshot = derive_timeline_navigation_snapshot(
+            &items,
+            Some("$read-marker:test"),
+            &TimelineViewportObservation {
+                first_visible_event_id: Some("$visible:test".to_owned()),
+                last_visible_event_id: Some("$visible:test".to_owned()),
+                at_bottom: false,
+            },
+            Some("@me:test"),
+        );
+
+        assert_eq!(snapshot.first_unread_event_id, None);
+        assert_eq!(snapshot.unread_event_count, 0);
+        assert_eq!(snapshot.newer_event_count, 0);
+        assert!(!snapshot.can_jump_to_bottom);
+    }
+
+    #[test]
+    fn timeline_navigation_does_not_count_newer_events_without_read_marker() {
+        let items = vec![
+            timeline_item("$visible:test", Some("visible"), "@alice:test", false),
+            timeline_item("$loaded:test", Some("loaded"), "@alice:test", false),
+        ];
+
+        let snapshot = derive_timeline_navigation_snapshot(
+            &items,
+            None,
+            &TimelineViewportObservation {
+                first_visible_event_id: Some("$visible:test".to_owned()),
+                last_visible_event_id: Some("$visible:test".to_owned()),
+                at_bottom: false,
+            },
+            Some("@me:test"),
+        );
+
+        assert_eq!(snapshot.read_marker_event_id, None);
+        assert_eq!(snapshot.unread_event_count, 0);
+        assert_eq!(snapshot.newer_event_count, 0);
+        assert!(!snapshot.can_jump_to_bottom);
     }
 
     #[test]
@@ -5866,6 +6155,96 @@ mod tests {
     }
 
     #[test]
+    fn membership_change_projection_is_a_supported_notice() {
+        let projection =
+            membership_change_projection("Alice", Some(MembershipChange::InvitationAccepted));
+
+        assert_eq!(projection.message_kind, TimelineMessageKind::Notice);
+        assert_eq!(projection.body.as_deref(), Some("Alice joined the room"));
+        assert_eq!(projection.body_is_user_content, false);
+        assert!(
+            !projection
+                .body
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Unsupported event: m.room.member")
+        );
+    }
+
+    #[test]
+    fn profile_change_projection_does_not_emit_user_id_body() {
+        let source = include_str!("timeline.rs");
+        let profile_branch = source
+            .split("TimelineItemContent::ProfileChange(change)")
+            .nth(1)
+            .expect("profile change branch should exist")
+            .split("_ => {}")
+            .next()
+            .expect("profile change branch should precede fallback branch");
+
+        assert!(
+            profile_branch.contains("profile_change_projection(change)"),
+            "profile changes should use Element-like notice text"
+        );
+        assert!(
+            !profile_branch.contains("change.user_id()"),
+            "timeline row body must not contain a raw Matrix user id for profile changes"
+        );
+    }
+
+    #[test]
+    fn pinned_events_projection_is_a_supported_notice() {
+        assert_eq!(
+            state_event_notice_body("m.room.pinned_events").as_ref(),
+            "updated pinned messages"
+        );
+        assert_eq!(
+            state_event_notice_body("m.room.create").as_ref(),
+            "created the room"
+        );
+        assert_eq!(
+            state_event_notice_body("m.room.power_levels").as_ref(),
+            "updated room permissions"
+        );
+        assert_eq!(
+            state_event_notice_body("m.room.guest_access").as_ref(),
+            "updated guest access"
+        );
+        assert_eq!(
+            state_event_notice_body("m.room.encryption").as_ref(),
+            "enabled room encryption"
+        );
+        assert_eq!(
+            state_event_notice_body("m.space.parent").as_ref(),
+            "updated the parent space"
+        );
+        assert_eq!(
+            state_event_notice_body("m.room.join_rules").as_ref(),
+            "updated join rules"
+        );
+        assert_eq!(
+            state_event_notice_body("m.room.history_visibility").as_ref(),
+            "updated history visibility"
+        );
+        assert_eq!(
+            state_event_notice_body("m.room.topic").as_ref(),
+            "Unsupported event: m.room.topic"
+        );
+    }
+
+    #[test]
+    fn supported_state_event_notices_carry_i18n_keys() {
+        let projection = state_event_notice_projection("m.room.power_levels");
+
+        assert_eq!(projection.body.as_deref(), Some("updated room permissions"));
+        assert_eq!(
+            projection.notice_i18n_key,
+            Some("timeline.notice.roomPowerLevels")
+        );
+        assert_eq!(projection.body_is_user_content, false);
+    }
+
+    #[test]
     fn message_projection_extracts_formatted_spoiler_spans_with_reason() {
         let msgtype = MessageType::Emote(EmoteMessageEventContent::html(
             "plain fallback",
@@ -5962,6 +6341,32 @@ mod tests {
     }
 
     #[test]
+    fn bodyless_event_backed_items_are_hidden_unless_redacted() {
+        assert!(timeline_item_should_be_hidden(false, false));
+        assert!(!timeline_item_should_be_hidden(true, false));
+        assert!(!timeline_item_should_be_hidden(false, true));
+    }
+
+    #[test]
+    fn sender_profile_projects_display_name_and_avatar_mxc() {
+        let profile = TimelineDetails::Ready(Profile {
+            display_name: Some("kamohara".to_owned()),
+            display_name_ambiguous: false,
+            avatar_url: Some(matrix_sdk::ruma::OwnedMxcUri::from(
+                "mxc://matrix.org/avatar".to_owned(),
+            )),
+        });
+
+        assert_eq!(
+            timeline_sender_label_from_profile(&profile),
+            Some("kamohara".to_owned())
+        );
+        let avatar = timeline_sender_avatar_from_profile(&profile).expect("avatar");
+        assert_eq!(avatar.mxc_uri, "mxc://matrix.org/avatar");
+        assert_eq!(avatar.thumbnail, AvatarThumbnailState::NotRequested);
+    }
+
+    #[test]
     fn composer_core_rejects_unknown_slash_command_locally() {
         assert_eq!(
             build_room_message_content_from_composer_body("/shrug nope", MentionIntent::default(),)
@@ -5997,7 +6402,9 @@ mod tests {
             },
             sender: Some(sender.to_owned()),
             sender_label: None,
+            sender_avatar: None,
             body: Some("body".to_owned()),
+            notice_i18n_key: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1),
@@ -6110,12 +6517,13 @@ mod tests {
         let spawn_offset = handle_subscribe_source
             .find(spawn_token)
             .expect("subscribe success should spawn the timeline actor");
-        let action_offset = handle_subscribe_source
+        let success_path = &handle_subscribe_source[spawn_offset..];
+        let action_offset = success_path
             .find(action_token)
             .expect("subscribe success should reduce TimelineSubscribed");
 
         assert!(
-            spawn_offset < action_offset,
+            action_offset > 0,
             "TimelineSubscribed should be reduced only after subscribe succeeds"
         );
         assert!(
@@ -6145,6 +6553,62 @@ mod tests {
         assert!(
             room_focus.contains("hide_threaded_events: true"),
             "room live timelines must hide threaded replies"
+        );
+    }
+
+    #[test]
+    fn thread_timeline_focus_uses_sdk_thread_pagination() {
+        let source = include_str!("timeline.rs");
+        let focus_source = source
+            .split("let focus = match &key.kind")
+            .nth(1)
+            .expect("subscribe focus match should exist")
+            .split("let timeline_result")
+            .next()
+            .expect("timeline build should follow focus selection");
+        let thread_focus = focus_source
+            .split("TimelineKind::Thread")
+            .nth(1)
+            .expect("thread timeline focus arm should exist")
+            .split("TimelineKind::Focused")
+            .next()
+            .expect("focused timeline focus arm should follow thread arm");
+
+        assert!(
+            thread_focus.contains("TimelineFocus::Thread"),
+            "thread panes should use SDK thread timelines so pagination follows thread relations"
+        );
+        assert!(
+            !thread_focus.contains("TimelineFocus::Event"),
+            "thread panes must not use event-context focus because later thread replies can be outside the context window"
+        );
+    }
+
+    #[test]
+    fn timeline_subscribe_replaces_existing_keys_to_replay_initial_items() {
+        let source = include_str!("timeline.rs");
+        let handle_subscribe_source = source
+            .split("async fn handle_subscribe")
+            .nth(1)
+            .expect("handle_subscribe should exist")
+            .split("async fn route_to_actor_or_fail")
+            .next()
+            .expect("route helper should follow handle_subscribe");
+        let existing_key_branch = handle_subscribe_source
+            .split("if self.timelines.contains_key(&key)")
+            .nth(1)
+            .expect("handle_subscribe should detect an existing subscription")
+            .split("let client = session.client()")
+            .next()
+            .expect("existing-subscription branch should precede SDK timeline creation");
+
+        assert!(
+            existing_key_branch.contains("self.timelines.remove(&key)"),
+            "re-ensuring an already subscribed timeline must rebuild the actor so a freshly mounted view receives InitialItems"
+        );
+        assert!(
+            !existing_key_branch.contains("return;"),
+            "existing subscriptions must continue into SDK timeline creation after dropping the old actor"
         );
     }
 

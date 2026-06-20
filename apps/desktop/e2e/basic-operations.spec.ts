@@ -3214,8 +3214,10 @@ test("message action menu dispatches source and forward through typed Rust contr
 
   const sourceDialog = page.getByRole("dialog", { name: "Message source" });
   await expect(sourceDialog).toBeVisible();
-  await expect(sourceDialog.getByText("Source body projected by Rust", { exact: true })).toBeVisible();
-  await expect(sourceDialog).toContainText("Edited");
+  await expect(sourceDialog.locator(".message-source-json")).toContainText(
+    '"body": "Source body projected by Rust"'
+  );
+  await expect(sourceDialog.locator(".message-source-json")).toContainText('"edited": true');
   await sourceDialog.getByRole("button", { name: "Close message source" }).click();
   await expect(sourceDialog).toHaveCount(0);
 
@@ -4395,6 +4397,53 @@ test("thread summary chip opens a thread timeline from keyed CoreEvents", async 
       .locator('aside[aria-label="Context panel"]')
       .getByText("Thread panel reply from keyed event stream", { exact: true })
   ).toBeVisible();
+});
+
+test("empty thread timeline initial generation zero triggers thread backfill", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+
+  await expect(page.getByRole("button", { name: /2 replies/ })).toBeVisible();
+  await page.getByRole("button", { name: /2 replies/ }).click();
+  await expect(page.getByText(t("panel.thread"), { exact: true })).toBeVisible();
+
+  const threadKey = threadTimelineKey(
+    "@harness-user:example.invalid",
+    "!harness-room:example.invalid",
+    "$seed-event:example.invalid"
+  );
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await page.evaluate(({ key }) => {
+    window.__harness.pushCoreEvent({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key,
+          generation: 0,
+          items: []
+        }
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+  }, {
+    key: threadKey
+  });
+
+  await expect
+    .poll(() => invocationCount(page, "paginate_thread_timeline_backwards"))
+    .toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("paginate_thread_timeline_backwards")[0]?.args)
+    )
+    .toEqual({
+      roomId: "!harness-room:example.invalid",
+      rootEventId: "$seed-event:example.invalid"
+    });
+  expect(await invocationCount(page, "paginate_timeline_backwards")).toBe(0);
 });
 
 test("thread panel scrollback invokes thread pagination command only", async ({

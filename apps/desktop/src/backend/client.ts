@@ -238,10 +238,6 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("select_room", { roomId });
   }
 
-  async paginateTimelineBackwards(roomId: string): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("paginate_timeline_backwards", { roomId });
-  }
-
   async sendText(
     roomId: string,
     body: string,

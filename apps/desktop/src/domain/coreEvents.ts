@@ -145,6 +145,7 @@ export interface TimelineMessageSource {
   is_redacted: boolean;
   is_edited: boolean;
   has_media: boolean;
+  original_json?: unknown | null;
 }
 
 export interface TimelineCodeBlock {
@@ -170,7 +171,9 @@ export interface TimelineItem {
   id: TimelineItemId;
   sender: string | null;
   sender_label?: string | null;
+  sender_avatar?: AvatarImage | null;
   body: string | null;
+  notice_i18n_key?: string | null;
   message_kind?: TimelineMessageKind;
   spoiler_spans?: TimelineSpoilerSpan[];
   timestamp_ms: number | null;
@@ -386,6 +389,13 @@ export type AccountEvent =
   | { LoggedOut: { request_id: RequestId; account_key: string } }
   | { AccountSwitched: { request_id: RequestId; account_key: string } }
   | { ProfileUpdated: { request_id: RequestId; account_key: string } }
+  | {
+      AvatarThumbnailDownloaded: {
+        request_id: RequestId;
+        mxc_uri: string;
+        thumbnail: AvatarThumbnailState;
+      };
+    }
   | { ReportCompleted: { request_id: RequestId; kind: ReportKind } };
 
 export type SyncBackendKind = "SyncService" | "LegacySync";

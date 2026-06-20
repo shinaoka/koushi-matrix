@@ -40,6 +40,7 @@ import {
 } from "../app/uiShared";
 import {
   TimelineView,
+  type TimelineDiagnosticLogEntry,
   type TimelineDiagnostics,
   type TimelineRowActionHandlers,
   type TimelineTransport
@@ -519,6 +520,7 @@ export function TimelinePane({
   showSearchResults,
   snapshot,
   rightPanelOpen,
+  timelineBackfill,
   timelineTransport,
   onCancelReply,
   onCancelScheduledSend,
@@ -531,7 +533,6 @@ export function TimelinePane({
   onEditMessage,
   onOpenContextMenu,
   onOpenThread,
-  onPaginateBackwards,
   onRedactMessage,
   onReply,
   onRescheduleScheduledSend,
@@ -543,7 +544,8 @@ export function TimelinePane({
   onToggleThread,
   onOpenRoomInfo,
   onOpenThreadsList,
-  onTimelineDiagnosticsChange
+  onTimelineDiagnosticsChange,
+  onTimelineDiagnosticLogEntry
 }: {
   activeRoomName: string;
   composerDraft: string;
@@ -555,6 +557,7 @@ export function TimelinePane({
   showSearchResults: boolean;
   snapshot: DesktopSnapshot;
   rightPanelOpen: boolean;
+  timelineBackfill: TimelineDiagnostics["backfill"];
   timelineTransport: TimelineTransport | null;
   onCancelReply: () => void;
   onCancelScheduledSend: (scheduledId: string) => void;
@@ -570,7 +573,6 @@ export function TimelinePane({
   onEditMessage: (message: { body: string | null; room_id: string; event_id: string }) => void;
   onOpenContextMenu: OpenContextMenu;
   onOpenThread: (roomId: string, rootEventId: string) => void;
-  onPaginateBackwards: (roomId: string) => void;
   onRedactMessage: (roomId: string, eventId: string) => void;
   onReply: TimelineRowActionHandlers["onReply"];
   onRescheduleScheduledSend: (scheduledId: string, sendAtMs: number) => void;
@@ -583,9 +585,12 @@ export function TimelinePane({
   onOpenRoomInfo: () => void;
   onOpenThreadsList: () => void;
   onTimelineDiagnosticsChange?: (diagnostics: TimelineDiagnostics) => void;
+  onTimelineDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
 }) {
   const timelineRoomId = snapshot.state.ui.timeline.room_id;
   const currentUserId = snapshot.state.domain.session.user_id ?? null;
+  const timelineBackfillBusy = timelineBackfill === "Paginating";
+  const timelineBackfillEnded = timelineBackfill === "EndReached";
   const activeRoom = timelineRoomId
     ? snapshot.state.domain.rooms.find((room) => room.room_id === timelineRoomId) ?? null
     : null;
@@ -676,18 +681,24 @@ export function TimelinePane({
             <button
               className="load-more-button"
               type="button"
-              disabled={!timelineRoomId || snapshot.state.ui.timeline.is_paginating_backwards}
+              disabled={
+                !timelineRoomId ||
+                !currentUserId ||
+                !timelineTransport ||
+                timelineBackfillBusy ||
+                timelineBackfillEnded
+              }
               onClick={() => {
-                if (timelineRoomId) {
-                  onPaginateBackwards(timelineRoomId);
+                if (timelineRoomId && currentUserId && timelineTransport) {
+                  void timelineTransport.paginateBackwards(
+                    roomTimelineKey(currentUserId, timelineRoomId)
+                  );
                 }
               }}
             >
               <Clock3 size={ICON_SIZE.compact} />
               <span>
-                {snapshot.state.ui.timeline.is_paginating_backwards
-                  ? t("timeline.loading")
-                  : t("timeline.olderMessages")}
+                {timelineBackfillBusy ? t("timeline.loading") : t("timeline.olderMessages")}
               </span>
             </button>
           </div>
@@ -715,6 +726,7 @@ export function TimelinePane({
               searchQuery={searchQuery}
               mediaDownloads={mediaDownloads}
               onDiagnosticsChange={onTimelineDiagnosticsChange}
+              onDiagnosticLogEntry={onTimelineDiagnosticLogEntry}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).

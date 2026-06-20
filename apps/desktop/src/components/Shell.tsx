@@ -27,6 +27,7 @@ import type {
   SearchScopeKind
 } from "../domain/types";
 import { contextMenuItems } from "../domain/contextMenus";
+import { mediaSourceUrl } from "../domain/mediaUrl";
 import { Tooltip } from "./Tooltip";
 import {
   ICON_SIZE,
@@ -75,11 +76,6 @@ export function TopBar({
   const syncStatus = syncStatePresentation(sync);
   return (
     <header className="titlebar">
-      <div className="traffic">
-        <span className="dot red" />
-        <span className="dot yellow" />
-        <span className="dot green" />
-      </div>
       <div className="history">
         <button className="icon-button" type="button" aria-label={t("action.back")}>
           ‹
@@ -670,7 +666,10 @@ export function EntityAvatar({
   fallback: string;
   fallbackMode?: "initials" | "compactLabel";
 }) {
-  const sourceUrl = avatar?.thumbnail.kind === "ready" ? avatar.thumbnail.source_url : null;
+  const sourceUrl =
+    avatar?.thumbnail.kind === "ready" ? mediaSourceUrl(avatar.thumbnail.source_url) : null;
+  const [failedSourceUrl, setFailedSourceUrl] = useState<string | null>(null);
+  const showImage = Boolean(sourceUrl && sourceUrl !== failedSourceUrl);
   const fallbackClassName =
     fallbackMode === "compactLabel" ? "avatar-fallback compact-label" : "avatar-fallback";
   const fallbackStyle =
@@ -681,8 +680,8 @@ export function EntityAvatar({
       : undefined;
   return (
     <span className={className} aria-hidden="true">
-      {sourceUrl ? (
-        <img src={sourceUrl} />
+      {showImage ? (
+        <img src={sourceUrl ?? undefined} onError={() => setFailedSourceUrl(sourceUrl)} />
       ) : (
         <span className={fallbackClassName} dir="auto" style={fallbackStyle}>
           {fallback}

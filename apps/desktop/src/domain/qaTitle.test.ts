@@ -5,6 +5,7 @@ import {
   qaDomDiagnosticTokens,
   qaSearchCrawlerDiagnosticTokens,
   qaTimelineDiagnosticTokens,
+  qaUiLatencyDiagnosticTokens,
   qaWindowTitle
 } from "./qaTitle";
 
@@ -274,13 +275,27 @@ describe("qaWindowTitle", () => {
     const tokens = qaTimelineDiagnosticTokens({
       visibleItems: 12,
       downloadedItems: 34,
-      backfill: "Paginating"
+      backfill: "Paginating",
+      avatarMxcItems: 8,
+      avatarReadyItems: 5,
+      avatarPendingItems: 2,
+      avatarFailedItems: 1,
+      avatarMissingItems: 4,
+      avatarRenderedImages: 3,
+      avatarBrokenImages: 1
     });
 
     expect(tokens).toEqual([
       "timeline_visible=12",
       "timeline_dl=34",
-      "timeline_backfill=Paginating"
+      "timeline_backfill=Paginating",
+      "timeline_avatar_mxc=8",
+      "timeline_avatar_ready=5",
+      "timeline_avatar_pending=2",
+      "timeline_avatar_failed=1",
+      "timeline_avatar_missing=4",
+      "timeline_avatar_rendered=3",
+      "timeline_avatar_broken=1"
     ]);
   });
 
@@ -295,6 +310,24 @@ describe("qaWindowTitle", () => {
       "dom_screen=auth",
       "dom_root_children=1",
       "dom_text_len=42"
+    ]);
+  });
+
+  test("summarizes UI latency diagnostics as coarse numeric tokens", () => {
+    expect(
+      qaUiLatencyDiagnosticTokens({
+        samples: 12,
+        lastFrameGapMs: 17.24,
+        averageFrameGapMs: 22.65,
+        maxFrameGapMs: 140.04,
+        longFrameCount: 3
+      })
+    ).toEqual([
+      "ui_frame_samples=12",
+      "ui_frame_last_ms=17.2",
+      "ui_frame_avg_ms=22.7",
+      "ui_frame_max_ms=140",
+      "ui_long_frames=3"
     ]);
   });
 });

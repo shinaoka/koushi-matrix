@@ -17,6 +17,8 @@
  *     — Phase 7 gate: test:ui-headless
  */
 
+import { readFileSync } from "node:fs";
+
 import { describe, expect, test } from "vitest";
 
 import type { TimelineItem, TimelineKey } from "./coreEvents";
@@ -29,11 +31,11 @@ import {
   createTimelineStore,
   getMediaUploadProgress,
   getItems,
+  getKeyState,
   getPaginationState,
   isAwaitingResync,
   shouldSuppressAutoBackfill
 } from "./timelineStore";
-import { restoreTimelineAnchor } from "./timelineAnchor";
 import { TauriIpcMock } from "../test/tauriIpcMock";
 
 // ---------------------------------------------------------------------------
@@ -67,6 +69,13 @@ function makeMsg(id: string, body: string): TimelineItem {
         sender_preview: ["@alice:example.invalid"]
       }
     ]
+  };
+}
+
+function makeMsgAt(id: string, body: string, timestampMs: number): TimelineItem {
+  return {
+    ...makeMsg(id, body),
+    timestamp_ms: timestampMs
   };
 }
 
@@ -133,6 +142,115 @@ describe("timeline store — diff application", () => {
     const items = getItems(store, KEY);
     expect(items).toHaveLength(2);
     expect(itemId(items[1])).toBe("$b");
+  });
+
+  test("PushBack preserves SDK VectorDiff order even when timestamps are older", () => {
+    let store = createTimelineStore();
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          makeMsgAt("$jun17", "Jun 17", 1_797_460_000_000),
+          makeMsgAt("$jun20", "Jun 20", 1_797_720_000_000)
+        ]
+      }
+    });
+
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 1,
+        batch_id: 2,
+        diffs: [{ PushBack: { item: makeMsgAt("$jun13", "Jun 13", 1_797_120_000_000) } }]
+      }
+    });
+
+    expect(getItems(store, KEY).map((item) => item.body)).toEqual(["Jun 17", "Jun 20", "Jun 13"]);
+  });
+
+  test("duplicate ItemsUpdated batch ids are ignored instead of reapplying index diffs", () => {
+    let store = createTimelineStore();
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [makeMsg("$a", "a"), makeMsg("$b", "b"), makeMsg("$c", "c")]
+      }
+    });
+
+    const repeatedBatch = {
+      key: KEY,
+      generation: 1,
+      batch_id: 2,
+      diffs: [{ Remove: { index: 1 } }]
+    };
+    store = applyTimelineEvent(store, { ItemsUpdated: repeatedBatch });
+    store = applyTimelineEvent(store, { ItemsUpdated: repeatedBatch });
+
+    expect(getItems(store, KEY).map((item) => itemId(item))).toEqual(["$a", "$c"]);
+  });
+
+  test("deduplicates repeated event ids from overlapping scrollback batches", () => {
+    let store = createTimelineStore();
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          makeMsgAt("$a", "first copy", 1_797_460_000_000),
+          makeMsgAt("$b", "neighbor", 1_797_720_000_000)
+        ]
+      }
+    });
+
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 1,
+        batch_id: 2,
+        diffs: [{ PushBack: { item: makeMsgAt("$a", "second copy", 1_797_460_000_000) } }]
+      }
+    });
+
+    const items = getItems(store, KEY);
+    expect(items.map((item) => itemId(item))).toEqual(["$a", "$b"]);
+    expect(items[0].body).toBe("first copy");
+  });
+
+  test("maintains item id and timestamp indexes alongside render items", () => {
+    const store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          makeMsgAt("$a", "first", 1_797_460_000_000),
+          makeMsgAt("$b", "second", 1_797_460_000_000)
+        ]
+      }
+    });
+
+    const state = getKeyState(store, KEY);
+    expect(state?.itemIndexById.get("$a")).toBe(0);
+    expect(state?.itemIndexById.get("$b")).toBe(1);
+    expect([...(state?.itemIdsByTimestamp.get(1_797_460_000_000) ?? [])]).toEqual(["$a", "$b"]);
+  });
+
+  test("render reducer avoids full-list sort and linear id scans", () => {
+    const source = readFileSync(new URL("./timelineStore.ts", import.meta.url), "utf8");
+    const renderReducerStart = source.indexOf("function applyDiffsForRender");
+    const renderReducerEnd = source.indexOf("/** True if any diff", renderReducerStart);
+    const renderReducer = source.slice(renderReducerStart, renderReducerEnd);
+
+    expect(renderReducer).toContain("itemIdsByTimestamp");
+    expect(renderReducer).toContain("itemIndexById");
+    expect(renderReducer).not.toContain(".sort(");
+    expect(renderReducer).not.toContain("findIndex(");
+    expect(renderReducer).not.toContain("insertionIndexForTimelineItem");
   });
 
   test("Set diff updates an existing item in-place", () => {
@@ -538,35 +656,6 @@ describe("scroll anchoring — prepend keeps anchor stable", () => {
     expect(itemId(prepended[0])).toBe("$older");
   });
 
-  test("restoreTimelineAnchor scrolls to the anchor element after prepend", () => {
-    const scrolledElements: string[] = [];
-    const mockRoot = {
-      querySelector: (selector: string) => {
-        const match = selector.match(/data-event-id="([^"]+)"/);
-        if (!match) return null;
-        const id = match[1];
-        return {
-          scrollIntoView: (_options?: ScrollIntoViewOptions) => {
-            scrolledElements.push(id);
-          }
-        };
-      }
-    };
-
-    const restored = restoreTimelineAnchor(mockRoot, "$first");
-    expect(restored).toBe(true);
-    expect(scrolledElements).toContain("$first");
-  });
-
-  test("restoreTimelineAnchor returns false when anchor element is not in DOM", () => {
-    const emptyRoot = { querySelector: () => null };
-    expect(restoreTimelineAnchor(emptyRoot, "$missing")).toBe(false);
-  });
-
-  test("restoreTimelineAnchor returns false for null anchor", () => {
-    const emptyRoot = { querySelector: () => null };
-    expect(restoreTimelineAnchor(emptyRoot, null)).toBe(false);
-  });
 });
 
 // ---------------------------------------------------------------------------

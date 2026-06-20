@@ -4,7 +4,7 @@
 use std::fmt;
 
 use koushi_state::{
-    ActivityStream, ActivityTab, AppState, AttachmentResult, AvatarThumbnailState,
+    ActivityStream, ActivityTab, AppState, AttachmentResult, AvatarImage, AvatarThumbnailState,
     CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, IdentityResetState,
     JapaneseCatalogProfile, KeyBackupStatus, LiveRoomSignalUpdate, LocalEncryptionHealth,
     MediaTransferProgress, NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind,
@@ -12,6 +12,7 @@ use koushi_state::{
     SessionState, SyncMode, ThreadsListItem, VerificationFlowState, resolve_user_display_name,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 use crate::failure::{CoreFailure, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, TimelineBatchId, TimelineGeneration, TimelineKey};
@@ -298,6 +299,11 @@ pub enum AccountEvent {
     ProfileUpdated {
         request_id: RequestId,
         account_key: AccountKey,
+    },
+    AvatarThumbnailDownloaded {
+        request_id: RequestId,
+        mxc_uri: String,
+        thumbnail: AvatarThumbnailState,
     },
     ReportCompleted {
         request_id: RequestId,
@@ -1129,6 +1135,8 @@ pub struct TimelineMessageSource {
     pub is_redacted: bool,
     pub is_edited: bool,
     pub has_media: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_json: Option<JsonValue>,
 }
 
 impl fmt::Debug for TimelineMessageSource {
@@ -1150,6 +1158,10 @@ impl fmt::Debug for TimelineMessageSource {
             .field("is_redacted", &self.is_redacted)
             .field("is_edited", &self.is_edited)
             .field("has_media", &self.has_media)
+            .field(
+                "original_json",
+                &self.original_json.as_ref().map(|_| "OriginalEventJson(..)"),
+            )
             .finish()
     }
 }
@@ -1169,6 +1181,7 @@ pub fn message_source_for_timeline_item(item: &TimelineItem) -> Option<TimelineM
         is_redacted: item.is_redacted,
         is_edited: item.is_edited,
         has_media: item.media.is_some(),
+        original_json: None,
     })
 }
 
@@ -1247,7 +1260,11 @@ pub struct TimelineItem {
     pub sender: Option<String>,
     #[serde(default)]
     pub sender_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_avatar: Option<AvatarImage>,
     pub body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice_i18n_key: Option<String>,
     #[serde(default)]
     pub message_kind: TimelineMessageKind,
     #[serde(default)]
@@ -1296,7 +1313,12 @@ impl fmt::Debug for TimelineItem {
                 "sender_label",
                 &self.sender_label.as_ref().map(|_| "SenderLabel(..)"),
             )
+            .field(
+                "sender_avatar",
+                &self.sender_avatar.as_ref().map(|_| "AvatarImage(..)"),
+            )
             .field("body", &self.body.as_ref().map(|_| "MessageBody(..)"))
+            .field("notice_i18n_key", &self.notice_i18n_key)
             .field("message_kind", &self.message_kind)
             .field("spoiler_spans", &self.spoiler_spans.len())
             .field("timestamp_ms", &self.timestamp_ms)
@@ -1821,7 +1843,9 @@ mod tests {
             },
             sender: Some("@alice:example.invalid".to_owned()),
             sender_label: None,
+            sender_avatar: None,
             body: Some("hello".to_owned()),
+            notice_i18n_key: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1_234),
@@ -1895,7 +1919,9 @@ mod tests {
             },
             sender: Some("@alice:example.invalid".to_owned()),
             sender_label: None,
+            sender_avatar: None,
             body: Some("reply body".to_owned()),
+            notice_i18n_key: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1_234),
@@ -1949,7 +1975,9 @@ mod tests {
             },
             sender: Some("@alice:example.invalid".to_owned()),
             sender_label: None,
+            sender_avatar: None,
             body: Some("plain fallback".to_owned()),
+            notice_i18n_key: None,
             message_kind: TimelineMessageKind::Emote,
             spoiler_spans: vec![TimelineSpoilerSpan {
                 start_utf16: 0,
@@ -2026,7 +2054,9 @@ mod tests {
             },
             sender: Some("@alice:example.invalid".to_owned()),
             sender_label: None,
+            sender_avatar: None,
             body: Some("copyable body".to_owned()),
+            notice_i18n_key: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1_234),
@@ -2127,6 +2157,16 @@ mod tests {
             is_redacted: false,
             is_edited: true,
             has_media: false,
+            original_json: Some(json!({
+                "event_id": "$event:test",
+                "sender": "@alice:test",
+                "type": "m.room.message",
+                "content": {
+                    "body": "private source body",
+                    "msgtype": "m.text"
+                },
+                "origin_server_ts": 1234
+            })),
         };
         let loaded = TimelineEvent::MessageSourceLoaded {
             request_id: fake_rid(30),
@@ -2160,7 +2200,17 @@ mod tests {
                         "thread_root": "$thread:test",
                         "is_redacted": false,
                         "is_edited": true,
-                        "has_media": false
+                        "has_media": false,
+                        "original_json": {
+                            "content": {
+                                "body": "private source body",
+                                "msgtype": "m.text"
+                            },
+                            "event_id": "$event:test",
+                            "origin_server_ts": 1234,
+                            "sender": "@alice:test",
+                            "type": "m.room.message"
+                        }
                     }
                 }
             })
@@ -2189,7 +2239,9 @@ mod tests {
             },
             sender: Some("@alice:example.invalid".to_owned()),
             sender_label: None,
+            sender_avatar: None,
             body: Some("hello".to_owned()),
+            notice_i18n_key: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1_234),
@@ -2235,7 +2287,9 @@ mod tests {
             },
             sender: Some("@alice:example.invalid".to_owned()),
             sender_label: None,
+            sender_avatar: None,
             body: Some("synthetic caption".to_owned()),
+            notice_i18n_key: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1_234),
@@ -2464,11 +2518,13 @@ mod tests {
             },
             sender: Some("@alice:example.invalid".to_owned()),
             sender_label: None,
+            sender_avatar: None,
             body: if is_redacted {
                 None
             } else {
                 Some("visible body".to_owned())
             },
+            notice_i18n_key: None,
             message_kind: Default::default(),
             spoiler_spans: Vec::new(),
             timestamp_ms: Some(1),

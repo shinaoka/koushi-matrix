@@ -300,6 +300,140 @@ test("timeline does not auto-backfill unless the setting enables it", async ({ p
     .toBe(0);
 });
 
+test("timeline prefetches older messages one batch before the top edge", async ({ page }) => {
+  await page.goto("/harness.html?autoLoadOlderMessages=true");
+  await page.waitForSelector("[data-testid=timeline-view]");
+  await pushInitialTimelineItems(page, 180);
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container).toHaveAttribute("data-total-items", "180");
+
+  // 3,500px is far above the old 80px top-edge trigger, but inside one
+  // 100-item batch in the deterministic harness (100 * 48px).
+  await container.evaluate((node) => {
+    node.scrollTop = 3_500;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__harness.invocationsOf("paginate_timeline_backwards").length)
+    )
+    .toBe(1);
+});
+
+test("large timelines keep only the viewport window in the DOM", async ({ page }) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+  await pushInitialTimelineItems(page, 1_000);
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container).toHaveAttribute("data-virtualized", "true");
+  await expect(container).toHaveAttribute("data-total-items", "1000");
+  await expect
+    .poll(() => container.locator("[data-item-id]").count())
+    .toBeLessThan(220);
+
+  await container.evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await expect(page.locator('[data-item-id="$m999"]')).toBeVisible();
+  await expect
+    .poll(() => container.locator("[data-item-id]").count())
+    .toBeLessThan(220);
+});
+
+test("timeline keeps SDK diff order and ignores duplicate update batches", async ({ page }) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 1, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: [
+        { ...makeItem("$jun17", "Jun 17"), timestamp_ms: 1_797_460_000_000 },
+        { ...makeItem("$jun20", "Jun 20"), timestamp_ms: 1_797_720_000_000 }
+      ]
+    }
+  );
+
+  await page.evaluate(
+    ({ key, item }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key,
+            generation: 1,
+            batch_id: 1,
+            diffs: [{ PushBack: { item } }]
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      item: { ...makeItem("$jun13", "Jun 13"), timestamp_ms: 1_797_120_000_000 }
+    }
+  );
+
+  await expect(page.locator("[data-item-id]")).toHaveCount(3);
+  await expect(page.locator("[data-item-id]").nth(0)).toHaveAttribute("data-item-id", "$jun17");
+  await expect(page.locator("[data-item-id]").nth(1)).toHaveAttribute("data-item-id", "$jun20");
+  await expect(page.locator("[data-item-id]").nth(2)).toHaveAttribute("data-item-id", "$jun13");
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 2, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: [makeItem("$a", "a"), makeItem("$b", "b"), makeItem("$c", "c")]
+    }
+  );
+  await expect(page.locator("[data-timeline-generation]")).toHaveAttribute(
+    "data-timeline-generation",
+    "2"
+  );
+
+  const repeatedRemoveBatch = {
+    kind: "Timeline",
+    event: {
+      ItemsUpdated: {
+        key: timelineKey(),
+        generation: 2,
+        batch_id: 2,
+        diffs: [{ Remove: { index: 1 } }]
+      }
+    }
+  };
+  await page.evaluate((payload) => {
+    window.__harness.pushCoreEvent(payload as any);
+    window.__harness.pushCoreEvent(payload as any);
+  }, repeatedRemoveBatch);
+
+  await expect(page.locator("[data-item-id]")).toHaveCount(2);
+  await expect(page.locator("[data-item-id]").nth(0)).toHaveAttribute("data-item-id", "$a");
+  await expect(page.locator("[data-item-id]").nth(1)).toHaveAttribute("data-item-id", "$c");
+});
+
 test("timeline navigation renders Rust-owned unread controls and sends viewport facts", async ({
   page
 }) => {

@@ -46,7 +46,7 @@ static NEXT_TRANSACTION_ID: AtomicU64 = AtomicU64::new(1);
 #[cfg(any(debug_assertions, test))]
 const QA_RECOVERY_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const QA_TITLE_ENV: &str = "KOUSHI_QA_TITLE";
-const TIMELINE_BACKWARDS_PAGE_EVENT_COUNT: u16 = 30;
+const TIMELINE_BACKWARDS_PAGE_EVENT_COUNT: u16 = 100;
 
 pub(crate) mod account;
 pub(crate) mod activity;
@@ -1566,6 +1566,16 @@ pub(crate) fn build_set_avatar_command(
     })
 }
 
+pub(crate) fn build_download_avatar_thumbnail_command(
+    request_id: koushi_core::RequestId,
+    mxc_uri: String,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::DownloadAvatarThumbnail {
+        request_id,
+        mxc_uri,
+    })
+}
+
 pub(crate) fn build_leave_room_command(
     request_id: koushi_core::RequestId,
     room_id: String,
@@ -2649,7 +2659,7 @@ mod tests {
                     }
                 );
                 assert_eq!(direction, PaginationDirection::Backward);
-                assert_eq!(event_count, 30);
+                assert_eq!(event_count, 100);
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -4265,7 +4275,7 @@ mod tests {
                     }
                 );
                 assert_eq!(direction, PaginationDirection::Backward);
-                assert_eq!(event_count, 30);
+                assert_eq!(event_count, 100);
             }
             other => panic!("unexpected command: {other:?}"),
         }

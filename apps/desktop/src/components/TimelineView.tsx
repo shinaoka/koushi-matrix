@@ -52,6 +52,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState
 } from "react";
@@ -61,11 +62,14 @@ import {
   contextMenuItems,
   type ContextMenuItem
 } from "../domain/contextMenus";
+import type { DiagnosticLogEntry } from "../domain/diagnostics";
 
 import type {
   AvatarThumbnailState,
   CoreEventPayload,
   MediaTransferProgress,
+  PaginationState,
+  TimelineEvent,
   TimelineItem,
   TimelineKey,
   TimelineNavigationSnapshot,
@@ -140,6 +144,8 @@ export interface TimelineTransport {
   unpinEvent(roomId: string, eventId: string): Promise<void>;
   /** Download an event-backed media attachment. */
   downloadMedia(roomId: string, eventId: string): Promise<void>;
+  /** Download a Matrix avatar thumbnail for a visible sender avatar MXC. */
+  downloadAvatarThumbnail?(mxcUri: string): Promise<void>;
   /** Request a Rust-owned safe source DTO for an event-backed item. */
   loadMessageSource(roomId: string, eventId: string): Promise<void>;
   /** Forward an event-backed message through Rust-owned source projection. */
@@ -276,7 +282,13 @@ function cssEscape(value: string): string {
 
 /** Distance (px) from the top edge that triggers automatic backfill. */
 const AUTO_BACKFILL_THRESHOLD_PX = 80;
+const AUTO_BACKFILL_PREFETCH_ITEMS = 100;
 const SCROLL_EDGE_TOLERANCE_PX = 2;
+const TIMELINE_VIRTUALIZATION_THRESHOLD = 600;
+const TIMELINE_VIRTUAL_OVERSCAN_ITEMS = 60;
+const TIMELINE_ESTIMATED_ITEM_HEIGHT_PX = 72;
+const TIMELINE_MIN_ITEM_HEIGHT_PX = 36;
+const TIMELINE_MAX_ITEM_HEIGHT_PX = 480;
 const REACTION_CHOICES = ["👍", "🎉", "❤️", "😂", "👀"] as const;
 
 const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "noop";
@@ -291,6 +303,12 @@ type TimelineAliasTarget = {
   userId: string;
   displayLabel: string;
   originalDisplayLabel: string;
+};
+
+type TimelineViewportMetrics = {
+  scrollTop: number;
+  clientHeight: number;
+  listOffsetTop: number;
 };
 
 export function renderTimelineMessageText(
@@ -1065,7 +1083,18 @@ export interface TimelineDiagnostics {
   visibleItems: number;
   downloadedItems: number;
   backfill: string;
+  avatarMxcItems: number;
+  avatarReadyItems: number;
+  avatarPendingItems: number;
+  avatarFailedItems: number;
+  avatarMissingItems: number;
+  avatarRenderedImages: number;
+  avatarBrokenImages: number;
 }
+
+export type TimelineDiagnosticLogEntry = DiagnosticLogEntry;
+
+const MAX_AVATAR_THUMBNAIL_ATTEMPTS = 2;
 
 export function TimelineView({
   timelineKey,
@@ -1087,7 +1116,8 @@ export function TimelineView({
   codeBlockWrap = true,
   searchQuery = "",
   mediaDownloads = {},
-  onDiagnosticsChange
+  onDiagnosticsChange,
+  onDiagnosticLogEntry
 }: {
   timelineKey: TimelineKey;
   roomId: string;
@@ -1116,16 +1146,29 @@ export function TimelineView({
   searchQuery?: string;
   mediaDownloads?: Record<string, TimelineMediaDownloadState>;
   onDiagnosticsChange?: (diagnostics: TimelineDiagnostics) => void;
+  onDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
 }) {
   const [store, setStore] = useState<TimelineStoreState>(createTimelineStore);
   const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
   const [navigationSnapshot, setNavigationSnapshot] =
     useState<TimelineNavigationSnapshot | null>(null);
+  const [avatarThumbnails, setAvatarThumbnails] = useState<Record<string, AvatarThumbnailState>>(
+    {}
+  );
   const [jumpDateValue, setJumpDateValue] = useState("");
   const [viewportAtBottom, setViewportAtBottom] = useState(false);
   const [aliasTarget, setAliasTarget] = useState<TimelineAliasTarget | null>(null);
   const [aliasDraft, setAliasDraft] = useState("");
+  const [viewportMetrics, setViewportMetrics] = useState<TimelineViewportMetrics>({
+    scrollTop: 0,
+    clientHeight: 0,
+    listOffsetTop: 0
+  });
+  const [virtualItemHeight, setVirtualItemHeight] = useState(
+    TIMELINE_ESTIMATED_ITEM_HEIGHT_PX
+  );
   const containerRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   /** Anchor captured before the latest prepend batch was applied. */
   const pendingAnchorRef = useRef<ScrollAnchor | null>(null);
   /** True from prepend-apply until anchor restoration completed. */
@@ -1135,9 +1178,40 @@ export function TimelineView({
   const readSignalEventRef = useRef<string | null>(null);
   const lastViewportObservationRef = useRef<string | null>(null);
   const downloadedEventIdsRef = useRef<Set<string>>(new Set());
+  const requestedAvatarMxcsRef = useRef<Set<string>>(new Set());
+  const avatarRetryCountsRef = useRef<Map<string, number>>(new Map());
+  const emptyThreadBackfillRequestedRef = useRef(false);
   const timelineKeyRef = useRef(timelineKey);
   timelineKeyRef.current = timelineKey;
   const timelineKeyHash = JSON.stringify(timelineKey);
+  const emitDiagnosticLog = useCallback(
+    (source: string, message: string) => {
+      onDiagnosticLogEntry?.({
+        timestampMs: Date.now(),
+        source,
+        message
+      });
+    },
+    [onDiagnosticLogEntry]
+  );
+  const updateViewportMetrics = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+    const next = {
+      scrollTop: container.scrollTop,
+      clientHeight: container.clientHeight,
+      listOffsetTop: listRef.current?.offsetTop ?? 0
+    };
+    setViewportMetrics((current) =>
+      current.scrollTop === next.scrollTop &&
+      current.clientHeight === next.clientHeight &&
+      current.listOffsetTop === next.listOffsetTop
+        ? current
+        : next
+    );
+  }, []);
 
   // --- Event subscription: apply CoreEvents to the store ---
   useEffect(() => {
@@ -1148,6 +1222,18 @@ export function TimelineView({
         anchorRestorePendingRef.current = false;
         setNavigationSnapshot(null);
         setStore((current) => applyGlobalResync(current));
+        return;
+      }
+      if (payload.kind === "Account" && "AvatarThumbnailDownloaded" in payload.event) {
+        const { mxc_uri, thumbnail } = payload.event.AvatarThumbnailDownloaded;
+        if (thumbnail.kind === "failed" && avatarThumbnailFailureIsRetryable(thumbnail)) {
+          const attempts = avatarRetryCountsRef.current.get(mxc_uri) ?? 0;
+          if (attempts < MAX_AVATAR_THUMBNAIL_ATTEMPTS) {
+            requestedAvatarMxcsRef.current.delete(mxc_uri);
+          }
+        }
+        emitDiagnosticLog("timeline.avatar", avatarThumbnailLogMessage(thumbnail));
+        setAvatarThumbnails((current) => ({ ...current, [mxc_uri]: thumbnail }));
         return;
       }
       if (payload.kind !== "Timeline") {
@@ -1188,6 +1274,10 @@ export function TimelineView({
       if (!timelineKeyEquals(eventKey, timelineKeyRef.current)) {
         return;
       }
+      emitTimelineEventDiagnosticLog(event, eventKey, emitDiagnosticLog);
+      if (timelineEventCompletesBackfillRequest(event)) {
+        backfillInFlightRef.current = false;
+      }
 
       // Prepend batches: capture the anchor BEFORE the diff is applied to
       // React state, so the layout effect can restore it after commit.
@@ -1223,7 +1313,7 @@ export function TimelineView({
     });
     void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
     return unsubscribe;
-  }, [timelineKeyHash, transport]);
+  }, [emitDiagnosticLog, timelineKeyHash, transport]);
 
   useEffect(() => {
     setNavigationSnapshot(null);
@@ -1231,21 +1321,106 @@ export function TimelineView({
     lastViewportObservationRef.current = null;
     readSignalEventRef.current = null;
     downloadedEventIdsRef.current = new Set();
+    requestedAvatarMxcsRef.current = new Set();
+    avatarRetryCountsRef.current = new Map();
+    emptyThreadBackfillRequestedRef.current = false;
+    backfillInFlightRef.current = false;
   }, [timelineKeyHash]);
 
   const items = getItems(store, timelineKey);
+  const visibleItems = useMemo(() => items.filter((item) => !item.is_hidden), [items]);
+  const virtualWindow = useMemo(() => {
+    if (visibleItems.length <= TIMELINE_VIRTUALIZATION_THRESHOLD) {
+      return {
+        virtualized: false,
+        startIndex: 0,
+        endIndex: visibleItems.length,
+        paddingTop: 0,
+        paddingBottom: 0,
+        items: visibleItems
+      };
+    }
+    const itemHeight = Math.max(
+      TIMELINE_MIN_ITEM_HEIGHT_PX,
+      Math.min(TIMELINE_MAX_ITEM_HEIGHT_PX, virtualItemHeight)
+    );
+    const viewportHeight = viewportMetrics.clientHeight || 600;
+    const relativeScrollTop = Math.max(
+      0,
+      viewportMetrics.scrollTop - viewportMetrics.listOffsetTop
+    );
+    const firstVisibleIndex = Math.floor(relativeScrollTop / itemHeight);
+    const startIndex = Math.max(0, firstVisibleIndex - TIMELINE_VIRTUAL_OVERSCAN_ITEMS);
+    const windowSize =
+      Math.ceil(viewportHeight / itemHeight) + TIMELINE_VIRTUAL_OVERSCAN_ITEMS * 2;
+    const endIndex = Math.min(visibleItems.length, startIndex + windowSize);
+    return {
+      virtualized: true,
+      startIndex,
+      endIndex,
+      paddingTop: Math.round(startIndex * itemHeight),
+      paddingBottom: Math.round((visibleItems.length - endIndex) * itemHeight),
+      items: visibleItems.slice(startIndex, endIndex)
+    };
+  }, [visibleItems, viewportMetrics, virtualItemHeight]);
+  const sideEffectItems = virtualWindow.virtualized ? virtualWindow.items : visibleItems;
   useEffect(() => {
+    const avatarDiagnostics = timelineAvatarDiagnostics(
+      visibleItems,
+      profileUsers,
+      avatarThumbnails
+    );
     for (const item of items) {
       if ("Event" in item.id) {
         downloadedEventIdsRef.current.add(item.id.Event.event_id);
       }
     }
     onDiagnosticsChange?.({
-      visibleItems: items.filter((item) => !item.is_hidden).length,
+      visibleItems: visibleItems.length,
       downloadedItems: downloadedEventIdsRef.current.size,
-      backfill: paginationStateDiagnosticLabel(getPaginationState(store, timelineKey, "Backward"))
+      backfill: paginationStateDiagnosticLabel(getPaginationState(store, timelineKey, "Backward")),
+      ...avatarDiagnostics,
+      ...timelineRenderedAvatarDiagnostics(containerRef.current)
     });
-  }, [items, onDiagnosticsChange, store, timelineKeyHash]);
+  }, [
+    avatarThumbnails,
+    items,
+    onDiagnosticsChange,
+    profileUsers,
+    store,
+    timelineKeyHash,
+    visibleItems
+  ]);
+  useEffect(() => {
+    if (!transport.downloadAvatarThumbnail) {
+      return;
+    }
+    for (const item of sideEffectItems) {
+      const profileAvatar = item.sender ? profileUsers[item.sender]?.avatar : null;
+      const avatar = item.sender_avatar ?? profileAvatar;
+      if (!avatar) {
+        continue;
+      }
+      const thumbnail = avatarThumbnails[avatar.mxc_uri] ?? avatar.thumbnail;
+      if (avatarThumbnailRequestShouldBeSkipped(thumbnail)) {
+        continue;
+      }
+      const attempts = avatarRetryCountsRef.current.get(avatar.mxc_uri) ?? 0;
+      if (attempts >= MAX_AVATAR_THUMBNAIL_ATTEMPTS) {
+        continue;
+      }
+      if (requestedAvatarMxcsRef.current.has(avatar.mxc_uri)) {
+        continue;
+      }
+      requestedAvatarMxcsRef.current.add(avatar.mxc_uri);
+      avatarRetryCountsRef.current.set(avatar.mxc_uri, attempts + 1);
+      emitDiagnosticLog("timeline.avatar", "avatar thumbnail request queued");
+      void transport.downloadAvatarThumbnail(avatar.mxc_uri).catch(() => {
+        requestedAvatarMxcsRef.current.delete(avatar.mxc_uri);
+        emitDiagnosticLog("timeline.avatar", "avatar thumbnail command failed");
+      });
+    }
+  }, [avatarThumbnails, emitDiagnosticLog, profileUsers, sideEffectItems, transport]);
   const notSentTransactionIds = items.flatMap((item) => {
     if (item.send_state?.kind !== "notSent" || !("Transaction" in item.id)) {
       return [];
@@ -1258,11 +1433,13 @@ export function TimelineView({
   const roomSignals = liveSignals?.rooms[roomId] ?? null;
   const roomTimelineRoomId = "Room" in timelineKey.kind ? timelineKey.kind.Room.room_id : null;
   const latestReadableEventId = latestEventBackedItemId(items);
+  const timelineKeyState = getKeyState(store, timelineKey);
+  const timelineInitialized = Boolean(timelineKeyState && !timelineKeyState.awaitingResync);
   // Stable, render-visible timeline generation for this key. Bumps when the
   // store replaces the list for a new generation (InitialItems / resync), so
-  // tests can poll a concrete attribute instead of sleeping. 0 = no
-  // InitialItems received yet.
-  const generation = getKeyState(store, timelineKey)?.generation ?? 0;
+  // tests can poll a concrete attribute instead of sleeping. 0 is a valid
+  // Core generation; use timelineInitialized to distinguish "not initialized".
+  const generation = timelineKeyState?.generation ?? 0;
   const onSendReaction = useCallback(
     (targetRoomId: string, eventId: string, reactionKey: string) => {
       void transport.sendReaction(targetRoomId, eventId, reactionKey).catch(() => undefined);
@@ -1465,19 +1642,55 @@ export function TimelineView({
       // Restoration complete: the next automatic fill request is allowed again.
       anchorRestorePendingRef.current = false;
     }
+    updateViewportMetrics();
     reportViewportObservation();
-  }, [items, reportViewportObservation]);
+  }, [items, reportViewportObservation, updateViewportMetrics]);
+
+  useLayoutEffect(() => {
+    if (!virtualWindow.virtualized) {
+      return;
+    }
+    const list = listRef.current;
+    if (!list) {
+      return;
+    }
+    const nodes = Array.from(
+      list.querySelectorAll<HTMLElement>(".timeline-item-frame")
+    ).slice(0, 40);
+    if (nodes.length === 0) {
+      return;
+    }
+    const totalHeight = nodes.reduce(
+      (total, node) => total + node.getBoundingClientRect().height,
+      0
+    );
+    const measuredAverage = Math.max(
+      TIMELINE_MIN_ITEM_HEIGHT_PX,
+      Math.min(TIMELINE_MAX_ITEM_HEIGHT_PX, totalHeight / nodes.length)
+    );
+    setVirtualItemHeight((current) =>
+      Math.abs(current - measuredAverage) > 4 ? measuredAverage : current
+    );
+  }, [
+    virtualWindow.endIndex,
+    virtualWindow.startIndex,
+    virtualWindow.virtualized,
+    visibleItems.length
+  ]);
 
   // --- Automatic backfill on scroll near the top ---
   const maybeAutoBackfill = useCallback(() => {
-    if (suppressPaginationUi || !autoLoadOlderMessages) {
+    if (suppressPaginationUi) {
       return;
     }
     const container = containerRef.current;
     if (!container) {
       return;
     }
-    if (container.scrollTop > AUTO_BACKFILL_THRESHOLD_PX) {
+    const backfillThreshold = autoLoadOlderMessages
+      ? Math.max(AUTO_BACKFILL_THRESHOLD_PX, virtualItemHeight * AUTO_BACKFILL_PREFETCH_ITEMS)
+      : 0;
+    if (container.scrollTop > backfillThreshold) {
       return;
     }
     // Block while: a previous diff's anchor restoration is pending, a
@@ -1491,25 +1704,95 @@ export function TimelineView({
     backfillInFlightRef.current = true;
     void transport
       .paginateBackwards(timelineKeyRef.current)
-      .catch(() => undefined)
-      .finally(() => {
+      .catch(() => {
         backfillInFlightRef.current = false;
       });
-  }, [store, transport, suppressPaginationUi, autoLoadOlderMessages]);
+  }, [store, transport, suppressPaginationUi, autoLoadOlderMessages, virtualItemHeight]);
   const onTimelineScroll = useCallback(() => {
+    updateViewportMetrics();
     reportViewportObservation();
     maybeAutoBackfill();
-  }, [maybeAutoBackfill, reportViewportObservation]);
+  }, [maybeAutoBackfill, reportViewportObservation, updateViewportMetrics]);
+  useEffect(() => {
+    if (!("Thread" in timelineKey.kind)) {
+      return;
+    }
+    if (
+      !timelineInitialized ||
+      items.length > 0 ||
+      suppressPaginationUi ||
+      isPaginating ||
+      endReached ||
+      emptyThreadBackfillRequestedRef.current ||
+      backfillInFlightRef.current
+    ) {
+      return;
+    }
+    emptyThreadBackfillRequestedRef.current = true;
+    backfillInFlightRef.current = true;
+    void transport
+      .paginateBackwards(timelineKeyRef.current)
+      .catch(() => {
+        backfillInFlightRef.current = false;
+      });
+  }, [
+    endReached,
+    isPaginating,
+    items.length,
+    suppressPaginationUi,
+    timelineKey.kind,
+    timelineKeyHash,
+    timelineInitialized,
+    transport
+  ]);
   const jumpToEvent = useCallback(
     (eventId: string) => {
       const container = containerRef.current;
+      const scrollMountedRowIntoView = () => {
+        const row = container?.querySelector<HTMLElement>(
+          `[data-event-id="${cssEscape(eventId)}"]`
+        );
+        row?.scrollIntoView({ block: "center", inline: "nearest" });
+      };
       const row = container?.querySelector<HTMLElement>(
         `[data-event-id="${cssEscape(eventId)}"]`
       );
-      row?.scrollIntoView({ block: "center", inline: "nearest" });
+      if (row) {
+        row.scrollIntoView({ block: "center", inline: "nearest" });
+        updateViewportMetrics();
+        reportViewportObservation();
+        return;
+      }
+      if (container && virtualWindow.virtualized) {
+        const itemIndex = visibleItems.findIndex(
+          (item) => "Event" in item.id && item.id.Event.event_id === eventId
+        );
+        if (itemIndex >= 0) {
+          container.scrollTop = Math.max(
+            0,
+            viewportMetrics.listOffsetTop +
+              itemIndex * virtualItemHeight -
+              container.clientHeight / 2
+          );
+          updateViewportMetrics();
+          requestAnimationFrame(() => {
+            scrollMountedRowIntoView();
+            updateViewportMetrics();
+            reportViewportObservation();
+          });
+          return;
+        }
+      }
       reportViewportObservation();
     },
-    [reportViewportObservation]
+    [
+      reportViewportObservation,
+      updateViewportMetrics,
+      viewportMetrics.listOffsetTop,
+      virtualItemHeight,
+      virtualWindow.virtualized,
+      visibleItems
+    ]
   );
   const jumpToBottom = useCallback(() => {
     const container = containerRef.current;
@@ -1521,12 +1804,14 @@ export function TimelineView({
       activeElement.blur();
     }
     container.scrollTop = container.scrollHeight;
+    updateViewportMetrics();
     reportViewportObservation();
     requestAnimationFrame(() => {
       container.scrollTop = container.scrollHeight;
+      updateViewportMetrics();
       reportViewportObservation();
     });
-  }, [reportViewportObservation]);
+  }, [reportViewportObservation, updateViewportMetrics]);
   const submitJumpDate = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
@@ -1573,6 +1858,9 @@ export function TimelineView({
       data-testid="timeline-view"
       data-end-reached={endReached || undefined}
       data-timeline-generation={generation}
+      data-virtualized={virtualWindow.virtualized || undefined}
+      data-total-items={visibleItems.length}
+      data-rendered-items={virtualWindow.items.length}
       ref={containerRef}
       style={{ overflowY: "auto", height: "100%" }}
       onScroll={onTimelineScroll}
@@ -1662,62 +1950,79 @@ export function TimelineView({
           </div>
         </div>
       ) : null}
-      {items.filter((item) => !item.is_hidden).map((item) => {
-        const eventId = "Event" in item.id ? item.id.Event.event_id : null;
-        const isFullyReadMarker = Boolean(
-          eventId && navigationMarkerEventId === eventId
-        );
-        return (
-          <div className="timeline-item-frame" key={timelineItemDomId(item.id)}>
-            {isFullyReadMarker ? (
-              <div className="read-marker" role="separator" aria-label={navigationMarkerLabel}>
-                <span>{navigationMarkerLabel}</span>
-              </div>
-            ) : null}
-            <TimelineItemRow
-              item={item}
-              roomId={roomId}
-              codeBlockWrap={codeBlockWrap}
-              searchQuery={searchQuery}
-              onReply={onReply}
-              onOpenThread={onOpenThread}
-              resolveComposerKeyAction={resolveComposerKeyAction}
-              mediaUploadProgress={mediaUploadProgressForItem(store, timelineKey, item)}
-              onSendReaction={onSendReaction}
-              onRedactReaction={onRedactReaction}
-              onEdit={onEdit}
-              onRedact={onRedact}
-              isPinned={eventId ? pinnedEventIds.includes(eventId) : false}
-              onPin={onPin}
-              onUnpin={onUnpin}
-              onDownloadMedia={onDownloadMedia}
-              onLoadMessageSource={onLoadMessageSource}
-              onForwardMessage={onForwardMessage}
-              onLoadLinkPreviews={onLoadLinkPreviews}
-              onHideLinkPreview={onHideLinkPreview}
-              onCopyText={onCopyText}
-              onOpenAliasDialog={onSetLocalUserAlias ? openAliasDialog : undefined}
-              forwardDestinations={effectiveForwardDestinations}
-              onRetrySend={onRetrySend}
-              onCancelSend={onCancelSend}
-              presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
-              profile={item.sender ? profileUsers[item.sender] : undefined}
-              currentUserId={currentUserId}
-              ignoredUserIds={ignoredUserIds}
-              onOpenContextMenu={onOpenContextMenu}
-              mentionProfileUsers={profileUsers}
-              mediaDownload={eventId ? mediaDownloads[eventId] : undefined}
-              receipts={eventId ? roomSignals?.receipts_by_event[eventId]?.readers ?? [] : []}
-              receiptTotalCount={
-                eventId ? roomSignals?.receipts_by_event[eventId]?.total_count ?? 0 : 0
-              }
-              receiptOverflowCount={
-                eventId ? roomSignals?.receipts_by_event[eventId]?.overflow_count ?? 0 : 0
-              }
-            />
-          </div>
-        );
-      })}
+      <div className="timeline-item-list" ref={listRef}>
+        {virtualWindow.virtualized ? (
+          <div
+            className="timeline-virtual-spacer"
+            aria-hidden="true"
+            style={{ blockSize: virtualWindow.paddingTop }}
+          />
+        ) : null}
+        {virtualWindow.items.map((item) => {
+          const eventId = "Event" in item.id ? item.id.Event.event_id : null;
+          const isFullyReadMarker = Boolean(
+            eventId && navigationMarkerEventId === eventId
+          );
+          return (
+            <div className="timeline-item-frame" key={timelineItemDomId(item.id)}>
+              {isFullyReadMarker ? (
+                <div className="read-marker" role="separator" aria-label={navigationMarkerLabel}>
+                  <span>{navigationMarkerLabel}</span>
+                </div>
+              ) : null}
+              <TimelineItemRow
+                item={item}
+                roomId={roomId}
+                codeBlockWrap={codeBlockWrap}
+                searchQuery={searchQuery}
+                onReply={onReply}
+                onOpenThread={onOpenThread}
+                resolveComposerKeyAction={resolveComposerKeyAction}
+                mediaUploadProgress={mediaUploadProgressForItem(store, timelineKey, item)}
+                onSendReaction={onSendReaction}
+                onRedactReaction={onRedactReaction}
+                onEdit={onEdit}
+                onRedact={onRedact}
+                isPinned={eventId ? pinnedEventIds.includes(eventId) : false}
+                onPin={onPin}
+                onUnpin={onUnpin}
+                onDownloadMedia={onDownloadMedia}
+                onLoadMessageSource={onLoadMessageSource}
+                onForwardMessage={onForwardMessage}
+                onLoadLinkPreviews={onLoadLinkPreviews}
+                onHideLinkPreview={onHideLinkPreview}
+                onCopyText={onCopyText}
+                onOpenAliasDialog={onSetLocalUserAlias ? openAliasDialog : undefined}
+                forwardDestinations={effectiveForwardDestinations}
+                onRetrySend={onRetrySend}
+                onCancelSend={onCancelSend}
+                presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
+                profile={item.sender ? profileUsers[item.sender] : undefined}
+                avatarThumbnails={avatarThumbnails}
+                currentUserId={currentUserId}
+                ignoredUserIds={ignoredUserIds}
+                onOpenContextMenu={onOpenContextMenu}
+                mentionProfileUsers={profileUsers}
+                mediaDownload={eventId ? mediaDownloads[eventId] : undefined}
+                receipts={eventId ? roomSignals?.receipts_by_event[eventId]?.readers ?? [] : []}
+                receiptTotalCount={
+                  eventId ? roomSignals?.receipts_by_event[eventId]?.total_count ?? 0 : 0
+                }
+                receiptOverflowCount={
+                  eventId ? roomSignals?.receipts_by_event[eventId]?.overflow_count ?? 0 : 0
+                }
+              />
+            </div>
+          );
+        })}
+        {virtualWindow.virtualized ? (
+          <div
+            className="timeline-virtual-spacer"
+            aria-hidden="true"
+            style={{ blockSize: virtualWindow.paddingBottom }}
+          />
+        ) : null}
+      </div>
       {roomSignals && roomSignals.typing_user_ids.length > 0 ? (
         <div className="typing-indicator" dir="auto">
           {formatTypingUsers(roomSignals.typing_user_ids)}
@@ -1797,6 +2102,7 @@ export function TimelineItemRow({
   onCancelSend = ignoreSendQueueAction,
   presence,
   profile,
+  avatarThumbnails = {},
   mentionProfileUsers = {},
   receipts = [],
   receiptTotalCount = receipts.length,
@@ -1833,6 +2139,7 @@ export function TimelineItemRow({
   onCancelSend?: TimelineRowActionHandlers["onCancelSend"];
   presence?: PresenceKind;
   profile?: UserProfile;
+  avatarThumbnails?: Record<string, AvatarThumbnailState>;
   mentionProfileUsers?: Record<string, UserProfile>;
   receipts?: LiveReadReceipt[];
   receiptTotalCount?: number;
@@ -1849,7 +2156,20 @@ export function TimelineItemRow({
   ) => void;
   mediaDownload?: TimelineMediaDownloadState;
 }) {
+  const [failedAvatarUrl, setFailedAvatarUrl] = useState<string | null>(null);
   const domId = timelineItemDomId(item.id);
+  const syntheticId = "Synthetic" in item.id ? item.id.Synthetic.synthetic_id : null;
+  const dateDividerTimestampMs = syntheticDateDividerTimestampMs(syntheticId, item.timestamp_ms);
+  if (dateDividerTimestampMs !== null) {
+    return (
+      <div className="read-marker timeline-date-divider" role="separator">
+        <span>{formatDateDividerLabel(dateDividerTimestampMs)}</span>
+      </div>
+    );
+  }
+  if (syntheticId !== null) {
+    return null;
+  }
   const transactionId = "Transaction" in item.id ? item.id.Transaction.transaction_id : null;
   const eventId = "Event" in item.id ? item.id.Event.event_id : null;
   const isRedacted = item.is_redacted;
@@ -1861,6 +2181,7 @@ export function TimelineItemRow({
   const [isReactionPickerOpen, setReactionPickerOpen] = useState(false);
   const [isActionMenuOpen, setActionMenuOpen] = useState(false);
   const [isForwardMenuOpen, setForwardMenuOpen] = useState(false);
+  const [actionMenuPlacement, setActionMenuPlacement] = useState<"above" | "below">("above");
   const [revealedSpoilers, setRevealedSpoilers] = useState<ReadonlySet<string>>(
     () => new Set()
   );
@@ -2111,6 +2432,11 @@ export function TimelineItemRow({
     onDownloadMedia(roomId, eventId);
   }, [eventId, onDownloadMedia, roomId]);
   const openActionMenu = useCallback(() => {
+    const triggerTop =
+      actionMenuTriggerRef.current?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY;
+    const tabsBottom =
+      document.querySelector<HTMLElement>(".tabs")?.getBoundingClientRect().bottom ?? 0;
+    setActionMenuPlacement(triggerTop - 180 < tabsBottom + 8 ? "below" : "above");
     setReactionPickerOpen(false);
     setForwardMenuOpen(false);
     setActionMenuOpen((current) => !current);
@@ -2172,8 +2498,11 @@ export function TimelineItemRow({
     canSetSenderAlias || canCopyMessage || canCopyPermalink || canViewSource || canForward;
   const canShowThreadSummary = Boolean(eventId && item.thread_summary);
   const canShowReactions = !isRedacted && !isEditing && item.reactions.length > 0;
+  const senderAvatar = item.sender_avatar ?? profile?.avatar ?? null;
   const avatarUrl =
-    profile?.avatar?.thumbnail.kind === "ready" ? profile.avatar.thumbnail.source_url : null;
+    thumbnailSourceUrl(senderAvatar ? avatarThumbnails[senderAvatar.mxc_uri] : null) ??
+    thumbnailSourceUrl(senderAvatar?.thumbnail);
+  const showAvatarImage = Boolean(avatarUrl && avatarUrl !== failedAvatarUrl);
   const senderDisplayLabel = item.sender_label?.trim() || item.sender || "";
   const senderOriginalLabel =
     profile?.original_display_label.trim() || profile?.display_name?.trim() || "";
@@ -2197,6 +2526,7 @@ export function TimelineItemRow({
   const receiptAriaLabel =
     receiptDetails.length > 0 ? `${receiptLabel}: ${receiptDetails.join("; ")}` : receiptLabel;
   const spoilerState = { revealed: revealedSpoilers, reveal: revealSpoiler };
+  const displayBody = localizedTimelineItemBody(item);
   const messageBodyClassName = [
     "message-body",
     item.formatted ? "message-formatted-body" : null,
@@ -2208,7 +2538,7 @@ export function TimelineItemRow({
   const messageBodyContent = item.formatted
     ? renderFormattedBody(item.formatted, codeBlockWrap, onCopyText, searchQuery, spoilerState)
     : renderTimelineMessageTextWithSpoilers(
-        item.body ?? "",
+        displayBody,
         item.spoiler_spans,
         searchQuery,
         mentionProfileUsers,
@@ -2322,7 +2652,11 @@ export function TimelineItemRow({
       onContextMenu={handleContextMenu}
     >
       <div className="avatar" aria-hidden="true">
-        {avatarUrl ? <img src={avatarUrl} /> : senderInitials(senderDisplayLabel || item.sender)}
+        {showAvatarImage ? (
+          <img src={avatarUrl ?? undefined} onError={() => setFailedAvatarUrl(avatarUrl)} />
+        ) : (
+          senderInitials(senderDisplayLabel || item.sender)
+        )}
       </div>
       <div className="message-main">
         <div className="message-heading">
@@ -2584,7 +2918,7 @@ export function TimelineItemRow({
             </button>
             {isActionMenuOpen ? (
               <div
-                className="message-action-menu"
+                className={`message-action-menu is-${actionMenuPlacement}`}
                 role="menu"
                 aria-label={t("timeline.messageActions")}
                 onKeyDown={(event) => {
@@ -2724,6 +3058,78 @@ function latestEventBackedItemId(items: TimelineItem[]): string | null {
   return null;
 }
 
+function emitTimelineEventDiagnosticLog(
+  event: TimelineEvent,
+  key: TimelineKey,
+  emit: (source: string, message: string) => void
+): void {
+  const kind = timelineKindDiagnosticLabel(key);
+  if ("InitialItems" in event) {
+    emit(
+      "timeline.event",
+      `kind=${kind} initial items=${event.InitialItems.items.length} generation=${event.InitialItems.generation}`
+    );
+    return;
+  }
+  if ("ItemsUpdated" in event) {
+    emit(
+      "timeline.event",
+      `kind=${kind} update diffs=${event.ItemsUpdated.diffs.length} generation=${event.ItemsUpdated.generation}`
+    );
+    return;
+  }
+  if ("PaginationStateChanged" in event) {
+    emit(
+      "timeline.event",
+      `kind=${kind} pagination direction=${event.PaginationStateChanged.direction} state=${paginationStateLogLabel(event.PaginationStateChanged.state)}`
+    );
+    return;
+  }
+  if ("NavigationUpdated" in event) {
+    emit(
+      "timeline.event",
+      `kind=${kind} navigation unread=${event.NavigationUpdated.snapshot.unread_event_count} newer=${event.NavigationUpdated.snapshot.newer_event_count} bottom=${event.NavigationUpdated.snapshot.can_jump_to_bottom}`
+    );
+    return;
+  }
+  if ("ResyncRequired" in event) {
+    emit("timeline.event", `kind=${kind} resync reason=${event.ResyncRequired.reason}`);
+  }
+}
+
+function timelineEventCompletesBackfillRequest(event: TimelineEvent): boolean {
+  if ("InitialItems" in event || "ResyncRequired" in event) {
+    return true;
+  }
+  if ("ItemsUpdated" in event) {
+    return batchContainsPrepend(event.ItemsUpdated.diffs);
+  }
+  if ("PaginationStateChanged" in event) {
+    return (
+      event.PaginationStateChanged.direction === "Backward" &&
+      event.PaginationStateChanged.state !== "Paginating"
+    );
+  }
+  return false;
+}
+
+function timelineKindDiagnosticLabel(key: TimelineKey): "room" | "thread" | "focused" {
+  if ("Room" in key.kind) {
+    return "room";
+  }
+  if ("Thread" in key.kind) {
+    return "thread";
+  }
+  return "focused";
+}
+
+function paginationStateLogLabel(state: PaginationState): string {
+  if (typeof state === "string") {
+    return state;
+  }
+  return `Failed(${state.Failed.kind})`;
+}
+
 function paginationStateDiagnosticLabel(
   state: ReturnType<typeof getPaginationState>
 ): string {
@@ -2736,29 +3142,99 @@ function paginationStateDiagnosticLabel(
   return "Unknown";
 }
 
+function timelineAvatarDiagnostics(
+  items: readonly TimelineItem[],
+  profileUsers: Record<string, UserProfile>,
+  avatarThumbnails: Record<string, AvatarThumbnailState>
+): Omit<
+  TimelineDiagnostics,
+  "visibleItems" | "downloadedItems" | "backfill" | "avatarRenderedImages" | "avatarBrokenImages"
+> {
+  const diagnostics = {
+    avatarMxcItems: 0,
+    avatarReadyItems: 0,
+    avatarPendingItems: 0,
+    avatarFailedItems: 0,
+    avatarMissingItems: 0
+  };
+  for (const item of items) {
+    const profileAvatar = item.sender ? profileUsers[item.sender]?.avatar : null;
+    const avatar = item.sender_avatar ?? profileAvatar;
+    if (!avatar) {
+      diagnostics.avatarMissingItems += 1;
+      continue;
+    }
+    diagnostics.avatarMxcItems += 1;
+    const thumbnail = avatarThumbnails[avatar.mxc_uri] ?? avatar.thumbnail;
+    if (thumbnail.kind === "ready") {
+      diagnostics.avatarReadyItems += 1;
+    } else if (thumbnail.kind === "failed") {
+      diagnostics.avatarFailedItems += 1;
+    } else {
+      diagnostics.avatarPendingItems += 1;
+    }
+  }
+  return diagnostics;
+}
+
+function timelineRenderedAvatarDiagnostics(container: HTMLElement | null): {
+  avatarRenderedImages: number;
+  avatarBrokenImages: number;
+} {
+  if (!container) {
+    return { avatarRenderedImages: 0, avatarBrokenImages: 0 };
+  }
+  const images = Array.from(container.querySelectorAll<HTMLImageElement>(".avatar img"));
+  return {
+    avatarRenderedImages: images.length,
+    avatarBrokenImages: images.filter((image) => image.complete && image.naturalWidth === 0).length
+  };
+}
+
+function avatarThumbnailRequestShouldBeSkipped(thumbnail: AvatarThumbnailState): boolean {
+  if (thumbnail.kind === "ready") {
+    return true;
+  }
+  return thumbnail.kind === "failed" && !avatarThumbnailFailureIsRetryable(thumbnail);
+}
+
+function avatarThumbnailFailureIsRetryable(thumbnail: AvatarThumbnailState): boolean {
+  return thumbnail.kind === "failed" && (
+    thumbnail.failureKind === "network" || thumbnail.failureKind === "sdk"
+  );
+}
+
+function avatarThumbnailLogMessage(thumbnail: AvatarThumbnailState): string {
+  if (thumbnail.kind === "ready") {
+    return "avatar thumbnail ready";
+  }
+  if (thumbnail.kind === "failed") {
+    return `avatar thumbnail failed kind=${thumbnail.failureKind}`;
+  }
+  return `avatar thumbnail ${thumbnail.kind}`;
+}
+
 function aliasTargetIsActive(target: TimelineAliasTarget): boolean {
   const displayLabel = target.displayLabel.trim();
   const originalDisplayLabel = target.originalDisplayLabel.trim();
   return Boolean(displayLabel && originalDisplayLabel && displayLabel !== originalDisplayLabel);
 }
 
-function MessageSourceDialog({
+export function MessageSourceDialog({
   source,
   onClose
 }: {
   source: TimelineMessageSource;
   onClose: () => void;
 }) {
-  const metadata: string[] = [];
-  if (source.is_edited) {
-    metadata.push(t("timeline.editedMessage"));
-  }
-  if (source.is_redacted) {
-    metadata.push(t("timeline.redactedMessage"));
-  }
-  if (source.has_media) {
-    metadata.push(t("timeline.sourceHasMedia"));
-  }
+  const sourceJson = messageSourceJson(source);
+  const sourceText = JSON.stringify(sourceJson, null, 2);
+  const copyEventId = useCallback(() => {
+    void writeClipboardText(source.event_id);
+  }, [source.event_id]);
+  const copySource = useCallback(() => {
+    void writeClipboardText(sourceText);
+  }, [sourceText]);
 
   return (
     <div
@@ -2777,24 +3253,75 @@ function MessageSourceDialog({
           <XCircle size={15} aria-hidden="true" />
         </button>
       </div>
-      <dl className="message-source-fields">
-        <div>
-          <dt>{t("timeline.sourceSender")}</dt>
-          <dd dir="auto">{source.sender ?? t("timeline.replyQuoteUnknownSender")}</dd>
-        </div>
-        <div>
-          <dt>{t("timeline.sourceBody")}</dt>
-          <dd dir="auto">{source.body ?? t("timeline.sourceNoBody")}</dd>
-        </div>
-        {metadata.length > 0 ? (
-          <div>
-            <dt>{t("timeline.sourceMetadata")}</dt>
-            <dd>{metadata.join(" · ")}</dd>
-          </div>
-        ) : null}
-      </dl>
+      <div className="message-source-event-id">
+        <span>{t("timeline.sourceEventId")}</span>
+        <code>{source.event_id}</code>
+        <button
+          className="message-source-copy"
+          type="button"
+          aria-label={t("timeline.copyEventId")}
+          onClick={copyEventId}
+        >
+          <Copy size={15} aria-hidden="true" />
+        </button>
+      </div>
+      <div className="message-source-section-header">
+        <h3>{t("timeline.originalEventSource")}</h3>
+        <button
+          className="message-source-copy"
+          type="button"
+          aria-label={t("timeline.copyOriginalEventSource")}
+          onClick={copySource}
+        >
+          <Copy size={15} aria-hidden="true" />
+        </button>
+      </div>
+      <pre className="message-source-json">
+        <code>{sourceText}</code>
+      </pre>
     </div>
   );
+}
+
+function messageSourceJson(source: TimelineMessageSource): unknown {
+  if (source.original_json && typeof source.original_json === "object") {
+    return source.original_json;
+  }
+
+  const content: Record<string, unknown> = {};
+  if (source.body) {
+    content.body = source.body;
+    content.msgtype = source.has_media ? "m.file" : "m.text";
+  }
+  if (source.in_reply_to_event_id) {
+    content["m.relates_to"] = {
+      "m.in_reply_to": {
+        event_id: source.in_reply_to_event_id
+      }
+    };
+  }
+  if (source.thread_root) {
+    content["m.relates_to"] = {
+      ...(typeof content["m.relates_to"] === "object" && content["m.relates_to"] !== null
+        ? (content["m.relates_to"] as Record<string, unknown>)
+        : {}),
+      rel_type: "m.thread",
+      event_id: source.thread_root
+    };
+  }
+
+  return {
+    content,
+    event_id: source.event_id,
+    origin_server_ts: source.timestamp_ms,
+    sender: source.sender,
+    type: "m.room.message",
+    unsigned: {
+      redacted: source.is_redacted || undefined,
+      edited: source.is_edited || undefined,
+      media: source.has_media || undefined
+    }
+  };
 }
 
 function formatTypingUsers(userIds: string[]): string {
@@ -2831,11 +3358,36 @@ function receiptInitials(receipt: LiveReadReceipt): string {
 }
 
 function receiptAvatarSource(receipt: LiveReadReceipt): string | null {
-  return receipt.avatar?.thumbnail.kind === "ready" ? receipt.avatar.thumbnail.source_url : null;
+  return receipt.avatar?.thumbnail.kind === "ready"
+    ? mediaSourceUrl(receipt.avatar.thumbnail.source_url)
+    : null;
 }
 
-function thumbnailSourceUrl(thumbnail: AvatarThumbnailState): string | null {
-  return thumbnail.kind === "ready" ? thumbnail.source_url : null;
+function syntheticDateDividerTimestampMs(
+  syntheticId: string | null,
+  timestampMs: number | null
+): number | null {
+  if (!syntheticId?.startsWith("date-divider-")) {
+    return null;
+  }
+  if (timestampMs !== null) {
+    return timestampMs;
+  }
+  const parsed = Number(syntheticId.slice("date-divider-".length));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatDateDividerLabel(timestampMs: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: "short",
+    year: "numeric",
+    month: "short",
+    day: "numeric"
+  }).format(new Date(timestampMs));
+}
+
+function thumbnailSourceUrl(thumbnail: AvatarThumbnailState | null | undefined): string | null {
+  return thumbnail?.kind === "ready" ? mediaSourceUrl(thumbnail.source_url) : null;
 }
 
 function formatReceiptTimestamp(timestampMs: number | null): string | null {
@@ -2881,6 +3433,29 @@ function replyQuoteBody(quote: NonNullable<TimelineItem["reply_quote"]>): string
     return t("timeline.replyQuoteUnsupported");
   }
   return t("timeline.replyQuoteUnavailable");
+}
+
+function localizedTimelineItemBody(item: TimelineItem): string {
+  switch (item.notice_i18n_key) {
+    case "timeline.notice.roomCreate":
+      return t("timeline.notice.roomCreate");
+    case "timeline.notice.roomPowerLevels":
+      return t("timeline.notice.roomPowerLevels");
+    case "timeline.notice.roomGuestAccess":
+      return t("timeline.notice.roomGuestAccess");
+    case "timeline.notice.roomEncryption":
+      return t("timeline.notice.roomEncryption");
+    case "timeline.notice.spaceParent":
+      return t("timeline.notice.spaceParent");
+    case "timeline.notice.roomJoinRules":
+      return t("timeline.notice.roomJoinRules");
+    case "timeline.notice.roomHistoryVisibility":
+      return t("timeline.notice.roomHistoryVisibility");
+    case "timeline.notice.roomPinnedEvents":
+      return t("timeline.notice.roomPinnedEvents");
+    default:
+      return item.body ?? "";
+  }
 }
 
 function senderInitials(sender: string | null): string {

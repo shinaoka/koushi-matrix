@@ -165,6 +165,27 @@ describe("desktop model", () => {
     ]);
   });
 
+  test("room list sections keep DMs global when the active Rooms projection omits them", () => {
+    const rooms: RoomSummary[] = [
+      roomSummary("!plain:example.invalid", "Plain", false),
+      roomSummary("!dm:example.invalid", "Direct", true)
+    ];
+    const roomList: DesktopSnapshot["state"]["ui"]["room_list"] = {
+      active_filter: { kind: "rooms" },
+      sort: { kind: "activity" },
+      items: [{ room_id: "!plain:example.invalid", kind: "room" }]
+    };
+
+    const sections = roomListSections(roomList, null, [], rooms, []);
+
+    expect(sections.rooms.map((room) => room.room_id)).toEqual([
+      "!plain:example.invalid"
+    ]);
+    expect(sections.people.map((room) => room.room_id)).toEqual([
+      "!dm:example.invalid"
+    ]);
+  });
+
   test("room list sections keep invite projection entries out of favourites", () => {
     const roomList: DesktopSnapshot["state"]["ui"]["room_list"] = {
       active_filter: { kind: "invites" },
@@ -286,21 +307,6 @@ describe("desktop model", () => {
     expect(results.map((result) => result.event_id)).toEqual(["$alpha-update"]);
     expect(results[0]?.match_field).toBe("messageBody");
     expect(results[0]?.highlights).toEqual([{ start_utf16: 0, end_utf16: 5 }]);
-  });
-
-  test("browser fake backward pagination prepends older timeline messages", async () => {
-    const api = createBrowserFakeApi();
-    const before = await api.getSnapshot();
-    const beforeEventIds = before.timeline.map((message) => message.event_id);
-
-    expect(beforeEventIds).not.toContain("$alpha-history");
-
-    const snapshot = await api.paginateTimelineBackwards("!room-alpha:example.invalid");
-    const afterEventIds = snapshot.timeline.map((message) => message.event_id);
-
-    expect(snapshot.state.ui.timeline.is_paginating_backwards).toBe(false);
-    expect(afterEventIds[0]).toBe("$alpha-history");
-    expect(afterEventIds[1]).toBe(beforeEventIds[0]);
   });
 
   test("browser fake sends text into the active timeline", async () => {

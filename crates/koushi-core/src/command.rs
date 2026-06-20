@@ -101,6 +101,7 @@ impl CoreCommand {
                 | AccountCommand::SetDisplayName { request_id, .. }
                 | AccountCommand::SetLocalUserAlias { request_id, .. }
                 | AccountCommand::SetAvatar { request_id, .. }
+                | AccountCommand::DownloadAvatarThumbnail { request_id, .. }
                 | AccountCommand::IgnoreUser { request_id, .. }
                 | AccountCommand::UnignoreUser { request_id, .. }
                 | AccountCommand::ReportUser { request_id, .. }
@@ -856,6 +857,10 @@ pub enum AccountCommand {
         request_id: RequestId,
         request: SetAvatarRequest,
     },
+    DownloadAvatarThumbnail {
+        request_id: RequestId,
+        mxc_uri: String,
+    },
     IgnoreUser {
         request_id: RequestId,
         user_id: String,
@@ -906,6 +911,7 @@ impl AccountCommand {
                 | Self::SetDisplayName { .. }
                 | Self::SetLocalUserAlias { .. }
                 | Self::SetAvatar { .. }
+                | Self::DownloadAvatarThumbnail { .. }
                 | Self::IgnoreUser { .. }
                 | Self::UnignoreUser { .. }
                 | Self::ReportUser { .. }
@@ -1175,6 +1181,11 @@ impl fmt::Debug for AccountCommand {
                 .field("mime_type", &request.mime_type)
                 .field("bytes", &"AvatarBytes(..)")
                 .field("bytes_len", &request.bytes.len())
+                .finish(),
+            Self::DownloadAvatarThumbnail { request_id, .. } => formatter
+                .debug_struct("DownloadAvatarThumbnail")
+                .field("request_id", request_id)
+                .field("mxc_uri", &"MxcUri(..)")
                 .finish(),
             Self::IgnoreUser { request_id, .. } => formatter
                 .debug_struct("IgnoreUser")

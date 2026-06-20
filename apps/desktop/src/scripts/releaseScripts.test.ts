@@ -1671,6 +1671,14 @@ describe("desktop release scripts", () => {
     expect(viteConfig).toContain("hmr: false");
     expect(tauriConfig.app.security.devCsp).toContain("http://127.0.0.1:5173");
     expect(tauriConfig.app.security.devCsp).toContain("ws://127.0.0.1:5173");
+    for (const csp of [
+      tauriConfig.app.security.csp,
+      tauriConfig.app.security.devCsp
+    ]) {
+      expect(csp).toContain("img-src");
+      expect(csp).toContain("asset:");
+      expect(csp).toContain("http://asset.localhost");
+    }
   });
 
   test("QA file credential store is gated to debug and test builds in core", () => {

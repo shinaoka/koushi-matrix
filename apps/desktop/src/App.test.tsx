@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
 
 import { createBrowserFakeApi } from "./backend/browserFakeApi";
-import { TimelineItemRow } from "./components/TimelineView";
+import { MessageSourceDialog, TimelineItemRow } from "./components/TimelineView";
 import type { TimelineItem } from "./domain/coreEvents";
 import type { DesktopSnapshot } from "./domain/types";
 import type { RightPanelMode } from "./domain/rightPanel";
@@ -1151,6 +1151,19 @@ describe("ContextualRightPanel", () => {
     expect(transportBranch).toContain("rootEventId");
   });
 
+  test("TimelinePane older messages button uses the event-driven timeline transport", () => {
+    const source = readFileSync(new URL("./components/panes.tsx", import.meta.url), "utf8");
+    const roomPaneStart = source.indexOf("export function TimelinePane");
+    const roomPane = source.slice(roomPaneStart);
+
+    expect(roomPane).toContain("timelineTransport.paginateBackwards");
+    expect(roomPane).toContain("roomTimelineKey(currentUserId, timelineRoomId)");
+    expect(roomPane).toContain('timelineBackfill === "Paginating"');
+    expect(roomPane).toContain('timelineBackfill === "EndReached"');
+    expect(roomPane).not.toContain("onPaginateBackwards");
+    expect(roomPane).not.toContain("is_paginating_backwards");
+  });
+
   test("Tauri timeline ensure waits for the webview CoreEvent listener registration", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const transportStart = source.indexOf("const tauriTimelineTransport");
@@ -1210,11 +1223,14 @@ describe("ContextualRightPanel", () => {
 });
 
 describe("Tauri state refresh wiring", () => {
-  test("listens for backend state events and refreshes the snapshot", () => {
+  test("listens for backend state events and coalesces snapshot refreshes", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 
     expect(source).toContain("STATE_EVENT_NAME");
     expect(source).toContain("listen<string>(STATE_EVENT_NAME");
+    expect(source).toContain("STATE_EVENT_REFRESH_DEBOUNCE_MS");
+    expect(source).toContain("stateRefreshTimerRef");
+    expect(source).toContain("window.setTimeout");
     expect(source).toContain("void refresh()");
   });
 
@@ -1373,6 +1389,7 @@ describe("Tauri state refresh wiring", () => {
     const renderEnd = source.indexOf("</ContextualRightPanel>", renderStart);
     const panelPropsSource = source.slice(renderStart, renderEnd);
     expect(panelPropsSource).toContain("closeFocusedContextPanel");
+    expect(panelPropsSource).toContain("onTimelineDiagnosticLogEntry={appendDiagnosticLog}");
   });
 
   test("feeds Rust-owned native attention into window title and notification adapters", () => {
@@ -1421,6 +1438,30 @@ describe("Tauri state refresh wiring", () => {
 });
 
 describe("TopBar sync state rendering", () => {
+  test("does not draw duplicate macOS traffic light controls", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { TopBar } = await import("./App");
+    const markup = renderToStaticMarkup(
+      <TopBar
+        activeSpaceName="Matrix"
+        isBusy={false}
+        searchInputRef={{ current: null }}
+        searchQuery=""
+        searchScope="allRooms"
+        sync="running"
+        onOpenKeyboardSettings={() => undefined}
+        onRestartSync={() => undefined}
+        onSearchQueryChange={() => undefined}
+        onSearchScopeChange={() => undefined}
+      />
+    );
+
+    expect(markup).not.toContain('class="traffic"');
+    expect(markup).not.toContain("dot red");
+    expect(markup).not.toContain("dot yellow");
+    expect(markup).not.toContain("dot green");
+  });
+
   test("renders reconnecting and failed states with a restart control", async () => {
     vi.stubGlobal("window", { location: { search: "" } });
     const { TopBar } = await import("./App");
@@ -1467,6 +1508,49 @@ describe("TopBar sync state rendering", () => {
 });
 
 describe("Timeline item row rendering", () => {
+  test("MessageSourceDialog renders Element-style original event source details", () => {
+    const markup = renderToStaticMarkup(
+      <MessageSourceDialog
+        source={{
+          event_id: "$event:example.invalid",
+          sender: "@alice:example.invalid",
+          timestamp_ms: 1_781_841_275_583,
+          body: "We are planning to release the first version in July.",
+          in_reply_to_event_id: null,
+          thread_root: null,
+          is_redacted: false,
+          is_edited: false,
+          has_media: false,
+          original_json: {
+            unsigned: {
+              age: 648,
+              transaction_id: "m1781841277122.98",
+              membership: "join"
+            },
+            content: {
+              body: "We are planning to release the first version in July.",
+              "m.mentions": {},
+              msgtype: "m.text"
+            },
+            origin_server_ts: 1_781_841_275_583,
+            sender: "@alice:example.invalid",
+            type: "m.room.message",
+            event_id: "$event:example.invalid",
+            room_id: "!room:example.invalid"
+          }
+        }}
+        onClose={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("Event ID:");
+    expect(markup).toContain("$event:example.invalid");
+    expect(markup).toContain("Original event source");
+    expect(markup).toContain("&quot;unsigned&quot;");
+    expect(markup).toContain("&quot;m.room.message&quot;");
+    expect(markup).toContain("&quot;m.mentions&quot;");
+  });
+
   test("renders sender surfaces from Rust-owned timeline display labels", () => {
     const markup = renderToStaticMarkup(
       <TimelineItemRow
@@ -1517,6 +1601,87 @@ describe("Timeline item row rendering", () => {
     expect(markup).not.toContain("@me:example.invalid");
     expect(markup).not.toContain("@alice:example.invalid");
     expect(markup).not.toContain("@carol:example.invalid");
+  });
+
+  test("TimelineItemRow renders sender avatar from Rust-owned timeline profile data", () => {
+    const markup = renderToStaticMarkup(
+      <TimelineItemRow
+        item={
+          {
+            id: { Event: { event_id: "$avatar:example.invalid" } },
+            sender: "@kamohara:matrix.org",
+            sender_label: "kamohara",
+            sender_avatar: {
+              mxc_uri: "mxc://matrix.org/avatar",
+              thumbnail: {
+                kind: "ready",
+                source_url: "/media/avatar.png",
+                width: 96,
+                height: 96,
+                mime_type: "image/png"
+              }
+            },
+            body: "23リットルにしました。",
+            timestamp_ms: 1_820_000_000_000,
+            in_reply_to_event_id: null,
+            thread_root: null,
+            thread_summary: null,
+            can_react: true,
+            is_redacted: false,
+            is_hidden: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
+            reactions: []
+          } as TimelineItem
+        }
+        roomId="!room:example.invalid"
+        onReply={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
+        onEdit={() => undefined}
+        onRedact={() => undefined}
+      />
+    );
+
+    expect(markup).toContain('<img src="/media/avatar.png"');
+    expect(markup).not.toContain(">KA<");
+  });
+
+  test("TimelineItemRow renders SDK date dividers without a fallback question avatar", () => {
+    const markup = renderToStaticMarkup(
+      <TimelineItemRow
+        item={
+          {
+            id: { Synthetic: { synthetic_id: "date-divider-1781049600000" } },
+            sender: null,
+            body: null,
+            timestamp_ms: 1_781_049_600_000,
+            in_reply_to_event_id: null,
+            thread_root: null,
+            thread_summary: null,
+            can_react: false,
+            is_redacted: false,
+            is_hidden: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
+            reactions: []
+          } as TimelineItem
+        }
+        roomId="!room:example.invalid"
+        onReply={() => undefined}
+        onSendReaction={() => undefined}
+        onRedactReaction={() => undefined}
+        onEdit={() => undefined}
+        onRedact={() => undefined}
+      />
+    );
+
+    expect(markup).toContain('role="separator"');
+    expect(markup).toContain("Jun");
+    expect(markup).not.toContain('class="avatar"');
+    expect(markup).not.toContain("&gt;?&lt;");
   });
 
   test("renders reply quote block from Rust-owned timeline item data", () => {

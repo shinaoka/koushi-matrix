@@ -28,6 +28,7 @@ import {
 import { t } from "../i18n/messages";
 import { KeyboardSettingsContent } from "./KeyboardSettingsPanel";
 import type { ShortcutLabelProfile } from "../domain/shortcuts";
+import { mediaSourceUrl } from "../domain/mediaUrl";
 import type {
   AccountManagementCapabilities,
   AccountManagementState,
@@ -2735,7 +2736,7 @@ function avatarSourceUrl(avatar: ProfileState["own"]["avatar"]): string | null {
   if (avatar?.thumbnail.kind !== "ready") {
     return null;
   }
-  return avatar.thumbnail.source_url;
+  return mediaSourceUrl(avatar.thumbnail.source_url);
 }
 
 function accountInitial(userId: string): string {

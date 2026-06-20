@@ -2184,6 +2184,7 @@ async fn wait_for_operation_failed(
                     | AccountEvent::SavedSessionsListed { request_id: id, .. }
                     | AccountEvent::RecoveryCompleted { request_id: id, .. }
                     | AccountEvent::ProfileUpdated { request_id: id, .. }
+                    | AccountEvent::AvatarThumbnailDownloaded { request_id: id, .. }
                     | AccountEvent::ReportCompleted { request_id: id, .. }
                     | AccountEvent::LoggedOut { request_id: id, .. }
                     | AccountEvent::AccountSwitched { request_id: id, .. } => *id == request_id,

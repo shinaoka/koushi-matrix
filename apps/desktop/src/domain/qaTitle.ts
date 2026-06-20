@@ -2,6 +2,7 @@ import type { DesktopSnapshot, SearchCrawlerRoomState, SyncState } from "./types
 import type { RightPanelMode } from "./rightPanel";
 import type { QaSendSmokeStatus } from "./qaSendSmoke";
 import { desktopAttentionSummary } from "./desktopAttention";
+import type { UiLatencyDiagnostics } from "./uiLatency";
 
 export function qaWindowTitle(
   snapshot: DesktopSnapshot,
@@ -50,6 +51,13 @@ export interface QaTimelineDiagnostics {
   visibleItems: number;
   downloadedItems: number;
   backfill: string;
+  avatarMxcItems: number;
+  avatarReadyItems: number;
+  avatarPendingItems: number;
+  avatarFailedItems: number;
+  avatarMissingItems: number;
+  avatarRenderedImages: number;
+  avatarBrokenImages: number;
 }
 
 export interface QaDomDiagnostics {
@@ -62,7 +70,14 @@ export function qaTimelineDiagnosticTokens(diagnostics: QaTimelineDiagnostics): 
   return [
     `timeline_visible=${diagnostics.visibleItems}`,
     `timeline_dl=${diagnostics.downloadedItems}`,
-    `timeline_backfill=${diagnostics.backfill}`
+    `timeline_backfill=${diagnostics.backfill}`,
+    `timeline_avatar_mxc=${diagnostics.avatarMxcItems}`,
+    `timeline_avatar_ready=${diagnostics.avatarReadyItems}`,
+    `timeline_avatar_pending=${diagnostics.avatarPendingItems}`,
+    `timeline_avatar_failed=${diagnostics.avatarFailedItems}`,
+    `timeline_avatar_missing=${diagnostics.avatarMissingItems}`,
+    `timeline_avatar_rendered=${diagnostics.avatarRenderedImages}`,
+    `timeline_avatar_broken=${diagnostics.avatarBrokenImages}`
   ];
 }
 
@@ -71,6 +86,16 @@ export function qaDomDiagnosticTokens(diagnostics: QaDomDiagnostics): string[] {
     `dom_screen=${safeQaToken(diagnostics.screen)}`,
     `dom_root_children=${Math.max(0, Math.trunc(diagnostics.rootChildren))}`,
     `dom_text_len=${Math.max(0, Math.trunc(diagnostics.bodyTextLength))}`
+  ];
+}
+
+export function qaUiLatencyDiagnosticTokens(diagnostics: UiLatencyDiagnostics): string[] {
+  return [
+    `ui_frame_samples=${Math.max(0, Math.trunc(diagnostics.samples))}`,
+    `ui_frame_last_ms=${safeMsToken(diagnostics.lastFrameGapMs)}`,
+    `ui_frame_avg_ms=${safeMsToken(diagnostics.averageFrameGapMs)}`,
+    `ui_frame_max_ms=${safeMsToken(diagnostics.maxFrameGapMs)}`,
+    `ui_long_frames=${Math.max(0, Math.trunc(diagnostics.longFrameCount))}`
   ];
 }
 
@@ -124,6 +149,13 @@ function latestErrorCode(snapshot: DesktopSnapshot): string {
 function safeQaToken(value: string): string {
   const safe = value.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 48);
   return safe || "unknown";
+}
+
+function safeMsToken(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+  return String(Math.max(0, Math.round(value * 10) / 10));
 }
 
 function syncStateLabel(sync: SyncState): string {

@@ -26,19 +26,28 @@
 //!   stop timeline subscriptions → stop search → stop sync → drop SDK handles.
 //! SDK handles dropped inside the Tokio runtime context.
 
-use std::{collections::BTreeMap, future::Future, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    hash::{DefaultHasher, Hasher},
+    sync::Arc,
+    time::Duration,
+};
 
 use futures_util::StreamExt;
 use koushi_key::{SessionKeyId, StoredMatrixSession};
 use koushi_sdk::{MatrixClientSession, PersistableMatrixSession};
 use koushi_state::{
-    AccountManagementOperation, AppAction, AuthFailureKind, AvatarImage, AvatarThumbnailState,
-    CrossSigningStatus, DeviceSessionSummary, E2eeRecoveryState, IdentityResetAuthType,
-    IdentityResetState, LoginRequest, OperationFailureKind, OwnProfile, PresenceKind,
-    RecoveryKeyDeliveryState, RecoveryMethod, RecoveryRequest, ScheduledSendCapability,
-    ScheduledSendHandle, ScheduledSendItem, SessionInfo, TrustOperationFailureKind,
-    VerificationCancelReason, VerificationFlowState, VerificationTarget,
+    AccountManagementOperation, AppAction, AuthFailureKind, AvatarImage,
+    AvatarThumbnailFailureKind, AvatarThumbnailState, CrossSigningStatus, DeviceSessionSummary,
+    E2eeRecoveryState, IdentityResetAuthType, IdentityResetState, LoginRequest,
+    OperationFailureKind, OwnProfile, PresenceKind, RecoveryKeyDeliveryState, RecoveryMethod,
+    RecoveryRequest, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SessionInfo,
+    TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState, VerificationTarget,
 };
+use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
+use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
+use matrix_sdk::ruma::{MxcUri, OwnedMxcUri};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::command::{
@@ -1282,6 +1291,13 @@ impl AccountActor {
             } => {
                 self.handle_set_avatar(request_id, request).await;
             }
+            AccountCommand::DownloadAvatarThumbnail {
+                request_id,
+                mxc_uri,
+            } => {
+                self.handle_download_avatar_thumbnail(request_id, mxc_uri)
+                    .await;
+            }
             AccountCommand::IgnoreUser {
                 request_id,
                 user_id,
@@ -1563,6 +1579,36 @@ impl AccountActor {
                 );
             }
         }
+    }
+
+    async fn handle_download_avatar_thumbnail(&self, request_id: RequestId, mxc_uri: String) {
+        let Some(session) = &self.session else {
+            self.emit(CoreEvent::Account(
+                AccountEvent::AvatarThumbnailDownloaded {
+                    request_id,
+                    mxc_uri,
+                    thumbnail: AvatarThumbnailState::Failed {
+                        request_id: request_id.sequence,
+                        kind: AvatarThumbnailFailureKind::Sdk,
+                    },
+                },
+            ));
+            return;
+        };
+
+        let thumbnail = download_avatar_thumbnail(session, &mxc_uri, &self.data_dir)
+            .await
+            .unwrap_or_else(|kind| AvatarThumbnailState::Failed {
+                request_id: request_id.sequence,
+                kind,
+            });
+        self.emit(CoreEvent::Account(
+            AccountEvent::AvatarThumbnailDownloaded {
+                request_id,
+                mxc_uri,
+                thumbnail,
+            },
+        ));
     }
 
     async fn handle_ignore_user(&mut self, request_id: RequestId, user_id: String, ignored: bool) {
@@ -3542,6 +3588,21 @@ impl AccountActor {
             Ok(()) => {
                 // Project success: Recovering → Ready.
                 self.reduce(vec![AppAction::E2eeRecoverySucceeded]);
+                self.reduce(vec![AppAction::RestoreKeyBackupRequested {
+                    request_id: request_id.sequence,
+                    version: None,
+                }]);
+                let restore_result =
+                    koushi_sdk::download_joined_room_keys_from_backup(&session, None).await;
+                let (actions, events) = project_restore_key_backup_result(
+                    request_id,
+                    account_key.clone(),
+                    restore_result,
+                );
+                self.reduce(actions);
+                for event in events {
+                    self.emit(event);
+                }
                 self.emit(CoreEvent::Account(AccountEvent::RecoveryCompleted {
                     request_id,
                     account_key,
@@ -3936,6 +3997,48 @@ fn map_matrix_own_profile(profile: koushi_sdk::MatrixOwnProfile) -> OwnProfile {
             thumbnail: AvatarThumbnailState::NotRequested,
         }),
     }
+}
+
+async fn download_avatar_thumbnail(
+    session: &MatrixClientSession,
+    mxc_uri: &str,
+    data_dir: &std::path::Path,
+) -> Result<AvatarThumbnailState, AvatarThumbnailFailureKind> {
+    let mxc = <&MxcUri>::from(mxc_uri);
+    if !mxc.is_valid() {
+        return Err(AvatarThumbnailFailureKind::Unsupported);
+    }
+    let uri: OwnedMxcUri = mxc.to_owned();
+    let bytes = session
+        .client()
+        .media()
+        .get_media_content(
+            &MediaRequestParameters {
+                source: SdkMediaSource::Plain(uri),
+                format: MediaFormat::File,
+            },
+            true,
+        )
+        .await
+        .map_err(|_| AvatarThumbnailFailureKind::Network)?;
+
+    let mut hasher = DefaultHasher::new();
+    hasher.write(mxc_uri.as_bytes());
+    let cache_dir = data_dir.join("avatar_thumbnails");
+    tokio::fs::create_dir_all(&cache_dir)
+        .await
+        .map_err(|_| AvatarThumbnailFailureKind::Sdk)?;
+    let path = cache_dir.join(format!("{:x}.bin", hasher.finish()));
+    tokio::fs::write(&path, &bytes)
+        .await
+        .map_err(|_| AvatarThumbnailFailureKind::Sdk)?;
+
+    Ok(AvatarThumbnailState::Ready {
+        source_url: format!("file://{}", path.display()),
+        width: None,
+        height: None,
+        mime_type: None,
+    })
 }
 
 fn classify_profile_error(error: &koushi_sdk::MatrixProfileError) -> ProfileFailureKind {
@@ -5181,6 +5284,31 @@ mod tests {
                 })
             ]
         ));
+    }
+
+    #[test]
+    fn submit_recovery_hydrates_joined_room_keys_after_secret_recovery() {
+        let source = include_str!("account.rs");
+        let body = source
+            .split("async fn handle_submit_recovery")
+            .nth(1)
+            .expect("handle_submit_recovery should exist")
+            .split("async fn perform_logout")
+            .next()
+            .expect("perform_logout should follow submit recovery");
+
+        let recover_offset = body
+            .find("koushi_sdk::recover_e2ee")
+            .expect("submit recovery should recover the secret first");
+        let restore_request_offset = body
+            .find("AppAction::RestoreKeyBackupRequested")
+            .expect("submit recovery should project key backup restore state");
+        let restore_offset = body
+            .find("koushi_sdk::download_joined_room_keys_from_backup")
+            .expect("submit recovery should hydrate joined room keys from backup");
+
+        assert!(recover_offset < restore_request_offset);
+        assert!(restore_request_offset < restore_offset);
     }
 
     #[test]

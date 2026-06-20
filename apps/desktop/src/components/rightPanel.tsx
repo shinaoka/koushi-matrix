@@ -32,6 +32,7 @@ import type { RightPanelMode } from "../domain/rightPanel";
 import { RecoveryPanel } from "./auth";
 import {
   TimelineView,
+  type TimelineDiagnosticLogEntry,
   type TimelineRowActionHandlers,
   type TimelineTransport
 } from "./TimelineView";
@@ -111,6 +112,7 @@ export function ContextualRightPanel({
   onSubmitAccountManagementUia = () => undefined,
   onStartCrawlRoom = () => undefined,
   onStopCrawlRoom = () => undefined,
+  onTimelineDiagnosticLogEntry,
   onThreadComposerDraftChange,
   onThreadReplySend
 }: {
@@ -192,6 +194,7 @@ export function ContextualRightPanel({
   onSubmitAccountManagementUia?: (flowId: number, password: string) => void;
   onStartCrawlRoom?: (roomId: string) => void;
   onStopCrawlRoom?: (roomId: string) => void;
+  onTimelineDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
   onIgnoreUser?: (userId: string) => void;
   onUnignoreUser?: (userId: string) => void;
@@ -508,6 +511,7 @@ export function ContextualRightPanel({
             codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
             searchQuery={searchQuery}
             mediaDownloads={mediaDownloads}
+            onDiagnosticLogEntry={onTimelineDiagnosticLogEntry}
           />
         ) : browserThreadSnapshot ? (
           <div className="message-fixture-list thread-fixture-list">

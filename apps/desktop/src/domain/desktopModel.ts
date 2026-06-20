@@ -24,19 +24,48 @@ export function roomListSections(
   rooms: RoomSummary[],
   invites: InvitePreview[]
 ): RoomListSections {
+  const fullSections = roomListSectionsFromSidebar(activeSpaceId, spaces, rooms);
   if (roomList.items === null) {
-    const sidebar = composeSidebar(activeSpaceId, spaces, rooms);
-    return {
-      favourites: sidebar.space_rooms.filter((room) => room.tags.favourite !== null),
-      invites: [],
-      rooms: sidebar.space_rooms.filter(
-        (room) => room.tags.favourite === null && room.tags.low_priority === null
-      ),
-      people: sidebar.global_dms,
-      lowPriority: sidebar.space_rooms.filter((room) => room.tags.low_priority !== null)
-    };
+    return fullSections;
   }
 
+  const projectedSections = roomListSectionsFromProjection(roomList.items, rooms, invites);
+  switch (roomList.active_filter.kind) {
+    case "rooms":
+      return { ...fullSections, rooms: projectedSections.rooms };
+    case "people":
+      return { ...fullSections, people: projectedSections.people };
+    case "favourites":
+      return { ...fullSections, favourites: projectedSections.favourites };
+    case "invites":
+      return { ...fullSections, invites: projectedSections.invites };
+    case "unread":
+      return projectedSections;
+  }
+}
+
+function roomListSectionsFromSidebar(
+  activeSpaceId: string | null,
+  spaces: SpaceSummary[],
+  rooms: RoomSummary[]
+): RoomListSections {
+  const sidebar = composeSidebar(activeSpaceId, spaces, rooms);
+  return {
+    favourites: sidebar.space_rooms.filter((room) => room.tags.favourite !== null),
+    invites: [],
+    rooms: sidebar.space_rooms.filter(
+      (room) => room.tags.favourite === null && room.tags.low_priority === null
+    ),
+    people: sidebar.global_dms,
+    lowPriority: sidebar.space_rooms.filter((room) => room.tags.low_priority !== null)
+  };
+}
+
+function roomListSectionsFromProjection(
+  items: NonNullable<RoomListProjection["items"]>,
+  rooms: RoomSummary[],
+  invites: InvitePreview[]
+): RoomListSections {
   const roomById = new Map(rooms.map((room) => [room.room_id, room]));
   const inviteById = new Map(invites.map((invite) => [invite.room_id, invite]));
 
@@ -46,7 +75,7 @@ export function roomListSections(
   const people: RoomListItem[] = [];
   const lowPriority: RoomListItem[] = [];
 
-  for (const item of roomList.items) {
+  for (const item of items) {
     const room = item.kind === "room" ? roomById.get(item.room_id) : undefined;
     const invite = item.kind === "invite" ? inviteById.get(item.room_id) : undefined;
     const source = room ?? invite;

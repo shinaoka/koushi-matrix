@@ -9,11 +9,12 @@ use koushi_state::{
 use matrix_sdk::{
     authentication::matrix::MatrixSession,
     deserialized_responses::SyncOrStrippedState,
+    encryption::{BackupDownloadStrategy, EncryptionSettings},
     room::ParentSpace,
     ruma::{
         events::{
             AnyGlobalAccountDataEventContent, GlobalAccountDataEventType, SyncStateEvent,
-            space::child::SpaceChildEventContent,
+            direct::DirectEventContent, space::child::SpaceChildEventContent,
         },
         serde::Raw,
     },
@@ -598,6 +599,14 @@ pub async fn restore_key_backup(
         .recover(request.secret.expose_secret())
         .await?;
 
+    download_joined_room_keys_from_backup(session, version).await
+}
+
+pub async fn download_joined_room_keys_from_backup(
+    session: &MatrixClientSession,
+    version: Option<&str>,
+) -> Result<KeyBackupRestoreSummary, E2eeTrustError> {
+    let encryption = session.client().encryption();
     let backup_state = encryption.backups().state();
     if !matches!(
         backup_state,
@@ -2633,9 +2642,14 @@ async fn build_client(
 fn desktop_client_builder_defaults(
     builder: matrix_sdk::ClientBuilder,
 ) -> matrix_sdk::ClientBuilder {
-    builder.with_threading_support(matrix_sdk::ThreadingSupport::Enabled {
-        with_subscriptions: true,
-    })
+    builder
+        .with_encryption_settings(EncryptionSettings {
+            backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
+            ..Default::default()
+        })
+        .with_threading_support(matrix_sdk::ThreadingSupport::Enabled {
+            with_subscriptions: true,
+        })
 }
 
 pub async fn recover_e2ee(
@@ -3428,7 +3442,7 @@ pub async fn search_message_candidates(
 pub async fn room_list_snapshot_from_sdk_rooms(
     rooms: impl IntoIterator<Item = matrix_sdk::Room>,
 ) -> MatrixRoomListSnapshot {
-    matrix_room_list_snapshot_from_rooms(rooms).await
+    matrix_room_list_snapshot_from_rooms(&BTreeMap::new(), rooms).await
 }
 
 /// Normalize joined rooms from the caller's source of truth plus invited rooms
@@ -3439,8 +3453,10 @@ pub async fn room_list_snapshot_from_sdk_rooms_with_invites(
     session: &MatrixClientSession,
     rooms: impl IntoIterator<Item = matrix_sdk::Room>,
 ) -> MatrixRoomListSnapshot {
-    let mut snapshot = matrix_room_list_snapshot_from_rooms(rooms).await;
-    snapshot.invites = matrix_invite_previews_from_rooms(session.client().invited_rooms()).await;
+    let client = session.client();
+    let direct_targets_by_room = matrix_direct_account_data_targets_by_room(&client).await;
+    let mut snapshot = matrix_room_list_snapshot_from_rooms(&direct_targets_by_room, rooms).await;
+    snapshot.invites = matrix_invite_previews_from_rooms(client.invited_rooms()).await;
     snapshot
 }
 
@@ -3469,7 +3485,14 @@ pub async fn room_list_snapshot(
     .await
     {
         Ok(service) => service,
-        Err(_) => return Ok(matrix_room_list_snapshot_from_rooms(client.joined_rooms()).await),
+        Err(_) => {
+            let direct_targets_by_room = matrix_direct_account_data_targets_by_room(&client).await;
+            return Ok(matrix_room_list_snapshot_from_rooms(
+                &direct_targets_by_room,
+                client.joined_rooms(),
+            )
+            .await);
+        }
     };
     let all_rooms = service
         .all_rooms()
@@ -3486,9 +3509,14 @@ pub async fn room_list_snapshot(
         return Ok(MatrixRoomListSnapshot::default());
     };
 
-    let snapshot = matrix_room_list_snapshot_from_diffs(diffs).await;
+    let direct_targets_by_room = matrix_direct_account_data_targets_by_room(&client).await;
+    let snapshot = matrix_room_list_snapshot_from_diffs(&direct_targets_by_room, diffs).await;
     if snapshot.rooms.is_empty() && snapshot.spaces.is_empty() {
-        return Ok(matrix_room_list_snapshot_from_rooms(client.joined_rooms()).await);
+        return Ok(matrix_room_list_snapshot_from_rooms(
+            &direct_targets_by_room,
+            client.joined_rooms(),
+        )
+        .await);
     }
 
     Ok(snapshot)
@@ -4037,6 +4065,7 @@ fn matrix_timeline_update_from_ui(
 }
 
 async fn matrix_room_list_snapshot_from_diffs(
+    direct_targets_by_room: &BTreeMap<String, Vec<String>>,
     diffs: Vec<eyeball_im::VectorDiff<matrix_sdk_ui::room_list_service::RoomListItem>>,
 ) -> MatrixRoomListSnapshot {
     let mut items = Vec::new();
@@ -4060,16 +4089,22 @@ async fn matrix_room_list_snapshot_from_diffs(
         }
     }
 
-    matrix_room_list_snapshot_from_items(items).await
+    matrix_room_list_snapshot_from_items(direct_targets_by_room, items).await
 }
 
 async fn matrix_room_list_snapshot_from_items(
+    direct_targets_by_room: &BTreeMap<String, Vec<String>>,
     items: Vec<matrix_sdk_ui::room_list_service::RoomListItem>,
 ) -> MatrixRoomListSnapshot {
-    matrix_room_list_snapshot_from_rooms(items.into_iter().map(|item| item.into_inner())).await
+    matrix_room_list_snapshot_from_rooms(
+        direct_targets_by_room,
+        items.into_iter().map(|item| item.into_inner()),
+    )
+    .await
 }
 
 async fn matrix_room_list_snapshot_from_rooms(
+    direct_targets_by_room: &BTreeMap<String, Vec<String>>,
     rooms: impl IntoIterator<Item = matrix_sdk::Room>,
 ) -> MatrixRoomListSnapshot {
     let mut snapshot = MatrixRoomListSnapshot::default();
@@ -4111,10 +4146,17 @@ async fn matrix_room_list_snapshot_from_rooms(
         let parent_space_ids = matrix_parent_space_ids(&room).await;
         let tags = matrix_room_tags(&room).await;
 
-        let is_dm = room.is_dm();
+        let direct_dm_user_ids = direct_targets_by_room
+            .get(&room_id)
+            .cloned()
+            .unwrap_or_default();
+        let is_dm = !direct_dm_user_ids.is_empty()
+            || room.is_direct().await.unwrap_or_else(|_| room.is_dm());
         let joined_members = active_user_ids.len() as u64;
         let own_user_id = room.own_user_id().to_string();
-        let dm_user_ids = if is_dm {
+        let dm_user_ids = if !direct_dm_user_ids.is_empty() {
+            direct_dm_user_ids
+        } else if is_dm {
             active_user_ids
                 .into_iter()
                 .filter(|user_id| user_id != &own_user_id)
@@ -4148,6 +4190,49 @@ async fn matrix_room_list_snapshot_from_rooms(
     }
     snapshot.user_profiles = user_profiles.into_values().collect();
     snapshot
+}
+
+async fn matrix_direct_account_data_targets_by_room(
+    client: &matrix_sdk::Client,
+) -> BTreeMap<String, Vec<String>> {
+    let Some(targets_by_room) = client
+        .account()
+        .account_data::<DirectEventContent>()
+        .await
+        .ok()
+        .flatten()
+        .and_then(|raw_content| raw_content.deserialize().ok())
+        .map(|content| direct_account_data_targets_by_room(&content))
+    else {
+        return client
+            .account()
+            .fetch_account_data_static::<DirectEventContent>()
+            .await
+            .ok()
+            .flatten()
+            .and_then(|raw_content| raw_content.deserialize().ok())
+            .map(|content| direct_account_data_targets_by_room(&content))
+            .unwrap_or_default();
+    };
+    targets_by_room
+}
+
+fn direct_account_data_targets_by_room(
+    content: &DirectEventContent,
+) -> BTreeMap<String, Vec<String>> {
+    let mut targets_by_room: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (user_id, room_ids) in content.iter() {
+        for room_id in room_ids {
+            targets_by_room
+                .entry(room_id.to_string())
+                .or_default()
+                .insert(user_id.to_string());
+        }
+    }
+    targets_by_room
+        .into_iter()
+        .map(|(room_id, targets)| (room_id, targets.into_iter().collect()))
+        .collect()
 }
 
 async fn collect_active_member_profiles(
@@ -4614,6 +4699,90 @@ mod tests {
         assert!(defaults_body.contains("with_threading_support"));
         assert!(defaults_body.contains("ThreadingSupport::Enabled"));
         assert!(defaults_body.contains("with_subscriptions: true"));
+    }
+
+    #[test]
+    fn client_builder_defaults_download_backup_keys_after_decryption_failures() {
+        let source = include_str!("lib.rs");
+        let defaults_body = source
+            .split("fn desktop_client_builder_defaults")
+            .nth(1)
+            .expect("desktop client builder defaults helper should exist")
+            .split("pub async fn recover_e2ee")
+            .next()
+            .expect("recover_e2ee should follow desktop client builder defaults");
+
+        assert!(defaults_body.contains("with_encryption_settings"));
+        assert!(defaults_body.contains("BackupDownloadStrategy::AfterDecryptionFailure"));
+    }
+
+    #[test]
+    fn joined_room_list_prefers_async_direct_dm_detection() {
+        let source = include_str!("lib.rs");
+        let projection_body = source
+            .split("async fn matrix_room_list_snapshot_from_rooms")
+            .nth(1)
+            .expect("joined room projection should exist")
+            .split("async fn collect_active_member_profiles")
+            .next()
+            .expect("member collection should follow joined room projection");
+
+        assert!(
+            projection_body.contains("room.is_direct().await"),
+            "joined room projection should read m.direct via async Room::is_direct"
+        );
+        assert!(
+            projection_body.contains("unwrap_or_else(|_| room.is_dm())"),
+            "joined room projection should fall back to cached is_dm when direct lookup fails"
+        );
+    }
+
+    #[test]
+    fn direct_account_data_targets_are_indexed_by_room() {
+        use matrix_sdk::ruma::{
+            OwnedRoomId, OwnedUserId,
+            events::direct::{DirectEventContent, OwnedDirectUserIdentifier},
+        };
+
+        let alice: OwnedUserId = "@alice:example.invalid".try_into().unwrap();
+        let bob: OwnedUserId = "@bob:example.invalid".try_into().unwrap();
+        let dm_room: OwnedRoomId = "!dm:example.invalid".try_into().unwrap();
+        let other_room: OwnedRoomId = "!other:example.invalid".try_into().unwrap();
+        let mut content = DirectEventContent::default();
+        content.insert(
+            OwnedDirectUserIdentifier::from(alice),
+            vec![dm_room.clone(), other_room.clone()],
+        );
+        content.insert(OwnedDirectUserIdentifier::from(bob), vec![dm_room.clone()]);
+
+        let by_room = super::direct_account_data_targets_by_room(&content);
+
+        assert_eq!(
+            by_room.get(dm_room.as_str()),
+            Some(&vec![
+                "@alice:example.invalid".to_owned(),
+                "@bob:example.invalid".to_owned()
+            ])
+        );
+        assert_eq!(
+            by_room.get(other_room.as_str()),
+            Some(&vec!["@alice:example.invalid".to_owned()])
+        );
+    }
+
+    #[test]
+    fn direct_account_data_dm_detection_fetches_server_when_store_misses() {
+        let source = include_str!("lib.rs");
+        let helper_body = source
+            .split("async fn matrix_direct_account_data_targets_by_room")
+            .nth(1)
+            .expect("direct account data helper should exist")
+            .split("fn direct_account_data_targets_by_room")
+            .next()
+            .expect("pure direct account data helper should follow async helper");
+
+        assert!(helper_body.contains("account_data::<DirectEventContent>()"));
+        assert!(helper_body.contains("fetch_account_data_static::<DirectEventContent>()"));
     }
 
     #[test]

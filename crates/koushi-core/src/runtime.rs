@@ -2169,6 +2169,7 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         | AccountCommand::QuerySavedSessions { .. }
         | AccountCommand::SubmitRecovery { .. }
         | AccountCommand::SetPresence { .. }
+        | AccountCommand::DownloadAvatarThumbnail { .. }
         | AccountCommand::Logout { .. }
         | AccountCommand::SwitchAccount { .. } => None,
     }
@@ -2321,7 +2322,9 @@ mod tests {
                 },
                 sender: Some("@alice:example.invalid".to_owned()),
                 sender_label: None,
+                sender_avatar: None,
                 body: Some("hello".to_owned()),
+                notice_i18n_key: None,
                 message_kind: Default::default(),
                 spoiler_spans: Vec::new(),
                 timestamp_ms: Some(1),
@@ -2391,7 +2394,9 @@ mod tests {
                     },
                     sender: Some("@alice:example.invalid".to_owned()),
                     sender_label: None,
+                    sender_avatar: None,
                     body: Some("later".to_owned()),
+                    notice_i18n_key: None,
                     message_kind: Default::default(),
                     spoiler_spans: Vec::new(),
                     timestamp_ms: Some(3),

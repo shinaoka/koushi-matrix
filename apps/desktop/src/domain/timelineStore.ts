@@ -40,17 +40,23 @@ import type {
   TimelineItem,
   TimelineKey
 } from "./coreEvents";
-import { timelineKeyEquals } from "./coreEvents";
+import { timelineItemDomId, timelineKeyEquals } from "./coreEvents";
 
 // ---------------------------------------------------------------------------
 // Per-key state
 // ---------------------------------------------------------------------------
 
 export interface TimelineKeyState {
-  /** Current known generation.  0 = not yet received InitialItems. */
+  /** Current known Core timeline generation. 0 is a valid first generation. */
   generation: number;
   /** Render list maintained by applying diffs. */
   items: TimelineItem[];
+  /** Stable item id -> render-list index for O(1) duplicate checks. */
+  itemIndexById: Map<string, number>;
+  /** Timestamp -> item ids, kept in sync with the render list for diagnostics and fast updates. */
+  itemIdsByTimestamp: Map<number, Set<string>>;
+  /** Last applied SDK VectorDiff batch id for this generation. */
+  lastAppliedBatchId: number | null;
   /** True while awaiting InitialItems after ResyncRequired / ResyncMarker. */
   awaitingResync: boolean;
   paginationBackward: PaginationState;
@@ -75,6 +81,9 @@ function emptyKeyState(): TimelineKeyState {
   return {
     generation: 0,
     items: [],
+    itemIndexById: new Map(),
+    itemIdsByTimestamp: new Map(),
+    lastAppliedBatchId: null,
     awaitingResync: true,
     paginationBackward: "Idle",
     paginationForward: "Idle",
@@ -130,6 +139,9 @@ export function applyGlobalResync(store: TimelineStoreState): TimelineStoreState
     next.set(k, {
       ...state,
       items: [],
+      itemIndexById: new Map(),
+      itemIdsByTimestamp: new Map(),
+      lastAppliedBatchId: null,
       awaitingResync: true,
       mediaUploadProgress: new Map()
     });
@@ -147,11 +159,15 @@ function applyInitialItems(
 ): TimelineStoreState {
   const k = keyStr(payload.key);
   const existing = store.keys.get(k) ?? emptyKeyState();
+  const indexed = indexedTimelineItems(payload.items);
   const next = new Map(store.keys);
   next.set(k, {
     ...existing,
     generation: payload.generation,
-    items: [...payload.items],
+    items: indexed.items,
+    itemIndexById: indexed.itemIndexById,
+    itemIdsByTimestamp: indexed.itemIdsByTimestamp,
+    lastAppliedBatchId: null,
     awaitingResync: false
   });
   return { keys: next };
@@ -196,11 +212,22 @@ function applyItemsUpdated(
     const initialized = {
       ...emptyKeyState(),
       generation: payload.generation,
+      lastAppliedBatchId: payload.batch_id,
       awaitingResync: false
     };
-    const updatedItems = applyDiffs(initialized.items, payload.diffs);
+    const updated = applyDiffsForRender(
+      initialized.items,
+      initialized.itemIndexById,
+      initialized.itemIdsByTimestamp,
+      payload.diffs
+    );
     const next = new Map(store.keys);
-    next.set(k, { ...initialized, items: updatedItems });
+    next.set(k, {
+      ...initialized,
+      items: updated.items,
+      itemIndexById: updated.itemIndexById,
+      itemIdsByTimestamp: updated.itemIdsByTimestamp
+    });
     return { keys: next };
   }
 
@@ -209,14 +236,29 @@ function applyItemsUpdated(
     return store;
   }
 
+  if (existing.lastAppliedBatchId !== null && payload.batch_id <= existing.lastAppliedBatchId) {
+    return store;
+  }
+
   // Awaiting resync: discard diffs; we need a fresh InitialItems first.
   if (existing.awaitingResync) {
     return store;
   }
 
-  const updatedItems = applyDiffs(existing.items, payload.diffs);
+  const updated = applyDiffsForRender(
+    existing.items,
+    existing.itemIndexById,
+    existing.itemIdsByTimestamp,
+    payload.diffs
+  );
   const next = new Map(store.keys);
-  next.set(k, { ...existing, items: updatedItems });
+  next.set(k, {
+    ...existing,
+    items: updated.items,
+    itemIndexById: updated.itemIndexById,
+    itemIdsByTimestamp: updated.itemIdsByTimestamp,
+    lastAppliedBatchId: payload.batch_id
+  });
   return { keys: next };
 }
 
@@ -251,6 +293,8 @@ function applyResyncRequired(
   next.set(k, {
     ...existing,
     items: [],
+    itemIndexById: new Map(),
+    itemIdsByTimestamp: new Map(),
     awaitingResync: true,
     mediaUploadProgress: new Map()
   });
@@ -426,6 +470,199 @@ function applyOneDiff(items: TimelineItem[], diff: TimelineDiff): TimelineItem[]
     return [...diff.Reset.items];
   }
   return items;
+}
+
+interface IndexedTimelineItems {
+  items: TimelineItem[];
+  itemIndexById: Map<string, number>;
+  itemIdsByTimestamp: Map<number, Set<string>>;
+}
+
+function applyDiffsForRender(
+  items: readonly TimelineItem[],
+  itemIndexById: ReadonlyMap<string, number>,
+  itemIdsByTimestamp: ReadonlyMap<number, ReadonlySet<string>>,
+  diffs: readonly TimelineDiff[]
+): IndexedTimelineItems {
+  let current = [...items];
+  const indexById = new Map(itemIndexById);
+  let idsByTimestamp = cloneTimestampIndex(itemIdsByTimestamp);
+
+  for (const diff of diffs) {
+    if (diff === "Clear") {
+      current = [];
+      indexById.clear();
+      idsByTimestamp.clear();
+    } else if ("PushFront" in diff) {
+      insertTimelineItem(current, indexById, idsByTimestamp, diff.PushFront.item, 0);
+    } else if ("PushBack" in diff) {
+      insertTimelineItem(current, indexById, idsByTimestamp, diff.PushBack.item, current.length);
+    } else if ("Insert" in diff) {
+      insertTimelineItem(current, indexById, idsByTimestamp, diff.Insert.item, diff.Insert.index);
+    } else if ("Set" in diff) {
+      setTimelineItem(current, indexById, idsByTimestamp, diff.Set.index, diff.Set.item);
+    } else if ("Remove" in diff) {
+      removeTimelineItemAt(current, indexById, idsByTimestamp, diff.Remove.index);
+    } else if ("Truncate" in diff) {
+      const indexed = indexedTimelineItems(current.slice(0, diff.Truncate.length));
+      current = indexed.items;
+      indexById.clear();
+      idsByTimestamp.clear();
+      copyIndex(indexById, indexed.itemIndexById);
+      idsByTimestamp = indexed.itemIdsByTimestamp;
+    } else if ("Reset" in diff) {
+      const indexed = indexedTimelineItems(diff.Reset.items);
+      current = indexed.items;
+      indexById.clear();
+      idsByTimestamp.clear();
+      copyIndex(indexById, indexed.itemIndexById);
+      idsByTimestamp = indexed.itemIdsByTimestamp;
+    }
+  }
+  return { items: current, itemIndexById: indexById, itemIdsByTimestamp: idsByTimestamp };
+}
+
+function indexedTimelineItems(items: readonly TimelineItem[]): IndexedTimelineItems {
+  const result: TimelineItem[] = [];
+  const itemIndexById = new Map<string, number>();
+  const itemIdsByTimestamp = new Map<number, Set<string>>();
+
+  for (const item of items) {
+    const id = timelineItemDomId(item.id);
+    if (itemIndexById.has(id)) {
+      continue;
+    }
+    itemIndexById.set(id, result.length);
+    addTimestampIndex(itemIdsByTimestamp, item);
+    result.push(item);
+  }
+
+  return { items: result, itemIndexById, itemIdsByTimestamp };
+}
+
+function insertTimelineItem(
+  items: TimelineItem[],
+  itemIndexById: Map<string, number>,
+  itemIdsByTimestamp: Map<number, Set<string>>,
+  item: TimelineItem,
+  preferredIndex: number
+): void {
+  const id = timelineItemDomId(item.id);
+  if (itemIndexById.has(id)) {
+    return;
+  }
+  const insertIndex = clampIndex(preferredIndex, items.length);
+  items.splice(insertIndex, 0, item);
+  reindexItemsFrom(items, itemIndexById, insertIndex);
+  addTimestampIndex(itemIdsByTimestamp, item);
+}
+
+function setTimelineItem(
+  items: TimelineItem[],
+  itemIndexById: Map<string, number>,
+  itemIdsByTimestamp: Map<number, Set<string>>,
+  index: number,
+  item: TimelineItem
+): void {
+  if (index < 0 || index >= items.length) {
+    return;
+  }
+  const id = timelineItemDomId(item.id);
+  const existingIndex = itemIndexById.get(id);
+  let targetIndex = index;
+  if (existingIndex !== undefined && existingIndex !== index) {
+    removeTimelineItemAt(items, itemIndexById, itemIdsByTimestamp, existingIndex);
+    if (existingIndex < targetIndex) {
+      targetIndex -= 1;
+    }
+  }
+  removeTimestampIndex(itemIdsByTimestamp, items[targetIndex]);
+  items[targetIndex] = item;
+  itemIndexById.set(id, targetIndex);
+  addTimestampIndex(itemIdsByTimestamp, item);
+}
+
+function removeTimelineItemAt(
+  items: TimelineItem[],
+  itemIndexById: Map<string, number>,
+  itemIdsByTimestamp: Map<number, Set<string>>,
+  index: number
+): void {
+  if (index < 0 || index >= items.length) {
+    return;
+  }
+  const [removed] = items.splice(index, 1);
+  if (!removed) {
+    return;
+  }
+  itemIndexById.delete(timelineItemDomId(removed.id));
+  removeTimestampIndex(itemIdsByTimestamp, removed);
+  reindexItemsFrom(items, itemIndexById, index);
+}
+
+function reindexItemsFrom(
+  items: readonly TimelineItem[],
+  itemIndexById: Map<string, number>,
+  startIndex: number
+): void {
+  for (let index = Math.max(0, startIndex); index < items.length; index += 1) {
+    itemIndexById.set(timelineItemDomId(items[index].id), index);
+  }
+}
+
+function addTimestampIndex(
+  itemIdsByTimestamp: Map<number, Set<string>>,
+  item: TimelineItem
+): void {
+  const timestamp = item.timestamp_ms;
+  if (timestamp === null || timestamp === undefined) {
+    return;
+  }
+  let ids = itemIdsByTimestamp.get(timestamp);
+  if (!ids) {
+    ids = new Set();
+    itemIdsByTimestamp.set(timestamp, ids);
+  }
+  ids.add(timelineItemDomId(item.id));
+}
+
+function removeTimestampIndex(
+  itemIdsByTimestamp: Map<number, Set<string>>,
+  item: TimelineItem
+): void {
+  const timestamp = item.timestamp_ms;
+  if (timestamp === null || timestamp === undefined) {
+    return;
+  }
+  const ids = itemIdsByTimestamp.get(timestamp);
+  if (!ids) {
+    return;
+  }
+  ids.delete(timelineItemDomId(item.id));
+  if (ids.size === 0) {
+    itemIdsByTimestamp.delete(timestamp);
+  }
+}
+
+function cloneTimestampIndex(
+  itemIdsByTimestamp: ReadonlyMap<number, ReadonlySet<string>>
+): Map<number, Set<string>> {
+  return new Map(
+    [...itemIdsByTimestamp.entries()].map(([timestamp, ids]) => [timestamp, new Set(ids)])
+  );
+}
+
+function copyIndex(target: Map<string, number>, source: ReadonlyMap<string, number>): void {
+  for (const [id, index] of source) {
+    target.set(id, index);
+  }
+}
+
+function clampIndex(index: number, length: number): number {
+  if (!Number.isFinite(index)) {
+    return length;
+  }
+  return Math.max(0, Math.min(Math.trunc(index), length));
 }
 
 /** True if any diff in the batch prepends items (scroll-anchor relevant). */

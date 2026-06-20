@@ -122,6 +122,24 @@ describe("styles.css token system", () => {
     expect(css).not.toMatch(/text-align:\s*(?:left|right)\b/);
   });
 
+  test("timeline message action menus open toward the upper inline-start side", () => {
+    const baseBlock = selectorBlock(".message-action-menu");
+    expect(baseBlock).toContain("inset-inline-end: 0;");
+    const aboveBlock = selectorBlock(".message-action-menu.is-above");
+    expect(aboveBlock).toContain("inset-block-end: 28px;");
+    const belowBlock = selectorBlock(".message-action-menu.is-below");
+    expect(belowBlock).toContain("inset-block-start: 28px;");
+    expect(baseBlock).not.toContain("inset-block-end");
+  });
+
+  test("timeline message action menus can stack above sticky timeline navigation", () => {
+    const block = selectorBlock(
+      ".timeline-scroll:has(.message-action-menu, .message-forward-menu) > .message-list"
+    );
+    expect(block).toContain("position: relative;");
+    expect(block).toContain("z-index: 12;");
+  });
+
   test("defines fixed-format sizing tokens for shared GUI controls", () => {
     expectTokens([
       "--icon-button-size",

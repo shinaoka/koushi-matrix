@@ -9,13 +9,17 @@ export function mediaSourceUrl(sourceUrl: string): string {
   if (
     sourceUrl.startsWith("http://") ||
     sourceUrl.startsWith("https://") ||
+    sourceUrl.startsWith("asset://") ||
     sourceUrl.startsWith("data:") ||
     sourceUrl.startsWith("blob:")
   ) {
     return sourceUrl;
   }
   try {
-    return convertFileSrc(sourceUrl);
+    const localPath = sourceUrl.startsWith("file://")
+      ? decodeURIComponent(new URL(sourceUrl).pathname)
+      : sourceUrl;
+    return convertFileSrc(localPath);
   } catch {
     return sourceUrl;
   }
