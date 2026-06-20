@@ -76,6 +76,12 @@ requireCheck(
   "security.assetProtocol.scope.applocaldata",
   "app local data directory allowed for local media/avatar images"
 );
+requireCheck(
+  assetProtocolScope.includes("$LOCALDATA/koushi-desktop/**") ||
+    assetProtocolScope.includes("$LOCALDATA/koushi-desktop/*"),
+  "security.assetProtocol.scope.koushiData",
+  "Koushi runtime data directory allowed for local media/avatar images"
+);
 for (const [label, csp] of [
   ["security.csp", security.csp],
   ["security.devCsp", security.devCsp]

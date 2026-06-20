@@ -79,6 +79,7 @@ describe("desktop release scripts", () => {
     expect(output).toContain("windows.wix.upgradeCode");
     expect(output).toContain("security.assetProtocol.enable");
     expect(output).toContain("security.assetProtocol.scope.appdata");
+    expect(output).toContain("security.assetProtocol.scope.koushiData");
   });
 
   test("manual QA script lists every Milestone 9 flow", () => {
