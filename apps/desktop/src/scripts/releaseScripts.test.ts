@@ -77,6 +77,8 @@ describe("desktop release scripts", () => {
     expect(output).toContain("macOS.hardenedRuntime");
     expect(output).toContain("windows.signCommand");
     expect(output).toContain("windows.wix.upgradeCode");
+    expect(output).toContain("security.assetProtocol.enable");
+    expect(output).toContain("security.assetProtocol.scope.appdata");
   });
 
   test("manual QA script lists every Milestone 9 flow", () => {

@@ -54,6 +54,28 @@ requireCheck(Boolean(windows.wix?.upgradeCode), "windows.wix.upgradeCode", "stab
 requireCheck(Boolean(windows.nsis), "windows.nsis", "NSIS configuration present");
 
 const security = tauriConfig.app?.security ?? {};
+const assetProtocol = security.assetProtocol ?? {};
+const assetProtocolScope = Array.isArray(assetProtocol.scope)
+  ? assetProtocol.scope
+  : Array.isArray(assetProtocol.scope?.allow)
+    ? assetProtocol.scope.allow
+    : [];
+requireCheck(
+  assetProtocol.enable === true,
+  "security.assetProtocol.enable",
+  "Tauri asset protocol enabled for local media/avatar images"
+);
+requireCheck(
+  assetProtocolScope.includes("$APPDATA/**") || assetProtocolScope.includes("$APPDATA/*"),
+  "security.assetProtocol.scope.appdata",
+  "app data directory allowed for local media/avatar images"
+);
+requireCheck(
+  assetProtocolScope.includes("$APPLOCALDATA/**") ||
+    assetProtocolScope.includes("$APPLOCALDATA/*"),
+  "security.assetProtocol.scope.applocaldata",
+  "app local data directory allowed for local media/avatar images"
+);
 for (const [label, csp] of [
   ["security.csp", security.csp],
   ["security.devCsp", security.devCsp]
