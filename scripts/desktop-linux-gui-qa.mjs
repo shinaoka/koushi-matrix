@@ -160,6 +160,16 @@ if (qaTitleReadySample !== undefined) {
   process.exit(0);
 }
 
+const qaTitleRealLoginReadySample = optionValue("--qa-title-real-login-ready");
+if (qaTitleRealLoginReadySample !== undefined) {
+  console.log(
+    qaStatusIsRealLoginReady(parseQaTitle(qaTitleRealLoginReadySample), false)
+      ? "ready"
+      : "not-ready"
+  );
+  process.exit(0);
+}
+
 const qaTitleAttentionReadySample = optionValue("--qa-title-attention-ready");
 if (qaTitleAttentionReadySample !== undefined) {
   console.log(
@@ -4265,7 +4275,7 @@ async function waitForRealLoginReady(browser, timeout, requireRecovered) {
     if (status.errors > 0) {
       throw new Error(`real login reported errors. Last title: ${lastTitle}`);
     }
-    if (qaStatusIsReady(status, requireRecovered, true)) {
+    if (qaStatusIsRealLoginReady(status, requireRecovered)) {
       return lastTitle;
     }
     if (shouldSelectFirstRoom(status, selectedRoom)) {
@@ -4710,7 +4720,17 @@ function parseQaTitle(title) {
       continue;
     }
     if (
-      ["rooms", "spaces", "timeline_items", "pinned", "pin_ops", "errors", "unread", "badge"].includes(key)
+      [
+        "rooms",
+        "spaces",
+        "timeline_items",
+        "timeline_avatar_rendered",
+        "pinned",
+        "pin_ops",
+        "errors",
+        "unread",
+        "badge"
+      ].includes(key)
     ) {
       status[key] = Number(value);
     } else if (["active_room", "timeline_room", "timeline_subscribed"].includes(key)) {
@@ -4797,6 +4817,26 @@ function qaStatusIsReady(status, requireRecovered, allowEmptyTimeline = false) {
     status.timeline_subscribed === true &&
     status.errors === 0 &&
     timelineReady
+  );
+}
+
+function qaStatusIsRealLoginReady(status, requireRecovered) {
+  const sessionReady = requireRecovered
+    ? status.session === "ready"
+    : status.session === "ready" || status.session === "needsRecovery";
+  const timelineEvidence =
+    status.timeline_subscribed === true ||
+    (Number.isFinite(status.timeline_avatar_rendered) && status.timeline_avatar_rendered > 0);
+  return (
+    sessionReady &&
+    status.sync === "running" &&
+    status.rooms > 0 &&
+    status.active_room === true &&
+    status.timeline_room !== false &&
+    timelineEvidence &&
+    status.errors === 0 &&
+    Number.isFinite(status.timeline_items) &&
+    status.timeline_items >= 0
   );
 }
 

@@ -5,7 +5,7 @@ use crate::{
         QrLoginState, RoomKeyExportState, RoomKeyImportState, SasEmoji,
         SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionState,
         TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState,
-        VerificationTarget,
+        SyncState, VerificationTarget,
     },
 };
 
@@ -56,12 +56,10 @@ pub(crate) fn handle_e2ee_recovery_succeeded(state: &mut AppState) -> Vec<AppEff
     };
     let info = info.clone();
     state.session = SessionState::Ready(info.clone());
-    state.sync = crate::state::SyncState::Starting;
-    vec![
-        AppEffect::PersistSession(info),
-        AppEffect::StartSync,
-        AppEffect::EmitUiEvent(UiEvent::SessionChanged),
-    ]
+    let mut effects = vec![AppEffect::PersistSession(info)];
+    effects.extend(ensure_sync_running_or_started(state));
+    effects.push(AppEffect::EmitUiEvent(UiEvent::SessionChanged));
+    effects
 }
 
 pub(crate) fn handle_e2ee_recovery_failed(state: &mut AppState, message: String) -> Vec<AppEffect> {
@@ -105,14 +103,21 @@ pub(crate) fn handle_e2ee_recovery_state_changed(
                 _ => return Vec::new(),
             };
             state.session = SessionState::Ready(info.clone());
-            state.sync = crate::state::SyncState::Starting;
-            vec![
-                AppEffect::PersistSession(info),
-                AppEffect::StartSync,
-                AppEffect::EmitUiEvent(UiEvent::SessionChanged),
-            ]
+            let mut effects = vec![AppEffect::PersistSession(info)];
+            effects.extend(ensure_sync_running_or_started(state));
+            effects.push(AppEffect::EmitUiEvent(UiEvent::SessionChanged));
+            effects
         }
     }
+}
+
+fn ensure_sync_running_or_started(state: &mut AppState) -> Vec<AppEffect> {
+    if matches!(state.sync, SyncState::Running) {
+        return Vec::new();
+    }
+
+    state.sync = SyncState::Starting;
+    vec![AppEffect::StartSync]
 }
 
 pub(crate) fn handle_verification_requested(

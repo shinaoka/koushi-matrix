@@ -528,6 +528,31 @@ fn e2ee_recovery_success_enters_ready_and_starts_sync() {
 }
 
 #[test]
+fn e2ee_recovery_success_preserves_running_sync() {
+    let info = session_info();
+    let mut state = AppState {
+        session: SessionState::Recovering {
+            info: info.clone(),
+            methods: vec![RecoveryMethod::RecoveryKey],
+        },
+        sync: SyncState::Running,
+        ..AppState::default()
+    };
+
+    let effects = reduce(&mut state, AppAction::E2eeRecoverySucceeded);
+
+    assert_eq!(state.session, SessionState::Ready(info.clone()));
+    assert_eq!(state.sync, SyncState::Running);
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::PersistSession(info),
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+        ]
+    );
+}
+
+#[test]
 fn unknown_e2ee_recovery_state_does_not_prompt_or_stop_sync() {
     let info = session_info();
     let mut state = AppState {
@@ -659,6 +684,37 @@ fn enabled_e2ee_recovery_state_releases_recovery_prompt() {
         vec![
             AppEffect::PersistSession(info),
             AppEffect::StartSync,
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+        ]
+    );
+}
+
+#[test]
+fn enabled_e2ee_recovery_state_preserves_running_sync() {
+    let info = session_info();
+    let mut state = AppState {
+        session: SessionState::NeedsRecovery {
+            info: info.clone(),
+            methods: vec![RecoveryMethod::RecoveryKey],
+        },
+        sync: SyncState::Running,
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::E2eeRecoveryStateChanged {
+            state: E2eeRecoveryState::Enabled,
+            methods: vec![RecoveryMethod::RecoveryKey],
+        },
+    );
+
+    assert_eq!(state.session, SessionState::Ready(info.clone()));
+    assert_eq!(state.sync, SyncState::Running);
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::PersistSession(info),
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
         ]
     );

@@ -984,6 +984,12 @@ describe("desktop release scripts", () => {
     const readyRecovered = runScript("scripts/desktop-linux-gui-qa.mjs", [
       "--qa-title-ready-require-recovered=koushi-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=closed"
     ]);
+    const realLoginReadyFromRenderedAvatar = runScript("scripts/desktop-linux-gui-qa.mjs", [
+      "--qa-title-real-login-ready=koushi-desktop qa session=ready sync=running rooms=20 spaces=0 active_room=true timeline_subscribed=false timeline_items=0 timeline_avatar_rendered=10 errors=0 panel=closed"
+    ]);
+    const realLoginNotReadyWithoutTimelineEvidence = runScript("scripts/desktop-linux-gui-qa.mjs", [
+      "--qa-title-real-login-ready=koushi-desktop qa session=ready sync=running rooms=20 spaces=0 active_room=true timeline_subscribed=false timeline_items=0 timeline_avatar_rendered=0 errors=0 panel=closed"
+    ]);
     const panel = runScript("scripts/desktop-linux-gui-qa.mjs", [
       "--qa-title-panel=koushi-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=keyboardSettings"
     ]);
@@ -997,6 +1003,8 @@ describe("desktop release scripts", () => {
 
     expect(ready.trim()).toBe("ready");
     expect(readyRecovered.trim()).toBe("ready");
+    expect(realLoginReadyFromRenderedAvatar.trim()).toBe("ready");
+    expect(realLoginNotReadyWithoutTimelineEvidence.trim()).toBe("not-ready");
     expect(panel.trim()).toBe("keyboardSettings");
     expect(panelReady.trim()).toBe("ready");
     expect(sendReady.trim()).toBe("ready");
@@ -1704,6 +1712,13 @@ describe("desktop release scripts", () => {
       expect(csp).toContain("asset:");
       expect(csp).toContain("http://asset.localhost");
     }
+    expect(tauriConfig.app.security.assetProtocol.enable).toBe(true);
+    expect(tauriConfig.app.security.assetProtocol.scope.allow).toContain(
+      "$HOME/.local/share/koushi-desktop/avatar_thumbnails/**/*"
+    );
+    expect(tauriConfig.app.security.assetProtocol.scope.allow).toContain(
+      "$HOME/.local/share/koushi-desktop-qa/**/avatar_thumbnails/**/*"
+    );
   });
 
   test("QA file credential store is gated to debug and test builds in core", () => {

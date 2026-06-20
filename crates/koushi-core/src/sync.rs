@@ -256,7 +256,7 @@ impl SyncActor {
                 // Task ended via stop signal — emit Stopped (no request_id because
                 // it was not from an explicit SyncCommand::Stop at this level).
                 self.emit(CoreEvent::Sync(SyncEvent::Stopped { request_id: None }));
-                self.reduce(vec![AppAction::SyncStopped]);
+                self.reduce(vec![AppAction::SyncStopped]).await;
             }
             SyncTaskOutcome::Failed { .. } | SyncTaskOutcome::Panicked => {
                 let kind = match outcome {
@@ -280,12 +280,13 @@ impl SyncActor {
                 }
                 self.lifecycle = SyncLifecycle::Failed;
                 let mode = sync_mode_from_backend(self.current_backend_kind(), true);
-                self.reduce(vec![AppAction::SyncModeChanged { mode }]);
+                self.reduce(vec![AppAction::SyncModeChanged { mode }]).await;
                 self.emit(CoreEvent::Sync(SyncEvent::ModeChanged { mode }));
                 self.emit(CoreEvent::Sync(SyncEvent::Failed));
                 self.reduce(vec![AppAction::SyncFailed {
                     reason: sync_failure_kind_label(kind).to_owned(),
-                }]);
+                }])
+                .await;
             }
         }
     }
@@ -318,7 +319,8 @@ impl SyncActor {
             self.reduce(vec![
                 AppAction::SyncModeChanged { mode },
                 AppAction::SyncStarted,
-            ]);
+            ])
+            .await;
             self.emit(CoreEvent::Sync(SyncEvent::Started {
                 request_id: Some(request_id),
                 backend,
@@ -332,7 +334,8 @@ impl SyncActor {
         let client = self.session.client();
         let backend_kind = probe_backend(&client).await;
         let mode = sync_mode_from_backend(backend_kind, false);
-        self.reduce(vec![AppAction::SyncModeChanged { mode }]);
+        self.reduce(vec![AppAction::SyncModeChanged { mode }])
+            .await;
         self.active_start_request_id = Some(request_id);
 
         // Emit Started with the selected backend BEFORE the task starts running,
@@ -391,7 +394,8 @@ impl SyncActor {
         let transition_mode = SyncMode::Transitioning;
         self.reduce(vec![AppAction::SyncModeChanged {
             mode: transition_mode,
-        }]);
+        }])
+        .await;
         self.emit(CoreEvent::Sync(SyncEvent::ModeChanged {
             mode: transition_mode,
         }));
@@ -403,7 +407,8 @@ impl SyncActor {
         let fallback_mode = SyncMode::Legacy;
         self.reduce(vec![AppAction::SyncModeChanged {
             mode: fallback_mode,
-        }]);
+        }])
+        .await;
         self.emit(CoreEvent::Sync(SyncEvent::Started {
             request_id,
             backend: SyncBackendKind::LegacySync,
@@ -514,7 +519,7 @@ impl SyncActor {
         self.active_start_request_id = None;
         self.lifecycle = SyncLifecycle::Stopped;
         self.emit(CoreEvent::Sync(SyncEvent::Stopped { request_id }));
-        self.reduce(vec![AppAction::SyncStopped]);
+        self.reduce(vec![AppAction::SyncStopped]).await;
     }
 
     fn current_backend_kind(&self) -> SyncBackendKind {
@@ -577,8 +582,8 @@ impl SyncActor {
         let _ = self.event_tx.send(event);
     }
 
-    fn reduce(&self, actions: Vec<AppAction>) {
-        let _ = self.action_tx.try_send(actions);
+    async fn reduce(&self, actions: Vec<AppAction>) {
+        let _ = self.action_tx.send(actions).await;
     }
 }
 
@@ -609,18 +614,19 @@ async fn observe_sync_service_states(
                 if !ever_ran {
                     ever_ran = true;
                     let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
-                    let _ = action_tx.try_send(vec![AppAction::SyncStarted]);
+                    let _ = action_tx.send(vec![AppAction::SyncStarted]).await;
                 } else {
                     // Recovered from Offline/Reconnecting.
                     let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
-                    let _ = action_tx.try_send(vec![AppAction::SyncRecovered]);
+                    let _ = action_tx.send(vec![AppAction::SyncRecovered]).await;
                 }
             }
             matrix_sdk_ui::sync_service::State::Offline => {
                 let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Reconnecting));
-                let _ = action_tx.try_send(vec![AppAction::SyncReconnecting {
+                let _ = action_tx.send(vec![AppAction::SyncReconnecting {
                     reason: "network_offline".to_owned(),
-                }]);
+                }])
+                .await;
                 return SyncTaskOutcome::Failed {
                     kind: SyncFailureKind::Http,
                     ever_ran,
@@ -679,11 +685,11 @@ async fn run_legacy_sync_loop(
                             ever_ran = true;
                             reconnecting = false;
                             let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
-                            let _ = action_tx.try_send(vec![AppAction::SyncStarted]);
+                            let _ = action_tx.send(vec![AppAction::SyncStarted]).await;
                         } else if reconnecting {
                             reconnecting = false;
                             let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
-                            let _ = action_tx.try_send(vec![AppAction::SyncRecovered]);
+                            let _ = action_tx.send(vec![AppAction::SyncRecovered]).await;
                         }
                         // Else: normal running tick — no event needed.
                     }
@@ -698,9 +704,10 @@ async fn run_legacy_sync_loop(
                         if !reconnecting {
                             reconnecting = true;
                             let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Reconnecting));
-                            let _ = action_tx.try_send(vec![AppAction::SyncReconnecting {
+                            let _ = action_tx.send(vec![AppAction::SyncReconnecting {
                                 reason: "network_error".to_owned(),
-                            }]);
+                            }])
+                            .await;
                         }
                     }
                 }
@@ -1241,6 +1248,46 @@ pub mod tests {
         assert!(matches!(a3[0], AppAction::SyncReconnecting { .. }));
         assert!(matches!(a4[0], AppAction::SyncFailed { .. }));
         assert!(matches!(a5[0], AppAction::SyncStopped));
+    }
+
+    #[tokio::test]
+    async fn sync_service_running_projection_waits_for_action_channel_capacity() {
+        let mut state = eyeball::Observable::new(matrix_sdk_ui::sync_service::State::Idle);
+        let state_sub = eyeball::Observable::subscribe(&state);
+        let (event_tx, mut event_rx) = broadcast::channel::<CoreEvent>(4);
+        let (action_tx, mut action_rx) = mpsc::channel::<Vec<AppAction>>(1);
+
+        action_tx
+            .send(vec![AppAction::SyncModeChanged {
+                mode: SyncMode::Simplified,
+            }])
+            .await
+            .expect("pre-fill action channel");
+
+        let observer = executor::spawn(observe_sync_service_states(
+            state_sub,
+            event_tx,
+            action_tx,
+        ));
+
+        eyeball::Observable::set(&mut state, matrix_sdk_ui::sync_service::State::Running);
+        let event = executor::timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("observer should emit running event")
+            .expect("running event should be available");
+        assert!(matches!(event, CoreEvent::Sync(SyncEvent::Running)));
+
+        let queued = action_rx.recv().await.expect("pre-filled action remains first");
+        assert!(matches!(queued[0], AppAction::SyncModeChanged { .. }));
+
+        let projected = executor::timeout(Duration::from_secs(1), action_rx.recv())
+            .await
+            .expect("sync started projection must wait for channel capacity")
+            .expect("sync started projection should be delivered");
+        assert!(matches!(projected[0], AppAction::SyncStarted));
+
+        drop(state);
+        let _ = observer.await;
     }
 
     // --- Failure reason must not be raw error text ---
