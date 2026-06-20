@@ -32,7 +32,7 @@ Rules:
 2. Release builds must reject environment-variable credential injection and
    the file-based credential store. The gate is compile-time (debug/test
    only) and CI must verify release builds ignore these paths.
-3. QA credentials enter processes via FIFO (`MATRIX_DESKTOP_QA_LOGIN_PIPE`)
+3. QA credentials enter processes via FIFO (`KOUSHI_QA_LOGIN_PIPE`)
    or the gated file credential store — never via argv, never typed by
    coordinates, never echoed to a terminal, never in screenshots or logs.
 4. Do not pass the parent shell environment wholesale into QA child
@@ -50,8 +50,8 @@ Rules:
    generated artifacts.
 8. An unexpected macOS Keychain prompt during unattended QA is an
    automation failure, not something to click through. Fix the run's
-   environment (`MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1`,
-   `MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR`) instead.
+   environment (`KOUSHI_SKIP_KEYCHAIN_PERSISTENCE=1`,
+   `KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR`) instead.
 9. OS notifications, badge labels, and QA window-title tokens are
    private-data-minimized surfaces. By default they may include only a safe
    room display label, notification kind (`mention`, `dm`, `message`), and
@@ -428,10 +428,10 @@ GUI automation is a thin smoke layer, never the primary correctness gate.
 3. Resolve processes as `first process whose name is <variable>` in
    AppleScript; check both the dev process name (`koushi-desktop`) and
    the product title (`Koushi`).
-4. First-run GUI smoke sets `MATRIX_DESKTOP_SKIP_SAVED_SESSIONS=1`;
+4. First-run GUI smoke sets `KOUSHI_SKIP_SAVED_SESSIONS=1`;
    real-login smoke additionally sets
-   `MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1` and
-   `MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR`.
+   `KOUSHI_SKIP_KEYCHAIN_PERSISTENCE=1` and
+   `KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR`.
 5. Keep the strict `timeline_items > 0` release signal; use
    `--allow-empty-timeline` only for sparse test accounts validating
    login/room-list/panel automation.

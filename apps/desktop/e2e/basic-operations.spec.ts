@@ -338,7 +338,7 @@ test("auth form defaults to matrix.org and submits custom ports in the homeserve
   await expect(homeserverInput).toHaveValue("https://matrix.org");
 
   await homeserverInput.fill("https://example.org:8448");
-  await page.getByRole("textbox", { name: t("auth.usernameOrMatrixId") }).fill("@alice:example.org");
+  await page.getByRole("textbox", { name: t("auth.username") }).fill("alice");
   await page.getByLabel(t("auth.password")).fill("synthetic-password");
   await page.getByRole("textbox", { name: t("auth.deviceName") }).fill("Koushi Test Device");
   await page.getByRole("button", { name: t("auth.continue") }).click();
@@ -348,7 +348,7 @@ test("auth form defaults to matrix.org and submits custom ports in the homeserve
     .poll(async () => page.evaluate(() => window.__harness.invocationsOf("submit_login")[0]?.args))
     .toEqual({
       homeserver: "https://example.org:8448",
-      username: "@alice:example.org",
+      username: "alice",
       password: "[REDACTED]",
       deviceDisplayName: "Koushi Test Device"
     });
@@ -1622,8 +1622,25 @@ test("room tag context menu dispatches typed commands and waits for Rust section
     window.__harness.pushStateChanged();
   }, HARNESS_ROOM_ID);
 
-  await expect(favouritesSection.getByRole("button", { name: "Harness Room" })).toBeVisible();
   await expect(roomsSection.getByRole("button", { name: "Harness Room" })).toHaveCount(0);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        ui: {
+          ...snapshot.state.ui,
+          room_list: {
+            ...snapshot.state.ui.room_list,
+            active_filter: { kind: "favourites" }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+  await expect(favouritesSection.getByRole("button", { name: "Harness Room" })).toBeVisible();
 
   await favouritesSection.getByRole("button", { name: "Harness Room" }).click({
     button: "right"
@@ -1665,6 +1682,23 @@ test("room tag context menu dispatches typed commands and waits for Rust section
     window.__harness.pushStateChanged();
   }, HARNESS_ROOM_ID);
 
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        ui: {
+          ...snapshot.state.ui,
+          room_list: {
+            ...snapshot.state.ui.room_list,
+            active_filter: { kind: "rooms" }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
   await expect(roomsSection.getByRole("button", { name: "Harness Room" })).toBeVisible();
   await expect(favouritesSection).toHaveCount(0);
 });
@@ -1683,46 +1717,66 @@ test("room sections follow Element-aligned order and render Rust-owned counts", 
       {
         room_id: "!favourite-room:example.invalid",
         display_name: "Favourite Room",
+        display_label: "Favourite Room",
+        original_display_label: "Favourite Room",
         avatar: null,
         is_dm: false,
+        dm_user_ids: [],
         tags: favouriteTags,
         unread_count: 1,
         notification_count: 1,
         highlight_count: 1,
-        parent_space_ids: []
+        parent_space_ids: [],
+        is_encrypted: false,
+        joined_members: 3
       },
       {
         room_id: "!plain-room:example.invalid",
         display_name: "Plain Room",
+        display_label: "Plain Room",
+        original_display_label: "Plain Room",
         avatar: null,
         is_dm: false,
+        dm_user_ids: [],
         tags: plainTags,
-        unread_count: 0,
-        notification_count: 0,
+        unread_count: 1,
+        notification_count: 1,
         highlight_count: 0,
-        parent_space_ids: []
+        parent_space_ids: [],
+        is_encrypted: false,
+        joined_members: 3
       },
       {
         room_id: "!low-room:example.invalid",
         display_name: "Low Priority Room",
+        display_label: "Low Priority Room",
+        original_display_label: "Low Priority Room",
         avatar: null,
         is_dm: false,
+        dm_user_ids: [],
         tags: lowPriorityTags,
-        unread_count: 0,
-        notification_count: 0,
+        unread_count: 1,
+        notification_count: 1,
         highlight_count: 0,
-        parent_space_ids: []
+        parent_space_ids: [],
+        is_encrypted: false,
+        joined_members: 3
       },
       {
         room_id: "!dm-room:example.invalid",
         display_name: "Direct Person",
+        display_label: "Direct Person",
+        original_display_label: "Direct Person",
         avatar: null,
         is_dm: true,
+        dm_user_ids: ["@direct-person:example.invalid"],
         tags: plainTags,
         unread_count: 2,
         notification_count: 2,
         highlight_count: 0,
-        parent_space_ids: []
+        parent_space_ids: [],
+        is_encrypted: false,
+        joined_members: 2
       }
     ];
     const toRoomListItem = (room: (typeof rooms)[number]) => ({
@@ -1747,7 +1801,12 @@ test("room sections follow Element-aligned order and render Rust-owned counts", 
           ...snapshot.state.ui,
           navigation: {
             ...snapshot.state.ui.navigation,
+            active_space_id: null,
             active_room_id: "!plain-room:example.invalid"
+          },
+          room_list: {
+            ...snapshot.state.ui.room_list,
+            active_filter: { kind: "unread" }
           },
           timeline: {
             ...snapshot.state.ui.timeline,
@@ -1759,11 +1818,14 @@ test("room sections follow Element-aligned order and render Rust-owned counts", 
         ...snapshot.sidebar,
         account_home: {
           ...snapshot.sidebar.account_home,
+          is_active: true,
           unread_count: 1,
           highlight_count: 1
         },
+        active_space_id: null,
         space_rail: snapshot.sidebar.space_rail.map((space) => ({
           ...space,
+          is_active: false,
           unread_count: 1,
           highlight_count: 1
         })),
@@ -1792,7 +1854,10 @@ test("room sections follow Element-aligned order and render Rust-owned counts", 
     .toEqual(["favourites", "people", "rooms", "low-priority"]);
 
   await expect(page.locator('[data-room-section="favourites"] .section-count')).toHaveText("1");
-  await expect(page.locator('[data-room-section="people"] .section-count')).toHaveText("0");
+  await expect(page.locator('[data-room-section="people"] .section-title')).toContainText(
+    t("workspace.people")
+  );
+  await expect(page.locator('[data-room-section="people"] .section-count')).toHaveText("1");
   await expect(page.locator('[data-room-section="rooms"] .section-count')).toHaveText("1");
   await expect(page.locator('[data-room-section="low-priority"] .section-count')).toHaveText("1");
 
@@ -1821,24 +1886,34 @@ test("notification attention snapshot drives room, space, thread, and click rout
       {
         room_id: "!attention-room:example.invalid",
         display_name: "Attention Room",
+        display_label: "Attention Room",
+        original_display_label: "Attention Room",
         avatar: null,
         is_dm: false,
+        dm_user_ids: [],
         tags: plainTags,
         unread_count: 4,
         notification_count: 4,
         highlight_count: 1,
-        parent_space_ids: ["!attention-space:example.invalid"]
+        parent_space_ids: ["!attention-space:example.invalid"],
+        is_encrypted: false,
+        joined_members: 3
       },
       {
         room_id: "!quiet-low:example.invalid",
         display_name: "Quiet Low Priority",
+        display_label: "Quiet Low Priority",
+        original_display_label: "Quiet Low Priority",
         avatar: null,
         is_dm: false,
+        dm_user_ids: [],
         tags: lowPriorityTags,
         unread_count: 8,
         notification_count: 8,
         highlight_count: 0,
-        parent_space_ids: ["!attention-space:example.invalid"]
+        parent_space_ids: ["!attention-space:example.invalid"],
+        is_encrypted: false,
+        joined_members: 3
       }
     ];
     const toRoomListItem = (room: (typeof rooms)[number]) => ({
@@ -1860,6 +1935,10 @@ test("notification attention snapshot drives room, space, thread, and click rout
             ...snapshot.state.ui.navigation,
             active_room_id: "!quiet-low:example.invalid",
             active_space_id: "!attention-space:example.invalid"
+          },
+          room_list: {
+            ...snapshot.state.ui.room_list,
+            active_filter: { kind: "unread" }
           },
           timeline: {
             ...snapshot.state.ui.timeline,
@@ -2998,7 +3077,7 @@ test("pin and unpin actions render the Tauri snapshot response without a manual 
   await expect.poll(() => invocationCount(page, "pin_event")).toBeGreaterThanOrEqual(1);
   await expect(pinnedRegion.getByText("Pinned from Tauri response", { exact: true })).toBeVisible();
 
-  await pinnedRegion.getByRole("button", { name: "Unpin message" }).click();
+  await pinnedRegion.getByRole("button", { name: "Unpin message" }).click({ force: true });
   await expect.poll(() => invocationCount(page, "unpin_event")).toBeGreaterThanOrEqual(1);
   await expect(pinnedRegion).toHaveCount(0);
 });
@@ -5650,12 +5729,21 @@ test("security settings drive Rust-owned room-key transfer and secure backup sta
   });
 
   await page.getByRole("button", { name: "User settings" }).click();
+  await page.getByRole("button", { name: "Security & Privacy" }).click();
   await expect(page.getByRole("heading", { name: "Key management" })).toBeVisible();
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("plugin:dialog|save", "/tmp/koushi-export.txt");
+    window.__harness.setCommandResponse(
+      "plugin:dialog|open",
+      "/tmp/element-compatible-keys.txt"
+    );
+  });
 
   const exportForm = page.getByRole("form", { name: "Room key export", exact: true });
-  await exportForm.getByLabel("Key export destination").fill("/tmp/koushi-export.txt");
-  await exportForm.getByLabel("Room key passphrase").fill("synthetic-export-passphrase");
   await exportForm.getByRole("button", { name: "Export room keys" }).click();
+  const exportDialog = page.getByRole("dialog", { name: "Room key passphrase" });
+  await exportDialog.getByLabel("Room key passphrase").fill("synthetic-export-passphrase");
+  await exportDialog.getByRole("button", { name: "Export room keys" }).click();
   await expect.poll(() => invocationCount(page, "export_room_keys")).toBe(1);
   await expect(page.getByTestId("room-key-export-state")).toHaveText("Exported");
   await expect
@@ -5668,9 +5756,10 @@ test("security settings drive Rust-owned room-key transfer and secure backup sta
     });
 
   const importForm = page.getByRole("form", { name: "Room key import", exact: true });
-  await importForm.getByLabel("Key import source").fill("/tmp/element-compatible-keys.txt");
-  await importForm.getByLabel("Room key passphrase").fill("synthetic-import-passphrase");
   await importForm.getByRole("button", { name: "Import room keys" }).click();
+  const importDialog = page.getByRole("dialog", { name: "Room key passphrase" });
+  await importDialog.getByLabel("Room key passphrase").fill("synthetic-import-passphrase");
+  await importDialog.getByRole("button", { name: "Import room keys" }).click();
   await expect.poll(() => invocationCount(page, "import_room_keys")).toBe(1);
   await expect(page.getByTestId("room-key-import-state")).toHaveText("1 of 1 imported");
   await expect

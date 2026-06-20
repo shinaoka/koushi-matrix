@@ -4,7 +4,7 @@ use koushi_state::{
     AuthDiscoveryState, AuthFailureKind, DelegatedAuthLinks, DeviceSessionListState,
     DeviceSessionSummary, E2eeKeyManagementState, LoginFlow, LoginFlowKind, OperationFailureKind,
     QrLoginState, RecoveryKeyDeliveryState, RoomKeyExportState, RoomKeyImportState,
-    RoomListEntryKind, RoomListFilter, RoomListProjectionItem, RoomSummary,
+    RoomListEntryKind, RoomListFilter, RoomListProjectionItem, RoomSummary, RoomTagInfo,
     SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionInfo, SessionState,
     SoftLogoutReauthState, SyncMode, TrustOperationFailureKind, UiEvent, reduce,
 };
@@ -656,6 +656,38 @@ fn room_list_filter_selection_is_session_ready_guarded_and_recomputes_projection
 }
 
 #[test]
+fn room_list_rooms_filter_excludes_favourites_and_low_priority_rooms() {
+    let mut favourite = room_summary("!fav:example.invalid", false, 0, 0, false);
+    favourite.tags.favourite = Some(RoomTagInfo {
+        order: Some("0.1".to_owned()),
+    });
+    let ordinary = room_summary("!ordinary:example.invalid", false, 0, 0, false);
+    let mut low_priority = room_summary("!low:example.invalid", false, 0, 0, false);
+    low_priority.tags.low_priority = Some(RoomTagInfo {
+        order: Some("0.9".to_owned()),
+    });
+    let dm = room_summary("!dm:example.invalid", true, 0, 0, false);
+
+    let rooms = vec![favourite, ordinary, low_priority, dm];
+    let projection = compute_room_list_projection(
+        RoomListFilter::Rooms,
+        Default::default(),
+        None,
+        &[],
+        &rooms,
+        &[],
+    );
+
+    assert_eq!(
+        projection.items,
+        vec![RoomListProjectionItem {
+            room_id: "!ordinary:example.invalid".to_owned(),
+            kind: RoomListEntryKind::Room,
+        }]
+    );
+}
+
+#[test]
 fn room_list_filter_applied_updates_projection_when_changed() {
     let rooms = vec![room_summary("!room1:example.invalid", false, 0, 0, false)];
     let mut state = ready_state_with_rooms(rooms);
@@ -692,6 +724,8 @@ fn mark_as_read_clears_unread_state_and_recomputes_room_list_projection() {
     state.room_list = compute_room_list_projection(
         RoomListFilter::Unread,
         state.room_list.sort,
+        state.navigation.active_space_id.as_deref(),
+        &state.spaces,
         &state.rooms,
         &state.invites,
     );
@@ -757,6 +791,8 @@ fn mark_as_unread_sets_unread_flag_and_recomputes_room_list_projection() {
     state.room_list = compute_room_list_projection(
         RoomListFilter::Unread,
         state.room_list.sort,
+        state.navigation.active_space_id.as_deref(),
+        &state.spaces,
         &state.rooms,
         &state.invites,
     );

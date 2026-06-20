@@ -72,6 +72,7 @@ export function ContextualRightPanel({
   onModerateMember = () => undefined,
   onSetLocalUserAlias = () => undefined,
   onSetRoomNotificationMode = () => undefined,
+  onStartDirectMessage = () => undefined,
   onUpdateMemberRole = () => undefined,
   onRecoverySecretPresenceChange,
   onReply,
@@ -82,6 +83,8 @@ export function ContextualRightPanel({
   onBootstrapCrossSigning,
   onCancelVerification,
   onConfirmSasVerification,
+  onChooseRoomKeyExportDestination = async () => null,
+  onChooseRoomKeyImportSource = async () => null,
   onExportRoomKeys,
   onImportRoomKeys,
   onBootstrapSecureBackup,
@@ -143,6 +146,7 @@ export function ContextualRightPanel({
   ) => void;
   onSetLocalUserAlias?: (userId: string, alias: string | null) => void;
   onSetRoomNotificationMode?: (roomId: string, mode: RoomNotificationMode) => void;
+  onStartDirectMessage?: (userId: string) => void;
   onUpdateMemberRole?: (
     roomId: string,
     targetUserId: string,
@@ -157,6 +161,8 @@ export function ContextualRightPanel({
   onBootstrapCrossSigning: () => void;
   onCancelVerification: (flowId: number) => void;
   onConfirmSasVerification: (flowId: number) => void;
+  onChooseRoomKeyExportDestination?: () => Promise<string | null>;
+  onChooseRoomKeyImportSource?: () => Promise<string | null>;
   onExportRoomKeys: (destinationPath: string, passphrase: string) => void;
   onImportRoomKeys: (sourcePath: string, passphrase: string) => void;
   onBootstrapSecureBackup: (
@@ -246,6 +252,8 @@ export function ContextualRightPanel({
           onBootstrapCrossSigning={onBootstrapCrossSigning}
           onCancelVerification={onCancelVerification}
           onConfirmSasVerification={onConfirmSasVerification}
+          onChooseRoomKeyExportDestination={onChooseRoomKeyExportDestination}
+          onChooseRoomKeyImportSource={onChooseRoomKeyImportSource}
           onExportRoomKeys={onExportRoomKeys}
           onImportRoomKeys={onImportRoomKeys}
           onBootstrapSecureBackup={onBootstrapSecureBackup}
@@ -317,6 +325,7 @@ export function ContextualRightPanel({
           }
           onSetLocalUserAlias={onSetLocalUserAlias}
           onSetRoomNotificationMode={onSetRoomNotificationMode}
+          onStartDirectMessage={onStartDirectMessage}
           onUpdateMemberRole={onUpdateMemberRole}
           onUpdateRoomSetting={onUpdateRoomSetting}
           onSetRoomUrlPreviewOverride={(roomId, enabled) => {
@@ -355,6 +364,7 @@ export function ContextualRightPanel({
               ? onOpenSpaceMembers
               : undefined
           }
+          onStartDirectMessage={onStartDirectMessage}
         />
       </aside>
     );

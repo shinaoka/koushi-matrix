@@ -295,22 +295,28 @@ impl SearchActorHandle {
         let _ = self.tx.send(SearchActorMessage::Shutdown).await;
     }
 
-    /// Notify the actor that the set of joined rooms has changed.
-    /// The actor idempotently starts background crawls for eligible rooms
-    /// when `settings.speed != Paused`.
-    ///
-    /// Uses `send` (not `try_send`) for reliable delivery — a dropped
-    /// notification can leave rooms un-crawled until the next room-list
-    /// update (REPOSITORY_RULES L124-128).
-    pub async fn notify_rooms_available(
+    /// Try to notify the actor that the set of joined rooms has changed.
+    /// Room availability is latest-wins background state; callers that get a
+    /// full inbox keep the returned payload and retry later instead of blocking
+    /// user-visible commands on crawler work.
+    pub fn try_notify_rooms_available(
         &self,
         room_ids: Vec<String>,
         settings: SearchCrawlerSettings,
-    ) {
-        let _ = self
+    ) -> Result<(), (Vec<String>, SearchCrawlerSettings)> {
+        match self
             .tx
-            .send(SearchActorMessage::RoomsAvailable { room_ids, settings })
-            .await;
+            .try_send(SearchActorMessage::RoomsAvailable { room_ids, settings })
+        {
+            Ok(()) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(
+                SearchActorMessage::RoomsAvailable { room_ids, settings },
+            )) => Err((room_ids, settings)),
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                unreachable!("try_notify_rooms_available only sends RoomsAvailable messages")
+            }
+        }
     }
 
     /// Invalidate the actor's completed-room cache because content-indexing
@@ -1318,6 +1324,27 @@ mod tests {
         assert!(
             start_page_source.contains("messages_backpressure.clone()"),
             "each search crawler page must receive the shared /messages backpressure handle"
+        );
+    }
+
+    #[test]
+    fn search_actor_room_availability_notifications_have_nonblocking_entrypoint() {
+        let source = include_str!("search.rs");
+        let handle_impl = source
+            .split("impl SearchActorHandle")
+            .nth(1)
+            .expect("SearchActorHandle impl")
+            .split("// ---------------------------------------------------------------------------")
+            .next()
+            .expect("SearchActorHandle methods");
+
+        assert!(
+            handle_impl.contains("pub fn try_notify_rooms_available"),
+            "background crawler room availability must have a nonblocking latest-wins delivery path"
+        );
+        assert!(
+            handle_impl.contains(".try_send(SearchActorMessage::RoomsAvailable"),
+            "nonblocking crawler notification delivery must use try_send"
         );
     }
 }

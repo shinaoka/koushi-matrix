@@ -8,7 +8,7 @@ fixture/demo backend contract mentioned below is historical (dev/demo only).
 The state-transition diagrams in this document are normative and must track the
 reducer; see [Maintenance Contract](#maintenance-contract).
 
-Date: 2026-06-17
+Date: 2026-06-20
 
 ## Contract
 
@@ -2171,10 +2171,15 @@ stateDiagram-v2
   eligibility, then applies the messages to the canonical document store and
   emits progress/completion actions. Stale page results are discarded before
   they can update search state.
-- **Reliable delivery**: `CrawlFinished`, `NotifySearchCrawlerRoomsAvailable`,
-  and `InvalidateSearchCrawlerCache` are delivered via `async send` (not
-  `try_send`) so state-machine transitions are never silently dropped
-  (REPOSITORY_RULES L124-128).
+- **Reliable delivery**: `CrawlFinished` and `InvalidateSearchCrawlerCache`
+  settle crawler state and are delivered via reliable actor sends.
+  `NotifySearchCrawlerRoomsAvailable` is different: it carries an
+  authoritative latest snapshot of joined rooms and crawler settings. It may be
+  delivered through a latest-wins nonblocking path so room/timeline/user
+  operations never wait behind crawler work, but the `AccountActor` must retain
+  the newest pending payload and retry it until the `SearchActor` accepts it.
+  Silent loss of the only pending room-availability update is prohibited
+  (REPOSITORY_RULES State-Machine Discipline).
 - **Restore gap**: A `NotifySearchCrawlerRoomsAvailable` that arrives before
   the `SearchActor` is spawned (e.g. `RoomListUpdated` fires between session
   establishment and `SearchActor` creation at restore time) is buffered in

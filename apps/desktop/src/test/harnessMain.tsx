@@ -43,7 +43,7 @@ window.__harness = {
 
 const transport: TimelineTransport = {
   listenCoreEvents(listener) {
-    return ipc.listen("matrix-desktop://event", (envelope) => {
+    return ipc.listen("koushi-desktop://event", (envelope) => {
       listener((envelope as { payload: CoreEventPayload }).payload);
     });
   },

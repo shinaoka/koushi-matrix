@@ -44,6 +44,13 @@ describe("i18n message catalog", () => {
     expect(t("auth.matrixDesktop", {}, "ja")).toBe("Koushi（光子・格子）");
   });
 
+  test("direct-message room list surfaces are labeled as DMs, not people", () => {
+    expect(t("roomList.filterPeople")).toBe("DMs");
+    expect(t("workspace.people")).toBe("DMs");
+    expect(t("roomList.filterPeople", {}, "ja")).toBe("DM");
+    expect(t("workspace.people", {}, "ja")).toBe("DM");
+  });
+
   test("Japanese catalog provides representative localized labels", () => {
     expect(t("composer.replying", {}, "ja")).toBe("返信中");
     expect(t("action.send", {}, "ja")).toBe("送信");
@@ -124,7 +131,7 @@ describe("i18n message catalog", () => {
       function visit(node: ts.Node): void {
         if (ts.isJsxText(node)) {
           const text = node.getText(sourceFile).trim().replace(/\s+/g, " ");
-          if (text && text !== "matrix-desktop" && /[A-Za-z]/.test(text)) {
+          if (text && text !== "koushi-desktop" && /[A-Za-z]/.test(text)) {
             findings.push(`${file}:${lineNumberAt(sourceFile, node)}: literal JSX text "${text}"`);
           }
         }

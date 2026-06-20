@@ -96,8 +96,8 @@ describe("desktop attention summary", () => {
       })
     );
 
-    expect(desktopAttentionWindowTitle("matrix-desktop", summary)).toBe(
-      "matrix-desktop · 4 unread"
+    expect(desktopAttentionWindowTitle("koushi-desktop", summary)).toBe(
+      "koushi-desktop · 4 unread"
     );
   });
 });
@@ -167,11 +167,11 @@ describe("desktop notification candidate", () => {
 
     await applyDesktopAttentionToWindow(
       windowMock,
-      desktopAttentionWindowTitle("matrix-desktop", summary),
+      desktopAttentionWindowTitle("koushi-desktop", summary),
       summary.badgeCount
     );
 
-    expect(windowMock.setTitle).toHaveBeenCalledWith("matrix-desktop · 5 unread");
+    expect(windowMock.setTitle).toHaveBeenCalledWith("koushi-desktop · 5 unread");
     expect(windowMock.setBadgeCount).toHaveBeenCalledWith(5);
   });
 
@@ -182,7 +182,7 @@ describe("desktop notification candidate", () => {
       setOverlayIcon: vi.fn().mockResolvedValue(undefined)
     };
 
-    await applyDesktopAttentionToWindow(windowMock, "matrix-desktop · 3 unread", 3, {
+    await applyDesktopAttentionToWindow(windowMock, "koushi-desktop · 3 unread", 3, {
       notifications: "available",
       badge: "unknown",
       overlay_icon: "available",
@@ -204,7 +204,7 @@ describe("desktop notification candidate", () => {
       requestUserAttention: vi.fn().mockResolvedValue(undefined)
     };
 
-    await applyDesktopAttentionToWindow(windowMock, "matrix-desktop · 2 unread", 2, {
+    await applyDesktopAttentionToWindow(windowMock, "koushi-desktop · 2 unread", 2, {
       notifications: "available",
       badge: "available",
       overlay_icon: "unavailable",
@@ -314,7 +314,7 @@ describe("desktop notification candidate", () => {
       requestUserAttention: vi.fn().mockResolvedValue(undefined)
     };
 
-    await applyDesktopAttentionToWindow(windowMock, "matrix-desktop · 2 unread", 2, {
+    await applyDesktopAttentionToWindow(windowMock, "koushi-desktop · 2 unread", 2, {
       notifications: "available",
       badge: "available",
       overlay_icon: "unavailable",
@@ -335,7 +335,7 @@ describe("desktop notification candidate", () => {
       setTrayBadgeCount: vi.fn().mockResolvedValue(undefined)
     };
 
-    await applyDesktopAttentionToWindow(windowMock, "matrix-desktop", 0, {
+    await applyDesktopAttentionToWindow(windowMock, "koushi-desktop", 0, {
       notifications: "available",
       badge: "available",
       overlay_icon: "unavailable",
@@ -355,7 +355,7 @@ describe("desktop notification candidate", () => {
       setOverlayIcon: vi.fn().mockResolvedValue(undefined)
     };
 
-    await applyDesktopAttentionToWindow(windowMock, "matrix-desktop", 0, {
+    await applyDesktopAttentionToWindow(windowMock, "koushi-desktop", 0, {
       notifications: "available",
       badge: "unknown",
       overlay_icon: "available",
@@ -374,10 +374,10 @@ describe("desktop notification candidate", () => {
     };
 
     await expect(
-      applyDesktopAttentionToWindow(windowMock, "matrix-desktop", 2)
+      applyDesktopAttentionToWindow(windowMock, "koushi-desktop", 2)
     ).resolves.toBeUndefined();
 
-    expect(windowMock.setTitle).toHaveBeenCalledWith("matrix-desktop");
+    expect(windowMock.setTitle).toHaveBeenCalledWith("koushi-desktop");
     expect(windowMock.setBadgeCount).toHaveBeenCalledWith(2);
   });
 });

@@ -332,6 +332,14 @@ button {
   background: var(--surface-hover);
 }
 
+.auth-field-help {
+  margin: -2px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
 .auth-discovery {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -371,6 +379,13 @@ button {
   color: var(--danger);
   background: var(--surface);
   font-size: 13px;
+}
+
+.auth-error-help {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-weight: 600;
+  line-height: 1.35;
 }
 
 .auth-submit {
@@ -3610,6 +3625,30 @@ mark {
   color: var(--text);
 }
 
+.dialog-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.diagnostics-dialog {
+  width: min(680px, calc(100vw - 48px));
+}
+
+.diagnostics-output {
+  max-height: min(56vh, 520px);
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-hover);
+  color: var(--text);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .dialog-input {
   height: 36px;
   padding: 0 12px;
@@ -4690,6 +4729,13 @@ kbd {
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.profile-settings-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .profile-settings-field input {

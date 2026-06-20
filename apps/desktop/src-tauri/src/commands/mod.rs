@@ -45,7 +45,7 @@ static NEXT_TRANSACTION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(any(debug_assertions, test))]
 const QA_RECOVERY_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-const QA_TITLE_ENV: &str = "MATRIX_DESKTOP_QA_TITLE";
+const QA_TITLE_ENV: &str = "KOUSHI_QA_TITLE";
 const TIMELINE_BACKWARDS_PAGE_EVENT_COUNT: u16 = 30;
 
 pub(crate) mod account;
@@ -123,7 +123,7 @@ pub(crate) fn qa_window_title_string(
     timeline_items: usize,
 ) -> String {
     [
-        "matrix-desktop qa".to_owned(),
+        "koushi-desktop qa".to_owned(),
         format!("session={}", qa_session_label(&snapshot.session)),
         format!("sync={}", qa_sync_label(&snapshot.sync)),
         format!("rooms={}", snapshot.rooms.len()),
@@ -165,9 +165,6 @@ fn qa_sync_label(sync: &koushi_state::SyncState) -> &'static str {
 }
 
 // ---- Tauri commands ----
-
-
-
 
 pub(crate) async fn submit_login_request(
     app: AppHandle,
@@ -396,9 +393,6 @@ async fn wait_for_upload_staging_snapshot(
 /// core, so 5 seconds is generous.
 const SAVED_SESSIONS_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-
-
-
 pub(crate) async fn submit_recovery_request(
     app: AppHandle,
     state: &CoreRuntimeState,
@@ -409,47 +403,6 @@ pub(crate) async fn submit_recovery_request(
     update_qa_window_title_from_state(&app, state).await;
     Ok(())
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -462,63 +415,6 @@ pub struct StageUploadInputItem {
     kind: StagedUploadKind,
     compression_choice: StagedUploadCompressionChoice,
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 const CREATE_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -635,20 +531,6 @@ async fn wait_for_room_joined(
     }
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // ---- Helpers ----
 
 pub(crate) fn build_submit_login_command(
@@ -695,9 +577,7 @@ pub(crate) fn build_logout_command(request_id: koushi_core::RequestId) -> CoreCo
     CoreCommand::Account(AccountCommand::Logout { request_id })
 }
 
-pub(crate) fn build_restart_sync_command(
-    request_id: koushi_core::RequestId,
-) -> CoreCommand {
+pub(crate) fn build_restart_sync_command(request_id: koushi_core::RequestId) -> CoreCommand {
     CoreCommand::Sync(SyncCommand::Restart { request_id })
 }
 
@@ -726,21 +606,15 @@ pub(crate) fn build_probe_local_encryption_health_command(
     CoreCommand::Account(AccountCommand::ProbeLocalEncryptionHealth { request_id })
 }
 
-pub(crate) fn build_reset_local_data_command(
-    request_id: koushi_core::RequestId,
-) -> CoreCommand {
+pub(crate) fn build_reset_local_data_command(request_id: koushi_core::RequestId) -> CoreCommand {
     CoreCommand::Account(AccountCommand::ResetLocalData { request_id })
 }
 
-pub(crate) fn build_open_activity_command(
-    request_id: koushi_core::RequestId,
-) -> CoreCommand {
+pub(crate) fn build_open_activity_command(request_id: koushi_core::RequestId) -> CoreCommand {
     CoreCommand::App(AppCommand::OpenActivity { request_id })
 }
 
-pub(crate) fn build_close_activity_command(
-    request_id: koushi_core::RequestId,
-) -> CoreCommand {
+pub(crate) fn build_close_activity_command(request_id: koushi_core::RequestId) -> CoreCommand {
     CoreCommand::App(AppCommand::CloseActivity { request_id })
 }
 
@@ -784,9 +658,7 @@ pub(crate) fn build_open_files_view_command(
     })
 }
 
-pub(crate) fn build_close_files_view_command(
-    request_id: koushi_core::RequestId,
-) -> CoreCommand {
+pub(crate) fn build_close_files_view_command(request_id: koushi_core::RequestId) -> CoreCommand {
     CoreCommand::App(AppCommand::CloseFilesView { request_id })
 }
 
@@ -800,9 +672,7 @@ pub(crate) fn build_open_threads_list_command(
     })
 }
 
-pub(crate) fn build_close_threads_list_command(
-    request_id: koushi_core::RequestId,
-) -> CoreCommand {
+pub(crate) fn build_close_threads_list_command(request_id: koushi_core::RequestId) -> CoreCommand {
     CoreCommand::App(AppCommand::CloseThreadsList { request_id })
 }
 
@@ -823,9 +693,7 @@ pub(crate) fn build_bootstrap_cross_signing_command(
     CoreCommand::Account(AccountCommand::BootstrapCrossSigning { request_id, auth })
 }
 
-pub(crate) fn build_enable_key_backup_command(
-    request_id: koushi_core::RequestId,
-) -> CoreCommand {
+pub(crate) fn build_enable_key_backup_command(request_id: koushi_core::RequestId) -> CoreCommand {
     CoreCommand::Account(AccountCommand::EnableKeyBackup {
         request_id,
         passphrase: None,
@@ -922,9 +790,7 @@ pub(crate) fn build_cancel_verification_command(
     })
 }
 
-pub(crate) fn build_reset_identity_command(
-    request_id: koushi_core::RequestId,
-) -> CoreCommand {
+pub(crate) fn build_reset_identity_command(request_id: koushi_core::RequestId) -> CoreCommand {
     CoreCommand::Account(AccountCommand::ResetIdentity { request_id })
 }
 
@@ -2035,9 +1901,7 @@ async fn account_key_from_snapshot(state: &CoreRuntimeState) -> AccountKey {
         | koushi_state::SessionState::NeedsRecovery { info, .. }
         | koushi_state::SessionState::Recovering { info, .. }
         | koushi_state::SessionState::Locked(info)
-        | koushi_state::SessionState::SwitchingAccount { info } => {
-            AccountKey(info.user_id.clone())
-        }
+        | koushi_state::SessionState::SwitchingAccount { info } => AccountKey(info.user_id.clone()),
         _ => AccountKey(String::new()),
     }
 }
@@ -2379,16 +2243,15 @@ mod tests {
         build_paginate_timeline_backwards_command, build_pin_event_command,
         build_probe_local_encryption_health_command, build_query_directory_command,
         build_redact_message_command, build_redact_reaction_command, build_remove_room_tag_command,
-        build_report_content_command, build_report_room_command, build_report_user_command,
-        build_reorder_spaces_command, build_reschedule_scheduled_send_command,
+        build_reorder_spaces_command, build_report_content_command, build_report_room_command,
+        build_report_user_command, build_reschedule_scheduled_send_command,
         build_reset_identity_command, build_reset_local_data_command, build_restart_sync_command,
         build_retry_send_command, build_schedule_send_command, build_select_room_command,
-        build_select_space_command,
-        build_send_reaction_command, build_send_read_receipt_command, build_send_reply_command,
-        build_send_text_command, build_send_thread_reply_command, build_set_activity_tab_command,
-        build_set_avatar_command, build_set_composer_draft_command, build_set_display_name_command,
-        build_set_fully_read_command, build_set_local_user_alias_command,
-        build_set_presence_command, build_set_room_tag_command,
+        build_select_space_command, build_send_reaction_command, build_send_read_receipt_command,
+        build_send_reply_command, build_send_text_command, build_send_thread_reply_command,
+        build_set_activity_tab_command, build_set_avatar_command, build_set_composer_draft_command,
+        build_set_display_name_command, build_set_fully_read_command,
+        build_set_local_user_alias_command, build_set_presence_command, build_set_room_tag_command,
         build_set_room_url_preview_override_command, build_set_space_child_command,
         build_set_thread_composer_draft_command, build_set_typing_command,
         build_start_direct_message_command, build_submit_identity_reset_oauth_command,
@@ -2410,7 +2273,7 @@ mod tests {
     #[test]
     fn qa_login_pipe_payload_maps_to_login_request_without_debugging_secret() {
         let request = parse_qa_login_pipe_payload(
-            r#"{"homeserver":"https://matrix.example.org","username":"fixture-user","password":"synthetic-password","device_display_name":"Matrix Desktop GUI Smoke","recovery_secret":"synthetic-recovery-secret"}"#,
+            r#"{"homeserver":"https://matrix.example.org","username":"fixture-user","password":"synthetic-password","device_display_name":"Koushi GUI Smoke","recovery_secret":"synthetic-recovery-secret"}"#,
         )
         .expect("payload should parse");
 
@@ -2419,7 +2282,7 @@ mod tests {
         assert_eq!(request.login.password.expose_secret(), "synthetic-password");
         assert_eq!(
             request.login.device_display_name.as_deref(),
-            Some("Matrix Desktop GUI Smoke")
+            Some("Koushi GUI Smoke")
         );
         assert_eq!(
             request
@@ -2494,7 +2357,7 @@ mod tests {
                 parent_space_ids: vec![],
                 is_encrypted: false,
                 joined_members: 0,
-},
+            },
             RoomSummary {
                 room_id: "!room2:example.org".to_owned(),
                 display_name: "Room 2".to_owned(),
@@ -2512,7 +2375,7 @@ mod tests {
                 parent_space_ids: vec![],
                 is_encrypted: false,
                 joined_members: 0,
-},
+            },
         ];
 
         let title = qa_window_title_string(&snapshot, 42);
@@ -4235,10 +4098,7 @@ mod tests {
                 assert_eq!(request_id, fake_request_id(65));
                 assert_eq!(scope, files_scope);
                 assert_eq!(filter, files_filter);
-                assert!(matches!(
-                    sort,
-                    koushi_state::AttachmentSort::Filename
-                ));
+                assert!(matches!(sort, koushi_state::AttachmentSort::Filename));
             }
             other => panic!("unexpected command: {other:?}"),
         }

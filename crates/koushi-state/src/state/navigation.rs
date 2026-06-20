@@ -70,9 +70,17 @@ pub enum FocusedContextState {
 pub fn compute_room_list_projection(
     active_filter: RoomListFilter,
     sort: RoomListSort,
+    active_space_id: Option<&str>,
+    spaces: &[super::room::SpaceSummary],
     rooms: &[super::room::RoomSummary],
     invites: &[super::room::InvitePreview],
 ) -> RoomListProjection {
+    let active_space_child_room_ids = active_space_id.and_then(|active_space_id| {
+        spaces
+            .iter()
+            .find(|space| space.space_id == active_space_id)
+            .map(|space| space.child_room_ids.as_slice())
+    });
     let mut items: Vec<RoomListProjectionItem> = match active_filter {
         RoomListFilter::Invites => invites
             .iter()
@@ -83,6 +91,9 @@ pub fn compute_room_list_projection(
             .collect(),
         _ => rooms
             .iter()
+            .filter(|room| {
+                room_visible_in_active_space(room, active_space_id, active_space_child_room_ids)
+            })
             .filter(|room| match active_filter {
                 RoomListFilter::Unread => {
                     room.unread_count > 0
@@ -91,7 +102,9 @@ pub fn compute_room_list_projection(
                         || room.marked_unread
                 }
                 RoomListFilter::People => room.is_dm,
-                RoomListFilter::Rooms => !room.is_dm,
+                RoomListFilter::Rooms => {
+                    !room.is_dm && room.tags.favourite.is_none() && room.tags.low_priority.is_none()
+                }
                 RoomListFilter::Favourites => room.tags.favourite.is_some(),
                 RoomListFilter::Invites => unreachable!(),
             })
@@ -127,4 +140,25 @@ pub fn compute_room_list_projection(
         sort,
         items,
     }
+}
+
+fn room_visible_in_active_space(
+    room: &super::room::RoomSummary,
+    active_space_id: Option<&str>,
+    active_space_child_room_ids: Option<&[String]>,
+) -> bool {
+    let Some(active_space_id) = active_space_id else {
+        return true;
+    };
+    if room.is_dm {
+        return true;
+    }
+    room.parent_space_ids
+        .iter()
+        .any(|space_id| space_id == active_space_id)
+        || active_space_child_room_ids.is_some_and(|child_room_ids| {
+            child_room_ids
+                .iter()
+                .any(|room_id| room_id == &room.room_id)
+        })
 }

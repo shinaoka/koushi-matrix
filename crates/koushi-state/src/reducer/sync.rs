@@ -19,10 +19,7 @@ pub(crate) fn handle_sync_started(state: &mut AppState) -> Vec<AppEffect> {
     }
 }
 
-pub(crate) fn handle_sync_failed(
-    state: &mut AppState,
-    reason: String,
-) -> Vec<AppEffect> {
+pub(crate) fn handle_sync_failed(state: &mut AppState, reason: String) -> Vec<AppEffect> {
     if !is_session_ready(state) || matches!(state.sync, SyncState::Stopped) {
         return Vec::new();
     }
@@ -34,13 +31,8 @@ pub(crate) fn handle_sync_failed(
     ]
 }
 
-pub(crate) fn handle_sync_reconnecting(
-    state: &mut AppState,
-    reason: String,
-) -> Vec<AppEffect> {
-    if !is_session_ready(state)
-        || matches!(state.sync, SyncState::Stopped | SyncState::Running)
-    {
+pub(crate) fn handle_sync_reconnecting(state: &mut AppState, reason: String) -> Vec<AppEffect> {
+    if !is_session_ready(state) || matches!(state.sync, SyncState::Stopped | SyncState::Running) {
         return Vec::new();
     }
 

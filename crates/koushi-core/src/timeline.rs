@@ -80,7 +80,7 @@ use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, RoomSendQueueUpdate, S
 use matrix_sdk_ui::timeline::{
     EmbeddedEvent, EventSendState as SdkEventSendState, EventTimelineItem, InReplyToDetails,
     ReactionStatus, ReactionsByKeyBySender, Timeline, TimelineDetails, TimelineEventItemId,
-    TimelineFocus, TimelineItem as SdkTimelineItem, TimelineItemKind,
+    TimelineFocus, TimelineItem as SdkTimelineItem, TimelineItemContent, TimelineItemKind,
 };
 use tokio::sync::{broadcast, mpsc};
 
@@ -2233,10 +2233,8 @@ impl TimelineActor {
                     // path components.  Use a hex-encoded SHA-256 of the
                     // room_id as the directory name and of the event_id as the
                     // filename so the path is safe on all platforms.
-                    let dir_name =
-                        sanitize_matrix_id_for_path(self.key.room_id());
-                    let file_name =
-                        format!("{}.bin", sanitize_matrix_id_for_path(&event_id));
+                    let dir_name = sanitize_matrix_id_for_path(self.key.room_id());
+                    let file_name = format!("{}.bin", sanitize_matrix_id_for_path(&event_id));
                     let dir = data_dir.join("media_downloads").join(dir_name);
                     if tokio::fs::create_dir_all(&dir).await.is_ok() {
                         let path = dir.join(file_name);
@@ -3981,7 +3979,29 @@ fn is_unread_navigation_item(item: &TimelineItem, own_user_id: Option<&str>) -> 
 }
 
 fn has_user_visible_content(item: &TimelineItem) -> bool {
-    item.body.is_some() || item.media.is_some()
+    timeline_content_is_renderable(
+        item.body.as_deref(),
+        item.media.as_ref(),
+        item.formatted.as_ref(),
+    )
+}
+
+fn timeline_content_is_renderable(
+    body: Option<&str>,
+    media: Option<&TimelineMedia>,
+    formatted: Option<&crate::event::TimelineFormattedBody>,
+) -> bool {
+    body.is_some_and(|body| !body.trim().is_empty())
+        || media.is_some()
+        || formatted.is_some_and(timeline_formatted_body_is_renderable)
+}
+
+fn timeline_formatted_body_is_renderable(formatted: &crate::event::TimelineFormattedBody) -> bool {
+    !formatted.plain_text.trim().is_empty()
+        || formatted
+            .code_blocks
+            .iter()
+            .any(|block| !block.body.trim().is_empty())
 }
 
 fn item_index_for_event_id(items: &[TimelineItem], event_id: &str) -> Option<usize> {
@@ -4105,13 +4125,15 @@ fn sdk_item_to_timeline_item_with_send_states(
             let sender = Some(event_item.sender().to_string());
             let timestamp_ms = Some(event_item.timestamp().0.into());
 
-            let message_projection = event_item
-                .content()
-                .as_message()
-                .map(|msg| message_projection_from_msgtype(msg.msgtype(), msg.body()));
+            let content = event_item.content();
+            let message_projection = Some(message_projection_from_timeline_content(content));
             let body = message_projection
                 .as_ref()
                 .and_then(|projection| projection.body.clone());
+            let actionable_body = message_projection
+                .as_ref()
+                .filter(|projection| projection.body_is_user_content)
+                .and_then(|projection| projection.body.as_deref());
             let message_kind = message_projection
                 .as_ref()
                 .map(|projection| projection.message_kind)
@@ -4126,12 +4148,13 @@ fn sdk_item_to_timeline_item_with_send_states(
             let formatted = message_projection
                 .as_ref()
                 .and_then(|projection| projection.formatted.clone());
-            let has_renderable_content = body.is_some() || media.is_some();
-            let can_hold_reactions = event_item.content().reactions().is_some();
+            let has_renderable_content =
+                timeline_content_is_renderable(body.as_deref(), media.as_ref(), formatted.as_ref());
+            let can_hold_reactions = content.reactions().is_some();
             let can_react = timeline_item_can_react(
                 event_item.event_id().is_some(),
                 can_hold_reactions,
-                event_item.content().is_redacted(),
+                content.is_redacted(),
                 has_renderable_content,
             );
             let can_redact = timeline_item_can_redact(
@@ -4139,7 +4162,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 own_user_id
                     .map(|user_id| event_item.sender().as_str() == user_id.as_str())
                     .unwrap_or(false),
-                event_item.content().is_redacted(),
+                content.is_redacted(),
                 has_renderable_content,
             );
             let can_edit = timeline_item_can_edit(
@@ -4147,10 +4170,10 @@ fn sdk_item_to_timeline_item_with_send_states(
                 own_user_id
                     .map(|user_id| event_item.sender().as_str() == user_id.as_str())
                     .unwrap_or(false),
-                event_item.content().is_redacted(),
-                body.is_some(),
+                content.is_redacted(),
+                actionable_body.is_some(),
             );
-            let in_reply_to = event_item.content().in_reply_to();
+            let in_reply_to = content.in_reply_to();
             let in_reply_to_event_id = in_reply_to
                 .as_ref()
                 .map(|details| details.event_id.to_string());
@@ -4168,8 +4191,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 .reactions()
                 .map(|reactions| reaction_groups_from_sdk(reactions, own_user_id))
                 .unwrap_or_default();
-            let is_edited = event_item
-                .content()
+            let is_edited = content
                 .as_message()
                 .map(|message| message.is_edited())
                 .unwrap_or(false);
@@ -4180,9 +4202,9 @@ fn sdk_item_to_timeline_item_with_send_states(
             let actions = message_actions_for_timeline_item(
                 key.room_id(),
                 &id,
-                body.as_deref(),
+                actionable_body,
                 media.is_some(),
-                event_item.content().is_redacted(),
+                content.is_redacted(),
             );
 
             TimelineItem {
@@ -4202,7 +4224,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 link_previews: None,
                 reactions,
                 can_react,
-                is_redacted: event_item.content().is_redacted(),
+                is_redacted: content.is_redacted(),
                 is_hidden: false,
                 can_redact,
                 is_edited,
@@ -4270,6 +4292,7 @@ fn thread_summary_from_sdk(summary: matrix_sdk_ui::timeline::ThreadSummary) -> T
 
 struct MessageProjection {
     body: Option<String>,
+    body_is_user_content: bool,
     message_kind: TimelineMessageKind,
     spoiler_spans: Vec<TimelineSpoilerSpan>,
     media: Option<TimelineMedia>,
@@ -4330,6 +4353,59 @@ fn reply_quote_preview_from_message_projection(projection: MessageProjection) ->
         .body
         .or_else(|| projection.media.map(|media| media.filename))?;
     collapsed_preview(&source, REPLY_QUOTE_PREVIEW_MAX_CHARS)
+}
+
+fn message_projection_from_timeline_content(content: &TimelineItemContent) -> MessageProjection {
+    if let Some(message) = content.as_message() {
+        return message_projection_from_msgtype(message.msgtype(), message.body());
+    }
+
+    if let Some(sticker) = content.as_sticker() {
+        let body = sticker.content().body.trim();
+        return MessageProjection {
+            body: (!body.is_empty()).then(|| body.to_owned()),
+            body_is_user_content: true,
+            message_kind: TimelineMessageKind::Text,
+            spoiler_spans: Vec::new(),
+            media: None,
+            formatted: None,
+        };
+    }
+
+    if content.is_unable_to_decrypt() {
+        return non_user_content_projection("Unable to decrypt message");
+    }
+
+    if content.is_poll() {
+        return non_user_content_projection("Poll message");
+    }
+
+    if content.is_redacted() {
+        return MessageProjection {
+            body: None,
+            body_is_user_content: false,
+            message_kind: TimelineMessageKind::Text,
+            spoiler_spans: Vec::new(),
+            media: None,
+            formatted: None,
+        };
+    }
+
+    let event_type = content
+        .event_type_str()
+        .unwrap_or_else(|| "unsupported Matrix event".to_owned());
+    non_user_content_projection(&format!("Unsupported event: {event_type}"))
+}
+
+fn non_user_content_projection(body: &str) -> MessageProjection {
+    MessageProjection {
+        body: Some(body.to_owned()),
+        body_is_user_content: false,
+        message_kind: TimelineMessageKind::Notice,
+        spoiler_spans: Vec::new(),
+        media: None,
+        formatted: None,
+    }
 }
 
 fn collapsed_preview(value: &str, max_chars: usize) -> Option<String> {
@@ -4396,6 +4472,7 @@ fn message_projection_from_msgtype(
         ),
         _ => MessageProjection {
             body: Some(fallback_body.to_owned()),
+            body_is_user_content: true,
             message_kind: TimelineMessageKind::Text,
             spoiler_spans: Vec::new(),
             media: None,
@@ -4427,6 +4504,7 @@ fn message_projection_from_body_and_formatted(
 
     MessageProjection {
         body,
+        body_is_user_content: true,
         message_kind,
         spoiler_spans,
         media,
@@ -4502,6 +4580,10 @@ fn project_formatted_body(formatted_body: &FormattedBody) -> Option<FormattedBod
     let html = Html::parse(&sanitized_body);
     let plain_text = plain_text_from_html(&html);
     let code_blocks = code_blocks_from_html(&html);
+    if plain_text.trim().is_empty() && code_blocks.iter().all(|block| block.body.trim().is_empty())
+    {
+        return None;
+    }
     let spoiler_spans = spoiler_spans_from_html(&html);
 
     Some(FormattedBodyProjection {
@@ -5852,6 +5934,31 @@ mod tests {
 
         assert_eq!(projection.body.as_deref(), Some("plain fallback"));
         assert!(projection.formatted.is_none());
+    }
+
+    #[test]
+    fn message_projection_falls_back_to_plain_body_when_formatted_body_has_only_markup() {
+        let msgtype = MessageType::Text(TextMessageEventContent::html(
+            "plain fallback",
+            "<p><br /></p>",
+        ));
+
+        let projection = message_projection_from_msgtype(&msgtype, "plain fallback");
+
+        assert_eq!(projection.body.as_deref(), Some("plain fallback"));
+        assert!(projection.formatted.is_none());
+    }
+
+    #[test]
+    fn user_visible_content_includes_formatted_body() {
+        let mut item = timeline_item("$formatted:test", None, "@alice:test", false);
+        item.formatted = Some(crate::event::TimelineFormattedBody {
+            html: "<strong>visible</strong>".to_owned(),
+            plain_text: "visible".to_owned(),
+            code_blocks: Vec::new(),
+        });
+
+        assert!(has_user_visible_content(&item));
     }
 
     #[test]

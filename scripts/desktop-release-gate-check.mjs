@@ -23,11 +23,11 @@ const noCompile = process.argv.includes("--no-compile");
 
 // Credential-bearing env vars: these inject or redirect credentials and MUST
 // be compiled out of release builds (engineering-rules: Secrets rule 2).
-// QA behavior toggles that carry no credentials (MATRIX_DESKTOP_QA_TITLE,
-// MATRIX_DESKTOP_SKIP_*) are intentionally not listed.
+// QA behavior toggles that carry no credentials (KOUSHI_QA_TITLE,
+// KOUSHI_SKIP_*) are intentionally not listed.
 const GATED_ENV_LITERALS = [
-  '"MATRIX_DESKTOP_QA_LOGIN_PIPE"',
-  '"MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR"',
+  '"KOUSHI_QA_LOGIN_PIPE"',
+  '"KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR"',
 ];
 const GATE_ATTR = /#\[cfg\((any\()?(debug_assertions|test)/;
 

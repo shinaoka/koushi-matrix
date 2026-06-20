@@ -2,6 +2,7 @@ import { type FormEvent, type RefObject } from "react";
 import { Hash, KeyRound, ShieldCheck } from "lucide-react";
 import { t } from "../i18n/messages";
 import type {
+  AppError,
   AuthFailureKind,
   DesktopSnapshot,
   LoginFlow
@@ -23,7 +24,7 @@ export function RecoveryPanel({
   onSecretPresenceChange: (value: boolean) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
-  const primaryError = snapshot.state.ui.errors.at(-1);
+  const primaryError = latestRecoveryError(snapshot.state.ui.errors);
   const session = snapshot.state.domain.session;
 
   return (
@@ -101,7 +102,7 @@ export function AuthScreen({
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onUsernameChange: (value: string) => void;
 }) {
-  const primaryError = snapshot.state.ui.errors.at(-1);
+  const primaryError = latestAuthError(snapshot.state.ui.errors);
   const auth = snapshot.state.domain.auth;
   const passwordLoginAvailable =
     auth.kind !== "ready" || auth.flows.some((flow) => flow.kind === "password");
@@ -140,15 +141,18 @@ export function AuthScreen({
           <div className="auth-flows">{authDiscoveryLabel(auth)}</div>
         </div>
         <label className="auth-field">
-          <span>{t("auth.usernameOrMatrixId")}</span>
+          <span>{t("auth.username")}</span>
           <input
+            aria-label={t("auth.username")}
             autoComplete="username"
             name="username"
+            placeholder={t("auth.usernamePlaceholder")}
             spellCheck={false}
             value={username}
             onChange={(event) => onUsernameChange(event.target.value)}
           />
         </label>
+        <p className="auth-field-help">{t("auth.usernameHelp")}</p>
         <label className="auth-field">
           <span>{t("auth.password")}</span>
           <input
@@ -173,6 +177,9 @@ export function AuthScreen({
         {primaryError ? (
           <div className="auth-error" role="alert">
             {primaryError.message}
+            {primaryError.code === "login_failed" ? (
+              <p className="auth-error-help">{t("auth.loginFailureUsernameHint")}</p>
+            ) : null}
           </div>
         ) : null}
         <button
@@ -191,6 +198,16 @@ export function AuthScreen({
       </form>
     </main>
   );
+}
+
+function latestAuthError(errors: AppError[]): AppError | undefined {
+  return [...errors]
+    .reverse()
+    .find((error) => error.code === "login_failed" || error.code === "restore_failed");
+}
+
+function latestRecoveryError(errors: AppError[]): AppError | undefined {
+  return [...errors].reverse().find((error) => error.code === "e2ee_recovery_failed");
 }
 
 function authDiscoveryLabel(auth: DesktopSnapshot["state"]["domain"]["auth"]) {

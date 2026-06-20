@@ -45,8 +45,8 @@ import { TauriIpcMock, type IpcInvocation } from "./tauriIpcMock";
 import { computeBrowserRoomListProjection } from "../backend/roomListProjection";
 import "../styles.css";
 
-const CORE_EVENT_NAME = "matrix-desktop://event";
-const STATE_EVENT_NAME = "matrix-desktop://state";
+const CORE_EVENT_NAME = "koushi-desktop://event";
+const STATE_EVENT_NAME = "koushi-desktop://state";
 
 // Identity used across the ready snapshot, timeline key, and CoreEvents.
 const HOMESERVER = "https://harness.example.invalid";
@@ -165,7 +165,7 @@ function readySnapshot(
         },
         ui: {
           navigation: { active_space_id: null, active_room_id: ROOM_ID, space_order: spaces.map((space) => space.space_id), last_room_by_space_id: {} },
-          room_list: computeBrowserRoomListProjection({ kind: "rooms" }, { kind: "activity" }, rooms, []),
+          room_list: computeBrowserRoomListProjection({ kind: "rooms" }, { kind: "activity" }, null, spaces, rooms, []),
           timeline: { room_id: ROOM_ID, is_subscribed: true, is_paginating_backwards: false, composer: { pending_transaction_id: null, draft: "", mode: composerMode }, scheduled_send_capability: "unknown", scheduled_sends: [], staged_uploads: [], media_gallery: [], media_downloads: {} },
           thread: { kind: "closed" }, threads_list: { kind: "closed" }, focused_context: { kind: "closed" },
           files_view: { kind: "closed" }, errors: [], basic_operation: basicOperation
@@ -503,6 +503,8 @@ function afterCreateRoomSnapshot(): DesktopSnapshot {
   snapshot.state.ui.room_list = computeBrowserRoomListProjection(
     snapshot.state.ui.room_list.active_filter,
     snapshot.state.ui.room_list.sort,
+    snapshot.state.ui.navigation.active_space_id,
+    snapshot.state.domain.spaces,
     snapshot.state.domain.rooms,
     snapshot.state.domain.invites
   );
@@ -548,6 +550,8 @@ function setCurrentSnapshot(next: DesktopSnapshot): DesktopSnapshot {
       room_list: computeBrowserRoomListProjection(
         next.state.ui.room_list.active_filter,
         next.state.ui.room_list.sort,
+        next.state.ui.navigation.active_space_id,
+        next.state.domain.spaces,
         next.state.domain.rooms,
         next.state.domain.invites
       )
@@ -654,6 +658,8 @@ mock.setCommandResponse(
         room_list: computeBrowserRoomListProjection(
           filter,
           currentSnapshot.state.ui.room_list.sort,
+          currentSnapshot.state.ui.navigation.active_space_id,
+          currentSnapshot.state.domain.spaces,
           currentSnapshot.state.domain.rooms,
           currentSnapshot.state.domain.invites
         )
@@ -701,6 +707,8 @@ mock.setCommandResponse("leave_room", ({ roomId }: { roomId: string }) => {
         room_list: computeBrowserRoomListProjection(
           currentSnapshot.state.ui.room_list.active_filter,
           currentSnapshot.state.ui.room_list.sort,
+          nextActiveSpaceId,
+          nextSpaces,
           nextRooms,
           currentSnapshot.state.domain.invites
         )
@@ -1469,10 +1477,28 @@ mock.setCommandResponse("load_room_settings", ({ roomId }: { roomId: string }) =
           },
           members: [
             {
-              user_id: "@harness-member:example.invalid",
-              display_name: "Harness Member",
-              display_label: "Harness Member",
-              original_display_label: "Harness Member",
+              user_id: "@harness-ada:example.invalid",
+              display_name: "Harness Ada",
+              display_label: "Harness Ada",
+              original_display_label: "Harness Ada",
+              avatar_url: null,
+              power_level: 100,
+              role: "administrator"
+            },
+            {
+              user_id: "@harness-grace:example.invalid",
+              display_name: "Harness Grace",
+              display_label: "Harness Grace",
+              original_display_label: "Harness Grace",
+              avatar_url: null,
+              power_level: 50,
+              role: "moderator"
+            },
+            {
+              user_id: "@harness-linus:example.invalid",
+              display_name: "Harness Linus",
+              display_label: "Harness Linus",
+              original_display_label: "Harness Linus",
               avatar_url: null,
               power_level: 0,
               role: "user"
@@ -1787,6 +1813,9 @@ function uniqueNonBlank(values: Array<string | null | undefined>): string[] {
 // (plugin:event|*) are handled internally by mockIPC's shouldMockEvents.
 mockIPC(
   (cmd, args) => {
+    if (cmd.startsWith("plugin:dialog|")) {
+      return mock.invoke(cmd, (args ?? {}) as Record<string, unknown>);
+    }
     if (cmd.startsWith("plugin:")) {
       // Window/notification/other plugin calls: return a benign value.
       return null;
@@ -1834,7 +1863,7 @@ async function boot() {
   }
   createRoot(root).render(<App />);
 
-  // After the App mounts and TimelineView subscribes to matrix-desktop://event,
+  // After the App mounts and TimelineView subscribes to koushi-desktop://event,
   // push one InitialItems batch carrying a single event-backed row so the
   // "Reply to message" action renders.
   const seedItem: TimelineItem = {

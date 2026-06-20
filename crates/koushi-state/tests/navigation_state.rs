@@ -762,6 +762,15 @@ fn selecting_space_filters_rooms_and_keeps_dms_global() {
     assert_eq!(sidebar.space_unread_count, 5);
     assert_eq!(sidebar.dm_unread_count, 3);
     assert_eq!(
+        state
+            .room_list
+            .items
+            .iter()
+            .map(|item| item.room_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["room-a"]
+    );
+    assert_eq!(
         effects,
         vec![
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
@@ -771,6 +780,73 @@ fn selecting_space_filters_rooms_and_keeps_dms_global() {
             AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
                 room_id: "room-a".to_owned(),
             }),
+        ]
+    );
+}
+
+#[test]
+fn room_list_update_keeps_empty_selected_space_empty() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        spaces: vec![
+            SpaceSummary {
+                space_id: "space-empty".to_owned(),
+                display_name: "Empty Space".to_owned(),
+                avatar: None,
+                child_room_ids: Vec::new(),
+            },
+            SpaceSummary {
+                space_id: "space-a".to_owned(),
+                display_name: "Space A".to_owned(),
+                avatar: None,
+                child_room_ids: vec!["room-a".to_owned()],
+            },
+        ],
+        rooms: rooms(),
+        ..AppState::default()
+    };
+
+    reduce(
+        &mut state,
+        AppAction::SelectSpace {
+            space_id: Some("space-empty".to_owned()),
+        },
+    );
+    let updated_spaces = state.spaces.clone();
+    let updated_rooms = state.rooms.clone();
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: updated_spaces,
+            rooms: updated_rooms,
+        },
+    );
+
+    assert_eq!(
+        state.navigation.active_space_id.as_deref(),
+        Some("space-empty")
+    );
+    assert_eq!(state.navigation.active_room_id, None);
+    assert_eq!(state.timeline, TimelinePaneState::default());
+    assert!(state.room_list.items.is_empty());
+    let sidebar = compose_sidebar(
+        state.navigation.active_space_id.as_deref(),
+        &state.spaces,
+        &state.rooms,
+    );
+    assert!(sidebar.space_rooms.is_empty());
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::NotifySearchCrawlerRoomsAvailable {
+                room_ids: vec![
+                    "room-a".to_owned(),
+                    "dm-a".to_owned(),
+                    "global-room".to_owned(),
+                ],
+                settings: search_crawler_settings_standard(),
+            },
         ]
     );
 }

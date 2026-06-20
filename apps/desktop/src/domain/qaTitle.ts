@@ -19,7 +19,7 @@ export function qaWindowTitle(
     (interaction) => interaction.pin_operation.kind !== "idle"
   ).length;
   const title = [
-    "matrix-desktop qa",
+    "koushi-desktop qa",
     `session=${snapshot.state.domain.session.kind}`,
     `sync=${syncStateLabel(snapshot.state.domain.sync)}`,
     `rooms=${snapshot.state.domain.rooms.length}`,
@@ -52,11 +52,25 @@ export interface QaTimelineDiagnostics {
   backfill: string;
 }
 
+export interface QaDomDiagnostics {
+  screen: string;
+  rootChildren: number;
+  bodyTextLength: number;
+}
+
 export function qaTimelineDiagnosticTokens(diagnostics: QaTimelineDiagnostics): string[] {
   return [
     `timeline_visible=${diagnostics.visibleItems}`,
     `timeline_dl=${diagnostics.downloadedItems}`,
     `timeline_backfill=${diagnostics.backfill}`
+  ];
+}
+
+export function qaDomDiagnosticTokens(diagnostics: QaDomDiagnostics): string[] {
+  return [
+    `dom_screen=${safeQaToken(diagnostics.screen)}`,
+    `dom_root_children=${Math.max(0, Math.trunc(diagnostics.rootChildren))}`,
+    `dom_text_len=${Math.max(0, Math.trunc(diagnostics.bodyTextLength))}`
   ];
 }
 
@@ -105,6 +119,11 @@ function summarizeCrawlerRoomState(
 
 function latestErrorCode(snapshot: DesktopSnapshot): string {
   return snapshot.state.ui.errors.at(-1)?.code ?? "none";
+}
+
+function safeQaToken(value: string): string {
+  const safe = value.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 48);
+  return safe || "unknown";
 }
 
 function syncStateLabel(sync: SyncState): string {

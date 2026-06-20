@@ -6,6 +6,7 @@ import {
   useState
 } from "react";
 import {
+  Copy,
   FileText,
   Image as ImageIcon,
   X
@@ -23,6 +24,12 @@ import {
   type ImageUploadVariantKindPayload,
   type ImageCompressionPlan
 } from "../app/uiShared";
+
+async function writeClipboardText(value: string): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+  }
+}
 
 // ===== CreateEntityDialog =====
 
@@ -173,6 +180,61 @@ export function ImageCompressionDialog({
         <div className="dialog-actions">
           <button className="dialog-button" type="button" onClick={onCancel}>
             {t("dialog.cancel")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ===== DiagnosticDialog =====
+
+export function DiagnosticDialog({
+  report,
+  onClose
+}: {
+  report: string;
+  onClose: () => void;
+}) {
+  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+    }
+  }
+
+  return (
+    <div
+      className="dialog-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("diagnostics.title")}
+      onKeyDown={onDialogKeyDown}
+    >
+      <div className="dialog-box diagnostics-dialog">
+        <div className="dialog-title-row">
+          <div className="dialog-title">{t("diagnostics.title")}</div>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={t("action.close")}
+            onClick={onClose}
+          >
+            <X size={ICON_SIZE.small} />
+          </button>
+        </div>
+        <pre className="diagnostics-output">{report}</pre>
+        <div className="dialog-actions">
+          <button
+            className="dialog-button is-primary"
+            type="button"
+            aria-label={t("diagnostics.copy")}
+            onClick={() => {
+              void writeClipboardText(report);
+            }}
+          >
+            <Copy size={ICON_SIZE.small} />
+            <span>{t("diagnostics.copy")}</span>
           </button>
         </div>
       </div>

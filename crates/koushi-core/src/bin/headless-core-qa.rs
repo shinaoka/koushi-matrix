@@ -23,16 +23,15 @@
 //!   send permission check placeholder (actual send is Phase 5)
 //!
 //! Required env vars:
-//!   MATRIX_DESKTOP_LOCAL_QA_HOMESERVER
-//!   MATRIX_DESKTOP_LOCAL_QA_SERVER_NAME
-//!   MATRIX_DESKTOP_LOCAL_QA_SERVER_KIND   (optional, defaults to "local")
-//!   MATRIX_DESKTOP_LOCAL_QA_USER_A / _PASSWORD_A
-//!   MATRIX_DESKTOP_LOCAL_QA_USER_B / _PASSWORD_B
-//!   MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR (mandatory; see guard)
+//!   KOUSHI_LOCAL_QA_HOMESERVER
+//!   KOUSHI_LOCAL_QA_SERVER_NAME
+//!   KOUSHI_LOCAL_QA_SERVER_KIND   (optional, defaults to "local")
+//!   KOUSHI_LOCAL_QA_USER_A / _PASSWORD_A
+//!   KOUSHI_LOCAL_QA_USER_B / _PASSWORD_B
+//!   KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR (mandatory; see guard)
 //!
 //! SDK handles are dropped inside the Tokio runtime context (overview.md Async rule 11).
 
-use std::io;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::process::ExitCode;
 use std::sync::{
@@ -41,6 +40,7 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{collections::BTreeSet, io};
 
 use koushi_core::command::{
     AccountCommand, AppCommand, CoreCommand, ImageUploadCompressionPolicy,
@@ -67,44 +67,53 @@ use koushi_state::{
     NativeAttentionCapability, NativeAttentionDispatchState, NativeAttentionObservationKind,
     NativeAttentionProjectionInput, NativeAttentionState, NativeAttentionSuppressionReason,
     OperationFailureKind, PresenceKind, RecoveryRequest, ReplyQuoteState, RoomAttentionKind,
-    RoomManagementOperationKind, RoomManagementOperationState, RoomModerationAction,
-    RoomNotificationMode, RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTags, SasEmoji,
-    ScheduledSendCapability, SearchCrawlerFailureKind, SearchCrawlerRoomState,
-    SearchCrawlerSettings, SearchCrawlerSpeed, SessionInfo, SessionState, SettingsPatch,
-    SettingsPersistenceState,
-    StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind, TimelineMediaGalleryItem,
-    TimelineMediaGalleryMedia, TimelineMediaGallerySource, TimelineMediaKind,
-    TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
-    build_formatted_message_draft, native_attention_state_from_rooms, reduce,
-    resolve_composer_key_action,
+    RoomListFilter, RoomManagementOperationKind, RoomManagementOperationState,
+    RoomModerationAction, RoomNotificationMode, RoomSettingChange, RoomSettingsSnapshot,
+    RoomSummary, RoomTags, SasEmoji, ScheduledSendCapability, SearchCrawlerFailureKind,
+    SearchCrawlerRoomState, SearchCrawlerSettings, SearchCrawlerSpeed, SessionInfo, SessionState,
+    SettingsPatch, SettingsPersistenceState, StagedUploadCompressionChoice, StagedUploadItem,
+    StagedUploadKind, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
+    TimelineMediaGallerySource, TimelineMediaKind, TrustOperationFailureKind,
+    VerificationFlowState, VerificationTarget, build_formatted_message_draft,
+    native_attention_state_from_rooms, reduce, resolve_composer_key_action,
 };
 
-const ENV_HOMESERVER: &str = "MATRIX_DESKTOP_LOCAL_QA_HOMESERVER";
-const ENV_SERVER_NAME: &str = "MATRIX_DESKTOP_LOCAL_QA_SERVER_NAME";
-const ENV_SERVER_KIND: &str = "MATRIX_DESKTOP_LOCAL_QA_SERVER_KIND";
-const ENV_USER_A: &str = "MATRIX_DESKTOP_LOCAL_QA_USER_A";
-const ENV_PASSWORD_A: &str = "MATRIX_DESKTOP_LOCAL_QA_PASSWORD_A";
-const ENV_USER_B: &str = "MATRIX_DESKTOP_LOCAL_QA_USER_B";
-const ENV_PASSWORD_B: &str = "MATRIX_DESKTOP_LOCAL_QA_PASSWORD_B";
+const ENV_HOMESERVER: &str = "KOUSHI_LOCAL_QA_HOMESERVER";
+const ENV_SERVER_NAME: &str = "KOUSHI_LOCAL_QA_SERVER_NAME";
+const ENV_SERVER_KIND: &str = "KOUSHI_LOCAL_QA_SERVER_KIND";
+const ENV_USER_A: &str = "KOUSHI_LOCAL_QA_USER_A";
+const ENV_PASSWORD_A: &str = "KOUSHI_LOCAL_QA_PASSWORD_A";
+const ENV_USER_B: &str = "KOUSHI_LOCAL_QA_USER_B";
+const ENV_PASSWORD_B: &str = "KOUSHI_LOCAL_QA_PASSWORD_B";
 /// Optional assertion input (a plain string, not a credential — no gating
 /// needed): when set, QA fails if the backend reported in SyncEvent::Started
 /// differs. Valid values: "SyncService" | "LegacySync".
-const ENV_EXPECT_SYNC_BACKEND: &str = "MATRIX_DESKTOP_LOCAL_QA_EXPECT_SYNC_BACKEND";
-const ENV_QA_SCENARIO: &str = "MATRIX_DESKTOP_QA_SCENARIO";
-const ENV_ALLOW_IDENTITY_RESET: &str = "MATRIX_DESKTOP_QA_ALLOW_IDENTITY_RESET";
+const ENV_EXPECT_SYNC_BACKEND: &str = "KOUSHI_LOCAL_QA_EXPECT_SYNC_BACKEND";
+const ENV_QA_SCENARIO: &str = "KOUSHI_QA_SCENARIO";
+const ENV_ALLOW_IDENTITY_RESET: &str = "KOUSHI_QA_ALLOW_IDENTITY_RESET";
 #[cfg(any(debug_assertions, test))]
-const ENV_FILE_CREDENTIAL_STORE_DIR: &str = "MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR";
+const ENV_FILE_CREDENTIAL_STORE_DIR: &str = "KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR";
 
-const DEVICE_A: &str = "Matrix Desktop Core QA A";
-const DEVICE_B: &str = "Matrix Desktop Core QA B";
+const DEVICE_A: &str = "Koushi Core QA A";
+const DEVICE_B: &str = "Koushi Core QA B";
 
 /// Maximum time to wait for a single event.
 const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 const ROOM_LIST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const E2EE_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const THREAD_REPLY_BODY: &str = "Phase 11 QA thread reply from B";
-const E2EE_KEY_BACKUP_SEED_BODY: &str = "Matrix Desktop E2EE key backup seed";
-const QA_WRONG_RECOVERY_SECRET: &str = "matrix-desktop-headless-qa-wrong-recovery-secret";
+const E2EE_KEY_BACKUP_SEED_BODY: &str = "Koushi E2EE key backup seed";
+const DEFAULT_STRESS_SPACE_COUNT: usize = 2;
+const DEFAULT_STRESS_ROOMS_PER_SPACE: usize = 2;
+const DEFAULT_STRESS_MESSAGES_PER_ROOM: usize = 8;
+const MAX_STRESS_SPACE_COUNT: usize = 6;
+const MAX_STRESS_ROOMS_PER_SPACE: usize = 8;
+const MAX_STRESS_MESSAGES_PER_ROOM: usize = 80;
+const ENV_STRESS_SPACE_COUNT: &str = "KOUSHI_QA_STRESS_SPACES";
+const ENV_STRESS_ROOMS_PER_SPACE: &str = "KOUSHI_QA_STRESS_ROOMS_PER_SPACE";
+const ENV_STRESS_MESSAGES_PER_ROOM: &str = "KOUSHI_QA_STRESS_MESSAGES_PER_ROOM";
+const ENV_STRESS_REPLAY_EXISTING: &str = "KOUSHI_QA_STRESS_REPLAY_EXISTING";
+const QA_WRONG_RECOVERY_SECRET: &str = "koushi-desktop-headless-qa-wrong-recovery-secret";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QaScenario {
@@ -119,6 +128,7 @@ enum QaScenario {
     Directory,
     RoomManagement,
     Timeline,
+    TimelineStress,
     Activity,
     Composer,
     Reply,
@@ -145,6 +155,7 @@ enum QaStage {
     Directory,
     RoomManagement,
     Timeline,
+    TimelineStress,
     Activity,
     Composer,
     Reply,
@@ -243,6 +254,7 @@ impl QaScenario {
             "directory" => Ok(Self::Directory),
             "room_management" => Ok(Self::RoomManagement),
             "timeline" => Ok(Self::Timeline),
+            "timeline_stress" => Ok(Self::TimelineStress),
             "activity" => Ok(Self::Activity),
             "composer" => Ok(Self::Composer),
             "reply" => Ok(Self::Reply),
@@ -256,14 +268,14 @@ impl QaScenario {
             "restore_cleanup" => Ok(Self::RestoreCleanup),
             "link_preview" => Ok(Self::LinkPreview),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, native_attention, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, activity, composer, reply, media, live_signals, thread, edit_redact_search, search_crawler, scheduled_send, restore_cleanup, link_preview; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, native_attention, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, search_crawler, scheduled_send, restore_cleanup, link_preview; got {other}"
             )),
         }
     }
 
     fn should_run_stage(self, stage: QaStage) -> bool {
         match self {
-            Self::All => true,
+            Self::All => !matches!(stage, QaStage::TimelineStress),
             Self::Safety => matches!(stage, QaStage::Safety),
             Self::LoginSync => matches!(stage, QaStage::Safety | QaStage::LoginSync),
             Self::CredentialHealth => matches!(
@@ -299,6 +311,14 @@ impl QaScenario {
             Self::Timeline => matches!(
                 stage,
                 QaStage::Safety | QaStage::LoginSync | QaStage::RoomSpace | QaStage::Timeline
+            ),
+            Self::TimelineStress => matches!(
+                stage,
+                QaStage::Safety
+                    | QaStage::LoginSync
+                    | QaStage::RoomSpace
+                    | QaStage::Timeline
+                    | QaStage::TimelineStress
             ),
             Self::Activity => matches!(
                 stage,
@@ -431,12 +451,18 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "invite_recv=ok",
             "invite_accept=ok",
             "invite_decline=ok",
+            "member_list=ok",
             "dm_start=ok",
         ],
         QaStage::RoomSpace => &["room_space=ok"],
         QaStage::Directory => &["directory_query=ok", "directory_join=ok"],
         QaStage::RoomManagement => &["room_settings=ok", "moderation=ok", "permission_guard=ok"],
         QaStage::Timeline => &["timeline=ok", "timeline_nav=ok", "hide_redacted=ok"],
+        QaStage::TimelineStress => &[
+            "timeline_stress=ok",
+            "stress_no_blank=ok",
+            "stress_space_scope=ok",
+        ],
         QaStage::Activity => &[
             "activity_recent=ok",
             "activity_unread=ok",
@@ -520,6 +546,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "invite_recv=ok",
         "invite_accept=ok",
         "invite_decline=ok",
+        "member_list=ok",
         "dm_start=ok",
         "room_space=ok",
         "directory_query=ok",
@@ -615,6 +642,13 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::LoginSync,
             QaStage::RoomSpace,
             QaStage::Timeline,
+        ],
+        QaScenario::TimelineStress => vec![
+            QaStage::Safety,
+            QaStage::LoginSync,
+            QaStage::RoomSpace,
+            QaStage::Timeline,
+            QaStage::TimelineStress,
         ],
         QaScenario::Activity => vec![
             QaStage::Safety,
@@ -752,6 +786,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         | QaScenario::E2eeTrust
         | QaScenario::InvitesDm
         | QaScenario::Timeline
+        | QaScenario::TimelineStress
         | QaScenario::Activity
         | QaScenario::Composer
         | QaScenario::Reply
@@ -887,6 +922,7 @@ async fn run_invites_dm_stage(
     start_sync_for_qa(&mut conn_b, "invites_dm sync B").await?;
 
     let user_b_full_id = format!("@{}:{}", config.user_b, config.server_name);
+    let user_a_full_id = format!("@{}:{}", config.user_a, config.server_name);
 
     let accept_room_id = create_room_for_qa(
         conn_a,
@@ -925,6 +961,17 @@ async fn run_invites_dm_stage(
         "invites_dm room list after room accept",
     )
     .await?;
+    let accept_room_settings = load_room_settings_for_qa(
+        &mut conn_b,
+        &accept_room_id,
+        "invites_dm accepted room members",
+    )
+    .await?;
+    assert_room_settings_contains_members(
+        &accept_room_settings,
+        &[user_a_full_id.as_str(), user_b_full_id.as_str()],
+        "invites_dm accepted room members",
+    )?;
 
     let accept_space_id = create_space_for_qa(
         conn_a,
@@ -960,7 +1007,19 @@ async fn run_invites_dm_stage(
         "invites_dm space list after space accept",
     )
     .await?;
+    let accept_space_settings = load_room_settings_for_qa(
+        &mut conn_b,
+        &accept_space_id,
+        "invites_dm accepted space members",
+    )
+    .await?;
+    assert_room_settings_contains_members(
+        &accept_space_settings,
+        &[user_a_full_id.as_str(), user_b_full_id.as_str()],
+        "invites_dm accepted space members",
+    )?;
     println!("invite_accept=ok");
+    println!("member_list=ok");
 
     let decline_room_id = create_room_for_qa(
         conn_a,
@@ -1020,8 +1079,8 @@ async fn run_invites_dm_stage(
 }
 
 async fn run_directory_stage(config: &QaConfig, conn_a: &mut CoreConnection) -> Result<(), String> {
-    let directory_room_name = "Matrix Desktop Directory QA";
-    let alias_localpart = format!("matrix-desktop-directory-qa-{}", std::process::id());
+    let directory_room_name = "Koushi Directory QA";
+    let alias_localpart = format!("koushi-desktop-directory-qa-{}", std::process::id());
     let expected_alias = format!("#{alias_localpart}:{}", config.server_name);
     let public_room_id = create_public_directory_room_for_qa(
         conn_a,
@@ -1061,7 +1120,7 @@ async fn run_directory_stage(config: &QaConfig, conn_a: &mut CoreConnection) -> 
                 homeserver: config.homeserver.clone(),
                 username: config.user_b.clone(),
                 password: AuthSecret::new(config.password_b.clone()),
-                device_display_name: Some("Matrix Desktop Core QA Directory B".to_owned()),
+                device_display_name: Some("Koushi Core QA Directory B".to_owned()),
             },
         }))
         .await
@@ -1238,7 +1297,7 @@ async fn run_e2ee_trust_stage(
                 homeserver: config.homeserver.clone(),
                 username: config.user_a.clone(),
                 password: AuthSecret::new(config.password_a.clone()),
-                device_display_name: Some("Matrix Desktop Core QA A2".to_owned()),
+                device_display_name: Some("Koushi Core QA A2".to_owned()),
             },
         }))
         .await
@@ -1256,13 +1315,12 @@ async fn run_e2ee_trust_stage(
         .await
         .map_err(|e| format!("submit sync start A2: {e}"))?;
     let sync_backend_a2 =
-        wait_for_sync_started(&mut conn_a2, sync_start_a2_id, "sync start A2").await?;
+        wait_for_sync_started_and_running(&mut conn_a2, sync_start_a2_id, "sync start A2").await?;
     assert_expected_backend(
         config.expect_sync_backend.as_deref(),
         sync_backend_a2,
         "sync start A2",
     )?;
-    wait_for_sync_running(&mut conn_a2, "sync A2 running").await?;
 
     wait_for_room_in_room_list(
         &mut conn_a2,
@@ -1348,13 +1406,677 @@ async fn cleanup_logged_in_runtime(
     Ok(())
 }
 
+async fn run_timeline_stress_stage(
+    config: &QaConfig,
+    conn_a: &mut CoreConnection,
+    conn_b: &mut CoreConnection,
+    account_key_a: &AccountKey,
+    account_key_b: &AccountKey,
+) -> Result<(), String> {
+    let stress = TimelineStressConfig::from_env()?;
+    let user_b_full_id = format!("@{}:{}", config.user_b, config.server_name);
+    let mut created_room_count = 0usize;
+    let mut sent_message_count = 0usize;
+
+    for space_index in 0..stress.space_count {
+        eprintln!("timeline_stress progress: create_space index={space_index}");
+        let space_id = create_space_for_qa(
+            conn_a,
+            &format!("Koushi Stress Space {space_index}"),
+            "timeline_stress create space",
+        )
+        .await?;
+        invite_user_for_qa(
+            conn_a,
+            &space_id,
+            &user_b_full_id,
+            "timeline_stress invite user to space",
+        )
+        .await?;
+        wait_for_invite_in_snapshot(
+            conn_b,
+            &space_id,
+            Some(false),
+            "timeline_stress receiver sees space invite",
+        )
+        .await?;
+        accept_invite_for_qa(conn_b, &space_id, "timeline_stress accept space invite").await?;
+        wait_for_space_in_space_list(conn_a, &space_id, "timeline_stress creator sees space")
+            .await?;
+        wait_for_space_in_space_list(conn_b, &space_id, "timeline_stress receiver sees space")
+            .await?;
+
+        let mut expected_room_ids = Vec::with_capacity(stress.rooms_per_space);
+        for room_index in 0..stress.rooms_per_space {
+            eprintln!(
+                "timeline_stress progress: create_room space={space_index} room={room_index}"
+            );
+            let room_id = create_room_for_qa(
+                conn_a,
+                &format!("Koushi Stress Room {space_index}-{room_index}"),
+                false,
+                "timeline_stress create room",
+            )
+            .await?;
+            set_space_child_for_qa(
+                conn_a,
+                &space_id,
+                &room_id,
+                &config.server_name,
+                "timeline_stress set space child",
+            )
+            .await?;
+            invite_user_for_qa(
+                conn_a,
+                &room_id,
+                &user_b_full_id,
+                "timeline_stress invite user to room",
+            )
+            .await?;
+            wait_for_invite_in_snapshot(
+                conn_b,
+                &room_id,
+                Some(false),
+                "timeline_stress receiver sees room invite",
+            )
+            .await?;
+            accept_invite_for_qa(conn_b, &room_id, "timeline_stress accept room invite").await?;
+            wait_for_room_in_room_list(conn_a, &room_id, "timeline_stress creator sees room")
+                .await?;
+            wait_for_room_in_room_list(conn_b, &room_id, "timeline_stress receiver sees room")
+                .await?;
+
+            expected_room_ids.push(room_id.clone());
+            wait_for_space_child_projection(
+                conn_a,
+                &space_id,
+                &expected_room_ids,
+                "timeline_stress creator space children",
+            )
+            .await?;
+            wait_for_space_child_projection(
+                conn_b,
+                &space_id,
+                &expected_room_ids,
+                "timeline_stress receiver space children",
+            )
+            .await?;
+            created_room_count += 1;
+
+            let sender_is_a = (space_index + room_index) % 2 == 0;
+            eprintln!(
+                "timeline_stress progress: messages space={space_index} room={room_index} sender={}",
+                if sender_is_a { "a" } else { "b" }
+            );
+            sent_message_count += if sender_is_a {
+                run_timeline_stress_room_messages(
+                    config,
+                    conn_a,
+                    conn_b,
+                    account_key_a,
+                    account_key_b,
+                    &room_id,
+                    StressRoomCoordinates {
+                        sender_prefix: "a",
+                        space_index,
+                        room_index,
+                    },
+                    stress.messages_per_room,
+                )
+                .await?
+            } else {
+                run_timeline_stress_room_messages(
+                    config,
+                    conn_b,
+                    conn_a,
+                    account_key_b,
+                    account_key_a,
+                    &room_id,
+                    StressRoomCoordinates {
+                        sender_prefix: "b",
+                        space_index,
+                        room_index,
+                    },
+                    stress.messages_per_room,
+                )
+                .await?
+            };
+        }
+
+        select_space_and_wait_for_room_scope(
+            conn_a,
+            &space_id,
+            &expected_room_ids,
+            "timeline_stress creator selected-space scope",
+        )
+        .await?;
+        select_space_and_wait_for_room_scope(
+            conn_b,
+            &space_id,
+            &expected_room_ids,
+            "timeline_stress receiver selected-space scope",
+        )
+        .await?;
+    }
+
+    if created_room_count != stress.total_rooms() || sent_message_count != stress.total_messages() {
+        return Err(format!(
+            "timeline_stress: count mismatch rooms={created_room_count}/{} messages={sent_message_count}/{}",
+            stress.total_rooms(),
+            stress.total_messages()
+        ));
+    }
+
+    println!(
+        "stress_counts=spaces={} rooms={} messages={}",
+        stress.space_count,
+        stress.total_rooms(),
+        stress.total_messages()
+    );
+    println!("stress_space_scope=ok");
+    println!("stress_no_blank=ok");
+    println!("timeline_stress=ok");
+    Ok(())
+}
+
+async fn run_timeline_stress_replay_stage(
+    conn_a: &mut CoreConnection,
+    conn_b: &mut CoreConnection,
+    account_key_a: &AccountKey,
+    account_key_b: &AccountKey,
+    _stress: TimelineStressConfig,
+) -> Result<(), String> {
+    let snapshot_a =
+        wait_for_existing_stress_fixture_room_list(conn_a, "timeline_stress replay A room list")
+            .await?;
+    let snapshot_b =
+        wait_for_existing_stress_fixture_room_list(conn_b, "timeline_stress replay B room list")
+            .await?;
+    verify_existing_stress_space_scopes(
+        conn_a,
+        &snapshot_a,
+        "timeline_stress replay A selected-space scope",
+    )
+    .await?;
+    verify_existing_stress_space_scopes(
+        conn_b,
+        &snapshot_b,
+        "timeline_stress replay B selected-space scope",
+    )
+    .await?;
+
+    let room_ids_a = stress_replay_room_ids(&snapshot_a);
+    let room_ids_b = stress_replay_room_ids(&snapshot_b);
+    if room_ids_a.is_empty() || room_ids_b.is_empty() {
+        return Err("timeline_stress replay: fixture has no joined rooms".to_owned());
+    }
+
+    let scan_a = scan_existing_stress_rooms(
+        conn_a,
+        account_key_a,
+        &room_ids_a,
+        "timeline_stress replay A timeline scan",
+    )
+    .await?;
+    let scan_b = scan_existing_stress_rooms(
+        conn_b,
+        account_key_b,
+        &room_ids_b,
+        "timeline_stress replay B timeline scan",
+    )
+    .await?;
+    let message_rows = scan_a.message_rows + scan_b.message_rows;
+    if message_rows == 0 {
+        return Err(
+            "timeline_stress replay: fixture timelines contained no visible messages".to_owned(),
+        );
+    }
+
+    println!(
+        "stress_counts=spaces={} rooms={} messages={}",
+        snapshot_a.spaces.len().max(snapshot_b.spaces.len()),
+        scan_a.rooms.max(scan_b.rooms),
+        message_rows
+    );
+    println!("stress_space_scope=ok");
+    println!("stress_no_blank=ok");
+    println!("timeline_stress=ok");
+    Ok(())
+}
+
+async fn wait_for_existing_stress_fixture_room_list(
+    conn: &mut CoreConnection,
+    label: &str,
+) -> Result<AppState, String> {
+    let has_fixture_shape =
+        |snapshot: &AppState| !snapshot.rooms.is_empty() && !snapshot.spaces.is_empty();
+    let snapshot = conn.snapshot();
+    if has_fixture_shape(&snapshot) {
+        return Ok(snapshot);
+    }
+
+    loop {
+        let event = tokio::time::timeout(ROOM_LIST_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| {
+                let snapshot = conn.snapshot();
+                format!(
+                    "{label}: timed out waiting for existing fixture rooms/spaces \
+                     (rooms={}, spaces={})",
+                    snapshot.rooms.len(),
+                    snapshot.spaces.len()
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomListUpdated) => {
+                let snapshot = conn.snapshot();
+                if has_fixture_shape(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            CoreEvent::StateChanged(snapshot) => {
+                if has_fixture_shape(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn verify_existing_stress_space_scopes(
+    conn: &mut CoreConnection,
+    snapshot: &AppState,
+    label: &str,
+) -> Result<(), String> {
+    let spaces = snapshot
+        .spaces
+        .iter()
+        .filter(|space| !space.child_room_ids.is_empty())
+        .map(|space| (space.space_id.clone(), space.child_room_ids.clone()))
+        .collect::<Vec<_>>();
+    if spaces.is_empty() {
+        return Err(format!("{label}: fixture has no spaces with child rooms"));
+    }
+    for (space_id, child_room_ids) in spaces {
+        select_space_and_wait_for_room_scope(conn, &space_id, &child_room_ids, label).await?;
+    }
+    Ok(())
+}
+
+fn stress_replay_room_ids(snapshot: &AppState) -> Vec<String> {
+    let joined_room_ids = snapshot
+        .rooms
+        .iter()
+        .map(|room| room.room_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut room_ids = BTreeSet::new();
+    for space in &snapshot.spaces {
+        for room_id in &space.child_room_ids {
+            if joined_room_ids.contains(room_id.as_str()) {
+                room_ids.insert(room_id.clone());
+            }
+        }
+    }
+    if room_ids.is_empty() {
+        for room in &snapshot.rooms {
+            room_ids.insert(room.room_id.clone());
+        }
+    }
+    room_ids.into_iter().collect()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StressReplayScan {
+    rooms: usize,
+    message_rows: usize,
+}
+
+async fn scan_existing_stress_rooms(
+    conn: &mut CoreConnection,
+    account_key: &AccountKey,
+    room_ids: &[String],
+    label: &str,
+) -> Result<StressReplayScan, String> {
+    let mut message_rows = 0usize;
+    for room_id in room_ids {
+        message_rows += scan_existing_stress_timeline(conn, account_key, room_id, label).await?;
+    }
+    Ok(StressReplayScan {
+        rooms: room_ids.len(),
+        message_rows,
+    })
+}
+
+async fn scan_existing_stress_timeline(
+    conn: &mut CoreConnection,
+    account_key: &AccountKey,
+    room_id: &str,
+    label: &str,
+) -> Result<usize, String> {
+    let key = TimelineKey::room(account_key.clone(), room_id.to_owned());
+    let subscribe_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+        request_id: subscribe_id,
+        key: key.clone(),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit replay subscribe failed: {e}"))?;
+    let initial_items = wait_for_initial_items(conn, &key, subscribe_id, label).await?;
+    assert_no_blank_visible_event_rows(&initial_items, label)?;
+    let mut message_rows = count_visible_payload_event_rows(&initial_items);
+    let mut end_reached = false;
+    let mut page_count = 0usize;
+    while !end_reached && page_count < 3 {
+        let request_id = submit_stress_backfill_paginate(conn, &key, 100, label).await?;
+        let result = wait_for_stress_replay_paginate(conn, &key, request_id, label).await?;
+        message_rows += result.message_rows;
+        end_reached = result.end_reached;
+        page_count += 1;
+    }
+
+    let unsubscribe_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
+        request_id: unsubscribe_id,
+        key,
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit replay unsubscribe failed: {e}"))?;
+    Ok(message_rows)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StressReplayPageResult {
+    message_rows: usize,
+    end_reached: bool,
+}
+
+async fn wait_for_stress_replay_paginate(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    request_id: RequestId,
+    label: &str,
+) -> Result<StressReplayPageResult, String> {
+    let mut message_rows = 0usize;
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for replay paginate"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match &event {
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ev_key, diffs, ..
+            }) if ev_key == key => {
+                visit_timeline_diff_items(&diffs, |item| {
+                    if timeline_item_is_visible_event_row(item)
+                        && !timeline_item_has_visible_payload(item)
+                    {
+                        return Err(format!(
+                            "{label}: visible event row had no renderable payload"
+                        ));
+                    }
+                    Ok(())
+                })?;
+                message_rows += count_visible_payload_event_rows_in_diffs(&diffs);
+            }
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ev_key, items, ..
+            }) if ev_key == key => {
+                assert_no_blank_visible_event_rows(&items, label)?;
+                message_rows += count_visible_payload_event_rows(&items);
+            }
+            CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                key: ev_key,
+                request_id: ev_id,
+                state,
+                ..
+            }) if ev_key == key && ev_id == &Some(request_id) => match state {
+                PaginationState::Idle => {
+                    return Ok(StressReplayPageResult {
+                        message_rows,
+                        end_reached: false,
+                    });
+                }
+                PaginationState::EndReached => {
+                    return Ok(StressReplayPageResult {
+                        message_rows,
+                        end_reached: true,
+                    });
+                }
+                PaginationState::Failed { kind } => {
+                    return Err(format!("{label}: replay pagination failed: {kind:?}"));
+                }
+                PaginationState::Paginating => {}
+            },
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == &request_id => {
+                return Err(format!(
+                    "{label}: replay paginate operation failed: {failure:?}"
+                ));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn count_visible_payload_event_rows(items: &[TimelineItem]) -> usize {
+    items
+        .iter()
+        .filter(|item| {
+            timeline_item_is_visible_event_row(item) && timeline_item_has_visible_payload(item)
+        })
+        .count()
+}
+
+fn count_visible_payload_event_rows_in_diffs(diffs: &[TimelineDiff]) -> usize {
+    let mut count = 0usize;
+    let _ = visit_timeline_diff_items(diffs, |item| {
+        if timeline_item_is_visible_event_row(item) && timeline_item_has_visible_payload(item) {
+            count += 1;
+        }
+        Ok(())
+    });
+    count
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StressRoomCoordinates {
+    sender_prefix: &'static str,
+    space_index: usize,
+    room_index: usize,
+}
+
+impl StressRoomCoordinates {
+    fn should_send_empty_formatted_probe(self) -> bool {
+        self.space_index == 0 && self.room_index == 0
+    }
+}
+
+async fn run_timeline_stress_room_messages(
+    config: &QaConfig,
+    sender_conn: &mut CoreConnection,
+    receiver_conn: &mut CoreConnection,
+    sender_account_key: &AccountKey,
+    receiver_account_key: &AccountKey,
+    room_id: &str,
+    coordinates: StressRoomCoordinates,
+    messages_per_room: usize,
+) -> Result<usize, String> {
+    let sender_key = TimelineKey::room(sender_account_key.clone(), room_id.to_owned());
+    let sender_subscribe_id = sender_conn.next_request_id();
+    sender_conn
+        .command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+            request_id: sender_subscribe_id,
+            key: sender_key.clone(),
+        }))
+        .await
+        .map_err(|e| format!("timeline_stress: submit sender subscribe failed: {e}"))?;
+    let sender_initial = wait_for_initial_items(
+        sender_conn,
+        &sender_key,
+        sender_subscribe_id,
+        "timeline_stress sender subscribe",
+    )
+    .await?;
+    assert_no_blank_visible_event_rows(&sender_initial, "timeline_stress sender initial")?;
+
+    let mut expected_bodies = Vec::with_capacity(messages_per_room);
+    for message_index in 0..messages_per_room {
+        let body = format!(
+            "Koushi local stress body s{} r{} m{}",
+            coordinates.space_index, coordinates.room_index, message_index
+        );
+        let transaction_id = format!(
+            "qa-stress-{}-{}-{}-{}",
+            coordinates.sender_prefix,
+            coordinates.space_index,
+            coordinates.room_index,
+            message_index
+        );
+        let send_id = sender_conn.next_request_id();
+        sender_conn
+            .command(CoreCommand::Timeline(TimelineCommand::SendText {
+                request_id: send_id,
+                key: sender_key.clone(),
+                transaction_id: transaction_id.clone(),
+                body: body.clone(),
+                mentions: MentionIntent::default(),
+            }))
+            .await
+            .map_err(|e| format!("timeline_stress: submit stress send failed: {e}"))?;
+        wait_for_send_flow_completion(
+            sender_conn,
+            send_id,
+            &sender_key,
+            &transaction_id,
+            &body,
+            "timeline_stress send flow",
+        )
+        .await?;
+        expected_bodies.push(body);
+    }
+
+    if coordinates.should_send_empty_formatted_probe() {
+        let probe_body = send_timeline_stress_empty_formatted_probe(
+            config,
+            room_id,
+            coordinates.sender_prefix,
+            "timeline_stress empty formatted probe",
+        )
+        .await?;
+        expected_bodies.push(probe_body);
+    }
+
+    let sender_unsubscribe_id = sender_conn.next_request_id();
+    sender_conn
+        .command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
+            request_id: sender_unsubscribe_id,
+            key: sender_key,
+        }))
+        .await
+        .map_err(|e| format!("timeline_stress: submit sender unsubscribe failed: {e}"))?;
+
+    let receiver_key = TimelineKey::room(receiver_account_key.clone(), room_id.to_owned());
+    let receiver_subscribe_id = receiver_conn.next_request_id();
+    receiver_conn
+        .command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+            request_id: receiver_subscribe_id,
+            key: receiver_key.clone(),
+        }))
+        .await
+        .map_err(|e| format!("timeline_stress: submit receiver subscribe failed: {e}"))?;
+    let receiver_initial = wait_for_initial_items(
+        receiver_conn,
+        &receiver_key,
+        receiver_subscribe_id,
+        "timeline_stress receiver subscribe",
+    )
+    .await?;
+
+    wait_for_stress_bodies_and_no_blank_rows(
+        receiver_conn,
+        &receiver_key,
+        &receiver_initial,
+        &expected_bodies,
+        (messages_per_room + 20).min(u16::MAX as usize) as u16,
+        "timeline_stress receiver backfill",
+    )
+    .await?;
+
+    let receiver_unsubscribe_id = receiver_conn.next_request_id();
+    receiver_conn
+        .command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
+            request_id: receiver_unsubscribe_id,
+            key: receiver_key,
+        }))
+        .await
+        .map_err(|e| format!("timeline_stress: submit receiver unsubscribe failed: {e}"))?;
+
+    Ok(expected_bodies.len())
+}
+
+async fn send_timeline_stress_empty_formatted_probe(
+    config: &QaConfig,
+    room_id: &str,
+    sender_prefix: &str,
+    label: &str,
+) -> Result<String, String> {
+    let (username, password) = match sender_prefix {
+        "a" => (&config.user_a, &config.password_a),
+        "b" => (&config.user_b, &config.password_b),
+        other => {
+            return Err(format!("{label}: unknown stress sender prefix {other}"));
+        }
+    };
+    let body = format!("Koushi local stress formatted fallback {sender_prefix}");
+    let session = koushi_sdk::login_with_password(&koushi_state::LoginRequest {
+        homeserver: config.homeserver.clone(),
+        username: username.clone(),
+        password: AuthSecret::new(password.clone()),
+        device_display_name: Some("Koushi raw formatted QA".to_owned()),
+    })
+    .await
+    .map_err(|error| format!("{label}: raw probe login failed: {error}"))?;
+    koushi_sdk::sync_once(&session)
+        .await
+        .map_err(|error| format!("{label}: raw probe sync failed: {error}"))?;
+
+    let parsed_room_id = matrix_sdk::ruma::RoomId::parse(room_id)
+        .map_err(|error| format!("{label}: raw probe room id parse failed: {error}"))?;
+    let room = session
+        .client()
+        .get_room(&parsed_room_id)
+        .ok_or_else(|| format!("{label}: raw probe room was not available after sync"))?;
+    room.send_raw(
+        "m.room.message",
+        serde_json::json!({
+            "msgtype": "m.text",
+            "body": body,
+            "format": "org.matrix.custom.html",
+            "formatted_body": "<p><br /></p>"
+        }),
+    )
+    .await
+    .map_err(|error| format!("{label}: raw probe send failed: {error}"))?;
+
+    if let Err(error) = koushi_sdk::logout(&session).await {
+        eprintln!("timeline_stress raw probe logout warning: {error}");
+    }
+    Ok(body)
+}
+
 async fn run_scheduled_send_stage(
     conn: &mut CoreConnection,
     key: &TimelineKey,
     room_id: &str,
 ) -> Result<(), String> {
-    const SCHEDULED_CREATE_BODY: &str = "Matrix Desktop scheduled create QA body";
-    const SCHEDULED_FIRE_BODY: &str = "Matrix Desktop scheduled fire QA body";
+    const SCHEDULED_CREATE_BODY: &str = "Koushi scheduled create QA body";
+    const SCHEDULED_FIRE_BODY: &str = "Koushi scheduled fire QA body";
 
     let select_id = conn.next_request_id();
     conn.command(CoreCommand::Room(RoomCommand::SelectRoom {
@@ -1613,7 +2335,7 @@ async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
             homeserver: proxy.homeserver_url(),
             username: config.user_a.clone(),
             password: AuthSecret::new(config.password_a.clone()),
-            device_display_name: Some("Matrix Desktop Core QA Send Queue".to_owned()),
+            device_display_name: Some("Koushi Core QA Send Queue".to_owned()),
         },
     }))
     .await
@@ -1954,7 +2676,8 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .await
         .map_err(|e| format!("submit sync start A: {e}"))?;
 
-    let sync_backend_a = wait_for_sync_started(&mut conn_a, sync_start_id, "sync start A").await?;
+    let sync_backend_a =
+        wait_for_sync_started_and_running(&mut conn_a, sync_start_id, "sync start A").await?;
     println!("sync_backend_a={sync_backend_a:?}");
     assert_expected_backend(
         config.expect_sync_backend.as_deref(),
@@ -1962,9 +2685,77 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         "sync start A",
     )?;
 
-    wait_for_sync_running(&mut conn_a, "sync A running").await?;
     println!("sync_a=running");
     println!("login_sync=ok");
+
+    if scenario == QaScenario::TimelineStress {
+        let stress = TimelineStressConfig::from_env()?;
+        if stress.replay_existing {
+            let runtime_b = CoreRuntime::start_with_data_dir(data_dir_b.clone());
+            let mut conn_b = runtime_b.attach();
+
+            let login_b_id = conn_b.next_request_id();
+            conn_b
+                .command(CoreCommand::Account(AccountCommand::LoginPassword {
+                    request_id: login_b_id,
+                    request: koushi_state::LoginRequest {
+                        homeserver: config.homeserver.clone(),
+                        username: config.user_b.clone(),
+                        password: AuthSecret::new(config.password_b.clone()),
+                        device_display_name: Some(DEVICE_B.to_owned()),
+                    },
+                }))
+                .await
+                .map_err(|e| format!("timeline_stress replay: submit login B failed: {e}"))?;
+
+            let account_key_b =
+                wait_for_logged_in(&mut conn_b, login_b_id, "timeline_stress replay login B")
+                    .await?;
+            wait_for_ready_snapshot(&mut conn_b, "timeline_stress replay session B Ready").await?;
+
+            let sync_start_b_id = conn_b.next_request_id();
+            conn_b
+                .command(CoreCommand::Sync(SyncCommand::Start {
+                    request_id: sync_start_b_id,
+                }))
+                .await
+                .map_err(|e| format!("timeline_stress replay: submit sync start B failed: {e}"))?;
+
+            let sync_backend_b = wait_for_sync_started_and_running(
+                &mut conn_b,
+                sync_start_b_id,
+                "timeline_stress replay sync start B",
+            )
+            .await?;
+            println!("sync_backend_b={sync_backend_b:?}");
+            assert_expected_backend(
+                config.expect_sync_backend.as_deref(),
+                sync_backend_b,
+                "timeline_stress replay sync start B",
+            )?;
+            println!("sync_b=running");
+
+            run_timeline_stress_replay_stage(
+                &mut conn_a,
+                &mut conn_b,
+                &account_key_a,
+                &account_key_b,
+                stress,
+            )
+            .await?;
+            cleanup_after_full_flow(
+                conn_a,
+                conn_b,
+                runtime_a,
+                runtime_b,
+                data_dir_a,
+                account_key_a,
+                account_key_b,
+            )
+            .await?;
+            return Ok(scenario_report(&config.server_kind, scenario));
+        }
+    }
 
     if scenario.should_run_stage(QaStage::CredentialHealth) {
         run_credential_health_stage(&mut conn_a).await?;
@@ -2143,7 +2934,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         .map_err(|e| format!("submit sync start B: {e}"))?;
 
     let sync_backend_b =
-        wait_for_sync_started(&mut conn_b, sync_start_b_id, "sync start B").await?;
+        wait_for_sync_started_and_running(&mut conn_b, sync_start_b_id, "sync start B").await?;
     println!("sync_backend_b={sync_backend_b:?}");
     assert_expected_backend(
         config.expect_sync_backend.as_deref(),
@@ -2151,7 +2942,6 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         "sync start B",
     )?;
 
-    wait_for_sync_running(&mut conn_b, "sync B running").await?;
     println!("sync_b=running");
 
     // B joins the room
@@ -2438,7 +3228,15 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     }
 
     if scenario.should_run_stage(QaStage::LiveSignals) {
-        run_live_signals_stage(&mut conn_a, &mut conn_b, &key_a, &key_b, &event1_id).await?;
+        run_live_signals_stage(
+            &mut conn_a,
+            &mut conn_b,
+            &key_a,
+            &key_b,
+            &event1_id,
+            &account_key_b.0,
+        )
+        .await?;
     }
 
     if scenario.should_run_stage(QaStage::Reply) {
@@ -2702,6 +3500,17 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
 
     if scenario.should_run_stage(QaStage::ScheduledSend) {
         run_scheduled_send_stage(&mut conn_a, &key_a, &room_id).await?;
+    }
+
+    if scenario.should_run_stage(QaStage::TimelineStress) {
+        run_timeline_stress_stage(
+            &config,
+            &mut conn_a,
+            &mut conn_b,
+            &account_key_a,
+            &account_key_b,
+        )
+        .await?;
     }
 
     // Unsubscribe A and B to confirm no leaks.
@@ -3107,6 +3916,31 @@ async fn load_room_settings_for_qa(
     wait_for_room_settings_loaded(conn, request_id, label).await
 }
 
+fn assert_room_settings_contains_members(
+    settings: &RoomSettingsSnapshot,
+    expected_user_ids: &[&str],
+    label: &str,
+) -> Result<(), String> {
+    let observed_user_ids = settings
+        .members
+        .iter()
+        .map(|member| member.user_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let missing_count = expected_user_ids
+        .iter()
+        .filter(|user_id| !observed_user_ids.contains(**user_id))
+        .count();
+    if missing_count > 0 {
+        return Err(format!(
+            "{label}: member list missing expected users \
+             (expected={}, observed={}, missing={missing_count})",
+            expected_user_ids.len(),
+            observed_user_ids.len()
+        ));
+    }
+    Ok(())
+}
+
 async fn accept_invite_for_qa(
     conn: &mut CoreConnection,
     room_id: &str,
@@ -3152,6 +3986,25 @@ async fn start_direct_message_for_qa(
     wait_for_direct_message_started(conn, request_id, label).await
 }
 
+async fn set_space_child_for_qa(
+    conn: &mut CoreConnection,
+    space_id: &str,
+    child_room_id: &str,
+    via_server: &str,
+    label: &str,
+) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::SetSpaceChild {
+        request_id,
+        space_id: space_id.to_owned(),
+        child_room_id: child_room_id.to_owned(),
+        via_server: via_server.to_owned(),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit set space child failed: {e}"))?;
+    wait_for_space_child_set(conn, request_id, space_id, child_room_id, label).await
+}
+
 // ---------------------------------------------------------------------------
 // Event waiter helpers (Phase 4 additions)
 // ---------------------------------------------------------------------------
@@ -3162,11 +4015,24 @@ async fn wait_for_room_created(
     request_id: koushi_core::ids::RequestId,
     label: &str,
 ) -> Result<String, String> {
+    let mut seen_total = 0usize;
+    let mut seen_state_changed = 0usize;
+    let mut seen_room_created_other = 0usize;
+    let mut seen_operation_failed_other = 0usize;
+    let mut last_event_kind = "none";
     loop {
         let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
             .await
-            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::RoomCreated"))?
+            .map_err(|_| {
+                format!(
+                    "{label}: timed out waiting for RoomEvent::RoomCreated request_id={}/{} seen_total={seen_total} seen_state_changed={seen_state_changed} seen_room_created_other={seen_room_created_other} seen_operation_failed_other={seen_operation_failed_other} last_event={last_event_kind}",
+                    request_id.connection_id.0,
+                    request_id.sequence,
+                )
+            })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        seen_total += 1;
+        last_event_kind = core_event_kind(&event);
 
         match event {
             CoreEvent::Room(RoomEvent::RoomCreated {
@@ -3181,8 +4047,46 @@ async fn wait_for_room_created(
             } if ev_id == request_id => {
                 return Err(format!("{label} failed: {failure:?}"));
             }
+            CoreEvent::Room(RoomEvent::RoomCreated { .. }) => {
+                seen_room_created_other += 1;
+            }
+            CoreEvent::OperationFailed { .. } => {
+                seen_operation_failed_other += 1;
+            }
+            CoreEvent::StateChanged(_) => {
+                seen_state_changed += 1;
+            }
             _ => continue,
         }
+    }
+}
+
+fn core_event_kind(event: &CoreEvent) -> &'static str {
+    match event {
+        CoreEvent::StateChanged(_) => "StateChanged",
+        CoreEvent::Account(_) => "Account",
+        CoreEvent::Sync(_) => "Sync",
+        CoreEvent::Room(room_event) => match room_event {
+            RoomEvent::RoomCreated { .. } => "RoomCreated",
+            RoomEvent::SpaceCreated { .. } => "SpaceCreated",
+            RoomEvent::SpaceChildSet { .. } => "SpaceChildSet",
+            RoomEvent::UserInvited { .. } => "UserInvited",
+            RoomEvent::InviteAccepted { .. } => "InviteAccepted",
+            RoomEvent::InviteDeclined { .. } => "InviteDeclined",
+            RoomEvent::RoomJoined { .. } => "RoomJoined",
+            RoomEvent::RoomListUpdated => "RoomListUpdated",
+            _ => "Room",
+        },
+        CoreEvent::Timeline(_) => "Timeline",
+        CoreEvent::LiveSignals(_) => "LiveSignals",
+        CoreEvent::Search(_) => "Search",
+        CoreEvent::E2eeTrust(_) => "E2eeTrust",
+        CoreEvent::Activity(_) => "Activity",
+        CoreEvent::LocalEncryption(_) => "LocalEncryption",
+        CoreEvent::NativeAttention(_) => "NativeAttention",
+        CoreEvent::CjkTextPolicy(_) => "CjkTextPolicy",
+        CoreEvent::ThreadsList(_) => "ThreadsList",
+        CoreEvent::OperationFailed { .. } => "OperationFailed",
     }
 }
 
@@ -3391,11 +4295,25 @@ async fn wait_for_space_created(
     request_id: koushi_core::ids::RequestId,
     label: &str,
 ) -> Result<String, String> {
+    let mut seen_total = 0usize;
+    let mut seen_state_changed = 0usize;
+    let mut seen_space_created_other = 0usize;
+    let mut seen_room_created = 0usize;
+    let mut seen_operation_failed_other = 0usize;
+    let mut last_event_kind = "none";
     loop {
         let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
             .await
-            .map_err(|_| format!("{label}: timed out waiting for RoomEvent::SpaceCreated"))?
+            .map_err(|_| {
+                format!(
+                    "{label}: timed out waiting for RoomEvent::SpaceCreated request_id={}/{} seen_total={seen_total} seen_state_changed={seen_state_changed} seen_space_created_other={seen_space_created_other} seen_room_created={seen_room_created} seen_operation_failed_other={seen_operation_failed_other} last_event={last_event_kind}",
+                    request_id.connection_id.0,
+                    request_id.sequence,
+                )
+            })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        seen_total += 1;
+        last_event_kind = core_event_kind(&event);
 
         match event {
             CoreEvent::Room(RoomEvent::SpaceCreated {
@@ -3409,6 +4327,18 @@ async fn wait_for_space_created(
                 failure,
             } if ev_id == request_id => {
                 return Err(format!("{label} failed: {failure:?}"));
+            }
+            CoreEvent::Room(RoomEvent::SpaceCreated { .. }) => {
+                seen_space_created_other += 1;
+            }
+            CoreEvent::Room(RoomEvent::RoomCreated { .. }) => {
+                seen_room_created += 1;
+            }
+            CoreEvent::OperationFailed { .. } => {
+                seen_operation_failed_other += 1;
+            }
+            CoreEvent::StateChanged(_) => {
+                seen_state_changed += 1;
             }
             _ => continue,
         }
@@ -3901,6 +4831,205 @@ async fn wait_for_space_in_space_list(
     }
 }
 
+async fn wait_for_space_child_projection(
+    conn: &mut CoreConnection,
+    space_id: &str,
+    expected_child_room_ids: &[String],
+    label: &str,
+) -> Result<AppState, String> {
+    let contains_expected = |snapshot: &AppState| {
+        space_has_expected_children(snapshot, space_id, expected_child_room_ids)
+    };
+
+    let snapshot = conn.snapshot();
+    if contains_expected(&snapshot) {
+        return Ok(snapshot);
+    }
+
+    loop {
+        let event = tokio::time::timeout(ROOM_LIST_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| {
+                let snapshot = conn.snapshot();
+                let observed_child_count = snapshot
+                    .spaces
+                    .iter()
+                    .find(|space| space.space_id == space_id)
+                    .map(|space| space.child_room_ids.len())
+                    .unwrap_or_default();
+                format!(
+                    "{label}: timed out waiting for space child projection \
+                     (expected_children={}, observed_children={}, spaces={})",
+                    expected_child_room_ids.len(),
+                    observed_child_count,
+                    snapshot.spaces.len()
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomListUpdated) => {
+                let snapshot = conn.snapshot();
+                if contains_expected(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            CoreEvent::StateChanged(snapshot) => {
+                if contains_expected(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            _ => continue,
+        }
+    }
+}
+
+async fn select_space_and_wait_for_room_scope(
+    conn: &mut CoreConnection,
+    space_id: &str,
+    expected_room_ids: &[String],
+    label: &str,
+) -> Result<AppState, String> {
+    select_room_list_filter_for_qa(conn, RoomListFilter::Rooms, label).await?;
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::SelectSpace {
+        request_id,
+        space_id: Some(space_id.to_owned()),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit select space failed: {e}"))?;
+
+    let matches_scope = |snapshot: &AppState| {
+        room_list_matches_selected_space(snapshot, space_id, expected_room_ids)
+    };
+    let snapshot = conn.snapshot();
+    if matches_scope(&snapshot) {
+        return Ok(snapshot);
+    }
+
+    loop {
+        let event = tokio::time::timeout(ROOM_LIST_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| {
+                let snapshot = conn.snapshot();
+                format!(
+                    "{label}: timed out waiting for selected-space room scope \
+                     (expected_rooms={}, projected_items={}, total_rooms={}, active_space={})",
+                    expected_room_ids.len(),
+                    snapshot.room_list.items.len(),
+                    snapshot.rooms.len(),
+                    snapshot.navigation.active_space_id.is_some()
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Room(RoomEvent::RoomListUpdated) => {
+                let snapshot = conn.snapshot();
+                if matches_scope(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            CoreEvent::StateChanged(snapshot) => {
+                if matches_scope(&snapshot) {
+                    return Ok(snapshot);
+                }
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label}: select space failed: {failure:?}"));
+            }
+            _ => continue,
+        }
+    }
+}
+
+async fn select_room_list_filter_for_qa(
+    conn: &mut CoreConnection,
+    filter: RoomListFilter,
+    label: &str,
+) -> Result<(), String> {
+    if conn.snapshot().room_list.active_filter == filter {
+        return Ok(());
+    }
+
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::SelectRoomListFilter {
+        request_id,
+        filter,
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit room-list filter failed: {e}"))?;
+
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for room-list filter"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::StateChanged(snapshot) if snapshot.room_list.active_filter == filter => {
+                return Ok(());
+            }
+            CoreEvent::Room(RoomEvent::RoomListUpdated)
+                if conn.snapshot().room_list.active_filter == filter =>
+            {
+                return Ok(());
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label}: room-list filter failed: {failure:?}"));
+            }
+            _ if conn.snapshot().room_list.active_filter == filter => return Ok(()),
+            _ => continue,
+        }
+    }
+}
+
+fn space_has_expected_children(
+    snapshot: &AppState,
+    space_id: &str,
+    expected_child_room_ids: &[String],
+) -> bool {
+    let Some(space) = snapshot
+        .spaces
+        .iter()
+        .find(|space| space.space_id == space_id)
+    else {
+        return false;
+    };
+    let child_room_ids = space.child_room_ids.iter().collect::<BTreeSet<_>>();
+    expected_child_room_ids
+        .iter()
+        .all(|room_id| child_room_ids.contains(room_id))
+}
+
+fn room_list_matches_selected_space(
+    snapshot: &AppState,
+    space_id: &str,
+    expected_room_ids: &[String],
+) -> bool {
+    if snapshot.navigation.active_space_id.as_deref() != Some(space_id)
+        || snapshot.room_list.active_filter != RoomListFilter::Rooms
+        || !space_has_expected_children(snapshot, space_id, expected_room_ids)
+    {
+        return false;
+    }
+    let expected = expected_room_ids.iter().collect::<BTreeSet<_>>();
+    let projected = snapshot
+        .room_list
+        .items
+        .iter()
+        .filter(|item| matches!(item.kind, koushi_state::RoomListEntryKind::Room))
+        .map(|item| &item.room_id)
+        .collect::<BTreeSet<_>>();
+    projected == expected
+}
+
 async fn wait_for_dm_room_in_room_list(
     conn: &mut CoreConnection,
     expected_room_id: &str,
@@ -4047,16 +5176,22 @@ async fn wait_for_invite_absent(
 // Phase 3 event waiter helpers (unchanged)
 // ---------------------------------------------------------------------------
 
-/// Wait for `SyncEvent::Started` with the given request_id. Returns the backend kind.
-async fn wait_for_sync_started(
+/// Wait for `SyncEvent::Started` for the request, then `Running`.
+///
+/// Runtime SyncService fallback emits another `Started` with the same request id
+/// before `Running`; return the latest backend so QA records the effective
+/// backend, not only the initially advertised one.
+async fn wait_for_sync_started_and_running(
     conn: &mut CoreConnection,
     request_id: koushi_core::ids::RequestId,
     label: &str,
 ) -> Result<SyncBackendKind, String> {
+    let mut observed_backend = None;
+    let mut saw_running_before_started = false;
     loop {
         let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
             .await
-            .map_err(|_| format!("{label}: timed out waiting for SyncEvent::Started"))?
+            .map_err(|_| format!("{label}: timed out waiting for SyncEvent::Started/Running"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
@@ -4064,7 +5199,21 @@ async fn wait_for_sync_started(
                 request_id: ev_id,
                 backend,
             }) if ev_id == Some(request_id) => {
-                return Ok(backend);
+                observed_backend = Some(backend);
+                if saw_running_before_started {
+                    return Ok(backend);
+                }
+            }
+            CoreEvent::Sync(SyncEvent::Running) => {
+                if let Some(backend) = observed_backend {
+                    return Ok(backend);
+                }
+                saw_running_before_started = true;
+            }
+            CoreEvent::Sync(SyncEvent::Failed) => {
+                return Err(format!(
+                    "{label}: SyncEvent::Failed received before Running"
+                ));
             }
             CoreEvent::OperationFailed {
                 request_id: ev_id,
@@ -4073,25 +5222,6 @@ async fn wait_for_sync_started(
                 return Err(format!("{label} failed: {failure:?}"));
             }
             _ => continue,
-        }
-    }
-}
-
-/// Wait for `SyncEvent::Running` (first successful sync response).
-async fn wait_for_sync_running(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
-    loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
-            .await
-            .map_err(|_| format!("{label}: timed out waiting for SyncEvent::Running"))?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
-
-        if matches!(event, CoreEvent::Sync(SyncEvent::Running)) {
-            return Ok(());
-        }
-        if matches!(event, CoreEvent::Sync(SyncEvent::Failed)) {
-            return Err(format!(
-                "{label}: SyncEvent::Failed received before Running"
-            ));
         }
     }
 }
@@ -4155,8 +5285,9 @@ async fn start_sync_for_qa(conn: &mut CoreConnection, label: &str) -> Result<(),
     conn.command(CoreCommand::Sync(SyncCommand::Start { request_id }))
         .await
         .map_err(|e| format!("{label}: submit Sync start failed: {e}"))?;
-    wait_for_sync_started(conn, request_id, label).await?;
-    wait_for_sync_running(conn, label).await
+    wait_for_sync_started_and_running(conn, request_id, label)
+        .await
+        .map(|_| ())
 }
 
 async fn wait_for_sync_once(
@@ -5491,8 +6622,8 @@ async fn verify_second_device_for_qa(
         "A accepts verification",
     )
     .await?;
-    sync_once_for_qa(conn_a2, "sync A2 for verification ready").await?;
-    wait_for_verification_accepted(conn_a2, flow_id_a2, None, "A2 observes A acceptance").await?;
+    wait_for_verification_accepted_with_sync_once(conn_a2, flow_id_a2, "A2 observes A acceptance")
+        .await?;
 
     // Let the requester start SAS. Starting from the accepting device has
     // triggered m.key_mismatch on Tuwunel self-verification in local QA.
@@ -5748,6 +6879,32 @@ async fn wait_for_verification_accepted(
     }
 }
 
+async fn wait_for_verification_accepted_with_sync_once(
+    conn: &mut CoreConnection,
+    flow_id: u64,
+    label: &str,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
+
+    loop {
+        if verification_state_is_at_least_accepted(
+            &conn.snapshot().e2ee_trust.verification,
+            flow_id,
+        )? {
+            return Ok(());
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "{label}: timed out waiting for verification acceptance with SyncOnce"
+            ));
+        }
+
+        let sync_label = format!("{label}: sync while waiting for acceptance");
+        sync_once_for_qa(conn, &sync_label).await?;
+    }
+}
+
 fn verification_state_is_at_least_accepted(
     state: &VerificationFlowState,
     flow_id: u64,
@@ -5947,6 +7104,64 @@ impl QaConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TimelineStressConfig {
+    space_count: usize,
+    rooms_per_space: usize,
+    messages_per_room: usize,
+    replay_existing: bool,
+}
+
+impl TimelineStressConfig {
+    fn from_env() -> Result<Self, String> {
+        Ok(Self {
+            space_count: bounded_usize_env(
+                ENV_STRESS_SPACE_COUNT,
+                DEFAULT_STRESS_SPACE_COUNT,
+                MAX_STRESS_SPACE_COUNT,
+            )?,
+            rooms_per_space: bounded_usize_env(
+                ENV_STRESS_ROOMS_PER_SPACE,
+                DEFAULT_STRESS_ROOMS_PER_SPACE,
+                MAX_STRESS_ROOMS_PER_SPACE,
+            )?,
+            messages_per_room: bounded_usize_env(
+                ENV_STRESS_MESSAGES_PER_ROOM,
+                DEFAULT_STRESS_MESSAGES_PER_ROOM,
+                MAX_STRESS_MESSAGES_PER_ROOM,
+            )?,
+            replay_existing: env_flag_enabled(ENV_STRESS_REPLAY_EXISTING)?,
+        })
+    }
+
+    fn total_rooms(self) -> usize {
+        self.space_count * self.rooms_per_space
+    }
+
+    fn total_messages(self) -> usize {
+        self.total_rooms() * self.messages_per_room + self.empty_formatted_probe_count()
+    }
+
+    fn empty_formatted_probe_count(self) -> usize {
+        usize::from(self.total_rooms() > 0)
+    }
+}
+
+fn bounded_usize_env(name: &str, default: usize, max: usize) -> Result<usize, String> {
+    let Ok(value) = std::env::var(name) else {
+        return Ok(default);
+    };
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| format!("{name} must be a positive integer no greater than {max}"))?;
+    if parsed == 0 || parsed > max {
+        return Err(format!(
+            "{name} must be a positive integer no greater than {max}"
+        ));
+    }
+    Ok(parsed)
+}
+
 fn env_flag_enabled(name: &str) -> Result<bool, String> {
     match std::env::var(name) {
         Ok(value) => parse_env_flag(name, &value),
@@ -5961,7 +7176,9 @@ fn parse_env_flag(name: &str, value: &str) -> Result<bool, String> {
     if value == "0" || value.eq_ignore_ascii_case("false") || value.is_empty() {
         return Ok(false);
     }
-    Err(format!("{name} must be 1, true, 0, false, or unset; got {value}"))
+    Err(format!(
+        "{name} must be 1, true, 0, false, or unset; got {value}"
+    ))
 }
 
 struct QaTcpProxy {
@@ -5998,14 +7215,7 @@ impl QaTcpProxy {
                             let _ = client.shutdown(Shutdown::Both);
                             continue;
                         }
-                        match TcpStream::connect_timeout(&target, Duration::from_secs(2)) {
-                            Ok(server) => {
-                                spawn_proxy_pair(client, server, thread_streams.clone());
-                            }
-                            Err(_) => {
-                                let _ = client.shutdown(Shutdown::Both);
-                            }
-                        }
+                        spawn_proxy_pair(client, target, thread_streams.clone());
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(20));
@@ -6069,37 +7279,134 @@ fn parse_http_homeserver_addr(homeserver: &str) -> Result<SocketAddr, String> {
 }
 
 fn spawn_proxy_pair(
-    mut client_read: TcpStream,
-    mut server_read: TcpStream,
+    mut client: TcpStream,
+    target: SocketAddr,
     active_streams: Arc<Mutex<Vec<TcpStream>>>,
 ) {
-    let Ok(mut client_write) = client_read.try_clone() else {
-        let _ = client_read.shutdown(Shutdown::Both);
-        let _ = server_read.shutdown(Shutdown::Both);
-        return;
-    };
-    let Ok(mut server_write) = server_read.try_clone() else {
-        let _ = client_read.shutdown(Shutdown::Both);
-        let _ = server_read.shutdown(Shutdown::Both);
-        return;
-    };
+    thread::spawn(move || {
+        let _ = proxy_single_http_request(&mut client, target, active_streams);
+        let _ = client.shutdown(Shutdown::Both);
+    });
+}
+
+fn proxy_single_http_request(
+    client: &mut TcpStream,
+    target: SocketAddr,
+    active_streams: Arc<Mutex<Vec<TcpStream>>>,
+) -> io::Result<()> {
+    let mut request_head = Vec::new();
+    {
+        let reader_stream = client.try_clone()?;
+        let mut reader = io::BufReader::new(reader_stream);
+        loop {
+            let mut line = Vec::new();
+            let bytes = io::BufRead::read_until(&mut reader, b'\n', &mut line)?;
+            if bytes == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "client closed before HTTP headers",
+                ));
+            }
+            request_head.extend_from_slice(&line);
+            if request_head.ends_with(b"\r\n\r\n") || request_head.ends_with(b"\n\n") {
+                break;
+            }
+            if request_head.len() > 64 * 1024 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "HTTP headers exceeded QA proxy limit",
+                ));
+            }
+        }
+
+        let content_length = http_content_length(&request_head)?;
+        if content_length > 0 {
+            let mut body = vec![0u8; content_length];
+            io::Read::read_exact(&mut reader, &mut body)?;
+            request_head.extend_from_slice(&body);
+        }
+    }
+
+    let mut server = TcpStream::connect_timeout(&target, Duration::from_secs(2))?;
     if let Ok(mut streams) = active_streams.lock() {
-        if let Ok(stream) = client_read.try_clone() {
+        if let Ok(stream) = client.try_clone() {
             streams.push(stream);
         }
-        if let Ok(stream) = server_read.try_clone() {
+        if let Ok(stream) = server.try_clone() {
             streams.push(stream);
         }
     }
 
-    thread::spawn(move || {
-        let _ = io::copy(&mut client_read, &mut server_write);
-        let _ = server_write.shutdown(Shutdown::Both);
-    });
-    thread::spawn(move || {
-        let _ = io::copy(&mut server_read, &mut client_write);
-        let _ = client_write.shutdown(Shutdown::Both);
-    });
+    let request = rewrite_http_request_connection_close(&request_head)?;
+    io::Write::write_all(&mut server, &request)?;
+    io::copy(&mut server, client)?;
+    Ok(())
+}
+
+fn http_content_length(request_head: &[u8]) -> io::Result<usize> {
+    let head = String::from_utf8_lossy(request_head);
+    for line in head.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            return value.trim().parse::<usize>().map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid HTTP content-length")
+            });
+        }
+    }
+    Ok(0)
+}
+
+fn rewrite_http_request_connection_close(request: &[u8]) -> io::Result<Vec<u8>> {
+    let Some(header_end) = find_http_header_end(request) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "missing HTTP header terminator",
+        ));
+    };
+    let (head, body) = request.split_at(header_end);
+    let head = String::from_utf8_lossy(head);
+    let mut lines = head.lines();
+    let Some(request_line) = lines.next() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "missing HTTP request line",
+        ));
+    };
+
+    let mut rewritten = Vec::with_capacity(request.len() + 32);
+    rewritten.extend_from_slice(request_line.as_bytes());
+    rewritten.extend_from_slice(b"\r\n");
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let lower = line
+            .split_once(':')
+            .map(|(name, _)| name.trim().to_ascii_lowercase());
+        if matches!(lower.as_deref(), Some("connection" | "proxy-connection")) {
+            continue;
+        }
+        rewritten.extend_from_slice(line.as_bytes());
+        rewritten.extend_from_slice(b"\r\n");
+    }
+    rewritten.extend_from_slice(b"Connection: close\r\n\r\n");
+    rewritten.extend_from_slice(body);
+    Ok(rewritten)
+}
+
+fn find_http_header_end(request: &[u8]) -> Option<usize> {
+    request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| position + 4)
+        .or_else(|| {
+            request
+                .windows(2)
+                .position(|window| window == b"\n\n")
+                .map(|position| position + 2)
+        })
 }
 
 fn shutdown_active_streams(active_streams: &Arc<Mutex<Vec<TcpStream>>>) {
@@ -6137,7 +7444,7 @@ fn env_required(name: &str) -> Result<String, String> {
 
 /// Data directory for QA runs.
 fn qa_data_dir(suffix: &str) -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("MATRIX_DESKTOP_QA_DATA_DIR") {
+    if let Ok(dir) = std::env::var("KOUSHI_QA_DATA_DIR") {
         return std::path::PathBuf::from(dir).join(suffix);
     }
     std::env::temp_dir()
@@ -6304,8 +7611,7 @@ impl SendFlowWaiter {
                 .map(|body| body.contains(&self.expected_body))
                 .unwrap_or(false)
             {
-                if let koushi_core::event::TimelineItemId::Transaction { transaction_id } =
-                    &item.id
+                if let koushi_core::event::TimelineItemId::Transaction { transaction_id } = &item.id
                 {
                     self.sdk_transaction_id = Some(transaction_id.clone());
                     break;
@@ -6991,6 +8297,7 @@ async fn run_live_signals_stage(
     key_a: &TimelineKey,
     key_b: &TimelineKey,
     event_id: &str,
+    expected_reader_user_id: &str,
 ) -> Result<(), String> {
     let room_id = timeline_key_room_id(key_b)
         .ok_or_else(|| "live signals: expected room timeline key".to_owned())?
@@ -7010,12 +8317,7 @@ async fn run_live_signals_stage(
     })
     .await?;
     wait_for_live_signal_snapshot(conn_b, "read receipt state", |snapshot| {
-        snapshot
-            .live_signals
-            .rooms
-            .get(&room_id)
-            .and_then(|room| room.receipts_by_event.get(event_id))
-            .is_some_and(|receipts| !receipts.readers.is_empty())
+        read_receipt_identity_projected(snapshot, &room_id, event_id, expected_reader_user_id)
     })
     .await?;
     println!("read_receipt=ok");
@@ -7105,6 +8407,29 @@ async fn run_live_signals_stage(
     println!("live_signals=ok");
 
     Ok(())
+}
+
+fn read_receipt_identity_projected(
+    snapshot: &AppState,
+    room_id: &str,
+    event_id: &str,
+    expected_reader_user_id: &str,
+) -> bool {
+    snapshot
+        .live_signals
+        .rooms
+        .get(room_id)
+        .and_then(|room| room.receipts_by_event.get(event_id))
+        .is_some_and(|receipts| {
+            receipts.readers.iter().any(|reader| {
+                let has_display_label = reader
+                    .display_name
+                    .as_deref()
+                    .is_some_and(|label| !label.trim().is_empty())
+                    || !reader.original_display_label.trim().is_empty();
+                reader.user_id == expected_reader_user_id && has_display_label
+            })
+        })
 }
 
 async fn run_composer_stage(
@@ -7270,7 +8595,7 @@ async fn run_media_stage(
     key_a: &TimelineKey,
     key_b: &TimelineKey,
 ) -> Result<(), String> {
-    const MEDIA_BYTES: &[u8] = b"matrix-desktop synthetic media fixture";
+    const MEDIA_BYTES: &[u8] = b"koushi-desktop synthetic media fixture";
     const MEDIA_CAPTION: &str = "matrix desktop media caption";
 
     let media_txn = "qa-phase15-media-txn".to_owned();
@@ -7281,7 +8606,7 @@ async fn run_media_stage(
             key: key_a.clone(),
             transaction_id: media_txn.clone(),
             request: UploadMediaRequest {
-                filename: "matrix-desktop-qa-media.bin".to_owned(),
+                filename: "koushi-desktop-qa-media.bin".to_owned(),
                 mime_type: "application/octet-stream".to_owned(),
                 bytes: MEDIA_BYTES.to_vec(),
                 kind: UploadMediaKind::File,
@@ -7635,7 +8960,7 @@ fn assert_image_upload_compression_contract() -> Result<(), String> {
         thumbnail_refreshed: true,
     };
     let request = UploadMediaRequest {
-        filename: "matrix-desktop-qa-private-name.jpg".to_owned(),
+        filename: "koushi-desktop-qa-private-name.jpg".to_owned(),
         mime_type: selected.mime_type,
         bytes: vec![0; 128_000],
         kind: UploadMediaKind::Image {
@@ -7670,7 +8995,7 @@ fn assert_image_upload_compression_contract() -> Result<(), String> {
         return Err("selected compression byte count diverged from upload bytes".to_owned());
     }
     let debug = format!("{request:?}");
-    if debug.contains("matrix-desktop-qa-private-name.jpg") || debug.contains("0, 0, 0") {
+    if debug.contains("koushi-desktop-qa-private-name.jpg") || debug.contains("0, 0, 0") {
         return Err("image compression request debug leaked private filename or bytes".to_owned());
     }
     Ok(())
@@ -7971,6 +9296,159 @@ async fn wait_for_bodies_and_pagination_settle(
             _ => {}
         }
     }
+}
+
+fn timeline_item_has_visible_payload(item: &TimelineItem) -> bool {
+    item.body
+        .as_ref()
+        .is_some_and(|body| !body.trim().is_empty())
+        || item.media.is_some()
+        || item.formatted.as_ref().is_some_and(|formatted| {
+            !formatted.plain_text.trim().is_empty()
+                || formatted
+                    .code_blocks
+                    .iter()
+                    .any(|block| !block.body.trim().is_empty())
+        })
+}
+
+fn timeline_item_is_visible_event_row(item: &TimelineItem) -> bool {
+    matches!(item.id, TimelineItemId::Event { .. })
+        && !item.is_hidden
+        && !item.is_redacted
+        && item.sender.is_some()
+        && item.timestamp_ms.is_some()
+}
+
+fn assert_no_blank_visible_event_rows(items: &[TimelineItem], label: &str) -> Result<(), String> {
+    let blank_count = items
+        .iter()
+        .filter(|item| {
+            timeline_item_is_visible_event_row(item) && !timeline_item_has_visible_payload(item)
+        })
+        .count();
+    if blank_count == 0 {
+        return Ok(());
+    }
+    Err(format!(
+        "{label}: {blank_count} visible event row(s) had no renderable payload"
+    ))
+}
+
+fn retain_unseen_expected_bodies(items: &[TimelineItem], remaining: &mut Vec<String>) {
+    for item in items {
+        if let Some(body) = item.body.as_ref() {
+            remaining.retain(|expected| !body.contains(expected));
+        }
+    }
+}
+
+async fn wait_for_stress_bodies_and_no_blank_rows(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    initial_items: &[TimelineItem],
+    expected_bodies: &[String],
+    page_size: u16,
+    label: &str,
+) -> Result<(), String> {
+    assert_no_blank_visible_event_rows(initial_items, label)?;
+    let mut remaining_bodies = expected_bodies.to_vec();
+    retain_unseen_expected_bodies(initial_items, &mut remaining_bodies);
+    if remaining_bodies.is_empty() {
+        return Ok(());
+    }
+
+    let mut pagination_ended = false;
+    let mut current_paginate_request_id =
+        submit_stress_backfill_paginate(conn, key, page_size, label).await?;
+
+    loop {
+        if remaining_bodies.is_empty() {
+            return Ok(());
+        }
+
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| {
+                format!(
+                    "{label}: timed out; remaining_body_count={} pagination_ended={}",
+                    remaining_bodies.len(),
+                    pagination_ended
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match &event {
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ev_key, diffs, ..
+            }) if ev_key == key => {
+                visit_timeline_diff_items(diffs, |item| {
+                    if timeline_item_is_visible_event_row(item)
+                        && !timeline_item_has_visible_payload(item)
+                    {
+                        return Err(format!(
+                            "{label}: visible event row had no renderable payload"
+                        ));
+                    }
+                    if let Some(body) = item.body.as_ref() {
+                        remaining_bodies.retain(|expected| !body.contains(expected));
+                    }
+                    Ok(())
+                })?;
+            }
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ev_key, items, ..
+            }) if ev_key == key => {
+                assert_no_blank_visible_event_rows(items, label)?;
+                retain_unseen_expected_bodies(items, &mut remaining_bodies);
+            }
+            CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                key: ev_key,
+                request_id: ev_id,
+                state,
+                ..
+            }) if ev_key == key && ev_id == &Some(current_paginate_request_id) => match state {
+                PaginationState::Idle => {
+                    if !remaining_bodies.is_empty() && !pagination_ended {
+                        current_paginate_request_id =
+                            submit_stress_backfill_paginate(conn, key, page_size, label).await?;
+                    }
+                }
+                PaginationState::EndReached => {
+                    pagination_ended = true;
+                }
+                PaginationState::Failed { kind } => {
+                    return Err(format!("{label}: pagination failed: {kind:?}"));
+                }
+                PaginationState::Paginating => {}
+            },
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == &current_paginate_request_id => {
+                return Err(format!("{label}: paginate operation failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn submit_stress_backfill_paginate(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    page_size: u16,
+    label: &str,
+) -> Result<RequestId, String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
+        request_id,
+        key: key.clone(),
+        direction: PaginationDirection::Backward,
+        event_count: page_size,
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit receiver paginate failed: {e}"))?;
+    Ok(request_id)
 }
 
 async fn wait_for_timeline_navigation(
@@ -8415,24 +9893,24 @@ async fn run_search_crawler_stage(
     let deadline = tokio::time::Instant::now() + Duration::from_secs(CRAWL_TIMEOUT_SECS);
     loop {
         if tokio::time::Instant::now() >= deadline {
-            return Err("crawl_backfill: timed out waiting for crawler to complete room".to_owned());
+            return Err(
+                "crawl_backfill: timed out waiting for crawler to complete room".to_owned(),
+            );
         }
 
         let snap = conn.snapshot();
         match snap.search_crawler.rooms.get(room_id) {
             Some(SearchCrawlerRoomState::Completed { .. }) => break,
             Some(SearchCrawlerRoomState::Failed { kind }) => {
-                return Err(format!("crawl_backfill: room crawler failed with kind={kind:?}"));
+                return Err(format!(
+                    "crawl_backfill: room crawler failed with kind={kind:?}"
+                ));
             }
             _ => {}
         }
 
         // Drive progress by waiting for the next SearchCrawlerChanged event.
-        let event = tokio::time::timeout(
-            Duration::from_secs(5),
-            conn.recv_event(),
-        )
-        .await;
+        let event = tokio::time::timeout(Duration::from_secs(5), conn.recv_event()).await;
         match event {
             Ok(Ok(_)) => {} // check snapshot again
             Ok(Err(lag)) => {
@@ -8475,8 +9953,7 @@ async fn run_search_crawler_stage(
         if tokio::time::Instant::now() >= throttle_deadline {
             return Err("crawl_throttle: timed out waiting for settings to persist".to_owned());
         }
-        let event = tokio::time::timeout(Duration::from_secs(5), conn.recv_event())
-            .await;
+        let event = tokio::time::timeout(Duration::from_secs(5), conn.recv_event()).await;
         let snap = conn.snapshot();
         if snap.settings.values.search_crawler.speed == SearchCrawlerSpeed::Slow {
             break;
@@ -9029,13 +10506,17 @@ mod tests {
             QaScenario::from_env_value("link_preview").unwrap(),
             QaScenario::LinkPreview
         );
+        assert_eq!(
+            QaScenario::from_env_value("timeline_stress").unwrap(),
+            QaScenario::TimelineStress
+        );
     }
 
     #[test]
     fn rejects_unknown_scenario_names() {
         let error = QaScenario::from_env_value("unknown").unwrap_err();
 
-        assert!(error.contains("MATRIX_DESKTOP_QA_SCENARIO"));
+        assert!(error.contains("KOUSHI_QA_SCENARIO"));
         assert!(error.contains("unknown"));
     }
 
@@ -9051,6 +10532,7 @@ mod tests {
             QaScenario::RoomManagement,
             QaScenario::InvitesDm,
             QaScenario::Timeline,
+            QaScenario::TimelineStress,
             QaScenario::Reply,
             QaScenario::Composer,
             QaScenario::Media,
@@ -9087,6 +10569,7 @@ mod tests {
             QaScenario::Directory,
             QaScenario::RoomManagement,
             QaScenario::Timeline,
+            QaScenario::TimelineStress,
             QaScenario::Activity,
             QaScenario::Composer,
             QaScenario::Reply,
@@ -9652,6 +11135,13 @@ mod tests {
         assert!(!QaScenario::Timeline.should_run_stage(QaStage::Reply));
         assert!(!QaScenario::Timeline.should_run_stage(QaStage::EditRedactSearch));
 
+        assert!(QaScenario::TimelineStress.should_run_stage(QaStage::LoginSync));
+        assert!(QaScenario::TimelineStress.should_run_stage(QaStage::RoomSpace));
+        assert!(QaScenario::TimelineStress.should_run_stage(QaStage::Timeline));
+        assert!(QaScenario::TimelineStress.should_run_stage(QaStage::TimelineStress));
+        assert!(!QaScenario::TimelineStress.should_run_stage(QaStage::Activity));
+        assert!(!QaScenario::TimelineStress.should_run_stage(QaStage::EditRedactSearch));
+
         assert!(QaScenario::Activity.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::Activity.should_run_stage(QaStage::RoomSpace));
         assert!(QaScenario::Activity.should_run_stage(QaStage::Timeline));
@@ -9735,6 +11225,7 @@ mod tests {
         assert!(QaScenario::All.should_run_stage(QaStage::Directory));
         assert!(QaScenario::All.should_run_stage(QaStage::RoomManagement));
         assert!(QaScenario::All.should_run_stage(QaStage::Timeline));
+        assert!(!QaScenario::All.should_run_stage(QaStage::TimelineStress));
         assert!(QaScenario::All.should_run_stage(QaStage::Activity));
         assert!(QaScenario::All.should_run_stage(QaStage::CredentialHealth));
         assert!(QaScenario::All.should_run_stage(QaStage::Reply));
@@ -9775,6 +11266,120 @@ mod tests {
                 "restore_cleanup=ok",
             ]
         );
+    }
+
+    #[test]
+    fn send_queue_proxy_forces_connection_close_per_request() {
+        let request = b"POST /_matrix/client/v3/login HTTP/1.1\r\nHost: example.test\r\nConnection: keep-alive\r\nProxy-Connection: keep-alive\r\nContent-Length: 2\r\n\r\n{}";
+        let rewritten = rewrite_http_request_connection_close(request).unwrap();
+        let rewritten = String::from_utf8(rewritten).unwrap();
+        let (head, body) = rewritten.split_once("\r\n\r\n").unwrap();
+
+        assert!(
+            head.contains("\r\nConnection: close"),
+            "send queue proxy must force one HTTP request per connection so response copying can read to EOF"
+        );
+        assert!(
+            !head.to_ascii_lowercase().contains("proxy-connection"),
+            "send queue proxy must drop proxy keep-alive headers before forwarding"
+        );
+        assert_eq!(body, "{}");
+    }
+
+    #[test]
+    fn timeline_stress_uses_event_waiters_not_manual_sync_once() {
+        let source = include_str!("headless-core-qa.rs");
+        let body = source
+            .split("async fn run_timeline_stress_stage")
+            .nth(1)
+            .and_then(|rest| {
+                rest.split("async fn run_timeline_stress_room_messages")
+                    .next()
+            })
+            .expect("timeline stress stage body");
+
+        assert!(
+            !body.contains("sync_once_for_qa"),
+            "timeline stress must not mix manual /sync with the running SyncService path"
+        );
+        assert!(
+            body.contains("wait_for_invite_in_snapshot"),
+            "timeline stress should wait for invite projection through the live sync path"
+        );
+    }
+
+    #[test]
+    fn timeline_stress_backfill_only_advances_current_paginate_request() {
+        let source = include_str!("headless-core-qa.rs");
+        let body = source
+            .split("async fn wait_for_stress_bodies_and_no_blank_rows")
+            .nth(1)
+            .and_then(|rest| {
+                rest.split("async fn submit_stress_backfill_paginate")
+                    .next()
+            })
+            .expect("stress body wait helper");
+        let pagination_arm = body
+            .split("CoreEvent::Timeline(TimelineEvent::PaginationStateChanged")
+            .nth(1)
+            .and_then(|rest| rest.split("CoreEvent::OperationFailed").next())
+            .expect("pagination state arm");
+
+        assert!(
+            pagination_arm.contains("request_id: ev_id")
+                && pagination_arm.contains("ev_id == &Some(current_paginate_request_id)"),
+            "stress backfill must ignore stale pagination state from older requests on the same timeline"
+        );
+    }
+
+    #[test]
+    fn timeline_stress_blank_row_detection_rejects_empty_formatted_body() {
+        let mut item = synthetic_timeline_item(
+            "$formatted-blank:test",
+            Some("plain fallback"),
+            None,
+            None,
+            None,
+        );
+        item.formatted = Some(koushi_core::event::TimelineFormattedBody {
+            html: "<p><br /></p>".to_owned(),
+            plain_text: String::new(),
+            code_blocks: Vec::new(),
+        });
+        item.body = None;
+
+        assert!(
+            !timeline_item_has_visible_payload(&item),
+            "blank formatted HTML must not satisfy stress_no_blank"
+        );
+    }
+
+    #[test]
+    fn timeline_stress_replay_existing_is_read_only() {
+        let source = include_str!("headless-core-qa.rs");
+        let run_async_body = source
+            .split("async fn run_async")
+            .nth(1)
+            .and_then(|rest| rest.split("// --- Phase 4: Room operations").next())
+            .expect("run_async pre-room-create body");
+        assert!(
+            run_async_body.contains("run_timeline_stress_replay_stage"),
+            "timeline stress replay must branch before the normal room creation flow"
+        );
+
+        let replay_body = source
+            .split("async fn run_timeline_stress_replay_stage")
+            .nth(1)
+            .and_then(|rest| rest.split("struct StressRoomCoordinates").next())
+            .expect("timeline stress replay body");
+        for forbidden in ["CreateRoom", "CreateSpace", "SendText"] {
+            assert!(
+                !replay_body.contains(forbidden),
+                "timeline stress replay must not perform mutating operation {forbidden}"
+            );
+        }
+        assert!(replay_body.contains("Subscribe"));
+        assert!(replay_body.contains("submit_stress_backfill_paginate"));
     }
 
     #[test]
@@ -9877,6 +11482,7 @@ mod tests {
                 "invite_recv=ok",
                 "invite_accept=ok",
                 "invite_decline=ok",
+                "member_list=ok",
                 "dm_start=ok",
                 "room_space=ok",
                 "directory_query=ok",
@@ -9953,7 +11559,7 @@ mod tests {
     fn e2ee_trust_stage_makes_identity_reset_explicitly_opt_in() {
         let source = include_str!("headless-core-qa.rs");
 
-        assert!(source.contains("MATRIX_DESKTOP_QA_ALLOW_IDENTITY_RESET"));
+        assert!(source.contains("KOUSHI_QA_ALLOW_IDENTITY_RESET"));
         assert!(source.contains("if config.allow_identity_reset"));
         assert!(source.contains("println!(\"e2ee_identity_reset=skipped\")"));
     }
@@ -10065,6 +11671,7 @@ mod tests {
                 "invite_recv=ok",
                 "invite_accept=ok",
                 "invite_decline=ok",
+                "member_list=ok",
                 "dm_start=ok",
                 "restore_cleanup=ok",
             ]
@@ -10078,6 +11685,21 @@ mod tests {
                 "timeline=ok",
                 "timeline_nav=ok",
                 "hide_redacted=ok",
+                "restore_cleanup=ok",
+            ]
+        );
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::TimelineStress),
+            [
+                "safety=ok",
+                "login_sync=ok",
+                "room_space=ok",
+                "timeline=ok",
+                "timeline_nav=ok",
+                "hide_redacted=ok",
+                "timeline_stress=ok",
+                "stress_no_blank=ok",
+                "stress_space_scope=ok",
                 "restore_cleanup=ok",
             ]
         );
@@ -10284,6 +11906,7 @@ mod tests {
                 "invite_recv=ok",
                 "invite_accept=ok",
                 "invite_decline=ok",
+                "member_list=ok",
                 "dm_start=ok",
                 "room_space=ok",
                 "directory_query=ok",

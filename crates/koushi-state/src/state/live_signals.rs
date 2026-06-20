@@ -19,8 +19,6 @@ pub struct RoomLiveSignals {
     pub typing_user_ids: Vec<String>,
 }
 
-pub const LIVE_READ_RECEIPT_READER_CAP: usize = 3;
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LiveReadReceipt {
     pub user_id: String,
@@ -113,13 +111,11 @@ fn normalize_receipts(
     });
 
     let total_count = readers.len() as u64;
-    let overflow_count = total_count.saturating_sub(LIVE_READ_RECEIPT_READER_CAP as u64);
-    readers.truncate(LIVE_READ_RECEIPT_READER_CAP);
 
     LiveEventReceiptSummary {
         readers,
         total_count,
-        overflow_count,
+        overflow_count: 0,
     }
 }
 

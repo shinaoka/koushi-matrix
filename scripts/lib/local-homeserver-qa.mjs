@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createWriteStream } from "node:fs";
+import { chmodSync, createWriteStream, mkdirSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
 import { dirname, resolve } from "node:path";
@@ -30,6 +30,11 @@ export function minimalEnvironment() {
 }
 
 export function checkInstalledHomeserver(name) {
+  if (name === "synapse") {
+    checkDockerAvailable();
+    return;
+  }
+
   const result = spawnSync(name, ["--version"], {
     cwd: repoRoot,
     encoding: "utf8",
@@ -38,6 +43,28 @@ export function checkInstalledHomeserver(name) {
   });
   if (result.status !== 0) {
     throw new Error(`${name} is not installed or not runnable with --version`);
+  }
+}
+
+function checkDockerAvailable() {
+  const version = spawnSync("docker", ["--version"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: minimalEnvironment(),
+    stdio: "ignore"
+  });
+  if (version.status !== 0) {
+    throw new Error("docker is not installed or not runnable with --version");
+  }
+
+  const info = spawnSync("docker", ["info"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: minimalEnvironment(),
+    stdio: "ignore"
+  });
+  if (info.status !== 0) {
+    throw new Error("docker daemon is not available for local Synapse QA");
   }
 }
 
@@ -73,24 +100,166 @@ trusted_servers = []
 `;
 }
 
-export function startHomeserver(serverKind, configPath, logPath) {
+export function startHomeserver(serverKind, configPath, logPath, options = {}) {
   const log = createWriteStream(logPath, { flags: "a" });
-  const child =
-    serverKind === "conduit"
-      ? spawn("conduit", [], {
-          cwd: repoRoot,
-          env: { ...minimalEnvironment(), CONDUIT_CONFIG: configPath },
-          stdio: ["ignore", "pipe", "pipe"]
-        })
-      : spawn("tuwunel", ["--config", configPath], {
-          cwd: repoRoot,
-          env: minimalEnvironment(),
-          stdio: ["ignore", "pipe", "pipe"]
-        });
+  const child = startHomeserverProcess(serverKind, configPath, options);
   child.stdout.on("data", (chunk) => log.write(chunk));
   child.stderr.on("data", (chunk) => log.write(chunk));
   child.once("exit", () => log.end());
   return child;
+}
+
+function startHomeserverProcess(serverKind, configPath, options) {
+  if (serverKind === "conduit") {
+    return spawn("conduit", [], {
+      cwd: repoRoot,
+      env: { ...minimalEnvironment(), CONDUIT_CONFIG: configPath },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  }
+  if (serverKind === "tuwunel") {
+    return spawn("tuwunel", ["--config", configPath], {
+      cwd: repoRoot,
+      env: minimalEnvironment(),
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  }
+  if (serverKind === "synapse") {
+    return startSynapseHomeserver(configPath, options);
+  }
+  throw new Error(`unknown local homeserver kind: ${serverKind}`);
+}
+
+function startSynapseHomeserver(configPath, { serverName, port, dataDir }) {
+  if (!serverName || !port || !dataDir) {
+    throw new Error("Synapse local QA requires serverName, port, and dataDir");
+  }
+  checkDockerAvailable();
+
+  const runDir = dirname(configPath);
+  mkdirSync(dataDir, { recursive: true });
+  const entrypointPath = resolve(runDir, "synapse-local-qa-start.sh");
+  const dockerfilePath = resolve(runDir, "Dockerfile.synapse-local-qa");
+  writeFileSync(entrypointPath, synapseEntrypoint(), { mode: 0o770 });
+  chmodSync(entrypointPath, 0o770);
+  writeFileSync(
+    dockerfilePath,
+    `FROM docker.io/matrixdotorg/synapse:v1.151.0
+COPY synapse-local-qa-start.sh /synapse-local-qa-start.sh
+RUN chmod 770 /synapse-local-qa-start.sh
+ENTRYPOINT ["/synapse-local-qa-start.sh"]
+`
+  );
+
+  const imageTag = `koushi-synapse-local-qa:${process.pid}-${Date.now()}`;
+  const build = spawnSync(
+    "docker",
+    ["build", "-q", "-t", imageTag, "-f", dockerfilePath, runDir],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: minimalEnvironment(),
+      maxBuffer: 10 * 1024 * 1024
+    }
+  );
+  if (build.status !== 0) {
+    throw new Error("local Synapse Docker image build failed");
+  }
+
+  const containerName = `koushi-synapse-local-qa-${process.pid}-${Date.now()}`;
+  const child = spawn(
+    "docker",
+    [
+      "run",
+      "--rm",
+      "--name",
+      containerName,
+      "-p",
+      `127.0.0.1:${port}:8008`,
+      "-v",
+      `${dataDir}:/data`,
+      "-e",
+      `SYNAPSE_SERVER_NAME=${serverName}`,
+      "-e",
+      "SYNAPSE_REPORT_STATS=no",
+      "-e",
+      "SYNAPSE_HTTP_PORT=8008",
+      "-e",
+      "SYNAPSE_NO_TLS=1",
+      imageTag
+    ],
+    {
+      cwd: repoRoot,
+      env: minimalEnvironment(),
+      stdio: ["ignore", "pipe", "pipe"]
+    }
+  );
+  child.koushiDockerContainerName = containerName;
+  child.koushiDockerImageTag = imageTag;
+  return child;
+}
+
+function synapseEntrypoint() {
+  return `#!/bin/bash
+set -euo pipefail
+export SYNAPSE_SERVER_NAME="\${SYNAPSE_SERVER_NAME:-localhost}"
+export SYNAPSE_REPORT_STATS="\${SYNAPSE_REPORT_STATS:-no}"
+if [ ! -f /data/homeserver.yaml ]; then
+  /start.py migrate_config
+  printf '\\n' >> /data/homeserver.yaml
+  cat >> /data/homeserver.yaml <<'YAML'
+enable_registration: true
+enable_registration_without_verification: true
+allow_public_rooms_without_auth: true
+allow_public_rooms_over_federation: false
+room_list_publication_rules:
+  - action: allow
+trusted_key_servers: []
+rc_message:
+  per_second: 1000
+  burst_count: 1000
+rc_room_creation:
+  per_second: 1000
+  burst_count: 1000
+rc_registration:
+  per_second: 1000
+  burst_count: 1000
+rc_login:
+  address:
+    per_second: 1000
+    burst_count: 1000
+  account:
+    per_second: 1000
+    burst_count: 1000
+  failed_attempts:
+    per_second: 1000
+    burst_count: 1000
+rc_admin_redaction:
+  per_second: 1000
+  burst_count: 1000
+rc_joins:
+  local:
+    per_second: 1000
+    burst_count: 1000
+  remote:
+    per_second: 1000
+    burst_count: 1000
+rc_invites:
+  per_room:
+    per_second: 1000
+    burst_count: 1000
+  per_user:
+    per_second: 1000
+    burst_count: 1000
+  per_issuer:
+    per_second: 1000
+    burst_count: 1000
+experimental_features:
+  msc3266_enabled: true
+YAML
+fi
+/start.py run
+`;
 }
 
 export async function waitForHomeserver(homeserver, child, maxWaitMs, logPath) {
@@ -300,6 +469,7 @@ export function freePort() {
 
 export async function stopProcess(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null) {
+    cleanupDockerHomeserver(child);
     return;
   }
   const exited = new Promise((resolve) => child.once("exit", resolve));
@@ -314,6 +484,14 @@ export async function stopProcess(child) {
   }
   const settled = await Promise.race([exited.then(() => true), sleep(5000).then(() => false)]);
   if (!settled && child.exitCode === null && child.signalCode === null) {
+    if (child.koushiDockerContainerName) {
+      spawnSync("docker", ["stop", "--time", "5", child.koushiDockerContainerName], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: minimalEnvironment(),
+        stdio: "ignore"
+      });
+    }
     try {
       process.kill(-child.pid, "SIGKILL");
     } catch {
@@ -324,6 +502,18 @@ export async function stopProcess(child) {
       }
     }
     await exited;
+  }
+  cleanupDockerHomeserver(child);
+}
+
+function cleanupDockerHomeserver(child) {
+  if (child?.koushiDockerImageTag) {
+    spawnSync("docker", ["image", "rm", "-f", child.koushiDockerImageTag], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: minimalEnvironment(),
+      stdio: "ignore"
+    });
   }
 }
 

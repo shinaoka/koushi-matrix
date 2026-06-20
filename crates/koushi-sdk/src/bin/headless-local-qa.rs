@@ -6,15 +6,15 @@ use std::{
 
 use koushi_state::{AuthSecret, LoginRequest};
 
-const ENV_HOMESERVER: &str = "MATRIX_DESKTOP_LOCAL_QA_HOMESERVER";
-const ENV_SERVER_NAME: &str = "MATRIX_DESKTOP_LOCAL_QA_SERVER_NAME";
-const ENV_SERVER_KIND: &str = "MATRIX_DESKTOP_LOCAL_QA_SERVER_KIND";
-const ENV_USER_A: &str = "MATRIX_DESKTOP_LOCAL_QA_USER_A";
-const ENV_PASSWORD_A: &str = "MATRIX_DESKTOP_LOCAL_QA_PASSWORD_A";
-const ENV_USER_B: &str = "MATRIX_DESKTOP_LOCAL_QA_USER_B";
-const ENV_PASSWORD_B: &str = "MATRIX_DESKTOP_LOCAL_QA_PASSWORD_B";
-const DEVICE_A: &str = "Matrix Desktop Headless QA A";
-const DEVICE_B: &str = "Matrix Desktop Headless QA B";
+const ENV_HOMESERVER: &str = "KOUSHI_LOCAL_QA_HOMESERVER";
+const ENV_SERVER_NAME: &str = "KOUSHI_LOCAL_QA_SERVER_NAME";
+const ENV_SERVER_KIND: &str = "KOUSHI_LOCAL_QA_SERVER_KIND";
+const ENV_USER_A: &str = "KOUSHI_LOCAL_QA_USER_A";
+const ENV_PASSWORD_A: &str = "KOUSHI_LOCAL_QA_PASSWORD_A";
+const ENV_USER_B: &str = "KOUSHI_LOCAL_QA_USER_B";
+const ENV_PASSWORD_B: &str = "KOUSHI_LOCAL_QA_PASSWORD_B";
+const DEVICE_A: &str = "Koushi Headless QA A";
+const DEVICE_B: &str = "Koushi Headless QA B";
 const POLL_ATTEMPTS: usize = 30;
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const TIMELINE_BACKFILL_EVENT_COUNT: u16 = 50;
@@ -144,17 +144,15 @@ async fn run_authenticated(
     let suffix = timestamp_millis()?;
     let room_id = koushi_sdk::create_room(
         session_a,
-        &format!("Matrix Desktop Headless QA Room {suffix}"),
+        &format!("Koushi Headless QA Room {suffix}"),
         false,
     )
     .await
     .map_err(|error| format!("create room failed: {error}"))?;
-    let space_id = koushi_sdk::create_space(
-        session_a,
-        &format!("Matrix Desktop Headless QA Space {suffix}"),
-    )
-    .await
-    .map_err(|error| format!("create space failed: {error}"))?;
+    let space_id =
+        koushi_sdk::create_space(session_a, &format!("Koushi Headless QA Space {suffix}"))
+            .await
+            .map_err(|error| format!("create space failed: {error}"))?;
 
     koushi_sdk::set_space_child(session_a, &space_id, &room_id, &config.server_name)
         .await
@@ -175,7 +173,7 @@ async fn run_authenticated(
     assert_can_send(session_a, &room_id, "sender A").await?;
     assert_can_send(session_b, &room_id, "sender B").await?;
 
-    let message_a_to_b = format!("matrix-desktop-headless-a-to-b-{suffix}");
+    let message_a_to_b = format!("koushi-desktop-headless-a-to-b-{suffix}");
     koushi_sdk::send_text_message(
         session_a,
         &room_id,
@@ -186,7 +184,7 @@ async fn run_authenticated(
     .map_err(|error| format!("send A to B failed: {error}"))?;
     wait_for_message(session_b, &room_id, &message_a_to_b, "B receive").await?;
 
-    let message_b_to_a = format!("matrix-desktop-headless-b-to-a-{suffix}");
+    let message_b_to_a = format!("koushi-desktop-headless-b-to-a-{suffix}");
     koushi_sdk::send_text_message(
         session_b,
         &room_id,

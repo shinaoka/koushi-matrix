@@ -1,4 +1,4 @@
-//! Matrix Desktop core runtime.
+//! Koushi core runtime.
 //!
 //! The only production runtime owner: actor lifecycle, command routing,
 //! event emission, SDK session handles, background tasks, and AppState

@@ -139,9 +139,7 @@ pub(crate) fn handle_open_thread(
     room_id: String,
     root_event_id: String,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state)
-        || state.timeline.room_id.as_deref() != Some(room_id.as_str())
-    {
+    if !is_session_ready(state) || state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
         return Vec::new();
     }
 
@@ -245,9 +243,7 @@ pub(crate) fn handle_open_focused_context(
     room_id: String,
     event_id: String,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state)
-        || state.timeline.room_id.as_deref() != Some(room_id.as_str())
-    {
+    if !is_session_ready(state) || state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
         return Vec::new();
     }
 

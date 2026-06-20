@@ -74,12 +74,12 @@ async function run() {
   const env = {
     ...minimalEnvironment(),
     // Path to the credentials file — not a secret itself.
-    MATRIX_DESKTOP_REAL_QA_CREDENTIALS_PATH: credentialsPath,
-    MATRIX_DESKTOP_REAL_QA_SCENARIO: scenarioOption,
+    KOUSHI_REAL_QA_CREDENTIALS_PATH: credentialsPath,
+    KOUSHI_REAL_QA_SCENARIO: scenarioOption,
     // File-dir credential store backend: prevents OS keychain prompts.
-    MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR: credStoreDir,
+    KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR: credStoreDir,
     // Fresh per-run data dir (SQLite store, media cache, etc.).
-    MATRIX_DESKTOP_QA_DATA_DIR: dataDir
+    KOUSHI_QA_DATA_DIR: dataDir
   };
 
   const result = spawnSync(

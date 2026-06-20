@@ -5,10 +5,7 @@ use crate::{
 
 use super::is_session_ready;
 
-pub(crate) fn handle_clear_error(
-    state: &mut AppState,
-    code: String,
-) -> Vec<AppEffect> {
+pub(crate) fn handle_clear_error(state: &mut AppState, code: String) -> Vec<AppEffect> {
     state.errors.retain(|error| error.code != code);
     vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
 }

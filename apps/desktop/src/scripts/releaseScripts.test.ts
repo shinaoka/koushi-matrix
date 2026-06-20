@@ -121,7 +121,7 @@ describe("desktop release scripts", () => {
 
   test("mac GUI smoke script parses the QA panel token without launching the GUI", () => {
     const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-panel=matrix-desktop qa session=ready sync=running rooms=1 spaces=0 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=keyboardSettings"
+      "--qa-title-panel=koushi-desktop qa session=ready sync=running rooms=1 spaces=0 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=keyboardSettings"
     ]);
 
     expect(output.trim()).toBe("keyboardSettings");
@@ -129,19 +129,19 @@ describe("desktop release scripts", () => {
 
   test("mac GUI smoke only skips panel checks while recovery owns the panel", () => {
     const readyRecoveryPanel = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-panel-ready=matrix-desktop qa session=ready sync=running rooms=1 spaces=0 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=recovery",
+      "--qa-title-panel-ready=koushi-desktop qa session=ready sync=running rooms=1 spaces=0 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=recovery",
       "--required-panel=keyboardSettings"
     ]);
     const recoveryPanel = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-panel-ready=matrix-desktop qa session=needsRecovery sync=running rooms=1 spaces=0 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=recovery",
+      "--qa-title-panel-ready=koushi-desktop qa session=needsRecovery sync=running rooms=1 spaces=0 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=recovery",
       "--required-panel=keyboardSettings"
     ]);
     const keyboardPanel = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-panel-ready=matrix-desktop qa session=ready sync=running rooms=1 spaces=0 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=keyboardSettings",
+      "--qa-title-panel-ready=koushi-desktop qa session=ready sync=running rooms=1 spaces=0 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=keyboardSettings",
       "--required-panel=keyboardSettings"
     ]);
     const erroredPanel = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-panel-ready=matrix-desktop qa session=ready sync=running rooms=1 spaces=0 active_room=true timeline_subscribed=true timeline_items=1 errors=1 panel=keyboardSettings",
+      "--qa-title-panel-ready=koushi-desktop qa session=ready sync=running rooms=1 spaces=0 active_room=true timeline_subscribed=true timeline_items=1 errors=1 panel=keyboardSettings",
       "--required-panel=keyboardSettings"
     ]);
 
@@ -178,14 +178,14 @@ describe("desktop release scripts", () => {
       "uses: actions/checkout@v6",
       "Prepare standalone key crate",
       'cp -R crates/koushi-key/. "$RUNNER_TEMP/koushi-key/"',
-      'MATRIX_DESKTOP_MACOS_KEYCHAIN_QA: "1"',
+      'KOUSHI_MACOS_KEYCHAIN_QA: "1"',
       'cargo test --manifest-path "$RUNNER_TEMP/koushi-key/Cargo.toml" credential_backend_macos_temporary_keychain_round_trip_is_env_gated -- --nocapture',
       'cargo test --manifest-path "$RUNNER_TEMP/koushi-key/Cargo.toml" credential_backend'
     ]) {
       expect(workflow).toContain(token);
     }
 
-    expect(workflow).not.toContain("MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR");
+    expect(workflow).not.toContain("KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR");
     expect(workflow).not.toContain("submodules:");
   });
 
@@ -208,7 +208,7 @@ describe("desktop release scripts", () => {
     );
 
     expect(source).toContain("--scenario");
-    expect(source).toContain("MATRIX_DESKTOP_REAL_QA_SCENARIO");
+    expect(source).toContain("KOUSHI_REAL_QA_SCENARIO");
     expect(source).toContain("compat|space_compat|all");
   });
 
@@ -218,7 +218,7 @@ describe("desktop release scripts", () => {
       "utf8"
     );
 
-    expect(source).toContain("MATRIX_DESKTOP_REAL_QA_SCENARIO");
+    expect(source).toContain("KOUSHI_REAL_QA_SCENARIO");
     expect(source).toContain("RealQaScenario");
     expect(source).toContain("SpaceCompat");
     expect(source).toContain("All");
@@ -655,7 +655,7 @@ describe("desktop release scripts", () => {
     );
 
     expect(source).toContain("local-logout-relogin");
-    expect(source).toContain("MATRIX_DESKTOP_QA_CONTROL_PIPE");
+    expect(source).toContain("KOUSHI_QA_CONTROL_PIPE");
     expect(source).toContain("qa-control.pipe");
     expect(source).toContain('JSON.stringify({ command: "logout" })');
     expect(source).toContain("requestQaLogout");
@@ -664,7 +664,7 @@ describe("desktop release scripts", () => {
       /function childEnvironment\(dataDir, qaLoginPipePath = null, qaControlPipePath = null\)/
     );
     expect(source).toMatch(
-      /if \(qaControlPipePath\) \{[\s\S]*env\.MATRIX_DESKTOP_QA_CONTROL_PIPE = qaControlPipePath;/
+      /if \(qaControlPipePath\) \{[\s\S]*env\.KOUSHI_QA_CONTROL_PIPE = qaControlPipePath;/
     );
   });
 
@@ -719,7 +719,7 @@ describe("desktop release scripts", () => {
 
   test("linux GUI smoke parses the attention baseline title token", () => {
     const output = runScript("scripts/desktop-linux-gui-qa.mjs", [
-      "--qa-title-attention-ready=matrix-desktop qa session=signedOut sync=stopped rooms=0 spaces=0 active_room=false timeline_subscribed=false timeline_items=0 errors=0 unread=0 badge=0 notify=none"
+      "--qa-title-attention-ready=koushi-desktop qa session=signedOut sync=stopped rooms=0 spaces=0 active_room=false timeline_subscribed=false timeline_items=0 errors=0 unread=0 badge=0 notify=none"
     ]);
 
     expect(output.trim()).toBe("ready");
@@ -727,7 +727,7 @@ describe("desktop release scripts", () => {
 
   test("linux GUI smoke validates the persisted window-state path contract", () => {
     const output = runScript("scripts/desktop-linux-gui-qa.mjs", [
-      "--qa-window-state-ready=/tmp/matrix-desktop/app-shell/window-state.json"
+      "--qa-window-state-ready=/tmp/koushi-desktop/app-shell/window-state.json"
     ]);
 
     expect(output.trim()).toBe("ready");
@@ -758,21 +758,21 @@ describe("desktop release scripts", () => {
         env: {
           ...process.env,
           DEEPSEEK_API_KEY: "synthetic-secret",
-          MATRIX_DESKTOP_TEST_SECRET: "synthetic-secret"
+          KOUSHI_TEST_SECRET: "synthetic-secret"
         }
       }
     );
 
-    expect(output).toContain("MATRIX_DESKTOP_DATA_DIR=");
-    expect(output).toContain("MATRIX_DESKTOP_QA_TITLE=1");
-    expect(output).toContain("VITE_MATRIX_DESKTOP_QA_TITLE=1");
-    expect(output).toContain("MATRIX_DESKTOP_SKIP_SAVED_SESSIONS=1");
-    expect(output).toContain("MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1");
-    expect(output).toContain("MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR=");
+    expect(output).toContain("KOUSHI_DATA_DIR=");
+    expect(output).toContain("KOUSHI_QA_TITLE=1");
+    expect(output).toContain("VITE_KOUSHI_QA_TITLE=1");
+    expect(output).toContain("KOUSHI_SKIP_SAVED_SESSIONS=1");
+    expect(output).toContain("KOUSHI_SKIP_KEYCHAIN_PERSISTENCE=1");
+    expect(output).toContain("KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR=");
     expect(output).toContain("/qa-credential-store");
     expect(output).toContain("NO_COLOR=1");
     expect(output).not.toContain("DEEPSEEK_API_KEY");
-    expect(output).not.toContain("MATRIX_DESKTOP_TEST_SECRET");
+    expect(output).not.toContain("KOUSHI_TEST_SECRET");
   });
 
   test("linux GUI smoke child environment exposes only safe QA keys for local login", () => {
@@ -785,16 +785,16 @@ describe("desktop release scripts", () => {
         env: {
           ...process.env,
           DEEPSEEK_API_KEY: "synthetic-secret",
-          MATRIX_DESKTOP_TEST_SECRET: "synthetic-secret"
+          KOUSHI_TEST_SECRET: "synthetic-secret"
         }
       }
     );
 
-    expect(output).toContain("MATRIX_DESKTOP_DATA_DIR");
-    expect(output).toContain("MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR");
-    expect(output).toContain("MATRIX_DESKTOP_QA_LOGIN_PIPE");
+    expect(output).toContain("KOUSHI_DATA_DIR");
+    expect(output).toContain("KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR");
+    expect(output).toContain("KOUSHI_QA_LOGIN_PIPE");
     expect(output).not.toContain("DEEPSEEK_API_KEY");
-    expect(output).not.toContain("MATRIX_DESKTOP_TEST_SECRET");
+    expect(output).not.toContain("KOUSHI_TEST_SECRET");
   });
 
   test("linux GUI smoke source wires the shared local homeserver helper module", () => {
@@ -814,6 +814,26 @@ describe("desktop release scripts", () => {
     expect(sharedSource).toContain("checkInstalledHomeserver");
     expect(sharedSource).toContain("registerUser");
     expect(sharedSource).toContain("stopProcess");
+  });
+
+  test("local Synapse QA config relaxes room creation limits for synthetic stress seeds", () => {
+    const sharedSource = readFileSync(
+      new URL("../../../../scripts/lib/local-homeserver-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(sharedSource).toContain("rc_room_creation:");
+    expect(sharedSource).toMatch(/rc_room_creation:\n\s+per_second: 1000\n\s+burst_count: 1000/);
+  });
+
+  test("local Synapse QA config allows synthetic public room directory publication", () => {
+    const sharedSource = readFileSync(
+      new URL("../../../../scripts/lib/local-homeserver-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(sharedSource).toContain("room_list_publication_rules:");
+    expect(sharedSource).toMatch(/room_list_publication_rules:\n\s+- action: allow/);
   });
 
   test("linux GUI local setup keeps homeserver data separate and cleanup covers setup failures", () => {
@@ -849,7 +869,7 @@ describe("desktop release scripts", () => {
     );
 
     expect(transport.trim()).toBe("fifo");
-    expect(source).toContain("MATRIX_DESKTOP_QA_LOGIN_PIPE");
+    expect(source).toContain("KOUSHI_QA_LOGIN_PIPE");
     expect(source).not.toContain("--password");
   });
 
@@ -938,13 +958,13 @@ describe("desktop release scripts", () => {
     expect(agents).toContain("bash -c");
     expect(agents).not.toContain("bash -lc");
     expect(agents).toContain('-u "$(id -u):$(id -g)"');
-    expect(agents).toContain("-v /tmp/matrix-desktop-cargo-home:/tmp/cargo-home");
-    expect(agents).toContain("-v /tmp/matrix-desktop-gui-target:/tmp/matrix-desktop-gui-target");
-    expect(agents).toContain("-v /tmp/matrix-desktop-npm-cache:/tmp/npm-cache");
+    expect(agents).toContain("-v /tmp/koushi-desktop-cargo-home:/tmp/cargo-home");
+    expect(agents).toContain("-v /tmp/koushi-desktop-gui-target:/tmp/koushi-desktop-gui-target");
+    expect(agents).toContain("-v /tmp/koushi-desktop-npm-cache:/tmp/npm-cache");
     expect(agents).toContain("CARGO_HOME=/tmp/cargo-home");
-    expect(agents).toContain("CARGO_TARGET_DIR=/tmp/matrix-desktop-gui-target");
+    expect(agents).toContain("CARGO_TARGET_DIR=/tmp/koushi-desktop-gui-target");
     expect(agents).toContain("NPM_CONFIG_CACHE=/tmp/npm-cache");
-    expect(agents).toContain("matrix-desktop-linux-gui:basic-ops");
+    expect(agents).toContain("koushi-desktop-linux-gui:basic-ops");
     expect(agents).toContain("--scenario=local-send");
     expect(agents).toContain("--server=conduit");
     expect(agents).toContain("--artifact-dir=/work/artifacts/linux-gui-local-send-docker");
@@ -959,20 +979,20 @@ describe("desktop release scripts", () => {
 
   test("linux GUI smoke QA title helpers match the mac runner contract", () => {
     const ready = runScript("scripts/desktop-linux-gui-qa.mjs", [
-      "--qa-title-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=closed"
+      "--qa-title-ready=koushi-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=closed"
     ]);
     const readyRecovered = runScript("scripts/desktop-linux-gui-qa.mjs", [
-      "--qa-title-ready-require-recovered=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=closed"
+      "--qa-title-ready-require-recovered=koushi-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=closed"
     ]);
     const panel = runScript("scripts/desktop-linux-gui-qa.mjs", [
-      "--qa-title-panel=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=keyboardSettings"
+      "--qa-title-panel=koushi-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=keyboardSettings"
     ]);
     const panelReady = runScript("scripts/desktop-linux-gui-qa.mjs", [
-      "--qa-title-panel-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=keyboardSettings",
+      "--qa-title-panel-ready=koushi-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 panel=keyboardSettings",
       "--required-panel=keyboardSettings"
     ]);
     const sendReady = runScript("scripts/desktop-linux-gui-qa.mjs", [
-      "--qa-title-send-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 send=sent panel=closed"
+      "--qa-title-send-ready=koushi-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 send=sent panel=closed"
     ]);
 
     expect(ready.trim()).toBe("ready");
@@ -1109,7 +1129,36 @@ describe("desktop release scripts", () => {
     );
 
     expect(source).toContain("--scenario");
-    expect(source).toContain("MATRIX_DESKTOP_QA_SCENARIO");
+    expect(source).toContain("KOUSHI_QA_SCENARIO");
+  });
+
+  test("headless local QA can replay a saved Synapse fixture without mutating the source data", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-headless-local-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("--fixture-run");
+    expect(source).toContain("loadQaFixture");
+    expect(source).toContain("copyFixtureDataDir");
+    expect(source).toContain("KOUSHI_QA_STRESS_REPLAY_EXISTING");
+    expect(source).toMatch(/cpSync\(fixture\.dataDir,\s*dataDir,\s*\{[\s\S]*recursive: true/);
+    expect(source).not.toContain("-v `${fixture.dataDir}:/data`");
+  });
+
+  test("headless local QA stores fixture credentials only under the ignored local secrets run dir", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-headless-local-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("fixture.json");
+    expect(source).toContain("writeQaFixture");
+    expect(source).toContain("serverName");
+    expect(source).toContain("passwordA");
+    expect(source).toContain("passwordB");
+    expect(source).toContain(".local-secrets");
+    expect(source).not.toContain("console.log(fixture");
   });
 
   test("headless local QA runner validates child output before writing artifacts", () => {
@@ -1194,16 +1243,16 @@ describe("desktop release scripts", () => {
         env: {
           ...process.env,
           DEEPSEEK_API_KEY: "synthetic-secret",
-          MATRIX_DESKTOP_TEST_SECRET: "synthetic-secret"
+          KOUSHI_TEST_SECRET: "synthetic-secret"
         }
       }
     );
 
     expect(output).toContain("PATH");
-    expect(output).toContain("MATRIX_DESKTOP_RESTORE_SESSION");
-    expect(output).toContain("MATRIX_DESKTOP_SKIP_SAVED_SESSIONS");
+    expect(output).toContain("KOUSHI_RESTORE_SESSION");
+    expect(output).toContain("KOUSHI_SKIP_SAVED_SESSIONS");
     expect(output).not.toContain("DEEPSEEK_API_KEY");
-    expect(output).not.toContain("MATRIX_DESKTOP_TEST_SECRET");
+    expect(output).not.toContain("KOUSHI_TEST_SECRET");
   });
 
   test("mac GUI smoke can opt into SDK error diagnostics without forwarding secret env values", () => {
@@ -1215,12 +1264,12 @@ describe("desktop release scripts", () => {
         encoding: "utf8",
         env: {
           ...process.env,
-          MATRIX_DESKTOP_DEBUG_SDK_ERROR: "synthetic-secret-value"
+          KOUSHI_DEBUG_SDK_ERROR: "synthetic-secret-value"
         }
       }
     );
 
-    expect(output).toContain("MATRIX_DESKTOP_DEBUG_SDK_ERROR=1");
+    expect(output).toContain("KOUSHI_DEBUG_SDK_ERROR=1");
     expect(output).not.toContain("synthetic-secret-value");
   });
 
@@ -1234,8 +1283,8 @@ describe("desktop release scripts", () => {
       "utf8"
     );
 
-    expect(output).toContain("VITE_MATRIX_DESKTOP_QA_TITLE");
-    expect(output).toContain("MATRIX_DESKTOP_QA_TITLE");
+    expect(output).toContain("VITE_KOUSHI_QA_TITLE");
+    expect(output).toContain("KOUSHI_QA_TITLE");
     expect(source).toContain("--real-login-from-stdin");
     expect(source).not.toContain("--password");
   });
@@ -1250,7 +1299,7 @@ describe("desktop release scripts", () => {
     );
 
     expect(output.trim()).toBe("fifo");
-    expect(source).toContain("MATRIX_DESKTOP_QA_LOGIN_PIPE");
+    expect(source).toContain("KOUSHI_QA_LOGIN_PIPE");
     expect(source).not.toContain("clickAndReplace");
   });
 
@@ -1276,14 +1325,85 @@ describe("desktop release scripts", () => {
     expect(capability).toContain("core:window:allow-set-title");
   });
 
+  test("mac GUI smoke has a frontend boot error title before App imports", () => {
+    const mainSource = readFileSync(
+      new URL("../../../../apps/desktop/src/main.tsx", import.meta.url),
+      "utf8"
+    );
+    const bootCaptureSource = readFileSync(
+      new URL("../../../../apps/desktop/src/bootErrorCapture.ts", import.meta.url),
+      "utf8"
+    );
+    const bootImportOffset = mainSource.indexOf("./bootErrorCapture");
+    const appImportOffset = mainSource.indexOf("./App");
+
+    expect(bootImportOffset).toBeGreaterThanOrEqual(0);
+    expect(appImportOffset).toBeGreaterThanOrEqual(0);
+    expect(bootImportOffset).toBeLessThan(appImportOffset);
+    expect(bootCaptureSource).toContain("session=booting");
+    expect(bootCaptureSource).toContain("session=boot_error");
+    expect(bootCaptureSource).toContain("error_kind=");
+  });
+
+  test("Tauri dev capability explicitly grants the Vite dev URL", () => {
+    const capability = JSON.parse(
+      readFileSync(
+        new URL("../../../../apps/desktop/src-tauri/capabilities/default.json", import.meta.url),
+        "utf8"
+      )
+    );
+
+    expect(capability.remote.urls).toContain("http://127.0.0.1:5173/*");
+  });
+
+  test("Tauri launch explicitly makes the main WebView window visible", () => {
+    const source = readFileSync(
+      new URL("../../../../apps/desktop/src-tauri/src/lib.rs", import.meta.url),
+      "utf8"
+    );
+    const setupSource = source
+      .split(".setup(move |app|")
+      .at(1)
+      ?.split(".on_window_event")
+      .at(0);
+
+    expect(source).toContain("ensure_main_window_visible");
+    expect(setupSource).toContain("ensure_main_window_visible(app)");
+    expect(source).toContain("set_activation_policy");
+    expect(source).toContain("run_on_main_thread");
+    expect(source).toContain("activateIgnoringOtherApps");
+    expect(source).toContain("makeKeyAndOrderFront");
+    expect(source).toContain("orderFrontRegardless");
+    expect(source).toContain("qa_window_visibility_mode_enabled");
+    expect(source).toContain("set_visible_on_all_workspaces(true)");
+    expect(source).toContain("window.unminimize()");
+    expect(source).toContain("window.show()");
+    expect(source).toContain("window.set_focus()");
+  });
+
+  test("Tauri repeats main window activation after the WebView page loads", () => {
+    const source = readFileSync(
+      new URL("../../../../apps/desktop/src-tauri/src/lib.rs", import.meta.url),
+      "utf8"
+    );
+    const pageLoadSource = source
+      .split(".on_page_load(")
+      .at(1)
+      ?.split(".on_window_event")
+      .at(0);
+
+    expect(pageLoadSource).toContain("ensure_main_window_visible");
+    expect(pageLoadSource).toContain('webview.label() == "main"');
+  });
+
   test("mac GUI smoke real login uses the QA file store instead of macOS Keychain", () => {
     const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
       "--child-env",
       "--real-login-from-stdin"
     ]);
 
-    expect(output).toContain("MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1");
-    expect(output).toContain("MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR=");
+    expect(output).toContain("KOUSHI_SKIP_KEYCHAIN_PERSISTENCE=1");
+    expect(output).toContain("KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR=");
     expect(output).toContain("qa-credential-store");
   });
 
@@ -1294,7 +1414,7 @@ describe("desktop release scripts", () => {
     );
 
     // A second debug/test-only FIFO carries control commands to the app.
-    expect(source).toContain("MATRIX_DESKTOP_QA_CONTROL_PIPE");
+    expect(source).toContain("KOUSHI_QA_CONTROL_PIPE");
     expect(source).toContain("qa-control.pipe");
     // The runner writes a logout command and waits for a signed-out QA title
     // before terminating the process group (no stale device survives the run).
@@ -1324,7 +1444,7 @@ describe("desktop release scripts", () => {
       /function childEnvironment\(dataDir, qaLoginPipePath = null, qaControlPipePath = null\)/
     );
     expect(source).toMatch(
-      /if \(qaControlPipePath\) \{[\s\S]*env\.MATRIX_DESKTOP_QA_CONTROL_PIPE = qaControlPipePath;/
+      /if \(qaControlPipePath\) \{[\s\S]*env\.KOUSHI_QA_CONTROL_PIPE = qaControlPipePath;/
     );
   });
 
@@ -1334,12 +1454,77 @@ describe("desktop release scripts", () => {
       "--qa-profile=agent-sync"
     ]);
 
-    expect(output).toContain("MATRIX_DESKTOP_RESTORE_SESSION=1");
-    expect(output).toContain("MATRIX_DESKTOP_SKIP_SAVED_SESSIONS=0");
+    expect(output).toContain("KOUSHI_RESTORE_SESSION=1");
+    expect(output).toContain("KOUSHI_SKIP_SAVED_SESSIONS=0");
     expect(output).toContain(".local-secrets/qa-profiles/agent-sync/data");
-    expect(output).toContain("MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR=");
+    expect(output).toContain("KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR=");
     expect(output).toContain(".local-secrets/qa-profiles/agent-sync/data/qa-credential-store");
-    expect(output).not.toContain("MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE");
+    expect(output).not.toContain("KOUSHI_SKIP_KEYCHAIN_PERSISTENCE");
+  });
+
+  test("Tauri debug runtime honors the keychain persistence bypass env", () => {
+    const source = readFileSync(
+      new URL("../../../../apps/desktop/src-tauri/src/lib.rs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("KOUSHI_SKIP_KEYCHAIN_PERSISTENCE");
+    expect(source).toContain("keychain_persistence_disabled_from_env");
+    expect(source).toContain("CoreRuntime::start_with_data_dir(data_dir.clone())");
+    expect(source).toContain("CoreRuntime::start_with_data_dir_and_os_backend");
+  });
+
+  test("desktop package exposes a local DMG build script", () => {
+    const packageJson = JSON.parse(
+      readFileSync(new URL("../../../../apps/desktop/package.json", import.meta.url), "utf8")
+    );
+    const scriptPath = new URL("../../../../scripts/desktop-build-dmg.mjs", import.meta.url);
+    const source = readFileSync(scriptPath, "utf8");
+
+    expect(packageJson.scripts["build:dmg"]).toBe(
+      "node ../../scripts/desktop-build-dmg.mjs"
+    );
+    expect(source).toContain("tauri");
+    expect(source).toContain("build");
+    expect(source).toContain("--bundles");
+    expect(source).toContain("dmg");
+    expect(source).toContain("Application Support/koushi-desktop");
+    expect(source).toContain("koushi-desktop");
+    expect(source).not.toContain("Application Support/matrix-desktop");
+  });
+
+  test("active runtime storage identifiers use Koushi without matrix-desktop compatibility", () => {
+    const activeSourceFiles = [
+      "apps/desktop/src/App.tsx",
+      "apps/desktop/src/bootErrorCapture.ts",
+      "apps/desktop/src-tauri/src/lib.rs",
+      "apps/desktop/src-tauri/src/commands/mod.rs",
+      "crates/koushi-core/src/store.rs",
+      "crates/koushi-core/src/runtime.rs",
+      "crates/koushi-core/src/sync.rs",
+      "crates/koushi-core/src/bin/headless-core-qa.rs",
+      "crates/koushi-core/src/bin/real-homeserver-qa.rs",
+      "crates/koushi-sdk/src/lib.rs",
+      "crates/koushi-key/src/lib.rs",
+      "scripts/desktop-build-dmg.mjs",
+      "scripts/desktop-headless-local-qa.mjs",
+      "scripts/desktop-linux-gui-qa.mjs",
+      "scripts/desktop-mac-gui-smoke.mjs",
+      "scripts/desktop-real-homeserver-qa.mjs"
+    ];
+
+    for (const file of activeSourceFiles) {
+      const source = readFileSync(new URL(`../../../../${file}`, import.meta.url), "utf8");
+      expect(source, file).not.toContain("MATRIX_DESKTOP_");
+      expect(source, file).not.toContain("VITE_MATRIX_DESKTOP_");
+      expect(source, file).not.toContain("matrix-desktop://");
+      expect(source, file).not.toContain("matrix-desktop:");
+      expect(source, file).not.toContain("LEGACY_DATA_DIR_NAME");
+      expect(source, file).not.toContain("LEGACY_CREDENTIAL_STORE_SERVICE_NAME");
+      expect(source, file).not.toContain("migrate_app_data_dir_if_needed");
+      expect(source, file).not.toContain("app.kagome");
+      expect(source, file).not.toContain("RURI-");
+    }
   });
 
   test("mac GUI smoke send smoke mode passes only a synthetic body through child env", () => {
@@ -1349,10 +1534,10 @@ describe("desktop release scripts", () => {
     ]);
     const sendLine = output
       .split("\n")
-      .find((line) => line.startsWith("VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE="));
+      .find((line) => line.startsWith("VITE_KOUSHI_QA_SEND_SMOKE_MESSAGE="));
 
     expect(sendLine).toBe(
-      "VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE=Koushi synthetic QA send"
+      "VITE_KOUSHI_QA_SEND_SMOKE_MESSAGE=Koushi synthetic QA send"
     );
     expect(sendLine).not.toContain("password");
   });
@@ -1369,7 +1554,7 @@ describe("desktop release scripts", () => {
     );
 
     expect(output).toContain(
-      "VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_USER_ID=@hiroshi.shinaoka:matrix.org"
+      "VITE_KOUSHI_QA_SEND_SMOKE_USER_ID=@hiroshi.shinaoka:matrix.org"
     );
     expect(source).toContain("qaSendSmokeTargetUserId");
     expect(source).toContain("api.startDirectMessage(targetUserId)");
@@ -1451,6 +1636,43 @@ describe("desktop release scripts", () => {
     }
   });
 
+  test("mac GUI smoke keeps rendered DOM counters in diagnostics summaries", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-mac-gui-smoke.mjs", import.meta.url),
+      "utf8"
+    );
+
+    for (const key of ["dom_screen", "dom_root_children", "dom_text_len"]) {
+      expect(source).toContain(`"${key}"`);
+    }
+  });
+
+  test("Tauri dev uses a refresh-free Vite mode compatible with the desktop CSP", () => {
+    const tauriConfig = JSON.parse(
+      readFileSync(
+        new URL("../../../../apps/desktop/src-tauri/tauri.conf.json", import.meta.url),
+        "utf8"
+      )
+    );
+    const packageJson = JSON.parse(
+      readFileSync(
+        new URL("../../../../apps/desktop/package.json", import.meta.url),
+        "utf8"
+      )
+    );
+    const viteConfig = readFileSync(
+      new URL("../../../../apps/desktop/vite.config.ts", import.meta.url),
+      "utf8"
+    );
+
+    expect(tauriConfig.build.beforeDevCommand).toBe("npm run dev:tauri");
+    expect(packageJson.scripts["dev:tauri"]).toContain("--mode tauri");
+    expect(viteConfig).toContain("mode === \"tauri\"");
+    expect(viteConfig).toContain("hmr: false");
+    expect(tauriConfig.app.security.devCsp).toContain("http://127.0.0.1:5173");
+    expect(tauriConfig.app.security.devCsp).toContain("ws://127.0.0.1:5173");
+  });
+
   test("QA file credential store is gated to debug and test builds in core", () => {
     // The credential store moved into koushi-core (StoreActor) when
     // src-tauri became a pure transport adapter; the compile-time gate lives
@@ -1477,7 +1699,7 @@ describe("desktop release scripts", () => {
       new URL("../../../../apps/desktop/src-tauri/src/lib.rs", import.meta.url),
       "utf8"
     );
-    expect(adapter).not.toContain("MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR");
+    expect(adapter).not.toContain("KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR");
     expect(adapter).not.toContain("CredentialStore");
   });
 
@@ -1501,7 +1723,7 @@ describe("desktop release scripts", () => {
 
   test("mac GUI smoke accepts recovery-required sessions after room timeline QA is ready", () => {
     const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-ready=matrix-desktop qa session=needsRecovery sync=running rooms=109 spaces=4 active_room=true timeline_subscribed=true timeline_items=8 errors=0 panel=recovery"
+      "--qa-title-ready=koushi-desktop qa session=needsRecovery sync=running rooms=109 spaces=4 active_room=true timeline_subscribed=true timeline_items=8 errors=0 panel=recovery"
     ]);
 
     expect(output.trim()).toBe("ready");
@@ -1509,11 +1731,11 @@ describe("desktop release scripts", () => {
 
   test("mac GUI smoke can relax timeline item count for sparse QA accounts", () => {
     const strict = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=0 errors=0 panel=closed"
+      "--qa-title-ready=koushi-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=0 errors=0 panel=closed"
     ]);
     const relaxed = runScript("scripts/desktop-mac-gui-smoke.mjs", [
       "--allow-empty-timeline",
-      "--qa-title-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=0 errors=0 panel=closed"
+      "--qa-title-ready=koushi-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=0 errors=0 panel=closed"
     ]);
 
     expect(strict.trim()).toBe("not-ready");
@@ -1522,7 +1744,7 @@ describe("desktop release scripts", () => {
 
   test("mac GUI smoke rejects ready titles with backend errors", () => {
     const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=1 panel=closed"
+      "--qa-title-ready=koushi-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=1 panel=closed"
     ]);
 
     expect(output.trim()).toBe("not-ready");
@@ -1530,13 +1752,13 @@ describe("desktop release scripts", () => {
 
   test("mac GUI smoke waits for send smoke success token", () => {
     const pending = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-send-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 send=pending panel=closed"
+      "--qa-title-send-ready=koushi-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 send=pending panel=closed"
     ]);
     const sent = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-send-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=2 errors=0 send=sent panel=closed"
+      "--qa-title-send-ready=koushi-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=2 errors=0 send=sent panel=closed"
     ]);
     const failed = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-send-ready=matrix-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=1 send=failed panel=closed"
+      "--qa-title-send-ready=koushi-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=1 send=failed panel=closed"
     ]);
 
     expect(pending.trim()).toBe("not-ready");
@@ -1546,10 +1768,10 @@ describe("desktop release scripts", () => {
 
   test("mac GUI smoke requires ready session when recovery code is supplied", () => {
     const waiting = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-ready-require-recovered=matrix-desktop qa session=needsRecovery sync=running rooms=109 spaces=4 active_room=true timeline_subscribed=true timeline_items=8 errors=0 panel=recovery"
+      "--qa-title-ready-require-recovered=koushi-desktop qa session=needsRecovery sync=running rooms=109 spaces=4 active_room=true timeline_subscribed=true timeline_items=8 errors=0 panel=recovery"
     ]);
     const recovered = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--qa-title-ready-require-recovered=matrix-desktop qa session=ready sync=running rooms=109 spaces=4 active_room=true timeline_subscribed=true timeline_items=8 errors=0 panel=keyboardSettings"
+      "--qa-title-ready-require-recovered=koushi-desktop qa session=ready sync=running rooms=109 spaces=4 active_room=true timeline_subscribed=true timeline_items=8 errors=0 panel=keyboardSettings"
     ]);
 
     expect(waiting.trim()).toBe("not-ready");

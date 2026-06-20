@@ -469,19 +469,17 @@ impl FakeDesktopBackend {
                     delegated: DelegatedAuthLinks::default(),
                 }]
             }
-            LoginDiscoveryMode::Http => {
-                match koushi_sdk::discover_login_flows(homeserver) {
-                    Ok(discovery) => vec![AppAction::LoginDiscoverySucceeded {
-                        homeserver: discovery.homeserver,
-                        flows: discovery.flows,
-                        delegated: discovery.delegated,
-                    }],
-                    Err(error) => vec![AppAction::LoginDiscoveryFailed {
-                        homeserver: homeserver.to_owned(),
-                        kind: login_discovery_failure_kind(&error),
-                    }],
-                }
-            }
+            LoginDiscoveryMode::Http => match koushi_sdk::discover_login_flows(homeserver) {
+                Ok(discovery) => vec![AppAction::LoginDiscoverySucceeded {
+                    homeserver: discovery.homeserver,
+                    flows: discovery.flows,
+                    delegated: discovery.delegated,
+                }],
+                Err(error) => vec![AppAction::LoginDiscoveryFailed {
+                    homeserver: homeserver.to_owned(),
+                    kind: login_discovery_failure_kind(&error),
+                }],
+            },
         }
     }
 
@@ -490,18 +488,16 @@ impl FakeDesktopBackend {
             LoginMode::FixtureFailure => vec![AppAction::LoginFailed {
                 message: "real Matrix login is not wired in this pre-login foundation".to_owned(),
             }],
-            LoginMode::MatrixSdk => {
-                match koushi_sdk::login_with_password_blocking(request) {
-                    Ok(session) => {
-                        let info = session.info.clone();
-                        self.matrix_session = Some(session);
-                        vec![self.authenticated_session_action(info)]
-                    }
-                    Err(error) => vec![AppAction::LoginFailed {
-                        message: error.to_string(),
-                    }],
+            LoginMode::MatrixSdk => match koushi_sdk::login_with_password_blocking(request) {
+                Ok(session) => {
+                    let info = session.info.clone();
+                    self.matrix_session = Some(session);
+                    vec![self.authenticated_session_action(info)]
                 }
-            }
+                Err(error) => vec![AppAction::LoginFailed {
+                    message: error.to_string(),
+                }],
+            },
             LoginMode::Deferred => Vec::new(),
         }
     }
@@ -1091,9 +1087,7 @@ fn fixture_login_flows() -> Vec<LoginFlow> {
         .expect("synthetic login discovery fixture should parse")
 }
 
-fn login_discovery_failure_kind(
-    error: &koushi_sdk::LoginDiscoveryError,
-) -> AuthFailureKind {
+fn login_discovery_failure_kind(error: &koushi_sdk::LoginDiscoveryError) -> AuthFailureKind {
     match error {
         koushi_sdk::LoginDiscoveryError::RequestFailed(_) => AuthFailureKind::Network,
         koushi_sdk::LoginDiscoveryError::HttpStatus { status: 403, .. } => {
@@ -1104,9 +1098,7 @@ fn login_discovery_failure_kind(
         | koushi_sdk::LoginDiscoveryError::InvalidResponse(_) => AuthFailureKind::Sdk,
         koushi_sdk::LoginDiscoveryError::InvalidHomeserver(_)
         | koushi_sdk::LoginDiscoveryError::UnsupportedHomeserverScheme
-        | koushi_sdk::LoginDiscoveryError::InsecureHomeserverScheme => {
-            AuthFailureKind::Unsupported
-        }
+        | koushi_sdk::LoginDiscoveryError::InsecureHomeserverScheme => AuthFailureKind::Unsupported,
     }
 }
 

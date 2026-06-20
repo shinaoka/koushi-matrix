@@ -6,7 +6,7 @@ glue. Vendored upstream code must keep its original license and copyright
 notices; local changes to vendored code must remain easy to upstream or
 revert.
 
-Last amended: 2026-06-18.
+Last amended: 2026-06-20.
 
 ## Read Order And Authority
 
@@ -126,6 +126,12 @@ conflict is being resolved.
   deterministic failure transition that clears/reports the pending state. Silent
   `try_send` drops are prohibited for send, reply, thread, room, search,
   cleanup, recovery, and login state machines.
+- Background workers that consume authoritative latest snapshots, such as the
+  search history crawler's joined-room availability notification, must not block
+  user-visible actor commands. They may use latest-wins coalescing and
+  nonblocking `try_send` only when the owning actor retains the newest pending
+  payload and retries it later; dropping the only pending update silently is
+  still prohibited.
 
 ## Security Rules
 
@@ -333,18 +339,17 @@ conflict is being resolved.
   installer metadata, docs, and QA artifacts must use Koushi. The GitHub
   repository is `shinaoka/koushi-matrix`.
 - Current internal identifiers are:
-  - Internal crate/module prefix: `matrix-desktop-*`
+  - Internal crate/module prefix: `koushi-*`
   - Tauri bundle identifier: `chat.koushi.desktop`
   - npm/Cargo package name: `koushi-desktop`
   - keychain / file credential-store service name: `koushi-desktop`
   - Matrix global account-data key for local user aliases:
     `app.koushi.local_aliases`
-- Migration from the previous Kagome-era identifiers is mandatory for any
-  persisted user data. The app must read legacy keychain entries under the old
-  `matrix-desktop` service name and legacy Matrix account-data under
-  `app.kagome.local_aliases`, then rewrite them under the current identifiers.
-  Renaming these identifiers again requires an explicit migration plan and user
-  approval.
+- No compatibility migration from old Matrix Desktop/Kagome identifiers is
+  required at this stage because there is no supported persisted user data to
+  preserve. New storage, QA env vars, keychain entries, account-data keys, and
+  internal app event schemes must use Koushi identifiers. Renaming these
+  identifiers again requires an explicit migration plan and user approval.
 
 ## Concurrent Work And Merge-Conflict Avoidance
 

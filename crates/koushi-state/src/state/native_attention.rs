@@ -1,4 +1,7 @@
-use std::{collections::{BTreeSet, HashMap}, fmt};
+use std::{
+    collections::{BTreeSet, HashMap},
+    fmt,
+};
 
 use serde::{Deserialize, Serialize};
 

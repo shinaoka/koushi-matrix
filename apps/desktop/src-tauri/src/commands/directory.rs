@@ -57,12 +57,8 @@ pub async fn join_directory_room(
         .command(command)
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    let joined_room_id = wait_for_room_joined(
-        &mut event_conn,
-        request_id,
-        ROOM_OPERATION_EVENT_TIMEOUT,
-    )
-    .await?;
+    let joined_room_id =
+        wait_for_room_joined(&mut event_conn, request_id, ROOM_OPERATION_EVENT_TIMEOUT).await?;
     wait_for_selected_room(
         &mut event_conn,
         request_id,

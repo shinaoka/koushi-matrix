@@ -1652,7 +1652,10 @@ pub enum SearchEvent {
     /// Carries only app-owned visible-state identifiers (room/event ids) so
     /// pollers can wake on indexing progress instead of sleeping; the message
     /// body is never included (Security Model — Search).
-    IndexUpdated { room_id: String, event_id: String },
+    IndexUpdated {
+        room_id: String,
+        event_id: String,
+    },
     HistoryCrawlProgress {
         room_id: String,
         processed: u64,
@@ -1708,7 +1711,10 @@ impl fmt::Debug for SearchEvent {
                 .field("processed", processed)
                 .field("indexed", indexed)
                 .finish(),
-            SearchEvent::HistoryCrawlCompleted { room_id: _, indexed } => formatter
+            SearchEvent::HistoryCrawlCompleted {
+                room_id: _,
+                indexed,
+            } => formatter
                 .debug_struct("HistoryCrawlCompleted")
                 .field("room_id", &"RoomId(..)")
                 .field("indexed", indexed)
@@ -1752,11 +1758,7 @@ mod tests {
         }
     }
 
-    fn activity_row(
-        room_id: &str,
-        event_id: &str,
-        timestamp_ms: u64,
-    ) -> koushi_state::ActivityRow {
+    fn activity_row(room_id: &str, event_id: &str, timestamp_ms: u64) -> koushi_state::ActivityRow {
         koushi_state::ActivityRow {
             room_id: room_id.to_owned(),
             event_id: event_id.to_owned(),
@@ -1769,9 +1771,7 @@ mod tests {
         }
     }
 
-    fn activity_stream(
-        rows: Vec<koushi_state::ActivityRow>,
-    ) -> koushi_state::ActivityStream {
+    fn activity_stream(rows: Vec<koushi_state::ActivityRow>) -> koushi_state::ActivityStream {
         koushi_state::ActivityStream {
             rows,
             next_batch: Some("private-page-token".to_owned()),

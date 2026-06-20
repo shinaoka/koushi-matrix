@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopDir = join(repoRoot, "apps", "desktop");
-const appProcessNames = ["koushi-desktop", "matrix-desktop", "matrix-desktop-app"];
+const appProcessNames = ["koushi-desktop"];
 let activeProcessName = appProcessNames[0];
 const checks = [
   "launch Tauri dev shell",
@@ -53,7 +53,7 @@ if (args.has("--check-tools")) {
 }
 
 if (args.has("--child-env-keys")) {
-  for (const key of Object.keys(childEnvironment("/tmp/matrix-desktop-mac-gui-smoke")).sort()) {
+  for (const key of Object.keys(childEnvironment("/tmp/koushi-desktop-mac-gui-smoke")).sort()) {
     console.log(key);
   }
   process.exit(0);
@@ -61,7 +61,7 @@ if (args.has("--child-env-keys")) {
 
 if (args.has("--child-env")) {
   for (const [key, value] of Object.entries(
-    childEnvironment(qaDataDirForRun("/tmp/matrix-desktop-mac-gui-smoke"))
+    childEnvironment(qaDataDirForRun("/tmp/koushi-desktop-mac-gui-smoke"))
   ).sort(([left], [right]) => left.localeCompare(right))) {
     console.log(`${key}=${value}`);
   }
@@ -303,31 +303,31 @@ function childEnvironment(dataDir, qaLoginPipePath = null, qaControlPipePath = n
       env[key] = process.env[key];
     }
   }
-  env.MATRIX_DESKTOP_RESTORE_SESSION = qaProfile !== undefined ? "1" : "0";
-  env.MATRIX_DESKTOP_SKIP_SAVED_SESSIONS = qaProfile !== undefined ? "0" : "1";
-  env.MATRIX_DESKTOP_DATA_DIR = dataDir;
-  env.MATRIX_DESKTOP_QA_TITLE = "1";
-  env.VITE_MATRIX_DESKTOP_QA_TITLE = "1";
-  if (process.env.MATRIX_DESKTOP_DEBUG_SDK_ERROR) {
-    env.MATRIX_DESKTOP_DEBUG_SDK_ERROR = "1";
+  env.KOUSHI_RESTORE_SESSION = qaProfile !== undefined ? "1" : "0";
+  env.KOUSHI_SKIP_SAVED_SESSIONS = qaProfile !== undefined ? "0" : "1";
+  env.KOUSHI_DATA_DIR = dataDir;
+  env.KOUSHI_QA_TITLE = "1";
+  env.VITE_KOUSHI_QA_TITLE = "1";
+  if (process.env.KOUSHI_DEBUG_SDK_ERROR) {
+    env.KOUSHI_DEBUG_SDK_ERROR = "1";
   }
   if (sendSmokeMessage !== null) {
-    env.VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE = sendSmokeMessage;
+    env.VITE_KOUSHI_QA_SEND_SMOKE_MESSAGE = sendSmokeMessage;
   }
   if (sendSmokeUserId !== null) {
-    env.VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_USER_ID = sendSmokeUserId;
+    env.VITE_KOUSHI_QA_SEND_SMOKE_USER_ID = sendSmokeUserId;
   }
   if (qaProfile !== undefined || realLoginFromStdin) {
-    env.MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR = join(dataDir, "qa-credential-store");
+    env.KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR = join(dataDir, "qa-credential-store");
   }
   if (realLoginFromStdin && qaProfile === undefined) {
-    env.MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE = "1";
+    env.KOUSHI_SKIP_KEYCHAIN_PERSISTENCE = "1";
   }
   if (qaLoginPipePath) {
-    env.MATRIX_DESKTOP_QA_LOGIN_PIPE = qaLoginPipePath;
+    env.KOUSHI_QA_LOGIN_PIPE = qaLoginPipePath;
   }
   if (qaControlPipePath) {
-    env.MATRIX_DESKTOP_QA_CONTROL_PIPE = qaControlPipePath;
+    env.KOUSHI_QA_CONTROL_PIPE = qaControlPipePath;
   }
   env.NO_COLOR = "1";
   return env;
@@ -348,7 +348,7 @@ function validatedQaProfileName() {
 }
 
 function sendSmokeMessageFromOption(value) {
-  const message = value?.trim() || `Matrix Desktop synthetic QA send ${timestamp()}`;
+  const message = value?.trim() || `Koushi synthetic QA send ${timestamp()}`;
   if (/[\r\n]/.test(message)) {
     throw new Error("send smoke message must be a single line");
   }
@@ -406,7 +406,7 @@ function realLoginCredentialsFromInput(input) {
     .replace(/\r/g, "")
     .split("\n");
   const homeserver = homeserverInput.trim() || "https://matrix.org";
-  const deviceName = deviceNameInput?.trim() || "Matrix Desktop Smoke Test";
+  const deviceName = deviceNameInput?.trim() || "Koushi Smoke Test";
   const recoverySecret = recoverySecretInput?.trim() || null;
   if (!username?.trim() || !password?.trim()) {
     throw new Error("real login stdin must contain homeserver, username, and password lines");
@@ -445,14 +445,14 @@ async function waitForWindow(timeout, diagnostics = null) {
     await sleep(1000);
   }
   throw new Error(
-    `matrix-desktop window did not appear within ${timeout}ms. Last state: ${lastError}`
+    `koushi-desktop window did not appear within ${timeout}ms. Last state: ${lastError}`
   );
 }
 
 async function currentWindowInfo() {
   const value = await appleScript(windowQueryScript());
   if (value === "missing" || value.endsWith("|no-window")) {
-    throw new Error(`matrix-desktop window is unavailable: ${value}`);
+    throw new Error(`koushi-desktop window is unavailable: ${value}`);
   }
   const windowInfo = parseWindowInfo(value);
   activeProcessName = windowInfo.processName;
@@ -662,7 +662,16 @@ function parseQaTitle(title) {
     if (!value) {
       continue;
     }
-    if (["rooms", "spaces", "timeline_items", "errors"].includes(key)) {
+    if (
+      [
+        "rooms",
+        "spaces",
+        "timeline_items",
+        "errors",
+        "dom_root_children",
+        "dom_text_len"
+      ].includes(key)
+    ) {
       status[key] = Number(value);
     } else if (["active_room", "timeline_subscribed"].includes(key)) {
       status[key] = value === "true";
@@ -745,7 +754,10 @@ function summarizeQaStatus(status) {
     "crawler_completed",
     "crawler_failed",
     "crawler_processed",
-    "crawler_indexed"
+    "crawler_indexed",
+    "dom_screen",
+    "dom_root_children",
+    "dom_text_len"
   ]) {
     if (status[key] !== undefined) {
       values.push(`${key}=${status[key]}`);

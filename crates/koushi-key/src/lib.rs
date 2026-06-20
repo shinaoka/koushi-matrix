@@ -16,12 +16,12 @@ use zeroize::Zeroizing;
 
 pub const LOCAL_UNLOCK_SECRET_LEN: usize = 32;
 
-const SDK_STORE_INFO: &[u8] = b"matrix-desktop:sdk-store";
-const SEARCH_INDEX_INFO: &[u8] = b"matrix-desktop:search-index";
-const COMPOSER_DRAFTS_INFO: &[u8] = b"matrix-desktop:composer-drafts";
-const SCHEDULED_SENDS_INFO: &[u8] = b"matrix-desktop:scheduled-sends";
-const LAST_SESSION_ACCOUNT_NAME: &str = "matrix-desktop:last-session:v1";
-const SAVED_SESSIONS_ACCOUNT_NAME: &str = "matrix-desktop:saved-sessions:v1";
+const SDK_STORE_INFO: &[u8] = b"koushi-desktop:sdk-store";
+const SEARCH_INDEX_INFO: &[u8] = b"koushi-desktop:search-index";
+const COMPOSER_DRAFTS_INFO: &[u8] = b"koushi-desktop:composer-drafts";
+const SCHEDULED_SENDS_INFO: &[u8] = b"koushi-desktop:scheduled-sends";
+const LAST_SESSION_ACCOUNT_NAME: &str = "koushi-desktop:last-session:v1";
+const SAVED_SESSIONS_ACCOUNT_NAME: &str = "koushi-desktop:saved-sessions:v1";
 
 pub fn last_session_account_name() -> &'static str {
     LAST_SESSION_ACCOUNT_NAME

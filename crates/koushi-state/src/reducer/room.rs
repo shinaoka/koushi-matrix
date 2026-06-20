@@ -3,19 +3,19 @@ use std::collections::BTreeSet;
 use crate::{
     effect::{AppEffect, UiEvent},
     state::{
-        AppError, AppState, OperationFailureKind, PinOp, PinnedEvent, PinOperationState,
-        RoomListFilter, RoomTagKind, RoomTagInfo, ThreadAttentionState, ThreadPaneState,
-        ThreadsListState, TimelinePaneState, compute_room_list_projection,
+        AppError, AppState, OperationFailureKind, PinOp, PinOperationState, PinnedEvent,
+        RoomListFilter, RoomTagInfo, RoomTagKind, ThreadAttentionState, ThreadPaneState,
+        ThreadsListState, TimelinePaneState,
     },
 };
 
 use super::{
-    is_session_ready, refresh_timeline_media_gallery, refresh_timeline_scheduled_sends,
+    active_room_left_selected_space, apply_space_order, first_default_room_id, is_session_ready,
+    preferred_room_id_in_active_space, recompute_room_list_projection, reconcile_space_order,
+    refresh_timeline_media_gallery, refresh_timeline_scheduled_sends,
     refresh_timeline_upload_staging, retain_navigation_room_memory,
-    select_active_room_after_room_list_update, retarget_active_room_for_selected_space,
-    preferred_room_id_in_active_space, first_default_room_id,
-    active_room_left_selected_space, room_exists, reconcile_space_order, apply_space_order,
-    session_user_id,
+    retarget_active_room_for_selected_space, room_exists,
+    select_active_room_after_room_list_update, session_user_id,
 };
 
 const PIN_EVENT_FAILED_MESSAGE: &str = "Pinning the event failed";
@@ -48,12 +48,7 @@ pub(crate) fn handle_room_list_updated(
     state.spaces = spaces;
     state.rooms = rooms;
     retain_navigation_room_memory(state);
-    state.room_list = compute_room_list_projection(
-        state.room_list.active_filter,
-        state.room_list.sort,
-        &state.rooms,
-        &state.invites,
-    );
+    recompute_room_list_projection(state);
     state.composer_drafts.retain_rooms(&retained_room_ids);
     state.scheduled_sends.retain_rooms(&retained_room_ids);
     state.upload_staging.retain_rooms(&retained_room_ids);
@@ -71,9 +66,7 @@ pub(crate) fn handle_room_list_updated(
         use crate::state::SearchCrawlerSpeed;
         let crawler_settings = &state.settings.values.search_crawler;
         if crawler_settings.speed != SearchCrawlerSpeed::Paused {
-            let room_ids: Vec<String> = state.rooms.iter()
-                .map(|r| r.room_id.clone())
-                .collect();
+            let room_ids: Vec<String> = state.rooms.iter().map(|r| r.room_id.clone()).collect();
             if !room_ids.is_empty() {
                 effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
                     room_ids,
@@ -141,28 +134,33 @@ pub(crate) fn handle_room_list_updated(
         retarget_active_room_for_selected_space(state, &mut effects, active_room_id);
     }
 
-    if !had_active_room_before_update
-        && state.navigation.active_room_id.is_none()
-        && let Some(room_id) = first_default_room_id(state)
-    {
-        state.navigation.active_room_id = Some(room_id.clone());
-        state.timeline = TimelinePaneState {
-            room_id: Some(room_id.clone()),
-            is_subscribed: false,
-            is_paginating_backwards: false,
-            composer: state.composer_drafts.composer_for_room(&room_id),
-            scheduled_send_capability: state.scheduled_sends.capability.clone(),
-            scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
-            staged_uploads: state.upload_staging.items_for_room(&room_id),
-            media_gallery: state.media_gallery.items_for_room(&room_id),
-            media_downloads: Default::default(),
+    if !had_active_room_before_update && state.navigation.active_room_id.is_none() {
+        let next_room_id = if state.navigation.active_space_id.is_some() {
+            preferred_room_id_in_active_space(state)
+        } else {
+            first_default_room_id(state)
         };
-        effects.push(AppEffect::SubscribeTimeline {
-            room_id: room_id.clone(),
-        });
-        effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }));
+        if let Some(room_id) = next_room_id {
+            state.navigation.active_room_id = Some(room_id.clone());
+            state.timeline = TimelinePaneState {
+                room_id: Some(room_id.clone()),
+                is_subscribed: false,
+                is_paginating_backwards: false,
+                composer: state.composer_drafts.composer_for_room(&room_id),
+                scheduled_send_capability: state.scheduled_sends.capability.clone(),
+                scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
+                staged_uploads: state.upload_staging.items_for_room(&room_id),
+                media_gallery: state.media_gallery.items_for_room(&room_id),
+                media_downloads: Default::default(),
+            };
+            effects.push(AppEffect::SubscribeTimeline {
+                room_id: room_id.clone(),
+            });
+            effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }));
+        }
     }
 
+    recompute_room_list_projection(state);
     effects
 }
 
@@ -174,12 +172,8 @@ pub(crate) fn handle_room_list_filter_selected(
         return Vec::new();
     }
 
-    state.room_list = compute_room_list_projection(
-        filter,
-        state.room_list.sort,
-        &state.rooms,
-        &state.invites,
-    );
+    state.room_list.active_filter = filter;
+    recompute_room_list_projection(state);
     vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
 }
 
@@ -500,12 +494,7 @@ pub(crate) fn handle_room_marked_as_read_succeeded(
         room.unread_count = 0;
         room.notification_count = 0;
         room.highlight_count = 0;
-        state.room_list = compute_room_list_projection(
-            state.room_list.active_filter,
-            state.room_list.sort,
-            &state.rooms,
-            &state.invites,
-        );
+        recompute_room_list_projection(state);
     }
     vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
 }
@@ -557,12 +546,7 @@ pub(crate) fn handle_room_marked_as_unread_succeeded(
         if !unread {
             room.unread_count = 0;
         }
-        state.room_list = compute_room_list_projection(
-            state.room_list.active_filter,
-            state.room_list.sort,
-            &state.rooms,
-            &state.invites,
-        );
+        recompute_room_list_projection(state);
     }
     vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
 }

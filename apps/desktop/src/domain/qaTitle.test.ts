@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { createBrowserFakeApi } from "../backend/browserFakeApi";
 import {
+  qaDomDiagnosticTokens,
   qaSearchCrawlerDiagnosticTokens,
   qaTimelineDiagnosticTokens,
   qaWindowTitle
@@ -14,7 +15,7 @@ describe("qaWindowTitle", () => {
 
     const title = qaWindowTitle(snapshot);
 
-    expect(title).toContain("matrix-desktop qa");
+    expect(title).toContain("koushi-desktop qa");
     expect(title).toContain("session=ready");
     expect(title).toContain("sync=running");
     expect(title).toContain("rooms=");
@@ -280,6 +281,20 @@ describe("qaWindowTitle", () => {
       "timeline_visible=12",
       "timeline_dl=34",
       "timeline_backfill=Paginating"
+    ]);
+  });
+
+  test("summarizes rendered DOM diagnostics without private content", () => {
+    const tokens = qaDomDiagnosticTokens({
+      screen: "auth",
+      rootChildren: 1,
+      bodyTextLength: 42
+    });
+
+    expect(tokens).toEqual([
+      "dom_screen=auth",
+      "dom_root_children=1",
+      "dom_text_len=42"
     ]);
   });
 });

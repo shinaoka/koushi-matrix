@@ -136,7 +136,7 @@ fn secret_bearing_commands_redact_debug() {
 fn auth_discovery_and_oidc_commands_redact_debug_and_do_not_require_ready_session() {
     let request_id = fake_request_id();
     let homeserver = "https://example.test".to_owned();
-    let callback_url = "matrix-desktop://auth/callback?code=secret-code".to_owned();
+    let callback_url = "koushi-desktop://auth/callback?code=secret-code".to_owned();
     let commands = [
         CoreCommand::Account(AccountCommand::DiscoverLogin {
             request_id,

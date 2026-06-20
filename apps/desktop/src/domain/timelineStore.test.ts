@@ -771,7 +771,7 @@ describe("login credential safety", () => {
   test("mock IPC event emission does not expose secret-bearing payloads", () => {
     const ipc = new TauriIpcMock();
     const received: unknown[] = [];
-    ipc.listen("matrix-desktop://event", (evt) => received.push(evt));
+    ipc.listen("koushi-desktop://event", (evt) => received.push(evt));
 
     ipc.emitCoreEvent({
       kind: "Account",

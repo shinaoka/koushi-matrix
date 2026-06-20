@@ -21,10 +21,10 @@ agent-added prepends. Put disposable QA binaries in front of `PATH` before
 local runs:
 
 ```text
-/tmp/matrix-desktop-local-qa-bin        host fast lane, preferred
-/tmp/matrix-desktop-local-qa-bin-test   host fallback/test binaries
+/tmp/koushi-desktop-local-qa-bin        host fast lane, preferred
+/tmp/koushi-desktop-local-qa-bin-test   host fallback/test binaries
 /usr/local/bin                          Docker lane inside the committed image
-%TEMP%\matrix-desktop-local-qa-bin      Windows/manual equivalent
+%TEMP%\koushi-desktop-local-qa-bin      Windows/manual equivalent
 existing PATH entries                   searched after the QA bin directories
 ```
 
@@ -222,6 +222,90 @@ before asserting `rooms` vs `spaces`. Local homeservers can briefly report a
 newly created or joined space as a plain room until the create state is folded
 into the room-list projection.
 
+### Timeline Stress Focused Gate
+
+Use this opt-in local lane when changing timeline pagination, room-list
+projection, space filtering, search-crawler backpressure, or any code that could
+make room bodies disappear under load. It creates multiple spaces, multiple
+rooms per space, two synthetic users, and multiple messages per room, then
+asserts:
+
+```text
+stress_counts=spaces=2 rooms=4 messages=32
+stress_space_scope=ok
+stress_no_blank=ok
+timeline_stress=ok
+```
+
+Successful Conduit procedure verified on 2026-06-20 JST:
+
+```bash
+npm --prefix apps/desktop run qa:headless-local -- --run --server=conduit --scenario=timeline_stress --core --core-backend=probed --timeout-ms=180000
+```
+
+Successful local Synapse procedure verified on 2026-06-20 JST:
+
+```bash
+npm --prefix apps/desktop run qa:headless-local -- --run --server=synapse --scenario=timeline_stress --core --core-backend=probed --timeout-ms=240000
+```
+
+Use the Synapse lane to approximate matrix.org homeserver semantics without
+touching real accounts. The probed lane should initially report
+`sync_backend_a=SyncService`; if Synapse later rejects the SDK SyncService stream
+with an MSC3575 HTTP capability error, the product path must fall back to
+LegacySync and still finish the stress tokens. Do not replace this with a forced
+LegacySync-only pass.
+
+Synapse stress diagnostics are split into seed and replay modes. The normal
+run above creates the synthetic users/rooms/messages and writes an ignored local
+fixture manifest under `.local-secrets/headless-local-qa/<run>/fixture.json`
+next to the Synapse `data/` directory. When investigating timeline loading,
+space filtering, or search-crawler contention, prefer replaying that fixture so
+Synapse room-creation rate limits do not contaminate the read-path signal. The
+local Synapse harness explicitly relaxes `rc_room_creation` for synthetic
+seed generation, but matrix.org and other real homeservers must still be
+treated as rate-limited compatibility targets.
+
+```bash
+npm --prefix apps/desktop run qa:headless-local -- \
+  --run \
+  --server=synapse \
+  --scenario=timeline_stress \
+  --core \
+  --core-backend=probed \
+  --fixture-run=<local-headless-qa-run-directory-name> \
+  --timeout-ms=90000
+```
+
+`--fixture-run` copies the saved Synapse `data/` directory into a fresh ignored
+run directory before startup and logs in with the saved synthetic fixture
+accounts. It does not mount the source fixture directly. The core binary then
+sets `KOUSHI_QA_STRESS_REPLAY_EXISTING=1` and performs a read-only replay:
+existing spaces are selected, their scoped room lists are checked, room
+timelines are subscribed, and backward pagination scans for blank visible event
+rows. Replay must not create rooms, create spaces, invite users, or send
+messages.
+
+The lane is intentionally `--core` only. It must not print room IDs, event IDs,
+message bodies, Matrix user IDs, transaction IDs, or raw SDK errors. A failure
+with `remaining_body_count` or missing `stress_space_scope=ok` is a product
+regression candidate, not a silent skip. Fix the core/runtime path or the
+homeserver harness root cause before claiming the stress gate is green.
+
+Known successful root-cause shape for the 2026-06-20 blank-timeline/space-scope
+regression:
+
+- The SDK snapshot must read direct `m.space.child` state from spaces and expose
+  child room IDs.
+- Core normalization must union direct space child IDs with rooms'
+  `m.space.parent` IDs for both `SpaceSummary.child_room_ids` and
+  `RoomSummary.parent_space_ids`.
+- The stress waiter must keep paginating backward while expected bodies are
+  missing; one pagination batch is not enough on every homeserver/backend.
+- The stress lane must wait for live sync projections (`RoomListUpdated`,
+  `StateChanged`, timeline diffs) and must not mix manual `SyncOnce` calls with
+  the running SyncService backend.
+
 Focused local proof:
 
 ```bash
@@ -237,6 +321,8 @@ npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=c
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=native_attention --core --core-backend=both --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=scheduled_send --core --core-backend=probed --timeout-ms=240000
 npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=send_queue --core --core-backend=both --timeout-ms=240000
+npm --prefix apps/desktop run qa:headless-local -- --run --server=conduit --scenario=timeline_stress --core --core-backend=probed --timeout-ms=180000
+npm --prefix apps/desktop run qa:headless-local -- --run --server=synapse --scenario=timeline_stress --core --core-backend=probed --timeout-ms=240000
 ```
 
 Core Batch A adds focused Phase A token contracts before the aggregate lane is
@@ -385,7 +471,7 @@ uses a disposable local homeserver, a helper user, and the real WebView to prove
 the unread jump, bottom jump, and timestamp-to-focused-context path:
 
 ```bash
-PATH=/tmp/matrix-desktop-local-qa-bin:$PATH \
+PATH=/tmp/koushi-desktop-local-qa-bin:$PATH \
   npm --prefix apps/desktop run qa:linux-gui -- \
     --scenario=local-timeline-navigation \
     --server=conduit \
@@ -659,8 +745,8 @@ For fast iteration, build the debug app once and reuse it with `--skip-build`
 
 ```bash
 npm --prefix apps/desktop run tauri build -- --debug --no-bundle
-PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-room --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-create-room-fast --timeout-ms=180000
-PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-rich-formatting --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-rich-formatting-fast --timeout-ms=180000
+PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-room --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-create-room-fast --timeout-ms=180000
+PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-rich-formatting --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-rich-formatting-fast --timeout-ms=180000
 ```
 
 The combined Linux lane is exposed through the shared release aggregator:

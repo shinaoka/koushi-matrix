@@ -9,7 +9,7 @@ import {
   useRef,
   useState
 } from "react";
-// App.tsx is the Tauri integration host. The three @tauri-apps imports below
+// App.tsx is the Tauri integration host. The @tauri-apps imports below
 // are acknowledged in-progress transport wiring tracked for Phase 2 migration
 // to backend/client.ts (#87). Each line has its own disable directive so the
 // rule still catches any NEW @tauri-apps import added without a comment.
@@ -19,6 +19,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 // eslint-disable-next-line no-restricted-imports
 import { getCurrentWindow } from "@tauri-apps/api/window";
+// eslint-disable-next-line no-restricted-imports
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 import { createDesktopApi } from "./backend/client";
 import { setActiveLocaleProfile, t } from "./i18n/messages";
@@ -63,10 +65,13 @@ import {
   sendDesktopAttentionNotification
 } from "./domain/desktopNotification";
 import {
+  qaDomDiagnosticTokens,
   qaTimelineDiagnosticTokens,
   qaWindowTitle,
+  type QaDomDiagnostics,
   type QaTimelineDiagnostics
 } from "./domain/qaTitle";
+import { diagnosticReport } from "./domain/diagnostics";
 import {
   type QaSendSmokeStatus,
   qaSendCompletionStatusFromCoreEvent,
@@ -131,6 +136,7 @@ import {
 import { AuthScreen } from "./components/auth";
 import {
   CreateEntityDialog,
+  DiagnosticDialog,
   ImageCompressionDialog,
   ReportReasonDialog,
   UserIdDialog
@@ -144,9 +150,10 @@ import { ContextualRightPanel } from "./components/rightPanel";
 
 const api = createDesktopApi();
 const DEFAULT_HOMESERVER = "https://matrix.org";
-const MENU_EVENT_NAME = "matrix-desktop://menu";
-const STATE_EVENT_NAME = "matrix-desktop://state";
-const CORE_EVENT_NAME = "matrix-desktop://event";
+const MENU_EVENT_NAME = "koushi-desktop://menu";
+const STATE_EVENT_NAME = "koushi-desktop://state";
+const CORE_EVENT_NAME = "koushi-desktop://event";
+let tauriCoreEventListenerReady: Promise<void> = Promise.resolve();
 
 declare global {
   interface Window {
@@ -157,7 +164,7 @@ declare global {
 
 if (
   typeof window !== "undefined" &&
-  import.meta.env.VITE_MATRIX_DESKTOP_QA_TITLE === "1" &&
+  import.meta.env.VITE_KOUSHI_QA_TITLE === "1" &&
   !window.__matrixDesktopQaErrorCaptureInstalled
 ) {
   window.__matrixDesktopQaErrorCaptureInstalled = true;
@@ -172,7 +179,7 @@ if (
 
 /**
  * Tauri transport for the event-driven timeline (Async rule 4: timeline data
- * flows ONLY as CoreEvent diffs over `matrix-desktop://event`; AppState
+ * flows ONLY as CoreEvent diffs over `koushi-desktop://event`; AppState
  * snapshots never embed item lists). Null in browser preview mode, where the
  * fixture snapshot rendering below is used instead.
  */
@@ -181,7 +188,7 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
       listenCoreEvents(listener: (payload: CoreEventPayload) => void) {
         let disposed = false;
         let unlisten: (() => void) | null = null;
-        void listen<CoreEventPayload>(CORE_EVENT_NAME, (event) => {
+        tauriCoreEventListenerReady = listen<CoreEventPayload>(CORE_EVENT_NAME, (event) => {
           listener(event.payload);
         }).then((dispose) => {
           if (disposed) {
@@ -190,10 +197,15 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
             unlisten = dispose;
           }
         });
+        void tauriCoreEventListenerReady;
         return () => {
           disposed = true;
           unlisten?.();
         };
+      },
+      async ensureSubscribed(timelineKey: TimelineKey) {
+        await tauriCoreEventListenerReady;
+        await invoke("ensure_timeline_subscribed", { timelineKey });
       },
       async paginateBackwards(timelineKey: TimelineKey) {
         if ("Room" in timelineKey.kind) {
@@ -655,17 +667,38 @@ function isTauriRuntime(): boolean {
 }
 
 function qaTitleEnabled(): boolean {
-  return import.meta.env.VITE_MATRIX_DESKTOP_QA_TITLE === "1";
+  return import.meta.env.VITE_KOUSHI_QA_TITLE === "1";
 }
 
 function qaSendSmokeMessage(): string | null {
-  return qaSendSmokeMessageFromEnv(import.meta.env.VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_MESSAGE);
+  return qaSendSmokeMessageFromEnv(import.meta.env.VITE_KOUSHI_QA_SEND_SMOKE_MESSAGE);
 }
 
 function qaSendSmokeTargetUserId(): string | null {
   return qaSendSmokeTargetUserIdFromEnv(
-    import.meta.env.VITE_MATRIX_DESKTOP_QA_SEND_SMOKE_USER_ID
+    import.meta.env.VITE_KOUSHI_QA_SEND_SMOKE_USER_ID
   );
+}
+
+function qaRenderedDomDiagnostics(): QaDomDiagnostics {
+  const root = document.getElementById("root");
+  const screen = document.querySelector('[data-testid="boot-error"]')
+    ? "boot_error"
+    : document.querySelector('[data-testid="auth-screen"]')
+      ? "auth"
+      : document.querySelector('[data-testid="recovery-panel"]')
+        ? "recovery"
+        : document.querySelector('[data-testid="timeline-view"]')
+          ? "timeline"
+          : root?.childElementCount
+            ? "unknown"
+            : "empty";
+
+  return {
+    screen,
+    rootChildren: root?.childElementCount ?? 0,
+    bodyTextLength: document.body.innerText.length
+  };
 }
 
 export function App() {
@@ -699,7 +732,7 @@ export function App() {
     useState<ImageCompressionDialogState | null>(null);
   const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);
   const [loginUsername, setLoginUsername] = useState("");
-  const [loginDeviceName, setLoginDeviceName] = useState("Matrix Desktop");
+  const [loginDeviceName, setLoginDeviceName] = useState("Koushi");
   const [loginPasswordFilled, setLoginPasswordFilled] = useState(false);
   const [recoverySecretFilled, setRecoverySecretFilled] = useState(false);
   const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>("closed");
@@ -716,6 +749,7 @@ export function App() {
   const [primaryView, setPrimaryView] = useState<PrimaryView>("timeline");
   const [directorySearchDraft, setDirectorySearchDraft] = useState("");
   const [newDmDialogOpen, setNewDmDialogOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [newDmDraftUserId, setNewDmDraftUserId] = useState("");
   const [inviteUserDialog, setInviteUserDialog] = useState<InviteUserDialogState>(null);
   const [inviteUserDraftUserId, setInviteUserDraftUserId] = useState("");
@@ -962,12 +996,13 @@ export function App() {
             qaSendStatus,
             [
               ...qaSendSmokeTargetDiagnosticTokens(snapshot, qaSendSmokeTargetUserId()),
-              ...qaTimelineDiagnosticTokens(timelineDiagnostics)
+              ...qaTimelineDiagnosticTokens(timelineDiagnostics),
+              ...qaDomDiagnosticTokens(qaRenderedDomDiagnostics())
             ]
           )
         : desktopAttentionWindowTitle("Koushi", safeAttentionSummary)
       : qaTitleEnabled()
-        ? "matrix-desktop qa session=booting"
+        ? "koushi-desktop qa session=booting"
         : "Koushi";
 
     document.title = title;
@@ -1346,7 +1381,7 @@ export function App() {
 
   async function submitRecovery(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const secret = recoverySecretRef.current?.value ?? "";
+    const secret = recoverySecretRef.current?.value.trim() ?? "";
     setIsBusy(true);
     try {
       setSnapshot(await api.submitRecovery(secret));
@@ -1483,6 +1518,31 @@ export function App() {
 
   async function importRoomKeys(sourcePath: string, passphrase: string) {
     setSnapshot(await api.importRoomKeys(sourcePath, passphrase));
+  }
+
+  async function chooseRoomKeyExportDestination(): Promise<string | null> {
+    if (!isTauriRuntime()) {
+      return null;
+    }
+    const selected = await saveDialog({
+      title: t("settings.roomKeyExport"),
+      defaultPath: "koushi-room-keys.txt",
+      filters: [{ name: t("settings.roomKeyExport"), extensions: ["txt", "json"] }]
+    });
+    return selected || null;
+  }
+
+  async function chooseRoomKeyImportSource(): Promise<string | null> {
+    if (!isTauriRuntime()) {
+      return null;
+    }
+    const selected = await openDialog({
+      title: t("settings.roomKeyImport"),
+      multiple: false,
+      filters: [{ name: t("settings.roomKeyImport"), extensions: ["txt", "json"] }],
+      fileAccessMode: "scoped"
+    });
+    return typeof selected === "string" ? selected : null;
   }
 
   async function bootstrapSecureBackup(
@@ -1688,6 +1748,21 @@ export function App() {
       setSnapshot(await api.startDirectMessage(userId));
       closeNewDmDialog();
       setPrimaryView("timeline");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function startDirectMessage(userId: string) {
+    const trimmedUserId = userId.trim();
+    if (!trimmedUserId || isBusy) {
+      return;
+    }
+    setIsBusy(true);
+    try {
+      setSnapshot(await api.startDirectMessage(trimmedUserId));
+      setPrimaryView("timeline");
+      await setRightPanelModeClosingFocusedContext("closed");
     } finally {
       setIsBusy(false);
     }
@@ -2127,6 +2202,14 @@ export function App() {
     await setRightPanelModeClosingFocusedContext("closed");
   }
 
+  function openActivityRow(roomId: string, eventId: string) {
+    void api.selectSearchResult(roomId, eventId).then((nextSnapshot) => {
+      setSnapshot(nextSnapshot);
+      setPrimaryView("timeline");
+      setRightPanelMode("focusedContext");
+    });
+  }
+
   function selectSearchResult(roomId: string, eventId: string) {
     void api.selectSearchResult(roomId, eventId).then((nextSnapshot) => {
       setSnapshot(nextSnapshot);
@@ -2363,6 +2446,7 @@ export function App() {
         onOpenKeyboardSettings={() => {
           void setRightPanelModeClosingFocusedContext("keyboardSettings");
         }}
+        onOpenDiagnostics={() => setDiagnosticsOpen(true)}
         onRestartSync={restartSync}
         onSearchQueryChange={setSearchQuery}
         onSearchScopeChange={setSearchScope}
@@ -2434,7 +2518,7 @@ export function App() {
               void markActivityRead(target);
             }}
             onOpenRow={(row) => {
-              selectSearchResult(row.room_id, row.event_id);
+              openActivityRow(row.room_id, row.event_id);
             }}
             onSetTab={(tab) => {
               void setActivityTab(tab);
@@ -2476,6 +2560,7 @@ export function App() {
             searchResults={searchResults}
             showSearchResults={effectiveRightPanelMode !== "search"}
             snapshot={snapshot}
+            rightPanelOpen={rightPanelOpen}
             timelineTransport={appTimelineTransport}
             onCancelReply={() => {
               void cancelComposerReply();
@@ -2605,6 +2690,9 @@ export function App() {
           onSetRoomNotificationMode={(roomId, mode) => {
             void setRoomNotificationMode(roomId, mode);
           }}
+          onStartDirectMessage={(userId) => {
+            void startDirectMessage(userId);
+          }}
           onUpdateMemberRole={(roomId, targetUserId, powerLevel) => {
             void updateRoomMemberRole(roomId, targetUserId, powerLevel);
           }}
@@ -2636,6 +2724,8 @@ export function App() {
           onConfirmSasVerification={(flowId) => {
             void confirmSasVerification(flowId);
           }}
+          onChooseRoomKeyExportDestination={chooseRoomKeyExportDestination}
+          onChooseRoomKeyImportSource={chooseRoomKeyImportSource}
           onExportRoomKeys={(destinationPath, passphrase) => {
             void exportRoomKeys(destinationPath, passphrase);
           }}
@@ -2784,6 +2874,18 @@ export function App() {
           plan={imageCompressionDialog.plan}
           onCancel={() => settleImageCompressionDialog("cancel")}
           onChoose={(choice, saveDefault) => settleImageCompressionDialog(choice, saveDefault)}
+        />
+      ) : null}
+      {diagnosticsOpen ? (
+        <DiagnosticDialog
+          report={diagnosticReport({
+            snapshot,
+            panelMode: effectiveRightPanelMode,
+            sendStatus: qaSendStatus,
+            timelineDiagnostics,
+            domDiagnostics: qaRenderedDomDiagnostics()
+          })}
+          onClose={() => setDiagnosticsOpen(false)}
         />
       ) : null}
     </div>

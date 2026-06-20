@@ -9,23 +9,28 @@ use crate::{
     },
 };
 
-use super::is_session_ready;
+use super::{clear_login_failed_errors, is_session_ready};
 
 pub(crate) fn handle_e2ee_recovery_required(
     state: &mut AppState,
     info: crate::state::SessionInfo,
     methods: Vec<crate::state::RecoveryMethod>,
 ) -> Vec<AppEffect> {
+    let cleared_login_error = clear_login_failed_errors(state);
     state.session = SessionState::NeedsRecovery {
         info: info.clone(),
         methods,
     };
     state.sync = crate::state::SyncState::Starting;
-    vec![
+    let mut effects = vec![
         AppEffect::PersistSession(info),
         AppEffect::StartSync,
         AppEffect::EmitUiEvent(UiEvent::SessionChanged),
-    ]
+    ];
+    if cleared_login_error {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ErrorChanged));
+    }
+    effects
 }
 
 pub(crate) fn handle_e2ee_recovery_submitted(
@@ -59,10 +64,7 @@ pub(crate) fn handle_e2ee_recovery_succeeded(state: &mut AppState) -> Vec<AppEff
     ]
 }
 
-pub(crate) fn handle_e2ee_recovery_failed(
-    state: &mut AppState,
-    message: String,
-) -> Vec<AppEffect> {
+pub(crate) fn handle_e2ee_recovery_failed(state: &mut AppState, message: String) -> Vec<AppEffect> {
     let SessionState::Recovering { info, methods } = &state.session else {
         return Vec::new();
     };
@@ -96,8 +98,7 @@ pub(crate) fn handle_e2ee_recovery_state_changed(
             state.session = SessionState::NeedsRecovery { info, methods };
             vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
         }
-        crate::state::E2eeRecoveryState::Enabled
-        | crate::state::E2eeRecoveryState::Disabled => {
+        crate::state::E2eeRecoveryState::Enabled | crate::state::E2eeRecoveryState::Disabled => {
             let info = match &state.session {
                 SessionState::NeedsRecovery { info, .. }
                 | SessionState::Recovering { info, .. } => info.clone(),
@@ -544,8 +545,7 @@ pub(crate) fn handle_room_key_export_requested(
     {
         return Vec::new();
     }
-    state.e2ee_trust.key_management.room_key_export =
-        RoomKeyExportState::Exporting { request_id };
+    state.e2ee_trust.key_management.room_key_export = RoomKeyExportState::Exporting { request_id };
     e2ee_key_management_events()
 }
 
@@ -599,8 +599,7 @@ pub(crate) fn handle_room_key_import_requested(
     {
         return Vec::new();
     }
-    state.e2ee_trust.key_management.room_key_import =
-        RoomKeyImportState::Importing { request_id };
+    state.e2ee_trust.key_management.room_key_import = RoomKeyImportState::Importing { request_id };
     e2ee_key_management_events()
 }
 
@@ -801,10 +800,7 @@ pub(crate) fn handle_qr_login_capability_check_requested(
     vec![AppEffect::EmitUiEvent(UiEvent::QrLoginChanged)]
 }
 
-pub(crate) fn handle_qr_login_unavailable(
-    state: &mut AppState,
-    request_id: u64,
-) -> Vec<AppEffect> {
+pub(crate) fn handle_qr_login_unavailable(state: &mut AppState, request_id: u64) -> Vec<AppEffect> {
     if !matches!(
         state.qr_login,
         QrLoginState::CheckingCapability {
@@ -847,10 +843,7 @@ pub(crate) fn handle_qr_login_scan_started(
     vec![AppEffect::EmitUiEvent(UiEvent::QrLoginChanged)]
 }
 
-pub(crate) fn handle_qr_login_verified(
-    state: &mut AppState,
-    request_id: u64,
-) -> Vec<AppEffect> {
+pub(crate) fn handle_qr_login_verified(state: &mut AppState, request_id: u64) -> Vec<AppEffect> {
     if !matches!(
         state.qr_login,
         QrLoginState::Displaying {

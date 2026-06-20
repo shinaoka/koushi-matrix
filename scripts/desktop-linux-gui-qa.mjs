@@ -103,7 +103,7 @@ if (args.has("--check-tools")) {
 }
 
 if (args.has("--child-env-keys")) {
-  for (const key of Object.keys(childEnvironment("/tmp/matrix-desktop-linux-gui-qa")).sort()) {
+  for (const key of Object.keys(childEnvironment("/tmp/koushi-desktop-linux-gui-qa")).sort()) {
     console.log(key);
   }
   process.exit(0);
@@ -111,7 +111,7 @@ if (args.has("--child-env-keys")) {
 
 if (args.has("--child-env")) {
   for (const [key, value] of Object.entries(
-    childEnvironment(qaDataDirForRun("/tmp/matrix-desktop-linux-gui-qa"))
+    childEnvironment(qaDataDirForRun("/tmp/koushi-desktop-linux-gui-qa"))
   ).sort(([left], [right]) => left.localeCompare(right))) {
     console.log(`${key}=${value}`);
   }
@@ -421,7 +421,7 @@ async function runLocalSendScenario() {
 
     const composer = await session.browser.$('textarea[aria-label="Message composer"]');
     await composer.waitForDisplayed({ timeout: timeoutMs });
-    const message = `Matrix Desktop GUI QA ${timestamp()}`;
+    const message = `Koushi GUI QA ${timestamp()}`;
     await composer.click();
     await composer.setValue(message);
     await session.browser.keys("Enter");
@@ -710,7 +710,7 @@ async function runLocalMediaScenario() {
     const filename = `qa-media-${safeTimestamp()}.txt`;
     const caption = `QA media caption ${safeTimestamp()}`;
     const fixturePath = join(session.runDir, filename);
-    writeFileSync(fixturePath, "Matrix Desktop Linux GUI media fixture\n", "utf8");
+    writeFileSync(fixturePath, "Koushi Linux GUI media fixture\n", "utf8");
     const composer = await session.browser.$('textarea[aria-label="Message composer"]');
     await composer.waitForDisplayed({ timeout: timeoutMs });
     await composer.click();
@@ -721,7 +721,7 @@ async function runLocalMediaScenario() {
       fixturePath,
       filename,
       "text/plain",
-      "Matrix Desktop Linux GUI media fixture"
+      "Koushi Linux GUI media fixture"
     );
     await waitForDocumentText(
       session.browser,
@@ -1925,7 +1925,7 @@ async function runLocalE2eeKeyManagementScenario() {
     const keyFilePath = join(session.runDir, "room-keys.txt");
     const recoveryKeyPath = join(session.runDir, "secure-backup-recovery.txt");
     const keyFilePassphrase = `koushi-key-transfer-${safeTimestamp()}`;
-    const secureBackupPassphrase = `matrix-desktop-secure-backup-${safeTimestamp()}`;
+    const secureBackupPassphrase = `koushi-desktop-secure-backup-${safeTimestamp()}`;
 
     await setKeyManagementFormInput(
       session.browser,
@@ -3653,7 +3653,7 @@ async function startLocalGuiScenario() {
 
     const userSuffix = safeTimestamp();
     const username = `qa_local_${userSuffix}`;
-    const password = `matrix-desktop-local-${userSuffix}`;
+    const password = `koushi-desktop-local-${userSuffix}`;
     const registration = await registerUser(homeserver, username, password);
     const accessToken = registration.access_token;
     const userId = registration.user_id;
@@ -3682,7 +3682,7 @@ async function startLocalGuiScenario() {
 
     if (guiScenario === "local-composer") {
       const helperUsername = `qa_mention_${userSuffix}`;
-      const helperPassword = `matrix-desktop-helper-${userSuffix}`;
+      const helperPassword = `koushi-desktop-helper-${userSuffix}`;
       const helperRegistration = await registerUser(homeserver, helperUsername, helperPassword);
       const helperAccessToken = helperRegistration.access_token;
       const helperUserId = helperRegistration.user_id;
@@ -3709,7 +3709,7 @@ async function startLocalGuiScenario() {
 
     if (guiScenario === "local-timeline-navigation") {
       const helperUsername = `qa_timeline_nav_${userSuffix}`;
-      const helperPassword = `matrix-desktop-helper-${userSuffix}`;
+      const helperPassword = `koushi-desktop-helper-${userSuffix}`;
       const helperRegistration = await registerUser(homeserver, helperUsername, helperPassword);
       const helperAccessToken = helperRegistration.access_token;
       const helperUserId = helperRegistration.user_id;
@@ -3732,7 +3732,7 @@ async function startLocalGuiScenario() {
 
     if (guiScenario === "local-message-types") {
       const helperUsername = `qa_message_types_${userSuffix}`;
-      const helperPassword = `matrix-desktop-helper-${userSuffix}`;
+      const helperPassword = `koushi-desktop-helper-${userSuffix}`;
       const helperRegistration = await registerUser(homeserver, helperUsername, helperPassword);
       const helperAccessToken = helperRegistration.access_token;
       const helperUserId = helperRegistration.user_id;
@@ -3776,7 +3776,7 @@ async function startLocalGuiScenario() {
 
     if (guiScenario === "local-alias") {
       const helperUsername = `qa_alias_${userSuffix}`;
-      const helperPassword = `matrix-desktop-helper-${userSuffix}`;
+      const helperPassword = `koushi-desktop-helper-${userSuffix}`;
       const helperRegistration = await registerUser(homeserver, helperUsername, helperPassword);
       const helperAccessToken = helperRegistration.access_token;
       const helperUserId = helperRegistration.user_id;
@@ -3799,7 +3799,7 @@ async function startLocalGuiScenario() {
 
     if (guiScenario === "local-room-management") {
       const helperUsername = `qa_management_${userSuffix}`;
-      const helperPassword = `matrix-desktop-helper-${userSuffix}`;
+      const helperPassword = `koushi-desktop-helper-${userSuffix}`;
       const helperRegistration = await registerUser(homeserver, helperUsername, helperPassword);
       const helperAccessToken = helperRegistration.access_token;
       const helperUserId = helperRegistration.user_id;
@@ -3821,7 +3821,7 @@ async function startLocalGuiScenario() {
 
     if (guiScenario === "local-invites-dm") {
       const helperUsername = `qa_inviter_${userSuffix}`;
-      const helperPassword = `matrix-desktop-helper-${userSuffix}`;
+      const helperPassword = `koushi-desktop-helper-${userSuffix}`;
       const helperRegistration = await registerUser(homeserver, helperUsername, helperPassword);
       const helperAccessToken = helperRegistration.access_token;
       const helperUserId = helperRegistration.user_id;
@@ -3835,7 +3835,7 @@ async function startLocalGuiScenario() {
 
     if (guiScenario === "local-explore") {
       const helperUsername = `qa_directory_${userSuffix}`;
-      const helperPassword = `matrix-desktop-helper-${userSuffix}`;
+      const helperPassword = `koushi-desktop-helper-${userSuffix}`;
       const helperRegistration = await registerUser(homeserver, helperUsername, helperPassword);
       const helperAccessToken = helperRegistration.access_token;
       if (!helperAccessToken) {
@@ -3900,7 +3900,7 @@ async function startLocalGuiScenario() {
       homeserver,
       username,
       password,
-      deviceName: "Matrix Desktop Local QA"
+      deviceName: "Koushi Local QA"
     };
 
     return session;
@@ -4162,27 +4162,27 @@ function childEnvironment(dataDir, qaLoginPipePath = null, qaControlPipePath = n
     }
   }
   env.GDK_BACKEND = "x11";
-  env.MATRIX_DESKTOP_RESTORE_SESSION = qaProfile !== undefined ? "1" : "0";
-  env.MATRIX_DESKTOP_SKIP_SAVED_SESSIONS = "1";
-  env.MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE = "1";
-  env.MATRIX_DESKTOP_DATA_DIR = dataDir;
-  env.MATRIX_DESKTOP_QA_TITLE = "1";
-  env.VITE_MATRIX_DESKTOP_QA_TITLE = "1";
-  env.MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR = join(dataDir, "qa-credential-store");
+  env.KOUSHI_RESTORE_SESSION = qaProfile !== undefined ? "1" : "0";
+  env.KOUSHI_SKIP_SAVED_SESSIONS = "1";
+  env.KOUSHI_SKIP_KEYCHAIN_PERSISTENCE = "1";
+  env.KOUSHI_DATA_DIR = dataDir;
+  env.KOUSHI_QA_TITLE = "1";
+  env.VITE_KOUSHI_QA_TITLE = "1";
+  env.KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR = join(dataDir, "qa-credential-store");
   if (guiScenario === "local-invites-dm") {
-    env.MATRIX_DESKTOP_QA_FORCE_SYNC_BACKEND = "legacy";
+    env.KOUSHI_QA_FORCE_SYNC_BACKEND = "legacy";
   }
   env.NO_COLOR = "1";
   if (qaProfile !== undefined) {
-    env.MATRIX_DESKTOP_RESTORE_SESSION = "1";
+    env.KOUSHI_RESTORE_SESSION = "1";
   }
   if (qaLoginPipePath) {
-    env.MATRIX_DESKTOP_QA_LOGIN_PIPE = qaLoginPipePath;
+    env.KOUSHI_QA_LOGIN_PIPE = qaLoginPipePath;
   } else if (realLoginFromStdin) {
-    env.MATRIX_DESKTOP_QA_LOGIN_PIPE = join(dataDir, "qa-login.pipe");
+    env.KOUSHI_QA_LOGIN_PIPE = join(dataDir, "qa-login.pipe");
   }
   if (qaControlPipePath) {
-    env.MATRIX_DESKTOP_QA_CONTROL_PIPE = qaControlPipePath;
+    env.KOUSHI_QA_CONTROL_PIPE = qaControlPipePath;
   }
   Object.assign(env, nssWrapperEnvironment(dataDir));
   return env;
@@ -4205,8 +4205,8 @@ function nssWrapperEnvironment(dataDir) {
 
   const passwdPath = join(nssDir, "passwd");
   const groupPath = join(nssDir, "group");
-  writeFileSync(passwdPath, `matrix-desktop:x:${uid}:${gid}:Matrix Desktop:/tmp:/bin/sh\n`);
-  writeFileSync(groupPath, `matrix-desktop:x:${gid}:\n`);
+  writeFileSync(passwdPath, `koushi-desktop:x:${uid}:${gid}:Koushi:/tmp:/bin/sh\n`);
+  writeFileSync(groupPath, `koushi-desktop:x:${gid}:\n`);
 
   return {
     LD_PRELOAD: buildLdPreload(libraryPath),
@@ -4324,15 +4324,9 @@ function resolveDebugAppBinary() {
   const candidates = [];
   if (cargoTargetDir) {
     candidates.push(join(cargoTargetDir, "debug", "koushi-desktop"));
-    candidates.push(join(cargoTargetDir, "debug", "matrix-desktop-app"));
-    candidates.push(join(cargoTargetDir, "debug", "matrix-desktop"));
   }
   candidates.push(join(desktopDir, "src-tauri", "target", "debug", "koushi-desktop"));
-  candidates.push(join(desktopDir, "src-tauri", "target", "debug", "matrix-desktop-app"));
-  candidates.push(join(desktopDir, "src-tauri", "target", "debug", "matrix-desktop"));
   candidates.push(join(repoRoot, "target", "debug", "koushi-desktop"));
-  candidates.push(join(repoRoot, "target", "debug", "matrix-desktop-app"));
-  candidates.push(join(repoRoot, "target", "debug", "matrix-desktop"));
   const found = candidates.find((candidate) => existsSync(candidate));
   if (!found) {
     throw new Error(`unable to resolve debug Tauri binary. Checked: ${candidates.join(", ")}`);
@@ -4610,7 +4604,7 @@ async function triggerNotificationSmoke(browser, timeout) {
           return;
         }
 
-        const notification = new notificationApi("Matrix Desktop QA", {
+        const notification = new notificationApi("Koushi QA", {
           body: "Notification smoke"
         });
         window.setTimeout(() => {

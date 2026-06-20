@@ -114,7 +114,10 @@ pub(crate) fn handle_history_crawl_started(
 ) -> Vec<AppEffect> {
     state.search_crawler.rooms.insert(
         room_id,
-        crate::state::SearchCrawlerRoomState::Running { processed: 0, indexed: 0 },
+        crate::state::SearchCrawlerRoomState::Running {
+            processed: 0,
+            indexed: 0,
+        },
     );
     vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
 }
@@ -125,13 +128,10 @@ pub(crate) fn handle_history_crawl_progress(
     processed: u64,
     indexed: u64,
 ) -> Vec<AppEffect> {
-    state
-        .search_crawler
-        .rooms
-        .insert(room_id, crate::state::SearchCrawlerRoomState::Running {
-            processed,
-            indexed,
-        });
+    state.search_crawler.rooms.insert(
+        room_id,
+        crate::state::SearchCrawlerRoomState::Running { processed, indexed },
+    );
     vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
 }
 
@@ -140,10 +140,10 @@ pub(crate) fn handle_history_crawl_completed(
     room_id: String,
     indexed: u64,
 ) -> Vec<AppEffect> {
-    state
-        .search_crawler
-        .rooms
-        .insert(room_id, crate::state::SearchCrawlerRoomState::Completed { indexed });
+    state.search_crawler.rooms.insert(
+        room_id,
+        crate::state::SearchCrawlerRoomState::Completed { indexed },
+    );
     vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
 }
 

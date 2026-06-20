@@ -6,7 +6,7 @@
  *     controlled responses.
  *   - Utilities to push fake CoreEvent / AppStateSnapshot payloads to
  *     registered listeners (simulating what the real Tauri backend emits on
- *     `matrix-desktop://event` and `matrix-desktop://state`).
+ *     `koushi-desktop://event` and `koushi-desktop://state`).
  *
  * Used by two test tiers (plan changelog 2026-06-13):
  *   - Vitest node-mode logic tests (timelineStore.test.ts);
@@ -83,17 +83,17 @@ export class TauriIpcMock {
 
   // ---- Event emission (simulates core backend) ----
 
-  /** Push a CoreEvent as if the Tauri backend emitted matrix-desktop://event */
+  /** Push a CoreEvent as if the Tauri backend emitted koushi-desktop://event */
   emitCoreEvent(event: CoreEventPayload): void {
-    const listeners = this.listeners.get("matrix-desktop://event") ?? [];
+    const listeners = this.listeners.get("koushi-desktop://event") ?? [];
     for (const listener of listeners) {
       listener({ payload: event });
     }
   }
 
-  /** Push a state-changed notification as if the backend emitted matrix-desktop://state */
+  /** Push a state-changed notification as if the backend emitted koushi-desktop://state */
   emitStateChanged(): void {
-    const listeners = this.listeners.get("matrix-desktop://state") ?? [];
+    const listeners = this.listeners.get("koushi-desktop://state") ?? [];
     for (const listener of listeners) {
       listener({ payload: "stateChanged" });
     }

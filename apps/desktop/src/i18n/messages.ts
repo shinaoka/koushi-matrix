@@ -51,6 +51,7 @@ export type MessageId =
   | "auth.flowSso"
   | "auth.flowToken"
   | "auth.flowUnknown"
+  | "auth.loginFailureUsernameHint"
   | "auth.matrixAccount"
   | "auth.matrixDesktop"
   | "auth.noLoginMethods"
@@ -62,7 +63,10 @@ export type MessageId =
   | "auth.sessionLocked"
   | "auth.signIn"
   | "auth.supportedRecoveryMethods"
+  | "auth.username"
+  | "auth.usernameHelp"
   | "auth.usernameOrMatrixId"
+  | "auth.usernamePlaceholder"
   | "composer.attachedFile"
   | "composer.attachmentFallback"
   | "composer.attachFile"
@@ -133,6 +137,9 @@ export type MessageId =
   | "dialog.reportReasonTitle"
   | "dialog.submitCreateRoom"
   | "dialog.submitCreateSpace"
+  | "diagnostics.copy"
+  | "diagnostics.open"
+  | "diagnostics.title"
   | "emoji.category.smileys"
   | "emoji.category.people"
   | "emoji.category.nature"
@@ -238,6 +245,7 @@ export type MessageId =
   | "room.kick"
   | "room.kickMember"
   | "room.management"
+  | "room.messageMember"
   | "room.aliasDialogTitle"
   | "room.aliasInput"
   | "room.clearAlias"
@@ -397,6 +405,7 @@ export type MessageId =
   | "settings.roomKeyExportedCount"
   | "settings.roomKeyExportFailed"
   | "settings.exportRoomKeys"
+  | "settings.chooseRoomKeyExportFile"
   | "settings.roomKeyImport"
   | "settings.roomKeyImportSource"
   | "settings.roomKeyImportIdle"
@@ -404,6 +413,9 @@ export type MessageId =
   | "settings.roomKeyImportedCount"
   | "settings.roomKeyImportFailed"
   | "settings.importRoomKeys"
+  | "settings.chooseRoomKeyImportFile"
+  | "settings.roomKeyPassphrasePromptExport"
+  | "settings.roomKeyPassphrasePromptImport"
   | "settings.roomKeyPassphrase"
   | "settings.secureBackup"
   | "settings.secureBackupPassphrase"
@@ -855,6 +867,8 @@ const en: Catalog = {
   "auth.flowSso": "Single sign-on",
   "auth.flowToken": "Token",
   "auth.flowUnknown": "Unknown method",
+  "auth.loginFailureUsernameHint":
+    "For @alice:matrix.org, enter alice here and keep matrix.org in Homeserver.",
   "auth.matrixAccount": "Matrix account",
   "auth.matrixDesktop": "Koushi",
   "auth.noLoginMethods": "No login methods",
@@ -866,7 +880,10 @@ const en: Catalog = {
   "auth.sessionLocked": "Session locked",
   "auth.signIn": "Sign in",
   "auth.supportedRecoveryMethods": "Supported recovery methods",
+  "auth.username": "Username",
+  "auth.usernameHelp": "Enter only the localpart. Do not include @ or the server name.",
   "auth.usernameOrMatrixId": "Username or Matrix ID",
+  "auth.usernamePlaceholder": "alice",
   "composer.attachedFile": "Attached file",
   "composer.attachmentFallback": "Attachment",
   "composer.attachFile": "Attach file",
@@ -937,6 +954,9 @@ const en: Catalog = {
   "dialog.reportReasonTitle": "Report",
   "dialog.submitCreateRoom": "Submit create room",
   "dialog.submitCreateSpace": "Submit create space",
+  "diagnostics.copy": "Copy diagnostics",
+  "diagnostics.open": "Open diagnostics",
+  "diagnostics.title": "Diagnostics",
   "emoji.category.smileys": "Smileys",
   "emoji.category.people": "People",
   "emoji.category.nature": "Nature",
@@ -1042,6 +1062,7 @@ const en: Catalog = {
   "room.kick": "Kick",
   "room.kickMember": "Kick {name}",
   "room.management": "Room management",
+  "room.messageMember": "Message {name}",
   "room.memberRole": "Member role",
   "room.memberRoleFor": "Member role for {name}",
   "room.aliasDialogTitle": "Alias for {name}",
@@ -1093,7 +1114,7 @@ const en: Catalog = {
   "room.unreadCount": "{count} unread",
   "roomList.filterRooms": "Rooms",
   "roomList.filterUnread": "Unread",
-  "roomList.filterPeople": "People",
+  "roomList.filterPeople": "DMs",
   "roomList.filterFavourites": "Favourites",
   "roomList.filterInvites": "Invites",
   "room.markAsRead": "Mark as read",
@@ -1213,6 +1234,7 @@ const en: Catalog = {
   "settings.roomKeyExportedCount": "{count} sessions exported",
   "settings.roomKeyExportFailed": "Export failed: {reason}",
   "settings.exportRoomKeys": "Export room keys",
+  "settings.chooseRoomKeyExportFile": "Choose export file",
   "settings.roomKeyImport": "Room key import",
   "settings.roomKeyImportSource": "Key import source",
   "settings.roomKeyImportIdle": "Not imported",
@@ -1220,6 +1242,9 @@ const en: Catalog = {
   "settings.roomKeyImportedCount": "{imported} of {total} imported",
   "settings.roomKeyImportFailed": "Import failed: {reason}",
   "settings.importRoomKeys": "Import room keys",
+  "settings.chooseRoomKeyImportFile": "Choose import file",
+  "settings.roomKeyPassphrasePromptExport": "Enter a passphrase for the room key export.",
+  "settings.roomKeyPassphrasePromptImport": "Enter the passphrase for this room key file.",
   "settings.roomKeyPassphrase": "Room key passphrase",
   "settings.secureBackup": "Secure backup",
   "settings.secureBackupPassphrase": "Secure backup passphrase",
@@ -1483,7 +1508,7 @@ const en: Catalog = {
   "workspace.favourites": "Favourites",
   "workspace.lowPriority": "Low priority",
   "workspace.newDm": "New DM",
-  "workspace.people": "People",
+  "workspace.people": "DMs",
   "workspace.rooms": "Rooms",
   "workspace.resizeRoomList": "Resize room list",
   "workspace.search": "Search",
@@ -1571,7 +1596,13 @@ const ja: Catalog = {
   "auth.sessionLocked": "セッションはロック中",
   "auth.signIn": "サインイン",
   "auth.supportedRecoveryMethods": "対応している復旧方法",
+  "auth.loginFailureUsernameHint":
+    "例: @alice:matrix.org の場合は alice だけを入力し、matrix.org はホームサーバー欄に入れます。",
+  "auth.username": "ユーザー名",
+  "auth.usernameHelp":
+    "ローカル部だけを入力します。先頭の @ とサーバー名は入れません。",
   "auth.usernameOrMatrixId": "ユーザー名またはMatrix ID",
+  "auth.usernamePlaceholder": "例: alice",
   "composer.attachedFile": "添付ファイル",
   "composer.attachmentFallback": "添付",
   "composer.attachFile": "ファイルを添付",
@@ -1642,6 +1673,9 @@ const ja: Catalog = {
   "dialog.reportReasonTitle": "報告",
   "dialog.submitCreateRoom": "ルーム作成を実行",
   "dialog.submitCreateSpace": "スペース作成を実行",
+  "diagnostics.copy": "診断情報をコピー",
+  "diagnostics.open": "診断情報を開く",
+  "diagnostics.title": "診断情報",
   "emoji.category.smileys": "顔",
   "emoji.category.people": "人",
   "emoji.category.nature": "自然",
@@ -1747,6 +1781,7 @@ const ja: Catalog = {
   "room.kick": "キック",
   "room.kickMember": "{name}をキック",
   "room.management": "ルーム管理",
+  "room.messageMember": "{name}にメッセージ",
   "room.memberRole": "メンバーロール",
   "room.memberRoleFor": "{name}のメンバーロール",
   "room.aliasDialogTitle": "{name}のエイリアス",
@@ -1798,7 +1833,7 @@ const ja: Catalog = {
   "room.unreadCount": "未読 {count} 件",
   "roomList.filterRooms": "ルーム",
   "roomList.filterUnread": "未読",
-  "roomList.filterPeople": "ユーザー",
+  "roomList.filterPeople": "DM",
   "roomList.filterFavourites": "お気に入り",
   "roomList.filterInvites": "招待",
   "room.markAsRead": "既読にする",
@@ -1917,6 +1952,7 @@ const ja: Catalog = {
   "settings.roomKeyExportedCount": "{count} セッションをエクスポート済み",
   "settings.roomKeyExportFailed": "エクスポート失敗: {reason}",
   "settings.exportRoomKeys": "ルーム鍵をエクスポート",
+  "settings.chooseRoomKeyExportFile": "エクスポート先ファイルを選択",
   "settings.roomKeyImport": "ルーム鍵インポート",
   "settings.roomKeyImportSource": "鍵インポート元",
   "settings.roomKeyImportIdle": "未インポート",
@@ -1924,6 +1960,11 @@ const ja: Catalog = {
   "settings.roomKeyImportedCount": "{imported}/{total} をインポート済み",
   "settings.roomKeyImportFailed": "インポート失敗: {reason}",
   "settings.importRoomKeys": "ルーム鍵をインポート",
+  "settings.chooseRoomKeyImportFile": "インポート元ファイルを選択",
+  "settings.roomKeyPassphrasePromptExport":
+    "ルーム鍵エクスポート用のパスフレーズを入力します。",
+  "settings.roomKeyPassphrasePromptImport":
+    "このルーム鍵ファイルのパスフレーズを入力します。",
   "settings.roomKeyPassphrase": "ルーム鍵パスフレーズ",
   "settings.secureBackup": "セキュアバックアップ",
   "settings.secureBackupPassphrase": "セキュアバックアップのパスフレーズ",
@@ -2185,7 +2226,7 @@ const ja: Catalog = {
   "workspace.favourites": "お気に入り",
   "workspace.lowPriority": "低優先度",
   "workspace.newDm": "新しいDM",
-  "workspace.people": "ユーザー",
+  "workspace.people": "DM",
   "workspace.rooms": "ルーム",
   "workspace.resizeRoomList": "ルームリストの幅を変更",
   "workspace.search": "検索",

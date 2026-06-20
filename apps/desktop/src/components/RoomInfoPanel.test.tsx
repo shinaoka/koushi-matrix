@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { renderToStaticMarkup } from "react-dom/server";
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { RoomInfoPanel } from "./RoomInfoPanel";
@@ -249,6 +249,125 @@ describe("RoomInfoPanel", () => {
     expect(markup).toContain("Original: Upstream Member");
     expect(markup).toContain("Edit alias for Local Remark");
     expect(markup).toContain("Clear alias for Local Remark");
+  });
+
+  test("starts a direct message from a room member row", () => {
+    const startedUserIds: string[] = [];
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        onStartDirectMessage={(userId) => {
+          startedUserIds.push(userId);
+        }}
+        roomManagement={{
+          selected_room_id: "!room-alpha:example.invalid",
+          settings: {
+            room_id: "!room-alpha:example.invalid",
+            name: "Alpha Room",
+            topic: null,
+            avatar_url: null,
+            join_rule: "invite",
+            history_visibility: "shared",
+            permissions: {
+              can_edit_settings: true,
+              can_edit_roles: true,
+              can_kick: true,
+              can_ban: true,
+              can_unban: false
+            },
+            members: [
+              {
+                user_id: "@member:example.invalid",
+                display_name: "Upstream Member",
+                display_label: "Local Remark",
+                original_display_label: "Upstream Member",
+                avatar_url: null,
+                power_level: 0,
+                role: "user"
+              }
+            ]
+          },
+          operation: { kind: "idle" }
+        }}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Message Local Remark" }));
+
+    expect(startedUserIds).toEqual(["@member:example.invalid"]);
+  });
+
+  test("renders every loaded room member with a direct-message entry point", () => {
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        onStartDirectMessage={() => undefined}
+        roomManagement={{
+          selected_room_id: "!room-alpha:example.invalid",
+          settings: {
+            room_id: "!room-alpha:example.invalid",
+            name: "Alpha Room",
+            topic: null,
+            avatar_url: null,
+            join_rule: "invite",
+            history_visibility: "shared",
+            permissions: {
+              can_edit_settings: true,
+              can_edit_roles: true,
+              can_kick: true,
+              can_ban: true,
+              can_unban: false
+            },
+            members: [
+              {
+                user_id: "@ada:example.invalid",
+                display_name: "Ada",
+                display_label: "Ada",
+                original_display_label: "Ada",
+                avatar_url: null,
+                power_level: 100,
+                role: "administrator"
+              },
+              {
+                user_id: "@grace:example.invalid",
+                display_name: "Grace",
+                display_label: "Grace",
+                original_display_label: "Grace",
+                avatar_url: null,
+                power_level: 50,
+                role: "moderator"
+              },
+              {
+                user_id: "@linus:example.invalid",
+                display_name: "Linus",
+                display_label: "Linus",
+                original_display_label: "Linus",
+                avatar_url: null,
+                power_level: 0,
+                role: "user"
+              }
+            ]
+          },
+          operation: { kind: "idle" }
+        }}
+      />
+    );
+
+    for (const member of ["Ada", "Grace", "Linus"]) {
+      expect(screen.getByText(member)).toBeTruthy();
+      expect(screen.getByRole("button", { name: `Message ${member}` })).toBeTruthy();
+    }
+    for (const userId of [
+      "@ada:example.invalid",
+      "@grace:example.invalid",
+      "@linus:example.invalid"
+    ]) {
+      expect(screen.getByText(userId)).toBeTruthy();
+    }
   });
 
   test("does not synthesize room member labels when the projected label is empty", () => {

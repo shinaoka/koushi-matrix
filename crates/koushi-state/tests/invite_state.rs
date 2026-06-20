@@ -96,9 +96,7 @@ fn invite_list_filters_invites_from_ignored_inviters_in_room_list_projection() {
     ignored.insert("@blocked:localhost".to_owned());
     reduce(
         &mut state,
-        AppAction::IgnoredUsersLoaded {
-            user_ids: ignored,
-        },
+        AppAction::IgnoredUsersLoaded { user_ids: ignored },
     );
 
     // Switch room list to Invites filter so the projection is active.
@@ -184,11 +182,11 @@ fn invite_list_updated_replaces_entire_list_not_delta() {
     assert_eq!(state.invites[0].room_id, "!room-c:localhost");
 
     // Empty snapshot clears everything.
-    reduce(
-        &mut state,
-        AppAction::InviteListUpdated { invites: vec![] },
+    reduce(&mut state, AppAction::InviteListUpdated { invites: vec![] });
+    assert!(
+        state.invites.is_empty(),
+        "empty snapshot must clear all invites"
     );
-    assert!(state.invites.is_empty(), "empty snapshot must clear all invites");
 }
 
 /// Characterization: account switch clears invite list as part of the
@@ -231,10 +229,7 @@ fn invite_list_is_cleared_on_account_switch() {
 fn invite_list_update_always_emits_room_list_changed_effect() {
     let mut state = ready_state();
 
-    let effects = reduce(
-        &mut state,
-        AppAction::InviteListUpdated { invites: vec![] },
-    );
+    let effects = reduce(&mut state, AppAction::InviteListUpdated { invites: vec![] });
     assert!(
         effects.contains(&AppEffect::EmitUiEvent(UiEvent::RoomListChanged)),
         "empty invite update must still emit RoomListChanged"

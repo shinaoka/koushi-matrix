@@ -2,7 +2,7 @@
  * TypeScript types for CoreEvent and AppStateSnapshot IPC payloads.
  *
  * These are the EXACT serialised forms of the Rust CoreEvent payloads as
- * emitted on `matrix-desktop://event` (see `serialize_core_event` in
+ * emitted on `koushi-desktop://event` (see `serialize_core_event` in
  * apps/desktop/src-tauri/src/lib.rs). Serde enums are externally tagged:
  * struct variants serialise as `{"Variant":{..}}`, unit variants as
  * `"Variant"`, and newtype wrappers (AccountKey, TimelineGeneration,
@@ -871,7 +871,7 @@ export type ReportFailureKind =
   | "Sdk";
 
 // ---------------------------------------------------------------------------
-// CoreEvent envelope (the `matrix-desktop://event` payload shape produced by
+// CoreEvent envelope (the `koushi-desktop://event` payload shape produced by
 // serialize_core_event in src-tauri lib.rs)
 // ---------------------------------------------------------------------------
 

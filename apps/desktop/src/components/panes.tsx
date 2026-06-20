@@ -518,6 +518,7 @@ export function TimelinePane({
   searchResults,
   showSearchResults,
   snapshot,
+  rightPanelOpen,
   timelineTransport,
   onCancelReply,
   onCancelScheduledSend,
@@ -553,6 +554,7 @@ export function TimelinePane({
   searchResults: SearchResult[];
   showSearchResults: boolean;
   snapshot: DesktopSnapshot;
+  rightPanelOpen: boolean;
   timelineTransport: TimelineTransport | null;
   onCancelReply: () => void;
   onCancelScheduledSend: (scheduledId: string) => void;
@@ -626,7 +628,7 @@ export function TimelinePane({
             <ImageIcon size={ICON_SIZE.panel} />
           </button>
           <button className="icon-button" type="button" aria-label={t("room.rightPanelToggle")} onClick={onToggleThread}>
-            {snapshot.state.ui.thread.kind !== "closed" ? <PanelRightClose size={ICON_SIZE.panel} /> : <PanelRightOpen size={ICON_SIZE.panel} />}
+            {rightPanelOpen ? <PanelRightClose size={ICON_SIZE.panel} /> : <PanelRightOpen size={ICON_SIZE.panel} />}
           </button>
           <button
             className="icon-button"

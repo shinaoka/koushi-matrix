@@ -13,7 +13,7 @@
 //!   in error messages. This binary self-checks its own transcript for those values
 //!   before exit and fails if they are found (redaction check).
 //! - An unexpected keychain prompt = automation failure. The file credential
-//!   store override (MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR) is mandatory.
+//!   store override (KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR) is mandatory.
 //! - ABSOLUTE_PROHIBITION: no GUI launch in any form.
 //! - Logout cleanup runs even on earlier failures (finally-ish path) so no
 //!   stale devices accumulate on the homeserver.
@@ -47,9 +47,9 @@
 //!
 //! ## Required env
 //!
-//! - MATRIX_DESKTOP_REAL_QA_CREDENTIALS_PATH - path to the credentials JSON file
-//! - MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR - mandatory; see keychain guard
-//! - MATRIX_DESKTOP_QA_DATA_DIR (optional) - overrides per-run data dir root
+//! - KOUSHI_REAL_QA_CREDENTIALS_PATH - path to the credentials JSON file
+//! - KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR - mandatory; see keychain guard
+//! - KOUSHI_QA_DATA_DIR (optional) - overrides per-run data dir root
 
 #![allow(dead_code)]
 
@@ -75,13 +75,13 @@ use koushi_state::{
 // Env var constants
 // ---------------------------------------------------------------------------
 
-const ENV_DATA_DIR: &str = "MATRIX_DESKTOP_QA_DATA_DIR";
-const ENV_REAL_QA_SCENARIO: &str = "MATRIX_DESKTOP_REAL_QA_SCENARIO";
+const ENV_DATA_DIR: &str = "KOUSHI_QA_DATA_DIR";
+const ENV_REAL_QA_SCENARIO: &str = "KOUSHI_REAL_QA_SCENARIO";
 
 #[cfg(any(debug_assertions, test))]
-const ENV_CREDENTIALS_PATH: &str = "MATRIX_DESKTOP_REAL_QA_CREDENTIALS_PATH";
+const ENV_CREDENTIALS_PATH: &str = "KOUSHI_REAL_QA_CREDENTIALS_PATH";
 #[cfg(any(debug_assertions, test))]
-const ENV_FILE_CREDENTIAL_STORE_DIR: &str = "MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR";
+const ENV_FILE_CREDENTIAL_STORE_DIR: &str = "KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR";
 
 #[cfg(any(debug_assertions, test))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -188,7 +188,7 @@ impl RealCredentials {
             .to_owned();
         let device_display_name = value["device_display_name"]
             .as_str()
-            .unwrap_or("Matrix Desktop Real QA")
+            .unwrap_or("Koushi Real QA")
             .to_owned();
 
         Ok(Self {
@@ -393,7 +393,7 @@ fn real_qa_data_dir() -> std::path::PathBuf {
         .unwrap_or_default()
         .as_secs();
     std::env::temp_dir()
-        .join("matrix-desktop-real-qa")
+        .join("koushi-desktop-real-qa")
         .join(format!("{}_{}", std::process::id(), ts))
 }
 
@@ -2384,9 +2384,7 @@ mod tests {
         };
 
         runtime
-            .inject_actions(vec![koushi_state::AppAction::LoginSucceeded(
-                info.clone(),
-            )])
+            .inject_actions(vec![koushi_state::AppAction::LoginSucceeded(info.clone())])
             .await;
 
         wait_for_ready_snapshot(&mut conn, "setup ready")
@@ -2397,12 +2395,10 @@ mod tests {
         let delayed = tokio::spawn(async move {
             sleep(Duration::from_millis(50)).await;
             runtime2
-                .inject_actions(vec![
-                    koushi_state::AppAction::E2eeRecoveryStateChanged {
-                        state: koushi_state::E2eeRecoveryState::Incomplete,
-                        methods: vec![koushi_state::RecoveryMethod::RecoveryKey],
-                    },
-                ])
+                .inject_actions(vec![koushi_state::AppAction::E2eeRecoveryStateChanged {
+                    state: koushi_state::E2eeRecoveryState::Incomplete,
+                    methods: vec![koushi_state::RecoveryMethod::RecoveryKey],
+                }])
                 .await;
         });
 

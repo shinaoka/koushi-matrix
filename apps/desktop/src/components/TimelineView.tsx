@@ -2,7 +2,7 @@
  * TimelineView: the event-driven timeline message list.
  *
  * Pure transport client of koushi-core: renders ONLY from the
- * timeline store fed by `matrix-desktop://event` CoreEvent payloads — never
+ * timeline store fed by `koushi-desktop://event` CoreEvent payloads — never
  * from AppState timeline fields (Async rule 4).
  *
  * Viewport/Scrollback contract (docs/architecture/overview.md):
@@ -105,8 +105,10 @@ import type {
 // ---------------------------------------------------------------------------
 
 export interface TimelineTransport {
-  /** Subscribe to `matrix-desktop://event`; returns an unsubscribe fn. */
+  /** Subscribe to `koushi-desktop://event`; returns an unsubscribe fn. */
   listenCoreEvents(listener: (payload: CoreEventPayload) => void): () => void;
+  /** Re/subscribe this key after the listener is active so InitialItems cannot be missed. */
+  ensureSubscribed?(timelineKey: TimelineKey): Promise<void>;
   /** Invoke a backward-pagination command for this timeline key. */
   paginateBackwards(timelineKey: TimelineKey): Promise<void>;
   /** Send a reaction command for a timeline event. */
@@ -1219,8 +1221,9 @@ export function TimelineView({
 
       setStore((current) => applyTimelineEvent(current, event));
     });
+    void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
     return unsubscribe;
-  }, [transport]);
+  }, [timelineKeyHash, transport]);
 
   useEffect(() => {
     setNavigationSnapshot(null);

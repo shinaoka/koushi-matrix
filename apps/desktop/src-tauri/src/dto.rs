@@ -3,7 +3,7 @@
 //! `FrontendDesktopSnapshot` is built from `AppStateSnapshot` (the core state
 //! projection). Timeline items and thread messages are REMOVED from the
 //! snapshot in Phase 7; they flow as `CoreEvent::Timeline` diffs over
-//! `matrix-desktop://event`. The TS types.ts contract keeps `timeline` and
+//! `koushi-desktop://event`. The TS types.ts contract keeps `timeline` and
 //! `thread` fields for backward compat; the adapter now always sends `[]` /
 //! `null` and the React timeline store populates them from events.
 //!
@@ -15,13 +15,13 @@ use koushi_state::{
     AccountManagementCapabilities, AccountManagementState, ActivityState, AppError, AppState,
     AuthDiscoveryState, BasicOperationState, CjkTextPolicyState, ComposerState,
     DeviceSessionListState, DirectoryState, DisplayPlatform, E2eeTrustState, FilesViewState,
-    FocusedContextState, InvitePreview, LinkPreviewSettingsState, LiveSignalsState, LocalEncryptionState,
-    LocaleDisplayProfile, NativeAttentionCapabilities, NativeAttentionState, NavigationState,
-    ProfileState, QrLoginState, RecoveryMethod, RoomInteractionState, RoomListProjection,
-    RoomManagementState, RoomNotificationSettings, RoomSummary, SearchCrawlerState,
-    SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState, SessionState,
-    SettingsState, SidebarModel, SoftLogoutReauthState, SpaceSummary, SyncMode, SyncState,
-    ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
+    FocusedContextState, InvitePreview, LinkPreviewSettingsState, LiveSignalsState,
+    LocalEncryptionState, LocaleDisplayProfile, NativeAttentionCapabilities, NativeAttentionState,
+    NavigationState, ProfileState, QrLoginState, RecoveryMethod, RoomInteractionState,
+    RoomListProjection, RoomManagementState, RoomNotificationSettings, RoomSummary,
+    SearchCrawlerState, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
+    SessionState, SettingsState, SidebarModel, SoftLogoutReauthState, SpaceSummary, SyncMode,
+    SyncState, ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
     TypographyDisplayProfile, native_attention_capabilities_for_platform,
     resolve_locale_display_profile, resolve_typography_display_profile,
 };
@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 /// The snapshot returned by all Tauri commands.
 ///
 /// `timeline` and `thread` are always empty / `None` in Phase 7; timeline
-/// items flow as `TimelineEvent` diffs over `matrix-desktop://event`.
+/// items flow as `TimelineEvent` diffs over `koushi-desktop://event`.
 #[derive(Clone, Debug, Serialize)]
 pub struct FrontendDesktopSnapshot {
     pub state: FrontendAppState,
@@ -552,19 +552,31 @@ mod tests {
         // Core Batch A skeletons must be present in the real Tauri DTO, not
         // only in browser fakes.
         assert_eq!(value["state"]["domain"]["room_interactions"], json!({}));
-        assert_eq!(value["state"]["domain"]["device_sessions"]["kind"], json!("idle"));
-        assert_eq!(value["state"]["domain"]["account_management"]["kind"], json!("idle"));
+        assert_eq!(
+            value["state"]["domain"]["device_sessions"]["kind"],
+            json!("idle")
+        );
+        assert_eq!(
+            value["state"]["domain"]["account_management"]["kind"],
+            json!("idle")
+        );
         assert_eq!(
             value["state"]["domain"]["account_management_capabilities"]["change_password"]["kind"],
             json!("unknown")
         );
-        assert_eq!(value["state"]["domain"]["soft_logout_reauth"]["kind"], json!("idle"));
+        assert_eq!(
+            value["state"]["domain"]["soft_logout_reauth"]["kind"],
+            json!("idle")
+        );
         assert_eq!(value["state"]["domain"]["qr_login"]["kind"], json!("idle"));
         assert_eq!(
             value["state"]["domain"]["directory"]["query"]["kind"],
             json!("closed")
         );
-        assert_eq!(value["state"]["domain"]["directory"]["join"]["kind"], json!("idle"));
+        assert_eq!(
+            value["state"]["domain"]["directory"]["join"]["kind"],
+            json!("idle")
+        );
         assert_eq!(
             value["state"]["domain"]["room_management"]["selected_room_id"],
             json!(null)
@@ -573,7 +585,10 @@ mod tests {
             value["state"]["domain"]["room_management"]["operation"]["kind"],
             json!("idle")
         );
-        assert_eq!(value["state"]["domain"]["activity"]["kind"], json!("closed"));
+        assert_eq!(
+            value["state"]["domain"]["activity"]["kind"],
+            json!("closed")
+        );
         // Phase 7: timeline is always [] (items flow as diffs)
         assert_eq!(value["timeline"], json!([]));
         // Phase 7: the legacy top-level thread is always null...
@@ -581,16 +596,28 @@ mod tests {
         // ...product thread state lives in state.thread (default Closed). The UI
         // reads the open/closed decision from here, not the legacy placeholder.
         assert_eq!(value["state"]["ui"]["thread"]["kind"], json!("closed"));
-        assert_eq!(value["state"]["domain"]["thread_attention"]["kind"], json!("closed"));
+        assert_eq!(
+            value["state"]["domain"]["thread_attention"]["kind"],
+            json!("closed")
+        );
         // focused_context must be present (default Closed) so the UI can drive
         // the focused search context view from the Rust-owned state machine.
-        assert_eq!(value["state"]["ui"]["focused_context"]["kind"], json!("closed"));
+        assert_eq!(
+            value["state"]["ui"]["focused_context"]["kind"],
+            json!("closed")
+        );
         // basic_operation must be present (default Idle) so the UI can read
         // snapshot.state.basic_operation.kind without crashing.
-        assert_eq!(value["state"]["ui"]["basic_operation"]["kind"], json!("idle"));
+        assert_eq!(
+            value["state"]["ui"]["basic_operation"]["kind"],
+            json!("idle")
+        );
         // sync_mode must be present so the UI can render the Rust-owned sync
         // backend/capability state (sliding sync vs legacy) without inference.
-        assert_eq!(value["state"]["domain"]["sync_mode"]["kind"], json!("unsupported"));
+        assert_eq!(
+            value["state"]["domain"]["sync_mode"]["kind"],
+            json!("unsupported")
+        );
         // room_list must be present so the UI renders the Rust-owned filtered
         // room-list projection instead of computing filters locally.
         assert_eq!(
@@ -601,7 +628,10 @@ mod tests {
         // live_signals must be present so Phase B GUI renders Rust-owned live
         // signal state without inventing receipts, typing, or presence locally.
         assert_eq!(value["state"]["domain"]["live_signals"]["rooms"], json!({}));
-        assert_eq!(value["state"]["domain"]["live_signals"]["presence"], json!({}));
+        assert_eq!(
+            value["state"]["domain"]["live_signals"]["presence"],
+            json!({})
+        );
         // e2ee_trust must be present (default private-data-free unknowns) so
         // later GUI work consumes the Rust-owned trust state machine.
         assert_eq!(
@@ -636,7 +666,10 @@ mod tests {
             value["state"]["domain"]["e2ee_trust"]["key_management"]["passphrase_change"]["kind"],
             json!("idle")
         );
-        assert_eq!(value["state"]["domain"]["local_encryption"]["kind"], json!("unknown"));
+        assert_eq!(
+            value["state"]["domain"]["local_encryption"]["kind"],
+            json!("unknown")
+        );
         assert_eq!(
             value["state"]["domain"]["native_attention"]["dispatch"]["kind"],
             json!("idle")
@@ -682,7 +715,10 @@ mod tests {
         );
         // room_notification_settings must be present (default empty) so the UI
         // renders per-room notification modes from Rust-owned state.
-        assert_eq!(value["state"]["domain"]["room_notification_settings"], json!({}));
+        assert_eq!(
+            value["state"]["domain"]["room_notification_settings"],
+            json!({})
+        );
         assert_eq!(
             value["state"]["domain"]["settings"]["values"]["media"]["image_upload_compression"],
             json!("ask")
@@ -702,8 +738,14 @@ mod tests {
         );
         // locale_profile must be present so React applies root lang/dir and
         // catalog selection from Rust-owned settings/profile resolution.
-        assert_eq!(value["state"]["domain"]["locale_profile"]["lang"], json!("en"));
-        assert_eq!(value["state"]["domain"]["locale_profile"]["dir"], json!("ltr"));
+        assert_eq!(
+            value["state"]["domain"]["locale_profile"]["lang"],
+            json!("en")
+        );
+        assert_eq!(
+            value["state"]["domain"]["locale_profile"]["dir"],
+            json!("ltr")
+        );
         assert_eq!(
             value["state"]["domain"]["locale_profile"]["catalog_locale"],
             json!("en")
@@ -736,9 +778,15 @@ mod tests {
             value["state"]["domain"]["profile"]["own"]["display_name"],
             json!(null)
         );
-        assert_eq!(value["state"]["domain"]["profile"]["own"]["avatar"], json!(null));
+        assert_eq!(
+            value["state"]["domain"]["profile"]["own"]["avatar"],
+            json!(null)
+        );
         assert_eq!(value["state"]["domain"]["profile"]["users"], json!({}));
-        assert_eq!(value["state"]["domain"]["profile"]["update"]["kind"], json!("idle"));
+        assert_eq!(
+            value["state"]["domain"]["profile"]["update"]["kind"],
+            json!("idle")
+        );
         // composer.mode must be present (default Plain) for the same reason.
         assert_eq!(
             value["state"]["ui"]["timeline"]["composer"]["mode"],
@@ -761,8 +809,14 @@ mod tests {
             value["state"]["ui"]["timeline"]["scheduled_send_capability"],
             json!("unknown")
         );
-        assert_eq!(value["state"]["ui"]["timeline"]["scheduled_sends"], json!([]));
-        assert_eq!(value["state"]["ui"]["timeline"]["staged_uploads"], json!([]));
+        assert_eq!(
+            value["state"]["ui"]["timeline"]["scheduled_sends"],
+            json!([])
+        );
+        assert_eq!(
+            value["state"]["ui"]["timeline"]["staged_uploads"],
+            json!([])
+        );
         assert_eq!(value["state"]["ui"]["timeline"]["media_gallery"], json!([]));
     }
 
@@ -852,7 +906,7 @@ mod tests {
             parent_space_ids: vec![],
             is_encrypted: false,
             joined_members: 0,
-});
+        });
 
         let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))
             .expect("snapshot should serialize");
@@ -874,7 +928,8 @@ mod tests {
             })
         );
         assert_eq!(
-            value["state"]["domain"]["profile"]["users"]["@bob:matrix.org"]["avatar"]["thumbnail"]["kind"],
+            value["state"]["domain"]["profile"]["users"]["@bob:matrix.org"]["avatar"]["thumbnail"]
+                ["kind"],
             json!("ready")
         );
         assert_eq!(
@@ -921,8 +976,14 @@ mod tests {
         let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))
             .expect("snapshot should serialize");
 
-        assert_eq!(value["state"]["domain"]["locale_profile"]["lang"], json!("ar-XB"));
-        assert_eq!(value["state"]["domain"]["locale_profile"]["dir"], json!("rtl"));
+        assert_eq!(
+            value["state"]["domain"]["locale_profile"]["lang"],
+            json!("ar-XB")
+        );
+        assert_eq!(
+            value["state"]["domain"]["locale_profile"]["dir"],
+            json!("rtl")
+        );
         assert_eq!(
             value["state"]["domain"]["locale_profile"]["catalog_locale"],
             json!("pseudo")
@@ -948,7 +1009,10 @@ mod tests {
         let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))
             .expect("snapshot should serialize");
 
-        assert_eq!(value["state"]["domain"]["typography_profile"]["font"], json!("inter"));
+        assert_eq!(
+            value["state"]["domain"]["typography_profile"]["font"],
+            json!("inter")
+        );
         assert_eq!(
             value["state"]["domain"]["typography_profile"]["emoji"],
             json!("twemojiColr")
@@ -985,7 +1049,10 @@ mod tests {
         let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))
             .expect("snapshot should serialize");
 
-        assert_eq!(value["state"]["domain"]["session"]["kind"], json!("needsRecovery"));
+        assert_eq!(
+            value["state"]["domain"]["session"]["kind"],
+            json!("needsRecovery")
+        );
         assert_eq!(
             value["state"]["domain"]["session"]["recovery_methods"],
             json!(["recoveryKey", "securityPhrase"])
@@ -1026,29 +1093,26 @@ mod tests {
     /// investigate before regenerating.
     #[test]
     fn frontend_app_state_golden_matches_maximally_populated_state() {
-        use std::collections::BTreeMap;
         use koushi_state::{
             ActivityMarkReadState, ActivityRow, ActivityState, ActivityStream, ActivityTab,
             AttachmentFilter, AttachmentKind, AttachmentResult, AttachmentScope, AttachmentSort,
-            AvatarImage, AvatarThumbnailState, BasicOperationState,
-            CrossSigningStatus, DirectoryJoinState, DirectoryQuery, DirectoryQueryState,
-            DirectoryRoomSummary, DirectoryState,
-            E2eeKeyManagementState, E2eeTrustState, FilesViewState, FocusedContextState,
-            IdentityResetState, InvitePreview, KeyBackupStatus,
+            AvatarImage, AvatarThumbnailState, BasicOperationState, CrossSigningStatus,
+            DirectoryJoinState, DirectoryQuery, DirectoryQueryState, DirectoryRoomSummary,
+            DirectoryState, E2eeKeyManagementState, E2eeTrustState, FilesViewState,
+            FocusedContextState, IdentityResetState, InvitePreview, KeyBackupStatus,
             LiveSignalsState, LocalEncryptionState, MediaTransferProgress,
             NativeAttentionCandidate, NativeAttentionCapabilities, NativeAttentionCapability,
             NativeAttentionDispatchState, NativeAttentionState, NativeAttentionSummary,
-            NavigationState, OwnProfile, PinOp, PinOperationState, PinnedEvent,
-            RoomAttentionKind, RoomInteractionState,
-            RoomJoinRule, RoomHistoryVisibility, RoomLiveSignals, RoomManagementOperationState,
-            RoomManagementState, RoomMemberRole, RoomMemberSummary,
+            NavigationState, OwnProfile, PinOp, PinOperationState, PinnedEvent, RoomAttentionKind,
+            RoomHistoryVisibility, RoomInteractionState, RoomJoinRule, RoomLiveSignals,
+            RoomManagementOperationState, RoomManagementState, RoomMemberRole, RoomMemberSummary,
             RoomNotificationSettings, RoomPermissionFacts, RoomSettingsSnapshot, RoomSummary,
             RoomTags, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
-            SessionInfo, SessionState, SpaceSummary, SyncState,
-            TextRange, ThreadAttentionState, ThreadsListItem, ThreadsListState,
-            TimelineMediaDownloadState, TimelinePaneState,
+            SessionInfo, SessionState, SpaceSummary, SyncState, TextRange, ThreadAttentionState,
+            ThreadsListItem, ThreadsListState, TimelineMediaDownloadState, TimelinePaneState,
             UserProfile, VerificationFlowState,
         };
+        use std::collections::BTreeMap;
 
         // Construct a maximally-populated AppState. Every section gets at least one
         // non-default field so that Phase 2/4 refactors cannot silently drop it.
@@ -1229,7 +1293,10 @@ mod tests {
                 m.insert(
                     "$media:example.invalid".to_owned(),
                     TimelineMediaDownloadState::Pending {
-                        progress: Some(MediaTransferProgress { current: 10, total: 100 }),
+                        progress: Some(MediaTransferProgress {
+                            current: 10,
+                            total: 100,
+                        }),
                     },
                 );
                 m
@@ -1348,7 +1415,10 @@ mod tests {
                 score_millis: 950,
                 snippet: "Fixture search snippet".to_owned(),
                 match_field: SearchMatchField::MessageBody,
-                highlights: vec![TextRange { start_utf16: 8, end_utf16: 14 }],
+                highlights: vec![TextRange {
+                    start_utf16: 8,
+                    end_utf16: 14,
+                }],
                 match_kind: SearchMatchKind::Exact,
             }],
         };
@@ -1431,8 +1501,7 @@ mod tests {
         );
 
         if std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1") {
-            let pretty = serde_json::to_string_pretty(&value)
-                .expect("should format golden JSON");
+            let pretty = serde_json::to_string_pretty(&value).expect("should format golden JSON");
             std::fs::create_dir_all(std::path::Path::new(golden_path).parent().unwrap())
                 .expect("golden directory should be creatable");
             std::fs::write(golden_path, pretty).expect("golden artifact should be writable");

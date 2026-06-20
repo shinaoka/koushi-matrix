@@ -1151,6 +1151,19 @@ describe("ContextualRightPanel", () => {
     expect(transportBranch).toContain("rootEventId");
   });
 
+  test("Tauri timeline ensure waits for the webview CoreEvent listener registration", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const transportStart = source.indexOf("const tauriTimelineTransport");
+    const transportEnd = source.indexOf("const tauriNotificationTransport", transportStart);
+    const transportBranch = source.slice(transportStart, transportEnd);
+
+    expect(source).toContain("let tauriCoreEventListenerReady");
+    expect(transportBranch).toContain("tauriCoreEventListenerReady = listen<CoreEventPayload>");
+    expect(transportBranch).toContain("async ensureSubscribed");
+    expect(transportBranch).toContain("await tauriCoreEventListenerReady");
+    expect(transportBranch).toContain("ensure_timeline_subscribed");
+  });
+
   test("renders encryption recovery as a contextual right panel mode", async () => {
     vi.stubGlobal("window", { location: { search: "" } });
     const { ContextualRightPanel } = await import("./App");
@@ -1220,6 +1233,20 @@ describe("Tauri state refresh wiring", () => {
     expect(styles).toContain(".app-grid.right-panel-open .thread-pane");
   });
 
+  test("room header right-panel toggle follows panel visibility, not thread state", () => {
+    const source = readFileSync(new URL("./components/panes.tsx", import.meta.url), "utf8");
+    const paneStart = source.indexOf("export function TimelinePane");
+    const paneEnd = source.indexOf("function TimelineComposer", paneStart);
+    const paneSource = source.slice(paneStart, paneEnd);
+    const toggleStart = paneSource.indexOf('aria-label={t("room.rightPanelToggle")}');
+    const toggleEnd = paneSource.indexOf('aria-label={t("threads.title")}', toggleStart);
+    const toggleSource = paneSource.slice(toggleStart, toggleEnd);
+
+    expect(paneSource).toContain("rightPanelOpen");
+    expect(toggleSource).toContain("rightPanelOpen ? <PanelRightClose");
+    expect(toggleSource).not.toContain("snapshot.state.ui.thread.kind");
+  });
+
   test("room creation links the new room into the active space", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const createStart = source.indexOf("async function submitCreateDialog");
@@ -1279,6 +1306,34 @@ describe("Tauri state refresh wiring", () => {
     expect(selectSearchResultSource).not.toContain("document.querySelector");
     expect(selectSearchResultSource).not.toContain("scrollIntoView");
     expect(selectSearchResultSource).not.toContain("cssEscape");
+  });
+
+  test("activity row selection opens event context without opening the search panel", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const openActivityRowStart = source.indexOf("function openActivityRow");
+    const openActivityRowEnd = source.indexOf("function selectSearchResult");
+    const openActivityRowSource = source.slice(openActivityRowStart, openActivityRowEnd);
+    const activityRenderStart = source.indexOf("<ActivityPane");
+    const activityRenderEnd = source.indexOf("</ActivityPane>", activityRenderStart);
+    const activityRenderSource = source.slice(activityRenderStart, activityRenderEnd);
+
+    expect(openActivityRowStart).toBeGreaterThanOrEqual(0);
+    expect(openActivityRowSource).toContain("api.selectSearchResult(roomId, eventId)");
+    expect(openActivityRowSource).toContain('setRightPanelMode("focusedContext")');
+    expect(openActivityRowSource).not.toContain('setRightPanelMode("search")');
+    expect(activityRenderSource).toContain("openActivityRow(row.room_id, row.event_id)");
+    expect(activityRenderSource).not.toContain("selectSearchResult(row.room_id, row.event_id)");
+  });
+
+  test("recovery submit trims pasted outer whitespace without altering the secret variable", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const submitRecoveryStart = source.indexOf("async function submitRecovery");
+    const submitRecoveryEnd = source.indexOf("async function restartSync", submitRecoveryStart);
+    const submitRecoverySource = source.slice(submitRecoveryStart, submitRecoveryEnd);
+
+    expect(submitRecoveryStart).toBeGreaterThanOrEqual(0);
+    expect(submitRecoverySource).toContain("recoverySecretRef.current?.value.trim() ??");
+    expect(submitRecoverySource).toContain("api.submitRecovery(secret)");
   });
 
   test("timeline date jump updates snapshot and opens focused context panel", () => {

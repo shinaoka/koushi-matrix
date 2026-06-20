@@ -23,6 +23,7 @@ test("the three-pane shell exposes landmarks and reachable keyboard focus stops"
   await expect(page.getByRole("navigation", { name: "Workspaces" })).toBeVisible();
   await expect(page.getByRole("complementary", { name: "Rooms" })).toBeVisible();
   await expect(page.getByRole("main", { name: "Conversation timeline" })).toBeVisible();
+  await page.getByRole("button", { name: "Space info and settings" }).click();
   await expect(page.getByRole("complementary", { name: "Context panel" })).toBeVisible();
 
   const labels: string[] = [];
@@ -38,6 +39,5 @@ test("the three-pane shell exposes landmarks and reachable keyboard focus stops"
   expect(labels).toContain("Synthetic Lab");
   expect(labels).toContain("Create space");
   expect(labels).toContain("User settings");
-  expect(labels).toContain("Space info and settings");
   expect(labels).toContain("Message composer");
 });

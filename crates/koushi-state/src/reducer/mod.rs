@@ -2,11 +2,10 @@ use crate::{
     action::AppAction,
     effect::{AppEffect, UiEvent},
     state::{
-        AccountManagementCapabilities, AccountManagementState,
-        ActivityState, AppState, DeviceSessionListState,
-        DirectoryState, E2eeKeyManagementState, E2eeTrustState,
-        FilesViewState, FocusedContextState,
-        LocalEncryptionState, NavigationState, QrLoginState, SearchState, SessionState, SoftLogoutReauthState, ThreadAttentionState, ThreadPaneState,
+        AccountManagementCapabilities, AccountManagementState, ActivityState, AppState,
+        DeviceSessionListState, DirectoryState, E2eeKeyManagementState, E2eeTrustState,
+        FilesViewState, FocusedContextState, LocalEncryptionState, NavigationState, QrLoginState,
+        SearchState, SessionState, SoftLogoutReauthState, ThreadAttentionState, ThreadPaneState,
         ThreadsListState, TimelinePaneState, compute_room_list_projection,
     },
 };
@@ -47,6 +46,19 @@ pub(crate) fn visible_invites_for_ignored_users(
         })
         .cloned()
         .collect()
+}
+
+pub(crate) fn recompute_room_list_projection(state: &mut AppState) {
+    let visible_invites =
+        visible_invites_for_ignored_users(&state.invites, &state.profile.ignored_user_ids);
+    state.room_list = compute_room_list_projection(
+        state.room_list.active_filter,
+        state.room_list.sort,
+        state.navigation.active_space_id.as_deref(),
+        &state.spaces,
+        &state.rooms,
+        &visible_invites,
+    );
 }
 
 pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
@@ -102,23 +114,28 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::EnableKeyBackupRequested { request_id } => {
             e2ee::handle_enable_key_backup_requested(state, request_id)
         }
-        AppAction::KeyBackupEnabled { request_id, version } => {
-            e2ee::handle_key_backup_enabled(state, request_id, version)
-        }
+        AppAction::KeyBackupEnabled {
+            request_id,
+            version,
+        } => e2ee::handle_key_backup_enabled(state, request_id, version),
         AppAction::KeyBackupFailed { request_id, kind } => {
             e2ee::handle_key_backup_failed(state, request_id, kind)
         }
-        AppAction::RestoreKeyBackupRequested { request_id, version } => {
-            e2ee::handle_restore_key_backup_requested(state, request_id, version)
-        }
+        AppAction::RestoreKeyBackupRequested {
+            request_id,
+            version,
+        } => e2ee::handle_restore_key_backup_requested(state, request_id, version),
         AppAction::KeyBackupRestoreProgress {
             request_id,
             restored_rooms,
             total_rooms,
-        } => e2ee::handle_key_backup_restore_progress(state, request_id, restored_rooms, total_rooms),
-        AppAction::KeyBackupRestored { request_id, version } => {
-            e2ee::handle_key_backup_restored(state, request_id, version)
+        } => {
+            e2ee::handle_key_backup_restore_progress(state, request_id, restored_rooms, total_rooms)
         }
+        AppAction::KeyBackupRestored {
+            request_id,
+            version,
+        } => e2ee::handle_key_backup_restored(state, request_id, version),
         AppAction::ResetIdentityRequested { request_id } => {
             e2ee::handle_reset_identity_requested(state, request_id)
         }
@@ -235,9 +252,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::DeviceSessionsLoadRequested { request_id } => {
             account::handle_device_sessions_load_requested(state, request_id)
         }
-        AppAction::DeviceSessionsLoaded { request_id, devices } => {
-            account::handle_device_sessions_loaded(state, request_id, devices)
-        }
+        AppAction::DeviceSessionsLoaded {
+            request_id,
+            devices,
+        } => account::handle_device_sessions_loaded(state, request_id, devices),
         AppAction::DeviceSessionsLoadFailed { request_id, kind } => {
             account::handle_device_sessions_load_failed(state, request_id, kind)
         }
@@ -282,9 +300,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::SettingsPersisted { request_id } => {
             settings::handle_settings_persisted(state, request_id)
         }
-        AppAction::SettingsPersistFailed { request_id, message } => {
-            settings::handle_settings_persist_failed(state, request_id, message)
-        }
+        AppAction::SettingsPersistFailed {
+            request_id,
+            message,
+        } => settings::handle_settings_persist_failed(state, request_id, message),
         AppAction::RoomUrlPreviewOverrideSet {
             request_id,
             room_id,
@@ -295,9 +314,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             mode,
         } => settings::handle_room_notification_mode_set(state, request_id, room_id, mode),
-        AppAction::RoomNotificationModeCompleted { request_id, room_id } => {
-            settings::handle_room_notification_mode_completed(state, request_id, room_id)
-        }
+        AppAction::RoomNotificationModeCompleted {
+            request_id,
+            room_id,
+        } => settings::handle_room_notification_mode_completed(state, request_id, room_id),
         AppAction::RoomNotificationModeFailed {
             request_id,
             room_id,
@@ -320,9 +340,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::LocalUserAliasUpdateSucceeded { request_id } => {
             profile::handle_local_user_alias_update_succeeded(state, request_id)
         }
-        AppAction::LocalUserAliasUpdateFailed { request_id, message } => {
-            profile::handle_local_user_alias_update_failed(state, request_id, message)
-        }
+        AppAction::LocalUserAliasUpdateFailed {
+            request_id,
+            message,
+        } => profile::handle_local_user_alias_update_failed(state, request_id, message),
         AppAction::IgnoredUsersLoaded { user_ids } => {
             profile::handle_ignored_users_loaded(state, user_ids)
         }
@@ -339,18 +360,21 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             user_id,
             ignored,
             message,
-        } => profile::handle_ignored_user_update_failed(
-            state, request_id, user_id, ignored, message,
-        ),
-        AppAction::ProfileUpdateRequested { request_id, request } => {
-            profile::handle_profile_update_requested(state, request_id, request)
+        } => {
+            profile::handle_ignored_user_update_failed(state, request_id, user_id, ignored, message)
         }
-        AppAction::ProfileUpdateSucceeded { request_id, profile } => {
-            profile::handle_profile_update_succeeded(state, request_id, profile)
-        }
-        AppAction::ProfileUpdateFailed { request_id, message } => {
-            profile::handle_profile_update_failed(state, request_id, message)
-        }
+        AppAction::ProfileUpdateRequested {
+            request_id,
+            request,
+        } => profile::handle_profile_update_requested(state, request_id, request),
+        AppAction::ProfileUpdateSucceeded {
+            request_id,
+            profile,
+        } => profile::handle_profile_update_succeeded(state, request_id, profile),
+        AppAction::ProfileUpdateFailed {
+            request_id,
+            message,
+        } => profile::handle_profile_update_failed(state, request_id, message),
         AppAction::SyncStarted => sync::handle_sync_started(state),
         AppAction::SyncFailed { reason } => sync::handle_sync_failed(state, reason),
         AppAction::SyncReconnecting { reason } => sync::handle_sync_reconnecting(state, reason),
@@ -383,9 +407,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             event_id,
         } => room::handle_pin_event_requested(state, request_id, room_id, event_id),
-        AppAction::PinEventCompleted { request_id, room_id } => {
-            room::handle_pin_event_completed(state, request_id, room_id)
-        }
+        AppAction::PinEventCompleted {
+            request_id,
+            room_id,
+        } => room::handle_pin_event_completed(state, request_id, room_id),
         AppAction::PinEventFailed {
             request_id,
             room_id,
@@ -396,9 +421,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             event_id,
         } => room::handle_unpin_event_requested(state, request_id, room_id, event_id),
-        AppAction::UnpinEventCompleted { request_id, room_id } => {
-            room::handle_unpin_event_completed(state, request_id, room_id)
-        }
+        AppAction::UnpinEventCompleted {
+            request_id,
+            room_id,
+        } => room::handle_unpin_event_completed(state, request_id, room_id),
         AppAction::UnpinEventFailed {
             request_id,
             room_id,
@@ -409,9 +435,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             event_id,
         } => room::handle_room_marked_as_read_requested(state, request_id, room_id, event_id),
-        AppAction::RoomMarkedAsReadSucceeded { request_id, room_id } => {
-            room::handle_room_marked_as_read_succeeded(state, request_id, room_id)
-        }
+        AppAction::RoomMarkedAsReadSucceeded {
+            request_id,
+            room_id,
+        } => room::handle_room_marked_as_read_succeeded(state, request_id, room_id),
         AppAction::RoomMarkedAsReadFailed {
             request_id,
             room_id,
@@ -440,7 +467,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             query,
             rooms,
             next_batch,
-        } => directory::handle_directory_query_succeeded(state, request_id, query, rooms, next_batch),
+        } => {
+            directory::handle_directory_query_succeeded(state, request_id, query, rooms, next_batch)
+        }
         AppAction::DirectoryQueryFailed {
             request_id,
             query,
@@ -451,9 +480,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             alias,
             via_server,
         } => directory::handle_directory_join_requested(state, request_id, alias, via_server),
-        AppAction::DirectoryJoinSucceeded { request_id, room_id } => {
-            directory::handle_directory_join_succeeded(state, request_id, room_id)
-        }
+        AppAction::DirectoryJoinSucceeded {
+            request_id,
+            room_id,
+        } => directory::handle_directory_join_succeeded(state, request_id, room_id),
         AppAction::DirectoryJoinFailed {
             request_id,
             alias,
@@ -511,9 +541,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             target_user_id: _,
             power_level: _,
-        } => room_management::handle_room_member_role_update_requested(
-            state, request_id, room_id,
-        ),
+        } => room_management::handle_room_member_role_update_requested(state, request_id, room_id),
         AppAction::RoomMemberRoleUpdateSucceeded {
             request_id,
             room_id,
@@ -531,9 +559,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             target_user_id: _,
             kind,
-        } => room_management::handle_room_member_role_update_failed(
-            state, request_id, room_id, kind,
-        ),
+        } => {
+            room_management::handle_room_member_role_update_failed(state, request_id, room_id, kind)
+        }
         AppAction::ActivityOpened { request_id } => {
             activity::handle_activity_opened(state, request_id)
         }
@@ -597,9 +625,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::InviteListUpdated { invites } => {
             navigation::handle_invite_list_updated(state, invites)
         }
-        AppAction::SelectSpace { space_id } => {
-            navigation::handle_select_space(state, space_id)
-        }
+        AppAction::SelectSpace { space_id } => navigation::handle_select_space(state, space_id),
         AppAction::ReorderSpaces { space_ids } => {
             navigation::handle_reorder_spaces(state, space_ids)
         }
@@ -607,9 +633,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::TimelineSubscribed { room_id } => {
             timeline::handle_timeline_subscribed(state, room_id)
         }
-        AppAction::TimelineSubscriptionFailed { room_id, message: _ } => {
-            timeline::handle_timeline_subscription_failed(state, room_id)
-        }
+        AppAction::TimelineSubscriptionFailed {
+            room_id,
+            message: _,
+        } => timeline::handle_timeline_subscription_failed(state, room_id),
         AppAction::TimelineBackPaginationRequested { room_id } => {
             timeline::handle_timeline_back_pagination_requested(state, room_id)
         }
@@ -749,12 +776,14 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             query,
             scope,
         } => search::handle_search_submitted(state, request_id, query, scope),
-        AppAction::SearchSucceeded { request_id, results } => {
-            search::handle_search_succeeded(state, request_id, results)
-        }
-        AppAction::SearchFailed { request_id, message } => {
-            search::handle_search_failed(state, request_id, message)
-        }
+        AppAction::SearchSucceeded {
+            request_id,
+            results,
+        } => search::handle_search_succeeded(state, request_id, results),
+        AppAction::SearchFailed {
+            request_id,
+            message,
+        } => search::handle_search_failed(state, request_id, message),
         AppAction::HistoryCrawlStarted {
             request_id: _,
             room_id,
@@ -786,15 +815,17 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::FilesViewQuerySucceeded { request_id, items } => {
             search::handle_files_view_query_succeeded(state, request_id, items)
         }
-        AppAction::FilesViewQueryFailed { request_id, message } => {
-            search::handle_files_view_query_failed(state, request_id, message)
-        }
+        AppAction::FilesViewQueryFailed {
+            request_id,
+            message,
+        } => search::handle_files_view_query_failed(state, request_id, message),
         AppAction::FilesViewSelectionChanged { event_id } => {
             search::handle_files_view_selection_changed(state, event_id)
         }
-        AppAction::OpenThreadsList { request_id, room_id } => {
-            thread::handle_open_threads_list(state, request_id, room_id)
-        }
+        AppAction::OpenThreadsList {
+            request_id,
+            room_id,
+        } => thread::handle_open_threads_list(state, request_id, room_id),
         AppAction::ThreadsListOpened {
             request_id,
             room_id,
@@ -821,16 +852,21 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             items,
             end_reached,
         } => thread::handle_threads_list_pagination_completed(
-            state, request_id, room_id, items, end_reached,
+            state,
+            request_id,
+            room_id,
+            items,
+            end_reached,
         ),
         AppAction::ThreadsListFailed {
             request_id,
             room_id,
             failure_kind,
         } => thread::handle_threads_list_failed(state, request_id, room_id, failure_kind),
-        AppAction::PaginateThreadsList { request_id, room_id } => {
-            thread::handle_paginate_threads_list(state, request_id, room_id)
-        }
+        AppAction::PaginateThreadsList {
+            request_id,
+            room_id,
+        } => thread::handle_paginate_threads_list(state, request_id, room_id),
         AppAction::CloseThreadsList => thread::handle_close_threads_list(state),
         AppAction::ClearError { code } => basic_operation::handle_clear_error(state, code),
         AppAction::BasicOperationRequested {
@@ -840,9 +876,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::BasicOperationSucceeded { request_id } => {
             basic_operation::handle_basic_operation_succeeded(state, request_id)
         }
-        AppAction::BasicOperationFailed { request_id, message } => {
-            basic_operation::handle_basic_operation_failed(state, request_id, message)
-        }
+        AppAction::BasicOperationFailed {
+            request_id,
+            message,
+        } => basic_operation::handle_basic_operation_failed(state, request_id, message),
         AppAction::LiveRoomSignalsUpdated { room_id, update } => {
             live_signals::handle_live_room_signals_updated(state, room_id, update)
         }
@@ -869,6 +906,12 @@ pub(crate) fn is_session_ready(state: &AppState) -> bool {
             | SessionState::NeedsRecovery { .. }
             | SessionState::Recovering { .. }
     )
+}
+
+pub(crate) fn clear_login_failed_errors(state: &mut AppState) -> bool {
+    let previous_len = state.errors.len();
+    state.errors.retain(|error| error.code != "login_failed");
+    state.errors.len() != previous_len
 }
 
 pub(crate) fn session_user_id(state: &AppState) -> Option<&str> {
@@ -1308,7 +1351,10 @@ pub(crate) fn refresh_timeline_media_gallery(state: &mut AppState) {
         .unwrap_or_default();
 }
 
-pub(crate) fn reconcile_space_order(space_order: &mut Vec<String>, spaces: &[crate::state::SpaceSummary]) {
+pub(crate) fn reconcile_space_order(
+    space_order: &mut Vec<String>,
+    spaces: &[crate::state::SpaceSummary],
+) {
     let available_space_ids = spaces
         .iter()
         .map(|space| space.space_id.as_str())
@@ -1339,7 +1385,10 @@ pub(crate) fn apply_space_order(spaces: &mut [crate::state::SpaceSummary], space
     });
 }
 
-pub(crate) fn is_complete_space_order(spaces: &[crate::state::SpaceSummary], space_ids: &[String]) -> bool {
+pub(crate) fn is_complete_space_order(
+    spaces: &[crate::state::SpaceSummary],
+    space_ids: &[String],
+) -> bool {
     if spaces.len() != space_ids.len() {
         return false;
     }
@@ -1743,7 +1792,7 @@ mod tests {
             .and_then(|room| room.receipts_by_event.get("$event:example.invalid"))
             .expect("receipt projection");
         assert_eq!(summary.total_count, 4);
-        assert_eq!(summary.overflow_count, 1);
+        assert_eq!(summary.overflow_count, 0);
         assert_eq!(
             summary
                 .readers
@@ -1772,6 +1821,7 @@ mod tests {
                     Some(3_000),
                     Some("mxc://example.invalid/bob"),
                 ),
+                ("@carol:example.invalid", Some("Carol"), Some(2_000), None),
             ]
         );
     }

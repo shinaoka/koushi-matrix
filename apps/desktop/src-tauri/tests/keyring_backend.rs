@@ -69,13 +69,13 @@ fn delete_missing_credential_is_success() {
 
 #[test]
 fn credential_backend_macos_temporary_keychain_round_trip_is_env_gated() {
-    if std::env::var_os("MATRIX_DESKTOP_MACOS_KEYCHAIN_QA").is_none() {
-        eprintln!("skipping macOS keychain QA; MATRIX_DESKTOP_MACOS_KEYCHAIN_QA is not set");
+    if std::env::var_os("KOUSHI_MACOS_KEYCHAIN_QA").is_none() {
+        eprintln!("skipping macOS keychain QA; KOUSHI_MACOS_KEYCHAIN_QA is not set");
         return;
     }
 
     #[cfg(not(target_os = "macos"))]
-    panic!("MATRIX_DESKTOP_MACOS_KEYCHAIN_QA is only supported on macOS");
+    panic!("KOUSHI_MACOS_KEYCHAIN_QA is only supported on macOS");
 
     #[cfg(target_os = "macos")]
     {

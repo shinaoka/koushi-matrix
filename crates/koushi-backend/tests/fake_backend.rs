@@ -380,8 +380,8 @@ fn deferred_sdk_login_completion_stores_session_and_enters_ready_state() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = koushi_sdk::login_with_password_blocking(&request)
-        .expect("password login should succeed");
+    let session =
+        koushi_sdk::login_with_password_blocking(&request).expect("password login should succeed");
 
     backend.complete_matrix_login(session);
 
@@ -416,8 +416,8 @@ fn deferred_sdk_login_completion_can_enter_e2ee_recovery_step() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = koushi_sdk::login_with_password_blocking(&request)
-        .expect("password login should succeed");
+    let session =
+        koushi_sdk::login_with_password_blocking(&request).expect("password login should succeed");
 
     let effects = backend.complete_matrix_login(session);
 
@@ -460,8 +460,8 @@ fn sdk_state_recovery_mode_does_not_prompt_before_sdk_reports_incomplete() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = koushi_sdk::login_with_password_blocking(&request)
-        .expect("password login should succeed");
+    let session =
+        koushi_sdk::login_with_password_blocking(&request).expect("password login should succeed");
 
     backend.complete_matrix_login(session);
 
@@ -491,8 +491,8 @@ fn deferred_sync_mode_emits_start_sync_without_fixture_room_updates() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = koushi_sdk::login_with_password_blocking(&request)
-        .expect("password login should succeed");
+    let session =
+        koushi_sdk::login_with_password_blocking(&request).expect("password login should succeed");
 
     let effects = backend.complete_matrix_login(session);
     let snapshot = backend.snapshot();
@@ -533,8 +533,8 @@ fn deferred_sync_mode_does_not_seed_fixture_rooms_after_sync_failure() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = koushi_sdk::login_with_password_blocking(&request)
-        .expect("password login should succeed");
+    let session =
+        koushi_sdk::login_with_password_blocking(&request).expect("password login should succeed");
     backend.complete_matrix_login(session);
 
     let effects = backend.dispatch(AppAction::SyncFailed {
@@ -735,8 +735,8 @@ fn logout_clears_backend_matrix_session_handle() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = koushi_sdk::login_with_password_blocking(&request)
-        .expect("password login should succeed");
+    let session =
+        koushi_sdk::login_with_password_blocking(&request).expect("password login should succeed");
     backend.complete_matrix_login(session);
 
     backend.dispatch(AppAction::LogoutRequested);

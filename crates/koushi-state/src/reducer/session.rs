@@ -4,7 +4,9 @@ use crate::{
     state::{AppError, AppState, SessionState, SoftLogoutReauthState, SyncState},
 };
 
-use super::{clear_session_views, current_session_info, is_session_ready};
+use super::{
+    clear_login_failed_errors, clear_session_views, current_session_info, is_session_ready,
+};
 
 pub(crate) fn handle_app_started(state: &mut AppState) -> Vec<AppEffect> {
     state.session = SessionState::Restoring;
@@ -15,13 +17,18 @@ pub(crate) fn handle_restore_or_login_succeeded(
     state: &mut AppState,
     info: crate::state::SessionInfo,
 ) -> Vec<AppEffect> {
+    let cleared_login_error = clear_login_failed_errors(state);
     state.session = SessionState::Ready(info.clone());
     state.sync = SyncState::Starting;
-    vec![
+    let mut effects = vec![
         AppEffect::PersistSession(info),
         AppEffect::StartSync,
         AppEffect::EmitUiEvent(UiEvent::SessionChanged),
-    ]
+    ];
+    if cleared_login_error {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ErrorChanged));
+    }
+    effects
 }
 
 pub(crate) fn handle_restore_session_not_found(state: &mut AppState) -> Vec<AppEffect> {
@@ -190,8 +197,7 @@ pub(crate) fn handle_soft_logout_reauth_requested(
     state: &mut AppState,
     request_id: u64,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state)
-        || !matches!(state.soft_logout_reauth, SoftLogoutReauthState::Idle)
+    if !is_session_ready(state) || !matches!(state.soft_logout_reauth, SoftLogoutReauthState::Idle)
     {
         return Vec::new();
     }

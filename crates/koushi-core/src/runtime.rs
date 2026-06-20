@@ -2192,17 +2192,17 @@ fn map_state_search_scope_to_core(scope: AppSearchScope) -> SearchScope {
 /// "Missing, corrupt, or inaccessible OS secrets MUST fail closed").
 fn default_data_dir_from_home(home: Option<std::ffi::OsString>) -> Result<PathBuf, String> {
     let home =
-        home.ok_or_else(|| "HOME is required to resolve matrix-desktop data dir".to_owned())?;
+        home.ok_or_else(|| "HOME is required to resolve koushi-desktop data dir".to_owned())?;
     Ok(PathBuf::from(home)
         .join(".local")
         .join("share")
-        .join("matrix-desktop"))
+        .join("koushi-desktop"))
 }
 
-/// Default application data directory (`$HOME/.local/share/matrix-desktop`).
+/// Default application data directory (`$HOME/.local/share/koushi-desktop`).
 fn default_data_dir() -> PathBuf {
     default_data_dir_from_home(std::env::var_os("HOME"))
-        .expect("HOME is required to resolve matrix-desktop data dir")
+        .expect("HOME is required to resolve koushi-desktop data dir")
 }
 
 #[cfg(test)]
@@ -2224,7 +2224,7 @@ mod tests {
     #[test]
     fn default_data_dir_uses_xdg_like_user_data_path() {
         let dir = default_data_dir_from_home(Some("/tmp/synthetic-home".into())).unwrap();
-        assert!(dir.ends_with(".local/share/matrix-desktop"));
+        assert!(dir.ends_with(".local/share/koushi-desktop"));
     }
 
     #[tokio::test]
@@ -2847,7 +2847,7 @@ mod tests {
             account_command_projected_action(&AccountCommand::CompleteOidcLogin {
                 request_id,
                 homeserver: "https://matrix.example.org".to_owned(),
-                callback_url: "matrix-desktop://auth/callback?code=secret".to_owned(),
+                callback_url: "koushi-desktop://auth/callback?code=secret".to_owned(),
             }),
             Some(AppAction::LoginDiscoveryRequested {
                 homeserver: "https://matrix.example.org".to_owned(),

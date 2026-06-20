@@ -148,7 +148,7 @@ http://127.0.0.1:5173/?session=recovery
 Open the Tauri shell in first-run mode with:
 
 ```bash
-MATRIX_DESKTOP_RESTORE_SESSION=0 npm run tauri dev
+KOUSHI_RESTORE_SESSION=0 npm run tauri dev
 ```
 
 Before typing live credentials into the native shell, the SDK password-login path

@@ -1,4 +1,4 @@
-import { Bell, ChevronRight, FileText, Link, Settings, Users } from "lucide-react";
+import { Bell, ChevronRight, FileText, Link, MessageCircle, Settings, Users } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { t } from "../i18n/messages";
@@ -35,6 +35,7 @@ export function RoomInfoPanel({
   onOpenFiles,
   onSetLocalUserAlias,
   onSetRoomNotificationMode,
+  onStartDirectMessage,
   onUpdateMemberRole,
   onUpdateRoomSetting,
   onSetRoomUrlPreviewOverride
@@ -60,6 +61,7 @@ export function RoomInfoPanel({
   onOpenFiles?: () => void;
   onSetLocalUserAlias?: (userId: string, alias: string | null) => void;
   onSetRoomNotificationMode?: (roomId: string, mode: RoomNotificationMode) => void;
+  onStartDirectMessage?: (userId: string) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
   onUpdateMemberRole?: (roomId: string, targetUserId: string, powerLevel: number) => void;
   onSetRoomUrlPreviewOverride?: (roomId: string, enabled: boolean) => void;
@@ -432,6 +434,16 @@ export function RoomInfoPanel({
                   <small>{roomMemberRoleLabel(profile.role)}</small>
                 </span>
                 <span className="room-member-actions">
+                  <button
+                    className="profile-settings-action room-member-action"
+                    type="button"
+                    aria-label={t("room.messageMember", { name: memberLabel(profile) })}
+                    disabled={!onStartDirectMessage}
+                    onClick={() => onStartDirectMessage?.(profile.user_id)}
+                  >
+                    <MessageCircle size={14} />
+                    {t("workspace.newDm")}
+                  </button>
                   <label className="room-member-role-field">
                     <span>{t("room.memberRole")}</span>
                     <select

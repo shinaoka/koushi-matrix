@@ -57,8 +57,8 @@ pub use settings::{
     AppearanceSettings, ComposerSendShortcut, DisplaySettings, EmojiPreference, FontPreference,
     ImageUploadCompressionMode, ImageUploadCompressionPolicy, KeyboardSettings,
     LinkPreviewSettingsState, LocaleSettings, MediaSettings, NotificationSettings,
-    RoomNotificationMode, RoomNotificationModeOperation, RoomNotificationSettings,
-    RoomUrlPreviews, SettingsPatch, SettingsPersistenceState, SettingsState, SettingsValues,
+    RoomNotificationMode, RoomNotificationModeOperation, RoomNotificationSettings, RoomUrlPreviews,
+    SettingsPatch, SettingsPersistenceState, SettingsState, SettingsValues,
     TextDirectionPreference, ThemePreference, TimelineSettings, TypographySettings,
 };
 
@@ -127,7 +127,9 @@ pub use native_attention::{
 };
 
 // ── Re-exports: cjk ─────────────────────────────────────────────────────────
-pub use cjk::{CjkCollationProfile, CjkNormalizationProfile, CjkTextPolicyState, JapaneseCatalogProfile};
+pub use cjk::{
+    CjkCollationProfile, CjkNormalizationProfile, CjkTextPolicyState, JapaneseCatalogProfile,
+};
 
 // ── Re-exports: timeline ────────────────────────────────────────────────────
 pub use timeline::{

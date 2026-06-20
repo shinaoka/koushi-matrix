@@ -7,10 +7,7 @@ use crate::{
 
 use super::is_session_ready;
 
-pub(crate) fn handle_activity_opened(
-    state: &mut AppState,
-    request_id: u64,
-) -> Vec<AppEffect> {
+pub(crate) fn handle_activity_opened(state: &mut AppState, request_id: u64) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
     }

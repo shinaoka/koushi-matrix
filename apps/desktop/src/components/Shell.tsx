@@ -7,6 +7,7 @@ import {
 } from "react";
 import {
   Bell,
+  Bug,
   Clock3,
   Compass,
   Edit3,
@@ -54,6 +55,7 @@ export function TopBar({
   searchScope,
   sync,
   onOpenKeyboardSettings,
+  onOpenDiagnostics = () => undefined,
   onRestartSync,
   onSearchQueryChange,
   onSearchScopeChange
@@ -65,6 +67,7 @@ export function TopBar({
   searchScope: SearchScopeKind;
   sync: DesktopSnapshot["state"]["domain"]["sync"];
   onOpenKeyboardSettings: () => void;
+  onOpenDiagnostics?: () => void;
   onRestartSync: () => void;
   onSearchQueryChange: (value: string) => void;
   onSearchScopeChange: (value: SearchScopeKind) => void;
@@ -142,6 +145,14 @@ export function TopBar({
           onClick={onOpenKeyboardSettings}
         >
           <HelpCircle size={ICON_SIZE.control} />
+        </button>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label={t("diagnostics.open")}
+          onClick={onOpenDiagnostics}
+        >
+          <Bug size={ICON_SIZE.control} />
         </button>
       </div>
     </header>

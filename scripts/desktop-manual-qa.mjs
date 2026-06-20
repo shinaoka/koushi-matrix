@@ -12,7 +12,7 @@ const flows = [
   {
     name: "restore",
     checks: [
-      "restart with MATRIX_DESKTOP_RESTORE_SESSION enabled",
+      "restart with KOUSHI_RESTORE_SESSION enabled",
       "confirm the persisted session restores before sync starts"
     ]
   },
@@ -83,7 +83,7 @@ if (process.argv.includes("--list")) {
 }
 
 if (process.argv.includes("--markdown")) {
-  console.log("# matrix-desktop Milestone 9 Manual QA\n");
+  console.log("# koushi-desktop Milestone 9 Manual QA\n");
   for (const flow of flows) {
     console.log(`## ${flow.name}`);
     for (const check of flow.checks) {

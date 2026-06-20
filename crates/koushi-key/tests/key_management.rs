@@ -102,7 +102,7 @@ fn matrix_session_account_name_is_separate_from_local_unlock_secret() {
 fn last_session_pointer_account_name_is_global_and_versioned() {
     assert_eq!(
         last_session_account_name(),
-        "matrix-desktop:last-session:v1"
+        "koushi-desktop:last-session:v1"
     );
 }
 
@@ -140,7 +140,7 @@ fn saved_session_index_tracks_unique_sessions_and_redacts_debug() {
 fn saved_session_index_account_name_is_global_and_versioned() {
     assert_eq!(
         saved_sessions_account_name(),
-        "matrix-desktop:saved-sessions:v1"
+        "koushi-desktop:saved-sessions:v1"
     );
 }
 
@@ -220,10 +220,8 @@ fn missing_credential_error_is_classified_for_fail_closed_store_restore() {
 #[test]
 #[ignore = "uses the live operating-system credential store"]
 fn credential_store_last_session_pointer_round_trip() {
-    let store = CredentialStore::with_backend(
-        "koushi-key-test",
-        InMemoryCredentialBackend::default(),
-    );
+    let store =
+        CredentialStore::with_backend("koushi-key-test", InMemoryCredentialBackend::default());
     let id = SessionKeyId {
         homeserver: "https://matrix.example".into(),
         user_id: "@user-a:example.invalid".into(),
@@ -243,10 +241,8 @@ fn credential_store_last_session_pointer_round_trip() {
 #[test]
 #[ignore = "uses the live operating-system credential store"]
 fn credential_store_matrix_session_round_trip() {
-    let store = CredentialStore::with_backend(
-        "koushi-key-test",
-        InMemoryCredentialBackend::default(),
-    );
+    let store =
+        CredentialStore::with_backend("koushi-key-test", InMemoryCredentialBackend::default());
     let id = SessionKeyId {
         homeserver: "https://matrix.example".into(),
         user_id: "@user-a:example.invalid".into(),
@@ -271,10 +267,8 @@ fn credential_store_matrix_session_round_trip() {
 #[test]
 #[ignore = "uses the live operating-system credential store"]
 fn credential_store_round_trip() {
-    let store = CredentialStore::with_backend(
-        "koushi-key-test",
-        InMemoryCredentialBackend::default(),
-    );
+    let store =
+        CredentialStore::with_backend("koushi-key-test", InMemoryCredentialBackend::default());
     let id = SessionKeyId {
         homeserver: "https://matrix.example".into(),
         user_id: "@user-a:example.invalid".into(),

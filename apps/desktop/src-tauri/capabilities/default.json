@@ -1,11 +1,15 @@
 {
   "identifier": "main",
   "description": "Default capability for the main desktop window.",
+  "remote": {
+    "urls": ["http://127.0.0.1:5173/*"]
+  },
   "windows": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-set-title",
     "core:window:allow-set-badge-count",
+    "dialog:default",
     "notification:default"
   ]
 }

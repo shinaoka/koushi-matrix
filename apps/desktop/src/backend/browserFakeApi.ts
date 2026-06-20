@@ -334,6 +334,7 @@ class BrowserFakeApi implements DesktopApi {
         ? spaceId
         : null;
     this.snapshot.state.ui.navigation.active_space_id = nextSpaceId;
+    this.refreshRoomListProjection();
     this.snapshot.sidebar = composeSidebar(
       this.snapshot.state.ui.navigation.active_space_id,
       this.snapshot.state.domain.spaces,
@@ -465,6 +466,8 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.ui.room_list = computeBrowserRoomListProjection(
       filter,
       this.snapshot.state.ui.room_list.sort,
+      this.snapshot.state.ui.navigation.active_space_id,
+      this.snapshot.state.domain.spaces,
       this.snapshot.state.domain.rooms,
       this.snapshot.state.domain.invites
     );
@@ -792,6 +795,7 @@ class BrowserFakeApi implements DesktopApi {
       if (!activeSpaceContainsSelectedRoom) {
         this.snapshot.state.ui.navigation.active_space_id =
           selectedRoom.parent_space_ids[0] ?? null;
+        this.refreshRoomListProjection();
         this.snapshot.sidebar = composeSidebar(
           this.snapshot.state.ui.navigation.active_space_id,
           this.snapshot.state.domain.spaces,
@@ -2736,6 +2740,8 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
         room_list: computeBrowserRoomListProjection(
           { kind: "rooms" },
           { kind: "activity" },
+          active_space_id,
+          spaces,
           rooms,
           invites
         ),
@@ -2839,6 +2845,8 @@ function createSignedOutSnapshot(): DesktopSnapshot {
         room_list: computeBrowserRoomListProjection(
           { kind: "rooms" },
           { kind: "activity" },
+          null,
+          [],
           [],
           []
         ),
@@ -3102,9 +3110,9 @@ function projectReceiptSummary(receipts: LiveReadReceipt[]): LiveEventReceiptSum
   });
   const totalCount = readers.length;
   return {
-    readers: readers.slice(0, 3),
+    readers,
     total_count: totalCount,
-    overflow_count: Math.max(0, totalCount - 3)
+    overflow_count: 0
   };
 }
 

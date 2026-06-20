@@ -101,9 +101,7 @@ fn password_change_request_enters_working_state() {
     );
     assert!(effects.iter().any(|e| matches!(
         e,
-        koushi_state::AppEffect::EmitUiEvent(
-            koushi_state::UiEvent::AccountManagementChanged
-        )
+        koushi_state::AppEffect::EmitUiEvent(koushi_state::UiEvent::AccountManagementChanged)
     )));
 }
 

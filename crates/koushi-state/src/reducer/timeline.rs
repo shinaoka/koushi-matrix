@@ -13,13 +13,8 @@ use super::{
 
 const TIMELINE_SUBSCRIPTION_FAILED_MESSAGE: &str = "Matrix timeline subscription failed";
 
-pub(crate) fn handle_timeline_subscribed(
-    state: &mut AppState,
-    room_id: String,
-) -> Vec<AppEffect> {
-    if !is_session_ready(state)
-        || state.timeline.room_id.as_deref() != Some(room_id.as_str())
-    {
+pub(crate) fn handle_timeline_subscribed(state: &mut AppState, room_id: String) -> Vec<AppEffect> {
+    if !is_session_ready(state) || state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
         return Vec::new();
     }
 
@@ -31,9 +26,7 @@ pub(crate) fn handle_timeline_subscription_failed(
     state: &mut AppState,
     room_id: String,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state)
-        || state.timeline.room_id.as_deref() != Some(room_id.as_str())
-    {
+    if !is_session_ready(state) || state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
         return Vec::new();
     }
 
@@ -347,9 +340,7 @@ pub(crate) fn handle_composer_draft_changed(
     room_id: String,
     draft: String,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state)
-        || state.timeline.room_id.as_deref() != Some(room_id.as_str())
-    {
+    if !is_session_ready(state) || state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
         return Vec::new();
     }
 
@@ -454,9 +445,7 @@ pub(crate) fn handle_composer_reply_target_selected(
     room_id: String,
     event_id: String,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state)
-        || state.timeline.room_id.as_deref() != Some(room_id.as_str())
-    {
+    if !is_session_ready(state) || state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
         return Vec::new();
     }
     state.timeline.composer.mode = ComposerMode::Reply {

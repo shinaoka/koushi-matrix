@@ -70,9 +70,7 @@ fn kind_from_keyring_error(error: keyring::Error) -> CredentialBackendErrorKind 
 /// Maps a `keyring::Result<()>` so that `NoEntry` (missing credential) is
 /// treated as success — the same semantics as `CredentialStore::delete_raw`.
 #[doc(hidden)]
-pub fn map_delete_result(
-    result: keyring::Result<()>,
-) -> Result<(), koushi_key::LocalSecretError> {
+pub fn map_delete_result(result: keyring::Result<()>) -> Result<(), koushi_key::LocalSecretError> {
     match result {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(koushi_key::LocalSecretError::CredentialBackend(

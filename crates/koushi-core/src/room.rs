@@ -138,13 +138,13 @@ impl RoomActorHandle {
 
 /// Handle on the spawned room-list observation loop: oneshot stop signal plus
 /// the task handle so teardown can await completion (same pattern as
-/// `sync.rs` `legacy_stop_tx`). `refresh_tx` is `Some` on the SyncService
-/// (live-service) loop: an operation-triggered refresh re-normalizes from the
-/// live service's current entries inside the loop.
+/// `sync.rs` `legacy_stop_tx`). Operation-triggered refreshes are always sent
+/// to the observation loop so command handling never blocks on room-list
+/// normalization.
 struct RoomListObservation {
     stop_tx: oneshot::Sender<()>,
     task: executor::JoinHandle<()>,
-    refresh_tx: Option<mpsc::Sender<()>>,
+    refresh_tx: mpsc::Sender<()>,
 }
 
 pub struct RoomActor {
@@ -210,11 +210,12 @@ impl RoomActor {
                             self.start_live_observation(session, service);
                         }
                         None => {
-                            // LegacySync backend: initial snapshot from
-                            // joined_rooms, then relay the base client's room
-                            // update broadcast (Async rule 1).
-                            self.refresh_room_list().await;
+                            // LegacySync backend: relay the base client's
+                            // room update broadcast (Async rule 1). Request
+                            // the initial snapshot through the observation
+                            // loop so SyncStarted never blocks this actor.
                             self.start_legacy_observation();
+                            self.refresh_room_list();
                         }
                     }
                 }
@@ -253,7 +254,7 @@ impl RoomActor {
         self.observation = Some(RoomListObservation {
             stop_tx,
             task,
-            refresh_tx: Some(refresh_tx),
+            refresh_tx,
         });
     }
 
@@ -264,17 +265,19 @@ impl RoomActor {
             return;
         };
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
+        let (refresh_tx, refresh_rx) = mpsc::channel::<()>(8);
         let task = executor::spawn(run_legacy_room_list_observation(
             session.clone(),
             self.known_room_ids.clone(),
             self.action_tx.clone(),
             self.event_tx.clone(),
+            refresh_rx,
             stop_rx,
         ));
         self.observation = Some(RoomListObservation {
             stop_tx,
             task,
-            refresh_tx: None,
+            refresh_tx,
         });
     }
 
@@ -510,7 +513,9 @@ impl RoomActor {
     }
 
     async fn handle_create_room(&self, request_id: RequestId, name: String, encrypted: bool) {
+        trace_room_operation("create_room", "start", request_id);
         let Some(session) = &self.session else {
+            trace_room_operation("create_room", "session_required", request_id);
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
@@ -523,6 +528,7 @@ impl RoomActor {
         }]);
         match koushi_sdk::create_room(session, &name, encrypted).await {
             Ok(room_id) => {
+                trace_room_operation("create_room", "succeeded", request_id);
                 self.emit(CoreEvent::Room(RoomEvent::RoomCreated {
                     request_id,
                     room_id,
@@ -532,9 +538,10 @@ impl RoomActor {
                 }]);
                 // Reflect the actor's own mutation immediately instead of
                 // waiting for the next sync round-trip.
-                self.refresh_room_list().await;
+                self.refresh_room_list();
             }
             Err(error) => {
+                trace_room_operation("create_room", "failed", request_id);
                 let kind = classify_room_error(&error);
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
                 self.reduce(vec![AppAction::BasicOperationFailed {
@@ -556,15 +563,13 @@ impl RoomActor {
             return;
         };
 
-        match koushi_sdk::create_public_directory_room(session, &name, &alias_localpart)
-            .await
-        {
+        match koushi_sdk::create_public_directory_room(session, &name, &alias_localpart).await {
             Ok(room_id) => {
                 self.emit(CoreEvent::Room(RoomEvent::RoomCreated {
                     request_id,
                     room_id,
                 }));
-                self.refresh_room_list().await;
+                self.refresh_room_list();
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -574,7 +579,9 @@ impl RoomActor {
     }
 
     async fn handle_create_space(&self, request_id: RequestId, name: String) {
+        trace_room_operation("create_space", "start", request_id);
         let Some(session) = &self.session else {
+            trace_room_operation("create_space", "session_required", request_id);
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
@@ -585,6 +592,7 @@ impl RoomActor {
         }]);
         match koushi_sdk::create_space(session, &name).await {
             Ok(space_id) => {
+                trace_room_operation("create_space", "succeeded", request_id);
                 self.emit(CoreEvent::Room(RoomEvent::SpaceCreated {
                     request_id,
                     space_id,
@@ -593,9 +601,10 @@ impl RoomActor {
                     request_id: request_id.sequence,
                 }]);
                 // Reflect the actor's own mutation immediately.
-                self.refresh_room_list().await;
+                self.refresh_room_list();
             }
             Err(error) => {
+                trace_room_operation("create_space", "failed", request_id);
                 let kind = classify_room_error(&error);
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
                 self.reduce(vec![AppAction::BasicOperationFailed {
@@ -625,9 +634,7 @@ impl RoomActor {
                 child_room_id: child_room_id.clone(),
             },
         }]);
-        match koushi_sdk::set_space_child(session, &space_id, &child_room_id, &via_server)
-            .await
-        {
+        match koushi_sdk::set_space_child(session, &space_id, &child_room_id, &via_server).await {
             Ok(()) => {
                 self.emit(CoreEvent::Room(RoomEvent::SpaceChildSet {
                     request_id,
@@ -638,7 +645,7 @@ impl RoomActor {
                     request_id: request_id.sequence,
                 }]);
                 // Reflect the actor's own mutation immediately.
-                self.refresh_room_list().await;
+                self.refresh_room_list();
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -663,7 +670,7 @@ impl RoomActor {
                     room_id,
                     user_id,
                 }));
-                self.refresh_room_list().await;
+                self.refresh_room_list();
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -683,7 +690,7 @@ impl RoomActor {
                     request_id,
                     room_id: joined_room_id,
                 }));
-                self.refresh_room_list().await;
+                self.refresh_room_list();
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -703,7 +710,7 @@ impl RoomActor {
                     request_id,
                     room_id: declined_room_id,
                 }));
-                self.refresh_room_list().await;
+                self.refresh_room_list();
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -723,7 +730,7 @@ impl RoomActor {
                     request_id,
                     room_id,
                 }));
-                self.refresh_room_list().await;
+                self.refresh_room_list();
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -744,7 +751,7 @@ impl RoomActor {
                     room_id: joined_room_id,
                 }));
                 // Reflect the actor's own mutation immediately.
-                self.refresh_room_list().await;
+                self.refresh_room_list();
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -838,7 +845,7 @@ impl RoomActor {
                     request_id,
                     room_id,
                 }));
-                self.refresh_room_list().await;
+                self.refresh_room_list();
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -889,8 +896,7 @@ impl RoomActor {
             return;
         };
 
-        let settings = match koushi_sdk::get_room_settings_snapshot(session, &room_id).await
-        {
+        let settings = match koushi_sdk::get_room_settings_snapshot(session, &room_id).await {
             Ok(settings) => room_settings_snapshot_from_sdk(settings),
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -923,12 +929,8 @@ impl RoomActor {
             change: change.clone(),
         }]);
 
-        match koushi_sdk::update_room_setting(
-            session,
-            &room_id,
-            room_setting_change_to_sdk(change),
-        )
-        .await
+        match koushi_sdk::update_room_setting(session, &room_id, room_setting_change_to_sdk(change))
+            .await
         {
             Ok(settings) => {
                 let settings = room_settings_snapshot_from_sdk(settings);
@@ -967,8 +969,7 @@ impl RoomActor {
             return;
         };
 
-        let settings = match koushi_sdk::get_room_settings_snapshot(session, &room_id).await
-        {
+        let settings = match koushi_sdk::get_room_settings_snapshot(session, &room_id).await {
             Ok(settings) => room_settings_snapshot_from_sdk(settings),
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -1054,8 +1055,7 @@ impl RoomActor {
             return;
         };
 
-        let settings = match koushi_sdk::get_room_settings_snapshot(session, &room_id).await
-        {
+        let settings = match koushi_sdk::get_room_settings_snapshot(session, &room_id).await {
             Ok(settings) => room_settings_snapshot_from_sdk(settings),
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -1149,7 +1149,7 @@ impl RoomActor {
                     request_id,
                     room_id: left_room_id,
                 }));
-                self.refresh_room_list().await;
+                self.refresh_room_list();
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -1169,7 +1169,7 @@ impl RoomActor {
                     request_id,
                     room_id: forgotten_room_id,
                 }));
-                self.refresh_room_list().await;
+                self.refresh_room_list();
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -1189,9 +1189,7 @@ impl RoomActor {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
-        match koushi_sdk::set_room_tag(session, &room_id, sdk_room_tag_kind(tag), order)
-            .await
-        {
+        match koushi_sdk::set_room_tag(session, &room_id, sdk_room_tag_kind(tag), order).await {
             Ok(()) => {
                 let info = room_tag_info_from_order(order);
                 if self
@@ -1370,28 +1368,33 @@ impl RoomActor {
         }));
     }
 
-    /// Refresh the room list and project it into AppState via the action
+    /// Request a room-list refresh and projection into AppState via the action
     /// channel. Also emits `RoomEvent::RoomListUpdated` as a discrete event.
     ///
     /// On the SyncService path this requests a re-normalization from the live
     /// service's current entries (inside the observation loop) — NEVER a new
-    /// `RoomListService`. On the LegacySync path (or before sync starts) it
-    /// re-normalizes from `client.joined_rooms()`.
-    async fn refresh_room_list(&self) {
-        if let Some(observation) = &self.observation
-            && let Some(refresh_tx) = &observation.refresh_tx
-        {
-            let _ = refresh_tx.try_send(());
+    /// `RoomListService`. On the LegacySync path, the same request is handled
+    /// by the legacy observation loop and coalesced there. Before sync starts,
+    /// a detached one-shot refresh is spawned so room commands never await
+    /// room-list normalization on the actor command loop.
+    fn refresh_room_list(&self) {
+        if let Some(observation) = &self.observation {
+            let _ = observation.refresh_tx.try_send(());
             return;
         }
-        if let Some(session) = &self.session {
-            refresh_room_list_from_joined_rooms(
-                session,
-                &self.known_room_ids,
-                &self.action_tx,
-                &self.event_tx,
-            )
-            .await;
+        if let Some(session) = self.session.clone() {
+            let known_room_ids = self.known_room_ids.clone();
+            let action_tx = self.action_tx.clone();
+            let event_tx = self.event_tx.clone();
+            let _ = executor::spawn(async move {
+                refresh_room_list_from_joined_rooms(
+                    &session,
+                    &known_room_ids,
+                    &action_tx,
+                    &event_tx,
+                )
+                .await;
+            });
         }
     }
 
@@ -1424,7 +1427,7 @@ impl RoomActor {
                     request_id,
                     room_id: room_id.clone(),
                 }));
-                self.refresh_room_list().await;
+                self.refresh_room_list();
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -1469,7 +1472,7 @@ impl RoomActor {
                     room_id: room_id.clone(),
                     unread,
                 }));
-                self.refresh_room_list().await;
+                self.refresh_room_list();
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
@@ -1706,7 +1709,10 @@ async fn run_live_room_list_observation(
     loop {
         tokio::select! {
             _ = &mut stop_rx => break,
-            _ = refresh_rx.recv() => {
+            maybe_refresh = refresh_rx.recv() => {
+                if maybe_refresh.is_none() {
+                    break;
+                }
                 // Operation-triggered refresh: drain coalesced requests, then
                 // re-normalize from the live service's CURRENT entries.
                 while refresh_rx.try_recv().is_ok() {}
@@ -1751,8 +1757,7 @@ async fn normalize_and_project_entries(
     for item in current.iter() {
         rooms.push(item.clone().into_inner());
     }
-    let snapshot =
-        koushi_sdk::room_list_snapshot_from_sdk_rooms_with_invites(session, rooms).await;
+    let snapshot = koushi_sdk::room_list_snapshot_from_sdk_rooms_with_invites(session, rooms).await;
     project_room_list_snapshot(&snapshot, known_room_ids, action_tx, event_tx);
 }
 
@@ -1768,6 +1773,7 @@ async fn run_legacy_room_list_observation(
     known_room_ids: Arc<RwLock<BTreeSet<String>>>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
+    mut refresh_rx: mpsc::Receiver<()>,
     mut stop_rx: oneshot::Receiver<()>,
 ) {
     use tokio::sync::broadcast::error::RecvError;
@@ -1776,6 +1782,20 @@ async fn run_legacy_room_list_observation(
     loop {
         tokio::select! {
             _ = &mut stop_rx => break,
+            maybe_refresh = refresh_rx.recv() => {
+                if maybe_refresh.is_none() {
+                    break;
+                }
+                // Operation-triggered refresh: drain coalesced requests, then
+                // normalize from the SDK's current joined-room snapshot.
+                while refresh_rx.try_recv().is_ok() {}
+                refresh_room_list_from_joined_rooms(
+                    &session,
+                    &known_room_ids,
+                    &action_tx,
+                    &event_tx,
+                ).await;
+            }
             result = updates_rx.recv() => match result {
                 Ok(_batch) => {
                     // Coalesce: drain any additionally pending update batches;
@@ -1808,19 +1828,15 @@ async fn run_legacy_room_list_observation(
 // ---------------------------------------------------------------------------
 
 /// Convert `MatrixRoomListSnapshot` spaces into `SpaceSummary` values with
-/// child room id lists. child_room_ids is populated by cross-referencing the
-/// rooms' `parent_space_ids`.
+/// child room id lists. Homeservers may sync one side of the Matrix space
+/// relationship before the other, so the projection uses both the space's
+/// `m.space.child` state and rooms' `m.space.parent` state.
 fn normalize_spaces(snapshot: &koushi_sdk::MatrixRoomListSnapshot) -> Vec<SpaceSummary> {
     snapshot
         .spaces
         .iter()
         .map(|space| {
-            let child_room_ids: Vec<String> = snapshot
-                .rooms
-                .iter()
-                .filter(|room| room.parent_space_ids.iter().any(|id| id == &space.space_id))
-                .map(|room| room.room_id.clone())
-                .collect();
+            let child_room_ids = normalize_space_child_room_ids(snapshot, space);
             SpaceSummary {
                 space_id: space.space_id.clone(),
                 display_name: space.display_name.clone(),
@@ -1829,6 +1845,22 @@ fn normalize_spaces(snapshot: &koushi_sdk::MatrixRoomListSnapshot) -> Vec<SpaceS
             }
         })
         .collect()
+}
+
+fn normalize_space_child_room_ids(
+    snapshot: &koushi_sdk::MatrixRoomListSnapshot,
+    space: &koushi_sdk::MatrixRoomListSpace,
+) -> Vec<String> {
+    let mut child_room_ids = BTreeSet::new();
+    child_room_ids.extend(space.child_room_ids.iter().cloned());
+    child_room_ids.extend(
+        snapshot
+            .rooms
+            .iter()
+            .filter(|room| room.parent_space_ids.iter().any(|id| id == &space.space_id))
+            .map(|room| room.room_id.clone()),
+    );
+    child_room_ids.into_iter().collect()
 }
 
 /// Convert `MatrixRoomListSnapshot` rooms into `RoomSummary` values.
@@ -1857,12 +1889,27 @@ fn normalize_rooms(snapshot: &koushi_sdk::MatrixRoomListSnapshot) -> Vec<RoomSum
                 highlight_count: room.highlight_count,
                 marked_unread: room.marked_unread,
                 last_activity_ms: room.last_activity_ms,
-                parent_space_ids: room.parent_space_ids.clone(),
+                parent_space_ids: normalize_room_parent_space_ids(snapshot, room),
                 is_encrypted: room.is_encrypted,
                 joined_members: room.joined_members,
             }
         })
         .collect()
+}
+
+fn normalize_room_parent_space_ids(
+    snapshot: &koushi_sdk::MatrixRoomListSnapshot,
+    room: &koushi_sdk::MatrixRoomListRoom,
+) -> Vec<String> {
+    let mut parent_space_ids: BTreeSet<String> = room.parent_space_ids.iter().cloned().collect();
+    parent_space_ids.extend(
+        snapshot
+            .spaces
+            .iter()
+            .filter(|space| space.child_room_ids.iter().any(|id| id == &room.room_id))
+            .map(|space| space.space_id.clone()),
+    );
+    parent_space_ids.into_iter().collect()
 }
 
 fn normalize_room_tags(tags: &MatrixRoomTags) -> RoomTags {
@@ -1876,9 +1923,7 @@ fn normalize_room_tags(tags: &MatrixRoomTags) -> RoomTags {
     }
 }
 
-fn normalize_user_profiles(
-    snapshot: &koushi_sdk::MatrixRoomListSnapshot,
-) -> Vec<UserProfile> {
+fn normalize_user_profiles(snapshot: &koushi_sdk::MatrixRoomListSnapshot) -> Vec<UserProfile> {
     snapshot
         .user_profiles
         .iter()
@@ -2172,6 +2217,15 @@ fn classify_report_error(
     }
 }
 
+fn trace_room_operation(kind: &str, stage: &str, request_id: RequestId) {
+    if std::env::var_os("KOUSHI_CORE_ACTOR_TRACE").is_some() {
+        eprintln!(
+            "koushi_core actor_trace room_actor stage={stage} kind={kind} request_id={}/{}",
+            request_id.connection_id.0, request_id.sequence
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests (network-free)
 // ---------------------------------------------------------------------------
@@ -2203,9 +2257,8 @@ pub mod tests {
 
     #[test]
     fn forbidden_sdk_error_classifies_as_forbidden() {
-        let error = MatrixRoomOperationError::Sdk(
-            koushi_sdk::MatrixRoomOperationFailureKind::Forbidden,
-        );
+        let error =
+            MatrixRoomOperationError::Sdk(koushi_sdk::MatrixRoomOperationFailureKind::Forbidden);
         assert_eq!(classify_room_error(&error), RoomFailureKind::Forbidden);
     }
 
@@ -2219,8 +2272,7 @@ pub mod tests {
 
     #[test]
     fn http_sdk_error_classifies_as_network() {
-        let error =
-            MatrixRoomOperationError::Sdk(koushi_sdk::MatrixRoomOperationFailureKind::Http);
+        let error = MatrixRoomOperationError::Sdk(koushi_sdk::MatrixRoomOperationFailureKind::Http);
         assert_eq!(classify_room_error(&error), RoomFailureKind::Network);
     }
 
@@ -2238,8 +2290,7 @@ pub mod tests {
 
     #[test]
     fn sdk_error_classifies_as_sdk() {
-        let error =
-            MatrixRoomOperationError::Sdk(koushi_sdk::MatrixRoomOperationFailureKind::Sdk);
+        let error = MatrixRoomOperationError::Sdk(koushi_sdk::MatrixRoomOperationFailureKind::Sdk);
         assert_eq!(classify_room_error(&error), RoomFailureKind::Sdk);
     }
 
@@ -2290,6 +2341,7 @@ pub mod tests {
                 space_id: "!space1:example.test".to_owned(),
                 display_name: "My Space".to_owned(),
                 avatar_mxc_uri: None,
+                child_room_ids: Vec::new(),
             }],
             rooms: vec![
                 MatrixRoomListRoom {
@@ -2334,12 +2386,47 @@ pub mod tests {
     }
 
     #[test]
+    fn normalize_spaces_uses_direct_space_child_state() {
+        let snapshot = MatrixRoomListSnapshot {
+            spaces: vec![MatrixRoomListSpace {
+                space_id: "!space1:example.test".to_owned(),
+                display_name: "My Space".to_owned(),
+                avatar_mxc_uri: None,
+                child_room_ids: vec!["!room1:example.test".to_owned()],
+            }],
+            rooms: vec![MatrixRoomListRoom {
+                room_id: "!room1:example.test".to_owned(),
+                display_name: "Room 1".to_owned(),
+                avatar_mxc_uri: None,
+                is_dm: false,
+                dm_user_ids: Vec::new(),
+                tags: MatrixRoomTags::default(),
+                unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
+                parent_space_ids: Vec::new(),
+                is_encrypted: false,
+                joined_members: 0,
+            }],
+            ..MatrixRoomListSnapshot::default()
+        };
+
+        let spaces = normalize_spaces(&snapshot);
+
+        assert_eq!(spaces.len(), 1);
+        assert_eq!(spaces[0].child_room_ids, vec!["!room1:example.test"]);
+    }
+
+    #[test]
     fn normalize_spaces_no_children() {
         let snapshot = MatrixRoomListSnapshot {
             spaces: vec![MatrixRoomListSpace {
                 space_id: "!space:example.test".to_owned(),
                 display_name: "Empty Space".to_owned(),
                 avatar_mxc_uri: None,
+                child_room_ids: Vec::new(),
             }],
             rooms: vec![],
             ..MatrixRoomListSnapshot::default()
@@ -2356,6 +2443,7 @@ pub mod tests {
                 space_id: "!space:example.test".to_owned(),
                 display_name: "Space".to_owned(),
                 avatar_mxc_uri: Some("mxc://example.test/space-avatar".to_owned()),
+                child_room_ids: Vec::new(),
             }],
             ..MatrixRoomListSnapshot::default()
         };
@@ -2427,6 +2515,40 @@ pub mod tests {
         assert_eq!(rooms[0].parent_space_ids, vec!["!space:example.test"]);
         assert_eq!(rooms[0].notification_count, 0);
         assert_eq!(rooms[0].highlight_count, 0);
+    }
+
+    #[test]
+    fn normalize_rooms_uses_direct_space_child_state_as_parent() {
+        let snapshot = MatrixRoomListSnapshot {
+            spaces: vec![MatrixRoomListSpace {
+                space_id: "!space:example.test".to_owned(),
+                display_name: "Space".to_owned(),
+                avatar_mxc_uri: None,
+                child_room_ids: vec!["!room:example.test".to_owned()],
+            }],
+            rooms: vec![MatrixRoomListRoom {
+                room_id: "!room:example.test".to_owned(),
+                display_name: "General".to_owned(),
+                avatar_mxc_uri: None,
+                is_dm: false,
+                dm_user_ids: Vec::new(),
+                tags: MatrixRoomTags::default(),
+                unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
+                parent_space_ids: Vec::new(),
+                is_encrypted: false,
+                joined_members: 0,
+            }],
+            ..MatrixRoomListSnapshot::default()
+        };
+
+        let rooms = normalize_rooms(&snapshot);
+
+        assert_eq!(rooms.len(), 1);
+        assert_eq!(rooms[0].parent_space_ids, vec!["!space:example.test"]);
     }
 
     #[test]
@@ -2936,6 +3058,60 @@ pub mod tests {
 
         assert!(!set_tag_body.contains("refresh_room_list().await"));
         assert!(!remove_tag_body.contains("refresh_room_list().await"));
+    }
+
+    #[test]
+    fn room_actor_command_loop_never_awaits_room_list_refresh() {
+        let source = include_str!("room.rs");
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+
+        assert!(
+            !production_source.contains("refresh_room_list().await"),
+            "RoomActor command handling must not await room-list normalization; it can block user-visible operations under large room lists"
+        );
+    }
+
+    #[test]
+    fn legacy_room_list_observation_accepts_explicit_refresh_requests() {
+        let source = include_str!("room.rs");
+        let legacy_body = source
+            .split("async fn run_legacy_room_list_observation")
+            .nth(1)
+            .expect("legacy observation function")
+            .split("// ---------------------------------------------------------------------------")
+            .next()
+            .expect("legacy observation body");
+
+        assert!(legacy_body.contains("mut refresh_rx: mpsc::Receiver<()>"));
+        assert!(legacy_body.contains("refresh_rx.recv()"));
+        assert!(legacy_body.contains("while refresh_rx.try_recv().is_ok()"));
+    }
+
+    #[test]
+    fn sync_started_legacy_starts_observation_before_refresh_request() {
+        let source = include_str!("room.rs");
+        let sync_started_body = source
+            .split("RoomMessage::SyncStarted")
+            .nth(2)
+            .expect("SyncStarted match arm")
+            .split("RoomMessage::SyncStopped")
+            .next()
+            .expect("SyncStarted body");
+
+        let start = sync_started_body
+            .find("self.start_legacy_observation();")
+            .expect("legacy observation starts");
+        let refresh = sync_started_body
+            .find("self.refresh_room_list();")
+            .expect("legacy refresh request");
+
+        assert!(
+            start < refresh,
+            "Legacy refresh must be requested through the observation loop after it starts"
+        );
     }
 
     #[test]

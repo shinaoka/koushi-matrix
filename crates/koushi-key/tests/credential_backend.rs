@@ -14,7 +14,7 @@ fn key_id() -> SessionKeyId {
 #[test]
 fn credential_backend_fake_round_trips_one_local_unlock_secret() {
     let backend = InMemoryCredentialBackend::default();
-    let store = CredentialStore::with_backend("matrix-desktop-test", backend);
+    let store = CredentialStore::with_backend("koushi-desktop-test", backend);
     let secret = LocalUnlockSecret::generate();
 
     store.save(&key_id(), &secret).expect("save");
@@ -29,7 +29,7 @@ fn credential_backend_fake_round_trips_one_local_unlock_secret() {
 #[test]
 fn credential_backend_fake_reports_missing_credential_without_raw_error_text() {
     let backend = InMemoryCredentialBackend::default();
-    let store = CredentialStore::with_backend("matrix-desktop-test", backend);
+    let store = CredentialStore::with_backend("koushi-desktop-test", backend);
 
     let error = store.load(&key_id()).expect_err("missing credential");
 
@@ -45,7 +45,7 @@ fn credential_backend_fake_reports_missing_credential_without_raw_error_text() {
 fn credential_backend_fake_locked_state_maps_to_locked_or_inaccessible() {
     let backend = InMemoryCredentialBackend::default();
     backend.set_error(CredentialBackendErrorKind::LockedOrInaccessible);
-    let store = CredentialStore::with_backend("matrix-desktop-test", backend);
+    let store = CredentialStore::with_backend("koushi-desktop-test", backend);
 
     let error = store.load(&key_id()).expect_err("locked credential store");
 

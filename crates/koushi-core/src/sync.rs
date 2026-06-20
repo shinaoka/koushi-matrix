@@ -63,10 +63,11 @@ use crate::room::RoomMessage;
 /// (release-gate structural rule pattern). Any value other than `legacy` is
 /// ignored and the probe runs normally.
 #[cfg(any(debug_assertions, test))]
-const ENV_FORCE_SYNC_BACKEND: &str = "MATRIX_DESKTOP_QA_FORCE_SYNC_BACKEND";
+const ENV_FORCE_SYNC_BACKEND: &str = "KOUSHI_QA_FORCE_SYNC_BACKEND";
 const SYNC_ACTOR_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_secs(1);
 const SYNC_ACTOR_SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(10);
 const SYNC_SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+const LEGACY_SYNC_ROOM_TIMELINE_LIMIT: u32 = 128;
 
 /// Messages sent to the SyncActor from AccountActor.
 pub enum SyncMessage {
@@ -126,7 +127,10 @@ enum SyncLifecycle {
 #[derive(Debug)]
 enum SyncTaskOutcome {
     Stopped,
-    Failed(SyncFailureKind),
+    Failed {
+        kind: SyncFailureKind,
+        ever_ran: bool,
+    },
     Panicked,
 }
 
@@ -158,6 +162,8 @@ pub struct SyncActor {
     legacy_stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
     /// SyncService handle (Some when SyncService backend is running).
     sync_service: Option<Arc<matrix_sdk_ui::sync_service::SyncService>>,
+    active_start_request_id: Option<RequestId>,
+    sync_service_runtime_fallback_attempted: bool,
     /// Handle for the global ignored-user-list account-data handler. Removed on
     /// stop so repeated start/stop cycles do not install duplicate handlers.
     ignored_user_list_handler: Option<matrix_sdk::event_handler::EventHandlerHandle>,
@@ -184,6 +190,8 @@ impl SyncActor {
             sync_task: None,
             legacy_stop_tx: None,
             sync_service: None,
+            active_start_request_id: None,
+            sync_service_runtime_fallback_attempted: false,
             ignored_user_list_handler: None,
         };
         let task = executor::spawn(actor.run());
@@ -203,10 +211,7 @@ impl SyncActor {
                         let outcome = outcome
                             .unwrap_or(SyncTaskOutcome::Panicked);
                         self.sync_task = None;
-                        self.legacy_stop_tx = None;
-                        self.sync_service = None;
-                        self.active_backend = ActiveBackend::None;
-                        self.handle_sync_task_ended(outcome);
+                        self.handle_sync_task_ended(outcome).await;
                     }
                     msg = self.command_rx.recv() => {
                         match msg {
@@ -237,11 +242,14 @@ impl SyncActor {
         }
     }
 
-    fn handle_sync_task_ended(&mut self, outcome: SyncTaskOutcome) {
+    async fn handle_sync_task_ended(&mut self, outcome: SyncTaskOutcome) {
         // The room-list observation must not outlive the sync backend it
         // relays (live RoomListService on SyncService, base-client updates on
         // legacy). try_send: this is a sync fn; capacity 64 suffices.
         let _ = self.room_tx.try_send(RoomMessage::SyncStopped);
+        let ended_backend = self.active_backend;
+        let request_id = self.active_start_request_id;
+        self.cleanup_ended_backend().await;
         match outcome {
             SyncTaskOutcome::Stopped => {
                 self.lifecycle = SyncLifecycle::Stopped;
@@ -250,12 +258,26 @@ impl SyncActor {
                 self.emit(CoreEvent::Sync(SyncEvent::Stopped { request_id: None }));
                 self.reduce(vec![AppAction::SyncStopped]);
             }
-            SyncTaskOutcome::Failed(_) | SyncTaskOutcome::Panicked => {
+            SyncTaskOutcome::Failed { .. } | SyncTaskOutcome::Panicked => {
                 let kind = match outcome {
-                    SyncTaskOutcome::Failed(k) => k,
+                    SyncTaskOutcome::Failed { kind, .. } => kind,
                     SyncTaskOutcome::Panicked => SyncFailureKind::Internal,
                     SyncTaskOutcome::Stopped => unreachable!(),
                 };
+                let ever_ran = match outcome {
+                    SyncTaskOutcome::Failed { ever_ran, .. } => ever_ran,
+                    SyncTaskOutcome::Panicked => false,
+                    SyncTaskOutcome::Stopped => unreachable!(),
+                };
+                if should_fallback_to_legacy_after_sync_service_failure(
+                    ended_backend,
+                    kind,
+                    ever_ran,
+                    self.sync_service_runtime_fallback_attempted,
+                ) {
+                    self.start_legacy_runtime_fallback(request_id).await;
+                    return;
+                }
                 self.lifecycle = SyncLifecycle::Failed;
                 let mode = sync_mode_from_backend(self.current_backend_kind(), true);
                 self.reduce(vec![AppAction::SyncModeChanged { mode }]);
@@ -311,6 +333,7 @@ impl SyncActor {
         let backend_kind = probe_backend(&client).await;
         let mode = sync_mode_from_backend(backend_kind, false);
         self.reduce(vec![AppAction::SyncModeChanged { mode }]);
+        self.active_start_request_id = Some(request_id);
 
         // Emit Started with the selected backend BEFORE the task starts running,
         // so QA can assert the backend kind on the same event.
@@ -327,23 +350,8 @@ impl SyncActor {
                     Ok(()) => {}
                     Err(()) => {
                         // SyncService build failed; fall back to legacy.
-                        let transition_mode = SyncMode::Transitioning;
-                        self.reduce(vec![AppAction::SyncModeChanged {
-                            mode: transition_mode,
-                        }]);
-                        self.emit(CoreEvent::Sync(SyncEvent::ModeChanged {
-                            mode: transition_mode,
-                        }));
-                        let client2 = self.session.client();
-                        self.active_backend = ActiveBackend::LegacySync;
-                        self.start_legacy_sync(client2).await;
-                        let fallback_mode = SyncMode::Legacy;
-                        self.reduce(vec![AppAction::SyncModeChanged {
-                            mode: fallback_mode,
-                        }]);
-                        self.emit(CoreEvent::Sync(SyncEvent::ModeChanged {
-                            mode: fallback_mode,
-                        }));
+                        self.start_legacy_runtime_fallback(Some(request_id)).await;
+                        return;
                     }
                 }
             }
@@ -378,6 +386,50 @@ impl SyncActor {
             .await;
     }
 
+    async fn start_legacy_runtime_fallback(&mut self, request_id: Option<RequestId>) {
+        self.sync_service_runtime_fallback_attempted = true;
+        let transition_mode = SyncMode::Transitioning;
+        self.reduce(vec![AppAction::SyncModeChanged {
+            mode: transition_mode,
+        }]);
+        self.emit(CoreEvent::Sync(SyncEvent::ModeChanged {
+            mode: transition_mode,
+        }));
+
+        let client = self.session.client();
+        self.active_backend = ActiveBackend::LegacySync;
+        self.active_start_request_id = request_id;
+
+        let fallback_mode = SyncMode::Legacy;
+        self.reduce(vec![AppAction::SyncModeChanged {
+            mode: fallback_mode,
+        }]);
+        self.emit(CoreEvent::Sync(SyncEvent::Started {
+            request_id,
+            backend: SyncBackendKind::LegacySync,
+        }));
+        self.emit(CoreEvent::Sync(SyncEvent::ModeChanged {
+            mode: fallback_mode,
+        }));
+
+        self.start_legacy_sync(client).await;
+        self.lifecycle = SyncLifecycle::Running;
+
+        let _ = self
+            .room_tx
+            .send(RoomMessage::SyncStarted {
+                session: self.session.clone(),
+                room_list_service: None,
+            })
+            .await;
+        let _ = self
+            .timeline_tx
+            .send(crate::timeline::TimelineMessage::SyncStarted {
+                room_list_service: None,
+            })
+            .await;
+    }
+
     /// Returns Ok(()) on success, Err(()) when SyncService build fails (caller falls back).
     async fn start_sync_service(&mut self, client: matrix_sdk::Client) -> Result<(), ()> {
         self.register_ignored_user_list_handler(&client);
@@ -394,16 +446,16 @@ impl SyncActor {
             })?;
         let service = Arc::new(service);
 
-        // Subscribe BEFORE starting so no state changes are missed.
+        // Start observing before the SDK service starts so short-lived
+        // Running/Error/Terminated transitions cannot be missed.
         let state_sub = service.state();
-        service.start().await;
-
         let event_tx = self.event_tx.clone();
         let action_tx = self.action_tx.clone();
 
         let task: executor::JoinHandle<SyncTaskOutcome> = executor::spawn(async move {
             observe_sync_service_states(state_sub, event_tx, action_tx).await
         });
+        service.start().await;
 
         self.sync_service = Some(service);
         self.sync_task = Some(task);
@@ -424,6 +476,18 @@ impl SyncActor {
 
         self.legacy_stop_tx = Some(stop_tx);
         self.sync_task = Some(task);
+    }
+
+    async fn cleanup_ended_backend(&mut self) {
+        if let Some(svc) = self.sync_service.take() {
+            let _ = executor::timeout(SYNC_SERVICE_STOP_TIMEOUT, svc.stop()).await;
+        }
+        self.legacy_stop_tx = None;
+        if let Some(handle) = self.ignored_user_list_handler.take() {
+            self.session.client().remove_event_handler(handle);
+        }
+        self.active_backend = ActiveBackend::None;
+        self.active_start_request_id = None;
     }
 
     /// Graceful stop: signal the running sync backend and wait (bounded timeout).
@@ -447,6 +511,7 @@ impl SyncActor {
             let _ = executor::timeout(Duration::from_secs(10), task).await;
         }
         self.active_backend = ActiveBackend::None;
+        self.active_start_request_id = None;
         self.lifecycle = SyncLifecycle::Stopped;
         self.emit(CoreEvent::Sync(SyncEvent::Stopped { request_id }));
         self.reduce(vec![AppAction::SyncStopped]);
@@ -530,12 +595,14 @@ async fn observe_sync_service_states(
     // (Running) on first success and SyncRecovered on subsequent recoveries.
     let mut ever_ran = false;
 
+    let mut pending_state = Some(state_sub.get());
     loop {
-        // `next()` waits for the next change; returns None when the observable is closed.
-        let next_state = state_sub.next().await;
-        let state = match next_state {
-            Some(s) => s,
-            None => return SyncTaskOutcome::Stopped,
+        let state = match pending_state.take() {
+            Some(state) => state,
+            None => match state_sub.next().await {
+                Some(state) => state,
+                None => return SyncTaskOutcome::Stopped,
+            },
         };
         match state {
             matrix_sdk_ui::sync_service::State::Running => {
@@ -554,13 +621,23 @@ async fn observe_sync_service_states(
                 let _ = action_tx.try_send(vec![AppAction::SyncReconnecting {
                     reason: "network_offline".to_owned(),
                 }]);
+                return SyncTaskOutcome::Failed {
+                    kind: SyncFailureKind::Http,
+                    ever_ran,
+                };
             }
             matrix_sdk_ui::sync_service::State::Terminated => {
-                return SyncTaskOutcome::Stopped;
+                return SyncTaskOutcome::Failed {
+                    kind: SyncFailureKind::Http,
+                    ever_ran,
+                };
             }
             matrix_sdk_ui::sync_service::State::Error(_) => {
                 // Error is opaque — never expose SDK error text.
-                return SyncTaskOutcome::Failed(SyncFailureKind::Http);
+                return SyncTaskOutcome::Failed {
+                    kind: SyncFailureKind::Http,
+                    ever_ran,
+                };
             }
             matrix_sdk_ui::sync_service::State::Idle => {
                 // Initial state and state after stop — not a terminal failure.
@@ -580,9 +657,8 @@ async fn run_legacy_sync_loop(
     action_tx: mpsc::Sender<Vec<AppAction>>,
 ) -> SyncTaskOutcome {
     use futures_util::StreamExt as _;
-    use matrix_sdk::config::SyncSettings;
 
-    let settings = SyncSettings::default();
+    let settings = legacy_sync_settings();
     let sync_stream = client.sync_stream(settings).await;
     tokio::pin!(sync_stream);
 
@@ -615,7 +691,7 @@ async fn run_legacy_sync_loop(
                         let kind = classify_sdk_sync_error(&error);
                         if kind == SyncFailureKind::Auth {
                             // Auth failures are terminal (the SDK will not recover).
-                            return SyncTaskOutcome::Failed(kind);
+                            return SyncTaskOutcome::Failed { kind, ever_ran };
                         }
                         // Network / transient failures: emit Reconnecting and let
                         // the SDK's stream retry internally.
@@ -641,7 +717,7 @@ async fn run_legacy_sync_loop(
 /// Returns `SyncService` if available, `LegacySync` otherwise.
 /// Never panics — network failures cause an empty result → LegacySync.
 ///
-/// Debug/test builds honor `MATRIX_DESKTOP_QA_FORCE_SYNC_BACKEND=legacy`
+/// Debug/test builds honor `KOUSHI_QA_FORCE_SYNC_BACKEND=legacy`
 /// (skip the probe, select `LegacySync`); release builds compile the check
 /// out entirely and always probe.
 fn sync_mode_from_backend(backend: SyncBackendKind, failed: bool) -> SyncMode {
@@ -656,6 +732,15 @@ fn sync_mode_from_backend(backend: SyncBackendKind, failed: bool) -> SyncMode {
     }
 }
 
+fn should_fallback_to_legacy_after_sync_service_failure(
+    backend: ActiveBackend,
+    kind: SyncFailureKind,
+    _ever_ran: bool,
+    already_attempted: bool,
+) -> bool {
+    backend == ActiveBackend::SyncService && kind == SyncFailureKind::Http && !already_attempted
+}
+
 pub(crate) async fn probe_backend(client: &matrix_sdk::Client) -> SyncBackendKind {
     #[cfg(any(debug_assertions, test))]
     if forced_legacy_backend() {
@@ -668,6 +753,22 @@ pub(crate) async fn probe_backend(client: &matrix_sdk::Client) -> SyncBackendKin
     } else {
         SyncBackendKind::SyncService
     }
+}
+
+fn legacy_sync_settings() -> matrix_sdk::config::SyncSettings {
+    use matrix_sdk::ruma::api::client::sync::sync_events;
+
+    matrix_sdk::config::SyncSettings::default().filter(sync_events::v3::Filter::from(
+        legacy_sync_filter_definition(),
+    ))
+}
+
+fn legacy_sync_filter_definition() -> matrix_sdk::ruma::api::client::filter::FilterDefinition {
+    let mut filter = matrix_sdk::ruma::api::client::filter::FilterDefinition::default();
+    filter.room.timeline.limit = Some(matrix_sdk::ruma::UInt::from(
+        LEGACY_SYNC_ROOM_TIMELINE_LIMIT,
+    ));
+    filter
 }
 
 /// True only when the QA env override requests the legacy backend.
@@ -927,7 +1028,7 @@ pub mod tests {
     fn sync_task_panicked_produces_internal_failure_kind() {
         let outcome = SyncTaskOutcome::Panicked;
         let kind = match outcome {
-            SyncTaskOutcome::Failed(k) => k,
+            SyncTaskOutcome::Failed { kind, .. } => kind,
             SyncTaskOutcome::Panicked => SyncFailureKind::Internal,
             SyncTaskOutcome::Stopped => panic!("wrong branch"),
         };
@@ -936,12 +1037,180 @@ pub mod tests {
 
     #[test]
     fn sync_task_failed_preserves_kind() {
-        let outcome = SyncTaskOutcome::Failed(SyncFailureKind::Auth);
+        let outcome = SyncTaskOutcome::Failed {
+            kind: SyncFailureKind::Auth,
+            ever_ran: false,
+        };
         let kind = match outcome {
-            SyncTaskOutcome::Failed(k) => k,
+            SyncTaskOutcome::Failed { kind, .. } => kind,
             _ => SyncFailureKind::Internal,
         };
         assert_eq!(kind, SyncFailureKind::Auth);
+    }
+
+    #[test]
+    fn sync_service_http_failure_falls_back_to_legacy_once() {
+        assert!(
+            should_fallback_to_legacy_after_sync_service_failure(
+                ActiveBackend::SyncService,
+                SyncFailureKind::Http,
+                false,
+                false
+            ),
+            "advertised SyncService can be incompatible at first request; fallback before Running"
+        );
+
+        assert!(
+            should_fallback_to_legacy_after_sync_service_failure(
+                ActiveBackend::SyncService,
+                SyncFailureKind::Http,
+                true,
+                false
+            ),
+            "some MSC3575 incompatibilities surface only after the first Running state"
+        );
+        assert!(
+            !should_fallback_to_legacy_after_sync_service_failure(
+                ActiveBackend::SyncService,
+                SyncFailureKind::Auth,
+                false,
+                false
+            ),
+            "auth failures must not be hidden by backend fallback"
+        );
+        assert!(
+            !should_fallback_to_legacy_after_sync_service_failure(
+                ActiveBackend::SyncService,
+                SyncFailureKind::Http,
+                false,
+                true
+            ),
+            "fallback must not loop within one actor session"
+        );
+        assert!(
+            !should_fallback_to_legacy_after_sync_service_failure(
+                ActiveBackend::LegacySync,
+                SyncFailureKind::Http,
+                false,
+                false
+            ),
+            "legacy failures have no lower backend to fall back to"
+        );
+    }
+
+    #[test]
+    fn runtime_fallback_emits_started_before_legacy_task_can_run() {
+        let source = include_str!("sync.rs");
+        let body = source
+            .split("    async fn start_legacy_runtime_fallback")
+            .nth(1)
+            .and_then(|rest| rest.split("    /// Returns Ok(())").next())
+            .expect("start_legacy_runtime_fallback body");
+
+        let started_index = body
+            .find("backend: SyncBackendKind::LegacySync")
+            .expect("fallback must emit Started(LegacySync)");
+        let spawn_index = body
+            .find("self.start_legacy_sync(client).await")
+            .expect("fallback must start legacy sync");
+        assert!(
+            started_index < spawn_index,
+            "Started(LegacySync) must be emitted before the spawned legacy task can emit Running"
+        );
+    }
+
+    #[test]
+    fn sync_service_offline_state_exits_observer_for_backend_fallback() {
+        let source = include_str!("sync.rs");
+        let offline_arm = source
+            .split("matrix_sdk_ui::sync_service::State::Offline =>")
+            .nth(1)
+            .and_then(|rest| {
+                rest.split("matrix_sdk_ui::sync_service::State::Terminated")
+                    .next()
+            })
+            .expect("SyncService Offline arm");
+
+        assert!(
+            offline_arm.contains("SyncTaskOutcome::Failed"),
+            "SyncService Offline must leave the observer so SyncActor can fall back to LegacySync"
+        );
+        assert!(
+            offline_arm.contains("kind: SyncFailureKind::Http"),
+            "Offline fallback must use the stable HTTP failure kind, not raw SDK text"
+        );
+    }
+
+    #[test]
+    fn sync_service_terminated_state_exits_observer_for_backend_fallback() {
+        let source = include_str!("sync.rs");
+        let terminated_arm = source
+            .split("matrix_sdk_ui::sync_service::State::Terminated =>")
+            .nth(1)
+            .and_then(|rest| {
+                rest.split("matrix_sdk_ui::sync_service::State::Error")
+                    .next()
+            })
+            .expect("SyncService Terminated arm");
+
+        assert!(
+            terminated_arm.contains("SyncTaskOutcome::Failed"),
+            "unexpected SyncService termination must leave the observer so SyncActor can fall back to LegacySync"
+        );
+        assert!(
+            terminated_arm.contains("kind: SyncFailureKind::Http"),
+            "terminated fallback must use the stable HTTP failure kind, not raw SDK text"
+        );
+    }
+
+    #[test]
+    fn sync_service_observer_starts_before_service_start() {
+        let source = include_str!("sync.rs");
+        let body = source
+            .split("    async fn start_sync_service")
+            .nth(1)
+            .and_then(|rest| rest.split("    async fn start_legacy_sync").next())
+            .expect("start_sync_service body");
+
+        let observer_index = body.find("executor::spawn").expect("observer task spawn");
+        let start_index = body
+            .find("service.start().await")
+            .expect("SyncService start call");
+
+        assert!(
+            observer_index < start_index,
+            "SyncService state observer must be running before service.start() can emit transient states"
+        );
+    }
+
+    #[test]
+    fn sync_service_observer_checks_current_state_before_waiting() {
+        let source = include_str!("sync.rs");
+        let body = source
+            .split("async fn observe_sync_service_states")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn run_legacy_sync_loop").next())
+            .expect("observe_sync_service_states body");
+
+        let get_index = body.find("state_sub.get()").expect("current state read");
+        let next_index = body
+            .find("state_sub.next().await")
+            .expect("next state wait");
+        assert!(
+            get_index < next_index,
+            "SyncService observer must inspect the current state before waiting for a future change"
+        );
+    }
+
+    #[test]
+    fn legacy_sync_filter_fetches_full_stress_burst_per_room() {
+        let filter = legacy_sync_filter_definition();
+
+        assert_eq!(
+            filter.room.timeline.limit,
+            Some(matrix_sdk::ruma::uint!(128)),
+            "LegacySync fallback must keep a large enough live tail to avoid a gap between /sync and /messages backfill under the local timeline stress cap"
+        );
     }
 
     // --- AppAction channel round-trip (no real client needed) ---

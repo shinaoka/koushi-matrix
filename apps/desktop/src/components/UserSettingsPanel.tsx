@@ -85,6 +85,8 @@ export function UserSettingsPanel({
   onSetAvatar,
   onBootstrapCrossSigning,
   onEnableKeyBackup,
+  onChooseRoomKeyExportDestination,
+  onChooseRoomKeyImportSource,
   onExportRoomKeys,
   onImportRoomKeys,
   onBootstrapSecureBackup,
@@ -128,6 +130,8 @@ export function UserSettingsPanel({
   onSetAvatar: (file: File) => void;
   onBootstrapCrossSigning: () => void;
   onEnableKeyBackup: () => void;
+  onChooseRoomKeyExportDestination: () => Promise<string | null>;
+  onChooseRoomKeyImportSource: () => Promise<string | null>;
   onExportRoomKeys: (destinationPath: string, passphrase: string) => void;
   onImportRoomKeys: (sourcePath: string, passphrase: string) => void;
   onBootstrapSecureBackup: (
@@ -616,6 +620,8 @@ export function UserSettingsPanel({
           platform={platform}
           onBootstrapSecureBackup={onBootstrapSecureBackup}
           onChangeSecureBackupPassphrase={onChangeSecureBackupPassphrase}
+          onChooseRoomKeyExportDestination={onChooseRoomKeyExportDestination}
+          onChooseRoomKeyImportSource={onChooseRoomKeyImportSource}
           onExportRoomKeys={onExportRoomKeys}
           onImportRoomKeys={onImportRoomKeys}
           onOpenRecovery={onOpenRecovery}
@@ -695,6 +701,8 @@ function SecuritySection({
   platform,
   onExportRoomKeys,
   onImportRoomKeys,
+  onChooseRoomKeyExportDestination,
+  onChooseRoomKeyImportSource,
   onBootstrapSecureBackup,
   onChangeSecureBackupPassphrase,
   onOpenRecovery,
@@ -706,6 +714,8 @@ function SecuritySection({
   platform: DisplayPlatform;
   onExportRoomKeys: (destinationPath: string, passphrase: string) => void;
   onImportRoomKeys: (sourcePath: string, passphrase: string) => void;
+  onChooseRoomKeyExportDestination: () => Promise<string | null>;
+  onChooseRoomKeyImportSource: () => Promise<string | null>;
   onBootstrapSecureBackup: (
     passphrase: string | null,
     recoveryKeyDestinationPath: string | null
@@ -720,44 +730,59 @@ function SecuritySection({
   onResetLocalData: () => void;
 }) {
   const status = localEncryptionStatus(localEncryption);
-  const exportDestinationRef = useRef<HTMLInputElement>(null);
-  const exportPassphraseRef = useRef<HTMLInputElement>(null);
-  const importSourceRef = useRef<HTMLInputElement>(null);
-  const importPassphraseRef = useRef<HTMLInputElement>(null);
+  const roomKeyPassphraseRef = useRef<HTMLInputElement>(null);
   const secureBackupPassphraseRef = useRef<HTMLInputElement>(null);
   const secureBackupRecoveryPathRef = useRef<HTMLInputElement>(null);
   const oldSecureBackupSecretRef = useRef<HTMLInputElement>(null);
   const newSecureBackupPassphraseRef = useRef<HTMLInputElement>(null);
   const passphraseChangeRecoveryPathRef = useRef<HTMLInputElement>(null);
+  const [roomKeyPassphraseRequest, setRoomKeyPassphraseRequest] =
+    useState<RoomKeyPassphraseRequest | null>(null);
   const canReset =
     localEncryption.kind === "missingCredential" ||
     localEncryption.kind === "resetRequired" ||
     localEncryption.kind === "resetting";
 
-  function submitRoomKeyExport(event: FormEvent<HTMLFormElement>) {
+  async function chooseRoomKeyExport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const destinationPath = exportDestinationRef.current?.value.trim() ?? "";
-    const passphrase = exportPassphraseRef.current?.value ?? "";
-    if (!destinationPath || !passphrase) {
+    const destinationPath = await onChooseRoomKeyExportDestination();
+    if (!destinationPath) {
       return;
     }
-    onExportRoomKeys(destinationPath, passphrase);
-    if (exportPassphraseRef.current) {
-      exportPassphraseRef.current.value = "";
-    }
+    setRoomKeyPassphraseRequest({ kind: "export", path: destinationPath });
   }
 
-  function submitRoomKeyImport(event: FormEvent<HTMLFormElement>) {
+  async function chooseRoomKeyImport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const sourcePath = importSourceRef.current?.value.trim() ?? "";
-    const passphrase = importPassphraseRef.current?.value ?? "";
-    if (!sourcePath || !passphrase) {
+    const sourcePath = await onChooseRoomKeyImportSource();
+    if (!sourcePath) {
       return;
     }
-    onImportRoomKeys(sourcePath, passphrase);
-    if (importPassphraseRef.current) {
-      importPassphraseRef.current.value = "";
+    setRoomKeyPassphraseRequest({ kind: "import", path: sourcePath });
+  }
+
+  function submitRoomKeyPassphrase(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const passphrase = roomKeyPassphraseRef.current?.value ?? "";
+    if (!roomKeyPassphraseRequest || !passphrase) {
+      return;
     }
+    if (roomKeyPassphraseRequest.kind === "export") {
+      onExportRoomKeys(roomKeyPassphraseRequest.path, passphrase);
+    } else {
+      onImportRoomKeys(roomKeyPassphraseRequest.path, passphrase);
+    }
+    if (roomKeyPassphraseRef.current) {
+      roomKeyPassphraseRef.current.value = "";
+    }
+    setRoomKeyPassphraseRequest(null);
+  }
+
+  function closeRoomKeyPassphraseDialog() {
+    if (roomKeyPassphraseRef.current) {
+      roomKeyPassphraseRef.current.value = "";
+    }
+    setRoomKeyPassphraseRequest(null);
   }
 
   function submitSecureBackupSetup(event: FormEvent<HTMLFormElement>) {
@@ -842,23 +867,22 @@ function SecuritySection({
           <form
             aria-label={t("settings.roomKeyExport")}
             className="profile-settings-form"
-            onSubmit={submitRoomKeyExport}
+            onSubmit={(event) => {
+              void chooseRoomKeyExport(event);
+            }}
           >
             <KeyManagementStatus
               label={t("settings.roomKeyExport")}
               value={roomKeyExportStatusLabel(keyManagement.room_key_export)}
               testId="room-key-export-state"
             />
-            <label className="profile-settings-field">
-              <span>{t("settings.roomKeyExportDestination")}</span>
-              <input ref={exportDestinationRef} autoComplete="off" type="text" />
-            </label>
-            <label className="profile-settings-field">
-              <span>{t("settings.roomKeyPassphrase")}</span>
-              <input ref={exportPassphraseRef} autoComplete="new-password" type="password" />
-            </label>
+            <p className="profile-settings-hint">{t("settings.chooseRoomKeyExportFile")}</p>
             <div className="profile-settings-actions">
-              <button className="trust-action-button primary" type="submit">
+              <button
+                className="trust-action-button primary"
+                type="submit"
+                disabled={keyManagement.room_key_export.kind === "exporting"}
+              >
                 <Download size={14} />
                 <span>{t("settings.exportRoomKeys")}</span>
               </button>
@@ -868,23 +892,22 @@ function SecuritySection({
           <form
             aria-label={t("settings.roomKeyImport")}
             className="profile-settings-form"
-            onSubmit={submitRoomKeyImport}
+            onSubmit={(event) => {
+              void chooseRoomKeyImport(event);
+            }}
           >
             <KeyManagementStatus
               label={t("settings.roomKeyImport")}
               value={roomKeyImportStatusLabel(keyManagement.room_key_import)}
               testId="room-key-import-state"
             />
-            <label className="profile-settings-field">
-              <span>{t("settings.roomKeyImportSource")}</span>
-              <input ref={importSourceRef} autoComplete="off" type="text" />
-            </label>
-            <label className="profile-settings-field">
-              <span>{t("settings.roomKeyPassphrase")}</span>
-              <input ref={importPassphraseRef} autoComplete="new-password" type="password" />
-            </label>
+            <p className="profile-settings-hint">{t("settings.chooseRoomKeyImportFile")}</p>
             <div className="profile-settings-actions">
-              <button className="trust-action-button primary" type="submit">
+              <button
+                className="trust-action-button primary"
+                type="submit"
+                disabled={keyManagement.room_key_import.kind === "importing"}
+              >
                 <Upload size={14} />
                 <span>{t("settings.importRoomKeys")}</span>
               </button>
@@ -960,9 +983,50 @@ function SecuritySection({
           </form>
         </div>
       </section>
+      {roomKeyPassphraseRequest ? (
+        <div className="dialog-overlay" role="presentation">
+          <form
+            className="dialog-box"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="room-key-passphrase-title"
+            onSubmit={submitRoomKeyPassphrase}
+          >
+            <h3 className="dialog-title" id="room-key-passphrase-title">
+              {t("settings.roomKeyPassphrase")}
+            </h3>
+            <p className="profile-settings-hint">
+              {roomKeyPassphraseRequest.kind === "export"
+                ? t("settings.roomKeyPassphrasePromptExport")
+                : t("settings.roomKeyPassphrasePromptImport")}
+            </p>
+            <input
+              className="dialog-input"
+              ref={roomKeyPassphraseRef}
+              autoComplete="new-password"
+              type="password"
+              aria-label={t("settings.roomKeyPassphrase")}
+            />
+            <div className="dialog-actions">
+              <button className="dialog-button" type="button" onClick={closeRoomKeyPassphraseDialog}>
+                {t("action.cancel")}
+              </button>
+              <button className="dialog-button is-primary" type="submit">
+                {roomKeyPassphraseRequest.kind === "export"
+                  ? t("settings.exportRoomKeys")
+                  : t("settings.importRoomKeys")}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </>
   );
 }
+
+type RoomKeyPassphraseRequest =
+  | { kind: "export"; path: string }
+  | { kind: "import"; path: string };
 
 function SessionsSection({
   deviceSessions,

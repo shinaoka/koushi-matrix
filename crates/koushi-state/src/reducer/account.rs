@@ -66,8 +66,7 @@ pub(crate) fn handle_account_management_requested(
     if !is_session_ready(state)
         || matches!(
             state.account_management,
-            AccountManagementState::Working { .. }
-                | AccountManagementState::AwaitingUia { .. }
+            AccountManagementState::Working { .. } | AccountManagementState::AwaitingUia { .. }
         )
     {
         return Vec::new();

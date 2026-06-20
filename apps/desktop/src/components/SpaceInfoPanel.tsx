@@ -4,6 +4,7 @@ import {
   FileText,
   Home,
   MailPlus,
+  MessageCircle,
   Settings,
   SlidersHorizontal,
   Users
@@ -20,7 +21,8 @@ export function SpaceInfoPanel({
   space,
   onInvitePeople,
   onOpenFiles,
-  onOpenMembers
+  onOpenMembers,
+  onStartDirectMessage
 }: {
   fallbackName: string;
   rooms: RoomSummary[];
@@ -29,6 +31,7 @@ export function SpaceInfoPanel({
   onInvitePeople?: () => void;
   onOpenFiles?: () => void;
   onOpenMembers?: () => void;
+  onStartDirectMessage?: (userId: string) => void;
 }) {
   const membersSectionRef = useRef<HTMLElement>(null);
   const childRooms = space
@@ -95,10 +98,11 @@ export function SpaceInfoPanel({
           ) : loadedSpaceSettings ? (
             loadedSpaceSettings.members.length > 0 ? (
               loadedSpaceSettings.members.map((member) => (
-                <DetailRow
+                <SpaceMemberRow
                   key={member.user_id}
-                  label={member.display_label}
-                  value={member.user_id}
+                  displayLabel={member.display_label}
+                  userId={member.user_id}
+                  onStartDirectMessage={onStartDirectMessage}
                 />
               ))
             ) : (
@@ -139,6 +143,33 @@ function DetailRow({ label, value }: { label: string; value: string }) {
     <div className="settings-detail-row">
       <span>{label}</span>
       <small>{value}</small>
+    </div>
+  );
+}
+
+function SpaceMemberRow({
+  displayLabel,
+  userId,
+  onStartDirectMessage
+}: {
+  displayLabel: string;
+  userId: string;
+  onStartDirectMessage?: (userId: string) => void;
+}) {
+  return (
+    <div className="settings-detail-row">
+      <span dir="auto">{displayLabel}</span>
+      <small dir="auto">{userId}</small>
+      <button
+        className="profile-settings-action room-member-action"
+        type="button"
+        aria-label={t("room.messageMember", { name: displayLabel })}
+        disabled={!onStartDirectMessage}
+        onClick={() => onStartDirectMessage?.(userId)}
+      >
+        <MessageCircle size={14} />
+        {t("workspace.newDm")}
+      </button>
     </div>
   );
 }

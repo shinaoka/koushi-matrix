@@ -3,15 +3,22 @@ import type {
   RoomListFilter,
   RoomListProjection,
   RoomListSort,
-  RoomSummary
+  RoomSummary,
+  SpaceSummary
 } from "../domain/types";
 
 export function computeBrowserRoomListProjection(
   activeFilter: RoomListFilter,
   sort: RoomListSort,
+  activeSpaceId: string | null,
+  spaces: SpaceSummary[],
   rooms: RoomSummary[],
   invites: InvitePreview[]
 ): RoomListProjection {
+  const activeSpaceChildRoomIds =
+    activeSpaceId === null
+      ? null
+      : spaces.find((space) => space.space_id === activeSpaceId)?.child_room_ids ?? null;
   const items =
     activeFilter.kind === "invites"
       ? invites.map((invite) => ({
@@ -19,6 +26,7 @@ export function computeBrowserRoomListProjection(
           kind: "invite" as const
         }))
       : rooms
+          .filter((room) => roomVisibleInActiveSpace(room, activeSpaceId, activeSpaceChildRoomIds))
           .filter((room) => roomMatchesFilter(room, activeFilter))
           .map((room) => ({
             room_id: room.room_id,
@@ -44,6 +52,23 @@ export function computeBrowserRoomListProjection(
   };
 }
 
+function roomVisibleInActiveSpace(
+  room: RoomSummary,
+  activeSpaceId: string | null,
+  activeSpaceChildRoomIds: string[] | null
+): boolean {
+  if (activeSpaceId === null) {
+    return true;
+  }
+  if (room.is_dm) {
+    return true;
+  }
+  return (
+    room.parent_space_ids.includes(activeSpaceId) ||
+    (activeSpaceChildRoomIds?.includes(room.room_id) ?? false)
+  );
+}
+
 function roomMatchesFilter(room: RoomSummary, filter: RoomListFilter): boolean {
   switch (filter.kind) {
     case "unread":
@@ -56,7 +81,7 @@ function roomMatchesFilter(room: RoomSummary, filter: RoomListFilter): boolean {
     case "people":
       return room.is_dm;
     case "rooms":
-      return !room.is_dm;
+      return !room.is_dm && room.tags.favourite === null && room.tags.low_priority === null;
     case "favourites":
       return room.tags.favourite !== null;
     case "invites":

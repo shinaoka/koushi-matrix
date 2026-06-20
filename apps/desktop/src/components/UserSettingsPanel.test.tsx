@@ -116,6 +116,8 @@ describe("UserSettingsPanel", () => {
     onConfirmSasVerification: () => undefined,
     onEnableKeyBackup: () => undefined,
     onOpenRecovery: () => undefined,
+    onChooseRoomKeyExportDestination: async () => null,
+    onChooseRoomKeyImportSource: async () => null,
     onOpenKeyboardSettings: () => undefined,
     onProbeLocalEncryption: () => undefined,
     onResetLocalData: () => undefined,
@@ -354,11 +356,16 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain("Room key import");
     expect(markup).toContain("Secure backup");
     expect(markup).toContain("Change secure backup passphrase");
+    expect(markup).toContain("Choose export file");
+    expect(markup).toContain("Choose import file");
     expect(markup).toContain("Export room keys");
     expect(markup).toContain("Import room keys");
     expect(markup).toContain("Set up secure backup");
     expect(markup).toContain("Recovery key saved");
     expect(markup).toContain("1 of 1 imported");
+    expect(markup).not.toContain("Key export destination");
+    expect(markup).not.toContain("Key import source");
+    expect(markup).not.toContain("Room key passphrase");
     expect(markup).not.toContain("private-room-key-passphrase");
     expect(markup).not.toContain("private-secure-backup-passphrase");
     expect(markup).not.toContain("/tmp/");

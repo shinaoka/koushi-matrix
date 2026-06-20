@@ -1,5 +1,5 @@
 use koushi_state::{
-    AppAction, AppEffect, AppState, AuthDiscoveryState, AuthFailureKind, AuthSecret,
+    AppAction, AppEffect, AppError, AppState, AuthDiscoveryState, AuthFailureKind, AuthSecret,
     DelegatedAuthLinks, E2eeRecoveryState, LoginFlow, LoginFlowKind, LoginRequest,
     NativeAttentionCandidate, NativeAttentionCapabilities, NativeAttentionCapability,
     NativeAttentionState, NativeAttentionSummary, NavigationState, RecoveryMethod, RecoveryRequest,
@@ -425,6 +425,41 @@ fn e2ee_recovery_required_after_login_stays_post_login_and_starts_sync() {
             AppEffect::PersistSession(info),
             AppEffect::StartSync,
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+        ]
+    );
+}
+
+#[test]
+fn e2ee_recovery_required_after_failed_login_clears_login_error() {
+    let mut state = AppState {
+        session: SessionState::Authenticating {
+            homeserver: "https://matrix.example.org".to_owned(),
+        },
+        errors: vec![AppError {
+            code: "login_failed".to_owned(),
+            message: "Invalid username or password".to_owned(),
+            recoverable: true,
+        }],
+        ..AppState::default()
+    };
+    let info = session_info();
+
+    let effects = reduce(
+        &mut state,
+        AppAction::E2eeRecoveryRequired {
+            info: info.clone(),
+            methods: vec![RecoveryMethod::RecoveryKey],
+        },
+    );
+
+    assert!(state.errors.is_empty());
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::PersistSession(info),
+            AppEffect::StartSync,
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
         ]
     );
 }

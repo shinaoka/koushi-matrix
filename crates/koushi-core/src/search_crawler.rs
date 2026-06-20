@@ -618,7 +618,9 @@ mod tests {
             .find("acquire_crawler")
             .expect("crawler page runner must acquire crawler /messages backpressure");
         let messages_offset = page_runner
-            .find(concat!("room", ".", "messages", "(", "options", ")", ".", "await"))
+            .find(concat!(
+                "room", ".", "messages", "(", "options", ")", ".", "await"
+            ))
             .expect("page runner must fetch one /messages page");
 
         assert!(

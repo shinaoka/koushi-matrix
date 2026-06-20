@@ -1,10 +1,11 @@
 use crate::{
     effect::{AppEffect, UiEvent},
-    state::{AppError, AppState, RoomListFilter, compute_room_list_projection},
+    state::{AppError, AppState, RoomListFilter},
 };
 
 use super::{
-    is_session_ready, profile_changed_effects, refresh_native_attention_candidate_display_projection,
+    is_session_ready, profile_changed_effects, recompute_room_list_projection,
+    refresh_native_attention_candidate_display_projection,
     refresh_open_room_settings_member_display_projection,
     refresh_open_room_summary_display_projection, session_user_id,
 };
@@ -192,13 +193,7 @@ pub(crate) fn handle_ignored_users_loaded(
     let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)];
 
     if state.room_list.active_filter == RoomListFilter::Invites {
-        let visible_invites = super::visible_invites_for_ignored_users(&state.invites, ignored);
-        state.room_list = compute_room_list_projection(
-            RoomListFilter::Invites,
-            state.room_list.sort,
-            &state.rooms,
-            &visible_invites,
-        );
+        recompute_room_list_projection(state);
         effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
     }
 
@@ -224,23 +219,13 @@ pub(crate) fn handle_ignored_user_update_requested(
     } else {
         state.profile.ignored_user_ids.remove(&user_id);
     }
-    state.profile.ignored_user_update =
-        crate::state::IgnoredUserUpdateState::Saving { request_id };
+    state.profile.ignored_user_update = crate::state::IgnoredUserUpdateState::Saving { request_id };
     state.live_signals.presence.remove(&user_id);
 
     let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::ProfileChanged)];
 
     if state.room_list.active_filter == RoomListFilter::Invites {
-        let visible_invites = super::visible_invites_for_ignored_users(
-            &state.invites,
-            &state.profile.ignored_user_ids,
-        );
-        state.room_list = compute_room_list_projection(
-            RoomListFilter::Invites,
-            state.room_list.sort,
-            &state.rooms,
-            &visible_invites,
-        );
+        recompute_room_list_projection(state);
         effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
     }
 

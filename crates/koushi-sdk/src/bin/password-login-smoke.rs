@@ -14,7 +14,7 @@ use koushi_state::{AuthSecret, LoginRequest};
 use tokio::runtime::Runtime;
 
 const DEFAULT_HOMESERVER: &str = "https://matrix.org";
-const DEFAULT_DEVICE_DISPLAY_NAME: &str = "Matrix Desktop Smoke Test";
+const DEFAULT_DEVICE_DISPLAY_NAME: &str = "Koushi Smoke Test";
 const TIMELINE_ROOM_SAMPLE_LIMIT: usize = 20;
 const TIMELINE_BACKFILL_EVENT_COUNT: u16 = 30;
 const SEARCH_SMOKE_QUERY: &str = "matrixdesktop-smoke-nonmatching-query";
@@ -214,7 +214,7 @@ struct SmokeStore {
 impl SmokeStore {
     fn new() -> Result<Self, String> {
         let root = std::env::temp_dir().join(format!(
-            "matrix-desktop-smoke-store-{}-{}",
+            "koushi-desktop-smoke-store-{}-{}",
             std::process::id(),
             timestamp_millis()?
         ));

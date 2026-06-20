@@ -243,7 +243,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   and
   `cargo test -p koushi-core reset_local_data_clears_current_account_persistence_and_signs_out_locally`.
 - The local headless proof is
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=credential_health --core --core-backend=both --timeout-ms=240000`.
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=credential_health --core --core-backend=both --timeout-ms=240000`.
   It runs under the debug/test file credential-store guard and must refuse to
   touch the OS keychain.
 - macOS Tier 2 real-Keychain proof is opt-in. The previous manual GitHub
@@ -258,7 +258,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `cargo test --manifest-path` there, so it must not require the private
   vendored Matrix SDK submodule. For a manual macOS session without an
   initialized vendor submodule, use the same temp-copy pattern before setting
-  `MATRIX_DESKTOP_MACOS_KEYCHAIN_QA=1`. The test treats
+  `KOUSHI_MACOS_KEYCHAIN_QA=1`. The test treats
   `security set-key-partition-list` as best-effort on hosted runners; the
   pass/fail proof is the real backend set/get/delete plus missing-credential
   mapping after delete. The test temporarily makes the throwaway keychain the
@@ -352,7 +352,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `cargo test -p koushi-sdk --test attention_surface`, and
   `cargo test -p koushi-core --features qa-bin --bin headless-core-qa`.
 - The local headless proof is
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=native_attention --core --core-backend=both --timeout-ms=240000`.
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=native_attention --core --core-backend=both --timeout-ms=240000`.
   It prints only `notification_candidate=ok`, `badge_state=ok`,
   `suppress_focus=ok`, and `clear_badge=ok`.
 
@@ -436,9 +436,9 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - Personal local user aliases are also Rust-owned profile state. Keep alias
   set/clear/list, persistence to `app.koushi.local_aliases`, display-name
   resolution, and pending/failure state in Rust; React may render the returned
-  labels and dispatch typed commands only. The SDK reads the legacy
-  `app.kagome.local_aliases` key on first migration and writes future updates
-  to `app.koushi.local_aliases`.
+  labels and dispatch typed commands only. The SDK uses
+  `app.koushi.local_aliases` only; old Kagome-era account-data migration is not
+  required for this project state.
 - `UserProfile.display_label`, `UserProfile.original_display_label`, and
   `UserProfile.mention_search_terms` are the Rust-owned person/mention
   projection. `display_label` may contain the local alias; `original_display_label`
@@ -625,7 +625,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   focused context. It prints `gui_local_timeline_unread_jump=ok`,
   `gui_local_timeline_bottom_jump=ok`, and
   `gui_local_timeline_date_jump=ok`:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-timeline-navigation --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-timeline-navigation-fast --timeout-ms=180000`
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-timeline-navigation --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-timeline-navigation-fast --timeout-ms=180000`
 
 ## Live Signals Phase A Notes
 
@@ -943,12 +943,12 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   changes `scheduled_sends`. Use:
   `cd apps/desktop && npx playwright test e2e/basic-operations.spec.ts -g "scheduled send UI"`.
 - The focused local scheduled-send QA lane is:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=scheduled_send --core --core-backend=probed --timeout-ms=240000`.
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=scheduled_send --core --core-backend=probed --timeout-ms=240000`.
   Required private-data-free tokens are
   `scheduled_capability=local_fallback`, `scheduled_create=ok`,
   `scheduled_reschedule=ok`, `scheduled_cancel=ok`, and `scheduled_fire=ok`.
 - The focused local composer QA lane is:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=composer --core --core-backend=both --timeout-ms=240000`.
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:headless-local -- --server=conduit --scenario=composer --core --core-backend=both --timeout-ms=240000`.
   Required private-data-free tokens are `mention_send=ok`,
   `markdown_send=ok`, `slash_command=ok`, and `ime_guard=ok`.
 - When `AppState.settings` or any settings enum changes, update the Tauri DTO,
@@ -1072,7 +1072,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 ## Linux GUI QA Container
 
 - Build the committed lane image with
-  `docker build -f docker/linux-gui.Dockerfile -t matrix-desktop-linux-gui:basic-ops .`
+  `docker build -f docker/linux-gui.Dockerfile -t koushi-desktop-linux-gui:basic-ops .`
 - The committed image includes `conduit`, `tuwunel`, and `zstd` so the
   `--scenario=local-login` and `--scenario=local-send` lanes can run against
   local homeservers entirely inside the container.
@@ -1080,7 +1080,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - The lane image includes `libnss-wrapper` so the numeric container UID can be
   given a temporary passwd/group entry during DBus-authenticated GUI smoke.
 - Run the lane from the repo root with the workspace mounted at `/work`:
-  `docker run --rm -it --shm-size=2g -u "$(id -u):$(id -g)" -v "$PWD:/work" -v /tmp/matrix-desktop-cargo-home:/tmp/cargo-home -v /tmp/matrix-desktop-gui-target:/tmp/matrix-desktop-gui-target -v /tmp/matrix-desktop-npm-cache:/tmp/npm-cache -w /work -e HOME=/tmp -e RUSTUP_HOME=/opt/rustup -e CARGO_HOME=/tmp/cargo-home -e CARGO_TARGET_DIR=/tmp/matrix-desktop-gui-target -e NPM_CONFIG_CACHE=/tmp/npm-cache -e PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin matrix-desktop-linux-gui:basic-ops bash -c 'export RUSTC="$(rustup which rustc)"; export RUSTDOC="$(rustup which rustdoc)"; npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-send --server=conduit --artifact-dir=/work/artifacts/linux-gui-local-send-docker --timeout-ms=180000'`
+  `docker run --rm -it --shm-size=2g -u "$(id -u):$(id -g)" -v "$PWD:/work" -v /tmp/koushi-desktop-cargo-home:/tmp/cargo-home -v /tmp/koushi-desktop-gui-target:/tmp/koushi-desktop-gui-target -v /tmp/koushi-desktop-npm-cache:/tmp/npm-cache -w /work -e HOME=/tmp -e RUSTUP_HOME=/opt/rustup -e CARGO_HOME=/tmp/cargo-home -e CARGO_TARGET_DIR=/tmp/koushi-desktop-gui-target -e NPM_CONFIG_CACHE=/tmp/npm-cache -e PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin koushi-desktop-linux-gui:basic-ops bash -c 'export RUSTC="$(rustup which rustc)"; export RUSTDOC="$(rustup which rustdoc)"; npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-send --server=conduit --artifact-dir=/work/artifacts/linux-gui-local-send-docker --timeout-ms=180000'`
 - The runner writes artifacts to `artifacts/linux-gui-local-send-docker/` inside the mounted
   repo. Keep that directory ignored and inspect the run log and screenshots
   there when a lane fails.
@@ -1106,37 +1106,37 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   keep this operational note in sync when changing it.
 - Search path list for local homeserver binaries:
   - Host fast lane, preferred:
-    `/tmp/matrix-desktop-local-qa-bin`
+    `/tmp/koushi-desktop-local-qa-bin`
   - Host fallback/test binaries:
-    `/tmp/matrix-desktop-local-qa-bin-test`
+    `/tmp/koushi-desktop-local-qa-bin-test`
   - Docker lane:
     `/usr/local/bin` inside the committed Linux GUI image
   - Windows/manual equivalent:
-    `%TEMP%\matrix-desktop-local-qa-bin` or another synthetic, ignored QA bin
+    `%TEMP%\koushi-desktop-local-qa-bin` or another synthetic, ignored QA bin
     directory prepended to `PATH`
   - Existing user/system `PATH` entries after the QA bin directories
 - POSIX host example:
-  `export PATH=/tmp/matrix-desktop-local-qa-bin:/tmp/matrix-desktop-local-qa-bin-test:$PATH`
+  `export PATH=/tmp/koushi-desktop-local-qa-bin:/tmp/koushi-desktop-local-qa-bin-test:$PATH`
 - Quick verification:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH conduit --version` and
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH tuwunel --version`.
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH conduit --version` and
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH tuwunel --version`.
 - Build the debug app once, then reuse it with `--skip-build` (optionally
   `--app-binary=PATH`) so each scenario trial skips the full Tauri rebuild:
   `npm --prefix apps/desktop run tauri build -- --debug --no-bundle`, then
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-room --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-create-room-fast --timeout-ms=180000`
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-create-room --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-create-room-fast --timeout-ms=180000`
 - Settings/composer-shortcut GUI changes use the same fast loop with
   `--scenario=local-settings`. This opens the real Settings UI, changes the
   Rust-owned composer shortcut and theme settings, verifies the E2EE trust
   settings section renders in the real Tauri WebView, and waits for
   `aria-pressed="true"` / `data-theme="dark"` from the snapshot-driven UI:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-settings-fast --timeout-ms=180000`
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-settings --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-settings-fast --timeout-ms=180000`
 - Rich formatted timeline rendering uses `--scenario=local-rich-formatting`.
   It sends a sanitized Matrix HTML event through the local homeserver, verifies
   the real Tauri WebView renders the Rust-owned formatted DTO (`strong`,
   blockquote/list/link/code block/copy control), then toggles
   `display.code_block_wrap` through Settings and waits for the code block CSS
   to switch from `pre-wrap` to `pre`:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-rich-formatting --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-rich-formatting-fast --timeout-ms=180000`
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-rich-formatting --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-rich-formatting-fast --timeout-ms=180000`
 - Media GUI iteration has a focused virtual-display lane:
   `--scenario=local-media`. It writes a synthetic fixture file under the
   scenario artifact directory, sets that path on the Composer's hidden file
@@ -1147,20 +1147,20 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   Rust-owned room media gallery/viewer, and prints `gui_local_media_stage=ok`,
   `gui_local_media=ok`, `gui_local_media_caption=ok`, and
   `gui_local_media_viewer=ok`:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-media --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-media-fast --timeout-ms=180000`
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-media --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-media-fast --timeout-ms=180000`
 - Image-compression GUI iteration has a focused virtual-display lane:
   `--scenario=local-image-compression`. It sets Compress images to Always from
   the real User Settings panel, returns to the QA Seed Room, attaches an
   ignored synthetic wide PNG, waits for the Rust-owned timeline media row to
   show the compressed `.jpg` filename, `image/jpeg`, and selected dimensions,
   and prints `gui_local_image_compress=ok`:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-image-compression --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-image-compression-fast --timeout-ms=180000`
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-image-compression --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-image-compression-fast --timeout-ms=180000`
 - Room-tag GUI iteration has a focused virtual-display lane:
   `--scenario=local-room-tags`. It opens the real room row context menu in the
   Linux Tauri WebView, clicks Add/Remove Favourites, and waits for the row to
   move between Rooms and Favourites from Rust-owned `RoomSummary.tags`; it
   prints `gui_local_room_tag_set=ok` and `gui_local_room_tag_removed=ok`:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-tags --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-room-tags-fast --timeout-ms=180000`
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-tags --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-room-tags-fast --timeout-ms=180000`
 - Room-management GUI iteration has a focused virtual-display lane:
   `--scenario=local-room-management`. It seeds a helper member, opens the real
   Room info panel, edits the topic, waits for
@@ -1169,33 +1169,33 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   room-scoped `settings.members` snapshot to remove the row. It prints only
   `gui_local_room_topic=ok`, `gui_local_room_role=ok`, and
   `gui_local_room_kick=ok`:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-management --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-room-management-fast --timeout-ms=180000`
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-room-management --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-room-management-fast --timeout-ms=180000`
 - Explore GUI iteration has a focused virtual-display lane:
   `--scenario=local-explore`. It creates a synthetic public-room fixture with a
   helper account, drives the real Explore search and Join controls, waits for
   Rust-owned directory results and joined room-list state, and prints only
   `gui_local_explore_query=ok` / `gui_local_explore_join=ok`:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-explore --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-explore-fast --timeout-ms=180000`
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-explore --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-explore-fast --timeout-ms=180000`
 - Activity GUI iteration has a focused virtual-display lane:
   `--scenario=local-activity`. It opens the real Activity rail entry and
   switches between Unread and Recent tabs through the Tauri command path. It
   prints `gui_local_activity_open=ok`, `gui_local_activity_unread_tab=ok`, and
   `gui_local_activity_recent_tab=ok`:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-activity --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-activity-fast --timeout-ms=180000`
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-activity --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-activity-fast --timeout-ms=180000`
 - Message-action/redacted-visibility GUI iteration has a focused
   virtual-display lane: `--scenario=local-message-actions`. It opens the real
   hover-gated message action menu, verifies source/forward behavior, redacts a
   synthetic message, toggles `Hide deleted messages`, and waits for the
   Rust-owned `TimelineItem.is_hidden` projection to remove the redacted row.
   After rebuilding once for frontend/Rust changes, use:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-message-actions --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-message-actions-fast --timeout-ms=180000`
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-message-actions --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-message-actions-fast --timeout-ms=180000`
 - Composer GUI iteration has a focused virtual-display lane:
   `--scenario=local-composer`. It seeds a synthetic helper member, waits for
   Rust-owned `ProfileState.users` to feed the mention autocomplete, drives the
   real composer mention option, Bold toolbar, and slash input, then waits for
   Rust-owned send state (`send=sent`) plus composer clear. It prints `gui_local_mention=ok`,
   `gui_local_markdown=ok`, and `gui_local_slash=ok`:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-composer-fast --timeout-ms=180000`
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-composer --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-composer-fast --timeout-ms=180000`
 - Scheduled-send GUI iteration has a focused virtual-display lane:
   `--scenario=local-scheduled-send`. It drives the real Composer `Send later`
   affordance, fills the `datetime-local` control through the shared WebDriver
@@ -1203,7 +1203,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   and prints only `gui_local_scheduled_create=ok`,
   `gui_local_scheduled_reschedule=ok`, and
   `gui_local_scheduled_cancel=ok`:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-scheduled-send --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-scheduled-send-fast --timeout-ms=180000`
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-scheduled-send --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-scheduled-send-fast --timeout-ms=180000`
 - Timeline navigation GUI iteration has a focused virtual-display lane:
   `--scenario=local-timeline-navigation`. It drives the real WebView
   first-unread pill, bottom pill, and jump-to-date focused-context path over
@@ -1211,7 +1211,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `gui_local_timeline_unread_jump=ok`,
   `gui_local_timeline_bottom_jump=ok`, and
   `gui_local_timeline_date_jump=ok`:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-timeline-navigation --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-timeline-navigation-fast --timeout-ms=180000`
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-timeline-navigation --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-timeline-navigation-fast --timeout-ms=180000`
 - Local alias GUI iteration has a focused virtual-display lane:
   `--scenario=local-alias`. It seeds a synthetic helper sender, opens the real
   hover-gated message sender menu, sets a local alias through the typed
@@ -1220,14 +1220,14 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   revert. It prints only `gui_local_alias_set=ok` and
   `gui_local_alias_clear=ok`; do not print Matrix IDs, event IDs, alias values,
   account-data payloads, or raw SDK errors:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-alias --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-alias-fast --timeout-ms=180000`
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-alias --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-alias-fast --timeout-ms=180000`
 - CJK visual fitting has a focused virtual-display lane:
   `--scenario=local-cjk`. It creates a long Japanese/CJK local room name, sends
   a long Japanese/CJK message through the real composer, and verifies the Tauri
   WebView CSS contract (`line-break: strict`, `word-break: normal`,
   `hyphens: none`, room ellipsis, message wrapping, no horizontal document
   overflow). It prints `gui_local_cjk=ok`:
-  `PATH=/tmp/matrix-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-cjk --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-cjk-fast --timeout-ms=180000`
+  `PATH=/tmp/koushi-desktop-local-qa-bin:$PATH npm --prefix apps/desktop run qa:linux-gui -- --scenario=local-cjk --server=conduit --skip-build --artifact-dir=artifacts/linux-gui-local-cjk-fast --timeout-ms=180000`
 - When you only need a quick window-state sanity check, use the lane's cheap
   QA title helpers such as `--qa-title-ready` and `--qa-title-send-ready`
   before starting a full scenario run.
@@ -1235,20 +1235,20 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   so retries do not blur login and send results:
 
   ```bash
-  PATH=/tmp/matrix-desktop-local-qa-bin:$PATH \
+  PATH=/tmp/koushi-desktop-local-qa-bin:$PATH \
     node scripts/desktop-linux-gui-qa.mjs --check-tools
 
-  PATH=/tmp/matrix-desktop-local-qa-bin:$PATH \
+  PATH=/tmp/koushi-desktop-local-qa-bin:$PATH \
     node scripts/desktop-linux-gui-qa.mjs --list
 
-  PATH=/tmp/matrix-desktop-local-qa-bin:$PATH \
+  PATH=/tmp/koushi-desktop-local-qa-bin:$PATH \
     npm --prefix apps/desktop run qa:linux-gui -- \
       --scenario=local-login \
       --server=conduit \
       --artifact-dir=artifacts/linux-gui-local-login-host \
       --timeout-ms=180000
 
-  PATH=/tmp/matrix-desktop-local-qa-bin:$PATH \
+  PATH=/tmp/koushi-desktop-local-qa-bin:$PATH \
     npm --prefix apps/desktop run qa:linux-gui -- \
       --scenario=local-send \
       --server=conduit \
@@ -1278,14 +1278,14 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 ## Linux GUI Local Operation Failures
 
 - `--skip-build` reuses an existing debug binary, but the QA window-title
-  tokens (`matrix-desktop qa session=...`) are baked into the frontend at build
-  time behind `VITE_MATRIX_DESKTOP_QA_TITLE=1`. A binary built without that env
+  tokens (`koushi-desktop qa session=...`) are baked into the frontend at build
+  time behind `VITE_KOUSHI_QA_TITLE=1`. A binary built without that env
   shows the normal product title (e.g. `Koushi · 1 unread`) instead, so
   the lane's `waitForLocalLoginReady` times out with "local GUI login did not
   reach a ready state. Last title: Koushi · 1 unread". The runner's own
   build sets this env; when pre-building manually for `--skip-build`
   (`npm --prefix apps/desktop run tauri build -- --debug --no-bundle`), also set
-  `VITE_MATRIX_DESKTOP_QA_TITLE=1`, or run one lane without `--skip-build` first
+  `VITE_KOUSHI_QA_TITLE=1`, or run one lane without `--skip-build` first
   to produce a QA-title binary the remaining `--skip-build` lanes can reuse.
 - The Tauri snapshot is a hand-maintained DTO
   (`apps/desktop/src-tauri/src/dto.rs`, `FrontendAppState` / `From<AppState>`),
@@ -1484,7 +1484,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - Do not pass the parent shell environment wholesale into GUI smoke child
   processes. Filter out secret-like variables such as API keys, tokens, and
   passwords before spawning `npm run tauri dev`.
-- First-run GUI smoke should set `MATRIX_DESKTOP_SKIP_SAVED_SESSIONS=1`.
+- First-run GUI smoke should set `KOUSHI_SKIP_SAVED_SESSIONS=1`.
   Otherwise opening User Settings can read the macOS Keychain and show a
   confirmation prompt, which blocks unattended automation.
 - Do not use `Cmd+Q` to stop the Tauri app from GUI smoke. If focus slips, the
@@ -1515,11 +1515,11 @@ before GA. Do not open feature issues for these without re-deciding scope here.
 - Do not drive real-account login by fixed window-relative coordinates. A
   2026-06-12 GUI smoke attempt clicked the wrong login field and placed the
   password in the username field. Real-login GUI smoke should pass credentials
-  through `MATRIX_DESKTOP_QA_LOGIN_PIPE`, which contains only a FIFO path in the
+  through `KOUSHI_QA_LOGIN_PIPE`, which contains only a FIFO path in the
   environment and keeps the credential payload out of argv, logs, screenshots,
   and committed files.
-- Real-login GUI smoke must set `MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1`.
-  `MATRIX_DESKTOP_SKIP_SAVED_SESSIONS=1` only prevents saved-session reads; a
+- Real-login GUI smoke must set `KOUSHI_SKIP_KEYCHAIN_PERSISTENCE=1`.
+  `KOUSHI_SKIP_SAVED_SESSIONS=1` only prevents saved-session reads; a
   successful login can still prompt macOS Keychain during session persistence or
   encrypted SDK store key creation.
 - The `password-login-smoke` prompt order is homeserver, username, device name,
@@ -1549,9 +1549,9 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   sync state across runs. Profile names must be synthetic and non-secret; data is
   stored under ignored `.local-secrets/qa-profiles/<name>/data`.
 - The default `qa:mac-gui -- --real-login-from-stdin` path is intentionally
-  disposable and sets `MATRIX_DESKTOP_SKIP_KEYCHAIN_PERSISTENCE=1`.
+  disposable and sets `KOUSHI_SKIP_KEYCHAIN_PERSISTENCE=1`.
   `--qa-profile=<name>` is the opt-in path for persistent restore/sync QA and
-  must set `MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR` so unattended runs do
+  must set `KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR` so unattended runs do
   not prompt macOS Keychain. This env-controlled file credential store must stay
   behind a debug/test-only compile-time gate; release builds must ignore it and
   use the OS credential store. If a profile run shows a Keychain prompt, treat

@@ -31,15 +31,14 @@ use crate::failure::CoreFailure;
 /// Service name used for OS keyring entries. This is user-visible in macOS
 /// Keychain Access, so keep it aligned with the shipped product name.
 const CREDENTIAL_STORE_SERVICE_NAME: &str = "koushi-desktop";
-const LEGACY_CREDENTIAL_STORE_SERVICE_NAME: &str = "matrix-desktop";
-const COMPOSER_DRAFTS_FILE_MAGIC: &[u8] = b"RURI-DRAFTS-V1\0";
+const COMPOSER_DRAFTS_FILE_MAGIC: &[u8] = b"KOUSHI-DRAFTS-V1\0";
 const SCHEDULED_SENDS_FILE_MAGIC: &[u8] = b"KOUSHI-SCHEDULED-SENDS-V1\0";
 const COMPOSER_DRAFTS_NONCE_LEN: usize = 12;
 
 /// Env var for QA/debug file-based credential store override.
 /// Only honored in debug/test builds; release builds ignore it entirely.
 #[cfg(any(debug_assertions, test))]
-const ENV_FILE_CREDENTIAL_STORE_DIR: &str = "MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR";
+const ENV_FILE_CREDENTIAL_STORE_DIR: &str = "KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR";
 
 /// Resolved store configuration for one account.
 ///
@@ -105,7 +104,7 @@ impl StoreActor {
     }
 
     /// Test-only constructor with an explicit backend (avoids the env-global
-    /// `MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR` race between unit tests).
+    /// `KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR` race between unit tests).
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn with_backend(
         credential_store: CredentialStoreBackend,
@@ -431,7 +430,7 @@ fn account_dir_name(key_id: &SessionKeyId) -> String {
 
 /// Credential store backend. Production = either OS keychain (injected from
 /// the platform layer) or in-memory; debug/test may use a file dir override
-/// when `MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR` is set.
+/// when `KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR` is set.
 pub enum CredentialStoreBackend {
     OsKeychain(OsCredentialStore),
     #[cfg(any(debug_assertions, test))]
@@ -559,9 +558,7 @@ impl CredentialStoreBackend {
         }
     }
 
-    pub fn load_last_session(
-        &self,
-    ) -> Result<Option<SessionKeyId>, koushi_key::LocalSecretError> {
+    pub fn load_last_session(&self) -> Result<Option<SessionKeyId>, koushi_key::LocalSecretError> {
         match self {
             Self::OsKeychain(store) => store.load_last_session(),
             #[cfg(any(debug_assertions, test))]
@@ -584,9 +581,7 @@ impl CredentialStoreBackend {
         match self {
             Self::OsKeychain(store) => store.delete_last_session(),
             #[cfg(any(debug_assertions, test))]
-            Self::FileDir(store) => {
-                store.delete_named(koushi_key::last_session_account_name())
-            }
+            Self::FileDir(store) => store.delete_named(koushi_key::last_session_account_name()),
             Self::InMemory(store) => store.delete_last_session(),
         }
     }
@@ -620,10 +615,7 @@ impl CredentialStoreBackend {
             Self::FileDir(store) => {
                 let mut index = self.load_saved_sessions()?;
                 index.upsert(key_id.clone());
-                store.save_named(
-                    koushi_key::saved_sessions_account_name(),
-                    &index.to_json()?,
-                )
+                store.save_named(koushi_key::saved_sessions_account_name(), &index.to_json()?)
             }
             Self::InMemory(store) => store.remember_saved_session(key_id),
         }
@@ -639,10 +631,7 @@ impl CredentialStoreBackend {
             Self::FileDir(store) => {
                 let mut index = self.load_saved_sessions()?;
                 index.remove(key_id);
-                store.save_named(
-                    koushi_key::saved_sessions_account_name(),
-                    &index.to_json()?,
-                )
+                store.save_named(koushi_key::saved_sessions_account_name(), &index.to_json()?)
             }
             Self::InMemory(store) => store.forget_saved_session(key_id),
         }
@@ -661,23 +650,15 @@ impl CredentialStoreBackend {
     }
 }
 
-/// OS keychain credential store that wraps a primary and optional legacy
-/// `CredentialStore`. Both hold an `Arc<dyn CredentialBackend>` so the real
-/// OS adapter is injected from the platform layer.
+/// OS keychain credential store for the shipped product service.
 pub struct OsCredentialStore {
     primary: CredentialStore<Arc<dyn koushi_key::CredentialBackend>>,
-    legacy: Option<CredentialStore<Arc<dyn koushi_key::CredentialBackend>>>,
 }
 
 impl OsCredentialStore {
     fn with_backend(backend: Arc<dyn koushi_key::CredentialBackend>) -> Self {
-        let legacy =
-            (LEGACY_CREDENTIAL_STORE_SERVICE_NAME != CREDENTIAL_STORE_SERVICE_NAME).then(|| {
-                CredentialStore::with_backend(LEGACY_CREDENTIAL_STORE_SERVICE_NAME, backend.clone())
-            });
         Self {
             primary: CredentialStore::with_backend(CREDENTIAL_STORE_SERVICE_NAME, backend),
-            legacy,
         }
     }
 
@@ -689,28 +670,7 @@ impl OsCredentialStore {
         &self,
         key_id: &SessionKeyId,
     ) -> Result<LocalUnlockSecret, koushi_key::LocalSecretError> {
-        match self.primary.load(key_id) {
-            Ok(secret) => Ok(secret),
-            Err(error) if koushi_key::is_missing_credential_error(&error) => {
-                let Some(legacy) = &self.legacy else {
-                    return Err(error);
-                };
-                match legacy.load(key_id) {
-                    Ok(secret) => {
-                        self.primary.save(key_id, &secret)?;
-                        let _ = legacy.delete(key_id);
-                        Ok(secret)
-                    }
-                    Err(legacy_error)
-                        if koushi_key::is_missing_credential_error(&legacy_error) =>
-                    {
-                        Err(error)
-                    }
-                    Err(legacy_error) => Err(legacy_error),
-                }
-            }
-            Err(error) => Err(error),
-        }
+        self.primary.load(key_id)
     }
 
     fn save(
@@ -718,21 +678,11 @@ impl OsCredentialStore {
         key_id: &SessionKeyId,
         secret: &LocalUnlockSecret,
     ) -> Result<(), koushi_key::LocalSecretError> {
-        self.primary.save(key_id, secret)?;
-        if let Some(legacy) = &self.legacy {
-            let _ = legacy.delete(key_id);
-        }
-        Ok(())
+        self.primary.save(key_id, secret)
     }
 
     fn delete(&self, key_id: &SessionKeyId) -> Result<(), koushi_key::LocalSecretError> {
-        let primary = self.primary.delete(key_id);
-        let legacy = self.legacy.as_ref().map(|store| store.delete(key_id));
-        primary?;
-        if let Some(result) = legacy {
-            result?;
-        }
-        Ok(())
+        self.primary.delete(key_id)
     }
 
     fn save_matrix_session(
@@ -740,115 +690,39 @@ impl OsCredentialStore {
         key_id: &SessionKeyId,
         session: &koushi_key::StoredMatrixSession,
     ) -> Result<(), koushi_key::LocalSecretError> {
-        self.primary.save_matrix_session(key_id, session)?;
-        if let Some(legacy) = &self.legacy {
-            let _ = legacy.delete_matrix_session(key_id);
-        }
-        Ok(())
+        self.primary.save_matrix_session(key_id, session)
     }
 
     fn load_matrix_session(
         &self,
         key_id: &SessionKeyId,
     ) -> Result<koushi_key::StoredMatrixSession, koushi_key::LocalSecretError> {
-        match self.primary.load_matrix_session(key_id) {
-            Ok(session) => Ok(session),
-            Err(error) if koushi_key::is_missing_credential_error(&error) => {
-                let Some(legacy) = &self.legacy else {
-                    return Err(error);
-                };
-                match legacy.load_matrix_session(key_id) {
-                    Ok(session) => {
-                        self.primary.save_matrix_session(key_id, &session)?;
-                        let _ = legacy.delete_matrix_session(key_id);
-                        Ok(session)
-                    }
-                    Err(legacy_error)
-                        if koushi_key::is_missing_credential_error(&legacy_error) =>
-                    {
-                        Err(error)
-                    }
-                    Err(legacy_error) => Err(legacy_error),
-                }
-            }
-            Err(error) => Err(error),
-        }
+        self.primary.load_matrix_session(key_id)
     }
 
     fn delete_matrix_session(
         &self,
         key_id: &SessionKeyId,
     ) -> Result<(), koushi_key::LocalSecretError> {
-        let primary = self.primary.delete_matrix_session(key_id);
-        let legacy = self
-            .legacy
-            .as_ref()
-            .map(|store| store.delete_matrix_session(key_id));
-        primary?;
-        if let Some(result) = legacy {
-            result?;
-        }
-        Ok(())
+        self.primary.delete_matrix_session(key_id)
     }
 
-    fn save_last_session(
-        &self,
-        key_id: &SessionKeyId,
-    ) -> Result<(), koushi_key::LocalSecretError> {
-        self.primary.save_last_session(key_id)?;
-        if let Some(legacy) = &self.legacy {
-            let _ = legacy.delete_last_session();
-        }
-        Ok(())
+    fn save_last_session(&self, key_id: &SessionKeyId) -> Result<(), koushi_key::LocalSecretError> {
+        self.primary.save_last_session(key_id)
     }
 
-    fn load_last_session(
-        &self,
-    ) -> Result<Option<SessionKeyId>, koushi_key::LocalSecretError> {
-        if let Some(key_id) = self.primary.load_last_session()? {
-            return Ok(Some(key_id));
-        }
-        let Some(legacy) = &self.legacy else {
-            return Ok(None);
-        };
-        let Some(key_id) = legacy.load_last_session()? else {
-            return Ok(None);
-        };
-        self.primary.save_last_session(&key_id)?;
-        let _ = legacy.delete_last_session();
-        Ok(Some(key_id))
+    fn load_last_session(&self) -> Result<Option<SessionKeyId>, koushi_key::LocalSecretError> {
+        self.primary.load_last_session()
     }
 
     fn delete_last_session(&self) -> Result<(), koushi_key::LocalSecretError> {
-        let primary = self.primary.delete_last_session();
-        let legacy = self
-            .legacy
-            .as_ref()
-            .map(|store| store.delete_last_session());
-        primary?;
-        if let Some(result) = legacy {
-            result?;
-        }
-        Ok(())
+        self.primary.delete_last_session()
     }
 
     fn load_saved_sessions(
         &self,
     ) -> Result<koushi_key::SavedSessionIndex, koushi_key::LocalSecretError> {
-        let mut index = self.primary.load_saved_sessions()?;
-        let Some(legacy) = &self.legacy else {
-            return Ok(index);
-        };
-        let legacy_index = legacy.load_saved_sessions()?;
-        if legacy_index.sessions().is_empty() {
-            return Ok(index);
-        }
-        for key_id in legacy_index.sessions() {
-            index.upsert(key_id.clone());
-        }
-        self.primary.save_saved_sessions(&index)?;
-        let _ = legacy.delete_saved_sessions();
-        Ok(index)
+        self.primary.load_saved_sessions()
     }
 
     fn remember_saved_session(
@@ -857,11 +731,7 @@ impl OsCredentialStore {
     ) -> Result<(), koushi_key::LocalSecretError> {
         let mut index = self.load_saved_sessions()?;
         index.upsert(key_id.clone());
-        self.primary.save_saved_sessions(&index)?;
-        if let Some(legacy) = &self.legacy {
-            let _ = legacy.delete_saved_sessions();
-        }
-        Ok(())
+        self.primary.save_saved_sessions(&index)
     }
 
     fn forget_saved_session(
@@ -870,27 +740,11 @@ impl OsCredentialStore {
     ) -> Result<(), koushi_key::LocalSecretError> {
         let mut index = self.load_saved_sessions()?;
         index.remove(key_id);
-        self.primary.save_saved_sessions(&index)?;
-        if let Some(legacy) = &self.legacy {
-            let _ = legacy.delete_saved_sessions();
-        }
-        Ok(())
+        self.primary.save_saved_sessions(&index)
     }
 }
 
-#[cfg(test)]
-impl OsCredentialStore {
-    fn with_stores(
-        primary: CredentialStore<Arc<dyn koushi_key::CredentialBackend>>,
-        legacy: Option<CredentialStore<Arc<dyn koushi_key::CredentialBackend>>>,
-    ) -> Self {
-        Self { primary, legacy }
-    }
-}
-
-fn local_secret_error_health(
-    error: &koushi_key::LocalSecretError,
-) -> LocalEncryptionHealth {
+fn local_secret_error_health(error: &koushi_key::LocalSecretError) -> LocalEncryptionHealth {
     if koushi_key::is_missing_credential_error(error) {
         return LocalEncryptionHealth::MissingCredential;
     }
@@ -990,10 +844,7 @@ impl FileCredentialStore {
     }
 
     /// Load an arbitrary named credential.
-    pub(super) fn load_named(
-        &self,
-        name: &str,
-    ) -> Result<String, koushi_key::LocalSecretError> {
+    pub(super) fn load_named(&self, name: &str) -> Result<String, koushi_key::LocalSecretError> {
         let path = self.named_file(name);
         std::fs::read_to_string(&path).map_err(|_| {
             koushi_key::LocalSecretError::CredentialBackend(
@@ -1003,10 +854,7 @@ impl FileCredentialStore {
     }
 
     /// Delete an arbitrary named credential (no error if absent).
-    pub(super) fn delete_named(
-        &self,
-        name: &str,
-    ) -> Result<(), koushi_key::LocalSecretError> {
+    pub(super) fn delete_named(&self, name: &str) -> Result<(), koushi_key::LocalSecretError> {
         let _ = std::fs::remove_file(self.named_file(name));
         Ok(())
     }
@@ -1053,14 +901,14 @@ fn safe_filename(name: String) -> String {
 fn tracing_or_eprintln(message: &str) {
     // Use eprintln as a simple diagnostic; in production the tracing crate
     // should be wired instead.
-    if std::env::var_os("MATRIX_DESKTOP_DEBUG_SDK_ERROR").is_some() {
+    if std::env::var_os("KOUSHI_DEBUG_SDK_ERROR").is_some() {
         eprintln!("[koushi-core] {message}");
     }
 }
 
 /// QA/debug structural guard: true only when the env-resolved credential
 /// store backend is the file-dir backend (i.e.
-/// `MATRIX_DESKTOP_QA_FILE_CREDENTIAL_STORE_DIR` is set in a debug/test
+/// `KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR` is set in a debug/test
 /// build). Headless QA binaries call this BEFORE any login so unattended runs
 /// are structurally unable to reach the OS keychain (engineering-rules
 /// Secrets rule: keychain prompts during automation are failures).
@@ -1177,7 +1025,7 @@ mod tests {
         let backend = koushi_key::InMemoryCredentialBackend::default();
         let actor = StoreActor::with_backend(
             CredentialStoreBackend::InMemory(koushi_key::CredentialStore::with_backend(
-                "matrix-desktop-test",
+                "koushi-desktop-test",
                 backend.clone(),
             )),
             data_dir.path(),
@@ -1212,35 +1060,23 @@ mod tests {
     }
 
     #[test]
-    fn os_keychain_load_migrates_legacy_unlock_secret_to_product_service() {
+    fn os_keychain_does_not_read_legacy_matrix_desktop_service() {
         let backend = koushi_key::InMemoryCredentialBackend::default();
         let backend_dyn: Arc<dyn koushi_key::CredentialBackend> = Arc::new(backend);
-        let primary = koushi_key::CredentialStore::with_backend(
-            CREDENTIAL_STORE_SERVICE_NAME,
-            backend_dyn.clone(),
-        );
-        let legacy = koushi_key::CredentialStore::with_backend(
-            LEGACY_CREDENTIAL_STORE_SERVICE_NAME,
-            backend_dyn.clone(),
-        );
-        let store = OsCredentialStore::with_stores(primary, Some(legacy));
+        let store = OsCredentialStore::with_backend(backend_dyn.clone());
         let key_id = make_key_id();
         let secret = LocalUnlockSecret::generate();
 
-        // Seed the legacy store through the shared backend Arc so the
-        // OsCredentialStore's legacy inner store can read it.
-        let legacy_probe = koushi_key::CredentialStore::with_backend(
-            LEGACY_CREDENTIAL_STORE_SERVICE_NAME,
-            backend_dyn.clone(),
-        );
+        let legacy_probe =
+            koushi_key::CredentialStore::with_backend("matrix-desktop", backend_dyn.clone());
         legacy_probe
             .save(&key_id, &secret)
             .expect("seed legacy unlock secret");
 
-        let loaded = store.load(&key_id).expect("migrate legacy secret");
-        assert_eq!(
-            secret.derive_sdk_store_key().as_bytes(),
-            loaded.derive_sdk_store_key().as_bytes()
+        let error = store.load(&key_id).expect_err("legacy service is not read");
+        assert!(
+            koushi_key::is_missing_credential_error(&error),
+            "legacy matrix-desktop credentials must not be migrated"
         );
     }
 
@@ -1470,13 +1306,12 @@ mod tests {
             .load_composer_drafts(&key_id)
             .expect("load bounded drafts");
 
+        assert!(loaded.rooms.len() <= koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT);
         assert!(
-            loaded.rooms.len() <= koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT
-        );
-        assert!(
-            loaded.rooms.values().all(
-                |draft| draft.len() <= koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_BYTES
-            )
+            loaded
+                .rooms
+                .values()
+                .all(|draft| draft.len() <= koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_BYTES)
         );
         let thread_count = loaded
             .threads
@@ -1489,9 +1324,7 @@ mod tests {
                 .threads
                 .values()
                 .flat_map(|room_threads| room_threads.values())
-                .all(
-                    |draft| draft.len() <= koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_BYTES
-                )
+                .all(|draft| draft.len() <= koushi_state::MAX_PERSISTED_COMPOSER_DRAFT_BYTES)
         );
     }
 }

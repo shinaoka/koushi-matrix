@@ -100,8 +100,8 @@ pub enum AccountMessage {
         timestamp_ms: u64,
     },
     SearchCommand(SearchCommand),
-    /// Forward `AppEffect::NotifySearchCrawlerRoomsAvailable` to the
-    /// `SearchActorHandle::notify_rooms_available` method.
+    /// Record `AppEffect::NotifySearchCrawlerRoomsAvailable` as a latest-wins
+    /// background crawler notification and try to flush it to SearchActor.
     NotifySearchCrawlerRoomsAvailable {
         room_ids: Vec<String>,
         settings: koushi_state::SearchCrawlerSettings,
@@ -259,8 +259,7 @@ pub struct AccountActor {
     /// `SearchActor` was spawned.  Replayed into the actor immediately after
     /// it is created so rooms that were already known to the reducer at
     /// session-restore time are not missed by the auto-start logic.
-    pending_crawler_notification:
-        Option<(Vec<String>, koushi_state::SearchCrawlerSettings)>,
+    pending_crawler_notification: Option<(Vec<String>, koushi_state::SearchCrawlerSettings)>,
 }
 
 impl AccountActor {
@@ -386,16 +385,12 @@ impl AccountActor {
                     self.route_search_command(search_command).await;
                 }
                 AccountMessage::NotifySearchCrawlerRoomsAvailable { room_ids, settings } => {
-                    if let Some(handle) = &self.search_actor {
-                        handle.notify_rooms_available(room_ids, settings).await;
-                    } else {
-                        // Buffer the notification so it can be replayed once the
-                        // SearchActor is spawned (e.g., a RoomListUpdated fires
-                        // between session establishment and actor creation at
-                        // session restore). Keep only the latest; the actor
-                        // deduplicates idempotently.
-                        self.pending_crawler_notification = Some((room_ids, settings));
-                    }
+                    // Room availability for the crawler is latest-wins
+                    // background state. Store it first, then try a
+                    // non-blocking flush so AccountActor does not stall room
+                    // or timeline commands behind crawler mailbox pressure.
+                    self.pending_crawler_notification = Some((room_ids, settings));
+                    self.flush_pending_crawler_notification();
                 }
                 AccountMessage::InvalidateSearchCrawlerCache => {
                     if let Some(handle) = &self.search_actor {
@@ -430,6 +425,7 @@ impl AccountActor {
                         .await;
                 }
             }
+            self.flush_pending_crawler_notification();
         }
         // Ordered shutdown (overview.md Async rule 12):
         // recovery/incoming observers → timelines → search → room → sync → SDK handles.
@@ -453,7 +449,11 @@ impl AccountActor {
     /// SessionRequired check internally (it holds the session ref after
     /// SyncStarted).
     async fn route_room_command(&self, command: RoomCommand) {
-        let _ = self.room_actor.send(RoomMessage::Command(command)).await;
+        trace_room_route("send", &command);
+        let sent = self.room_actor.send(RoomMessage::Command(command)).await;
+        if !sent {
+            trace_room_route_closed();
+        }
     }
 
     /// Route a TimelineCommand to the TimelineManagerActor.
@@ -474,6 +474,18 @@ impl AccountActor {
             .timeline_manager
             .send(TimelineMessage::Command(command))
             .await;
+    }
+
+    fn flush_pending_crawler_notification(&mut self) {
+        let Some(handle) = &self.search_actor else {
+            return;
+        };
+        let Some((room_ids, settings)) = self.pending_crawler_notification.take() else {
+            return;
+        };
+        if let Err((room_ids, settings)) = handle.try_notify_rooms_available(room_ids, settings) {
+            self.pending_crawler_notification = Some((room_ids, settings));
+        }
     }
 
     /// Route a SearchCommand to the SearchActor. Emit SessionRequired if no
@@ -922,13 +934,13 @@ impl AccountActor {
         );
         let search_index_tx = search_handle.index_sender();
 
+        self.search_actor = Some(search_handle);
         // Replay any notification that arrived before the actor was ready so
         // rooms already known to the reducer at session-restore time are not
-        // missed by the auto-start logic (AGENTS.md Task 4).
-        if let Some((room_ids, settings)) = self.pending_crawler_notification.take() {
-            search_handle.notify_rooms_available(room_ids, settings).await;
-        }
-        self.search_actor = Some(search_handle);
+        // missed by the auto-start logic. Flush is non-blocking; if the search
+        // actor is already saturated, the latest payload remains pending for
+        // the next AccountActor tick.
+        self.flush_pending_crawler_notification();
 
         // Replace the TimelineManagerActor with one holding the current session
         // AND the search index sender. The old manager (with no session) is
@@ -1481,8 +1493,7 @@ impl AccountActor {
             return;
         };
 
-        match koushi_sdk::update_local_user_alias(session, &user_id, alias.as_deref()).await
-        {
+        match koushi_sdk::update_local_user_alias(session, &user_id, alias.as_deref()).await {
             Ok(aliases) => {
                 self.send_actions(vec![
                     AppAction::LocalUserAliasUpdateSucceeded {
@@ -2205,9 +2216,7 @@ impl AccountActor {
         };
         let account_key = AccountKey(session.info.user_id.clone());
         let result = match self.identity_reset_handle.as_ref() {
-            Some(handle) => {
-                koushi_sdk::complete_identity_reset(&session, handle, &request).await
-            }
+            Some(handle) => koushi_sdk::complete_identity_reset(&session, handle, &request).await,
             None => Err(koushi_sdk::E2eeTrustError::Sdk(
                 "identity reset auth continuation missing".to_owned(),
             )),
@@ -2307,8 +2316,7 @@ impl AccountActor {
             }
         };
         let account_key = AccountKey(session.info.user_id.clone());
-        let result =
-            koushi_sdk::restore_key_backup(&session, &request, version.as_deref()).await;
+        let result = koushi_sdk::restore_key_backup(&session, &request, version.as_deref()).await;
         drop(request);
 
         let (actions, events) = project_restore_key_backup_result(request_id, account_key, result);
@@ -2336,8 +2344,7 @@ impl AccountActor {
             passphrase,
         } = request;
         let result =
-            koushi_sdk::export_room_keys_to_file(&session, destination_path, &passphrase)
-                .await;
+            koushi_sdk::export_room_keys_to_file(&session, destination_path, &passphrase).await;
         drop(passphrase);
         match result {
             Ok(summary) => {
@@ -2379,8 +2386,7 @@ impl AccountActor {
             passphrase,
         } = request;
         let result =
-            koushi_sdk::import_room_keys_from_file(&session, source_path, &passphrase)
-                .await;
+            koushi_sdk::import_room_keys_from_file(&session, source_path, &passphrase).await;
         drop(passphrase);
         match result {
             Ok(summary) => {
@@ -2571,10 +2577,9 @@ impl AccountActor {
 
     async fn handle_discover_login(&mut self, _request_id: RequestId, homeserver: String) {
         let requested_homeserver = homeserver.clone();
-        let discovery_result = tokio::task::spawn_blocking(move || {
-            koushi_sdk::discover_login_flows(&homeserver)
-        })
-        .await;
+        let discovery_result =
+            tokio::task::spawn_blocking(move || koushi_sdk::discover_login_flows(&homeserver))
+                .await;
 
         match discovery_result {
             Ok(Ok(discovery)) => {
@@ -2888,8 +2893,7 @@ impl AccountActor {
             return;
         };
 
-        let result =
-            koushi_sdk::rename_device(&session, &raw_device_id, &display_name).await;
+        let result = koushi_sdk::rename_device(&session, &raw_device_id, &display_name).await;
         drop(display_name);
         match result {
             Ok(()) => self.reduce(vec![AppAction::AccountManagementSucceeded {
@@ -3197,16 +3201,14 @@ impl AccountActor {
                 .await
                 .map_err(AccountManagementUiaError::AccountManagement)
             }
-            AccountManagementOperation::DeactivateAccount => {
-                koushi_sdk::deactivate_account(
-                    &session,
-                    pending.erase_data,
-                    Some(&auth),
-                    pending.uiaa_session.as_deref(),
-                )
-                .await
-                .map_err(AccountManagementUiaError::AccountManagement)
-            }
+            AccountManagementOperation::DeactivateAccount => koushi_sdk::deactivate_account(
+                &session,
+                pending.erase_data,
+                Some(&auth),
+                pending.uiaa_session.as_deref(),
+            )
+            .await
+            .map_err(AccountManagementUiaError::AccountManagement),
         };
         drop(auth);
         match result {
@@ -3242,9 +3244,9 @@ impl AccountActor {
                     },
                 );
             }
-            Err(AccountManagementUiaError::DeleteDevices(
-                koushi_sdk::DeleteDevicesError::Sdk(_),
-            ))
+            Err(AccountManagementUiaError::DeleteDevices(koushi_sdk::DeleteDevicesError::Sdk(
+                _,
+            )))
             | Err(AccountManagementUiaError::AccountManagement(
                 koushi_sdk::AccountManagementError::Sdk(_),
             )) => {
@@ -3779,6 +3781,43 @@ impl AccountActor {
     }
 }
 
+fn trace_room_route(stage: &str, command: &RoomCommand) {
+    if std::env::var_os("KOUSHI_CORE_ACTOR_TRACE").is_none() {
+        return;
+    }
+    match command {
+        RoomCommand::CreateRoom { request_id, .. } => {
+            trace_room_route_event(stage, "create_room", *request_id);
+        }
+        RoomCommand::CreateSpace { request_id, .. } => {
+            trace_room_route_event(stage, "create_space", *request_id);
+        }
+        RoomCommand::SetSpaceChild { request_id, .. } => {
+            trace_room_route_event(stage, "set_space_child", *request_id);
+        }
+        RoomCommand::InviteUser { request_id, .. } => {
+            trace_room_route_event(stage, "invite_user", *request_id);
+        }
+        RoomCommand::AcceptInvite { request_id, .. } => {
+            trace_room_route_event(stage, "accept_invite", *request_id);
+        }
+        _ => {}
+    }
+}
+
+fn trace_room_route_event(stage: &str, kind: &str, request_id: RequestId) {
+    eprintln!(
+        "koushi_core actor_trace account_room_route stage={stage} kind={kind} request_id={}/{}",
+        request_id.connection_id.0, request_id.sequence
+    );
+}
+
+fn trace_room_route_closed() {
+    if std::env::var_os("KOUSHI_CORE_ACTOR_TRACE").is_some() {
+        eprintln!("koushi_core actor_trace account_room_route stage=closed");
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum ServerLogoutOutcome {
     Completed,
@@ -3972,9 +4011,7 @@ fn classify_recovery_error(
     }
 }
 
-fn classify_e2ee_trust_error(
-    error: &koushi_sdk::E2eeTrustError,
-) -> TrustOperationFailureKind {
+fn classify_e2ee_trust_error(error: &koushi_sdk::E2eeTrustError) -> TrustOperationFailureKind {
     match error {
         koushi_sdk::E2eeTrustError::NoOlmMachine => TrustOperationFailureKind::Sdk,
         koushi_sdk::E2eeTrustError::Sdk(message) => {
@@ -4247,9 +4284,7 @@ fn classify_login_error(error: &koushi_sdk::PasswordLoginError) -> LoginFailureK
     }
 }
 
-fn login_discovery_failure_kind(
-    error: &koushi_sdk::LoginDiscoveryError,
-) -> AuthFailureKind {
+fn login_discovery_failure_kind(error: &koushi_sdk::LoginDiscoveryError) -> AuthFailureKind {
     match error {
         koushi_sdk::LoginDiscoveryError::RequestFailed(_) => AuthFailureKind::Network,
         koushi_sdk::LoginDiscoveryError::HttpStatus { status: 403, .. } => {
@@ -4260,9 +4295,7 @@ fn login_discovery_failure_kind(
         | koushi_sdk::LoginDiscoveryError::InvalidResponse(_) => AuthFailureKind::Sdk,
         koushi_sdk::LoginDiscoveryError::InvalidHomeserver(_)
         | koushi_sdk::LoginDiscoveryError::UnsupportedHomeserverScheme
-        | koushi_sdk::LoginDiscoveryError::InsecureHomeserverScheme => {
-            AuthFailureKind::Unsupported
-        }
+        | koushi_sdk::LoginDiscoveryError::InsecureHomeserverScheme => AuthFailureKind::Unsupported,
     }
 }
 
@@ -4380,6 +4413,31 @@ mod tests {
         assert!(
             !body.contains("koushi_sdk::logout(&session).await"),
             "logout must not await the network request without a product timeout"
+        );
+    }
+
+    #[test]
+    fn search_crawler_room_notifications_are_latest_wins_and_nonblocking() {
+        let source = include_str!("account.rs");
+        let notification_arm = source
+            .split("AccountMessage::NotifySearchCrawlerRoomsAvailable")
+            .nth(1)
+            .expect("crawler notification arm")
+            .split("AccountMessage::InvalidateSearchCrawlerCache")
+            .next()
+            .expect("crawler notification arm body");
+
+        assert!(
+            notification_arm.contains("self.pending_crawler_notification = Some"),
+            "crawler room availability should be stored as a latest-wins notification"
+        );
+        assert!(
+            notification_arm.contains("self.flush_pending_crawler_notification();"),
+            "crawler room availability should be flushed without awaiting SearchActor capacity"
+        );
+        assert!(
+            !notification_arm.contains("notify_rooms_available(room_ids, settings).await"),
+            "AccountActor must not block user commands on background crawler notification delivery"
         );
     }
 
@@ -4997,9 +5055,7 @@ mod tests {
             koushi_state::TrustOperationFailureKind::Timeout
         );
         assert_eq!(
-            classify_e2ee_trust_error(&koushi_sdk::E2eeTrustError::Sdk(
-                "M_FORBIDDEN".to_owned()
-            )),
+            classify_e2ee_trust_error(&koushi_sdk::E2eeTrustError::Sdk("M_FORBIDDEN".to_owned())),
             koushi_state::TrustOperationFailureKind::Forbidden
         );
     }

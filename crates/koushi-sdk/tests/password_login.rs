@@ -23,6 +23,7 @@ fn room_list_smoke_report_counts_without_private_names() {
             space_id: "!space:example.invalid".into(),
             display_name: "Private Space Name".into(),
             avatar_mxc_uri: None,
+            child_room_ids: Vec::new(),
         }],
         rooms: vec![
             MatrixRoomListRoom {
@@ -78,6 +79,7 @@ fn real_account_qa_report_counts_without_private_timeline_data() {
             space_id: "!space:example.invalid".into(),
             display_name: "Private Space Name".into(),
             avatar_mxc_uri: None,
+            child_room_ids: Vec::new(),
         }],
         rooms: vec![MatrixRoomListRoom {
             room_id: "!room:example.invalid".into(),
@@ -149,8 +151,7 @@ fn restored_real_account_qa_report_records_restore_without_private_data() {
         body: "Private visible message body".into(),
     }];
 
-    let report =
-        koushi_sdk::restored_real_account_qa_report(&snapshot, true, &timeline_items);
+    let report = koushi_sdk::restored_real_account_qa_report(&snapshot, true, &timeline_items);
     let rendered = report.to_string();
 
     assert!(report.session_restored);
@@ -227,8 +228,8 @@ fn sdk_password_login_returns_session_info_without_exposing_secret() {
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
 
-    let session = koushi_sdk::login_with_password_blocking(&request)
-        .expect("password login should succeed");
+    let session =
+        koushi_sdk::login_with_password_blocking(&request).expect("password login should succeed");
 
     assert_eq!(session.info.homeserver, homeserver);
     assert_eq!(session.info.user_id, "@fixture-user:example.invalid");
@@ -246,8 +247,8 @@ fn sdk_password_login_failure_does_not_include_secret() {
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
 
-    let error = koushi_sdk::login_with_password_blocking(&request)
-        .expect_err("password login should fail");
+    let error =
+        koushi_sdk::login_with_password_blocking(&request).expect_err("password login should fail");
 
     assert!(!error.to_string().contains("synthetic-password"));
 }
@@ -300,10 +301,9 @@ fn sdk_password_login_can_use_encrypted_sqlite_store_without_exposing_store_key(
         .expect("test runtime should build");
 
     runtime.block_on(async {
-        let session =
-            koushi_sdk::login_with_password_with_store(&request, Some(&store_config))
-                .await
-                .expect("password login with encrypted store should succeed");
+        let session = koushi_sdk::login_with_password_with_store(&request, Some(&store_config))
+            .await
+            .expect("password login with encrypted store should succeed");
 
         assert_eq!(session.info.homeserver, homeserver);
         assert_eq!(session.info.user_id, "@fixture-user:example.invalid");
@@ -350,21 +350,18 @@ fn encrypted_sqlite_store_rejects_wrong_key_without_exposing_key_material() {
         .expect("test runtime should build");
 
     runtime.block_on(async {
-        let session = koushi_sdk::login_with_password_with_store(
-            &request,
-            Some(&correct_store_config),
-        )
-        .await
-        .expect("password login with encrypted store should succeed");
+        let session =
+            koushi_sdk::login_with_password_with_store(&request, Some(&correct_store_config))
+                .await
+                .expect("password login with encrypted store should succeed");
         let persistable = session
             .persistable_session()
             .expect("SDK should expose session data");
         drop(session);
 
-        let error =
-            koushi_sdk::restore_session_with_store(&persistable, Some(&wrong_store_config))
-                .await
-                .expect_err("encrypted store should reject the wrong key");
+        let error = koushi_sdk::restore_session_with_store(&persistable, Some(&wrong_store_config))
+            .await
+            .expect_err("encrypted store should reject the wrong key");
 
         assert!(!error.to_string().contains("12, 12"));
         assert!(!format!("{error:?}").contains("12, 12"));
@@ -383,8 +380,8 @@ fn sdk_password_login_session_can_logout_without_exposing_secret() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = koushi_sdk::login_with_password_blocking(&request)
-        .expect("password login should succeed");
+    let session =
+        koushi_sdk::login_with_password_blocking(&request).expect("password login should succeed");
 
     koushi_sdk::logout_blocking(&session).expect("logout should succeed");
 
@@ -401,8 +398,8 @@ fn sdk_password_login_exports_redacted_persistable_session() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = koushi_sdk::login_with_password_blocking(&request)
-        .expect("password login should succeed");
+    let session =
+        koushi_sdk::login_with_password_blocking(&request).expect("password login should succeed");
 
     let persisted = session
         .persistable_session()
@@ -431,14 +428,14 @@ fn persisted_session_restores_sdk_client_without_exposing_token() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = koushi_sdk::login_with_password_blocking(&request)
-        .expect("password login should succeed");
+    let session =
+        koushi_sdk::login_with_password_blocking(&request).expect("password login should succeed");
     let persisted = session
         .persistable_session()
         .expect("SDK should expose session data");
 
-    let restored = koushi_sdk::restore_session_blocking(&persisted)
-        .expect("persisted session should restore");
+    let restored =
+        koushi_sdk::restore_session_blocking(&persisted).expect("persisted session should restore");
     koushi_sdk::logout_blocking(&restored).expect("restored session should logout");
 
     assert_eq!(restored.info.homeserver, homeserver);
@@ -510,10 +507,9 @@ fn sdk_room_operation_failures_do_not_include_body_ids_or_token() {
             "synthetic-password",
         ];
 
-        let send_error =
-            koushi_sdk::send_text_message(&session, room_id, body, transaction_id)
-                .await
-                .expect_err("missing room should make SDK send fail");
+        let send_error = koushi_sdk::send_text_message(&session, room_id, body, transaction_id)
+            .await
+            .expect_err("missing room should make SDK send fail");
         assert_error_redacts(&send_error, &forbidden);
 
         let edit_error = koushi_sdk::edit_text_message(&session, room_id, event_id, body)
@@ -596,18 +592,14 @@ fn sdk_room_can_send_text_message_respects_power_levels() {
             .await
             .expect("sync with power levels should succeed");
 
-        let read_only = koushi_sdk::room_can_send_text_message(
-            &session,
-            "!readonly-room:example.invalid",
-        )
-        .await
-        .expect("read-only room sendability should be available");
-        let sendable = koushi_sdk::room_can_send_text_message(
-            &session,
-            "!sendable-room:example.invalid",
-        )
-        .await
-        .expect("sendable room sendability should be available");
+        let read_only =
+            koushi_sdk::room_can_send_text_message(&session, "!readonly-room:example.invalid")
+                .await
+                .expect("read-only room sendability should be available");
+        let sendable =
+            koushi_sdk::room_can_send_text_message(&session, "!sendable-room:example.invalid")
+                .await
+                .expect("sendable room sendability should be available");
 
         assert!(!read_only);
         assert!(sendable);
@@ -633,10 +625,9 @@ fn sdk_search_candidates_return_empty_without_joined_rooms() {
             .await
             .expect("password login should succeed");
 
-        let candidates =
-            koushi_sdk::search_message_candidates(&session, "synthetic query", 20)
-                .await
-                .expect("empty joined room set should search successfully");
+        let candidates = koushi_sdk::search_message_candidates(&session, "synthetic query", 20)
+            .await
+            .expect("empty joined room set should search successfully");
 
         assert!(candidates.is_empty());
     });
@@ -698,6 +689,12 @@ fn sdk_room_list_snapshot_preserves_synced_parent_spaces() {
             .await
             .expect("synced rooms should snapshot successfully");
 
+        let space = snapshot
+            .spaces
+            .iter()
+            .find(|space| space.space_id == "!fixture-space:example.invalid")
+            .expect("space should be in room list");
+        assert_eq!(space.child_room_ids, vec!["!fixture-room:example.invalid"]);
         assert_eq!(
             snapshot
                 .spaces
@@ -769,8 +766,8 @@ fn sdk_search_candidates_blocking_returns_empty_for_empty_query() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = koushi_sdk::login_with_password_blocking(&request)
-        .expect("password login should succeed");
+    let session =
+        koushi_sdk::login_with_password_blocking(&request).expect("password login should succeed");
 
     let candidates = koushi_sdk::search_message_candidates_blocking(&session, "  ", 10)
         .expect("empty search should succeed");
@@ -859,8 +856,8 @@ fn sdk_e2ee_recovery_failure_does_not_include_secret() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = koushi_sdk::login_with_password_blocking(&request)
-        .expect("password login should succeed");
+    let session =
+        koushi_sdk::login_with_password_blocking(&request).expect("password login should succeed");
     let recovery = RecoveryRequest {
         secret: AuthSecret::new("synthetic-recovery-secret"),
     };
@@ -881,8 +878,8 @@ fn sdk_e2ee_recovery_state_is_exposed_without_secret_material() {
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = koushi_sdk::login_with_password_blocking(&request)
-        .expect("password login should succeed");
+    let session =
+        koushi_sdk::login_with_password_blocking(&request).expect("password login should succeed");
 
     let state = session.e2ee_recovery_state();
 
@@ -899,8 +896,8 @@ fn sdk_e2ee_recovery_state_stream_emits_initial_state_without_secret_material() 
         password: AuthSecret::new("synthetic-password"),
         device_display_name: Some("Matrix Desktop Test".to_owned()),
     };
-    let session = koushi_sdk::login_with_password_blocking(&request)
-        .expect("password login should succeed");
+    let session =
+        koushi_sdk::login_with_password_blocking(&request).expect("password login should succeed");
 
     let mut stream = session.e2ee_recovery_state_stream();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -918,8 +915,7 @@ fn sdk_e2ee_recovery_state_stream_emits_initial_state_without_secret_material() 
     assert!(
         matches!(
             state,
-            koushi_sdk::E2eeRecoveryState::Unknown
-                | koushi_sdk::E2eeRecoveryState::Disabled
+            koushi_sdk::E2eeRecoveryState::Unknown | koushi_sdk::E2eeRecoveryState::Disabled
         ),
         "unexpected initial recovery state: {state:?}"
     );

@@ -35,20 +35,22 @@ use koushi_backend::{
     SyncMode,
 };
 
-const MENU_EVENT_NAME: &str = "matrix-desktop://menu";
+const MENU_EVENT_NAME: &str = "koushi-desktop://menu";
 /// Tauri event for serialized CoreEvent payloads (discrete events + diff batches).
-pub(crate) const CORE_EVENT_NAME: &str = "matrix-desktop://event";
+pub(crate) const CORE_EVENT_NAME: &str = "koushi-desktop://event";
 /// Tauri event for serialized AppStateSnapshot payloads (latest-wins).
-const STATE_EVENT_NAME: &str = "matrix-desktop://state";
+const STATE_EVENT_NAME: &str = "koushi-desktop://state";
 const MENU_ID_OPEN_USER_SETTINGS: &str = "open_user_settings";
 const MENU_ID_SHOW_KEYBOARD_SETTINGS: &str = "show_keyboard_settings";
 const MENU_ID_TOGGLE_RIGHT_PANEL: &str = "toggle_right_panel";
 const MIN_RESTORABLE_WINDOW_WIDTH: u32 = 760;
 const MIN_RESTORABLE_WINDOW_HEIGHT: u32 = 620;
 #[cfg(any(debug_assertions, test))]
-const QA_LOGIN_PIPE_ENV: &str = "MATRIX_DESKTOP_QA_LOGIN_PIPE";
+const QA_LOGIN_PIPE_ENV: &str = "KOUSHI_QA_LOGIN_PIPE";
 #[cfg(any(debug_assertions, test))]
-const QA_CONTROL_PIPE_ENV: &str = "MATRIX_DESKTOP_QA_CONTROL_PIPE";
+const QA_CONTROL_PIPE_ENV: &str = "KOUSHI_QA_CONTROL_PIPE";
+#[cfg(any(debug_assertions, test))]
+const SKIP_KEYCHAIN_PERSISTENCE_ENV: &str = "KOUSHI_SKIP_KEYCHAIN_PERSISTENCE";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ForwardedWebviewEvent {
@@ -221,6 +223,21 @@ fn saved_sessions_disabled_from_env_value(value: Option<&str>) -> bool {
 }
 
 #[cfg(any(debug_assertions, test))]
+fn keychain_persistence_disabled_from_env_value(value: Option<&str>) -> bool {
+    matches!(
+        value.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("1" | "true" | "yes")
+    )
+}
+
+#[cfg(any(debug_assertions, test))]
+fn keychain_persistence_disabled_from_env() -> bool {
+    keychain_persistence_disabled_from_env_value(
+        std::env::var(SKIP_KEYCHAIN_PERSISTENCE_ENV).ok().as_deref(),
+    )
+}
+
+#[cfg(any(debug_assertions, test))]
 fn qa_login_pipe_path_from_env_value(value: Option<&str>) -> Option<PathBuf> {
     value
         .map(str::trim)
@@ -252,33 +269,23 @@ fn qa_control_pipe_path_from_env() -> Option<PathBuf> {
     qa_control_pipe_path_from_env_value(std::env::var(QA_CONTROL_PIPE_ENV).ok().as_deref())
 }
 
-/// GUI-smoke toggle: when `MATRIX_DESKTOP_SKIP_SAVED_SESSIONS` is set, the
+/// GUI-smoke toggle: when `KOUSHI_SKIP_SAVED_SESSIONS` is set, the
 /// adapter answers `list_saved_sessions` with an empty list WITHOUT routing
 /// the command to core. This prevents the OS keychain read that would
 /// otherwise prompt during unattended automation. Adapter-level concern: the
 /// command boundary stays untouched.
 pub(crate) fn saved_sessions_disabled_from_env() -> bool {
     saved_sessions_disabled_from_env_value(
-        std::env::var("MATRIX_DESKTOP_SKIP_SAVED_SESSIONS")
+        std::env::var("KOUSHI_SKIP_SAVED_SESSIONS")
             .ok()
             .as_deref(),
     )
 }
 
 const DATA_DIR_NAME: &str = "koushi-desktop";
-const LEGACY_DATA_DIR_NAME: &str = "matrix-desktop";
 
 pub(crate) fn app_data_dir() -> Result<PathBuf, String> {
     if let Ok(path) = std::env::var("KOUSHI_DATA_DIR") {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
-        }
-    }
-
-    // Retain the legacy override name so existing QA lanes and portable runs
-    // continue to work across the rebrand.
-    if let Ok(path) = std::env::var("MATRIX_DESKTOP_DATA_DIR") {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
             return Ok(PathBuf::from(trimmed));
@@ -290,76 +297,18 @@ pub(crate) fn app_data_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "local application data directory is unavailable".to_owned())
 }
 
-/// Migrate on-disk data from the legacy `matrix-desktop` directory to the
-/// current `koushi-desktop` directory. This is a one-time copy performed before
-/// the runtime starts so existing installs are not locked out after the rebrand.
-///
-/// The migration is atomic from the app's point of view: entries are copied
-/// into a sibling temporary directory first, and only renamed to the final name
-/// after every entry succeeds. A failure therefore leaves the final directory
-/// absent, so the next launch will retry the full migration.
-pub(crate) fn migrate_app_data_dir_if_needed() -> Result<(), String> {
-    // When an explicit data-dir override is in use we cannot know where the
-    // legacy default profile lives, and the caller is responsible for isolation.
-    // Empty or whitespace-only values are ignored, matching `app_data_dir()`.
-    let has_override = |name: &str| {
-        std::env::var(name)
-            .ok()
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
-    };
-    if has_override("KOUSHI_DATA_DIR") || has_override("MATRIX_DESKTOP_DATA_DIR") {
-        return Ok(());
-    }
-
-    let Some(base) = dirs::data_local_dir() else {
-        // No local app-data directory is available (e.g. minimal/headless
-        // environments). There is no default legacy profile to migrate, so let
-        // the caller fall back to its own data-dir path.
-        return Ok(());
-    };
-    let new_dir = base.join(DATA_DIR_NAME);
-    if new_dir.exists() {
-        return Ok(());
-    }
-    let legacy_dir = base.join(LEGACY_DATA_DIR_NAME);
-    if !legacy_dir.exists() {
-        return Ok(());
-    }
-
-    let temp_dir = base.join(format!("{}.{}", DATA_DIR_NAME, "migrating"));
-    // Remove any stale temporary directory from a previous failed attempt.
-    if temp_dir.exists() {
-        std::fs::remove_dir_all(&temp_dir)
-            .map_err(|e| format!("failed to remove stale migration temp dir: {e}"))?;
-    }
-    std::fs::create_dir_all(&temp_dir)
-        .map_err(|e| format!("failed to create migration temp dir: {e}"))?;
-
-    for entry in std::fs::read_dir(&legacy_dir).map_err(|e| format!("failed to read legacy data dir: {e}"))? {
-        let entry = entry.map_err(|e| format!("failed to read legacy data dir entry: {e}"))?;
-        let src = entry.path();
-        let dst = temp_dir.join(entry.file_name());
-        copy_dir_or_file(&src, &dst).map_err(|e| format!("failed to migrate {}: {e}", src.display()))?;
-    }
-
-    std::fs::rename(&temp_dir, &new_dir)
-        .map_err(|e| format!("failed to finalize migration: {e}"))?;
-    Ok(())
-}
-
-fn copy_dir_or_file(src: &Path, dst: &Path) -> std::io::Result<()> {
-    let metadata = std::fs::metadata(src)?;
-    if metadata.is_dir() {
-        std::fs::create_dir_all(dst)?;
-        for entry in std::fs::read_dir(src)? {
-            let entry = entry?;
-            copy_dir_or_file(&entry.path(), &dst.join(entry.file_name()))?;
+fn start_core_runtime_for_tauri(data_dir: PathBuf) -> CoreRuntime {
+    #[cfg(any(debug_assertions, test))]
+    {
+        if keychain_persistence_disabled_from_env() {
+            return CoreRuntime::start_with_data_dir(data_dir.clone());
         }
-        Ok(())
-    } else {
-        std::fs::copy(src, dst).map(|_| ())
     }
+
+    CoreRuntime::start_with_data_dir_and_os_backend(
+        data_dir,
+        std::sync::Arc::new(crate::keyring_backend::KeyringCredentialBackend),
+    )
 }
 
 fn window_state_path(base_dir: &Path) -> PathBuf {
@@ -487,6 +436,97 @@ fn restore_main_window_state<R: tauri::Runtime, M: Manager<R>>(manager: &M) -> R
     apply_persisted_window_state(&window, state)
 }
 
+fn ensure_main_window_visible<R: tauri::Runtime>(app: &mut tauri::App<R>) {
+    #[cfg(target_os = "macos")]
+    {
+        app.set_activation_policy(tauri::ActivationPolicy::Regular);
+        activate_macos_application(app.handle());
+    }
+
+    if let Some(window) = app.get_webview_window("main") {
+        ensure_webview_window_visible(&window);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn activate_macos_application<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    let _ = app.show();
+    let _ = app.run_on_main_thread(|| {
+        activate_macos_application_now();
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn activate_macos_application_now() {
+    if let Some(mtm) = objc2::MainThreadMarker::new() {
+        let ns_app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+        #[allow(deprecated)]
+        ns_app.activateIgnoringOtherApps(true);
+    }
+}
+
+fn ensure_webview_window_visible<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    #[cfg(target_os = "macos")]
+    {
+        if qa_window_visibility_mode_enabled() {
+            let _ = window.set_visible_on_all_workspaces(true);
+        }
+        if let Ok(ns_window) = window.ns_window() {
+            let ns_window_addr = ns_window as usize;
+            let _ = window.run_on_main_thread(move || {
+                order_macos_ns_window_front(ns_window_addr);
+            });
+        }
+    }
+
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+fn ensure_main_window_visible_after_page_load<R: tauri::Runtime>(window: &tauri::Window<R>) {
+    #[cfg(target_os = "macos")]
+    {
+        if qa_window_visibility_mode_enabled() {
+            let _ = window.set_visible_on_all_workspaces(true);
+        }
+        if let Ok(ns_window) = window.ns_window() {
+            let ns_window_addr = ns_window as usize;
+            let _ = window.run_on_main_thread(move || {
+                order_macos_ns_window_front(ns_window_addr);
+            });
+        }
+        let _ = window.run_on_main_thread(|| {
+            activate_macos_application_now();
+        });
+    }
+
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+#[cfg(target_os = "macos")]
+fn order_macos_ns_window_front(ns_window_addr: usize) {
+    let ns_window = ns_window_addr as *mut objc2_app_kit::NSWindow;
+    // The pointer comes from Tauri's `ns_window()` for the live main window.
+    // Ordering must run on the main thread; callers enforce that with
+    // `run_on_main_thread`.
+    if let Some(ns_window) = unsafe { ns_window.as_ref() } {
+        ns_window.makeKeyAndOrderFront(None);
+        ns_window.orderFrontRegardless();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn qa_window_visibility_mode_enabled() -> bool {
+    matches!(
+        std::env::var("KOUSHI_QA_TITLE").ok().as_deref(),
+        Some("1")
+    )
+}
+
 fn persisted_window_state_from_window<R: tauri::Runtime>(
     window: &tauri::Window<R>,
 ) -> Result<PersistedWindowState, String> {
@@ -568,9 +608,9 @@ fn menu_item<R: tauri::Runtime, M: Manager<R>>(
 /// (second `attach()`) so it can loop on `recv_event` without blocking command
 /// dispatch.
 ///
-/// On `CoreEvent::StateChanged`: emit `matrix-desktop://state` with the
+/// On `CoreEvent::StateChanged`: emit `koushi-desktop://state` with the
 /// serialized snapshot + update QA window title.
-/// On any `CoreEvent`: emit `matrix-desktop://event` with a serialized DTO.
+/// On any `CoreEvent`: emit `koushi-desktop://event` with a serialized DTO.
 /// On `EventStreamLag`: emit the latest snapshot (resync) + a
 /// `ResyncMarker` event so the frontend resets its timeline stores.
 fn spawn_core_event_forwarder(
@@ -690,7 +730,7 @@ fn emit_forwarded_webview_events(
 fn serialize_core_event(event: &CoreEvent) -> Option<serde_json::Value> {
     Some(match event {
         CoreEvent::StateChanged(_) => {
-            // StateChanged snapshots are sent via `matrix-desktop://state`;
+            // StateChanged snapshots are sent via `koushi-desktop://state`;
             // don't duplicate as a generic event.
             return None;
         }
@@ -725,37 +765,26 @@ fn serialize_core_event(event: &CoreEvent) -> Option<serde_json::Value> {
 
 pub fn run() {
     let restore_session = restore_session_enabled_from_env_value(
-        std::env::var("MATRIX_DESKTOP_RESTORE_SESSION")
+        std::env::var("KOUSHI_RESTORE_SESSION")
             .ok()
             .as_deref(),
     );
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
-            // One-time migration of on-disk data from the legacy
-            // `matrix-desktop` directory to `koushi-desktop`. A failure here
-            // is blocking: continuing with an empty new directory would strand
-            // existing installs, and the legacy directory is left untouched so
-            // the user can retry after resolving the error.
-            migrate_app_data_dir_if_needed()
-                .map_err(|e| format!("data directory migration failed: {e}"))?;
-
             // Build the CoreRuntime inside setup() so Tauri's async runtime is
             // already active. `CoreRuntime::start_with_data_dir` calls
             // `executor::spawn` which requires a Tokio runtime context. Tauri
             // starts its tokio runtime before invoking setup; we enter the
             // handle so `tokio::task::spawn` can find it from the main thread.
-            let data_dir =
-                app_data_dir().unwrap_or_else(|_| PathBuf::from("koushi-desktop-data"));
+            let data_dir = app_data_dir().unwrap_or_else(|_| PathBuf::from("koushi-desktop-data"));
             // Enter Tauri's tokio runtime so `executor::spawn` (tokio::task::spawn)
             // can find a runtime handle from this non-tokio-worker thread.
             let async_handle = tauri::async_runtime::handle();
             let _guard = async_handle.inner().enter();
-            let runtime = CoreRuntime::start_with_data_dir_and_os_backend(
-                data_dir,
-                std::sync::Arc::new(crate::keyring_backend::KeyringCredentialBackend),
-            );
+            let runtime = start_core_runtime_for_tauri(data_dir);
 
             // command-dispatch connection (held in state)
             let command_conn = runtime.attach();
@@ -778,6 +807,7 @@ pub fn run() {
             let menu = build_desktop_menu(app)?;
             app.set_menu(menu)?;
             let _ = restore_main_window_state(app);
+            ensure_main_window_visible(app);
             app.on_menu_event(|app, event| {
                 if let Some(action_id) = desktop_menu_action_id(event.id().as_ref()) {
                     let _ = app.emit(MENU_EVENT_NAME, action_id);
@@ -818,6 +848,12 @@ pub fn run() {
             }
 
             Ok(())
+        })
+        .on_page_load(|webview, _payload| {
+            if webview.label() == "main" {
+                let window = webview.window();
+                ensure_main_window_visible_after_page_load(&window);
+            }
         })
         .on_window_event(|window, event| {
             if window.label() == "main" {
@@ -875,6 +911,7 @@ pub fn run() {
             commands::navigation::close_focused_context,
             commands::navigation::open_timeline_at_timestamp,
             commands::navigation::observe_timeline_viewport,
+            commands::timeline::ensure_timeline_subscribed,
             commands::timeline::paginate_timeline_backwards,
             commands::timeline::paginate_thread_timeline_backwards,
             commands::timeline::send_text,
@@ -993,10 +1030,27 @@ mod tests {
     }
 
     #[test]
+    fn keychain_persistence_env_value_can_disable_os_keychain_for_gui_smoke() {
+        assert!(super::keychain_persistence_disabled_from_env_value(Some(
+            "1"
+        )));
+        assert!(super::keychain_persistence_disabled_from_env_value(Some(
+            "true"
+        )));
+        assert!(super::keychain_persistence_disabled_from_env_value(Some(
+            "yes"
+        )));
+        assert!(!super::keychain_persistence_disabled_from_env_value(None));
+        assert!(!super::keychain_persistence_disabled_from_env_value(Some(
+            "0"
+        )));
+    }
+
+    #[test]
     fn qa_login_pipe_env_uses_path_only() {
         assert_eq!(
-            qa_login_pipe_path_from_env_value(Some(" /tmp/matrix-desktop-login.pipe ")),
-            Some(Path::new("/tmp/matrix-desktop-login.pipe").to_path_buf())
+            qa_login_pipe_path_from_env_value(Some(" /tmp/koushi-desktop-login.pipe ")),
+            Some(Path::new("/tmp/koushi-desktop-login.pipe").to_path_buf())
         );
         assert_eq!(qa_login_pipe_path_from_env_value(Some("   ")), None);
         assert_eq!(qa_login_pipe_path_from_env_value(None), None);
@@ -1005,8 +1059,8 @@ mod tests {
     #[test]
     fn qa_control_pipe_env_uses_path_only() {
         assert_eq!(
-            qa_control_pipe_path_from_env_value(Some(" /tmp/matrix-desktop-control.pipe ")),
-            Some(Path::new("/tmp/matrix-desktop-control.pipe").to_path_buf())
+            qa_control_pipe_path_from_env_value(Some(" /tmp/koushi-desktop-control.pipe ")),
+            Some(Path::new("/tmp/koushi-desktop-control.pipe").to_path_buf())
         );
         assert_eq!(qa_control_pipe_path_from_env_value(Some("   ")), None);
         assert_eq!(qa_control_pipe_path_from_env_value(None), None);
@@ -1057,7 +1111,7 @@ mod tests {
     #[test]
     fn qa_login_pipe_payload_maps_to_login_request_without_debugging_secret() {
         let request = parse_qa_login_pipe_payload(
-            r#"{"homeserver":"https://matrix.example.org","username":"fixture-user","password":"synthetic-password","device_display_name":"Matrix Desktop GUI Smoke","recovery_secret":"synthetic-recovery-secret"}"#,
+            r#"{"homeserver":"https://matrix.example.org","username":"fixture-user","password":"synthetic-password","device_display_name":"Koushi GUI Smoke","recovery_secret":"synthetic-recovery-secret"}"#,
         )
         .expect("payload should parse");
 
@@ -1066,7 +1120,7 @@ mod tests {
         assert_eq!(request.login.password.expose_secret(), "synthetic-password");
         assert_eq!(
             request.login.device_display_name.as_deref(),
-            Some("Matrix Desktop GUI Smoke")
+            Some("Koushi GUI Smoke")
         );
         assert_eq!(
             request
@@ -1151,11 +1205,11 @@ mod tests {
 
     #[test]
     fn window_state_path_is_separate_from_encrypted_session_stores() {
-        let path = window_state_path(Path::new("/tmp/matrix-desktop"));
+        let path = window_state_path(Path::new("/tmp/koushi-desktop"));
 
         assert_eq!(
             path,
-            Path::new("/tmp/matrix-desktop")
+            Path::new("/tmp/koushi-desktop")
                 .join("app-shell")
                 .join("window-state.json")
         );
@@ -1328,10 +1382,10 @@ mod tests {
             event::{
                 AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent, LinkPreview,
                 LinkPreviewImage, LinkPreviewState, LiveSignalsEvent, LocalEncryptionEvent,
-                NativeAttentionEvent, PaginationDirection, PaginationState,
-                ReactionGroup, RoomEvent, SearchEvent, SyncEvent, ThreadsListEvent,
-                TimelineCodeBlock, TimelineDisplayLabelUpdate, TimelineEvent, TimelineFormattedBody,
-                TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
+                NativeAttentionEvent, PaginationDirection, PaginationState, ReactionGroup,
+                RoomEvent, SearchEvent, SyncEvent, ThreadsListEvent, TimelineCodeBlock,
+                TimelineDisplayLabelUpdate, TimelineEvent, TimelineFormattedBody, TimelineItem,
+                TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
                 TimelineMediaThumbnail, TimelineMessageActions, TimelineMessageKind,
                 TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
                 TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
@@ -1805,8 +1859,8 @@ mod tests {
             }))
             .expect("serialize media upload progress");
 
-        let media_download_progress = serialize_core_event(&CoreEvent::Timeline(
-            TimelineEvent::MediaDownloadProgress {
+        let media_download_progress =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::MediaDownloadProgress {
                 request_id,
                 key: key.clone(),
                 event_id: "$media1".to_owned(),
@@ -1814,9 +1868,8 @@ mod tests {
                     current: 0,
                     total: 68,
                 },
-            },
-        ))
-        .expect("serialize media download progress");
+            }))
+            .expect("serialize media download progress");
 
         let media_download_completed = serialize_core_event(&CoreEvent::Timeline(
             TimelineEvent::MediaDownloadCompleted {
@@ -1832,15 +1885,14 @@ mod tests {
         ))
         .expect("serialize media download completion");
 
-        let media_download_failed = serialize_core_event(&CoreEvent::Timeline(
-            TimelineEvent::MediaDownloadFailed {
+        let media_download_failed =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::MediaDownloadFailed {
                 request_id,
                 key: key.clone(),
                 event_id: "$media1".to_owned(),
                 kind: TimelineFailureKind::Sdk,
-            },
-        ))
-        .expect("serialize media download failure");
+            }))
+            .expect("serialize media download failure");
 
         let message_source_loaded =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::MessageSourceLoaded {
@@ -2353,45 +2405,44 @@ mod tests {
         );
 
         // Search history crawler contract events (#77).
-        let search_crawl_progress = serialize_core_event(&CoreEvent::Search(
-            SearchEvent::HistoryCrawlProgress {
+        let search_crawl_progress =
+            serialize_core_event(&CoreEvent::Search(SearchEvent::HistoryCrawlProgress {
                 room_id: "!r:example.test".to_owned(),
                 processed: 100,
                 indexed: 42,
-            },
-        ))
-        .expect("serialize history crawl progress event");
+            }))
+            .expect("serialize history crawl progress event");
         assert_eq!(
             search_crawl_progress["event"]["HistoryCrawlProgress"]["processed"],
             json!(100u64)
         );
 
-        let search_crawl_completed = serialize_core_event(&CoreEvent::Search(
-            SearchEvent::HistoryCrawlCompleted {
+        let search_crawl_completed =
+            serialize_core_event(&CoreEvent::Search(SearchEvent::HistoryCrawlCompleted {
                 room_id: "!r:example.test".to_owned(),
                 indexed: 42,
-            },
-        ))
-        .expect("serialize history crawl completed event");
+            }))
+            .expect("serialize history crawl completed event");
         assert_eq!(
             search_crawl_completed["event"]["HistoryCrawlCompleted"]["indexed"],
             json!(42u64)
         );
 
-        let search_crawl_failed = serialize_core_event(&CoreEvent::Search(
-            SearchEvent::HistoryCrawlFailed {
+        let search_crawl_failed =
+            serialize_core_event(&CoreEvent::Search(SearchEvent::HistoryCrawlFailed {
                 room_id: "!r:example.test".to_owned(),
                 kind: SearchCrawlerFailureKind::Sdk,
-            },
-        ))
-        .expect("serialize history crawl failed event");
+            }))
+            .expect("serialize history crawl failed event");
         assert_eq!(
             search_crawl_failed["event"]["HistoryCrawlFailed"]["failureKind"],
             json!("sdk")
         );
         // Privacy assertion: no raw error text in the failed event.
         assert!(
-            !serde_json::to_string(&search_crawl_failed).unwrap().contains("message"),
+            !serde_json::to_string(&search_crawl_failed)
+                .unwrap()
+                .contains("message"),
             "crawl failure must not carry a raw message field"
         );
 

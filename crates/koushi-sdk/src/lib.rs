@@ -6,11 +6,17 @@ use koushi_state::{
     RecoveryRequest, RoomAttentionSummary, SasEmoji, SessionInfo, VerificationTarget,
     room_attention_summary,
 };
-use matrix_sdk::authentication::matrix::MatrixSession;
-use matrix_sdk::room::ParentSpace;
-use matrix_sdk::ruma::{
-    events::{AnyGlobalAccountDataEventContent, GlobalAccountDataEventType},
-    serde::Raw,
+use matrix_sdk::{
+    authentication::matrix::MatrixSession,
+    deserialized_responses::SyncOrStrippedState,
+    room::ParentSpace,
+    ruma::{
+        events::{
+            AnyGlobalAccountDataEventContent, GlobalAccountDataEventType, SyncStateEvent,
+            space::child::SpaceChildEventContent,
+        },
+        serde::Raw,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -31,7 +37,6 @@ const LOGIN_DISCOVERY_PATH: &str = "_matrix/client/v3/login";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const MATRIX_ROOM_LIST_SNAPSHOT_LIMIT: usize = 4096;
 pub const LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE: &str = "app.koushi.local_aliases";
-const LEGACY_LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE: &str = "app.kagome.local_aliases";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LoginDiscovery {
@@ -1998,6 +2003,7 @@ pub struct MatrixRoomListSpace {
     pub space_id: String,
     pub display_name: String,
     pub avatar_mxc_uri: Option<String>,
+    pub child_room_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3313,9 +3319,7 @@ pub async fn set_room_notification_mode(
         ))];
         let new_rule = NewConditionalPushRule::new(rule_id, conditions, actions);
         let new_push_rule = match mode {
-            koushi_state::RoomNotificationMode::Mentions => {
-                NewPushRule::Underride(new_rule)
-            }
+            koushi_state::RoomNotificationMode::Mentions => NewPushRule::Underride(new_rule),
             koushi_state::RoomNotificationMode::Mute => NewPushRule::Override(new_rule),
             koushi_state::RoomNotificationMode::All => unreachable!(),
         };
@@ -4084,10 +4088,12 @@ async fn matrix_room_list_snapshot_from_rooms(
             .unwrap_or_else(|| room_id.clone());
 
         if room.is_space() {
+            let child_room_ids = matrix_space_child_room_ids(&room).await;
             snapshot.spaces.push(MatrixRoomListSpace {
                 space_id: room_id,
                 display_name,
                 avatar_mxc_uri: room.avatar_url().map(|uri| uri.to_string()),
+                child_room_ids,
             });
             continue;
         }
@@ -4325,36 +4331,14 @@ fn local_user_aliases_event_type() -> GlobalAccountDataEventType {
     GlobalAccountDataEventType::from(LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE.to_owned())
 }
 
-fn legacy_local_user_aliases_event_type() -> GlobalAccountDataEventType {
-    GlobalAccountDataEventType::from(LEGACY_LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE.to_owned())
-}
-
 async fn fetch_local_user_aliases_raw(
     session: &MatrixClientSession,
 ) -> Result<Option<Raw<AnyGlobalAccountDataEventContent>>, MatrixProfileError> {
     let account = session.client().account();
-    match account
+    account
         .fetch_account_data(local_user_aliases_event_type())
         .await
-        .map_err(MatrixProfileError::from_sdk_error)?
-    {
-        Some(raw) => return Ok(Some(raw)),
-        None => {}
-    }
-    let Some(raw) = account
-        .fetch_account_data(legacy_local_user_aliases_event_type())
-        .await
-        .map_err(MatrixProfileError::from_sdk_error)?
-    else {
-        return Ok(None);
-    };
-    // Migrate: write the legacy content under the current key so future reads
-    // use the new identifier. A write failure here is not propagated; the
-    // caller already has usable aliases from the legacy key.
-    let _ = account
-        .set_account_data_raw(local_user_aliases_event_type(), raw.clone())
-        .await;
-    Ok(Some(raw))
+        .map_err(MatrixProfileError::from_sdk_error)
 }
 
 fn normalized_local_user_aliases(aliases: BTreeMap<String, String>) -> BTreeMap<String, String> {
@@ -4461,6 +4445,30 @@ async fn matrix_parent_space_ids(room: &matrix_sdk::Room) -> Vec<String> {
         })
         .collect()
         .await
+}
+
+async fn matrix_space_child_room_ids(room: &matrix_sdk::Room) -> Vec<String> {
+    let Ok(child_events) = room
+        .get_state_events_static::<SpaceChildEventContent>()
+        .await
+    else {
+        return Vec::new();
+    };
+
+    let mut child_room_ids: Vec<String> = child_events
+        .into_iter()
+        .filter_map(|child_event| match child_event.deserialize() {
+            Ok(SyncOrStrippedState::Sync(SyncStateEvent::Original(event))) => {
+                Some(event.state_key.to_string())
+            }
+            Ok(SyncOrStrippedState::Sync(SyncStateEvent::Redacted(_))) => None,
+            Ok(SyncOrStrippedState::Stripped(event)) => Some(event.state_key.to_string()),
+            Err(_) => None,
+        })
+        .collect();
+    child_room_ids.sort();
+    child_room_ids.dedup();
+    child_room_ids
 }
 
 fn matrix_timeline_item_from_ui(

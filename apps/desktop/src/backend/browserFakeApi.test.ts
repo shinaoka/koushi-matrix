@@ -1,6 +1,21 @@
 import { describe, expect, test } from "vitest";
 
 import { createBrowserFakeApi } from "./browserFakeApi";
+import type { DesktopSnapshot, LiveReadReceipt } from "../domain/types";
+
+function receipt(
+  userId: string,
+  displayName: string,
+  timestampMs: number
+): LiveReadReceipt {
+  return {
+    user_id: userId,
+    display_name: displayName,
+    original_display_label: displayName,
+    avatar: null,
+    timestamp_ms: timestampMs
+  };
+}
 
 describe("BrowserFakeApi settings preview", () => {
   test("applies the Rust-shaped settings patch to the fixture snapshot", async () => {
@@ -34,8 +49,7 @@ describe("BrowserFakeApi settings preview", () => {
     const initial = await api.getSnapshot();
     expect(initial.state.ui.room_list.items?.map((item) => item.room_id)).toEqual([
       "!room-alpha:example.invalid",
-      "!room-planning:example.invalid",
-      "!room-search:example.invalid"
+      "!room-planning:example.invalid"
     ]);
 
     const people = await api.selectRoomListFilter({ kind: "people" });
@@ -48,11 +62,15 @@ describe("BrowserFakeApi settings preview", () => {
     expect(unread.state.ui.room_list.items?.map((item) => item.room_id)).toEqual([
       "!dm-member-1:example.invalid",
       "!room-alpha:example.invalid",
-      "!room-planning:example.invalid",
-      "!room-search:example.invalid"
+      "!room-planning:example.invalid"
     ]);
 
     await api.setRoomTag("!room-planning:example.invalid", "favourite");
+    const roomsAfterFavourite = await api.selectRoomListFilter({ kind: "rooms" });
+    expect(roomsAfterFavourite.state.ui.room_list.items).toEqual([
+      { room_id: "!room-alpha:example.invalid", kind: "room" }
+    ]);
+
     const favourites = await api.selectRoomListFilter({ kind: "favourites" });
     expect(favourites.state.ui.room_list.items).toEqual([
       { room_id: "!room-planning:example.invalid", kind: "room" }
@@ -62,6 +80,56 @@ describe("BrowserFakeApi settings preview", () => {
     expect(invites.state.ui.room_list.items).toEqual([
       { room_id: "!invite-design-review:example.invalid", kind: "invite" }
     ]);
+  });
+
+  test("projects room-list filters within the active space like the Rust reducer", async () => {
+    const api = createBrowserFakeApi();
+
+    const initial = await api.getSnapshot();
+    expect(initial.state.ui.navigation.active_space_id).toBe("!space-alpha:example.invalid");
+    expect(initial.state.ui.room_list.items?.map((item) => item.room_id)).toEqual([
+      "!room-alpha:example.invalid",
+      "!room-planning:example.invalid"
+    ]);
+
+    const beta = await api.selectSpace("!space-beta:example.invalid");
+    expect(beta.state.ui.navigation.active_space_id).toBe("!space-beta:example.invalid");
+    expect(beta.state.ui.room_list.items?.map((item) => item.room_id)).toEqual([
+      "!room-search:example.invalid"
+    ]);
+  });
+
+  test("preserves all read-receipt readers when adding the current user", async () => {
+    const api = createBrowserFakeApi();
+    const eventId = "$receipt-target:example.invalid";
+    const existingReaders: LiveReadReceipt[] = [
+      receipt("@alice:example.invalid", "Alice", 1_000),
+      receipt("@bob:example.invalid", "Bob", 2_000),
+      receipt("@carol:example.invalid", "Carol", 3_000)
+    ];
+    const mutableApi = api as unknown as { snapshot: DesktopSnapshot };
+    mutableApi.snapshot.state.domain.live_signals.rooms["!room-alpha:example.invalid"] = {
+      receipts_by_event: {
+        [eventId]: {
+          readers: existingReaders,
+          total_count: existingReaders.length,
+          overflow_count: 0
+        }
+      },
+      fully_read_event_id: null,
+      typing_user_ids: []
+    };
+
+    const updated = await api.sendReadReceipt("!room-alpha:example.invalid", eventId);
+
+    const summary =
+      updated.state.domain.live_signals.rooms["!room-alpha:example.invalid"]?.receipts_by_event[
+        eventId
+      ];
+    expect(summary?.total_count).toBe(4);
+    expect(summary?.overflow_count).toBe(0);
+    expect(summary?.readers).toHaveLength(4);
+    expect(summary?.readers.map((reader) => reader.user_id)).toContain("@demo-user:example.invalid");
   });
 
   test("resolves composer key actions from the Rust-shaped settings snapshot", async () => {

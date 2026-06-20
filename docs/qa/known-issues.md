@@ -3,6 +3,76 @@
 This file records currently known product/QA blockers that should be easy to
 find before claiming a release gate is green.
 
+## Local Synapse Probed SyncService Compatibility
+
+Status: resolved on 2026-06-20 JST. Local Synapse probed stress now passes.
+
+Date observed: 2026-06-20 JST.
+Date resolved: 2026-06-20 JST.
+
+Evidence:
+
+- The local Synapse Docker harness starts successfully after forcing the
+  generated listener to container port `8008`.
+- Before the fix, forced LegacySync stress passed while probed SyncService stress
+  did not:
+
+```bash
+npm --prefix apps/desktop run qa:headless-local -- --run --server=synapse --scenario=timeline_stress --core --core-backend=legacy --timeout-ms=240000
+```
+
+- Required stress tokens were present:
+
+```text
+stress_counts=spaces=2 rooms=4 messages=32
+stress_space_scope=ok
+stress_no_blank=ok
+timeline_stress=ok
+restore_cleanup=ok
+```
+
+- Probed SyncService selected `SyncService` and then failed during the stress
+  path. Redacted failure:
+
+```text
+Headless core QA failed: timeline_stress sync receiver after room join: SyncOnce failed: SyncFailed { kind: Http }
+```
+
+- Synapse logged repeated `400` responses from its MSC3575 endpoint because
+  `extensions.to_device.since` received a normal `/sync` token-like string
+  instead of an integer-like token.
+
+Root cause:
+
+- The stress lane mixed manual `SyncOnce` calls with a running SyncService,
+  creating a second sync path on the same client.
+- Local Synapse can accept the initial SyncService run and later enter an
+  HTTP/offline loop on the MSC3575 stream. Leaving that as reconnecting made the
+  timeline stop receiving bodies while QA waited.
+
+Resolution:
+
+- `SyncActor` now leaves the SyncService observer on HTTP/offline failure and
+  falls back to LegacySync once per actor session.
+- `timeline_stress` now waits for live sync projections and timeline diffs
+  instead of calling `SyncOnce` while SyncService is running.
+- Successful probed Synapse command:
+
+```bash
+npm --prefix apps/desktop run qa:headless-local -- --run --server=synapse --scenario=timeline_stress --core --core-backend=probed --timeout-ms=240000
+```
+
+- Required stress tokens were present:
+
+```text
+sync_backend_a=SyncService
+stress_counts=spaces=2 rooms=4 messages=32
+stress_space_scope=ok
+stress_no_blank=ok
+timeline_stress=ok
+restore_cleanup=ok
+```
+
 ## E2EE Recipient Decryptability After Identity Reset
 
 Status: open follow-up for historical undecryptable events. Current encrypted
@@ -79,7 +149,7 @@ Implication:
 
 Follow-up:
 
-- `headless-core-qa` now requires `MATRIX_DESKTOP_QA_ALLOW_IDENTITY_RESET=1`
+- `headless-core-qa` now requires `KOUSHI_QA_ALLOW_IDENTITY_RESET=1`
   before the E2EE trust stage performs identity reset; otherwise it prints
   `e2ee_identity_reset=skipped`.
 - Determine whether Element Desktop needs to re-verify/trust the reset
