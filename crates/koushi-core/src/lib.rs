@@ -8,6 +8,7 @@
 //! Migration spec: `docs/superpowers/specs/2026-06-12-headless-core-runtime-design.md`.
 
 pub mod account;
+pub(crate) mod cached_image;
 pub mod command;
 pub mod event;
 pub mod executor;

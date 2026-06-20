@@ -12,6 +12,7 @@ use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
 use regex::Regex;
 use tokio::fs;
 
+use crate::cached_image::cached_image_kind;
 use crate::event::{LinkPreview, LinkPreviewImage, LinkPreviewState};
 use crate::event::{TimelineFormattedBody, TimelineMediaSource};
 
@@ -311,14 +312,16 @@ async fn download_preview_image(
     let hash = hasher.finish();
     let thumb_dir = dir.join("link_preview_thumbnails");
     fs::create_dir_all(&thumb_dir).await.map_err(|_| ())?;
-    let path = thumb_dir.join(format!("{hash:x}.bin"));
+    let image_kind = cached_image_kind(&bytes);
+    let extension = image_kind.map_or("bin", |kind| kind.extension);
+    let path = thumb_dir.join(format!("{hash:x}.{extension}"));
     fs::write(&path, &bytes).await.map_err(|_| ())?;
 
     Ok(AvatarThumbnailState::Ready {
         source_url: format!("file://{}", path.display()),
         width: None,
         height: None,
-        mime_type: None,
+        mime_type: image_kind.map(|kind| kind.mime_type.to_owned()),
     })
 }
 

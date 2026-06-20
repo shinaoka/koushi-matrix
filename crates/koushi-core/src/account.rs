@@ -50,6 +50,7 @@ use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
 use matrix_sdk::ruma::{MxcUri, OwnedMxcUri};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
+use crate::cached_image::cached_image_kind;
 use crate::command::{
     AccountCommand, RoomCommand, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand,
     SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SyncCommand, ThreadsListCommand,
@@ -4028,7 +4029,9 @@ async fn download_avatar_thumbnail(
     tokio::fs::create_dir_all(&cache_dir)
         .await
         .map_err(|_| AvatarThumbnailFailureKind::Sdk)?;
-    let path = cache_dir.join(format!("{:x}.bin", hasher.finish()));
+    let image_kind = cached_image_kind(&bytes);
+    let extension = image_kind.map_or("bin", |kind| kind.extension);
+    let path = cache_dir.join(format!("{:x}.{extension}", hasher.finish()));
     tokio::fs::write(&path, &bytes)
         .await
         .map_err(|_| AvatarThumbnailFailureKind::Sdk)?;
@@ -4037,7 +4040,7 @@ async fn download_avatar_thumbnail(
         source_url: format!("file://{}", path.display()),
         width: None,
         height: None,
-        mime_type: None,
+        mime_type: image_kind.map(|kind| kind.mime_type.to_owned()),
     })
 }
 
