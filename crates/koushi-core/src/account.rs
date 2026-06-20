@@ -1586,7 +1586,7 @@ impl AccountActor {
             self.emit(CoreEvent::Account(
                 AccountEvent::AvatarThumbnailDownloaded {
                     request_id,
-                    mxc_uri,
+                    mxc_uri: mxc_uri.clone(),
                     thumbnail: AvatarThumbnailState::Failed {
                         request_id: request_id.sequence,
                         kind: AvatarThumbnailFailureKind::Sdk,
@@ -1602,6 +1602,11 @@ impl AccountActor {
                 request_id: request_id.sequence,
                 kind,
             });
+        self.send_actions(vec![AppAction::AvatarThumbnailUpdated {
+            mxc_uri: mxc_uri.clone(),
+            thumbnail: thumbnail.clone(),
+        }])
+        .await;
         self.emit(CoreEvent::Account(
             AccountEvent::AvatarThumbnailDownloaded {
                 request_id,

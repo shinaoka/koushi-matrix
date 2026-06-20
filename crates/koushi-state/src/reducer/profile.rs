@@ -1,7 +1,9 @@
 use crate::{
     effect::{AppEffect, UiEvent},
-    state::{AppError, AppState, RoomListFilter},
+    state::{AppError, AppState, AvatarImage, AvatarThumbnailState, RoomListFilter},
 };
+
+use std::collections::BTreeMap;
 
 use super::{
     is_session_ready, profile_changed_effects, recompute_room_list_projection,
@@ -68,6 +70,141 @@ pub(crate) fn handle_user_profiles_updated(
         room_list_changed,
         native_attention_changed,
     )
+}
+
+pub(crate) fn handle_avatar_thumbnail_updated(
+    state: &mut AppState,
+    mxc_uri: String,
+    thumbnail: AvatarThumbnailState,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    let mut profile_changed = false;
+    profile_changed |= update_avatar_thumbnail(&mut state.profile.own.avatar, &mxc_uri, &thumbnail);
+    for profile in state.profile.users.values_mut() {
+        profile_changed |= update_avatar_thumbnail(&mut profile.avatar, &mxc_uri, &thumbnail);
+    }
+
+    let mut room_list_changed = false;
+    room_list_changed |= update_avatar_thumbnails_in_rooms(&mut state.rooms, &mxc_uri, &thumbnail);
+    room_list_changed |= update_avatar_thumbnails_in_spaces(&mut state.spaces, &mxc_uri, &thumbnail);
+    for invite in &mut state.invites {
+        room_list_changed |= update_avatar_thumbnail(&mut invite.avatar, &mxc_uri, &thumbnail);
+    }
+
+    let mut effects = Vec::new();
+    if profile_changed {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ProfileChanged));
+    }
+    if room_list_changed {
+        recompute_room_list_projection(state);
+        effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
+    }
+    effects
+}
+
+pub(super) fn avatar_thumbnail_states_by_mxc(
+    state: &AppState,
+) -> BTreeMap<String, AvatarThumbnailState> {
+    let mut states = BTreeMap::new();
+    collect_avatar_thumbnail(&state.profile.own.avatar, &mut states);
+    for profile in state.profile.users.values() {
+        collect_avatar_thumbnail(&profile.avatar, &mut states);
+    }
+    for room in &state.rooms {
+        collect_avatar_thumbnail(&room.avatar, &mut states);
+    }
+    for space in &state.spaces {
+        collect_avatar_thumbnail(&space.avatar, &mut states);
+    }
+    for invite in &state.invites {
+        collect_avatar_thumbnail(&invite.avatar, &mut states);
+    }
+    states
+}
+
+pub(super) fn apply_avatar_thumbnail_states_to_rooms_and_spaces(
+    rooms: &mut [crate::state::RoomSummary],
+    spaces: &mut [crate::state::SpaceSummary],
+    states: &BTreeMap<String, AvatarThumbnailState>,
+) {
+    for room in rooms {
+        apply_known_avatar_thumbnail(&mut room.avatar, states);
+    }
+    for space in spaces {
+        apply_known_avatar_thumbnail(&mut space.avatar, states);
+    }
+}
+
+fn collect_avatar_thumbnail(
+    avatar: &Option<AvatarImage>,
+    states: &mut BTreeMap<String, AvatarThumbnailState>,
+) {
+    let Some(avatar) = avatar else {
+        return;
+    };
+    if avatar.thumbnail == AvatarThumbnailState::NotRequested {
+        return;
+    }
+    states.insert(avatar.mxc_uri.clone(), avatar.thumbnail.clone());
+}
+
+fn apply_known_avatar_thumbnail(
+    avatar: &mut Option<AvatarImage>,
+    states: &BTreeMap<String, AvatarThumbnailState>,
+) -> bool {
+    let Some(avatar) = avatar else {
+        return false;
+    };
+    let Some(thumbnail) = states.get(&avatar.mxc_uri) else {
+        return false;
+    };
+    if avatar.thumbnail == *thumbnail {
+        return false;
+    }
+    avatar.thumbnail = thumbnail.clone();
+    true
+}
+
+fn update_avatar_thumbnails_in_rooms(
+    rooms: &mut [crate::state::RoomSummary],
+    mxc_uri: &str,
+    thumbnail: &AvatarThumbnailState,
+) -> bool {
+    let mut changed = false;
+    for room in rooms {
+        changed |= update_avatar_thumbnail(&mut room.avatar, mxc_uri, thumbnail);
+    }
+    changed
+}
+
+fn update_avatar_thumbnails_in_spaces(
+    spaces: &mut [crate::state::SpaceSummary],
+    mxc_uri: &str,
+    thumbnail: &AvatarThumbnailState,
+) -> bool {
+    let mut changed = false;
+    for space in spaces {
+        changed |= update_avatar_thumbnail(&mut space.avatar, mxc_uri, thumbnail);
+    }
+    changed
+}
+
+fn update_avatar_thumbnail(
+    avatar: &mut Option<AvatarImage>,
+    mxc_uri: &str,
+    thumbnail: &AvatarThumbnailState,
+) -> bool {
+    let Some(avatar) = avatar else {
+        return false;
+    };
+    if avatar.mxc_uri != mxc_uri || avatar.thumbnail == *thumbnail {
+        return false;
+    }
+    avatar.thumbnail = thumbnail.clone();
+    true
 }
 
 pub(crate) fn handle_local_user_aliases_loaded(

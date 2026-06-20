@@ -71,6 +71,7 @@ const checks = [
   "verify debug Tauri build",
   "drive WebdriverIO session",
   "exercise real IPC and DOM smoke",
+  "optional real login diagnostics via FIFO",
   "optional local homeserver login via FIFO",
   "clean process teardown"
 ];
@@ -83,6 +84,7 @@ const realLoginFromStdin = args.has("--real-login-from-stdin");
 const allowEmptyTimeline = args.has("--allow-empty-timeline");
 const artifactRoot = resolveArtifactRoot(optionValue("--artifact-dir"));
 const timeoutMs = Number(optionValue("--timeout-ms") ?? "120000");
+const settleMs = Number(optionValue("--settle-ms") ?? "0");
 
 if (args.has("--print-artifact-root")) {
   console.log(artifactRoot);
@@ -198,6 +200,10 @@ if (args.has("--run")) {
 printUsage();
 
 async function run() {
+  if (realLoginFromStdin && guiScenario === "signed-out") {
+    await runRealLoginScenario();
+    return;
+  }
   if (guiScenario === "signed-out") {
     await runSignedOutScenario();
     return;
@@ -303,6 +309,138 @@ async function run() {
     return;
   }
   throw new Error(`unsupported --scenario: ${guiScenario}`);
+}
+
+async function runRealLoginScenario() {
+  checkLinuxTools();
+  const realLogin = await withRealLoginStage("stdin", () => readRealLoginCredentials());
+  const runDir = join(artifactRoot, `${timestamp()}-real-login`);
+  const dataDir = qaDataDirForRun(runDir);
+  const logPath = join(runDir, "run.log");
+  const qaLoginPipePath = join(runDir, "qa-login.pipe");
+  const qaControlPipePath = join(runDir, "qa-control.pipe");
+  mkdirSync(runDir, { recursive: true });
+  mkdirSync(dataDir, { recursive: true });
+  createNamedPipe(qaLoginPipePath);
+  createNamedPipe(qaControlPipePath);
+
+  const baseEnv = childEnvironment(dataDir, qaLoginPipePath, qaControlPipePath);
+  const dbusSession = await withRealLoginStage("dbus", () =>
+    Promise.resolve(ensureDbusSession(logPath, baseEnv))
+  );
+  const buildEnv = {
+    ...baseEnv,
+    ...dbusSession.env
+  };
+  const xvfb = await withRealLoginStage("xvfb", () => startXvfb(logPath, buildEnv));
+  const driverPort = await freePort();
+  const nativePort = await freePort();
+  const tauriDriver = spawnLogged(
+    "tauri-driver",
+    ["--port", String(driverPort), "--native-port", String(nativePort)],
+    {
+      cwd: desktopDir,
+      env: { ...buildEnv, DISPLAY: `:${xvfb.display}` },
+      detached: true,
+      logPath,
+      label: "tauri-driver"
+    }
+  );
+
+  let browser;
+  let realLoginCleanupRequired = false;
+  try {
+    const appBinary = await withRealLoginStage("app_binary", () =>
+      ensureAppBinary({ cwd: desktopDir, env: buildEnv, logPath })
+    );
+    await withRealLoginStage("driver_port", () =>
+      waitForPort("127.0.0.1", driverPort, timeoutMs)
+    );
+
+    const { remote } = await withRealLoginStage("webdriver_import", () =>
+      importDesktopWebdriverio()
+    );
+    browser = await withRealLoginStage("webdriver_remote", () =>
+      remote({
+        hostname: "127.0.0.1",
+        port: driverPort,
+        logLevel: "error",
+        capabilities: webdriverCapabilities(appBinary)
+      })
+    );
+
+    await withRealLoginStage("auth_screen", () => waitForAuthScreen(browser, timeoutMs));
+    await withRealLoginStage("write_login_pipe", () =>
+      writeRealLoginPipe(qaLoginPipePath, realLogin)
+    );
+    realLoginCleanupRequired = true;
+    const title = await withRealLoginStage("ready", () =>
+      waitForRealLoginReady(browser, timeoutMs, Boolean(realLogin.recoverySecret))
+    );
+    console.log(`real_login_title=${summarizeRealLoginTitle(title)}`);
+    if (Number.isFinite(settleMs) && settleMs > 0) {
+      await withRealLoginStage("settle", () => sleep(settleMs), settleMs + 5000);
+    }
+    const diagnostics = await withRealLoginStage("diagnostics", () =>
+      collectRealLoginDiagnostics(browser, timeoutMs)
+    );
+    for (const line of diagnostics) {
+      console.log(line);
+    }
+    console.log("skip real login screenshot: post-login windows can contain private room data");
+    console.log("gui_real_login=ok");
+    console.log("run_dir=artifact");
+  } finally {
+    try {
+      if (realLoginCleanupRequired) {
+        try {
+          await withRealLoginStage("logout_request", () => requestQaLogout(qaControlPipePath));
+          await withRealLoginStage("logout_ready", () => waitForSignedOutTitle(browser, timeoutMs));
+          console.log("real_login_logout=ok");
+        } catch (error) {
+          console.error(`real login logout cleanup failed: ${error.message}`);
+        }
+      }
+      if (browser) {
+        await safeDeleteSession(browser);
+      }
+    } finally {
+      if (dbusSession.pid) {
+        try {
+          process.kill(dbusSession.pid, "SIGTERM");
+        } catch {
+          // ignore cleanup failures
+        }
+      }
+      terminateProcessGroup(tauriDriver, "SIGTERM");
+      await settleChild(tauriDriver);
+      terminateProcessGroup(xvfb.child, "SIGTERM");
+      await settleChild(xvfb.child);
+    }
+  }
+}
+
+async function withRealLoginStage(stage, task, stageTimeout = timeoutMs + 10000) {
+  console.log(`real_login_stage=${stage}:start`);
+  let timer;
+  try {
+    const result = await Promise.race([
+      task(),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`real login stage timed out: ${stage}`)),
+          stageTimeout
+        );
+      })
+    ]);
+    console.log(`real_login_stage=${stage}:ok`);
+    return result;
+  } catch (error) {
+    console.log(`real_login_stage=${stage}:failed`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function runSignedOutScenario() {
@@ -4033,12 +4171,181 @@ async function writeLocalLoginPipe(path, credentials) {
   await writeSensitivePayloadToPath(path, payload, 10000);
 }
 
+function readRealLoginCredentials() {
+  return new Promise((resolve, reject) => {
+    let input = "";
+    let settled = false;
+    const settle = (callback) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      callback();
+    };
+    const parseInput = () => {
+      try {
+        settle(() => resolve(realLoginCredentialsFromInput(input)));
+      } catch (error) {
+        settle(() => reject(error));
+      }
+    };
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      input += chunk;
+      if (completeRealLoginInputWasReceived(input)) {
+        parseInput();
+      }
+    });
+    process.stdin.on("error", reject);
+    process.stdin.on("end", parseInput);
+    process.stdin.resume();
+  });
+}
+
+function completeRealLoginInputWasReceived(input) {
+  return (input.replace(/\r/g, "").match(/\n/g) ?? []).length >= 5;
+}
+
+function realLoginCredentialsFromInput(input) {
+  const [homeserverInput, username, password, deviceNameInput, recoverySecretInput] = input
+    .replace(/\r/g, "")
+    .split("\n");
+  const homeserver = homeserverInput.trim() || "https://matrix.org";
+  const deviceName = deviceNameInput?.trim() || "Koushi Linux GUI QA";
+  const recoverySecret = recoverySecretInput?.trim() || null;
+  if (!username?.trim() || !password?.trim()) {
+    throw new Error("real login stdin must contain homeserver, username, and password lines");
+  }
+  return {
+    homeserver,
+    username: username.trim(),
+    password: password.trim(),
+    deviceName,
+    recoverySecret
+  };
+}
+
+async function writeRealLoginPipe(path, credentials) {
+  const payloadObject = {
+    homeserver: credentials.homeserver,
+    username: credentials.username,
+    password: credentials.password,
+    device_display_name: credentials.deviceName
+  };
+  if (credentials.recoverySecret) {
+    payloadObject.recovery_secret = credentials.recoverySecret;
+  }
+  const payload = JSON.stringify(payloadObject) + "\n";
+  await writeSensitivePayloadToPath(path, payload, 10000);
+}
+
 async function requestQaLogout(path) {
   if (!path) {
     throw new Error("local GUI logout scenario requires a QA control pipe");
   }
   const payload = JSON.stringify({ command: "logout" }) + "\n";
   await writeSensitivePayloadToPath(path, payload, 10000);
+}
+
+async function waitForRealLoginReady(browser, timeout, requireRecovered) {
+  const startedAt = Date.now();
+  let lastTitle = "";
+  let selectedRoom = false;
+  while (Date.now() - startedAt < timeout) {
+    lastTitle = await browser.execute(() => document.title);
+    const status = parseQaTitle(lastTitle);
+    if (status.errors > 0) {
+      throw new Error(`real login reported errors. Last title: ${lastTitle}`);
+    }
+    if (qaStatusIsReady(status, requireRecovered, true)) {
+      return lastTitle;
+    }
+    if (shouldSelectFirstRoom(status, selectedRoom)) {
+      selectedRoom = await selectFirstRoom(browser);
+    }
+    await sleep(500);
+  }
+  throw new Error(`real login did not reach ready state. Last title: ${lastTitle}`);
+}
+
+async function collectRealLoginDiagnostics(browser, timeout) {
+  const diagnosticsButton = await browser.$('button[aria-label="Open diagnostics"]');
+  await diagnosticsButton.waitForDisplayed({ timeout });
+  await diagnosticsButton.click();
+  const output = await browser.$(".diagnostics-output");
+  await output.waitForDisplayed({ timeout });
+  const report = await output.getText();
+  const title = await browser.execute(() => document.title);
+  const dom = await browser.execute(() => {
+    const avatarImages = Array.from(
+      document.querySelectorAll(
+        ".avatar img, .room-avatar img, .workspace-button-avatar img, .receipt-reader-avatar img"
+      )
+    );
+    return {
+      roomItems: document.querySelectorAll(".room-item").length,
+      dmRoomItems: document.querySelectorAll('.room-item[data-room-kind="dm"]').length,
+      avatarImages: avatarImages.length,
+      brokenAvatarImages: avatarImages.filter(
+        (image) => image.complete && image.naturalWidth === 0
+      ).length
+    };
+  });
+  return [
+    `real_login_summary=${summarizeRealLoginTitle(title)}`,
+    ...safeDiagnosticReportLines(report),
+    `real_login_dom room_items=${safeCount(dom.roomItems)} dm_room_items=${safeCount(dom.dmRoomItems)} avatar_images=${safeCount(dom.avatarImages)} broken_avatar_images=${safeCount(dom.brokenAvatarImages)}`
+  ];
+}
+
+function safeDiagnosticReportLines(report) {
+  return report
+    .split(/\r?\n/)
+    .filter((line) =>
+      line.startsWith("Room classification:") ||
+      line.startsWith("Timeline avatars:") ||
+      line.startsWith("Verbose diagnostics:") ||
+      line.startsWith("Security diagnostics:") ||
+      line.startsWith("security.avatar_src_schemes=") ||
+      line.startsWith("security.avatar_broken_images=")
+    )
+    .map((line) => `real_login_diag ${line.replace(/[^A-Za-z0-9_.,:= -]/g, "_")}`);
+}
+
+function summarizeRealLoginTitle(title) {
+  const keys = [
+    "session",
+    "sync",
+    "rooms",
+    "spaces",
+    "active_room",
+    "timeline_subscribed",
+    "timeline_items",
+    "errors",
+    "timeline_avatar_mxc",
+    "timeline_avatar_ready",
+    "timeline_avatar_pending",
+    "timeline_avatar_failed",
+    "timeline_avatar_rendered",
+    "timeline_avatar_broken"
+  ];
+  const tokens = new Map();
+  for (const token of title.split(/\s+/)) {
+    const [key, value] = token.split("=");
+    if (key && value !== undefined) {
+      tokens.set(key, value);
+    }
+  }
+  return keys.map((key) => `${key}:${safeTitleValue(tokens.get(key))}`).join(",");
+}
+
+function safeTitleValue(value) {
+  return String(value ?? "missing").replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 32);
+}
+
+function safeCount(value) {
+  const count = Number(value);
+  return Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
 }
 
 async function submitLoginForm(browser, credentials, timeout) {

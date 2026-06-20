@@ -1316,6 +1316,27 @@ describe("desktop release scripts", () => {
     expect(source).not.toContain("02-real-login.png");
   });
 
+  test("linux GUI smoke can drive real login diagnostics without post-login screenshots", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("runRealLoginScenario");
+    expect(source).toContain("readRealLoginCredentials");
+    expect(source).toContain("writeRealLoginPipe");
+    expect(source).toContain("waitForRealLoginReady");
+    expect(source).toContain("collectRealLoginDiagnostics");
+    expect(source).toContain("withRealLoginStage");
+    expect(source).toContain("real_login_stage=${stage}:start");
+    expect(source).toContain("real_login_stage=${stage}:ok");
+    expect(source).toContain('withRealLoginStage("auth_screen"');
+    expect(source).toContain('withRealLoginStage("write_login_pipe"');
+    expect(source).toContain("requestQaLogout");
+    expect(source).toContain("skip real login screenshot");
+    expect(source).not.toContain("real-login.png");
+  });
+
   test("mac GUI smoke can update the native QA title from the frontend", () => {
     const capability = readFileSync(
       new URL("../../../../apps/desktop/src-tauri/capabilities/default.json", import.meta.url),

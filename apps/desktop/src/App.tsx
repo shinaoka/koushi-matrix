@@ -95,6 +95,7 @@ import type {
   AttachmentFilter,
   AttachmentScope,
   AttachmentSort,
+  AvatarImage,
   DesktopSnapshot,
   DirectoryRoomSummary,
   FilesViewScope,
@@ -102,7 +103,6 @@ import type {
   ImageUploadCompressionPolicy,
   MentionIntent,
   ResolveComposerKeyAction,
-  RoomListFilter,
   RoomModerationAction,
   RoomNotificationMode,
   RoomSettingChange,
@@ -731,7 +731,7 @@ function qaRenderedDomDiagnostics(): QaDomDiagnostics {
 function qaSecurityDiagnostics(): SecurityDiagnostics {
   const avatarImages = Array.from(
     document.querySelectorAll<HTMLImageElement>(
-      ".avatar img, .room-avatar img, .space-avatar img, .receipt-reader-avatar img"
+      ".avatar img, .room-avatar img, .workspace-button-avatar img, .receipt-reader-avatar img"
     )
   );
   return {
@@ -755,6 +755,32 @@ function imageSrcScheme(src: string): string {
   } catch {
     return "invalid";
   }
+}
+
+function snapshotAvatarThumbnailRequestMxcs(snapshot: DesktopSnapshot): string[] {
+  const mxcs = new Set<string>();
+  const addAvatar = (avatar: AvatarImage | null | undefined) => {
+    if (!avatar || avatar.thumbnail.kind !== "notRequested") {
+      return;
+    }
+    mxcs.add(avatar.mxc_uri);
+  };
+
+  addAvatar(snapshot.state.domain.profile.own.avatar);
+  for (const profile of Object.values(snapshot.state.domain.profile.users)) {
+    addAvatar(profile.avatar);
+  }
+  for (const room of snapshot.state.domain.rooms) {
+    addAvatar(room.avatar);
+  }
+  for (const space of snapshot.state.domain.spaces) {
+    addAvatar(space.avatar);
+  }
+  for (const invite of snapshot.state.domain.invites) {
+    addAvatar(invite.avatar);
+  }
+
+  return [...mxcs];
 }
 
 function useUiLatencyDiagnostics(): UiLatencyDiagnostics {
@@ -890,6 +916,7 @@ export function App() {
   const recoverySecretRef = useRef<HTMLInputElement>(null);
   const roomSettingsLoadRef = useRef<string | null>(null);
   const spaceSettingsLoadRef = useRef<string | null>(null);
+  const requestedSnapshotAvatarMxcsRef = useRef<Set<string>>(new Set());
   const appTimelineTransport = useMemo<TimelineTransport | null>(() => {
     if (!tauriTimelineTransport) {
       return null;
@@ -990,6 +1017,31 @@ export function App() {
         : INITIAL_TIMELINE_DIAGNOSTICS
     );
   }, [snapshot?.state.ui.timeline.room_id]);
+
+  useEffect(() => {
+    if (!snapshot || !isTauriRuntime()) {
+      requestedSnapshotAvatarMxcsRef.current.clear();
+      return;
+    }
+
+    const requestMxcs = snapshotAvatarThumbnailRequestMxcs(snapshot);
+    const currentMxcs = new Set(requestMxcs);
+    requestedSnapshotAvatarMxcsRef.current.forEach((mxcUri) => {
+      if (!currentMxcs.has(mxcUri)) {
+        requestedSnapshotAvatarMxcsRef.current.delete(mxcUri);
+      }
+    });
+
+    for (const mxcUri of requestMxcs) {
+      if (requestedSnapshotAvatarMxcsRef.current.has(mxcUri)) {
+        continue;
+      }
+      requestedSnapshotAvatarMxcsRef.current.add(mxcUri);
+      void invoke("download_avatar_thumbnail", { mxcUri }).catch(() => {
+        requestedSnapshotAvatarMxcsRef.current.delete(mxcUri);
+      });
+    }
+  }, [snapshot]);
 
   useEffect(() => {
     const activeIds = new Set(stagedUploads.map((item) => item.staged_id));
@@ -1781,10 +1833,6 @@ export function App() {
   async function selectRoom(roomId: string) {
     setPrimaryView("timeline");
     setSnapshot(await api.selectRoom(roomId));
-  }
-
-  async function selectRoomListFilter(filter: RoomListFilter) {
-    setSnapshot(await api.selectRoomListFilter(filter));
   }
 
   async function openInvitesView() {
@@ -2654,7 +2702,6 @@ export function App() {
             }
           }}
           onSelectRoom={selectRoom}
-          onSelectRoomListFilter={selectRoomListFilter}
         />
         <button
           className="app-grid-resizer"

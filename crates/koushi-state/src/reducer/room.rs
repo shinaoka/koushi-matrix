@@ -33,6 +33,12 @@ pub(crate) fn handle_room_list_updated(
     let own_user_id = session_user_id(state).map(str::to_owned);
     let mut rooms = rooms;
     let mut spaces = spaces;
+    let avatar_thumbnail_states = super::profile::avatar_thumbnail_states_by_mxc(state);
+    super::profile::apply_avatar_thumbnail_states_to_rooms_and_spaces(
+        &mut rooms,
+        &mut spaces,
+        &avatar_thumbnail_states,
+    );
     crate::state::refresh_room_summary_display_projection(
         &mut rooms,
         &state.profile,

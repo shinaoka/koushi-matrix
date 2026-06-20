@@ -329,6 +329,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::UserProfilesUpdated { profiles } => {
             profile::handle_user_profiles_updated(state, profiles)
         }
+        AppAction::AvatarThumbnailUpdated { mxc_uri, thumbnail } => {
+            profile::handle_avatar_thumbnail_updated(state, mxc_uri, thumbnail)
+        }
         AppAction::LocalUserAliasesLoaded { aliases } => {
             profile::handle_local_user_aliases_loaded(state, aliases)
         }
@@ -1515,6 +1518,140 @@ mod tests {
             avatar: None,
             child_room_ids: Vec::new(),
         }
+    }
+
+    fn test_avatar(mxc_uri: &str) -> AvatarImage {
+        AvatarImage {
+            mxc_uri: mxc_uri.to_owned(),
+            thumbnail: AvatarThumbnailState::NotRequested,
+        }
+    }
+
+    fn ready_avatar_thumbnail(label: &str) -> AvatarThumbnailState {
+        AvatarThumbnailState::Ready {
+            source_url: format!("file:///tmp/koushi-test-{label}.png"),
+            width: Some(64),
+            height: Some(64),
+            mime_type: Some("image/png".to_owned()),
+        }
+    }
+
+    fn test_room(room_id: &str, avatar: Option<AvatarImage>) -> crate::state::RoomSummary {
+        crate::state::RoomSummary {
+            room_id: room_id.to_owned(),
+            display_name: room_id.to_owned(),
+            display_label: room_id.to_owned(),
+            original_display_label: room_id.to_owned(),
+            avatar,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: crate::state::RoomTags::default(),
+            unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 0,
+            parent_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 0,
+        }
+    }
+
+    #[test]
+    fn avatar_thumbnail_updates_rust_owned_snapshots() {
+        let mut state = ready_state();
+        let mxc_uri = "mxc://example.invalid/avatar";
+        state.profile.own.avatar = Some(test_avatar(mxc_uri));
+        state.profile.users.insert(
+            "@bob:example.invalid".to_owned(),
+            UserProfile {
+                user_id: "@bob:example.invalid".to_owned(),
+                display_name: Some("Bob".to_owned()),
+                display_label: "Bob".to_owned(),
+                original_display_label: "Bob".to_owned(),
+                mention_search_terms: Vec::new(),
+                avatar: Some(test_avatar(mxc_uri)),
+            },
+        );
+        state.rooms = vec![test_room("!room:example.invalid", Some(test_avatar(mxc_uri)))];
+        state.spaces = vec![crate::state::SpaceSummary {
+            avatar: Some(test_avatar(mxc_uri)),
+            ..test_space("!space:example.invalid")
+        }];
+        state.invites = vec![crate::state::InvitePreview {
+            room_id: "!invite:example.invalid".to_owned(),
+            display_name: "Invite".to_owned(),
+            avatar: Some(test_avatar(mxc_uri)),
+            topic: None,
+            inviter_display_name: None,
+            inviter_user_id: None,
+            is_dm: false,
+        }];
+
+        let thumbnail = ready_avatar_thumbnail("avatar");
+        let effects = reduce(
+            &mut state,
+            AppAction::AvatarThumbnailUpdated {
+                mxc_uri: mxc_uri.to_owned(),
+                thumbnail: thumbnail.clone(),
+            },
+        );
+
+        assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::ProfileChanged)));
+        assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::RoomListChanged)));
+        assert_eq!(
+            state.profile.own.avatar.as_ref().map(|avatar| &avatar.thumbnail),
+            Some(&thumbnail)
+        );
+        assert_eq!(
+            state
+                .profile
+                .users
+                .get("@bob:example.invalid")
+                .and_then(|profile| profile.avatar.as_ref())
+                .map(|avatar| &avatar.thumbnail),
+            Some(&thumbnail)
+        );
+        assert_eq!(
+            state.rooms[0].avatar.as_ref().map(|avatar| &avatar.thumbnail),
+            Some(&thumbnail)
+        );
+        assert_eq!(
+            state.spaces[0].avatar.as_ref().map(|avatar| &avatar.thumbnail),
+            Some(&thumbnail)
+        );
+        assert_eq!(
+            state.invites[0].avatar.as_ref().map(|avatar| &avatar.thumbnail),
+            Some(&thumbnail)
+        );
+    }
+
+    #[test]
+    fn room_list_updates_preserve_downloaded_avatar_thumbnails() {
+        let mut state = ready_state();
+        let mxc_uri = "mxc://example.invalid/avatar";
+        let thumbnail = ready_avatar_thumbnail("preserved");
+        state.rooms = vec![test_room(
+            "!room:example.invalid",
+            Some(AvatarImage {
+                mxc_uri: mxc_uri.to_owned(),
+                thumbnail: thumbnail.clone(),
+            }),
+        )];
+
+        let effects = reduce(
+            &mut state,
+            AppAction::RoomListUpdated {
+                spaces: Vec::new(),
+                rooms: vec![test_room("!room:example.invalid", Some(test_avatar(mxc_uri)))],
+            },
+        );
+
+        assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::RoomListChanged)));
+        assert_eq!(
+            state.rooms[0].avatar.as_ref().map(|avatar| &avatar.thumbnail),
+            Some(&thumbnail)
+        );
     }
 
     #[test]
