@@ -85,6 +85,7 @@ const allowEmptyTimeline = args.has("--allow-empty-timeline");
 const artifactRoot = resolveArtifactRoot(optionValue("--artifact-dir"));
 const timeoutMs = Number(optionValue("--timeout-ms") ?? "120000");
 const settleMs = Number(optionValue("--settle-ms") ?? "0");
+const REAL_LOGIN_WAIT_PROGRESS_INTERVAL_MS = 15000;
 
 if (args.has("--print-artifact-root")) {
   console.log(artifactRoot);
@@ -4250,9 +4251,16 @@ async function requestQaLogout(path) {
 async function waitForRealLoginReady(browser, timeout, requireRecovered) {
   const startedAt = Date.now();
   let lastTitle = "";
+  let lastProgressLoggedAt = 0;
   let selectedRoom = false;
   while (Date.now() - startedAt < timeout) {
     lastTitle = await browser.execute(() => document.title);
+    lastProgressLoggedAt = maybeLogRealLoginWaitProgress(
+      "ready",
+      startedAt,
+      lastProgressLoggedAt,
+      lastTitle
+    );
     const status = parseQaTitle(lastTitle);
     if (status.errors > 0) {
       throw new Error(`real login reported errors. Last title: ${lastTitle}`);
@@ -4266,6 +4274,18 @@ async function waitForRealLoginReady(browser, timeout, requireRecovered) {
     await sleep(500);
   }
   throw new Error(`real login did not reach ready state. Last title: ${lastTitle}`);
+}
+
+function maybeLogRealLoginWaitProgress(stage, startedAt, lastLoggedAt, title) {
+  const now = Date.now();
+  if (now - lastLoggedAt < REAL_LOGIN_WAIT_PROGRESS_INTERVAL_MS) {
+    return lastLoggedAt;
+  }
+  const elapsedMs = Math.max(0, now - startedAt);
+  console.log(
+    `real_login_wait=${stage} elapsed_ms=${elapsedMs} ${summarizeRealLoginTitle(title)}`
+  );
+  return now;
 }
 
 async function collectRealLoginDiagnostics(browser, timeout) {

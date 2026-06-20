@@ -1332,6 +1332,10 @@ describe("desktop release scripts", () => {
     expect(source).toContain("real_login_stage=${stage}:ok");
     expect(source).toContain('withRealLoginStage("auth_screen"');
     expect(source).toContain('withRealLoginStage("write_login_pipe"');
+    expect(source).toContain("real_login_wait=${stage}");
+    expect(source).toContain("lastProgressLoggedAt = maybeLogRealLoginWaitProgress");
+    expect(source).toContain('"ready",');
+    expect(source).toContain("maybeLogRealLoginWaitProgress");
     expect(source).toContain("requestQaLogout");
     expect(source).toContain("skip real login screenshot");
     expect(source).not.toContain("real-login.png");
