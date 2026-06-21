@@ -18,8 +18,11 @@ import type {
   TimelineMessage,
   UserProfile
 } from "../domain/types";
+import type { MentionCandidate } from "../domain/projectionTypes";
 import type { ContextMenuItem } from "../domain/contextMenus";
 import { t } from "../i18n/messages";
+
+export type { MentionCandidate } from "../domain/projectionTypes";
 
 // ===== Types =====
 
@@ -55,13 +58,6 @@ export type PrimaryView = "timeline" | "invites" | "explore" | "activity";
 export type ComposerModeProp =
   | { kind: "plain" }
   | { kind: "reply"; in_reply_to_event_id: string };
-
-export type MentionCandidate = {
-  key: string;
-  label: string;
-  searchText: string;
-  target: MentionTarget;
-};
 
 export type ImageUploadDimensionsPayload = {
   width: number;
@@ -348,7 +344,7 @@ export function pinnedEventsForRoom(
 
 export function forwardDestinationsFromSnapshot(
   snapshot: import("../domain/types").DesktopSnapshot
-): import("../components/TimelineView").TimelineForwardDestination[] {
+): import("../domain/projectionTypes").TimelineForwardDestination[] {
   return snapshot.state.domain.rooms.map((room) => ({
     room_id: room.room_id,
     display_name: room.display_label

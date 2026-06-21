@@ -125,6 +125,11 @@ import {
   SPACE_OVERRIDES_CHANGED_EVENT,
   writeDisplayDensity
 } from "./app/localPresentation";
+import {
+  selectSnapshot,
+  setAppStoreSnapshot,
+  useAppStore
+} from "./domain/appStore";
 
 import {
   EMPTY_MENTION_INTENT,
@@ -847,7 +852,7 @@ function useUiLatencyDiagnostics(): UiLatencyDiagnostics {
 }
 
 export function App() {
-  const [snapshot, setSnapshotState] = useState<DesktopSnapshot | null>(null);
+  const snapshot = useAppStore(selectSnapshot);
   const [schemaMismatchVersion, setSchemaMismatchVersion] = useState<number | null>(null);
   // #87 Phase 4 IPC contract guard (fail-closed at the data boundary): every snapshot enters
   // render state through this setter, so we reject one whose schema_version does not match the
@@ -867,7 +872,7 @@ export function App() {
       return;
     }
     setSchemaMismatchVersion(null);
-    setSnapshotState(next);
+    setAppStoreSnapshot(next);
   }, []);
   const [searchQuery, setSearchQuery] = useState(() => initialSearchQuery());
   const [searchScope, setSearchScope] = useState<SearchScopeKind>("allRooms");

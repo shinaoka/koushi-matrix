@@ -335,6 +335,19 @@ CoreCommand -> actor side effect -> CoreEvent -> AppAction
 `AppState` contains only serializable UI data. SDK handles, task handles,
 subscriptions, and keys live in actor-owned runtime state.
 
+Desktop WebViews consume `AppState` through a selector-subscribed projection
+cache, not as React-owned product state. During the #111 Phase 1 migration the
+Tauri adapter may still deliver complete snapshots, but the WebView must apply
+each snapshot by comparing top-level `DesktopSnapshot`/`AppState` slices and
+preserving references for unchanged `domain`, `ui`, `sidebar`, timeline, and
+thread data. Components should subscribe to selectors or memoized derived
+selectors for the slices they render; background changes to unrelated slices
+must not force hot timeline/composer consumers to receive freshly allocated
+derived arrays. The target transport after Phase 2 is incremental Rust-owned
+slice deltas with a full-snapshot reset fallback for initial load, reconnect,
+or missed generations. Tauri Channels are reserved for measured high-frequency
+streams and must not become a second React-owned state source.
+
 Core identity types are concrete and stable:
 
 ```rust

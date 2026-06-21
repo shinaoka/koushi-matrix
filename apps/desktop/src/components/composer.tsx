@@ -3,6 +3,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type MouseEvent,
+  memo,
   useEffect,
   useRef,
   useState
@@ -47,7 +48,7 @@ import {
   type ComposerModeProp
 } from "../app/uiShared";
 
-export function Composer({
+export const Composer = memo(function Composer({
   composerMode,
   hasStagedUploads = false,
   isSending,
@@ -503,7 +504,7 @@ export function Composer({
       ) : null}
     </section>
   );
-}
+});
 
 function ThreadComposer({
   canEdit,

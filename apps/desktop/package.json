@@ -42,7 +42,8 @@
     "lucide-react": "^1.17.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "twemoji-colr-font": "15.0.3"
+    "twemoji-colr-font": "15.0.3",
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",

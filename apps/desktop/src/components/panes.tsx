@@ -1,4 +1,11 @@
-import { useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent
+} from "react";
 import {
   Bell,
   CalendarDays,
@@ -33,12 +40,14 @@ import {
   ICON_SIZE,
   initials,
   operationFailureLabel,
-  mentionCandidatesFromSnapshot,
-  forwardDestinationsFromSnapshot,
-  pinnedEventsForRoom,
   type ComposerModeProp,
   type OpenContextMenu
 } from "../app/uiShared";
+import {
+  selectForwardDestinations,
+  selectMentionCandidates,
+  useAppStore
+} from "../domain/appStore";
 import {
   TimelineView,
   type TimelineDiagnosticLogEntry,
@@ -58,6 +67,8 @@ import {
 import { Composer } from "./composer";
 import { UploadStagingDialog } from "./dialogs";
 
+const EMPTY_PINNED_EVENTS: DesktopSnapshot["state"]["domain"]["room_interactions"][string]["pinned_events"] = [];
+
 function activityStream(activity: Extract<ActivityState, { kind: "open" }>, tab: ActivityTab): ActivityStream {
   return tab === "recent" ? activity.recent : activity.unread;
 }
@@ -71,6 +82,16 @@ function activityTimestamp(timestampMs: number): string {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(new Date(timestampMs));
+}
+
+function useStableEvent<T extends (...args: any[]) => unknown>(handler: T): T {
+  const handlerRef = useRef(handler);
+
+  useEffect(() => {
+    handlerRef.current = handler;
+  }, [handler]);
+
+  return useCallback(((...args: any[]) => handlerRef.current(...args)) as T, []);
 }
 
 export function ActivityPane({
@@ -597,11 +618,62 @@ export function TimelinePane({
   const activeRoom = timelineRoomId
     ? snapshot.state.domain.rooms.find((room) => room.room_id === timelineRoomId) ?? null
     : null;
-  const pinnedEvents = pinnedEventsForRoom(snapshot, timelineRoomId);
-  const pinnedEventIds = pinnedEvents.map((event) => event.event_id);
+  const timelineKey = useMemo(
+    () =>
+      currentUserId && timelineRoomId
+        ? roomTimelineKey(currentUserId, timelineRoomId)
+        : null,
+    [currentUserId, timelineRoomId]
+  );
+  const composerModeForComposer = useMemo(
+    () => composerMode,
+    [
+      composerMode.kind,
+      composerMode.kind === "reply" ? composerMode.in_reply_to_event_id : null
+    ]
+  );
+  const pinnedEvents = timelineRoomId
+    ? snapshot.state.domain.room_interactions[timelineRoomId]?.pinned_events ?? EMPTY_PINNED_EVENTS
+    : EMPTY_PINNED_EVENTS;
+  const pinnedEventIds = useMemo(
+    () => pinnedEvents.map((event) => event.event_id),
+    [pinnedEvents]
+  );
   const stagedUploads = snapshot.state.ui.timeline.staged_uploads ?? [];
   const mediaGallery = snapshot.state.ui.timeline.media_gallery ?? [];
   const mediaDownloads = snapshot.state.ui.timeline.media_downloads ?? {};
+  const forwardDestinations = useAppStore(selectForwardDestinations);
+  const mentionCandidates = useAppStore(selectMentionCandidates);
+  const resolveComposerKeyActionStable = useStableEvent(resolveComposerKeyAction);
+  const onCancelReplyStable = useStableEvent(onCancelReply);
+  const onCancelScheduledSendStable = useStableEvent(onCancelScheduledSend);
+  const onAttachFilesStable = useStableEvent(onAttachFiles);
+  const onClearUploadStagingStable = useStableEvent(onClearUploadStaging);
+  const onUpdateStagedUploadCaptionStable = useStableEvent(onUpdateStagedUploadCaption);
+  const onUpdateStagedUploadCompressionStable = useStableEvent(onUpdateStagedUploadCompression);
+  const onComposerDraftChangeStable = useStableEvent(onComposerDraftChange);
+  const onMentionIntentChangeStable = useStableEvent(onMentionIntentChange);
+  const onEditMessageStable = useStableEvent(onEditMessage);
+  const onOpenContextMenuStable = useStableEvent(onOpenContextMenu);
+  const onOpenThreadStable = useStableEvent(onOpenThread);
+  const onRedactMessageStable = useStableEvent(onRedactMessage);
+  const onReplyStable = useStableEvent(onReply);
+  const onRescheduleScheduledSendStable = useStableEvent(onRescheduleScheduledSend);
+  const onResultSelectStable = useStableEvent(onResultSelect);
+  const onScheduleSendStable = useStableEvent(onScheduleSend);
+  const onSendTextStable = useStableEvent(onSendText);
+  const onSetLocalUserAliasStable = useStableEvent(onSetLocalUserAlias);
+  const onUnpinPinnedEventStable = useStableEvent(onUnpinPinnedEvent);
+  const onToggleThreadStable = useStableEvent(onToggleThread);
+  const onOpenRoomInfoStable = useStableEvent(onOpenRoomInfo);
+  const onOpenRoomMembersStable = useStableEvent(onOpenRoomMembers);
+  const onOpenThreadsListStable = useStableEvent(onOpenThreadsList);
+  const onTimelineDiagnosticsChangeStable = useStableEvent(
+    (diagnostics: TimelineDiagnostics) => onTimelineDiagnosticsChange?.(diagnostics)
+  );
+  const onTimelineDiagnosticLogEntryStable = useStableEvent(
+    (entry: TimelineDiagnosticLogEntry) => onTimelineDiagnosticLogEntry?.(entry)
+  );
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [dateJumpDialogOpen, setDateJumpDialogOpen] = useState(false);
@@ -642,7 +714,7 @@ export function TimelinePane({
             className="member-pill"
             type="button"
             aria-label={t("room.members")}
-            onClick={onOpenRoomMembers}
+            onClick={onOpenRoomMembersStable}
           >
             <Users size={ICON_SIZE.small} />
             <span>{activeRoom?.joined_members ?? 0}</span>
@@ -655,18 +727,28 @@ export function TimelinePane({
           >
             <ImageIcon size={ICON_SIZE.panel} />
           </button>
-          <button className="icon-button" type="button" aria-label={t("room.rightPanelToggle")} onClick={onToggleThread}>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={t("room.rightPanelToggle")}
+            onClick={onToggleThreadStable}
+          >
             {rightPanelOpen ? <PanelRightClose size={ICON_SIZE.panel} /> : <PanelRightOpen size={ICON_SIZE.panel} />}
           </button>
           <button
             className="icon-button"
             type="button"
             aria-label={t("threads.title")}
-            onClick={onOpenThreadsList}
+            onClick={onOpenThreadsListStable}
           >
             <MessageCircle size={ICON_SIZE.panel} />
           </button>
-          <button className="icon-button" type="button" aria-label={t("room.roomInfo")} onClick={onOpenRoomInfo}>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={t("room.roomInfo")}
+            onClick={onOpenRoomInfoStable}
+          >
             <MoreVertical size={ICON_SIZE.panel} />
           </button>
         </div>
@@ -748,7 +830,7 @@ export function TimelinePane({
           <PinnedEventsList
             roomId={timelineRoomId}
             pinnedEvents={pinnedEvents}
-            onUnpin={onUnpinPinnedEvent}
+            onUnpin={onUnpinPinnedEventStable}
           />
         ) : null}
         {showSearchResults ? (
@@ -756,7 +838,7 @@ export function TimelinePane({
             query={searchQuery}
             results={searchResults}
             rooms={snapshot.state.domain.rooms}
-            onResultSelect={onResultSelect}
+            onResultSelect={onResultSelectStable}
           />
         ) : null}
         <div className="message-list">
@@ -772,10 +854,8 @@ export function TimelinePane({
                 timelineBackfillEnded
               }
               onClick={() => {
-                if (timelineRoomId && currentUserId && timelineTransport) {
-                  void timelineTransport.paginateBackwards(
-                    roomTimelineKey(currentUserId, timelineRoomId)
-                  );
+                if (timelineKey && timelineTransport) {
+                  void timelineTransport.paginateBackwards(timelineKey);
                 }
               }}
             >
@@ -791,25 +871,25 @@ export function TimelinePane({
             <TimelineView
               key={timelineRoomId}
               roomId={timelineRoomId}
-              timelineKey={roomTimelineKey(currentUserId, timelineRoomId)}
+              timelineKey={timelineKey!}
               transport={timelineTransport}
-              onReply={onReply}
-              onOpenThread={onOpenThread}
-              resolveComposerKeyAction={resolveComposerKeyAction}
+              onReply={onReplyStable}
+              onOpenThread={onOpenThreadStable}
+              resolveComposerKeyAction={resolveComposerKeyActionStable}
               liveSignals={snapshot.state.domain.live_signals}
               profileUsers={snapshot.state.domain.profile.users}
               pinnedEventIds={pinnedEventIds}
-              forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
-              onSetLocalUserAlias={onSetLocalUserAlias}
-              onOpenContextMenu={onOpenContextMenu}
+              forwardDestinations={forwardDestinations}
+              onSetLocalUserAlias={onSetLocalUserAliasStable}
+              onOpenContextMenu={onOpenContextMenuStable}
               currentUserId={currentUserId}
               ignoredUserIds={snapshot.state.domain.profile.ignored_user_ids}
               autoLoadOlderMessages={snapshot.state.domain.settings.values.timeline.auto_load_older_messages}
               codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
               searchQuery={searchQuery}
               mediaDownloads={mediaDownloads}
-              onDiagnosticsChange={onTimelineDiagnosticsChange}
-              onDiagnosticLogEntry={onTimelineDiagnosticLogEntry}
+              onDiagnosticsChange={onTimelineDiagnosticsChangeStable}
+              onDiagnosticLogEntry={onTimelineDiagnosticLogEntryStable}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).
@@ -820,10 +900,10 @@ export function TimelinePane({
                   message={message}
                   query={searchQuery}
                   currentUserId={currentUserId}
-                  onOpenContextMenu={onOpenContextMenu}
-                  onEditMessage={onEditMessage}
-                  onOpenThread={onOpenThread}
-                  onRedactMessage={onRedactMessage}
+                  onOpenContextMenu={onOpenContextMenuStable}
+                  onEditMessage={onEditMessageStable}
+                  onOpenThread={onOpenThreadStable}
+                  onRedactMessage={onRedactMessageStable}
                   profileUsers={snapshot.state.domain.profile.users}
                   isIgnored={snapshot.state.domain.profile.ignored_user_ids.includes(message.sender)}
                 />
@@ -835,33 +915,33 @@ export function TimelinePane({
       <ScheduledMessagesList
         capability={snapshot.state.ui.timeline.scheduled_send_capability}
         items={snapshot.state.ui.timeline.scheduled_sends}
-        onCancel={onCancelScheduledSend}
-        onReschedule={onRescheduleScheduledSend}
+        onCancel={onCancelScheduledSendStable}
+        onReschedule={onRescheduleScheduledSendStable}
       />
       {stagedUploads.length > 0 ? (
         <UploadStagingDialog
           items={stagedUploads}
-          onClear={onClearUploadStaging}
-          onUpdateCaption={onUpdateStagedUploadCaption}
-          onUpdateCompression={onUpdateStagedUploadCompression}
+          onClear={onClearUploadStagingStable}
+          onUpdateCaption={onUpdateStagedUploadCaptionStable}
+          onUpdateCompression={onUpdateStagedUploadCompressionStable}
         />
       ) : null}
       <Composer
-        composerMode={composerMode}
+        composerMode={composerModeForComposer}
         hasStagedUploads={stagedUploads.length > 0}
         isSending={Boolean(snapshot.state.ui.timeline.composer.pending_transaction_id)}
-        mentionCandidates={mentionCandidatesFromSnapshot(snapshot)}
+        mentionCandidates={mentionCandidates}
         mentionIntent={mentionIntent}
-        resolveComposerKeyAction={resolveComposerKeyAction}
+        resolveComposerKeyAction={resolveComposerKeyActionStable}
         draftKey={timelineRoomId ?? "no-room"}
         roomName={activeRoomName}
         value={composerDraft}
-        onCancelReply={onCancelReply}
-        onAttachFiles={onAttachFiles}
-        onMentionIntentChange={onMentionIntentChange}
-        onScheduleSend={onScheduleSend}
-        onSend={onSendText}
-        onValueChange={onComposerDraftChange}
+        onCancelReply={onCancelReplyStable}
+        onAttachFiles={onAttachFilesStable}
+        onMentionIntentChange={onMentionIntentChangeStable}
+        onScheduleSend={onScheduleSendStable}
+        onSend={onSendTextStable}
+        onValueChange={onComposerDraftChangeStable}
       />
       {viewerIndex !== null && mediaGallery[viewerIndex] ? (
         <MediaViewer

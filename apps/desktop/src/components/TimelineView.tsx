@@ -48,6 +48,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type MouseEvent,
+  memo,
   type ReactNode,
   useCallback,
   useEffect,
@@ -104,6 +105,9 @@ import type {
   TimelineMediaDownloadState,
   UserProfile
 } from "../domain/types";
+import type { TimelineForwardDestination } from "../domain/projectionTypes";
+
+export type { TimelineForwardDestination } from "../domain/projectionTypes";
 
 // ---------------------------------------------------------------------------
 // Transport interface (Tauri IPC, browser fake, or test mock)
@@ -202,11 +206,6 @@ export interface TimelineRowActionHandlers {
   onSetLocalUserAlias: (userId: string, alias: string | null) => void;
   onRetrySend: (roomId: string, transactionId: string) => void;
   onCancelSend: (roomId: string, transactionId: string) => void;
-}
-
-export interface TimelineForwardDestination {
-  room_id: string;
-  display_name: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1100,7 +1099,7 @@ export type TimelineDiagnosticLogEntry = DiagnosticLogEntry;
 
 const MAX_AVATAR_THUMBNAIL_ATTEMPTS = 2;
 
-export function TimelineView({
+export const TimelineView = memo(function TimelineView({
   timelineKey,
   roomId,
   transport,
@@ -2053,7 +2052,7 @@ export function TimelineView({
       ) : null}
     </div>
   );
-}
+});
 
 export function TimelineItemRow({
   item,

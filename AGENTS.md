@@ -193,6 +193,27 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml core_event_wire_format_matches_checked_in_contract_artifact`,
   and `npm --prefix apps/desktop run typecheck`.
 
+## State Transport Phase Notes
+
+- The #111 state-transport architecture is Rust-owned incremental slice deltas
+  plus a selector-subscribed WebView projection cache. React may cache and
+  subscribe to Rust snapshots for rendering, but it must not mutate product
+  state, synthesize Matrix semantics, or repair command results locally.
+- During Phase 1, existing full snapshots still enter the WebView. Apply them
+  through the projection store by value-comparing top-level
+  `DesktopSnapshot`/`AppState` slices and preserving references for unchanged
+  `domain`, `ui`, `sidebar`, timeline, and thread data. Hot derived arrays such
+  as mention candidates and forward destinations must be memoized from Rust DTO
+  input references.
+- When Phase 2 adds `CoreEvent::StateDelta` / changed-slice DTOs, update
+  `apps/desktop/src-tauri/src/dto.rs`, `apps/desktop/src/domain/types.ts`,
+  `coreEvents.generated.json`, browser fakes, Tauri IPC mock, app harness
+  snapshots, and serialization-contract tests in the same change. Full
+  snapshots are then initial/reset fallback only, with generation-gap recovery.
+- Tauri Channels are high-frequency only and measurement-gated. Keep crawler,
+  typing, receipt, and presence semantics Rust-owned; a Channel transports
+  Rust projections, not React-local state.
+
 ## Japanese / CJK Phase A Notes
 
 - Japanese/CJK product semantics stay Rust-owned. React may render the
