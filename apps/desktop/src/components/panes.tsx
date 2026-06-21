@@ -764,7 +764,7 @@ export function TimelinePane({
               type="button"
               onClick={() => setDateJumpDialogOpen(true)}
             >
-              <CalendarDays size={14} aria-hidden="true" />
+              <CalendarDays size={ICON_SIZE.micro} aria-hidden="true" />
               <span>{t("timeline.jumpToDate")}</span>
             </button>
           </div>
@@ -795,11 +795,11 @@ export function TimelinePane({
                 aria-label={t("timeline.closeJumpToDate")}
                 onClick={() => setDateJumpDialogOpen(false)}
               >
-                <X size={18} aria-hidden="true" />
+                <X size={ICON_SIZE.control} aria-hidden="true" />
               </button>
             </div>
             <label className="timeline-date-jump-label">
-              <CalendarDays size={14} aria-hidden="true" />
+              <CalendarDays size={ICON_SIZE.micro} aria-hidden="true" />
               <span>{t("timeline.jumpToDate")}</span>
               <input
                 className="timeline-date-jump-input"
