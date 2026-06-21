@@ -157,7 +157,7 @@ function readySnapshot(
           directory: { query: { kind: "closed" }, join: { kind: "idle" } },
           room_management: { selected_room_id: null, settings: null, operation: { kind: "idle" } },
           activity: { kind: "closed" }, thread_attention: { kind: "closed" },
-          search: { kind: "closed" }, search_crawler: { rooms: {} },
+          search: { kind: "closed" }, search_crawler: { rooms: {}, last_active: null },
           live_signals: defaultLiveSignalsState(),
           e2ee_trust: overrides.e2eeTrust ?? defaultE2eeTrustState(),
           local_encryption: { kind: "unknown" },
@@ -1521,12 +1521,19 @@ mock.setCommandResponse("start_room_crawl", ({ roomId }: { roomId: string }) => 
       ...currentSnapshot.state,
       domain: {
         ...currentSnapshot.state.domain,
-      search_crawler: {
-        rooms: {
-          ...currentSnapshot.state.domain.search_crawler.rooms,
-          [roomId]: { kind: "queued" }
+        search_crawler: {
+          rooms: {
+            ...currentSnapshot.state.domain.search_crawler.rooms,
+            [roomId]: { kind: "queued" }
+          },
+          last_active: {
+            room_id: roomId,
+            updated_at_ms: Date.now(),
+            status: "queued",
+            processed: 0,
+            indexed: 0
+          }
         }
-      }
       },
     }
   });
@@ -1540,12 +1547,13 @@ mock.setCommandResponse("stop_room_crawl", ({ roomId }: { roomId: string }) => {
       ...currentSnapshot.state,
       domain: {
         ...currentSnapshot.state.domain,
-      search_crawler: {
-        rooms: {
-          ...currentSnapshot.state.domain.search_crawler.rooms,
-          [roomId]: { kind: "idle" }
+        search_crawler: {
+          rooms: {
+            ...currentSnapshot.state.domain.search_crawler.rooms,
+            [roomId]: { kind: "idle" }
+          },
+          last_active: currentSnapshot.state.domain.search_crawler.last_active
         }
-      }
       },
     }
   });

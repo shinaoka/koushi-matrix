@@ -34,8 +34,8 @@ pub use media_download::{MediaTransferProgress, TimelineMediaDownloadState};
 
 // ── Re-exports: search_crawler ──────────────────────────────────────────────
 pub use search_crawler::{
-    SearchCrawlerFailureKind, SearchCrawlerRoomState, SearchCrawlerSettings, SearchCrawlerSpeed,
-    SearchCrawlerState,
+    SearchCrawlerFailureKind, SearchCrawlerLastActive, SearchCrawlerLastActiveStatus,
+    SearchCrawlerRoomState, SearchCrawlerSettings, SearchCrawlerSpeed, SearchCrawlerState,
 };
 
 // ── Re-exports: errors ──────────────────────────────────────────────────────

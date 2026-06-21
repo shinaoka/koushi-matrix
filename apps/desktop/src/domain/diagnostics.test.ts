@@ -38,6 +38,13 @@ describe("diagnosticReport", () => {
                   processed: 42,
                   indexed: 24
                 }
+              },
+              last_active: {
+                room_id: "!private-room:example.invalid",
+                updated_at_ms: 1_800_000_000_000,
+                status: "running",
+                processed: 42,
+                indexed: 24
               }
             }
           },

@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SearchCrawlerState {
     pub rooms: BTreeMap<String, SearchCrawlerRoomState>,
+    pub last_active: Option<SearchCrawlerLastActive>,
 }
 
 impl std::fmt::Debug for SearchCrawlerState {
@@ -41,8 +42,43 @@ impl std::fmt::Debug for SearchCrawlerState {
             .field("running", &running)
             .field("completed", &completed)
             .field("failed", &failed)
+            .field(
+                "last_active",
+                &self.last_active.as_ref().map(|_| "Some(..)"),
+            )
             .finish()
     }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SearchCrawlerLastActive {
+    pub room_id: String,
+    pub updated_at_ms: u64,
+    pub status: SearchCrawlerLastActiveStatus,
+    pub processed: u64,
+    pub indexed: u64,
+}
+
+impl std::fmt::Debug for SearchCrawlerLastActive {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SearchCrawlerLastActive")
+            .field("room_id", &"RoomId(..)")
+            .field("updated_at_ms", &"Timestamp(..)")
+            .field("status", &self.status)
+            .field("processed", &self.processed)
+            .field("indexed", &self.indexed)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchCrawlerLastActiveStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

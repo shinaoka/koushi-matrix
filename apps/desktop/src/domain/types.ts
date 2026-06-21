@@ -1407,6 +1407,17 @@ export type SearchCrawlerRoomState =
   | { kind: "completed"; indexed: number }
   | { kind: "failed"; failureKind: SearchCrawlerFailureKind };
 
+export type SearchCrawlerLastActiveStatus = "queued" | "running" | "completed" | "failed";
+
+export interface SearchCrawlerLastActive {
+  room_id: string;
+  updated_at_ms: number;
+  status: SearchCrawlerLastActiveStatus;
+  processed: number;
+  indexed: number;
+}
+
 export interface SearchCrawlerState {
   rooms: Record<string, SearchCrawlerRoomState>;
+  last_active: SearchCrawlerLastActive | null;
 }

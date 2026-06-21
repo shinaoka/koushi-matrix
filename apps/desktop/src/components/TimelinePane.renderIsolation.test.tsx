@@ -115,6 +115,13 @@ describe("TimelinePane render isolation", () => {
     searchCrawlerOnly.state.domain.search_crawler = {
       rooms: {
         "!crawler:example.invalid": { kind: "running", processed: 7, indexed: 4 }
+      },
+      last_active: {
+        room_id: "!crawler:example.invalid",
+        updated_at_ms: 1_800_000_000_000,
+        status: "running",
+        processed: 7,
+        indexed: 4
       }
     };
 
@@ -333,7 +340,7 @@ function makeSnapshot(): DesktopSnapshot {
         activity: { kind: "closed" },
         thread_attention: { kind: "closed" },
         search: { kind: "closed" },
-        search_crawler: { rooms: {} },
+        search_crawler: { rooms: {}, last_active: null },
         live_signals: { rooms: {}, presence: {} },
         e2ee_trust: {
           verification: { kind: "idle" },

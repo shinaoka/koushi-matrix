@@ -797,18 +797,26 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::HistoryCrawlStarted {
             request_id: _,
             room_id,
-        } => search::handle_history_crawl_started(state, room_id),
+            timestamp_ms,
+        } => search::handle_history_crawl_started(state, room_id, timestamp_ms),
         AppAction::HistoryCrawlProgress {
             room_id,
             processed,
             indexed,
-        } => search::handle_history_crawl_progress(state, room_id, processed, indexed),
-        AppAction::HistoryCrawlCompleted { room_id, indexed } => {
-            search::handle_history_crawl_completed(state, room_id, indexed)
+            timestamp_ms,
+        } => {
+            search::handle_history_crawl_progress(state, room_id, processed, indexed, timestamp_ms)
         }
-        AppAction::HistoryCrawlFailed { room_id, kind } => {
-            search::handle_history_crawl_failed(state, room_id, kind)
-        }
+        AppAction::HistoryCrawlCompleted {
+            room_id,
+            indexed,
+            timestamp_ms,
+        } => search::handle_history_crawl_completed(state, room_id, indexed, timestamp_ms),
+        AppAction::HistoryCrawlFailed {
+            room_id,
+            kind,
+            timestamp_ms,
+        } => search::handle_history_crawl_failed(state, room_id, kind, timestamp_ms),
         AppAction::FilesViewOpened {
             request_id,
             scope,

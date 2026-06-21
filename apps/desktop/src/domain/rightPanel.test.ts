@@ -190,7 +190,7 @@ function snapshotForPanelMode(
             }
           : { kind: "closed" },
         search: { kind: "closed" },
-        search_crawler: { rooms: {} },
+        search_crawler: { rooms: {}, last_active: null },
         live_signals: { rooms: {}, presence: {} },
         e2ee_trust: {
           verification: { kind: "idle" },

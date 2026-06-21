@@ -2275,7 +2275,8 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.domain.search_crawler = {
       rooms: Object.fromEntries(
         this.snapshot.state.domain.rooms.map((room) => [room.room_id, { kind: "idle" as const }])
-      )
+      ),
+      last_active: null
     };
     return this.getSnapshot();
   }
@@ -2289,6 +2290,13 @@ class BrowserFakeApi implements DesktopApi {
       rooms: {
         ...this.snapshot.state.domain.search_crawler.rooms,
         [roomId]: { kind: "queued" }
+      },
+      last_active: {
+        room_id: roomId,
+        updated_at_ms: Date.now(),
+        status: "queued",
+        processed: 0,
+        indexed: 0
       }
     };
     return this.getSnapshot();
@@ -2304,7 +2312,8 @@ class BrowserFakeApi implements DesktopApi {
       rooms: {
         ...this.snapshot.state.domain.search_crawler.rooms,
         [roomId]: { kind: "idle" }
-      }
+      },
+      last_active: this.snapshot.state.domain.search_crawler.last_active
     };
     return this.getSnapshot();
   }
@@ -2743,7 +2752,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
         activity: { kind: "closed" },
         thread_attention: { kind: "closed" },
         search: { kind: "closed" },
-        search_crawler: { rooms: {} },
+        search_crawler: { rooms: {}, last_active: null },
         live_signals: defaultLiveSignalsState(),
         e2ee_trust: defaultE2eeTrustState(),
         local_encryption: { kind: "unknown" },
@@ -2850,7 +2859,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
         activity: { kind: "closed" },
         thread_attention: { kind: "closed" },
         search: { kind: "closed" },
-        search_crawler: { rooms: {} },
+        search_crawler: { rooms: {}, last_active: null },
         live_signals: defaultLiveSignalsState(),
         e2ee_trust: defaultE2eeTrustState(),
         local_encryption: { kind: "unknown" },

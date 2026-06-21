@@ -2,7 +2,8 @@ use crate::{
     effect::{AppEffect, UiEvent},
     state::{
         AppState, AttachmentScope, FilesViewScope, FilesViewState, SearchCrawlerFailureKind,
-        SearchCrawlerRoomState, SearchCrawlerSpeed, SearchState,
+        SearchCrawlerLastActive, SearchCrawlerLastActiveStatus, SearchCrawlerRoomState,
+        SearchCrawlerSpeed, SearchState,
     },
 };
 
@@ -119,6 +120,7 @@ pub(crate) fn handle_search_index_rebuild_requested(state: &mut AppState) -> Vec
         .iter()
         .map(|room| (room.room_id.clone(), SearchCrawlerRoomState::Idle))
         .collect();
+    state.search_crawler.last_active = None;
 
     let mut effects = vec![
         AppEffect::RebuildSearchIndex,
@@ -144,10 +146,19 @@ pub(crate) fn handle_search_index_rebuild_requested(state: &mut AppState) -> Vec
 pub(crate) fn handle_history_crawl_started(
     state: &mut AppState,
     room_id: String,
+    timestamp_ms: u64,
 ) -> Vec<AppEffect> {
     state.search_crawler.rooms.insert(
-        room_id,
+        room_id.clone(),
         crate::state::SearchCrawlerRoomState::Queued,
+    );
+    remember_search_crawler_activity(
+        state,
+        room_id,
+        timestamp_ms,
+        SearchCrawlerLastActiveStatus::Queued,
+        0,
+        0,
     );
     vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
 }
@@ -157,10 +168,19 @@ pub(crate) fn handle_history_crawl_progress(
     room_id: String,
     processed: u64,
     indexed: u64,
+    timestamp_ms: u64,
 ) -> Vec<AppEffect> {
     state.search_crawler.rooms.insert(
-        room_id,
+        room_id.clone(),
         crate::state::SearchCrawlerRoomState::Running { processed, indexed },
+    );
+    remember_search_crawler_activity(
+        state,
+        room_id,
+        timestamp_ms,
+        SearchCrawlerLastActiveStatus::Running,
+        processed,
+        indexed,
     );
     vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
 }
@@ -169,10 +189,19 @@ pub(crate) fn handle_history_crawl_completed(
     state: &mut AppState,
     room_id: String,
     indexed: u64,
+    timestamp_ms: u64,
 ) -> Vec<AppEffect> {
     state.search_crawler.rooms.insert(
-        room_id,
+        room_id.clone(),
         crate::state::SearchCrawlerRoomState::Completed { indexed },
+    );
+    remember_search_crawler_activity(
+        state,
+        room_id,
+        timestamp_ms,
+        SearchCrawlerLastActiveStatus::Completed,
+        indexed,
+        indexed,
     );
     vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
 }
@@ -181,12 +210,38 @@ pub(crate) fn handle_history_crawl_failed(
     state: &mut AppState,
     room_id: String,
     kind: SearchCrawlerFailureKind,
+    timestamp_ms: u64,
 ) -> Vec<AppEffect> {
     state.search_crawler.rooms.insert(
-        room_id,
+        room_id.clone(),
         crate::state::SearchCrawlerRoomState::Failed { kind },
     );
+    remember_search_crawler_activity(
+        state,
+        room_id,
+        timestamp_ms,
+        SearchCrawlerLastActiveStatus::Failed,
+        0,
+        0,
+    );
     vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
+}
+
+fn remember_search_crawler_activity(
+    state: &mut AppState,
+    room_id: String,
+    timestamp_ms: u64,
+    status: SearchCrawlerLastActiveStatus,
+    processed: u64,
+    indexed: u64,
+) {
+    state.search_crawler.last_active = Some(SearchCrawlerLastActive {
+        room_id,
+        updated_at_ms: timestamp_ms,
+        status,
+        processed,
+        indexed,
+    });
 }
 
 pub(crate) fn handle_files_view_opened(

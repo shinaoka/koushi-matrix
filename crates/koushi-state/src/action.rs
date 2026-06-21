@@ -747,19 +747,23 @@ pub enum AppAction {
     HistoryCrawlStarted {
         request_id: u64,
         room_id: String,
+        timestamp_ms: u64,
     },
     HistoryCrawlProgress {
         room_id: String,
         processed: u64,
         indexed: u64,
+        timestamp_ms: u64,
     },
     HistoryCrawlCompleted {
         room_id: String,
         indexed: u64,
+        timestamp_ms: u64,
     },
     HistoryCrawlFailed {
         room_id: String,
         kind: crate::state::SearchCrawlerFailureKind,
+        timestamp_ms: u64,
     },
     FilesViewOpened {
         request_id: u64,

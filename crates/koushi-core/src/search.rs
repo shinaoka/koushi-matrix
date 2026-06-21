@@ -45,6 +45,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use koushi_sdk::MatrixClientSession;
 use koushi_search::{
@@ -72,6 +73,13 @@ const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
 
 /// Search index mutation queue capacity (canon, overview.md: 512).
 pub const SEARCH_INDEX_MUTATION_QUEUE: usize = 512;
+
+fn current_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or_default()
+}
 
 // ---------------------------------------------------------------------------
 // Public message type (forwarded from TimelineActor)
@@ -784,6 +792,7 @@ impl SearchActor {
                 .send(vec![AppAction::HistoryCrawlStarted {
                     request_id,
                     room_id: queued.room_id.clone(),
+                    timestamp_ms: current_epoch_ms(),
                 }])
                 .await;
         }
@@ -841,6 +850,7 @@ impl SearchActor {
                         room_id: checkpoint.room_id.clone(),
                         processed: checkpoint.processed,
                         indexed: checkpoint.indexed,
+                        timestamp_ms: current_epoch_ms(),
                     }])
                     .await;
                 if completed {
@@ -850,6 +860,7 @@ impl SearchActor {
                         .send(vec![AppAction::HistoryCrawlCompleted {
                             room_id: checkpoint.room_id.clone(),
                             indexed: checkpoint.indexed,
+                            timestamp_ms: current_epoch_ms(),
                         }])
                         .await;
                     self.emit(CoreEvent::Search(SearchEvent::HistoryCrawlCompleted {
@@ -875,6 +886,7 @@ impl SearchActor {
                     .send(vec![AppAction::HistoryCrawlFailed {
                         room_id: checkpoint.room_id,
                         kind,
+                        timestamp_ms: current_epoch_ms(),
                     }])
                     .await;
             }
