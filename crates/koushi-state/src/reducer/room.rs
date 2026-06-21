@@ -1,11 +1,11 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     effect::{AppEffect, UiEvent},
     state::{
-        AppError, AppState, OperationFailureKind, PinOp, PinOperationState, PinnedEvent,
-        RoomListFilter, RoomTagInfo, RoomTagKind, ThreadAttentionState, ThreadPaneState,
-        ThreadsListState, TimelinePaneState,
+        AppError, AppState, AvatarImage, AvatarThumbnailState, OperationFailureKind, PinOp,
+        PinOperationState, PinnedEvent, RoomListFilter, RoomTagInfo, RoomTagKind, SpaceSummary,
+        ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
     },
 };
 
@@ -33,6 +33,7 @@ pub(crate) fn handle_room_list_updated(
     let own_user_id = session_user_id(state).map(str::to_owned);
     let mut rooms = rooms;
     let mut spaces = spaces;
+    preserve_known_avatar_thumbnails(state, &mut spaces, &mut rooms);
     crate::state::refresh_room_summary_display_projection(
         &mut rooms,
         &state.profile,
@@ -162,6 +163,61 @@ pub(crate) fn handle_room_list_updated(
 
     recompute_room_list_projection(state);
     effects
+}
+
+fn preserve_known_avatar_thumbnails(
+    state: &AppState,
+    spaces: &mut [SpaceSummary],
+    rooms: &mut [crate::state::RoomSummary],
+) {
+    let mut known_thumbnails = BTreeMap::new();
+    remember_known_avatar_thumbnails(&mut known_thumbnails, state.profile.own.avatar.as_ref());
+    for profile in state.profile.users.values() {
+        remember_known_avatar_thumbnails(&mut known_thumbnails, profile.avatar.as_ref());
+    }
+    for room in &state.rooms {
+        remember_known_avatar_thumbnails(&mut known_thumbnails, room.avatar.as_ref());
+    }
+    for space in &state.spaces {
+        remember_known_avatar_thumbnails(&mut known_thumbnails, space.avatar.as_ref());
+    }
+
+    for room in rooms {
+        preserve_avatar_thumbnail(&known_thumbnails, &mut room.avatar);
+    }
+    for space in spaces {
+        preserve_avatar_thumbnail(&known_thumbnails, &mut space.avatar);
+    }
+}
+
+fn remember_known_avatar_thumbnails(
+    known_thumbnails: &mut BTreeMap<String, AvatarThumbnailState>,
+    avatar: Option<&AvatarImage>,
+) {
+    let Some(avatar) = avatar else {
+        return;
+    };
+    if avatar.thumbnail == AvatarThumbnailState::NotRequested {
+        return;
+    }
+    known_thumbnails.insert(avatar.mxc_uri.clone(), avatar.thumbnail.clone());
+}
+
+fn preserve_avatar_thumbnail(
+    known_thumbnails: &BTreeMap<String, AvatarThumbnailState>,
+    avatar: &mut Option<AvatarImage>,
+) -> bool {
+    let Some(avatar) = avatar.as_mut() else {
+        return false;
+    };
+    if avatar.thumbnail != AvatarThumbnailState::NotRequested {
+        return false;
+    }
+    let Some(thumbnail) = known_thumbnails.get(&avatar.mxc_uri) else {
+        return false;
+    };
+    avatar.thumbnail = thumbnail.clone();
+    true
 }
 
 pub(crate) fn handle_room_list_filter_selected(

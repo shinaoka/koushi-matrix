@@ -96,6 +96,7 @@ import type {
   AttachmentFilter,
   AttachmentScope,
   AttachmentSort,
+  AvatarImage,
   DesktopSnapshot,
   DirectoryRoomSummary,
   FilesViewScope,
@@ -635,6 +636,26 @@ function releaseImageCompressionPlan(plan: ImageCompressionPlan) {
   }
 }
 
+function collectSnapshotAvatarMxcs(snapshot: DesktopSnapshot): string[] {
+  const mxcs = new Set<string>();
+  const avatars: Array<AvatarImage | null> = [
+    snapshot.state.domain.profile.own.avatar,
+    ...Object.values(snapshot.state.domain.profile.users).map((profile) => profile.avatar),
+    ...snapshot.state.domain.rooms.map((room) => room.avatar),
+    ...snapshot.state.domain.spaces.map((space) => space.avatar),
+    ...snapshot.state.domain.invites.map((invite) => invite.avatar)
+  ];
+
+  for (const avatar of avatars) {
+    if (!avatar || avatar.thumbnail.kind !== "notRequested") {
+      continue;
+    }
+    mxcs.add(avatar.mxc_uri);
+  }
+
+  return [...mxcs];
+}
+
 function createStagedUploadId(index: number): string {
   const random =
     typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -898,6 +919,7 @@ export function App() {
   const qaSendTargetRequested = useRef(false);
   const qaSendTargetSelectionRequested = useRef<string | null>(null);
   const qaSendBaselineErrorCount = useRef(0);
+  const requestedAvatarMxcsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const refreshOverrides = () => setSpaceLocalOverrides(readSpaceLocalOverrides());
@@ -1056,6 +1078,32 @@ export function App() {
       return next.size === files.size ? files : next;
     });
   }, [stagedUploadIdKey]);
+
+  useEffect(() => {
+    if (!snapshot || !tauriTimelineTransport?.downloadAvatarThumbnail) {
+      requestedAvatarMxcsRef.current.clear();
+      return;
+    }
+
+    const requestedAvatarMxcs = requestedAvatarMxcsRef.current;
+    const notRequestedAvatarMxcs = new Set(collectSnapshotAvatarMxcs(snapshot));
+
+    for (const mxcUri of [...requestedAvatarMxcs]) {
+      if (!notRequestedAvatarMxcs.has(mxcUri)) {
+        requestedAvatarMxcs.delete(mxcUri);
+      }
+    }
+
+    for (const mxcUri of notRequestedAvatarMxcs) {
+      if (requestedAvatarMxcs.has(mxcUri)) {
+        continue;
+      }
+      requestedAvatarMxcs.add(mxcUri);
+      void tauriTimelineTransport.downloadAvatarThumbnail(mxcUri).catch(() => {
+        requestedAvatarMxcs.delete(mxcUri);
+      });
+    }
+  }, [snapshot]);
 
   function handleShortcutAction(shortcutId: string): boolean {
     switch (shortcutId) {

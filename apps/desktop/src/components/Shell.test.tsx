@@ -11,6 +11,29 @@ afterEach(() => {
 });
 
 describe("EntityAvatar", () => {
+  it("renders a ready avatar image", () => {
+    render(
+      <EntityAvatar
+        avatar={{
+          mxc_uri: "mxc://matrix.org/avatar",
+          thumbnail: {
+            kind: "ready",
+            source_url: "asset://avatar.bin",
+            width: null,
+            height: null,
+            mime_type: null
+          }
+        }}
+        className="room-avatar"
+        fallback="AL"
+      />
+    );
+
+    expect(document.querySelector<HTMLImageElement>(".room-avatar img")?.getAttribute("src")).toBe(
+      "asset://avatar.bin"
+    );
+  });
+
   it("falls back to initials when a ready avatar image fails to render", () => {
     render(
       <EntityAvatar

@@ -1,6 +1,6 @@
 use crate::{
     effect::{AppEffect, UiEvent},
-    state::{AppError, AppState, RoomListFilter},
+    state::{AppError, AppState, AvatarImage, AvatarThumbnailState, RoomListFilter},
 };
 
 use super::{
@@ -351,4 +351,63 @@ pub(crate) fn handle_profile_update_failed(
         AppEffect::EmitUiEvent(UiEvent::ProfileChanged),
         AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
     ]
+}
+
+pub(crate) fn handle_avatar_thumbnail_updated(
+    state: &mut AppState,
+    mxc_uri: String,
+    thumbnail: AvatarThumbnailState,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    let mut profile_changed = false;
+    let mut room_list_changed = false;
+
+    profile_changed |=
+        update_avatar_thumbnail(&mut state.profile.own.avatar, &mxc_uri, thumbnail.clone());
+    for user in state.profile.users.values_mut() {
+        profile_changed |= update_avatar_thumbnail(&mut user.avatar, &mxc_uri, thumbnail.clone());
+    }
+
+    for room in &mut state.rooms {
+        room_list_changed |= update_avatar_thumbnail(&mut room.avatar, &mxc_uri, thumbnail.clone());
+    }
+    for space in &mut state.spaces {
+        room_list_changed |=
+            update_avatar_thumbnail(&mut space.avatar, &mxc_uri, thumbnail.clone());
+    }
+    for invite in &mut state.invites {
+        room_list_changed |=
+            update_avatar_thumbnail(&mut invite.avatar, &mxc_uri, thumbnail.clone());
+    }
+
+    if room_list_changed {
+        recompute_room_list_projection(state);
+    }
+
+    let mut effects = Vec::new();
+    if profile_changed {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ProfileChanged));
+    }
+    if room_list_changed {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
+    }
+    effects
+}
+
+pub(crate) fn update_avatar_thumbnail(
+    avatar: &mut Option<AvatarImage>,
+    mxc_uri: &str,
+    thumbnail: AvatarThumbnailState,
+) -> bool {
+    let Some(current) = avatar.as_mut() else {
+        return false;
+    };
+    if current.mxc_uri != mxc_uri || current.thumbnail == thumbnail {
+        return false;
+    }
+    current.thumbnail = thumbnail;
+    true
 }

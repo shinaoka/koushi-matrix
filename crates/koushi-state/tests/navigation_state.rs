@@ -1,7 +1,7 @@
 use koushi_state::{
     AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState,
-    NativeAttentionObservationKind, NativeAttentionProjectionInput, RoomSummary, RoomTags,
-    SearchCrawlerSettings, SessionInfo, SessionState, SpaceSummary, ThreadPaneState,
+    NativeAttentionObservationKind, NativeAttentionProjectionInput, RoomListFilter, RoomSummary,
+    RoomTags, SearchCrawlerSettings, SessionInfo, SessionState, SpaceSummary, ThreadPaneState,
     TimelinePaneState, UiEvent, UserProfile, compose_sidebar, native_attention_state_from_rooms,
     reduce,
 };
@@ -27,6 +27,15 @@ fn avatar(mxc_uri: &str) -> AvatarImage {
     AvatarImage {
         mxc_uri: mxc_uri.to_owned(),
         thumbnail: AvatarThumbnailState::NotRequested,
+    }
+}
+
+fn ready_avatar_thumbnail(label: &str) -> AvatarThumbnailState {
+    AvatarThumbnailState::Ready {
+        source_url: format!("file:///tmp/koushi-test-{label}.png"),
+        width: Some(64),
+        height: Some(64),
+        mime_type: Some("image/png".to_owned()),
     }
 }
 
@@ -236,6 +245,67 @@ fn room_list_update_projects_dm_room_avatar_from_counterpart_profile() {
             .as_ref()
             .map(|avatar| avatar.mxc_uri.as_str()),
         Some("mxc://example.invalid/alice-avatar")
+    );
+}
+
+#[test]
+fn avatar_thumbnail_update_refreshes_people_filter_room_avatar_surface() {
+    let mut state = ready_state();
+    let mxc_uri = "mxc://example.invalid/dm-avatar";
+    let thumbnail = ready_avatar_thumbnail("people-filter");
+    state.rooms = vec![RoomSummary {
+        room_id: "dm-a".to_owned(),
+        display_name: "Alice".to_owned(),
+        display_label: "Alice".to_owned(),
+        original_display_label: "Alice".to_owned(),
+        avatar: Some(AvatarImage {
+            mxc_uri: mxc_uri.to_owned(),
+            thumbnail: AvatarThumbnailState::NotRequested,
+        }),
+        is_dm: true,
+        dm_user_ids: Vec::new(),
+        tags: RoomTags::default(),
+        unread_count: 3,
+        notification_count: 3,
+        highlight_count: 0,
+        marked_unread: false,
+        last_activity_ms: 0,
+        parent_space_ids: vec!["space-a".to_owned()],
+        dm_space_ids: vec!["space-a".to_owned()],
+        is_encrypted: false,
+        joined_members: 0,
+    }];
+
+    reduce(
+        &mut state,
+        AppAction::RoomListFilterSelected {
+            filter: RoomListFilter::People,
+        },
+    );
+    assert_eq!(state.room_list.active_filter, RoomListFilter::People);
+    assert_eq!(state.room_list.items.len(), 1);
+
+    reduce(
+        &mut state,
+        AppAction::AvatarThumbnailUpdated {
+            mxc_uri: mxc_uri.to_owned(),
+            thumbnail: thumbnail.clone(),
+        },
+    );
+
+    assert_eq!(
+        state.rooms[0].avatar.as_ref().map(|avatar| &avatar.thumbnail),
+        Some(&thumbnail)
+    );
+    assert_eq!(state.room_list.active_filter, RoomListFilter::People);
+    assert_eq!(state.room_list.items.len(), 1);
+    let sidebar = compose_sidebar(None, &state.spaces, &state.rooms);
+    assert_eq!(
+        sidebar.global_dms[0]
+            .avatar
+            .as_ref()
+            .map(|avatar| &avatar.thumbnail),
+        Some(&thumbnail)
     );
 }
 

@@ -1591,26 +1591,25 @@ impl AccountActor {
     }
 
     async fn handle_download_avatar_thumbnail(&self, request_id: RequestId, mxc_uri: String) {
-        let Some(session) = &self.session else {
-            self.emit(CoreEvent::Account(
-                AccountEvent::AvatarThumbnailDownloaded {
-                    request_id,
-                    mxc_uri,
-                    thumbnail: AvatarThumbnailState::Failed {
-                        request_id: request_id.sequence,
-                        kind: AvatarThumbnailFailureKind::Sdk,
-                    },
-                },
-            ));
-            return;
+        let thumbnail = if let Some(session) = &self.session {
+            download_avatar_thumbnail(session, &mxc_uri, &self.data_dir)
+                .await
+                .unwrap_or_else(|kind| AvatarThumbnailState::Failed {
+                    request_id: request_id.sequence,
+                    kind,
+                })
+        } else {
+            AvatarThumbnailState::Failed {
+                request_id: request_id.sequence,
+                kind: AvatarThumbnailFailureKind::Sdk,
+            }
         };
 
-        let thumbnail = download_avatar_thumbnail(session, &mxc_uri, &self.data_dir)
-            .await
-            .unwrap_or_else(|kind| AvatarThumbnailState::Failed {
-                request_id: request_id.sequence,
-                kind,
-            });
+        self.send_actions(vec![AppAction::AvatarThumbnailUpdated {
+            mxc_uri: mxc_uri.clone(),
+            thumbnail: thumbnail.clone(),
+        }])
+        .await;
         self.emit(CoreEvent::Account(
             AccountEvent::AvatarThumbnailDownloaded {
                 request_id,

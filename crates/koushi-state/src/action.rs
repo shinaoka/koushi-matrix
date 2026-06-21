@@ -3,17 +3,17 @@ use std::fmt;
 use crate::state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityStream, ActivityTab,
     AttachmentFilter, AttachmentResult, AttachmentScope, AttachmentSort, AuthFailureKind,
-    BasicOperationRequest, CrossSigningStatus, DelegatedAuthLinks, DeviceSessionSummary,
-    DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState, FilesViewScope, IdentityResetAuthType,
-    JapaneseCatalogProfile, LiveEventReceipts, LiveRoomSignalUpdate, LocalEncryptionHealth,
-    LoginFlow, NativeAttentionState, OperationFailureKind, OwnProfile, PinnedEvent, PresenceKind,
-    ProfileUpdateRequest, RecoveryKeyDeliveryState, RecoveryMethod, RoomListFilter,
-    RoomListProjection, RoomModerationAction, RoomSettingChange, RoomSettingsSnapshot, RoomSummary,
-    RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability, ScheduledSendHandle,
-    ScheduledSendItem, SearchResult, SearchScope, SessionInfo, SettingsPatch, SettingsValues,
-    SpaceSummary, StagedUploadCompressionChoice, StagedUploadItem, SyncMode,
-    TimelineMediaDownloadState, TimelineMediaGalleryItem, TrustOperationFailureKind, UserProfile,
-    VerificationCancelReason, VerificationTarget,
+    AvatarThumbnailState, BasicOperationRequest, CrossSigningStatus, DelegatedAuthLinks,
+    DeviceSessionSummary, DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState, FilesViewScope,
+    IdentityResetAuthType, JapaneseCatalogProfile, LiveEventReceipts, LiveRoomSignalUpdate,
+    LocalEncryptionHealth, LoginFlow, NativeAttentionState, OperationFailureKind, OwnProfile,
+    PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryKeyDeliveryState, RecoveryMethod,
+    RoomListFilter, RoomListProjection, RoomModerationAction, RoomSettingChange,
+    RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji,
+    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope,
+    SessionInfo, SettingsPatch, SettingsValues, SpaceSummary, StagedUploadCompressionChoice,
+    StagedUploadItem, SyncMode, TimelineMediaDownloadState, TimelineMediaGalleryItem,
+    TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
@@ -172,6 +172,10 @@ pub enum AppAction {
     ProfileUpdateFailed {
         request_id: u64,
         message: String,
+    },
+    AvatarThumbnailUpdated {
+        mxc_uri: String,
+        thumbnail: AvatarThumbnailState,
     },
     LoginSubmitted(LoginRequest),
     LoginSucceeded(SessionInfo),

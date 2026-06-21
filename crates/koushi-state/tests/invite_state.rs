@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use koushi_state::{
-    AppAction, AppEffect, AppState, InvitePreview, RoomListFilter, SessionInfo, SessionState,
-    UiEvent, reduce,
+    AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState, InvitePreview,
+    RoomListFilter, SessionInfo, SessionState, UiEvent, reduce,
 };
 
 fn ready_state() -> AppState {
@@ -25,6 +25,22 @@ fn invite_preview(room_id: &str, is_dm: bool) -> InvitePreview {
         inviter_display_name: Some("Inviter".to_owned()),
         inviter_user_id: Some("@inviter:localhost".to_owned()),
         is_dm,
+    }
+}
+
+fn ready_avatar_thumbnail(label: &str) -> AvatarThumbnailState {
+    AvatarThumbnailState::Ready {
+        source_url: format!("file:///tmp/koushi-test-{label}.png"),
+        width: Some(64),
+        height: Some(64),
+        mime_type: Some("image/png".to_owned()),
+    }
+}
+
+fn invite_preview_with_avatar(room_id: &str, is_dm: bool, avatar: AvatarImage) -> InvitePreview {
+    InvitePreview {
+        avatar: Some(avatar),
+        ..invite_preview(room_id, is_dm)
     }
 }
 
@@ -219,6 +235,88 @@ fn invite_list_is_cleared_on_account_switch() {
     assert!(
         state.invites.is_empty(),
         "invite list must be cleared on account switch"
+    );
+}
+
+#[test]
+fn invite_list_updated_preserves_downloaded_avatar_thumbnails() {
+    let mut state = ready_state();
+    let mxc_uri = "mxc://example.invalid/invite-avatar";
+    let thumbnail = ready_avatar_thumbnail("invite");
+    state.invites = vec![invite_preview_with_avatar(
+        "!invite-old:localhost",
+        false,
+        AvatarImage {
+            mxc_uri: mxc_uri.to_owned(),
+            thumbnail: thumbnail.clone(),
+        },
+    )];
+
+    reduce(
+        &mut state,
+        AppAction::InviteListUpdated {
+            invites: vec![invite_preview_with_avatar(
+                "!invite-new:localhost",
+                false,
+                AvatarImage {
+                    mxc_uri: mxc_uri.to_owned(),
+                    thumbnail: AvatarThumbnailState::NotRequested,
+                },
+            )],
+        },
+    );
+
+    assert_eq!(
+        state.invites[0].avatar.as_ref().map(|avatar| &avatar.thumbnail),
+        Some(&thumbnail)
+    );
+}
+
+#[test]
+fn invite_list_updated_preserves_avatar_thumbnails_from_room_snapshot_state() {
+    let mut state = ready_state();
+    let mxc_uri = "mxc://example.invalid/shared-avatar";
+    let thumbnail = ready_avatar_thumbnail("shared");
+    state.rooms = vec![koushi_state::RoomSummary {
+        room_id: "!dm-avatar:localhost".to_owned(),
+        display_name: "Avatar Room".to_owned(),
+        display_label: "Avatar Room".to_owned(),
+        original_display_label: "Avatar Room".to_owned(),
+        avatar: Some(AvatarImage {
+            mxc_uri: mxc_uri.to_owned(),
+            thumbnail: thumbnail.clone(),
+        }),
+        is_dm: true,
+        dm_user_ids: vec!["@shared:localhost".to_owned()],
+        tags: koushi_state::RoomTags::default(),
+        unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
+        marked_unread: false,
+        last_activity_ms: 0,
+        parent_space_ids: vec![],
+        dm_space_ids: vec![],
+        is_encrypted: false,
+        joined_members: 0,
+    }];
+
+    reduce(
+        &mut state,
+        AppAction::InviteListUpdated {
+            invites: vec![invite_preview_with_avatar(
+                "!invite-shared:localhost",
+                false,
+                AvatarImage {
+                    mxc_uri: mxc_uri.to_owned(),
+                    thumbnail: AvatarThumbnailState::NotRequested,
+                },
+            )],
+        },
+    );
+
+    assert_eq!(
+        state.invites[0].avatar.as_ref().map(|avatar| &avatar.thumbnail),
+        Some(&thumbnail)
     );
 }
 
