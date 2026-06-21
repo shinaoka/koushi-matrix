@@ -199,6 +199,36 @@ pub async fn load_room_settings(
 }
 
 #[tauri::command]
+pub async fn reshare_room_key(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_reshare_room_key_command(request_id, room_id))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_operation(
+        &mut event_conn,
+        request_id,
+        ROOM_OPERATION_EVENT_TIMEOUT,
+        |event, expected_request_id| {
+            matches!(
+                event,
+                RoomEvent::RoomKeyReshared { request_id, .. } if *request_id == expected_request_id
+            )
+        },
+        "room key reshare did not complete",
+        "room key reshare failed",
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn update_room_setting(
     room_id: String,
     change: RoomSettingChange,

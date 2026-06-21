@@ -22,12 +22,14 @@ impl std::fmt::Debug for SearchCrawlerState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Emit per-state counts only; omit room ids.
         let mut idle = 0u32;
+        let mut queued = 0u32;
         let mut running = 0u32;
         let mut completed = 0u32;
         let mut failed = 0u32;
         for state in self.rooms.values() {
             match state {
                 SearchCrawlerRoomState::Idle => idle += 1,
+                SearchCrawlerRoomState::Queued => queued += 1,
                 SearchCrawlerRoomState::Running { .. } => running += 1,
                 SearchCrawlerRoomState::Completed { .. } => completed += 1,
                 SearchCrawlerRoomState::Failed { .. } => failed += 1,
@@ -35,6 +37,7 @@ impl std::fmt::Debug for SearchCrawlerState {
         }
         f.debug_struct("SearchCrawlerState")
             .field("idle", &idle)
+            .field("queued", &queued)
             .field("running", &running)
             .field("completed", &completed)
             .field("failed", &failed)
@@ -46,6 +49,7 @@ impl std::fmt::Debug for SearchCrawlerState {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SearchCrawlerRoomState {
     Idle,
+    Queued,
     Running {
         processed: u64,
         indexed: u64,

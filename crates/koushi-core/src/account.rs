@@ -119,6 +119,9 @@ pub enum AccountMessage {
     /// Forward `AppEffect::InvalidateSearchCrawlerCache` to the actor so it
     /// drops its completed-room cache before the subsequent re-enqueue.
     InvalidateSearchCrawlerCache,
+    /// Forward `AppEffect::RebuildSearchIndex` to the actor so it clears local
+    /// search documents and crawl queues before re-enqueue.
+    RebuildSearchIndex,
     ThreadsListCommand(ThreadsListCommand),
     VerificationRequestProgress {
         request_id: RequestId,
@@ -409,6 +412,11 @@ impl AccountActor {
                     // If the actor is not yet running there is no completed-room
                     // cache to clear; the pending_crawler_notification is
                     // already the latest settings so a new crawl will use them.
+                }
+                AccountMessage::RebuildSearchIndex => {
+                    if let Some(handle) = &self.search_actor {
+                        handle.rebuild_search_index().await;
+                    }
                 }
                 AccountMessage::ThreadsListCommand(threads_list_command) => {
                     self.route_threads_list_command(threads_list_command).await;

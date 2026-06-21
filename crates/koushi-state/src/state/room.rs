@@ -36,6 +36,8 @@ pub struct RoomSummary {
     pub last_activity_ms: u64,
     pub parent_space_ids: Vec<String>,
     #[serde(default)]
+    pub dm_space_ids: Vec<String>,
+    #[serde(default)]
     pub is_encrypted: bool,
     #[serde(default)]
     pub joined_members: u64,
@@ -59,6 +61,7 @@ impl fmt::Debug for RoomSummary {
             .field("marked_unread", &self.marked_unread)
             .field("last_activity_ms", &self.last_activity_ms)
             .field("parent_space_ids", &self.parent_space_ids.len())
+            .field("dm_space_ids", &self.dm_space_ids.len())
             .field("is_encrypted", &self.is_encrypted)
             .field("joined_members", &self.joined_members)
             .finish()

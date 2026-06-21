@@ -28,6 +28,7 @@ import {
   shortcutLabelProfileFromLocaleProfile,
   threadReplyToTimelineMessage
 } from "../app/uiShared";
+import type { DisplayDensity, SpaceLocalOverrides } from "../app/localPresentation";
 import type { RightPanelMode } from "../domain/rightPanel";
 import { RecoveryPanel } from "./auth";
 import {
@@ -49,8 +50,10 @@ export function ContextualRightPanel({
   activeRoom,
   activeSpace,
   activeSpaceName,
+  displayDensity = "comfortable",
   isRecoveryBusy,
   mode,
+  roomInfoInitialSection = null,
   recoverySecretFilled,
   recoverySecretInputRef,
   snapshot,
@@ -75,6 +78,7 @@ export function ContextualRightPanel({
   onSetRoomNotificationMode = () => undefined,
   onStartDirectMessage = () => undefined,
   onUpdateMemberRole = () => undefined,
+  onReshareRoomKey = () => undefined,
   onRecoverySecretPresenceChange,
   onReply,
   onResultSelect,
@@ -98,6 +102,7 @@ export function ContextualRightPanel({
   onSubmitIdentityResetOAuth,
   onSubmitIdentityResetPassword,
   onUpdateSettings = () => undefined,
+  onRebuildSearchIndex = () => undefined,
   onSetRoomUrlPreviewOverride = () => undefined,
   onUpdateRoomSetting = () => undefined,
   onIgnoreUser = () => undefined,
@@ -112,15 +117,21 @@ export function ContextualRightPanel({
   onSubmitAccountManagementUia = () => undefined,
   onStartCrawlRoom = () => undefined,
   onStopCrawlRoom = () => undefined,
+  onDisplayDensityChange = () => undefined,
+  onSetSpaceLocalOverride = () => undefined,
+  spaceLocalOverrides = {},
   onTimelineDiagnosticLogEntry,
   onThreadComposerDraftChange,
-  onThreadReplySend
+  onThreadReplySend,
+  threadComposerDraftOverrides = {}
 }: {
   activeRoom: DesktopSnapshot["state"]["domain"]["rooms"][number] | null;
   activeSpace: DesktopSnapshot["state"]["domain"]["spaces"][number] | null;
   activeSpaceName: string;
+  displayDensity?: DisplayDensity;
   isRecoveryBusy: boolean;
   mode: RightPanelMode;
+  roomInfoInitialSection?: "members" | null;
   recoverySecretFilled: boolean;
   recoverySecretInputRef: RefObject<HTMLInputElement | null>;
   snapshot: DesktopSnapshot;
@@ -154,6 +165,7 @@ export function ContextualRightPanel({
     targetUserId: string,
     powerLevel: number
   ) => void;
+  onReshareRoomKey?: (roomId: string) => void;
   onRecoverySecretPresenceChange: (value: boolean) => void;
   onReply: TimelineRowActionHandlers["onReply"];
   onResultSelect: (roomId: string, eventId: string) => void;
@@ -184,6 +196,7 @@ export function ContextualRightPanel({
   onSubmitIdentityResetOAuth: (flowId: number) => void;
   onSubmitIdentityResetPassword: (flowId: number, password: string) => void;
   onUpdateSettings?: (patch: SettingsPatch) => void;
+  onRebuildSearchIndex?: () => void;
   onSetRoomUrlPreviewOverride?: (roomId: string, enabled: boolean) => void;
   onQueryDevices?: () => void;
   onRenameDevice?: (deviceOrdinal: number, displayName: string) => void;
@@ -194,6 +207,12 @@ export function ContextualRightPanel({
   onSubmitAccountManagementUia?: (flowId: number, password: string) => void;
   onStartCrawlRoom?: (roomId: string) => void;
   onStopCrawlRoom?: (roomId: string) => void;
+  onDisplayDensityChange?: (density: DisplayDensity) => void;
+  onSetSpaceLocalOverride?: (
+    spaceId: string,
+    override: { name?: string; icon?: string } | null
+  ) => void;
+  spaceLocalOverrides?: SpaceLocalOverrides;
   onTimelineDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
   onIgnoreUser?: (userId: string) => void;
@@ -201,6 +220,7 @@ export function ContextualRightPanel({
   onReportUser?: (userId: string) => void;
   onThreadComposerDraftChange: (roomId: string, rootEventId: string, draft: string) => void;
   onThreadReplySend: (roomId: string, rootEventId: string, body: string) => void;
+  threadComposerDraftOverrides?: Record<string, string>;
 }) {
   const mediaDownloads = snapshot.state.ui.timeline.media_downloads ?? {};
 
@@ -243,6 +263,7 @@ export function ContextualRightPanel({
         <PanelHeader title={t("panel.userSettings")} onClose={onClosePanel} />
         <UserSettingsPanel
           currentSession={currentSavedSession(snapshot)}
+          displayDensity={displayDensity}
           e2eeTrust={snapshot.state.domain.e2ee_trust}
           localEncryption={snapshot.state.domain.local_encryption}
           keyboardLabelProfile={shortcutLabelProfileFromLocaleProfile(snapshot.state.domain.locale_profile)}
@@ -272,6 +293,7 @@ export function ContextualRightPanel({
           onSubmitIdentityResetOAuth={onSubmitIdentityResetOAuth}
           onSubmitIdentityResetPassword={onSubmitIdentityResetPassword}
           onUpdateSettings={onUpdateSettings}
+          onRebuildSearchIndex={onRebuildSearchIndex}
           onSwitchAccount={onSwitchAccount}
           deviceSessions={snapshot.state.domain.device_sessions}
           accountManagement={snapshot.state.domain.account_management}
@@ -287,6 +309,7 @@ export function ContextualRightPanel({
           onSubmitAccountManagementUia={onSubmitAccountManagementUia ?? (() => undefined)}
           onStartCrawlRoom={onStartCrawlRoom}
           onStopCrawlRoom={onStopCrawlRoom}
+          onDisplayDensityChange={onDisplayDensityChange}
           rooms={snapshot.state.domain.rooms}
         />
       </aside>
@@ -300,6 +323,7 @@ export function ContextualRightPanel({
         <RoomInfoPanel
           currentUserId={snapshot.state.domain.session.user_id ?? null}
           ignoredUserIds={snapshot.state.domain.profile.ignored_user_ids}
+          initialSection={roomInfoInitialSection}
           room={activeRoom}
           roomManagement={snapshot.state.domain.room_management}
           roomNotificationSettings={
@@ -330,6 +354,7 @@ export function ContextualRightPanel({
           onSetRoomNotificationMode={onSetRoomNotificationMode}
           onStartDirectMessage={onStartDirectMessage}
           onUpdateMemberRole={onUpdateMemberRole}
+          onReshareRoomKey={onReshareRoomKey}
           onUpdateRoomSetting={onUpdateRoomSetting}
           onSetRoomUrlPreviewOverride={(roomId, enabled) => {
             void onSetRoomUrlPreviewOverride(roomId, enabled);
@@ -345,6 +370,8 @@ export function ContextualRightPanel({
         <PanelHeader title={t("panel.spaceInfo")} onClose={onClosePanel} />
         <SpaceInfoPanel
           fallbackName={activeSpaceName}
+          localIcon={activeSpace ? spaceLocalOverrides[activeSpace.space_id]?.icon ?? "" : ""}
+          localName={activeSpace ? spaceLocalOverrides[activeSpace.space_id]?.name ?? "" : ""}
           roomManagement={snapshot.state.domain.room_management}
           rooms={snapshot.state.domain.rooms}
           space={activeSpace}
@@ -365,6 +392,11 @@ export function ContextualRightPanel({
           onOpenMembers={
             activeSpace
               ? onOpenSpaceMembers
+              : undefined
+          }
+          onSetLocalPresentation={
+            activeSpace
+              ? (override) => onSetSpaceLocalOverride(activeSpace.space_id, override)
               : undefined
           }
           onStartDirectMessage={onStartDirectMessage}
@@ -471,7 +503,13 @@ export function ContextualRightPanel({
   const threadRoomId = threadState.room_id;
   const rootEventId = threadState.root_event_id;
   const threadComposer = threadState.kind === "open" ? threadState.composer : undefined;
-  const threadDraft = threadComposer?.draft ?? "";
+  const threadDraftKeyValue =
+    threadRoomId && rootEventId ? threadComposerDraftKey(threadRoomId, rootEventId) : null;
+  const threadDraft =
+    threadDraftKeyValue &&
+    Object.prototype.hasOwnProperty.call(threadComposerDraftOverrides, threadDraftKeyValue)
+      ? threadComposerDraftOverrides[threadDraftKeyValue] ?? ""
+      : threadComposer?.draft ?? "";
   const threadSendPending = Boolean(threadComposer?.pending_transaction_id);
   const threadTimelineKeyValue =
     currentUserId && timelineTransport && threadRoomId && rootEventId
@@ -551,6 +589,10 @@ export function ContextualRightPanel({
       />
     </aside>
   );
+}
+
+function threadComposerDraftKey(roomId: string, rootEventId: string): string {
+  return `${roomId}\u0000${rootEventId}`;
 }
 
 export function PanelHeader({

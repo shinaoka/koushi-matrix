@@ -23,6 +23,7 @@ const baseRoom: RoomSummary = {
   dm_user_ids: [],
   tags: { favourite: null, low_priority: null },
   parent_space_ids: ["!space-work:example.invalid"],
+  dm_space_ids: [],
   is_encrypted: false,
   unread_count: 8
 };
@@ -128,6 +129,7 @@ describe("RoomInfoPanel", () => {
           is_dm: true,
           dm_user_ids: ["@alice:example.invalid"],
           parent_space_ids: [],
+          dm_space_ids: [],
           unread_count: 0
         }}
         roomNotificationSettings={idleSettings}
@@ -151,6 +153,7 @@ describe("RoomInfoPanel", () => {
           is_dm: true,
           dm_user_ids: ["@alice:example.invalid"],
           parent_space_ids: [],
+          dm_space_ids: [],
           unread_count: 0
         }}
         roomNotificationSettings={idleSettings}
@@ -203,6 +206,61 @@ describe("RoomInfoPanel", () => {
 
     expect(markup).toContain("Local Remark");
     expect(markup).toContain("Kick Local Remark");
+  });
+
+  test("shows user trust state and help access in member rows", () => {
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={{
+          selected_room_id: "!room-alpha:example.invalid",
+          settings: {
+            room_id: "!room-alpha:example.invalid",
+            name: "Alpha Room",
+            topic: null,
+            avatar_url: null,
+            join_rule: "invite",
+            history_visibility: "shared",
+            permissions: {
+              can_edit_settings: true,
+              can_edit_roles: true,
+              can_kick: true,
+              can_ban: true,
+              can_unban: false
+            },
+            members: [
+              {
+                user_id: "@verified:example.invalid",
+                display_name: "Verified User",
+                display_label: "Verified User",
+                original_display_label: "Verified User",
+                avatar_url: null,
+                power_level: 0,
+                role: "user",
+                user_trust: { kind: "verified" }
+              },
+              {
+                user_id: "@reset:example.invalid",
+                display_name: "Reset User",
+                display_label: "Reset User",
+                original_display_label: "Reset User",
+                avatar_url: null,
+                power_level: 0,
+                role: "user",
+                user_trust: { kind: "identityReset" }
+              }
+            ]
+          },
+          operation: { kind: "idle" }
+        }}
+      />
+    );
+
+    expect(screen.getByText("Verified")).toBeTruthy();
+    expect(screen.getByText("Identity reset")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Explain user trust" })).toHaveLength(2);
   });
 
   test("renders alias edit controls with Rust-projected original member context", () => {

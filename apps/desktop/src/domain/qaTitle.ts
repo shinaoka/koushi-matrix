@@ -104,6 +104,7 @@ export function qaSearchCrawlerDiagnosticTokens(snapshot: DesktopSnapshot): stri
     (current, roomState) => summarizeCrawlerRoomState(current, roomState),
     {
       running: 0,
+      queued: 0,
       completed: 0,
       failed: 0,
       processed: 0,
@@ -112,6 +113,7 @@ export function qaSearchCrawlerDiagnosticTokens(snapshot: DesktopSnapshot): stri
   );
   return [
     `crawler_running=${summary.running}`,
+    `crawler_queued=${summary.queued}`,
     `crawler_completed=${summary.completed}`,
     `crawler_failed=${summary.failed}`,
     `crawler_processed=${summary.processed}`,
@@ -122,6 +124,7 @@ export function qaSearchCrawlerDiagnosticTokens(snapshot: DesktopSnapshot): stri
 function summarizeCrawlerRoomState(
   current: {
     running: number;
+    queued: number;
     completed: number;
     failed: number;
     processed: number;
@@ -133,6 +136,8 @@ function summarizeCrawlerRoomState(
     current.running += 1;
     current.processed += roomState.processed;
     current.indexed += roomState.indexed;
+  } else if (roomState.kind === "queued") {
+    current.queued += 1;
   } else if (roomState.kind === "completed") {
     current.completed += 1;
     current.indexed += roomState.indexed;

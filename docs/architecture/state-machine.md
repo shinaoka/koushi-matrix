@@ -173,9 +173,14 @@ stateDiagram-v2
 ## Navigation
 
 - Spaces filter non-DM rooms.
-- DMs are global and remain visible regardless of active Space.
-- If no active Space is selected, only non-DM rooms with no parent Space appear
-  in the room list.
+- DMs are shown in full only in Home (no active Space). When a Space is active,
+  the DM section shows DMs where at least one counterpart is a member of that
+  Space's room (any counterpart for group DMs); a DM matching no Space appears
+  only in Home. The association is counterpart space-room membership, computed
+  Rust-side as `RoomSummary.dm_space_ids` (DMs are never assigned to Spaces via
+  `m.space.child`/`m.space.parent`).
+- If no active Space is selected, the room list shows non-DM rooms with no parent
+  Space, plus all DMs (Home shows DMs in full).
 - Navigation remembers the last non-DM room selected inside each Space. Selecting
   a Space restores that room when it still belongs to the Space, otherwise it
   falls back to the Space's first non-DM room and retargets the timeline.

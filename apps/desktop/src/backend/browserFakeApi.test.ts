@@ -120,7 +120,8 @@ describe("BrowserFakeApi settings preview", () => {
       typing_user_ids: []
     };
 
-    const updated = await api.sendReadReceipt("!room-alpha:example.invalid", eventId);
+    await api.sendReadReceipt("!room-alpha:example.invalid", eventId);
+    const updated = await api.getSnapshot();
 
     const summary =
       updated.state.domain.live_signals.rooms["!room-alpha:example.invalid"]?.receipts_by_event[

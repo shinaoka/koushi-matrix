@@ -177,7 +177,7 @@ pub async fn observe_timeline_viewport(
     at_bottom: bool,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
+) -> Result<(), String> {
     let account_key = account_key_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
@@ -193,5 +193,5 @@ pub async fn observe_timeline_viewport(
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
+    Ok(())
 }

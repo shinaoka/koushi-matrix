@@ -536,11 +536,13 @@ test("scrolling to bottom marks the latest readable event", async ({ page }) => 
 });
 
 test("timeline jump-to-date dispatches Rust timestamp resolution", async ({ page }) => {
-  await page.goto("/harness.html?autoLoadOlderMessages=true");
+  await page.goto("/appHarness.html");
   await page.waitForSelector("[data-testid=timeline-view]");
   await pushInitialTimelineItems(page, 8);
 
-  await page.getByLabel("Jump to date").fill("2026-06-16T12:34");
+  await page.getByRole("button", { name: "Jump to date" }).click();
+  await expect(page.getByRole("dialog", { name: "Jump to date" })).toBeVisible();
+  await page.getByRole("textbox", { name: "Jump to date" }).fill("2026-06-16T12:34");
   await page.getByRole("button", { name: "Open date in timeline" }).click();
 
   const expectedTimestamp = await page.evaluate(() =>
@@ -559,11 +561,13 @@ test("timeline jump-to-date dispatches Rust timestamp resolution", async ({ page
 });
 
 test("timeline jump-to-date reads the submitted input value", async ({ page }) => {
-  await page.goto("/harness.html?autoLoadOlderMessages=true");
+  await page.goto("/appHarness.html");
   await page.waitForSelector("[data-testid=timeline-view]");
   await pushInitialTimelineItems(page, 8);
 
-  await page.getByLabel("Jump to date").evaluate((node) => {
+  await page.getByRole("button", { name: "Jump to date" }).click();
+  await expect(page.getByRole("dialog", { name: "Jump to date" })).toBeVisible();
+  await page.getByRole("textbox", { name: "Jump to date" }).evaluate((node) => {
     (node as HTMLInputElement).value = "2026-06-16T12:35";
   });
   await page.getByRole("button", { name: "Open date in timeline" }).click();

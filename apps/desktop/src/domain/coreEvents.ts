@@ -193,7 +193,20 @@ export interface TimelineItem {
   can_edit: boolean;
   actions?: TimelineMessageActions;
   send_state?: TimelineSendState | null;
+  unable_to_decrypt?: TimelineUnableToDecrypt | null;
 }
+
+export interface TimelineUnableToDecrypt {
+  session_id: string | null;
+  reason: TimelineUnableToDecryptReason;
+  can_request_keys: boolean;
+}
+
+export type TimelineUnableToDecryptReason =
+  | "missingRoomKey"
+  | "withheld"
+  | "malformed"
+  | "unknown";
 
 export interface ThreadSummaryDto {
   reply_count: number;
@@ -519,9 +532,15 @@ export interface RoomMemberSummary {
   avatar_url: string | null;
   power_level: number | null;
   role: RoomMemberRole;
+  user_trust?: UserTrustState;
 }
 
 export type RoomMemberRole = "creator" | "administrator" | "moderator" | "user";
+
+export type UserTrustState =
+  | { kind: "unverified" }
+  | { kind: "verified" }
+  | { kind: "identityReset" };
 
 export type RoomJoinRule = "public" | "invite" | "knock" | "restricted" | "private";
 

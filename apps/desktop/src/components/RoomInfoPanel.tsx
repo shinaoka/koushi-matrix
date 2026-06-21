@@ -1,7 +1,18 @@
-import { Bell, ChevronRight, FileText, Link, MessageCircle, Settings, Users } from "lucide-react";
+import {
+  Bell,
+  ChevronRight,
+  FileText,
+  KeyRound,
+  Link,
+  MessageCircle,
+  MoreHorizontal,
+  Settings,
+  Users
+} from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { t } from "../i18n/messages";
+import { UserTrustChip } from "./TrustHelp";
 import type {
   RoomHistoryVisibility,
   RoomJoinRule,
@@ -21,6 +32,7 @@ import type {
 export function RoomInfoPanel({
   currentUserId = null,
   ignoredUserIds = [],
+  initialSection = null,
   room,
   roomManagement,
   roomNotificationSettings,
@@ -37,11 +49,13 @@ export function RoomInfoPanel({
   onSetRoomNotificationMode,
   onStartDirectMessage,
   onUpdateMemberRole,
+  onReshareRoomKey,
   onUpdateRoomSetting,
   onSetRoomUrlPreviewOverride
 }: {
   currentUserId?: string | null;
   ignoredUserIds?: string[];
+  initialSection?: "members" | null;
   room: RoomSummary | null;
   roomManagement?: RoomManagementState;
   roomNotificationSettings: RoomNotificationSettings | undefined;
@@ -64,6 +78,7 @@ export function RoomInfoPanel({
   onStartDirectMessage?: (userId: string) => void;
   onUpdateRoomSetting?: (roomId: string, change: RoomSettingChange) => void;
   onUpdateMemberRole?: (roomId: string, targetUserId: string, powerLevel: number) => void;
+  onReshareRoomKey?: (roomId: string) => void | Promise<void>;
   onSetRoomUrlPreviewOverride?: (roomId: string, enabled: boolean) => void;
 }) {
   const roomId = room?.room_id ?? "";
@@ -99,6 +114,7 @@ export function RoomInfoPanel({
     useState<RoomHistoryVisibility>(settings?.history_visibility ?? "shared");
   const [aliasTarget, setAliasTarget] = useState<RoomMemberSummary | null>(null);
   const [aliasDraft, setAliasDraft] = useState("");
+  const [reshareState, setReshareState] = useState<"idle" | "pending" | "success" | "error">("idle");
   const membersRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -108,6 +124,32 @@ export function RoomInfoPanel({
     setJoinRuleDraft(settings?.join_rule ?? "invite");
     setHistoryVisibilityDraft(settings?.history_visibility ?? "shared");
   }, [roomName, settings]);
+
+  useEffect(() => {
+    if (initialSection !== "members") {
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      membersRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [initialSection, roomId, memberProfiles.length]);
+
+  useEffect(() => {
+    setReshareState("idle");
+  }, [roomId]);
+
+  async function reshareRoomKeys() {
+    if (!onReshareRoomKey || reshareState === "pending") {
+      return;
+    }
+    setReshareState("pending");
+    try {
+      await onReshareRoomKey(roomId);
+      setReshareState("success");
+    } catch {
+      setReshareState("error");
+    }
+  }
 
   const closeAliasDialog = () => {
     setAliasTarget(null);
@@ -177,6 +219,31 @@ export function RoomInfoPanel({
           <DetailRow label={t("room.searchIndex")} value={t("room.exactVerifiedResults")} />
           <DetailRow label={t("room.dmList")} value={room.is_dm ? t("room.globalDmList") : t("room.roomScoped")} />
         </div>
+        {isEncrypted ? (
+          <div className="room-key-actions">
+            <button
+              className="profile-settings-action"
+              type="button"
+              disabled={!onReshareRoomKey || reshareState === "pending"}
+              onClick={() => {
+                void reshareRoomKeys();
+              }}
+            >
+              <KeyRound size={16} aria-hidden="true" />
+              <span>
+                {reshareState === "pending"
+                  ? t("room.reshareRoomKeysPending")
+                  : t("room.reshareRoomKeys")}
+              </span>
+            </button>
+            <p className="profile-settings-hint">{t("room.reshareRoomKeysHint")}</p>
+            {reshareState === "success" ? (
+              <p className="profile-settings-hint success">{t("room.reshareRoomKeysSuccess")}</p>
+            ) : reshareState === "error" ? (
+              <p className="profile-settings-hint error">{t("room.reshareRoomKeysError")}</p>
+            ) : null}
+          </div>
+        ) : null}
       </section>
 
       {appSettings && linkPreviewSettings && onSetRoomUrlPreviewOverride ? (
@@ -422,7 +489,14 @@ export function RoomInfoPanel({
             {memberProfiles.map((profile) => (
               <li className="room-member-row" key={profile.user_id}>
                 <span className="room-member-main">
-                  <span dir="auto">{memberLabel(profile)}</span>
+                  <button
+                    className="room-member-name-button"
+                    type="button"
+                    disabled={!onStartDirectMessage}
+                    onClick={() => onStartDirectMessage?.(profile.user_id)}
+                  >
+                    <span dir="auto">{memberLabel(profile)}</span>
+                  </button>
                   <small dir="auto">{profile.user_id}</small>
                   {aliasIsActive(profile) ? (
                     <small className="room-member-original-context" dir="auto">
@@ -432,20 +506,19 @@ export function RoomInfoPanel({
                     </small>
                   ) : null}
                   <small>{roomMemberRoleLabel(profile.role)}</small>
+                  <UserTrustChip state={profile.user_trust ?? null} />
                 </span>
                 <span className="room-member-actions">
                   <button
-                    className="profile-settings-action room-member-action"
+                    className="profile-settings-action room-member-action room-member-icon-action"
                     type="button"
                     aria-label={t("room.messageMember", { name: memberLabel(profile) })}
                     disabled={!onStartDirectMessage}
                     onClick={() => onStartDirectMessage?.(profile.user_id)}
                   >
                     <MessageCircle size={14} />
-                    {t("workspace.newDm")}
                   </button>
                   <label className="room-member-role-field">
-                    <span>{t("room.memberRole")}</span>
                     <select
                       aria-label={t("room.memberRoleFor", { name: memberLabel(profile) })}
                       value={profile.power_level === null ? "creator" : String(profile.power_level)}
@@ -488,9 +561,19 @@ export function RoomInfoPanel({
                       >
                         {t(aliasIsActive(profile) ? "room.editAlias" : "room.setAlias")}
                       </button>
-                      {aliasIsActive(profile) ? (
+                    </>
+                  ) : null}
+                  <details className="room-member-menu">
+                    <summary
+                      className="profile-settings-action room-member-action room-member-icon-action"
+                      aria-label={t("context.openRoomInfo")}
+                    >
+                      <MoreHorizontal size={14} />
+                    </summary>
+                    <div className="room-member-menu-popover">
+                      {aliasIsActive(profile) && onSetLocalUserAlias ? (
                         <button
-                          className="profile-settings-action room-member-action"
+                          className="room-member-menu-item"
                           type="button"
                           aria-label={t("room.clearAliasForMember", {
                             name: memberLabel(profile)
@@ -500,68 +583,68 @@ export function RoomInfoPanel({
                           {t("room.clearAlias")}
                         </button>
                       ) : null}
-                    </>
-                  ) : null}
-                  <ModerationButton
-                    action="kick"
-                    disabled={
-                      !permissions?.can_kick || moderationPending || !onModerateMember
-                    }
-                    label={t("room.kickMember", { name: memberLabel(profile) })}
-                    onClick={() =>
-                      onModerateMember?.(room.room_id, profile.user_id, "kick", null)
-                    }
-                  />
-                  <ModerationButton
-                    action="ban"
-                    disabled={
-                      !permissions?.can_ban || moderationPending || !onModerateMember
-                    }
-                    label={t("room.banMember", { name: memberLabel(profile) })}
-                    onClick={() =>
-                      onModerateMember?.(room.room_id, profile.user_id, "ban", null)
-                    }
-                  />
-                  <ModerationButton
-                    action="unban"
-                    disabled={
-                      !permissions?.can_unban || moderationPending || !onModerateMember
-                    }
-                    label={t("room.unbanMember", { name: memberLabel(profile) })}
-                    onClick={() =>
-                      onModerateMember?.(room.room_id, profile.user_id, "unban", null)
-                    }
-                  />
-                  {ignoredUserIds.includes(profile.user_id) ? (
-                    <button
-                      className="profile-settings-action room-member-action"
-                      type="button"
-                      aria-label={t("context.unignoreUser")}
-                      disabled={!onUnignoreUser}
-                      onClick={() => onUnignoreUser?.(profile.user_id)}
-                    >
-                      {t("context.unignoreUser")}
-                    </button>
-                  ) : (
-                    <button
-                      className="profile-settings-action room-member-action"
-                      type="button"
-                      aria-label={t("context.ignoreUser")}
-                      disabled={!onIgnoreUser}
-                      onClick={() => onIgnoreUser?.(profile.user_id)}
-                    >
-                      {t("context.ignoreUser")}
-                    </button>
-                  )}
-                  <button
-                    className="profile-settings-action room-member-action"
-                    type="button"
-                    aria-label={t("context.reportUser")}
-                    disabled={!onReportUser}
-                    onClick={() => onReportUser?.(profile.user_id)}
-                  >
-                    {t("context.reportUser")}
-                  </button>
+                      <ModerationButton
+                        action="kick"
+                        disabled={
+                          !permissions?.can_kick || moderationPending || !onModerateMember
+                        }
+                        label={t("room.kickMember", { name: memberLabel(profile) })}
+                        onClick={() =>
+                          onModerateMember?.(room.room_id, profile.user_id, "kick", null)
+                        }
+                      />
+                      <ModerationButton
+                        action="ban"
+                        disabled={
+                          !permissions?.can_ban || moderationPending || !onModerateMember
+                        }
+                        label={t("room.banMember", { name: memberLabel(profile) })}
+                        onClick={() =>
+                          onModerateMember?.(room.room_id, profile.user_id, "ban", null)
+                        }
+                      />
+                      <ModerationButton
+                        action="unban"
+                        disabled={
+                          !permissions?.can_unban || moderationPending || !onModerateMember
+                        }
+                        label={t("room.unbanMember", { name: memberLabel(profile) })}
+                        onClick={() =>
+                          onModerateMember?.(room.room_id, profile.user_id, "unban", null)
+                        }
+                      />
+                      {ignoredUserIds.includes(profile.user_id) ? (
+                        <button
+                          className="room-member-menu-item"
+                          type="button"
+                          aria-label={t("context.unignoreUser")}
+                          disabled={!onUnignoreUser}
+                          onClick={() => onUnignoreUser?.(profile.user_id)}
+                        >
+                          {t("context.unignoreUser")}
+                        </button>
+                      ) : (
+                        <button
+                          className="room-member-menu-item"
+                          type="button"
+                          aria-label={t("context.ignoreUser")}
+                          disabled={!onIgnoreUser}
+                          onClick={() => onIgnoreUser?.(profile.user_id)}
+                        >
+                          {t("context.ignoreUser")}
+                        </button>
+                      )}
+                      <button
+                        className="room-member-menu-item"
+                        type="button"
+                        aria-label={t("context.reportUser")}
+                        disabled={!onReportUser}
+                        onClick={() => onReportUser?.(profile.user_id)}
+                      >
+                        {t("context.reportUser")}
+                      </button>
+                    </div>
+                  </details>
                 </span>
               </li>
             ))}

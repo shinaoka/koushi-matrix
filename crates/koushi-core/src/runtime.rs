@@ -1172,6 +1172,15 @@ impl AppActor {
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
+                AppCommand::RebuildSearchIndex { request_id } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::SearchIndexRebuildRequested {
+                            request_id: request_id.sequence,
+                        })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
                 AppCommand::SetRoomUrlPreviewOverride {
                     request_id,
                     room_id,
@@ -1645,6 +1654,11 @@ impl AppActor {
                     .account_actor
                     .send(crate::account::AccountMessage::InvalidateSearchCrawlerCache)
                     .await;
+            } else if let AppEffect::RebuildSearchIndex = effect {
+                let _ = self
+                    .account_actor
+                    .send(crate::account::AccountMessage::RebuildSearchIndex)
+                    .await;
             } else if let AppEffect::PersistSettings {
                 request_id: effect_request_id,
                 values,
@@ -1737,6 +1751,11 @@ impl AppActor {
                 let _ = self
                     .account_actor
                     .send(crate::account::AccountMessage::InvalidateSearchCrawlerCache)
+                    .await;
+            } else if let AppEffect::RebuildSearchIndex = effect {
+                let _ = self
+                    .account_actor
+                    .send(crate::account::AccountMessage::RebuildSearchIndex)
                     .await;
             }
         }
@@ -2356,6 +2375,7 @@ mod tests {
                 can_edit: false,
                 actions: Default::default(),
                 send_state: None,
+                unable_to_decrypt: None,
             }],
         }));
 
@@ -2416,6 +2436,7 @@ mod tests {
                     can_edit: false,
                     actions: Default::default(),
                     send_state: None,
+                    unable_to_decrypt: None,
                 },
             }],
         }));

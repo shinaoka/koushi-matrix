@@ -1,4 +1,9 @@
-import { composeSidebar, roomIsInScope, textRangeUtf16 } from "../domain/desktopModel";
+import {
+  composeSidebar,
+  projectRoomSummaries,
+  roomIsInScope,
+  textRangeUtf16
+} from "../domain/desktopModel";
 import { computeBrowserRoomListProjection } from "./roomListProjection";
 import type {
   AvatarThumbnailState,
@@ -63,6 +68,7 @@ export interface DesktopApi {
   submitRecovery(secret: string): Promise<DesktopSnapshot>;
   restartSync(): Promise<DesktopSnapshot>;
   updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot>;
+  rebuildSearchIndex(): Promise<DesktopSnapshot>;
   setRoomUrlPreviewOverride(roomId: string, enabled: boolean): Promise<DesktopSnapshot>;
   selectRoomListFilter(filter: RoomListFilter): Promise<DesktopSnapshot>;
   markRoomAsRead(roomId: string, eventId: string): Promise<DesktopSnapshot>;
@@ -127,9 +133,9 @@ export interface DesktopApi {
     reactionKey: string,
     reactionEventId: string
   ): Promise<DesktopSnapshot>;
-  sendReadReceipt(roomId: string, eventId: string): Promise<DesktopSnapshot>;
-  setFullyRead(roomId: string, eventId: string): Promise<DesktopSnapshot>;
-  setTyping(roomId: string, isTyping: boolean): Promise<DesktopSnapshot>;
+  sendReadReceipt(roomId: string, eventId: string): Promise<void>;
+  setFullyRead(roomId: string, eventId: string): Promise<void>;
+  setTyping(roomId: string, isTyping: boolean): Promise<void>;
   setPresence(presence: PresenceKind): Promise<DesktopSnapshot>;
   setDisplayName(displayName: string | null): Promise<DesktopSnapshot>;
   setLocalUserAlias(userId: string, alias: string | null): Promise<DesktopSnapshot>;
@@ -142,6 +148,7 @@ export interface DesktopApi {
   editMessage(roomId: string, eventId: string, body: string): Promise<DesktopSnapshot>;
   redactMessage(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   loadMessageSource(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  requestRoomKey(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   forwardMessage(
     roomId: string,
     sourceEventId: string,
@@ -155,6 +162,7 @@ export interface DesktopApi {
   removeRoomTag(roomId: string, tag: RoomTagKind): Promise<DesktopSnapshot>;
   pinEvent(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   unpinEvent(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  reshareRoomKey(roomId: string): Promise<DesktopSnapshot>;
   openActivity(): Promise<DesktopSnapshot>;
   closeActivity(): Promise<DesktopSnapshot>;
   setActivityTab(tab: ActivityTab): Promise<DesktopSnapshot>;
@@ -225,6 +233,7 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async getSnapshot(): Promise<DesktopSnapshot> {
+    this.refreshRoomPresentation();
     return clone(this.snapshot);
   }
 
@@ -469,6 +478,18 @@ class BrowserFakeApi implements DesktopApi {
       this.snapshot.state.domain.spaces,
       this.snapshot.state.domain.rooms,
       this.snapshot.state.domain.invites
+    );
+  }
+
+  private refreshRoomPresentation(): void {
+    this.snapshot.state.domain.rooms = projectRoomSummaries(
+      this.snapshot.state.domain.rooms,
+      this.snapshot.state.domain.profile
+    );
+    this.snapshot.sidebar = composeSidebar(
+      this.snapshot.state.ui.navigation.active_space_id,
+      this.snapshot.state.domain.spaces,
+      this.snapshot.state.domain.rooms
     );
   }
 
@@ -1060,10 +1081,10 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
-  async sendReadReceipt(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+  async sendReadReceipt(roomId: string, eventId: string): Promise<void> {
     const session = this.snapshot.state.domain.session;
     if (!this.isReady() || !session.user_id || eventId.trim().length === 0) {
-      return this.getSnapshot();
+      return;
     }
     const roomSignals = ensureRoomLiveSignals(this.snapshot, roomId);
     const existing = roomSignals.receipts_by_event[eventId]?.readers ?? [];
@@ -1077,26 +1098,23 @@ class BrowserFakeApi implements DesktopApi {
         timestamp_ms: Date.now()
       }
     ]);
-    return this.getSnapshot();
   }
 
-  async setFullyRead(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+  async setFullyRead(roomId: string, eventId: string): Promise<void> {
     if (!this.isReady() || eventId.trim().length === 0) {
-      return this.getSnapshot();
+      return;
     }
     ensureRoomLiveSignals(this.snapshot, roomId).fully_read_event_id = eventId;
-    return this.getSnapshot();
   }
 
-  async setTyping(roomId: string, isTyping: boolean): Promise<DesktopSnapshot> {
+  async setTyping(roomId: string, isTyping: boolean): Promise<void> {
     const session = this.snapshot.state.domain.session;
     if (!this.isReady() || !session.user_id) {
-      return this.getSnapshot();
+      return;
     }
     const roomSignals = ensureRoomLiveSignals(this.snapshot, roomId);
     const withoutSelf = roomSignals.typing_user_ids.filter((userId) => userId !== session.user_id);
     roomSignals.typing_user_ids = isTyping ? [...withoutSelf, session.user_id] : withoutSelf;
-    return this.getSnapshot();
   }
 
   async setPresence(presence: PresenceKind): Promise<DesktopSnapshot> {
@@ -1263,6 +1281,10 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async loadMessageSource(_roomId: string, _eventId: string): Promise<DesktopSnapshot> {
+    return this.getSnapshot();
+  }
+
+  async requestRoomKey(_roomId: string, _eventId: string): Promise<DesktopSnapshot> {
     return this.getSnapshot();
   }
 
@@ -1556,6 +1578,7 @@ class BrowserFakeApi implements DesktopApi {
       tags: emptyRoomTags(),
       unread_count: 0,
       parent_space_ids: [],
+      dm_space_ids: [],
       is_encrypted: false
     };
 
@@ -1581,6 +1604,10 @@ class BrowserFakeApi implements DesktopApi {
       settings: this.roomSettingsSnapshot(normalizedRoomId),
       operation: { kind: "idle" }
     };
+    return this.getSnapshot();
+  }
+
+  async reshareRoomKey(_roomId: string): Promise<DesktopSnapshot> {
     return this.getSnapshot();
   }
 
@@ -1795,6 +1822,7 @@ class BrowserFakeApi implements DesktopApi {
       tags: emptyRoomTags(),
       unread_count: 0,
       parent_space_ids: [],
+      dm_space_ids: [],
       is_encrypted: false
     };
     this.snapshot.state.domain.rooms = [...this.snapshot.state.domain.rooms, newRoom];
@@ -1882,6 +1910,7 @@ class BrowserFakeApi implements DesktopApi {
       tags: emptyRoomTags(),
       unread_count: 0,
       parent_space_ids: [],
+      dm_space_ids: [],
       is_encrypted: false
     };
     this.snapshot.state.domain.invites = this.snapshot.state.domain.invites.filter(
@@ -1933,6 +1962,7 @@ class BrowserFakeApi implements DesktopApi {
       tags: emptyRoomTags(),
       unread_count: 0,
       parent_space_ids: [],
+      dm_space_ids: [],
       is_encrypted: false
     };
     this.snapshot.state.domain.rooms = [...this.snapshot.state.domain.rooms, newRoom];
@@ -2238,6 +2268,18 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
+  async rebuildSearchIndex(): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.domain.search_crawler = {
+      rooms: Object.fromEntries(
+        this.snapshot.state.domain.rooms.map((room) => [room.room_id, { kind: "idle" as const }])
+      )
+    };
+    return this.getSnapshot();
+  }
+
   async startRoomCrawl(roomId: string): Promise<DesktopSnapshot> {
     // Browser fake: transition the room to running state so tests can observe state changes.
     if (!this.canUseSyncedViews() || !roomId.trim()) {
@@ -2246,7 +2288,7 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.domain.search_crawler = {
       rooms: {
         ...this.snapshot.state.domain.search_crawler.rooms,
-        [roomId]: { kind: "running", processed: 0, indexed: 0 }
+        [roomId]: { kind: "queued" }
       }
     };
     return this.getSnapshot();
@@ -3456,6 +3498,7 @@ const rooms: RoomSummary[] = [
     tags: emptyRoomTags(),
     unread_count: 8,
     parent_space_ids: ["!space-alpha:example.invalid"],
+    dm_space_ids: [],
     is_encrypted: false
   },
   {
@@ -3469,6 +3512,7 @@ const rooms: RoomSummary[] = [
     tags: emptyRoomTags(),
     unread_count: 2,
     parent_space_ids: ["!space-alpha:example.invalid"],
+    dm_space_ids: [],
     is_encrypted: false
   },
   {
@@ -3482,6 +3526,7 @@ const rooms: RoomSummary[] = [
     tags: emptyRoomTags(),
     unread_count: 1,
     parent_space_ids: ["!space-beta:example.invalid"],
+    dm_space_ids: [],
     is_encrypted: false
   },
   {
@@ -3495,6 +3540,7 @@ const rooms: RoomSummary[] = [
     tags: emptyRoomTags(),
     unread_count: 1,
     parent_space_ids: [],
+    dm_space_ids: [],
     is_encrypted: false
   },
   {
@@ -3508,6 +3554,7 @@ const rooms: RoomSummary[] = [
     tags: emptyRoomTags(),
     unread_count: 0,
     parent_space_ids: [],
+    dm_space_ids: [],
     is_encrypted: false
   }
 ];

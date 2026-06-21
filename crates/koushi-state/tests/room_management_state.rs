@@ -46,6 +46,7 @@ fn editable_settings(room_id: &str) -> RoomSettingsSnapshot {
                 avatar_url: None,
                 power_level: Some(100),
                 role: RoomMemberRole::Administrator,
+                user_trust: None,
             },
             RoomMemberSummary {
                 user_id: "@target:example.invalid".to_owned(),
@@ -55,6 +56,7 @@ fn editable_settings(room_id: &str) -> RoomSettingsSnapshot {
                 avatar_url: Some("mxc://example.invalid/target-avatar".to_owned()),
                 power_level: Some(0),
                 role: RoomMemberRole::User,
+                user_trust: None,
             },
         ],
     }

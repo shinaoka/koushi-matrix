@@ -25,11 +25,12 @@ eyeball = "0.8"
 eyeball-im = "0.8"
 futures-util = "0.3"
 regex = "1"
-matrix-sdk = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk", default-features = false, features = ["e2e-encryption", "experimental-search", "sqlite"] }
+matrix-sdk = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk", default-features = false, features = ["automatic-room-key-forwarding", "e2e-encryption", "experimental-search", "sqlite"] }
 matrix-sdk-ui = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk-ui", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter"] }
 # Confined to executor.rs and channel plumbing per Platform Portability rule 2.
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 

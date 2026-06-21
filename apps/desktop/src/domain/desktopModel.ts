@@ -1,6 +1,7 @@
 import type {
   DesktopSnapshot,
   InvitePreview,
+  ProfileState,
   RoomListItem,
   RoomListProjection,
   RoomListSections,
@@ -14,6 +15,39 @@ export function visibleRooms(snapshot: DesktopSnapshot): VisibleRooms {
   return {
     spaceRooms: snapshot.sidebar.space_rooms,
     globalDms: snapshot.sidebar.global_dms
+  };
+}
+
+export function projectRoomSummaries(
+  rooms: RoomSummary[],
+  profile: ProfileState
+): RoomSummary[] {
+  return rooms.map((room) => projectRoomSummary(room, profile));
+}
+
+function projectRoomSummary(room: RoomSummary, profile: ProfileState): RoomSummary {
+  if (!room.is_dm || room.dm_user_ids.length !== 1) {
+    return room;
+  }
+  const user = profile.users[room.dm_user_ids[0] ?? ""];
+  if (!user) {
+    return room;
+  }
+  const displayLabel = user.display_label.trim() || room.display_label;
+  const originalDisplayLabel = user.original_display_label.trim() || room.original_display_label;
+  const avatar = user.avatar ?? room.avatar;
+  if (
+    displayLabel === room.display_label &&
+    originalDisplayLabel === room.original_display_label &&
+    avatar === room.avatar
+  ) {
+    return room;
+  }
+  return {
+    ...room,
+    display_label: displayLabel,
+    original_display_label: originalDisplayLabel,
+    avatar
   };
 }
 
@@ -136,18 +170,26 @@ export function composeSidebar(
   spaces: SpaceSummary[],
   rooms: RoomSummary[]
 ): DesktopSnapshot["sidebar"] {
+  const roomById = new Map(rooms.map((room) => [room.room_id, room]));
+  const activeSpace = activeSpaceId
+    ? spaces.find((space) => space.space_id === activeSpaceId) ?? null
+    : null;
   const roomExists = (room: RoomSummary | undefined): room is RoomSummary =>
     room !== undefined && !room.is_dm;
 
   const spaceRooms = activeSpaceId
-    ? spaces
-        .find((space) => space.space_id === activeSpaceId)
-        ?.child_room_ids.map((roomId) => rooms.find((room) => room.room_id === roomId))
+    ? activeSpace
+        ?.child_room_ids.map((roomId) => roomById.get(roomId))
         .filter(roomExists)
         .map(roomListItem) ?? []
     : rooms.filter((room) => !room.is_dm).map(roomListItem);
 
-  const globalDms = rooms.filter((room) => room.is_dm).map(roomListItem);
+  const globalDms = rooms
+    .filter(
+      (room) =>
+        room.is_dm && (activeSpaceId === null || room.dm_space_ids.includes(activeSpaceId))
+    )
+    .map(roomListItem);
 
   return {
     active_space_id: activeSpaceId,

@@ -1135,6 +1135,39 @@ describe("desktop release scripts", () => {
     expect(source).toContain("KOUSHI_QA_SCENARIO");
   });
 
+  test("headless local QA forwards explicit Rust diagnostics env to core QA", () => {
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-headless-local-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("KOUSHI_QA_RUST_LOG");
+    expect(source).toContain("KOUSHI_QA_RUST_BACKTRACE");
+    expect(source).toContain("env.RUST_LOG = process.env.KOUSHI_QA_RUST_LOG");
+    expect(source).not.toContain('"RUST_LOG",');
+    expect(source).not.toContain('"RUST_BACKTRACE",');
+    expect(source).toContain("KOUSHI_QA_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND");
+  });
+
+  test("headless local QA exposes strict E2EE multi-device options", () => {
+    const usage = runScript("scripts/desktop-headless-local-qa.mjs");
+    const source = readFileSync(
+      new URL("../../../../scripts/desktop-headless-local-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(usage).toContain("--e2ee-recipient-second-device");
+    expect(usage).toContain("--e2ee-pause-sync-before-multi-device-send");
+    expect(source).toContain("e2eeRecipientSecondDeviceOption");
+    expect(source).toContain("env.KOUSHI_QA_E2EE_RECIPIENT_SECOND_DEVICE = \"true\"");
+    expect(source).toContain(
+      "env.KOUSHI_QA_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND = \"true\""
+    );
+    expect(source.indexOf("if (e2eeRecipientSecondDeviceOption)")).toBeGreaterThan(
+      source.indexOf("for (const name of [")
+    );
+  });
+
   test("headless local QA can replay a saved Synapse fixture without mutating the source data", () => {
     const source = readFileSync(
       new URL("../../../../scripts/desktop-headless-local-qa.mjs", import.meta.url),
@@ -1164,22 +1197,22 @@ describe("desktop release scripts", () => {
     expect(source).not.toContain("console.log(fixture");
   });
 
-  test("headless local QA runner validates child output before writing artifacts", () => {
+  test("headless local QA runner preserves raw child logs before public privacy validation", () => {
     const source = readFileSync(
       new URL("../../../../scripts/desktop-headless-local-qa.mjs", import.meta.url),
       "utf8"
     );
 
     const firstValidation = source.indexOf("assertQaOutputIsPrivate(");
-    const firstAppend = source.indexOf("appendQaOutput(");
+    const firstWrite = source.indexOf("writeQaOutputFiles(");
 
     expect(source).toContain("./lib/qa-token-contract.mjs");
     expect(source).toContain("assertNoMatrixIdentifiers");
     expect(source).toContain("assertNoLocalPaths");
     expect(source).toContain("assertNoRawSdkErrors");
     expect(firstValidation).toBeGreaterThan(-1);
-    expect(firstAppend).toBeGreaterThan(-1);
-    expect(firstValidation).toBeLessThan(firstAppend);
+    expect(firstWrite).toBeGreaterThan(-1);
+    expect(firstWrite).toBeLessThan(firstValidation);
   });
 
   test("headless local QA failure messages do not replay raw child output or paths", () => {

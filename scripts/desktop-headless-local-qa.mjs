@@ -74,6 +74,10 @@ const coreBackendOption =
   optionValue("--core-backend") ?? defaultCoreBackendForScenario(scenarioOption);
 const fixtureRunOption = optionValue("--fixture-run");
 const fixtureReplay = args.has("--fixture-replay") || fixtureRunOption !== undefined;
+const e2eeRecipientSecondDeviceOption = args.has("--e2ee-recipient-second-device");
+const e2eePauseSyncBeforeMultiDeviceSendOption = args.has(
+  "--e2ee-pause-sync-before-multi-device-send"
+);
 // --core: run the headless-core-qa binary in addition to (or instead of) the
 // headless-local-qa binary. When this flag is present, both QA paths run for
 // each server so both layers are exercised.
@@ -121,6 +125,12 @@ if (args.has("--run")) {
 printUsage();
 
 async function run() {
+  if (
+    (e2eeRecipientSecondDeviceOption || e2eePauseSyncBeforeMultiDeviceSendOption) &&
+    !runCoreQa
+  ) {
+    throw new Error("E2EE multi-device options require --core");
+  }
   if (scenarioOption === "timeline_stress" && !runCoreQa) {
     throw new Error("--scenario=timeline_stress requires --core because it validates Core state");
   }
@@ -302,11 +312,11 @@ function runHeadlessQa({
       timeout: timeoutMs
     }
   );
+  writeQaOutputFiles(logPath, "sdk", result.stdout, result.stderr);
   assertQaOutputIsPrivate("headless SDK QA", result, [
     ["passwordA", passwordA],
     ["passwordB", passwordB]
   ]);
-  writeQaOutputFiles(logPath, "sdk", result.stdout, result.stderr);
   appendQaOutput(logPath, result.stdout, result.stderr);
   if (result.error?.code === "ETIMEDOUT") {
     throw new Error(
@@ -367,11 +377,25 @@ function runCoreHeadlessQa({
     "KOUSHI_QA_STRESS_SPACES",
     "KOUSHI_QA_STRESS_ROOMS_PER_SPACE",
     "KOUSHI_QA_STRESS_MESSAGES_PER_ROOM",
+    "KOUSHI_QA_E2EE_RECIPIENT_SECOND_DEVICE",
+    "KOUSHI_QA_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND",
     "KOUSHI_CORE_ACTOR_TRACE"
   ]) {
     if (process.env[name] !== undefined) {
       env[name] = process.env[name];
     }
+  }
+  if (e2eeRecipientSecondDeviceOption) {
+    env.KOUSHI_QA_E2EE_RECIPIENT_SECOND_DEVICE = "true";
+  }
+  if (e2eePauseSyncBeforeMultiDeviceSendOption) {
+    env.KOUSHI_QA_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND = "true";
+  }
+  if (process.env.KOUSHI_QA_RUST_LOG !== undefined) {
+    env.RUST_LOG = process.env.KOUSHI_QA_RUST_LOG;
+  }
+  if (process.env.KOUSHI_QA_RUST_BACKTRACE !== undefined) {
+    env.RUST_BACKTRACE = process.env.KOUSHI_QA_RUST_BACKTRACE;
   }
   if (replayExistingStress) {
     env.KOUSHI_QA_STRESS_REPLAY_EXISTING = "1";
@@ -397,11 +421,11 @@ function runCoreHeadlessQa({
       timeout: timeoutMs
     }
   );
+  writeQaOutputFiles(logPath, `core-${legLabel}`, result.stdout, result.stderr);
   assertQaOutputIsPrivate("headless core QA", result, [
     ["passwordA", passwordA],
     ["passwordB", passwordB]
   ]);
-  writeQaOutputFiles(logPath, `core-${legLabel}`, result.stdout, result.stderr);
   appendQaOutput(logPath, result.stdout, result.stderr);
   if (result.status !== 0) {
     if (result.error?.code === "ETIMEDOUT") {
@@ -566,11 +590,17 @@ function safeTimestamp() {
 
 function printUsage() {
   console.log(
-    "Usage: desktop-headless-local-qa.mjs --run [--server=conduit|tuwunel|synapse|matrixorg|both|all] [--scenario=all|timeline_stress|directory|room_management|activity|composer|credential_health|native_attention|send_queue|live_signals|link_preview] [--core] [--core-backend=probed|legacy|both] [--fixture-run=<local-run-dir>]"
+    "Usage: desktop-headless-local-qa.mjs --run [--server=conduit|tuwunel|synapse|matrixorg|both|all] [--scenario=all|timeline_stress|directory|room_management|activity|composer|credential_health|native_attention|send_queue|live_signals|link_preview] [--core] [--core-backend=probed|legacy|both] [--fixture-run=<local-run-dir>] [--e2ee-recipient-second-device] [--e2ee-pause-sync-before-multi-device-send]"
   );
   console.log("Starts a disposable local homeserver and runs non-GUI Matrix SDK QA.");
   console.log("  --server=synapse/matrixorg  Runs local Synapse in Docker.");
   console.log("  --core  Also run the headless-core-qa binary (Phase 2+ core runtime QA).");
   console.log("  --core-backend  Select core backend leg. E2EE scenarios default to probed.");
   console.log("  --fixture-run  Replay a saved local Synapse fixture by copying its data dir.");
+  console.log(
+    "  --e2ee-recipient-second-device  Require encrypted sends to decrypt on the recipient's second verified device."
+  );
+  console.log(
+    "  --e2ee-pause-sync-before-multi-device-send  Pause sync before the strict multi-device E2EE send for diagnostics."
+  );
 }

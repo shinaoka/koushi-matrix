@@ -24,7 +24,6 @@
 
 import {
   ArrowDown,
-  CalendarDays,
   Check,
   Copy,
   Download,
@@ -33,6 +32,7 @@ import {
   FileText,
   Forward,
   ImageIcon,
+  KeyRound,
   Link2,
   MessageCircle,
   MoreHorizontal,
@@ -58,6 +58,7 @@ import {
 } from "react";
 
 import { t } from "../i18n/messages";
+import { useRecoverableImageSource } from "./avatarImage";
 import {
   contextMenuItems,
   type ContextMenuItem
@@ -148,6 +149,8 @@ export interface TimelineTransport {
   downloadAvatarThumbnail?(mxcUri: string): Promise<void>;
   /** Request a Rust-owned safe source DTO for an event-backed item. */
   loadMessageSource(roomId: string, eventId: string): Promise<void>;
+  /** Request missing room keys for an undecryptable event and retry decryption. */
+  requestRoomKey(roomId: string, eventId: string): Promise<void>;
   /** Forward an event-backed message through Rust-owned source projection. */
   forwardMessage(
     roomId: string,
@@ -191,6 +194,7 @@ export interface TimelineRowActionHandlers {
   onUnpin: (roomId: string, eventId: string) => void;
   onDownloadMedia: (roomId: string, eventId: string) => void;
   onLoadMessageSource: (roomId: string, eventId: string) => void;
+  onRequestRoomKey: (roomId: string, eventId: string) => void;
   onForwardMessage: (roomId: string, sourceEventId: string, destinationRoomId: string) => void;
   onLoadLinkPreviews: (roomId: string, eventId: string) => void;
   onHideLinkPreview: (roomId: string, eventId: string) => void;
@@ -1155,7 +1159,6 @@ export function TimelineView({
   const [avatarThumbnails, setAvatarThumbnails] = useState<Record<string, AvatarThumbnailState>>(
     {}
   );
-  const [jumpDateValue, setJumpDateValue] = useState("");
   const [viewportAtBottom, setViewportAtBottom] = useState(false);
   const [aliasTarget, setAliasTarget] = useState<TimelineAliasTarget | null>(null);
   const [aliasDraft, setAliasDraft] = useState("");
@@ -1512,6 +1515,23 @@ export function TimelineView({
     },
     [transport]
   );
+  const onRequestRoomKey = useCallback(
+    (targetRoomId: string, eventId: string) => {
+      onDiagnosticLogEntry?.({
+        timestampMs: Date.now(),
+        source: "e2ee.room_key",
+        message: `request keys room=${targetRoomId} event=${eventId}`
+      });
+      void transport.requestRoomKey(targetRoomId, eventId).catch((error) => {
+        onDiagnosticLogEntry?.({
+          timestampMs: Date.now(),
+          source: "e2ee.room_key",
+          message: `request keys failed room=${targetRoomId} event=${eventId} error=${String(error)}`
+        });
+      });
+    },
+    [onDiagnosticLogEntry, transport]
+  );
   const onForwardMessage = useCallback(
     (targetRoomId: string, sourceEventId: string, destinationRoomId: string) => {
       void transport
@@ -1812,27 +1832,6 @@ export function TimelineView({
       reportViewportObservation();
     });
   }, [reportViewportObservation, updateViewportMetrics]);
-  const submitJumpDate = useCallback(
-    (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
-      if (!transport.openAtTimestamp || roomTimelineRoomId !== roomId) {
-        return;
-      }
-      const dateControl = event.currentTarget.elements.namedItem("timeline-jump-date");
-      const submittedDateValue =
-        dateControl instanceof HTMLInputElement ? dateControl.value : jumpDateValue;
-      if (submittedDateValue !== jumpDateValue) {
-        setJumpDateValue(submittedDateValue);
-      }
-      const timestampMs = new Date(submittedDateValue).getTime();
-      if (!Number.isFinite(timestampMs)) {
-        return;
-      }
-      void transport.openAtTimestamp(roomId, timestampMs).catch(() => undefined);
-    },
-    [jumpDateValue, roomId, roomTimelineRoomId, transport]
-  );
-
   const canRenderRoomNavigation = roomTimelineRoomId === roomId;
   const firstUnreadEventId = navigationSnapshot?.first_unread_event_id ?? null;
   const firstUnreadCount = navigationSnapshot?.unread_event_count ?? 0;
@@ -1866,7 +1865,7 @@ export function TimelineView({
       onScroll={onTimelineScroll}
     >
       {canRenderRoomNavigation &&
-      (transport.openAtTimestamp || canJumpToFirstUnread || canJumpToBottom) ? (
+      (canJumpToFirstUnread || canJumpToBottom) ? (
         <div className="timeline-navigation-bar">
           <div className="timeline-navigation-pills">
             {canJumpToFirstUnread && firstUnreadEventId ? (
@@ -1894,25 +1893,6 @@ export function TimelineView({
               </button>
             ) : null}
           </div>
-          {transport.openAtTimestamp ? (
-            <form className="timeline-date-jump" onSubmit={submitJumpDate}>
-              <label className="timeline-date-jump-label">
-                <CalendarDays size={14} aria-hidden="true" />
-                <span>{t("timeline.jumpToDate")}</span>
-                <input
-                  className="timeline-date-jump-input"
-                  type="datetime-local"
-                  name="timeline-jump-date"
-                  aria-label={t("timeline.jumpToDate")}
-                  value={jumpDateValue}
-                  onChange={(event) => setJumpDateValue(event.currentTarget.value)}
-                />
-              </label>
-              <button className="timeline-date-jump-button" type="submit">
-                {t("timeline.openDateInTimeline")}
-              </button>
-            </form>
-          ) : null}
         </div>
       ) : null}
       {!suppressPaginationUi && isPaginating ? (
@@ -1988,6 +1968,7 @@ export function TimelineView({
                 onUnpin={onUnpin}
                 onDownloadMedia={onDownloadMedia}
                 onLoadMessageSource={onLoadMessageSource}
+                onRequestRoomKey={onRequestRoomKey}
                 onForwardMessage={onForwardMessage}
                 onLoadLinkPreviews={onLoadLinkPreviews}
                 onHideLinkPreview={onHideLinkPreview}
@@ -2092,6 +2073,7 @@ export function TimelineItemRow({
   onUnpin = () => undefined,
   onDownloadMedia = () => undefined,
   onLoadMessageSource = () => undefined,
+  onRequestRoomKey = () => undefined,
   onForwardMessage = () => undefined,
   onLoadLinkPreviews = () => undefined,
   onHideLinkPreview = () => undefined,
@@ -2129,6 +2111,7 @@ export function TimelineItemRow({
   onUnpin?: TimelineRowActionHandlers["onUnpin"];
   onDownloadMedia?: TimelineRowActionHandlers["onDownloadMedia"];
   onLoadMessageSource?: TimelineRowActionHandlers["onLoadMessageSource"];
+  onRequestRoomKey?: TimelineRowActionHandlers["onRequestRoomKey"];
   onForwardMessage?: TimelineRowActionHandlers["onForwardMessage"];
   onLoadLinkPreviews?: TimelineRowActionHandlers["onLoadLinkPreviews"];
   onHideLinkPreview?: TimelineRowActionHandlers["onHideLinkPreview"];
@@ -2156,7 +2139,6 @@ export function TimelineItemRow({
   ) => void;
   mediaDownload?: TimelineMediaDownloadState;
 }) {
-  const [failedAvatarUrl, setFailedAvatarUrl] = useState<string | null>(null);
   const domId = timelineItemDomId(item.id);
   const syntheticId = "Synthetic" in item.id ? item.id.Synthetic.synthetic_id : null;
   const dateDividerTimestampMs = syntheticDateDividerTimestampMs(syntheticId, item.timestamp_ms);
@@ -2463,6 +2445,12 @@ export function TimelineItemRow({
     onLoadMessageSource(roomId, eventId);
     closeActionMenu();
   }, [closeActionMenu, eventId, item.actions?.can_view_source, onLoadMessageSource, roomId]);
+  const requestRoomKey = useCallback(() => {
+    if (!eventId || !item.unable_to_decrypt?.can_request_keys) {
+      return;
+    }
+    onRequestRoomKey(roomId, eventId);
+  }, [eventId, item.unable_to_decrypt?.can_request_keys, onRequestRoomKey, roomId]);
   const submitForward = useCallback(
     (destinationRoomId: string) => {
       if (!eventId || !item.actions?.can_forward) {
@@ -2492,6 +2480,7 @@ export function TimelineItemRow({
     eventId && item.actions?.can_permalink && item.actions.permalink
   );
   const canViewSource = Boolean(eventId && item.actions?.can_view_source);
+  const canRequestRoomKey = Boolean(eventId && item.unable_to_decrypt?.can_request_keys);
   const canForward = Boolean(eventId && item.actions?.can_forward);
   const canSetSenderAlias = Boolean(eventId && item.sender && onOpenAliasDialog);
   const canShowMessageActionMenu =
@@ -2502,7 +2491,12 @@ export function TimelineItemRow({
   const avatarUrl =
     thumbnailSourceUrl(senderAvatar ? avatarThumbnails[senderAvatar.mxc_uri] : null) ??
     thumbnailSourceUrl(senderAvatar?.thumbnail);
-  const showAvatarImage = Boolean(avatarUrl && avatarUrl !== failedAvatarUrl);
+  const {
+    displaySourceUrl: displayAvatarUrl,
+    onImageError: onAvatarImageError,
+    onImageLoad: onAvatarImageLoad
+  } = useRecoverableImageSource(avatarUrl);
+  const showAvatarImage = Boolean(displayAvatarUrl);
   const senderDisplayLabel = item.sender_label?.trim() || item.sender || "";
   const senderOriginalLabel =
     profile?.original_display_label.trim() || profile?.display_name?.trim() || "";
@@ -2653,7 +2647,11 @@ export function TimelineItemRow({
     >
       <div className="avatar" aria-hidden="true">
         {showAvatarImage ? (
-          <img src={avatarUrl ?? undefined} onError={() => setFailedAvatarUrl(avatarUrl)} />
+          <img
+            src={displayAvatarUrl ?? undefined}
+            onError={onAvatarImageError}
+            onLoad={onAvatarImageLoad}
+          />
         ) : (
           senderInitials(senderDisplayLabel || item.sender)
         )}
@@ -2731,6 +2729,14 @@ export function TimelineItemRow({
             <button className="message-send-action" type="button" onClick={submitCancelSend}>
               <XCircle size={13} aria-hidden="true" />
               <span>{t("timeline.cancelSend")}</span>
+            </button>
+          </div>
+        ) : null}
+        {canRequestRoomKey ? (
+          <div className="message-send-actions">
+            <button className="message-send-action" type="button" onClick={requestRoomKey}>
+              <KeyRound size={13} aria-hidden="true" />
+              <span>{t("timeline.requestRoomKey")}</span>
             </button>
           </div>
         ) : null}

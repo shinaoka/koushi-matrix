@@ -105,6 +105,9 @@ const transport: TimelineTransport = {
   loadMessageSource(roomId, eventId) {
     return ipc.invoke("load_message_source", { roomId, eventId });
   },
+  requestRoomKey(roomId, eventId) {
+    return ipc.invoke("request_room_key", { roomId, eventId });
+  },
   forwardMessage(roomId, sourceEventId, destinationRoomId) {
     return ipc.invoke("forward_message", { roomId, sourceEventId, destinationRoomId });
   },

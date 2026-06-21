@@ -32,6 +32,7 @@ describe("diagnosticReport", () => {
             ...snapshot.state.domain,
             search_crawler: {
               rooms: {
+                "!queued-room:example.invalid": { kind: "queued" },
                 "!private-room:example.invalid": {
                   kind: "running",
                   processed: 42,
@@ -123,10 +124,10 @@ describe("diagnosticReport", () => {
       "Timeline avatars: mxc=2 ready=1 pending=1 failed=0 missing=1 rendered=1 broken=0"
     );
     expect(report).toContain(
-      "Potential UI load: search crawler queued/running in 1 room state(s); worker=1"
+      "Potential UI load: search crawler running=1 queued=1; worker=1"
     );
     expect(report).toContain(
-      "Search crawler queued/running room states=1: processed=42 indexed=24"
+      "Search crawler running=1 queued=1: processed=42 indexed=24"
     );
     expect(report).toContain("Potential UI lag: max frame gap 125 ms");
     expect(report).toContain("UI frame gap: last=18ms avg=26.5ms max=125ms longFrames=2 samples=8");

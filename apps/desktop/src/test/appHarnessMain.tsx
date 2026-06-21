@@ -130,6 +130,7 @@ function readySnapshot(
       notification_count: 0,
       highlight_count: 0,
       parent_space_ids: [],
+      dm_space_ids: [],
       is_encrypted: false,
       joined_members: 8
     }
@@ -488,6 +489,7 @@ function afterCreateRoomSnapshot(): DesktopSnapshot {
     notification_count: 0,
     highlight_count: 0,
     parent_space_ids: [],
+    dm_space_ids: [],
     is_encrypted: false
   });
   snapshot.state.ui.navigation.active_room_id = newRoomId;
@@ -1522,7 +1524,7 @@ mock.setCommandResponse("start_room_crawl", ({ roomId }: { roomId: string }) => 
       search_crawler: {
         rooms: {
           ...currentSnapshot.state.domain.search_crawler.rooms,
-          [roomId]: { kind: "running", processed: 0, indexed: 0 }
+          [roomId]: { kind: "queued" }
         }
       }
       },

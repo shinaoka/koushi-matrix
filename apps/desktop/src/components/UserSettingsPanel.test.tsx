@@ -1,8 +1,11 @@
+// @vitest-environment jsdom
+
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, test, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { UserSettingsPanel } from "./UserSettingsPanel";
-import type { E2eeTrustState, ProfileState } from "../domain/types";
+import type { E2eeTrustState, ProfileState, RoomSummary } from "../domain/types";
 
 describe("UserSettingsPanel", () => {
   const settings = {
@@ -132,6 +135,7 @@ describe("UserSettingsPanel", () => {
     onChangeSecureBackupPassphrase: () => undefined,
     onSwitchAccount: () => undefined,
     onUpdateSettings: () => undefined,
+    onRebuildSearchIndex: () => undefined,
     onQueryDevices: () => undefined,
     onRenameDevice: () => undefined,
     onDeleteDevices: () => undefined,
@@ -144,6 +148,10 @@ describe("UserSettingsPanel", () => {
   const idleAccountManagement: import("../domain/types").AccountManagementState = { kind: "idle" };
   const idleAccountManagementCapabilities: import("../domain/types").AccountManagementCapabilities =
     { change_password: { kind: "unknown" } };
+
+  afterEach(() => {
+    cleanup();
+  });
 
   test("renders account switch entries and keyboard settings access", () => {
     const markup = renderToStaticMarkup(
@@ -223,8 +231,176 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain("Key backup");
     expect(markup).toContain("Device 1");
     expect(markup).toContain("Device 2");
+    expect(markup).toContain("Cross-signed");
     expect(markup).not.toContain("redacted-target-user");
     expect(markup).not.toContain("TARGETDEVICE");
+  });
+
+  test("exposes prominent pause and resume actions for the search crawler", () => {
+    const onUpdateSettings = vi.fn();
+    const { rerender } = render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+        onUpdateSettings={onUpdateSettings}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Pause crawler" }));
+    expect(onUpdateSettings).toHaveBeenCalledWith({
+      search_crawler: { ...settings.values.search_crawler, speed: "paused" }
+    });
+
+    rerender(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={{
+          ...settings,
+          values: {
+            ...settings.values,
+            search_crawler: { ...settings.values.search_crawler, speed: "paused" }
+          }
+        }}
+        {...handlers}
+        onUpdateSettings={onUpdateSettings}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume crawler" }));
+    expect(onUpdateSettings).toHaveBeenCalledWith({
+      search_crawler: { ...settings.values.search_crawler, speed: "standard" }
+    });
+  });
+
+  test("confirms search index rebuild before invoking the destructive action", () => {
+    const onRebuildSearchIndex = vi.fn();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+        onRebuildSearchIndex={onRebuildSearchIndex}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild search database" }));
+    expect(confirmSpy).toHaveBeenCalledWith(
+      "Rebuild the search database? This clears the local search index and re-crawls room history."
+    );
+    expect(onRebuildSearchIndex).not.toHaveBeenCalled();
+
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild search database" }));
+    expect(onRebuildSearchIndex).toHaveBeenCalledTimes(1);
+  });
+
+  test("shows the selected crawl speed and currently indexing rooms first", () => {
+    const rooms = [
+      {
+        room_id: "!running:example.invalid",
+        display_name: "Running room",
+        display_label: "Running room",
+        original_display_label: "Running room",
+        avatar: null,
+        is_dm: false,
+        dm_user_ids: [],
+        tags: { favourite: null, low_priority: null },
+        unread_count: 0,
+        parent_space_ids: [],
+        dm_space_ids: [],
+        is_encrypted: true
+      },
+      {
+        room_id: "!complete:example.invalid",
+        display_name: "Complete room",
+        display_label: "Complete room",
+        original_display_label: "Complete room",
+        avatar: null,
+        is_dm: false,
+        dm_user_ids: [],
+        tags: { favourite: null, low_priority: null },
+        unread_count: 0,
+        parent_space_ids: [],
+        dm_space_ids: [],
+        is_encrypted: true
+      }
+    ] satisfies RoomSummary[];
+
+    render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        searchCrawlerState={{
+          rooms: {
+            "!complete:example.invalid": { kind: "completed", indexed: 10 },
+            "!running:example.invalid": { kind: "running", processed: 4, indexed: 3 }
+          }
+        }}
+        rooms={rooms}
+        {...handlers}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: /Standard, Current/ }).getAttribute("aria-pressed"))
+      .toBe("true");
+    expect(screen.getByText("Search crawler activity")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Processed means timeline events scanned. Indexed means searchable messages written to the local database."
+      )
+    ).toBeTruthy();
+    expect(screen.getAllByText("Running room").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("1 running, 0 queued, 1 complete, 0 failed")).toBeTruthy();
   });
 
   test("renders the Rust-owned code block wrap display setting", () => {

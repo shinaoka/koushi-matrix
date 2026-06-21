@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import {
   Bell,
+  CalendarDays,
   Check,
   Clock3,
   Compass,
@@ -543,6 +544,7 @@ export function TimelinePane({
   onUnpinPinnedEvent,
   onToggleThread,
   onOpenRoomInfo,
+  onOpenRoomMembers,
   onOpenThreadsList,
   onTimelineDiagnosticsChange,
   onTimelineDiagnosticLogEntry
@@ -577,12 +579,13 @@ export function TimelinePane({
   onReply: TimelineRowActionHandlers["onReply"];
   onRescheduleScheduledSend: (scheduledId: string, sendAtMs: number) => void;
   onResultSelect: (roomId: string, eventId: string) => void;
-  onScheduleSend: (sendAtMs: number) => void;
-  onSendText: () => void;
+  onScheduleSend: (sendAtMs: number, body: string) => void;
+  onSendText: (body: string) => void;
   onSetLocalUserAlias: (userId: string, alias: string | null) => void;
   onUnpinPinnedEvent: (roomId: string, eventId: string) => void;
   onToggleThread: () => void;
   onOpenRoomInfo: () => void;
+  onOpenRoomMembers: () => void;
   onOpenThreadsList: () => void;
   onTimelineDiagnosticsChange?: (diagnostics: TimelineDiagnostics) => void;
   onTimelineDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
@@ -601,6 +604,27 @@ export function TimelinePane({
   const mediaDownloads = snapshot.state.ui.timeline.media_downloads ?? {};
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  const [dateJumpDialogOpen, setDateJumpDialogOpen] = useState(false);
+  const [jumpDateValue, setJumpDateValue] = useState("");
+
+  function submitJumpDate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!timelineTransport?.openAtTimestamp || !timelineRoomId) {
+      return;
+    }
+    const dateControl = event.currentTarget.elements.namedItem("timeline-jump-date");
+    const submittedDateValue =
+      dateControl instanceof HTMLInputElement ? dateControl.value : jumpDateValue;
+    if (submittedDateValue !== jumpDateValue) {
+      setJumpDateValue(submittedDateValue);
+    }
+    const timestampMs = new Date(submittedDateValue).getTime();
+    if (!Number.isFinite(timestampMs)) {
+      return;
+    }
+    void timelineTransport.openAtTimestamp(timelineRoomId, timestampMs).catch(() => undefined);
+    setDateJumpDialogOpen(false);
+  }
 
   return (
     <main className="main-pane" aria-label={t("timeline.conversation")}>
@@ -618,7 +642,7 @@ export function TimelinePane({
             className="member-pill"
             type="button"
             aria-label={t("room.members")}
-            onClick={onOpenRoomInfo}
+            onClick={onOpenRoomMembers}
           >
             <Users size={ICON_SIZE.small} />
             <span>{activeRoom?.joined_members ?? 0}</span>
@@ -627,7 +651,6 @@ export function TimelinePane({
             className="icon-button"
             type="button"
             aria-label={t("mediaGallery.open")}
-            disabled={mediaGallery.length === 0}
             onClick={() => setGalleryOpen((open) => !open)}
           >
             <ImageIcon size={ICON_SIZE.panel} />
@@ -648,11 +671,71 @@ export function TimelinePane({
           </button>
         </div>
       </header>
-      <nav className="tabs" aria-label={t("room.tabs")}>
+      <nav className="tabs room-tabs" aria-label={t("room.tabs")}>
         <button className="tab is-active" type="button">
           {t("timeline.messagesTab")}
         </button>
+        {timelineTransport?.openAtTimestamp && timelineRoomId ? (
+          <div className="tabs-actions">
+            <button
+              className="timeline-date-jump-trigger"
+              type="button"
+              onClick={() => setDateJumpDialogOpen(true)}
+            >
+              <CalendarDays size={14} aria-hidden="true" />
+              <span>{t("timeline.jumpToDate")}</span>
+            </button>
+          </div>
+        ) : null}
       </nav>
+      {timelineTransport?.openAtTimestamp && timelineRoomId && dateJumpDialogOpen ? (
+        <div
+          className="timeline-date-jump-overlay"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setDateJumpDialogOpen(false);
+            }
+          }}
+        >
+          <form
+            className="timeline-date-jump-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="timeline-date-jump-title"
+            onSubmit={submitJumpDate}
+          >
+            <div className="timeline-date-jump-header">
+              <h3 id="timeline-date-jump-title">{t("timeline.jumpToDateDialogTitle")}</h3>
+              <button
+                className="timeline-date-jump-close"
+                type="button"
+                aria-label={t("timeline.closeJumpToDate")}
+                onClick={() => setDateJumpDialogOpen(false)}
+              >
+                <X size={18} aria-hidden="true" />
+              </button>
+            </div>
+            <label className="timeline-date-jump-label">
+              <CalendarDays size={14} aria-hidden="true" />
+              <span>{t("timeline.jumpToDate")}</span>
+              <input
+                className="timeline-date-jump-input"
+                type="datetime-local"
+                name="timeline-jump-date"
+                aria-label={t("timeline.jumpToDate")}
+                value={jumpDateValue}
+                onChange={(event) => setJumpDateValue(event.currentTarget.value)}
+              />
+            </label>
+            <div className="timeline-date-jump-actions">
+              <button className="timeline-date-jump-button" type="submit">
+                {t("timeline.openDateInTimeline")}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
       {galleryOpen ? (
         <RoomMediaGallery
           items={mediaGallery}
@@ -770,6 +853,7 @@ export function TimelinePane({
         mentionCandidates={mentionCandidatesFromSnapshot(snapshot)}
         mentionIntent={mentionIntent}
         resolveComposerKeyAction={resolveComposerKeyAction}
+        draftKey={timelineRoomId ?? "no-room"}
         roomName={activeRoomName}
         value={composerDraft}
         onCancelReply={onCancelReply}

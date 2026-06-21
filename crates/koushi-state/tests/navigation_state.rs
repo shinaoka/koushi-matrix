@@ -2,7 +2,8 @@ use koushi_state::{
     AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState,
     NativeAttentionObservationKind, NativeAttentionProjectionInput, RoomSummary, RoomTags,
     SearchCrawlerSettings, SessionInfo, SessionState, SpaceSummary, ThreadPaneState,
-    TimelinePaneState, UiEvent, compose_sidebar, native_attention_state_from_rooms, reduce,
+    TimelinePaneState, UiEvent, UserProfile, compose_sidebar, native_attention_state_from_rooms,
+    reduce,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -59,6 +60,7 @@ fn rooms() -> Vec<RoomSummary> {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
+            dm_space_ids: Vec::new(),
             is_encrypted: false,
             joined_members: 0,
         },
@@ -77,6 +79,7 @@ fn rooms() -> Vec<RoomSummary> {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
+            dm_space_ids: vec!["space-a".to_owned()],
             is_encrypted: false,
             joined_members: 0,
         },
@@ -95,6 +98,7 @@ fn rooms() -> Vec<RoomSummary> {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec![],
+            dm_space_ids: vec![],
             is_encrypted: false,
             joined_members: 0,
         },
@@ -118,6 +122,7 @@ fn room_summary_serializes_projected_label_and_dm_identity_contract() {
         marked_unread: false,
         last_activity_ms: 0,
         parent_space_ids: Vec::new(),
+        dm_space_ids: Vec::new(),
         is_encrypted: false,
         joined_members: 0,
     };
@@ -161,6 +166,7 @@ fn room_list_update_projects_dm_room_display_labels_from_aliases() {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: Vec::new(),
+                dm_space_ids: Vec::new(),
                 is_encrypted: false,
                 joined_members: 0,
             }],
@@ -176,6 +182,61 @@ fn room_list_update_projects_dm_room_display_labels_from_aliases() {
     assert_eq!(value["display_name"], json!("Alice Upstream"));
     assert_eq!(value["display_label"], json!("Alice Local"));
     assert_eq!(value["original_display_label"], json!("Alice Upstream"));
+}
+
+#[test]
+fn room_list_update_projects_dm_room_avatar_from_counterpart_profile() {
+    let mut state = ready_state();
+    state.profile.users.insert(
+        "@alice:example.invalid".to_owned(),
+        UserProfile {
+            user_id: "@alice:example.invalid".to_owned(),
+            display_name: Some("Alice Upstream".to_owned()),
+            display_label: "Alice Upstream".to_owned(),
+            original_display_label: "Alice Upstream".to_owned(),
+            mention_search_terms: vec!["@alice:example.invalid".to_owned()],
+            avatar: Some(avatar("mxc://example.invalid/alice-avatar")),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: Vec::new(),
+            rooms: vec![RoomSummary {
+                room_id: "dm-a".to_owned(),
+                display_name: "Alice Upstream".to_owned(),
+                display_label: "Alice Upstream".to_owned(),
+                original_display_label: "Alice Upstream".to_owned(),
+                avatar: None,
+                is_dm: true,
+                dm_user_ids: vec!["@alice:example.invalid".to_owned()],
+                tags: RoomTags::default(),
+                unread_count: 3,
+                notification_count: 3,
+                highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
+                parent_space_ids: Vec::new(),
+                dm_space_ids: Vec::new(),
+                is_encrypted: false,
+                joined_members: 0,
+            }],
+        },
+    );
+
+    assert_eq!(
+        state.rooms[0].avatar.as_ref().map(|avatar| avatar.mxc_uri.as_str()),
+        Some("mxc://example.invalid/alice-avatar")
+    );
+    let sidebar = compose_sidebar(None, &state.spaces, &state.rooms);
+    assert_eq!(
+        sidebar.global_dms[0]
+            .avatar
+            .as_ref()
+            .map(|avatar| avatar.mxc_uri.as_str()),
+        Some("mxc://example.invalid/alice-avatar")
+    );
 }
 
 #[test]
@@ -196,6 +257,7 @@ fn local_alias_update_refreshes_open_dm_room_labels_and_notification_candidate()
         marked_unread: false,
         last_activity_ms: 0,
         parent_space_ids: Vec::new(),
+        dm_space_ids: Vec::new(),
         is_encrypted: false,
         joined_members: 0,
     }];
@@ -361,6 +423,7 @@ fn room_list_update_clears_missing_active_space_and_room() {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: vec![],
+                dm_space_ids: vec![],
                 is_encrypted: false,
                 joined_members: 0,
             }],
@@ -413,6 +476,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: vec!["space-a".to_owned()],
+                dm_space_ids: Vec::new(),
                 is_encrypted: false,
                 joined_members: 0,
             },
@@ -431,6 +495,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: Vec::new(),
+                dm_space_ids: Vec::new(),
                 is_encrypted: false,
                 joined_members: 0,
             },
@@ -485,6 +550,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                     marked_unread: false,
                     last_activity_ms: 0,
                     parent_space_ids: Vec::new(),
+                    dm_space_ids: Vec::new(),
                     is_encrypted: false,
                     joined_members: 0,
                 },
@@ -503,6 +569,7 @@ fn room_list_update_moves_active_room_when_it_leaves_selected_space() {
                     marked_unread: false,
                     last_activity_ms: 0,
                     parent_space_ids: vec!["space-a".to_owned()],
+                    dm_space_ids: Vec::new(),
                     is_encrypted: false,
                     joined_members: 0,
                 },
@@ -559,6 +626,7 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
+            dm_space_ids: Vec::new(),
             is_encrypted: false,
             joined_members: 0,
         }],
@@ -605,6 +673,7 @@ fn room_list_update_moves_active_room_when_it_disappears_from_selected_space() {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: vec!["space-a".to_owned()],
+                dm_space_ids: Vec::new(),
                 is_encrypted: false,
                 joined_members: 0,
             }],
@@ -869,6 +938,7 @@ fn selecting_space_restores_last_non_dm_room_for_that_space() {
         marked_unread: false,
         last_activity_ms: 0,
         parent_space_ids: vec!["space-a".to_owned()],
+        dm_space_ids: Vec::new(),
         is_encrypted: false,
         joined_members: 0,
     });
@@ -957,6 +1027,135 @@ fn account_home_lists_all_non_dm_rooms_and_keeps_dms_global() {
 }
 
 #[test]
+fn home_lists_all_dms() {
+    let sidebar = compose_sidebar(None, &spaces(), &rooms());
+
+    assert_eq!(
+        sidebar
+            .global_dms
+            .iter()
+            .map(|room| room.room_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["dm-a"]
+    );
+    assert_eq!(sidebar.dm_unread_count, 3);
+}
+
+#[test]
+fn active_space_lists_only_dms_belonging_to_that_space() {
+    let mut rooms_with_outside = rooms();
+    rooms_with_outside.push(RoomSummary {
+        room_id: "dm-outside".to_owned(),
+        display_name: "Outside DM".to_owned(),
+        display_label: "Outside DM".to_owned(),
+        original_display_label: "Outside DM".to_owned(),
+        avatar: None,
+        is_dm: true,
+        dm_user_ids: Vec::new(),
+        tags: RoomTags::default(),
+        unread_count: 9,
+        notification_count: 9,
+        highlight_count: 0,
+        marked_unread: false,
+        last_activity_ms: 0,
+        parent_space_ids: Vec::new(),
+        dm_space_ids: vec![],
+        is_encrypted: false,
+        joined_members: 0,
+    });
+
+    let sidebar = compose_sidebar(Some("space-a"), &spaces(), &rooms_with_outside);
+
+    assert_eq!(
+        sidebar
+            .global_dms
+            .iter()
+            .map(|room| room.room_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["dm-a"]
+    );
+    assert_eq!(sidebar.dm_unread_count, 3);
+}
+
+#[test]
+fn dm_in_multiple_spaces_appears_under_each() {
+    let multi_spaces = vec![
+        SpaceSummary {
+            space_id: "space-a".to_owned(),
+            display_name: "Space A".to_owned(),
+            avatar: None,
+            child_room_ids: vec!["room-a".to_owned(), "dm-multi".to_owned()],
+        },
+        SpaceSummary {
+            space_id: "space-b".to_owned(),
+            display_name: "Space B".to_owned(),
+            avatar: None,
+            child_room_ids: vec!["dm-multi".to_owned()],
+        },
+    ];
+    let multi_rooms = vec![
+        RoomSummary {
+            room_id: "room-a".to_owned(),
+            display_name: "Room A".to_owned(),
+            display_label: "Room A".to_owned(),
+            original_display_label: "Room A".to_owned(),
+            avatar: None,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: RoomTags::default(),
+            unread_count: 5,
+            notification_count: 5,
+            highlight_count: 1,
+            marked_unread: false,
+            last_activity_ms: 0,
+            parent_space_ids: vec!["space-a".to_owned()],
+            dm_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 0,
+        },
+        RoomSummary {
+            room_id: "dm-multi".to_owned(),
+            display_name: "Multi DM".to_owned(),
+            display_label: "Multi DM".to_owned(),
+            original_display_label: "Multi DM".to_owned(),
+            avatar: None,
+            is_dm: true,
+            dm_user_ids: Vec::new(),
+            tags: RoomTags::default(),
+            unread_count: 2,
+            notification_count: 2,
+            highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 0,
+            parent_space_ids: Vec::new(),
+            dm_space_ids: vec!["space-a".to_owned(), "space-b".to_owned()],
+            is_encrypted: false,
+            joined_members: 0,
+        },
+    ];
+
+    let sidebar_a = compose_sidebar(Some("space-a"), &multi_spaces, &multi_rooms);
+    let sidebar_b = compose_sidebar(Some("space-b"), &multi_spaces, &multi_rooms);
+
+    assert_eq!(
+        sidebar_a
+            .global_dms
+            .iter()
+            .map(|room| room.room_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["dm-multi"]
+    );
+    assert_eq!(
+        sidebar_b
+            .global_dms
+            .iter()
+            .map(|room| room.room_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["dm-multi"]
+    );
+}
+
+#[test]
 fn sidebar_projection_carries_rust_owned_highlight_counts_for_mention_affordances() {
     let sidebar = compose_sidebar(None, &spaces(), &rooms());
     let value = serde_json::to_value(sidebar).expect("sidebar serializes");
@@ -999,6 +1198,7 @@ fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
+            dm_space_ids: Vec::new(),
             is_encrypted: false,
             joined_members: 0,
         },
@@ -1017,6 +1217,7 @@ fn sidebar_items_carry_rust_owned_room_and_space_avatars() {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec!["space-a".to_owned()],
+            dm_space_ids: vec!["space-a".to_owned()],
             is_encrypted: false,
             joined_members: 0,
         },

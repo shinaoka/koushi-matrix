@@ -25,6 +25,7 @@ fn ready_state() -> AppState {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: Vec::new(),
+            dm_space_ids: Vec::new(),
             is_encrypted: false,
             joined_members: 0,
         }],

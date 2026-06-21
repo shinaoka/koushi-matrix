@@ -103,7 +103,7 @@ pub use directory::{
 pub use room_management::{
     RoomHistoryVisibility, RoomJoinRule, RoomManagementOperationKind, RoomManagementOperationState,
     RoomManagementState, RoomMemberRole, RoomMemberSummary, RoomModerationAction,
-    RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot,
+    RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot, UserTrustState,
 };
 
 // ── Re-exports: e2ee ────────────────────────────────────────────────────────

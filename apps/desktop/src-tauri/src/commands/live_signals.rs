@@ -6,7 +6,7 @@ pub async fn send_read_receipt(
     event_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
+) -> Result<(), String> {
     let account_key = account_key_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
     if let Some(command) =
@@ -15,7 +15,7 @@ pub async fn send_read_receipt(
         submit_core_command(state.inner(), command).await?;
     }
     update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
+    Ok(())
 }
 
 #[tauri::command]
@@ -24,7 +24,7 @@ pub async fn set_fully_read(
     event_id: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
+) -> Result<(), String> {
     let account_key = account_key_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
     if let Some(command) = build_set_fully_read_command(request_id, account_key, room_id, event_id)
@@ -32,7 +32,7 @@ pub async fn set_fully_read(
         submit_core_command(state.inner(), command).await?;
     }
     update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
+    Ok(())
 }
 
 #[tauri::command]
@@ -41,7 +41,7 @@ pub async fn set_typing(
     is_typing: bool,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
+) -> Result<(), String> {
     let account_key = account_key_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
@@ -50,7 +50,7 @@ pub async fn set_typing(
     )
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
+    Ok(())
 }
 
 #[tauri::command]

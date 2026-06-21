@@ -79,6 +79,7 @@ import {
   EMPTY_UI_LATENCY_DIAGNOSTICS,
   type UiLatencyDiagnostics
 } from "./domain/uiLatency";
+import { e2eeSendDiagnosticMessage } from "./domain/e2eeSendDiagnostics";
 import {
   type QaSendSmokeStatus,
   qaSendCompletionStatusFromCoreEvent,
@@ -102,7 +103,6 @@ import type {
   ImageUploadCompressionPolicy,
   MentionIntent,
   ResolveComposerKeyAction,
-  RoomListFilter,
   RoomModerationAction,
   RoomNotificationMode,
   RoomSettingChange,
@@ -114,6 +114,16 @@ import type {
   UploadStagingRequestItem
 } from "./domain/types";
 import { SNAPSHOT_SCHEMA_VERSION } from "./domain/types";
+import {
+  type DisplayDensity,
+  type SpaceLocalOverrides,
+  readDisplayDensity,
+  readSpaceLocalOverrides,
+  setSpaceLocalOverride,
+  spaceDisplayName,
+  SPACE_OVERRIDES_CHANGED_EVENT,
+  writeDisplayDensity
+} from "./app/localPresentation";
 
 import {
   EMPTY_MENTION_INTENT,
@@ -292,6 +302,9 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
       },
       async loadMessageSource(roomId: string, eventId: string) {
         await invoke("load_message_source", { roomId, eventId });
+      },
+      async requestRoomKey(roomId: string, eventId: string) {
+        await invoke("request_room_key", { roomId, eventId });
       },
       async forwardMessage(
         roomId: string,
@@ -838,6 +851,7 @@ export function App() {
   const [searchQuery, setSearchQuery] = useState(() => initialSearchQuery());
   const [searchScope, setSearchScope] = useState<SearchScopeKind>("allRooms");
   const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
+  const [localThreadComposerDrafts, setLocalThreadComposerDrafts] = useState<Record<string, string>>({});
   const [stagedUploadFiles, setStagedUploadFiles] = useState<Map<string, File>>(() => new Map());
   const [imageCompressionDialog, setImageCompressionDialog] =
     useState<ImageCompressionDialogState | null>(null);
@@ -847,6 +861,8 @@ export function App() {
   const [loginPasswordFilled, setLoginPasswordFilled] = useState(false);
   const [recoverySecretFilled, setRecoverySecretFilled] = useState(false);
   const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>("closed");
+  const [roomInfoInitialSection, setRoomInfoInitialSection] =
+    useState<"members" | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [qaSendStatus, setQaSendStatus] = useState<QaSendSmokeStatus>("idle");
   const [timelineDiagnostics, setTimelineDiagnostics] =
@@ -860,6 +876,10 @@ export function App() {
   const [directorySearchDraft, setDirectorySearchDraft] = useState("");
   const [newDmDialogOpen, setNewDmDialogOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [displayDensity, setDisplayDensityState] =
+    useState<DisplayDensity>(readDisplayDensity);
+  const [spaceLocalOverrides, setSpaceLocalOverrides] =
+    useState<SpaceLocalOverrides>(readSpaceLocalOverrides);
   const [newDmDraftUserId, setNewDmDraftUserId] = useState("");
   const [inviteUserDialog, setInviteUserDialog] = useState<InviteUserDialogState>(null);
   const [inviteUserDraftUserId, setInviteUserDraftUserId] = useState("");
@@ -878,8 +898,39 @@ export function App() {
   const qaSendTargetRequested = useRef(false);
   const qaSendTargetSelectionRequested = useRef<string | null>(null);
   const qaSendBaselineErrorCount = useRef(0);
+
+  useEffect(() => {
+    const refreshOverrides = () => setSpaceLocalOverrides(readSpaceLocalOverrides());
+    window.addEventListener(SPACE_OVERRIDES_CHANGED_EVENT, refreshOverrides);
+    window.addEventListener("storage", refreshOverrides);
+    return () => {
+      window.removeEventListener(SPACE_OVERRIDES_CHANGED_EVENT, refreshOverrides);
+      window.removeEventListener("storage", refreshOverrides);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (rightPanelMode !== "roomInfo") {
+      setRoomInfoInitialSection(null);
+    }
+  }, [rightPanelMode]);
+
+  function setDisplayDensity(density: DisplayDensity) {
+    setDisplayDensityState(density);
+    writeDisplayDensity(density);
+  }
+
+  function updateSpaceLocalOverride(
+    spaceId: string,
+    override: { name?: string; icon?: string } | null
+  ) {
+    setSpaceLocalOverrides(setSpaceLocalOverride(spaceId, override));
+  }
   const qaSendBaselineTimelineItems = useRef(0);
   const stateRefreshTimerRef = useRef<number | null>(null);
+  const composerDraftPersistTimer = useRef<number | null>(null);
+  const localComposerDraftsRef = useRef<Record<string, string>>({});
+  const threadComposerDraftPersistTimers = useRef<Record<string, number>>({});
   const panelDiagnosticRef = useRef<string | null>(null);
   const typingSignalRef = useRef<{ roomId: string | null; isTyping: boolean }>({
     roomId: null,
@@ -943,7 +994,12 @@ export function App() {
       titleHint: null,
       qaTitleToken: "unread=0 badge=0 notify=none"
     };
-  const composerDraft = snapshot?.state.ui.timeline.composer.draft ?? "";
+  const timelineRoomId = snapshot?.state.ui.timeline.room_id ?? null;
+  const snapshotComposerDraft = snapshot?.state.ui.timeline.composer.draft ?? "";
+  const composerDraft =
+    timelineRoomId && Object.prototype.hasOwnProperty.call(localComposerDraftsRef.current, timelineRoomId)
+      ? localComposerDraftsRef.current[timelineRoomId] ?? ""
+      : snapshotComposerDraft;
   const stagedUploads = snapshot?.state.ui.timeline.staged_uploads ?? [];
   const stagedUploadIdKey = stagedUploads.map((item) => item.staged_id).join("\n");
 
@@ -1050,6 +1106,13 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    return () => {
+      cancelComposerDraftPersist();
+      cancelThreadComposerDraftPersists();
+    };
+  }, []);
+
+  useEffect(() => {
     if (rightPanelMode === "userSettings") {
       void refreshSavedSessions();
     }
@@ -1057,22 +1120,16 @@ export function App() {
 
   useEffect(() => {
     const roomId = snapshot?.state.ui.timeline.room_id ?? null;
-    const isTyping = Boolean(roomId && composerDraft.trim());
     const previous = typingSignalRef.current;
 
     if (previous.roomId && previous.roomId !== roomId && previous.isTyping) {
       void api.setTyping(previous.roomId, false).catch(() => undefined);
     }
 
-    typingSignalRef.current = { roomId, isTyping };
-    if (!roomId) {
-      return;
+    if (previous.roomId !== roomId) {
+      typingSignalRef.current = { roomId, isTyping: false };
     }
-    if (previous.roomId === roomId && previous.isTyping === isTyping) {
-      return;
-    }
-    void api.setTyping(roomId, isTyping).catch(() => undefined);
-  }, [composerDraft, snapshot?.state.ui.timeline.room_id]);
+  }, [snapshot?.state.ui.timeline.room_id]);
 
   useEffect(() => {
     const theme = snapshot?.state.domain.settings.values.appearance.theme ?? "system";
@@ -1572,6 +1629,10 @@ export function App() {
     setSnapshot(await api.updateSettings(patch));
   }
 
+  async function rebuildSearchIndex() {
+    setSnapshot(await api.rebuildSearchIndex());
+  }
+
   async function startRoomCrawl(roomId: string) {
     setSnapshot(await api.startRoomCrawl(roomId));
   }
@@ -1685,6 +1746,29 @@ export function App() {
     setSnapshot(await api.importRoomKeys(sourcePath, passphrase));
   }
 
+  async function reshareRoomKey(roomId: string) {
+    appendDiagnosticLog({
+      timestampMs: Date.now(),
+      source: "e2ee.room_key",
+      message: `manual reshare requested room=${roomId}`
+    });
+    try {
+      setSnapshot(await api.reshareRoomKey(roomId));
+      appendDiagnosticLog({
+        timestampMs: Date.now(),
+        source: "e2ee.room_key",
+        message: `manual reshare completed room=${roomId}`
+      });
+    } catch (error) {
+      appendDiagnosticLog({
+        timestampMs: Date.now(),
+        source: "e2ee.room_key",
+        message: `manual reshare failed room=${roomId} error=${String(error)}`
+      });
+      throw error;
+    }
+  }
+
   async function chooseRoomKeyExportDestination(): Promise<string | null> {
     if (!isTauriRuntime()) {
       return null;
@@ -1781,10 +1865,6 @@ export function App() {
   async function selectRoom(roomId: string) {
     setPrimaryView("timeline");
     setSnapshot(await api.selectRoom(roomId));
-  }
-
-  async function selectRoomListFilter(filter: RoomListFilter) {
-    setSnapshot(await api.selectRoomListFilter(filter));
   }
 
   async function openInvitesView() {
@@ -1991,9 +2071,9 @@ export function App() {
     setSnapshot(await api.cancelComposerReply());
   }
 
-  async function sendText() {
+  async function sendText(bodyOverride?: string) {
     const roomId = snapshot?.state.ui.timeline.room_id;
-    const body = composerDraft;
+    const body = bodyOverride ?? composerDraft;
     const uploads = snapshot?.state.ui.timeline.staged_uploads ?? [];
     if (!roomId || (!body.trim() && uploads.length === 0)) {
       return;
@@ -2010,9 +2090,12 @@ export function App() {
         }
       }
       setStagedUploadFiles(new Map());
+      cancelComposerDraftPersist();
+      clearLocalComposerDraft(roomId);
       setSnapshot(await api.clearUploadStaging(roomId));
       setSnapshot(await api.setComposerDraft(roomId, ""));
       setComposerMentions(EMPTY_MENTION_INTENT);
+      updateComposerTypingSignal(roomId, "");
       return;
     }
     // Reply semantics are Rust-owned: dispatch sendReply when the composer is
@@ -2024,17 +2107,28 @@ export function App() {
     qaSendBaselineTimelineItems.current = snapshot?.timeline.length ?? 0;
     qaSendPending.current = true;
     setQaSendStatus("pending");
+    if (snapshot) {
+      appendDiagnosticLog({
+        timestampMs: Date.now(),
+        source: "e2ee.send",
+        message: e2eeSendDiagnosticMessage(snapshot, roomId)
+      });
+    }
     try {
+      const mentions = pruneMentionIntentForDraft(composerMentions, body);
       const nextSnapshot =
         composerMode === "Plain"
-          ? await api.sendText(roomId, body, composerMentions)
+          ? await api.sendText(roomId, body, mentions)
           : await api.sendReply(
               roomId,
               composerMode.Reply.in_reply_to_event_id,
               body,
-              composerMentions
+              mentions
             );
+      cancelComposerDraftPersist();
+      clearLocalComposerDraft(roomId);
       setSnapshot(nextSnapshot);
+      updateComposerTypingSignal(roomId, "");
       if (!isTauriRuntime()) {
         const completionStatus = qaSendSmokeCompletionStatus(
           nextSnapshot,
@@ -2052,16 +2146,19 @@ export function App() {
     setComposerMentions(EMPTY_MENTION_INTENT);
   }
 
-  async function scheduleSend(sendAtMs: number) {
+  async function scheduleSend(sendAtMs: number, bodyOverride?: string) {
     const roomId = snapshot?.state.ui.timeline.room_id;
-    const body = composerDraft;
+    const body = bodyOverride ?? composerDraft;
     if (!roomId || !body.trim() || stagedUploads.length > 0) {
       return;
     }
 
     try {
+      cancelComposerDraftPersist();
+      clearLocalComposerDraft(roomId);
       setSnapshot(await api.scheduleSend(roomId, body, sendAtMs));
       setComposerMentions(EMPTY_MENTION_INTENT);
+      updateComposerTypingSignal(roomId, "");
     } catch {
       // Command failures are surfaced through the Rust-owned error/event path.
     }
@@ -2083,17 +2180,56 @@ export function App() {
     }
   }
 
-  async function updateComposerDraft(value: string) {
+  function updateComposerDraft(value: string) {
     const roomId = snapshot?.state.ui.timeline.room_id;
-    setComposerMentions((mentions) => pruneMentionIntentForDraft(mentions, value));
     if (!roomId) {
       return;
     }
-    try {
-      setSnapshot(await api.setComposerDraft(roomId, value));
-    } catch {
-      // Command failures are surfaced through the Rust-owned error/event path.
+    if (value) {
+      localComposerDraftsRef.current[roomId] = value;
+    } else {
+      delete localComposerDraftsRef.current[roomId];
     }
+    updateComposerTypingSignal(roomId, value);
+    queueComposerDraftPersist(roomId, value);
+  }
+
+  function updateComposerTypingSignal(roomId: string, value: string) {
+    const isTyping = Boolean(value.trim());
+    const previous = typingSignalRef.current;
+    if (previous.roomId === roomId && previous.isTyping === isTyping) {
+      return;
+    }
+    typingSignalRef.current = { roomId, isTyping };
+    void api.setTyping(roomId, isTyping).catch(() => undefined);
+  }
+
+  function cancelComposerDraftPersist() {
+    if (composerDraftPersistTimer.current === null) {
+      return;
+    }
+    window.clearTimeout(composerDraftPersistTimer.current);
+    composerDraftPersistTimer.current = null;
+  }
+
+  function queueComposerDraftPersist(roomId: string, value: string) {
+    cancelComposerDraftPersist();
+    composerDraftPersistTimer.current = window.setTimeout(() => {
+      composerDraftPersistTimer.current = null;
+      void api
+        .setComposerDraft(roomId, value)
+        .then((nextSnapshot) => {
+          if ((localComposerDraftsRef.current[roomId] ?? "") !== value) {
+            return;
+          }
+          setSnapshot(nextSnapshot);
+        })
+        .catch(() => undefined);
+    }, 350);
+  }
+
+  function clearLocalComposerDraft(roomId: string) {
+    delete localComposerDraftsRef.current[roomId];
   }
 
   async function stageUploadFiles(files: File[]): Promise<void> {
@@ -2308,16 +2444,69 @@ export function App() {
     setSnapshot(await api.openFilesView(scopeParam, filter, sort));
   }
 
-  async function setThreadComposerDraft(
+  function updateThreadComposerDraft(
     roomId: string,
     rootEventId: string,
     draft: string
   ) {
-    setSnapshot(await api.setThreadComposerDraft(roomId, rootEventId, draft));
+    const key = threadComposerDraftKey(roomId, rootEventId);
+    setLocalThreadComposerDrafts((drafts) =>
+      drafts[key] === draft ? drafts : { ...drafts, [key]: draft }
+    );
+    queueThreadComposerDraftPersist(roomId, rootEventId, draft);
   }
 
   async function sendThreadReply(roomId: string, rootEventId: string, body: string) {
+    cancelThreadComposerDraftPersist(roomId, rootEventId);
+    clearLocalThreadComposerDraft(roomId, rootEventId);
     setSnapshot(await api.sendThreadReply(roomId, rootEventId, body));
+  }
+
+  function queueThreadComposerDraftPersist(roomId: string, rootEventId: string, draft: string) {
+    cancelThreadComposerDraftPersist(roomId, rootEventId);
+    const key = threadComposerDraftKey(roomId, rootEventId);
+    threadComposerDraftPersistTimers.current[key] = window.setTimeout(() => {
+      delete threadComposerDraftPersistTimers.current[key];
+      void api
+        .setThreadComposerDraft(roomId, rootEventId, draft)
+        .then((nextSnapshot) => {
+          setSnapshot(nextSnapshot);
+        })
+        .catch(() => undefined);
+    }, 350);
+  }
+
+  function cancelThreadComposerDraftPersist(roomId: string, rootEventId: string) {
+    const key = threadComposerDraftKey(roomId, rootEventId);
+    const timer = threadComposerDraftPersistTimers.current[key];
+    if (timer === undefined) {
+      return;
+    }
+    window.clearTimeout(timer);
+    delete threadComposerDraftPersistTimers.current[key];
+  }
+
+  function cancelThreadComposerDraftPersists() {
+    Object.values(threadComposerDraftPersistTimers.current).forEach((timer) => {
+      window.clearTimeout(timer);
+    });
+    threadComposerDraftPersistTimers.current = {};
+  }
+
+  function clearLocalThreadComposerDraft(roomId: string, rootEventId: string) {
+    const key = threadComposerDraftKey(roomId, rootEventId);
+    setLocalThreadComposerDrafts((drafts) => {
+      if (!Object.prototype.hasOwnProperty.call(drafts, key)) {
+        return drafts;
+      }
+      const next = { ...drafts };
+      delete next[key];
+      return next;
+    });
+  }
+
+  function threadComposerDraftKey(roomId: string, rootEventId: string): string {
+    return `${roomId}\u0000${rootEventId}`;
   }
 
   function focusedContextVisibleForMode(mode: RightPanelMode): boolean {
@@ -2566,6 +2755,9 @@ export function App() {
   const activeSpace = snapshot.state.domain.spaces.find(
     (space) => space.space_id === snapshot.state.ui.navigation.active_space_id
   );
+  const activeSpaceName = activeSpace
+    ? spaceDisplayName(activeSpace.space_id, activeSpace.display_name, spaceLocalOverrides)
+    : snapshot.sidebar.account_home.display_name;
   const searchResults = snapshot.state.domain.search.kind === "results" ? snapshot.state.domain.search.results : [];
   const effectiveRightPanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
   const rightPanelOpen = effectiveRightPanelMode !== "closed";
@@ -2592,9 +2784,9 @@ export function App() {
   }
 
   return (
-    <div className="desktop">
+    <div className="desktop" data-density={displayDensity}>
       <TopBar
-        activeSpaceName={activeSpace?.display_name ?? t("auth.matrixAccount")}
+        activeSpaceName={activeSpaceName}
         isBusy={isBusy}
         searchInputRef={searchInputRef}
         searchQuery={searchQuery}
@@ -2615,6 +2807,7 @@ export function App() {
         <WorkspaceRail
           activeView={primaryView}
           snapshot={snapshot}
+          spaceOverrides={spaceLocalOverrides}
           onCreateSpace={() => openCreateDialog("space")}
           onOpenContextMenu={openContextMenu}
           onOpenActivity={() => {
@@ -2632,6 +2825,7 @@ export function App() {
           activeRoomId={snapshot.state.ui.navigation.active_room_id}
           activeView={primaryView}
           snapshot={snapshot}
+          spaceOverrides={spaceLocalOverrides}
           onCreateRoom={() => openCreateDialog("room")}
           onNewDm={openNewDmDialog}
           onOpenContextMenu={openContextMenu}
@@ -2654,7 +2848,6 @@ export function App() {
             }
           }}
           onSelectRoom={selectRoom}
-          onSelectRoomListFilter={selectRoomListFilter}
         />
         <button
           className="app-grid-resizer"
@@ -2747,8 +2940,8 @@ export function App() {
             onRescheduleScheduledSend={(scheduledId, sendAtMs) => {
               void rescheduleScheduledSend(scheduledId, sendAtMs);
             }}
-            onScheduleSend={(sendAtMs) => {
-              void scheduleSend(sendAtMs);
+            onScheduleSend={(sendAtMs, body) => {
+              void scheduleSend(sendAtMs, body);
             }}
             onSendText={sendText}
             onEditMessage={editMessage}
@@ -2771,10 +2964,16 @@ export function App() {
                 // action (openThread -> Rust ThreadPaneState), not by scanning the
                 // legacy snapshot.timeline placeholder. The panel toggle opens room
                 // info as the default right-panel surface.
+                setRoomInfoInitialSection(null);
                 void setRightPanelModeClosingFocusedContext("roomInfo");
               }
             }}
             onOpenRoomInfo={() => {
+              setRoomInfoInitialSection(null);
+              void setRightPanelModeClosingFocusedContext("roomInfo");
+            }}
+            onOpenRoomMembers={() => {
+              setRoomInfoInitialSection("members");
               void setRightPanelModeClosingFocusedContext("roomInfo");
             }}
             onOpenThreadsList={() => {
@@ -2790,9 +2989,11 @@ export function App() {
         <ContextualRightPanel
           activeRoom={activeRoom ?? null}
           activeSpace={activeSpace ?? null}
-          activeSpaceName={activeSpace?.display_name ?? snapshot.sidebar.account_home.display_name}
+          activeSpaceName={activeSpaceName}
+          displayDensity={displayDensity}
           isRecoveryBusy={isBusy || sessionKind === "recovering"}
           mode={effectiveRightPanelMode}
+          roomInfoInitialSection={roomInfoInitialSection}
           recoverySecretFilled={recoverySecretFilled}
           recoverySecretInputRef={recoverySecretRef}
           snapshot={snapshot}
@@ -2854,6 +3055,9 @@ export function App() {
           onUpdateMemberRole={(roomId, targetUserId, powerLevel) => {
             void updateRoomMemberRole(roomId, targetUserId, powerLevel);
           }}
+          onReshareRoomKey={(roomId) => {
+            void reshareRoomKey(roomId);
+          }}
           onRecoverySecretPresenceChange={setRecoverySecretFilled}
           onReply={(roomId, eventId) => {
             void setComposerReplyTarget(roomId, eventId);
@@ -2864,8 +3068,9 @@ export function App() {
             void switchAccount(session);
           }}
           onThreadComposerDraftChange={(roomId, rootEventId, draft) => {
-            void setThreadComposerDraft(roomId, rootEventId, draft);
+            updateThreadComposerDraft(roomId, rootEventId, draft);
           }}
+          threadComposerDraftOverrides={localThreadComposerDrafts}
           onThreadReplySend={(roomId, rootEventId, body) => {
             void sendThreadReply(roomId, rootEventId, body);
           }}
@@ -2968,6 +3173,12 @@ export function App() {
           onStopCrawlRoom={(roomId) => {
             void stopRoomCrawl(roomId);
           }}
+          onRebuildSearchIndex={() => {
+            void rebuildSearchIndex();
+          }}
+          onDisplayDensityChange={setDisplayDensity}
+          onSetSpaceLocalOverride={updateSpaceLocalOverride}
+          spaceLocalOverrides={spaceLocalOverrides}
         />
       </div>
       {contextMenu ? (

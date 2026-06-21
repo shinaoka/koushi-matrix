@@ -102,6 +102,9 @@ pub enum AppEffect {
     /// content-indexing settings change so the actor re-crawls rooms that
     /// it had previously recorded as done.
     InvalidateSearchCrawlerCache,
+    /// Tell the `SearchActor` to clear its in-memory search document store and
+    /// crawler queues before a full local search rebuild.
+    RebuildSearchIndex,
     EmitUiEvent(UiEvent),
 }
 

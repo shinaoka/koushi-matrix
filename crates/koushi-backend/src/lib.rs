@@ -418,7 +418,8 @@ impl FakeDesktopBackend {
             // The fake backend has no SearchActor; silently ignore crawler
             // notifications (there are no background crawls in tests).
             | AppEffect::NotifySearchCrawlerRoomsAvailable { .. }
-            | AppEffect::InvalidateSearchCrawlerCache => Vec::new(),
+            | AppEffect::InvalidateSearchCrawlerCache
+            | AppEffect::RebuildSearchIndex => Vec::new(),
             AppEffect::RequestVerification { request_id, .. }
             | AppEffect::AcceptVerification { request_id }
             | AppEffect::ConfirmSasVerification { request_id } => {
@@ -833,6 +834,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec![DEFAULT_SPACE_ID.to_owned()],
+            dm_space_ids: Vec::new(),
             is_encrypted: false,
             joined_members: 0,
         },
@@ -851,6 +853,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec![DEFAULT_SPACE_ID.to_owned()],
+            dm_space_ids: Vec::new(),
             is_encrypted: false,
             joined_members: 0,
         },
@@ -869,6 +872,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec!["!space-beta:example.invalid".to_owned()],
+            dm_space_ids: Vec::new(),
             is_encrypted: false,
             joined_members: 0,
         },
@@ -887,6 +891,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: Vec::new(),
+            dm_space_ids: Vec::new(),
             is_encrypted: false,
             joined_members: 0,
         },
@@ -905,6 +910,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: Vec::new(),
+            dm_space_ids: Vec::new(),
             is_encrypted: false,
             joined_members: 0,
         },

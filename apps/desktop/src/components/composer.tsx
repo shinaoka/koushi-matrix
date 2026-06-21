@@ -3,6 +3,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type MouseEvent,
+  useEffect,
   useRef,
   useState
 } from "react";
@@ -53,6 +54,7 @@ export function Composer({
   mentionCandidates = [],
   mentionIntent = EMPTY_MENTION_INTENT,
   resolveComposerKeyAction = ignoreComposerKeyAction,
+  draftKey = "default",
   roomName,
   value,
   onCancelReply,
@@ -68,13 +70,14 @@ export function Composer({
   mentionCandidates?: MentionCandidate[];
   mentionIntent?: MentionIntent;
   resolveComposerKeyAction?: ResolveComposerKeyAction;
+  draftKey?: string;
   roomName: string;
   value: string;
   onCancelReply: () => void;
   onAttachFiles?: (files: File[]) => void | Promise<void>;
   onMentionIntentChange?: (intent: MentionIntent) => void;
-  onScheduleSend?: (sendAtMs: number) => void | Promise<void>;
-  onSend: () => void | Promise<void>;
+  onScheduleSend?: (sendAtMs: number, body: string) => void | Promise<void>;
+  onSend: (body: string) => void | Promise<void>;
   onValueChange: (value: string) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -83,7 +86,8 @@ export function Composer({
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const [scheduleValue, setScheduleValue] = useState(() => defaultScheduleDateTimeValue());
-  const activeMention = activeMentionQuery(value);
+  const [localValue, setLocalValue] = useState(value);
+  const activeMention = activeMentionQuery(localValue);
   const activeMentionSuggestions =
     activeMention === null
       ? []
@@ -92,15 +96,24 @@ export function Composer({
           .slice(0, 5);
   const autocompleteOpen = activeMentionSuggestions.length > 0;
 
+  useEffect(() => {
+    setLocalValue(value);
+  }, [draftKey, value]);
+
+  function updateLocalValue(nextValue: string) {
+    setLocalValue(nextValue);
+    onValueChange(nextValue);
+  }
+
   function replaceTextRange(
     start: number,
     end: number,
     replacement: string,
     cursorOffset = replacement.length
   ) {
-    const nextValue = `${value.slice(0, start)}${replacement}${value.slice(end)}`;
+    const nextValue = `${localValue.slice(0, start)}${replacement}${localValue.slice(end)}`;
     const cursor = start + cursorOffset;
-    onValueChange(nextValue);
+    updateLocalValue(nextValue);
     requestAnimationFrame(() => {
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(cursor, cursor);
@@ -110,8 +123,8 @@ export function Composer({
   function selectionRange(): { start: number; end: number } {
     const textarea = textareaRef.current;
     return {
-      start: textarea?.selectionStart ?? value.length,
-      end: textarea?.selectionEnd ?? value.length
+      start: textarea?.selectionStart ?? localValue.length,
+      end: textarea?.selectionEnd ?? localValue.length
     };
   }
 
@@ -121,7 +134,7 @@ export function Composer({
 
   function applyInlineMarkdown(prefix: string, suffix = prefix, placeholder = "") {
     const { start, end } = selectionRange();
-    const selected = value.slice(start, end) || placeholder;
+    const selected = localValue.slice(start, end) || placeholder;
     replaceTextRange(
       start,
       end,
@@ -132,14 +145,14 @@ export function Composer({
 
   function applyLinkMarkdown() {
     const { start, end } = selectionRange();
-    const selected = value.slice(start, end) || "link";
+    const selected = localValue.slice(start, end) || "link";
     const replacement = `[${selected}](https://)`;
     replaceTextRange(start, end, replacement, replacement.length - 1);
   }
 
   function applyListMarkdown() {
     const { start, end } = selectionRange();
-    const selected = value.slice(start, end);
+    const selected = localValue.slice(start, end);
     if (!selected) {
       replaceTextRange(start, end, "- ", 2);
       return;
@@ -166,7 +179,9 @@ export function Composer({
       return;
     }
     const token = `${mentionDraftToken(candidate.target)} `;
-    onValueChange(`${value.slice(0, activeMention.start)}${token}${value.slice(activeMention.end)}`);
+    updateLocalValue(
+      `${localValue.slice(0, activeMention.start)}${token}${localValue.slice(activeMention.end)}`
+    );
     onMentionIntentChange(appendMentionTarget(mentionIntent, candidate.target));
     const cursor = activeMention.start + token.length;
     requestAnimationFrame(() => {
@@ -207,10 +222,10 @@ export function Composer({
   async function submitSchedule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const sendAtMs = scheduledSendTimestampFromInput(scheduleValue);
-    if (sendAtMs === null || !value.trim() || hasStagedUploads || isSending) {
+    if (sendAtMs === null || !localValue.trim() || hasStagedUploads || isSending) {
       return;
     }
-    await onScheduleSend(sendAtMs);
+    await onScheduleSend(sendAtMs, localValue);
     setScheduleOpen(false);
   }
 
@@ -228,7 +243,7 @@ export function Composer({
     });
     const resolverOptions = {
       autocomplete_open: autocompleteOpen,
-      send_enabled: !isSending && (value.trim().length > 0 || hasStagedUploads)
+      send_enabled: !isSending && (localValue.trim().length > 0 || hasStagedUploads)
     };
     if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
       void resolveComposerKeyAction("main", keyEvent, resolverOptions).catch(() => undefined);
@@ -239,12 +254,12 @@ export function Composer({
     void resolveComposerKeyAction("main", keyEvent, resolverOptions)
       .then((action) => {
         if (action === "send") {
-          void onSend();
+          void onSend(localValue);
           return;
         }
         if (action === "insertNewline") {
-          const nextValue = insertNewlineAtSelection(value, selectionStart, selectionEnd);
-          onValueChange(nextValue.value);
+          const nextValue = insertNewlineAtSelection(localValue, selectionStart, selectionEnd);
+          updateLocalValue(nextValue.value);
           requestAnimationFrame(() => {
             textarea.selectionStart = nextValue.cursor;
             textarea.selectionEnd = nextValue.cursor;
@@ -368,7 +383,7 @@ export function Composer({
       <textarea
         ref={textareaRef}
         aria-label={t("composer.messageComposer")}
-        value={value}
+        value={localValue}
         placeholder={t("composer.placeholder", { roomName })}
         onKeyDown={onComposerKeyDown}
         onPaste={(event) => {
@@ -378,7 +393,7 @@ export function Composer({
             void attachDroppedOrPastedFiles(files);
           }
         }}
-        onChange={(event) => onValueChange(event.target.value)}
+        onChange={(event) => updateLocalValue(event.target.value)}
       />
       <div
         className="composer-footer"
@@ -445,18 +460,18 @@ export function Composer({
             className="icon-button"
             type="button"
             aria-label={t("scheduled.sendLater")}
-            disabled={isSending || !value.trim() || hasStagedUploads}
+            disabled={isSending || !localValue.trim() || hasStagedUploads}
             onClick={openScheduleForm}
           >
             <Clock3 size={ICON_SIZE.control} />
           </button>
         </div>
         <button
-          className={`send-button ${(value.trim() || hasStagedUploads) && !isSending ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
+          className={`send-button ${(localValue.trim() || hasStagedUploads) && !isSending ? "ready" : ""} ${isSending ? "is-sending" : ""}`}
           type="button"
           aria-label={isSending ? t("action.sending") : t("action.send")}
-          disabled={isSending || (!value.trim() && !hasStagedUploads)}
-          onClick={onSend}
+          disabled={isSending || (!localValue.trim() && !hasStagedUploads)}
+          onClick={() => onSend(localValue)}
         >
           <Send size={ICON_SIZE.input} />
         </button>

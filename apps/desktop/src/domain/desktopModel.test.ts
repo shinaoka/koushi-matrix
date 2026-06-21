@@ -1,22 +1,111 @@
 import { describe, expect, test } from "vitest";
 
 import { createBrowserFakeApi } from "../backend/browserFakeApi";
-import { composeSidebar, roomListSections, visibleRooms } from "./desktopModel";
+import { composeSidebar, projectRoomSummaries, roomListSections, visibleRooms } from "./desktopModel";
 import type { DesktopSnapshot, RoomSummary, RoomTags, SpaceSummary } from "./types";
 
 describe("desktop model", () => {
-  test("space rooms exclude DMs while DMs stay global", async () => {
+  test("Home (null space) global_dms includes all DMs regardless of dm_space_ids", () => {
+    const spaces: SpaceSummary[] = [
+      {
+        space_id: "!space-a:example.invalid",
+        display_name: "Alpha",
+        avatar: null,
+        child_room_ids: ["!room-a:example.invalid"]
+      }
+    ];
+    const rooms: RoomSummary[] = [
+      roomSummary("!room-a:example.invalid", "Alpha room", false),
+      roomSummaryWithDmSpaces("!dm-in-space:example.invalid", "In-space DM", [
+        "!space-a:example.invalid"
+      ]),
+      roomSummaryWithDmSpaces("!dm-no-space:example.invalid", "No-space DM", [])
+    ];
+
+    const sidebar = composeSidebar(null, spaces, rooms);
+
+    expect(sidebar.global_dms.map((room) => room.room_id)).toEqual([
+      "!dm-in-space:example.invalid",
+      "!dm-no-space:example.invalid"
+    ]);
+  });
+
+  test("active space global_dms shows only DMs whose dm_space_ids includes that space", () => {
+    const spaces: SpaceSummary[] = [
+      {
+        space_id: "!space-a:example.invalid",
+        display_name: "Alpha",
+        avatar: null,
+        child_room_ids: ["!room-a:example.invalid"]
+      }
+    ];
+    const rooms: RoomSummary[] = [
+      roomSummary("!room-a:example.invalid", "Alpha room", false),
+      roomSummaryWithDmSpaces("!dm-in-space:example.invalid", "In-space DM", [
+        "!space-a:example.invalid"
+      ]),
+      roomSummaryWithDmSpaces("!dm-no-space:example.invalid", "No-space DM", [])
+    ];
+
+    const sidebar = composeSidebar("!space-a:example.invalid", spaces, rooms);
+
+    expect(sidebar.space_rooms.map((room) => room.room_id)).toEqual([
+      "!room-a:example.invalid"
+    ]);
+    expect(sidebar.global_dms.map((room) => room.room_id)).toEqual([
+      "!dm-in-space:example.invalid"
+    ]);
+  });
+
+  test("DM with multiple dm_space_ids appears under each matching space", () => {
+    const spaces: SpaceSummary[] = [
+      {
+        space_id: "!space-a:example.invalid",
+        display_name: "Alpha",
+        avatar: null,
+        child_room_ids: []
+      },
+      {
+        space_id: "!space-b:example.invalid",
+        display_name: "Beta",
+        avatar: null,
+        child_room_ids: []
+      }
+    ];
+    const rooms: RoomSummary[] = [
+      roomSummaryWithDmSpaces("!dm-both:example.invalid", "Both spaces DM", [
+        "!space-a:example.invalid",
+        "!space-b:example.invalid"
+      ]),
+      roomSummaryWithDmSpaces("!dm-only-a:example.invalid", "Space-A only DM", [
+        "!space-a:example.invalid"
+      ])
+    ];
+
+    const sidebarA = composeSidebar("!space-a:example.invalid", spaces, rooms);
+    const sidebarB = composeSidebar("!space-b:example.invalid", spaces, rooms);
+
+    expect(sidebarA.global_dms.map((room) => room.room_id)).toEqual([
+      "!dm-both:example.invalid",
+      "!dm-only-a:example.invalid"
+    ]);
+    expect(sidebarB.global_dms.map((room) => room.room_id)).toEqual([
+      "!dm-both:example.invalid"
+    ]);
+  });
+
+  test("fake API: selecting a space shows only DMs with matching dm_space_ids", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.selectSpace("!space-beta:example.invalid");
 
     const rooms = visibleRooms(snapshot);
 
+    // space_rooms has only the non-DM child room of space-beta
     expect(rooms.spaceRooms.map((room) => room.room_id)).toEqual([
       "!room-search:example.invalid"
     ]);
-    expect(rooms.globalDms.map((room) => room.room_id)).toContain(
-      "!dm-member-1:example.invalid"
-    );
+    // fake DMs have dm_space_ids: [] so none appear under an active space (C1 behaviour)
+    expect(rooms.globalDms.map((room) => room.room_id)).toEqual([]);
     expect(rooms.spaceRooms.every((room) => !room.room_id.startsWith("!dm-"))).toBe(
       true
     );
@@ -42,6 +131,7 @@ describe("desktop model", () => {
         dm_user_ids: [],
         tags: { favourite: { order: "0.25" }, low_priority: null },
         parent_space_ids: ["!space-a:example.invalid"],
+        dm_space_ids: [],
         is_encrypted: false,
         unread_count: 5
       },
@@ -55,6 +145,7 @@ describe("desktop model", () => {
         dm_user_ids: [],
         tags: { favourite: null, low_priority: null },
         parent_space_ids: [],
+        dm_space_ids: [],
         is_encrypted: false,
         unread_count: 2
       },
@@ -68,6 +159,7 @@ describe("desktop model", () => {
         dm_user_ids: ["@direct:example.invalid"],
         tags: { favourite: null, low_priority: null },
         parent_space_ids: ["!space-a:example.invalid"],
+        dm_space_ids: [],
         is_encrypted: false,
         unread_count: 3
       }
@@ -90,6 +182,46 @@ describe("desktop model", () => {
     ]);
     expect(sidebar.global_dms[0]?.display_name).toBe("Direct local");
   });
+
+  test("projects direct-message room avatars from counterpart profiles", () => {
+    const profileAvatar = {
+      mxc_uri: "mxc://example.invalid/direct-avatar",
+      thumbnail: {
+        kind: "ready" as const,
+        source_url: "asset://direct-avatar.png",
+        width: 64,
+        height: 64,
+        mime_type: "image/png"
+      }
+    };
+    const rooms = projectRoomSummaries(
+      [roomSummary("!dm-a:example.invalid", "Direct upstream", true)],
+      {
+        own: { display_name: null, avatar: null },
+        users: {
+          "@dm-a:example.invalid": {
+            user_id: "@dm-a:example.invalid",
+            display_name: "Direct upstream",
+            display_label: "Direct local",
+            original_display_label: "Direct upstream",
+            mention_search_terms: ["Direct local", "@dm-a:example.invalid"],
+            avatar: profileAvatar
+          }
+        },
+        local_aliases: {},
+        local_alias_update: { kind: "idle" },
+        ignored_user_ids: [],
+        ignored_user_update: { kind: "idle" },
+        update: { kind: "idle" }
+      }
+    );
+    const sidebar = composeSidebar(null, [], rooms);
+
+    expect(rooms[0]?.display_label).toBe("Direct local");
+    expect(rooms[0]?.avatar).toBe(profileAvatar);
+    expect(sidebar.global_dms[0]?.avatar).toBe(profileAvatar);
+  });
+
 
   test("room list sections are derived from Rust-owned tags and DM classification", () => {
     const rooms: RoomSummary[] = [
@@ -260,7 +392,8 @@ describe("desktop model", () => {
     const rooms: RoomSummary[] = [
       roomSummary("!in-space:example.invalid", "In space", false),
       roomSummary("!outside:example.invalid", "Outside", false),
-      roomSummary("!dm:example.invalid", "Direct", true)
+      // DM is tagged to space-a so it shows there; not tagged to space-empty so absent there
+      roomSummaryWithDmSpaces("!dm:example.invalid", "Direct", ["!space-a:example.invalid"])
     ];
     const roomList: DesktopSnapshot["state"]["ui"]["room_list"] = {
       active_filter: { kind: "rooms" },
@@ -286,15 +419,15 @@ describe("desktop model", () => {
     expect(sections.rooms.map((room) => room.room_id)).toEqual([
       "!in-space:example.invalid"
     ]);
+    // DM is tagged to space-a so it appears here (C1)
     expect(sections.people.map((room) => room.room_id)).toEqual([
       "!dm:example.invalid"
     ]);
     expect(emptySections.rooms).toEqual([]);
     expect(emptySections.favourites).toEqual([]);
     expect(emptySections.lowPriority).toEqual([]);
-    expect(emptySections.people.map((room) => room.room_id)).toEqual([
-      "!dm:example.invalid"
-    ]);
+    // DM is NOT tagged to space-empty so it is absent (C1)
+    expect(emptySections.people).toEqual([]);
   });
 
   test("fake search keeps exact matches and drops ngram false positives", async () => {
@@ -553,7 +686,8 @@ function roomSummary(
   roomId: string,
   displayName: string,
   isDm: boolean,
-  tags: RoomTags = { favourite: null, low_priority: null }
+  tags: RoomTags = { favourite: null, low_priority: null },
+  parentSpaceIds: string[] = []
 ): RoomSummary {
   return {
     room_id: roomId,
@@ -564,7 +698,29 @@ function roomSummary(
     is_dm: isDm,
     dm_user_ids: isDm ? [`@${roomId.replace(/^!/, "")}`] : [],
     tags,
+    parent_space_ids: parentSpaceIds,
+    dm_space_ids: [],
+    is_encrypted: false,
+    unread_count: 0
+  };
+}
+
+function roomSummaryWithDmSpaces(
+  roomId: string,
+  displayName: string,
+  dmSpaceIds: string[]
+): RoomSummary {
+  return {
+    room_id: roomId,
+    display_name: displayName,
+    display_label: displayName,
+    original_display_label: displayName,
+    avatar: null,
+    is_dm: true,
+    dm_user_ids: [`@${roomId.replace(/^!/, "")}`],
+    tags: { favourite: null, low_priority: null },
     parent_space_ids: [],
+    dm_space_ids: dmSpaceIds,
     is_encrypted: false,
     unread_count: 0
   };

@@ -182,6 +182,9 @@ pub(crate) enum SearchActorMessage {
     /// `completed_rooms` so the next `RoomsAvailable` notification re-crawls
     /// them with the updated settings.
     InvalidateCrawlerCache,
+    /// Clear the in-memory search document store and crawl queues so joined
+    /// rooms can be indexed from scratch.
+    RebuildIndex,
     Shutdown,
 }
 
@@ -235,6 +238,7 @@ impl std::fmt::Debug for SearchActorMessage {
             Self::InvalidateCrawlerCache => {
                 write!(f, "SearchActorMessage::InvalidateCrawlerCache")
             }
+            Self::RebuildIndex => write!(f, "SearchActorMessage::RebuildIndex"),
             Self::Shutdown => write!(f, "SearchActorMessage::Shutdown"),
         }
     }
@@ -329,6 +333,11 @@ impl SearchActorHandle {
             .tx
             .send(SearchActorMessage::InvalidateCrawlerCache)
             .await;
+    }
+
+    /// Clear indexed search documents and crawler progress in the actor.
+    pub async fn rebuild_search_index(&self) {
+        let _ = self.tx.send(SearchActorMessage::RebuildIndex).await;
     }
 
     /// Return a sender for forwarding timeline mutations (indexable events).
@@ -464,6 +473,9 @@ impl SearchActor {
                             self.crawl_settings_generation =
                                 self.crawl_settings_generation.wrapping_add(1);
                             self.invalidate_history_crawler_cache();
+                        }
+                        SearchActorMessage::RebuildIndex => {
+                            self.rebuild_search_index();
                         }
                     }
                 }
@@ -928,6 +940,13 @@ impl SearchActor {
         self.stop_all_history_crawls();
     }
 
+    fn rebuild_search_index(&mut self) {
+        self.document_store.clear();
+        self.indexed_rooms.clear();
+        self.crawl_settings_generation = self.crawl_settings_generation.wrapping_add(1);
+        self.invalidate_history_crawler_cache();
+    }
+
     fn emit(&self, event: CoreEvent) {
         let _ = self.event_tx.send(event);
     }
@@ -1081,6 +1100,46 @@ mod tests {
             "must not verify after redaction"
         );
         assert_eq!(store.document_count(), 0, "document count must drop to 0");
+    }
+
+    #[test]
+    fn clear_removes_documents_edits_pending_edits_and_aliases() {
+        let mut store = SearchDocumentStore::default();
+        store.upsert_message(make_event("!r:test", "$e1", "original content"));
+        store.upsert_edit(make_edit("$e1", "edited content"));
+        store.upsert_edit(make_edit("$missing", "pending edit"));
+
+        assert_eq!(store.document_count(), 1);
+        assert_eq!(store.pending_edit_count(), 1);
+        assert!(
+            store
+                .verify_candidate(make_candidate("!r:test", "$e1_edit"), "edited")
+                .is_some(),
+            "edit alias must verify before clear"
+        );
+
+        store.clear();
+
+        assert_eq!(store.document_count(), 0);
+        assert_eq!(store.pending_edit_count(), 0);
+        assert!(
+            store
+                .verify_candidate(make_candidate("!r:test", "$e1"), "edited")
+                .is_none(),
+            "cleared document must not verify"
+        );
+        assert!(
+            store
+                .verify_candidate(make_candidate("!r:test", "$e1_edit"), "edited")
+                .is_none(),
+            "cleared edit alias must not verify"
+        );
+        assert!(
+            store
+                .verify_candidate(make_candidate("!r:test", "$missing"), "pending")
+                .is_none(),
+            "cleared pending edit must not verify"
+        );
     }
 
     // --- Unresolved replacement not indexed as standalone ---

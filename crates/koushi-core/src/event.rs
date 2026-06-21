@@ -519,6 +519,10 @@ pub enum RoomEvent {
         target_user_id: String,
         power_level: i64,
     },
+    RoomKeyReshared {
+        request_id: RequestId,
+        room_id: String,
+    },
     MarkedAsRead {
         request_id: RequestId,
         room_id: String,
@@ -658,6 +662,11 @@ impl fmt::Debug for RoomEvent {
                 .field("room_id", &"RoomId(..)")
                 .field("target_user_id", &"UserId(..)")
                 .field("power_level", power_level)
+                .finish(),
+            Self::RoomKeyReshared { request_id, .. } => formatter
+                .debug_struct("RoomKeyReshared")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
                 .finish(),
             Self::MarkedAsRead { request_id, .. } => formatter
                 .debug_struct("MarkedAsRead")
@@ -1297,10 +1306,28 @@ pub struct TimelineItem {
     pub is_edited: bool,
     #[serde(default)]
     pub can_edit: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unable_to_decrypt: Option<TimelineUnableToDecrypt>,
     #[serde(default)]
     pub actions: TimelineMessageActions,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub send_state: Option<TimelineSendState>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineUnableToDecrypt {
+    pub session_id: Option<String>,
+    pub reason: TimelineUnableToDecryptReason,
+    pub can_request_keys: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TimelineUnableToDecryptReason {
+    MissingRoomKey,
+    Withheld,
+    Malformed,
+    Unknown,
 }
 
 impl fmt::Debug for TimelineItem {
@@ -1354,6 +1381,7 @@ impl fmt::Debug for TimelineItem {
             .field("can_redact", &self.can_redact)
             .field("is_edited", &self.is_edited)
             .field("can_edit", &self.can_edit)
+            .field("unable_to_decrypt", &self.unable_to_decrypt)
             .field("actions", &self.actions)
             .field("send_state", &self.send_state)
             .finish()
@@ -1533,6 +1561,7 @@ pub fn project_room_event_display_labels(event: &mut RoomEvent, state: &AppState
         | RoomEvent::DirectoryQueryCompleted { .. }
         | RoomEvent::RoomMemberModerated { .. }
         | RoomEvent::RoomMemberRoleUpdated { .. }
+        | RoomEvent::RoomKeyReshared { .. }
         | RoomEvent::MarkedAsRead { .. }
         | RoomEvent::MarkedAsUnread { .. }
         | RoomEvent::ReportCompleted { .. } => {}
@@ -1877,6 +1906,7 @@ mod tests {
             can_edit: true,
             actions: TimelineMessageActions::default(),
             send_state: None,
+            unable_to_decrypt: None,
         };
 
         let value = serde_json::to_value(&item).expect("timeline item serializes");
@@ -1947,6 +1977,7 @@ mod tests {
             can_edit: false,
             actions: TimelineMessageActions::default(),
             send_state: None,
+            unable_to_decrypt: None,
         };
 
         let value = serde_json::to_value(&item).expect("timeline item serializes");
@@ -2009,6 +2040,7 @@ mod tests {
             can_edit: true,
             actions: TimelineMessageActions::default(),
             send_state: None,
+            unable_to_decrypt: None,
         };
 
         let value = serde_json::to_value(&item).expect("timeline item serializes");
@@ -2084,6 +2116,7 @@ mod tests {
                 false,
             ),
             send_state: None,
+            unable_to_decrypt: None,
         };
 
         let value = serde_json::to_value(&item).expect("timeline item serializes");
@@ -2263,6 +2296,7 @@ mod tests {
             send_state: Some(TimelineSendState::NotSent {
                 reason: TimelineSendFailureReason::Recoverable,
             }),
+            unable_to_decrypt: None,
         };
 
         let value = serde_json::to_value(&item).expect("timeline item serializes");
@@ -2332,6 +2366,7 @@ mod tests {
             can_edit: false,
             actions: TimelineMessageActions::default(),
             send_state: None,
+            unable_to_decrypt: None,
         };
 
         let value = serde_json::to_value(&item).expect("timeline item serializes");
@@ -2544,6 +2579,7 @@ mod tests {
             can_edit: false,
             actions: TimelineMessageActions::default(),
             send_state: None,
+            unable_to_decrypt: None,
         }
     }
 
@@ -2578,6 +2614,7 @@ mod tests {
                     avatar_url: None,
                     power_level: Some(0),
                     role: koushi_state::RoomMemberRole::User,
+                    user_trust: None,
                 }],
             },
         };

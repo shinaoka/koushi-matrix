@@ -51,6 +51,17 @@ describe("i18n message catalog", () => {
     expect(t("workspace.people", {}, "ja")).toBe("DM");
   });
 
+  test("explains the three-state user trust model in shipped locales", () => {
+    expect(t("help.userTrust.title")).toBe("User trust model");
+    expect(t("help.userTrust.unverifiedTitle")).toBe("Unverified");
+    expect(t("help.userTrust.verifiedTitle")).toBe("Verified");
+    expect(t("help.userTrust.identityResetTitle")).toBe("Identity reset");
+    expect(t("help.userTrust.title", {}, "ja")).toBe("ユーザー信頼モデル");
+    expect(t("help.userTrust.unverifiedTitle", {}, "ja")).toBe("未検証");
+    expect(t("help.userTrust.verifiedTitle", {}, "ja")).toBe("検証済み");
+    expect(t("help.userTrust.identityResetTitle", {}, "ja")).toBe("IDリセット");
+  });
+
   test("Japanese catalog provides representative localized labels", () => {
     expect(t("composer.replying", {}, "ja")).toBe("返信中");
     expect(t("action.send", {}, "ja")).toBe("送信");

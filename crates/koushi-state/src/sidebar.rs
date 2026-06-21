@@ -103,7 +103,14 @@ pub fn compose_sidebar(
 
     let global_dms: Vec<_> = rooms
         .iter()
-        .filter(|room| room.is_dm)
+        .filter(|room| {
+            room.is_dm
+                && (active_space_id.is_none()
+                    || room
+                        .dm_space_ids
+                        .iter()
+                        .any(|space_id| Some(space_id.as_str()) == active_space_id))
+        })
         .map(room_list_item)
         .collect();
 

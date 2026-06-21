@@ -91,6 +91,9 @@ const ENV_PASSWORD_B: &str = "KOUSHI_LOCAL_QA_PASSWORD_B";
 const ENV_EXPECT_SYNC_BACKEND: &str = "KOUSHI_LOCAL_QA_EXPECT_SYNC_BACKEND";
 const ENV_QA_SCENARIO: &str = "KOUSHI_QA_SCENARIO";
 const ENV_ALLOW_IDENTITY_RESET: &str = "KOUSHI_QA_ALLOW_IDENTITY_RESET";
+const ENV_E2EE_RECIPIENT_SECOND_DEVICE: &str = "KOUSHI_QA_E2EE_RECIPIENT_SECOND_DEVICE";
+const ENV_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND: &str =
+    "KOUSHI_QA_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND";
 #[cfg(any(debug_assertions, test))]
 const ENV_FILE_CREDENTIAL_STORE_DIR: &str = "KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR";
 
@@ -101,8 +104,11 @@ const DEVICE_B: &str = "Koushi Core QA B";
 const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 const ROOM_LIST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const E2EE_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
+const DEVICE_LIST_SETTLE_SYNC_TIMEOUT: Duration = Duration::from_secs(5);
 const THREAD_REPLY_BODY: &str = "Phase 11 QA thread reply from B";
 const E2EE_KEY_BACKUP_SEED_BODY: &str = "Koushi E2EE key backup seed";
+const E2EE_SECOND_DEVICE_BODY: &str = "Koushi E2EE second-device delivery";
+const E2EE_MULTI_USER_MULTI_DEVICE_BODY: &str = "Koushi E2EE multi-user multi-device delivery";
 const DEFAULT_STRESS_SPACE_COUNT: usize = 2;
 const DEFAULT_STRESS_ROOMS_PER_SPACE: usize = 2;
 const DEFAULT_STRESS_MESSAGES_PER_ROOM: usize = 8;
@@ -171,6 +177,8 @@ enum QaStage {
 }
 
 fn main() -> ExitCode {
+    init_headless_qa_tracing_from_env();
+
     match run() {
         Ok(report) => {
             println!("{report}");
@@ -181,6 +189,19 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn init_headless_qa_tracing_from_env() {
+    if std::env::var_os("RUST_LOG").is_none() {
+        return;
+    }
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
 }
 
 fn run() -> Result<String, String> {
@@ -424,6 +445,7 @@ impl QaScenario {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn suppress_matrix_identifiers(self) -> bool {
         let _ = self;
         true
@@ -446,7 +468,12 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "suppress_focus=ok",
             "clear_badge=ok",
         ],
-        QaStage::E2eeTrust => &["joined_room_restore=ok", "e2ee_trust=ok"],
+        QaStage::E2eeTrust => &[
+            "joined_room_restore=ok",
+            "e2ee_second_device_decrypt=ok",
+            "e2ee_multi_user_multi_device_decrypt=ok",
+            "e2ee_trust=ok",
+        ],
         QaStage::InvitesDm => &[
             "invite_recv=ok",
             "invite_accept=ok",
@@ -600,6 +627,8 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "fifo=ok",
         "unsent_restart=ok",
         "joined_room_restore=ok",
+        "e2ee_second_device_decrypt=ok",
+        "e2ee_multi_user_multi_device_decrypt=ok",
         "e2ee_trust=ok",
         "restore_cleanup=ok",
         "link_preview_global=ok",
@@ -1348,8 +1377,35 @@ async fn run_e2ee_trust_stage(
     .await?;
     println!("joined_room_restore=ok");
 
-    verify_second_device_for_qa(conn_a, &mut conn_a2, &session_a, &session_a2).await?;
+    verify_second_device_for_qa(
+        conn_a,
+        &mut conn_a2,
+        &session_a,
+        &session_a2,
+        "e2ee self verification A/A2",
+    )
+    .await?;
     println!("e2ee_verification=ok");
+
+    verify_second_device_room_key_delivery_for_qa(
+        conn_a,
+        &mut conn_a2,
+        account_key_a,
+        &account_key_a2,
+        &key_backup_seed_room_id,
+    )
+    .await?;
+    println!("e2ee_second_device_decrypt=ok");
+
+    verify_multi_user_multi_device_room_key_delivery_for_qa(
+        config,
+        conn_a,
+        &mut conn_a2,
+        account_key_a,
+        &account_key_a2,
+    )
+    .await?;
+    println!("e2ee_multi_user_multi_device_decrypt=ok");
 
     cleanup_e2ee_secondary_device(conn_a2, runtime_a2, account_key_a2).await?;
 
@@ -5272,6 +5328,40 @@ async fn sync_once_for_qa(conn: &mut CoreConnection, label: &str) -> Result<(), 
     wait_for_sync_once(conn, request_id, label).await
 }
 
+async fn best_effort_sync_once_for_qa(
+    conn: &mut CoreConnection,
+    label: &str,
+) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Sync(SyncCommand::SyncOnce { request_id }))
+        .await
+        .map_err(|e| format!("{label}: submit SyncOnce failed: {e}"))?;
+
+    loop {
+        let event =
+            match tokio::time::timeout(DEVICE_LIST_SETTLE_SYNC_TIMEOUT, conn.recv_event()).await {
+                Ok(Ok(event)) => event,
+                Ok(Err(lag)) => {
+                    return Err(format!(
+                        "{label}: event stream lagged during best-effort SyncOnce (skipped={})",
+                        lag.skipped
+                    ));
+                }
+                Err(_) => return Ok(()),
+            };
+
+        match event {
+            CoreEvent::Sync(SyncEvent::Stopped {
+                request_id: Some(ev_id),
+            }) if ev_id == request_id => return Ok(()),
+            CoreEvent::OperationFailed {
+                request_id: ev_id, ..
+            } if ev_id == request_id => return Ok(()),
+            _ => {}
+        }
+    }
+}
+
 async fn stop_sync_for_qa(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
     let request_id = conn.next_request_id();
     conn.command(CoreCommand::Sync(SyncCommand::Stop { request_id }))
@@ -5977,6 +6067,7 @@ fn native_attention_room(
         marked_unread: false,
         last_activity_ms: 0,
         parent_space_ids: Vec::new(),
+        dm_space_ids: Vec::new(),
         is_encrypted: false,
         joined_members: 0,
     }
@@ -6578,6 +6669,7 @@ async fn verify_second_device_for_qa(
     conn_a2: &mut CoreConnection,
     session_a: &SessionInfo,
     session_a2: &SessionInfo,
+    label: &str,
 ) -> Result<(), String> {
     if session_a.user_id != session_a2.user_id {
         return Err("E2EE verification proof requires two devices for one user".to_owned());
@@ -6595,16 +6687,17 @@ async fn verify_second_device_for_qa(
         device_id: session_a2.device_id.clone(),
     };
 
-    let flow_id_a2 =
-        request_device_verification_for_qa(conn_a2, target_a, "request verification A2 to A")
-            .await?;
+    let request_label = format!("{label}: request secondary to primary");
+    let flow_id_a2 = request_device_verification_for_qa(conn_a2, target_a, &request_label).await?;
     // Avoid overlapping continuous SyncService with manual SyncOnce delivery
     // during SAS; overlapping paths reproduced pre-SAS key-mismatch flakes.
-    stop_sync_for_qa(conn_a, "pause sync A for verification").await?;
-    stop_sync_for_qa(conn_a2, "pause sync A2 for verification").await?;
-    sync_once_for_qa(conn_a, "sync A for verification request").await?;
+    let pause_primary_label = format!("{label}: pause sync primary for verification");
+    let pause_secondary_label = format!("{label}: pause sync secondary for verification");
+    stop_sync_for_qa(conn_a, &pause_primary_label).await?;
+    stop_sync_for_qa(conn_a2, &pause_secondary_label).await?;
+    let incoming_label = format!("{label}: incoming verification request");
     let flow_id_a =
-        wait_for_verification_requested(conn_a, Some(&target_a2), "incoming verification A")
+        wait_for_verification_requested_with_sync_once(conn_a, Some(&target_a2), &incoming_label)
             .await?;
 
     let accept_a_id = conn_a.next_request_id();
@@ -6614,17 +6707,18 @@ async fn verify_second_device_for_qa(
             flow_id: flow_id_a,
         }))
         .await
-        .map_err(|e| format!("accept verification A failed to submit: {e}"))?;
+        .map_err(|e| format!("{label}: accept verification primary failed to submit: {e}"))?;
 
-    wait_for_verification_accepted(
-        conn_a,
-        flow_id_a,
-        Some(accept_a_id),
-        "A accepts verification",
+    let primary_accept_label = format!("{label}: primary accepts verification");
+    wait_for_verification_accepted(conn_a, flow_id_a, Some(accept_a_id), &primary_accept_label)
+        .await?;
+    let secondary_observes_accept_label = format!("{label}: secondary observes primary acceptance");
+    wait_for_verification_accepted_with_sync_once(
+        conn_a2,
+        flow_id_a2,
+        &secondary_observes_accept_label,
     )
     .await?;
-    wait_for_verification_accepted_with_sync_once(conn_a2, flow_id_a2, "A2 observes A acceptance")
-        .await?;
 
     // Let the requester start SAS. Starting from the accepting device has
     // triggered m.key_mismatch on Tuwunel self-verification in local QA.
@@ -6635,12 +6729,12 @@ async fn verify_second_device_for_qa(
             flow_id: flow_id_a2,
         }))
         .await
-        .map_err(|e| format!("start SAS from A2 failed to submit: {e}"))?;
+        .map_err(|e| format!("{label}: start SAS from secondary failed to submit: {e}"))?;
 
     let (emojis_a, emojis_a2) =
-        drive_until_both_verification_sas(conn_a, flow_id_a, conn_a2, flow_id_a2).await?;
+        drive_until_both_verification_sas(conn_a, flow_id_a, conn_a2, flow_id_a2, label).await?;
     if emojis_a != emojis_a2 {
-        return Err("SAS emoji mismatch between devices".to_owned());
+        return Err(format!("{label}: SAS emoji mismatch between devices"));
     }
 
     let confirm_a_id = conn_a.next_request_id();
@@ -6652,7 +6746,7 @@ async fn verify_second_device_for_qa(
             },
         ))
         .await
-        .map_err(|e| format!("confirm SAS A failed to submit: {e}"))?;
+        .map_err(|e| format!("{label}: confirm SAS primary failed to submit: {e}"))?;
 
     let confirm_a2_id = conn_a2.next_request_id();
     conn_a2
@@ -6663,26 +6757,422 @@ async fn verify_second_device_for_qa(
             },
         ))
         .await
-        .map_err(|e| format!("confirm SAS A2 failed to submit: {e}"))?;
+        .map_err(|e| format!("{label}: confirm SAS secondary failed to submit: {e}"))?;
 
-    sync_once_for_qa(conn_a2, "sync A2 after SAS confirm").await?;
-    sync_once_for_qa(conn_a, "sync A after A2 SAS confirm").await?;
-    sync_once_for_qa(conn_a2, "sync A2 after SAS done").await?;
+    let sync_secondary_after_confirm_label = format!("{label}: sync secondary after SAS confirm");
+    let sync_primary_after_confirm_label =
+        format!("{label}: sync primary after secondary SAS confirm");
+    let sync_secondary_after_done_label = format!("{label}: sync secondary after SAS done");
+    sync_once_for_qa(conn_a2, &sync_secondary_after_confirm_label).await?;
+    sync_once_for_qa(conn_a, &sync_primary_after_confirm_label).await?;
+    sync_once_for_qa(conn_a2, &sync_secondary_after_done_label).await?;
 
-    wait_for_verification_done(conn_a, flow_id_a, Some(confirm_a_id), "A verification done")
-        .await?;
+    let primary_done_label = format!("{label}: primary verification done");
+    wait_for_verification_done(conn_a, flow_id_a, Some(confirm_a_id), &primary_done_label).await?;
+    let secondary_done_label = format!("{label}: secondary verification done");
     wait_for_verification_done(
         conn_a2,
         flow_id_a2,
         Some(confirm_a2_id),
-        "A2 verification done",
+        &secondary_done_label,
     )
     .await?;
 
-    start_sync_for_qa(conn_a, "resume sync A after verification").await?;
-    start_sync_for_qa(conn_a2, "resume sync A2 after verification").await?;
+    let resume_primary_label = format!("{label}: resume sync primary after verification");
+    let resume_secondary_label = format!("{label}: resume sync secondary after verification");
+    start_sync_for_qa(conn_a, &resume_primary_label).await?;
+    start_sync_for_qa(conn_a2, &resume_secondary_label).await?;
 
     Ok(())
+}
+
+async fn verify_second_device_room_key_delivery_for_qa(
+    conn_a: &mut CoreConnection,
+    conn_a2: &mut CoreConnection,
+    account_key_a: &AccountKey,
+    account_key_a2: &AccountKey,
+    room_id: &str,
+) -> Result<(), String> {
+    sync_once_for_qa(conn_a, "sync A before second-device encrypted send").await?;
+    sync_once_for_qa(conn_a2, "sync A2 before second-device encrypted receive").await?;
+    wait_for_room_in_room_list(conn_a2, room_id, "A2 room list before encrypted receive").await?;
+
+    let key_a = TimelineKey::room(account_key_a.clone(), room_id.to_owned());
+    let key_a2 = TimelineKey::room(account_key_a2.clone(), room_id.to_owned());
+
+    let subscribe_a2_id = conn_a2.next_request_id();
+    conn_a2
+        .command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+            request_id: subscribe_a2_id,
+            key: key_a2.clone(),
+        }))
+        .await
+        .map_err(|e| format!("second-device decrypt: submit A2 subscribe failed: {e}"))?;
+
+    let initial_a2 = wait_for_initial_items(
+        conn_a2,
+        &key_a2,
+        subscribe_a2_id,
+        "second-device encrypted room subscribe",
+    )
+    .await?;
+    assert_no_decryption_failure_items(&initial_a2, "second-device encrypted room initial")?;
+    if find_timeline_item_with_body(&initial_a2, E2EE_KEY_BACKUP_SEED_BODY).is_none() {
+        return Err("second-device decrypt: restored backup seed body was not visible".to_owned());
+    }
+
+    let transaction_id = "qa-e2ee-second-device-delivery".to_owned();
+    let send_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            request_id: send_id,
+            key: key_a.clone(),
+            transaction_id: transaction_id.clone(),
+            body: E2EE_SECOND_DEVICE_BODY.to_owned(),
+            mentions: MentionIntent::default(),
+        }))
+        .await
+        .map_err(|e| format!("second-device decrypt: submit encrypted send failed: {e}"))?;
+
+    wait_for_send_flow_completion(
+        conn_a,
+        send_id,
+        &key_a,
+        &transaction_id,
+        E2EE_SECOND_DEVICE_BODY,
+        "second-device encrypted send",
+    )
+    .await?;
+
+    wait_for_item_with_body_or_decryption_failure(
+        conn_a2,
+        &key_a2,
+        E2EE_SECOND_DEVICE_BODY,
+        "second-device encrypted receive",
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
+    config: &QaConfig,
+    conn_a: &mut CoreConnection,
+    conn_a2: &mut CoreConnection,
+    account_key_a: &AccountKey,
+    account_key_a2: &AccountKey,
+) -> Result<(), String> {
+    let check_recipient_second_device = env_flag_enabled(ENV_E2EE_RECIPIENT_SECOND_DEVICE)?;
+    let (runtime_b, mut conn_b, account_key_b) = login_synced_participant_for_qa(
+        config,
+        qa_data_dir("e2ee-b"),
+        &config.user_b,
+        &config.password_b,
+        DEVICE_B,
+        "e2ee login B",
+    )
+    .await?;
+
+    let user_b_full_id = format!("@{}:{}", config.user_b, config.server_name);
+    let room_id = create_room_for_qa(
+        conn_a,
+        "QA E2EE Multi Device DM",
+        true,
+        "e2ee multi-device create encrypted room",
+    )
+    .await?;
+
+    sync_once_for_qa(conn_a, "e2ee multi-device sync A after room create").await?;
+    wait_for_room_in_room_list(
+        conn_a,
+        &room_id,
+        "e2ee multi-device A room list after create",
+    )
+    .await?;
+
+    invite_user_for_qa(
+        conn_a,
+        &room_id,
+        &user_b_full_id,
+        "e2ee multi-device invite B",
+    )
+    .await?;
+    sync_once_for_qa(&mut conn_b, "e2ee multi-device sync B for invite").await?;
+    wait_for_invite_in_snapshot(
+        &mut conn_b,
+        &room_id,
+        Some(false),
+        "e2ee multi-device wait for B invite",
+    )
+    .await?;
+    accept_invite_for_qa(&mut conn_b, &room_id, "e2ee multi-device B accepts invite").await?;
+
+    sync_once_for_qa(conn_a, "e2ee multi-device sync A after B join").await?;
+    sync_once_for_qa(conn_a2, "e2ee multi-device sync A2 after room join").await?;
+    sync_once_for_qa(&mut conn_b, "e2ee multi-device sync B after join").await?;
+    wait_for_room_in_room_list(
+        conn_a2,
+        &room_id,
+        "e2ee multi-device A2 room list after create",
+    )
+    .await?;
+    wait_for_room_in_room_list(&mut conn_b, &room_id, "e2ee multi-device B room list").await?;
+
+    let key_a = TimelineKey::room(account_key_a.clone(), room_id.clone());
+    let key_a2 = TimelineKey::room(account_key_a2.clone(), room_id.clone());
+    let key_b = TimelineKey::room(account_key_b.clone(), room_id.clone());
+
+    let initial_a =
+        subscribe_timeline_for_qa(conn_a, &key_a, "e2ee multi-device subscribe A").await?;
+    let initial_a2 =
+        subscribe_timeline_for_qa(conn_a2, &key_a2, "e2ee multi-device subscribe A2").await?;
+    let initial_b =
+        subscribe_timeline_for_qa(&mut conn_b, &key_b, "e2ee multi-device subscribe B").await?;
+    assert_no_decryption_failure_items(&initial_a, "e2ee multi-device A initial")?;
+    assert_no_decryption_failure_items(&initial_a2, "e2ee multi-device A2 initial")?;
+    assert_no_decryption_failure_items(&initial_b, "e2ee multi-device B initial")?;
+
+    let mut maybe_recipient_second_device = None;
+    if check_recipient_second_device {
+        let (runtime_b2, mut conn_b2, account_key_b2) = login_synced_participant_for_qa(
+            config,
+            qa_data_dir("e2ee-b2"),
+            &config.user_b,
+            &config.password_b,
+            "Koushi Core QA B2",
+            "e2ee login B2",
+        )
+        .await?;
+        let session_b =
+            authenticated_session_info(&mut conn_b, "session B info for E2EE multi-device")?;
+        let session_b2 =
+            authenticated_session_info(&mut conn_b2, "session B2 info for E2EE multi-device")?;
+        verify_second_device_for_qa(
+            &mut conn_b,
+            &mut conn_b2,
+            &session_b,
+            &session_b2,
+            "e2ee recipient verification B/B2",
+        )
+        .await?;
+        wait_for_room_in_room_list(&mut conn_b2, &room_id, "e2ee multi-device B2 room list")
+            .await?;
+        let key_b2 = TimelineKey::room(account_key_b2.clone(), room_id.clone());
+        let initial_b2 =
+            subscribe_timeline_for_qa(&mut conn_b2, &key_b2, "e2ee multi-device subscribe B2")
+                .await?;
+        assert_no_decryption_failure_items(&initial_b2, "e2ee multi-device B2 initial")?;
+        maybe_recipient_second_device = Some((runtime_b2, conn_b2, account_key_b2, key_b2));
+    }
+
+    if let Some((_runtime_b2, conn_b2, _account_key_b2, _key_b2)) =
+        maybe_recipient_second_device.as_mut()
+    {
+        settle_e2ee_device_list_propagation_for_qa(
+            conn_a,
+            &mut conn_b,
+            conn_b2,
+            "e2ee multi-device settle after B2 verification",
+        )
+        .await?;
+    }
+
+    if env_flag_enabled(ENV_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND)? {
+        stop_sync_for_qa(conn_a, "pause sync A before multi-device send").await?;
+        stop_sync_for_qa(conn_a2, "pause sync A2 before multi-device send").await?;
+        stop_sync_for_qa(&mut conn_b, "pause sync B before multi-device send").await?;
+        if let Some((_runtime_b2, conn_b2, _account_key_b2, _key_b2)) =
+            maybe_recipient_second_device.as_mut()
+        {
+            stop_sync_for_qa(conn_b2, "pause sync B2 before multi-device send").await?;
+        }
+    }
+
+    let transaction_id = "qa-e2ee-multi-user-multi-device-delivery".to_owned();
+    let send_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            request_id: send_id,
+            key: key_a.clone(),
+            transaction_id: transaction_id.clone(),
+            body: E2EE_MULTI_USER_MULTI_DEVICE_BODY.to_owned(),
+            mentions: MentionIntent::default(),
+        }))
+        .await
+        .map_err(|e| format!("e2ee multi-device: submit encrypted send failed: {e}"))?;
+
+    wait_for_send_flow_completion_with_timeout(
+        conn_a,
+        send_id,
+        &key_a,
+        &transaction_id,
+        E2EE_MULTI_USER_MULTI_DEVICE_BODY,
+        "e2ee multi-device encrypted send",
+        E2EE_EVENT_TIMEOUT,
+    )
+    .await?;
+
+    wait_for_item_with_body_or_decryption_failure_with_sync(
+        conn_a2,
+        &key_a2,
+        E2EE_MULTI_USER_MULTI_DEVICE_BODY,
+        "e2ee multi-device A2 receive",
+    )
+    .await?;
+    wait_for_item_with_body_or_decryption_failure_with_sync(
+        &mut conn_b,
+        &key_b,
+        E2EE_MULTI_USER_MULTI_DEVICE_BODY,
+        "e2ee multi-device B receive",
+    )
+    .await?;
+
+    if let Some((runtime_b2, mut conn_b2, account_key_b2, key_b2)) = maybe_recipient_second_device {
+        wait_for_item_with_body_or_decryption_failure_with_sync(
+            &mut conn_b2,
+            &key_b2,
+            E2EE_MULTI_USER_MULTI_DEVICE_BODY,
+            "e2ee multi-device B2 receive",
+        )
+        .await?;
+        println!("e2ee_recipient_second_device_decrypt=ok");
+        cleanup_logged_in_runtime(conn_b2, runtime_b2, account_key_b2, "e2ee cleanup B2").await?;
+    }
+
+    cleanup_logged_in_runtime(conn_b, runtime_b, account_key_b, "e2ee cleanup B").await?;
+    Ok(())
+}
+
+async fn settle_e2ee_device_list_propagation_for_qa(
+    conn_a: &mut CoreConnection,
+    conn_b: &mut CoreConnection,
+    conn_b2: &mut CoreConnection,
+    label: &str,
+) -> Result<(), String> {
+    for attempt in 1..=3 {
+        let label_b2 = format!("{label}: B2 sync {attempt}");
+        best_effort_sync_once_for_qa(conn_b2, &label_b2).await?;
+        let label_b = format!("{label}: B sync {attempt}");
+        best_effort_sync_once_for_qa(conn_b, &label_b).await?;
+        let label_a = format!("{label}: A sync {attempt}");
+        best_effort_sync_once_for_qa(conn_a, &label_a).await?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    Ok(())
+}
+
+async fn login_synced_participant_for_qa(
+    config: &QaConfig,
+    data_dir: std::path::PathBuf,
+    username: &str,
+    password: &str,
+    device_display_name: &str,
+    label: &str,
+) -> Result<(CoreRuntime, CoreConnection, AccountKey), String> {
+    let runtime = CoreRuntime::start_with_data_dir(data_dir);
+    let mut conn = runtime.attach();
+
+    let login_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(AccountCommand::LoginPassword {
+        request_id: login_id,
+        request: koushi_state::LoginRequest {
+            homeserver: config.homeserver.clone(),
+            username: username.to_owned(),
+            password: AuthSecret::new(password.to_owned()),
+            device_display_name: Some(device_display_name.to_owned()),
+        },
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit login failed: {e}"))?;
+    let account_key = wait_for_logged_in(&mut conn, login_id, label).await?;
+    wait_for_ready_snapshot(&mut conn, label).await?;
+    start_sync_for_qa(&mut conn, label).await?;
+
+    Ok((runtime, conn, account_key))
+}
+
+async fn subscribe_timeline_for_qa(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    label: &str,
+) -> Result<Vec<TimelineItem>, String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+        request_id,
+        key: key.clone(),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit timeline subscribe failed: {e}"))?;
+    wait_for_initial_items(conn, key, request_id, label).await
+}
+
+fn assert_no_decryption_failure_items(items: &[TimelineItem], label: &str) -> Result<(), String> {
+    if items.iter().any(timeline_item_is_decryption_failure) {
+        return Err(format!(
+            "{label}: timeline contained an undecryptable event"
+        ));
+    }
+    Ok(())
+}
+
+fn timeline_item_is_decryption_failure(item: &TimelineItem) -> bool {
+    item.body
+        .as_ref()
+        .map(|body| body.contains("Unable to decrypt"))
+        .unwrap_or(false)
+}
+
+#[derive(Debug)]
+struct BodyWaitObserver<'a> {
+    expected_body: &'a str,
+    saw_decryption_failure: bool,
+}
+
+impl<'a> BodyWaitObserver<'a> {
+    fn new(expected_body: &'a str) -> Self {
+        Self {
+            expected_body,
+            saw_decryption_failure: false,
+        }
+    }
+
+    fn observe_items(&mut self, items: &[TimelineItem]) -> Option<TimelineItem> {
+        if let Some(item) = find_timeline_item_with_body(items, self.expected_body) {
+            return Some(item);
+        }
+        if items.iter().any(timeline_item_is_decryption_failure) {
+            self.saw_decryption_failure = true;
+        }
+        None
+    }
+
+    fn observe_diffs(&mut self, diffs: &[TimelineDiff]) -> Result<Option<TimelineItem>, String> {
+        let mut found = None;
+        visit_timeline_diff_items(diffs, |item| {
+            if found.is_none() && timeline_item_body_matches(item, self.expected_body) {
+                found = Some(item.clone());
+            }
+            if timeline_item_is_decryption_failure(item) {
+                self.saw_decryption_failure = true;
+            }
+            Ok(())
+        })?;
+        Ok(found)
+    }
+
+    fn timeout_message(&self, label: &str) -> String {
+        if self.saw_decryption_failure {
+            format!(
+                "{label}: timed out waiting for body {:?} after transient undecryptable events",
+                self.expected_body
+            )
+        } else {
+            format!(
+                "{label}: timed out waiting for body {:?}",
+                self.expected_body
+            )
+        }
+    }
 }
 
 enum VerificationRequestAttempt {
@@ -6782,38 +7272,88 @@ async fn wait_for_verification_requested_or_failed(
     }
 }
 
-async fn wait_for_verification_requested(
+async fn wait_for_verification_requested_with_sync_once(
     conn: &mut CoreConnection,
     expected_target: Option<&VerificationTarget>,
     label: &str,
 ) -> Result<u64, String> {
-    if let Some(flow_id) =
-        requested_verification_flow_id(&conn.snapshot().e2ee_trust.verification, expected_target)?
-    {
-        return Ok(flow_id);
-    }
+    let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
 
     loop {
-        let event = tokio::time::timeout(E2EE_EVENT_TIMEOUT, conn.recv_event())
-            .await
-            .map_err(|_| format!("{label}: timed out waiting for incoming verification request"))?
-            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+        if let Some(flow_id) = requested_verification_flow_id(
+            &conn.snapshot().e2ee_trust.verification,
+            expected_target,
+        )? {
+            return Ok(flow_id);
+        }
 
-        match event {
-            CoreEvent::E2eeTrust(E2eeTrustEvent::VerificationProgress { state, .. })
-            | CoreEvent::StateChanged(AppState {
-                e2ee_trust:
-                    koushi_state::E2eeTrustState {
-                        verification: state,
-                        ..
-                    },
-                ..
-            }) => {
-                if let Some(flow_id) = requested_verification_flow_id(&state, expected_target)? {
-                    return Ok(flow_id);
-                }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(format!(
+                "{label}: timed out waiting for incoming verification request with SyncOnce"
+            ));
+        }
+
+        let sync_label = format!("{label}: sync while waiting for verification request");
+        let sync_request_id = conn.next_request_id();
+        conn.command(CoreCommand::Sync(SyncCommand::SyncOnce {
+            request_id: sync_request_id,
+        }))
+        .await
+        .map_err(|e| format!("{sync_label}: submit SyncOnce failed: {e}"))?;
+
+        loop {
+            if let Some(flow_id) = requested_verification_flow_id(
+                &conn.snapshot().e2ee_trust.verification,
+                expected_target,
+            )? {
+                return Ok(flow_id);
             }
-            _ => {}
+
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Err(format!(
+                    "{label}: timed out waiting for incoming verification request with SyncOnce"
+                ));
+            }
+            let remaining = deadline.duration_since(now);
+
+            let event = tokio::time::timeout(remaining.min(EVENT_TIMEOUT), conn.recv_event())
+                .await
+                .map_err(|_| {
+                    format!(
+                        "{label}: timed out waiting for incoming verification request with SyncOnce"
+                    )
+                })?
+                .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+            match event {
+                CoreEvent::E2eeTrust(E2eeTrustEvent::VerificationProgress { state, .. })
+                | CoreEvent::StateChanged(AppState {
+                    e2ee_trust:
+                        koushi_state::E2eeTrustState {
+                            verification: state,
+                            ..
+                        },
+                    ..
+                }) => {
+                    if let Some(flow_id) = requested_verification_flow_id(&state, expected_target)?
+                    {
+                        return Ok(flow_id);
+                    }
+                }
+                CoreEvent::Sync(SyncEvent::Stopped {
+                    request_id: Some(ev_id),
+                }) if ev_id == sync_request_id => break,
+                CoreEvent::Sync(SyncEvent::Stopped { request_id: None }) => break,
+                CoreEvent::OperationFailed {
+                    request_id: ev_id,
+                    failure,
+                } if ev_id == sync_request_id => {
+                    return Err(format!("{sync_label}: SyncOnce failed: {failure:?}"));
+                }
+                _ => {}
+            }
         }
     }
 }
@@ -6930,6 +7470,7 @@ async fn drive_until_both_verification_sas(
     flow_id_a: u64,
     conn_a2: &mut CoreConnection,
     flow_id_a2: u64,
+    label: &str,
 ) -> Result<(Vec<SasEmoji>, Vec<SasEmoji>), String> {
     let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
 
@@ -6937,23 +7478,27 @@ async fn drive_until_both_verification_sas(
         let emojis_a = verification_state_sas(
             &conn_a.snapshot().e2ee_trust.verification,
             flow_id_a,
-            "A SAS presented",
+            &format!("{label}: primary SAS presented"),
         )?;
         let emojis_a2 = verification_state_sas(
             &conn_a2.snapshot().e2ee_trust.verification,
             flow_id_a2,
-            "A2 SAS presented",
+            &format!("{label}: secondary SAS presented"),
         )?;
         if let (Some(emojis_a), Some(emojis_a2)) = (emojis_a, emojis_a2) {
             return Ok((emojis_a, emojis_a2));
         }
 
         if tokio::time::Instant::now() >= deadline {
-            return Err("timed out driving SAS presentation with SyncOnce".to_owned());
+            return Err(format!(
+                "{label}: timed out driving SAS presentation with SyncOnce"
+            ));
         }
 
-        sync_once_for_qa(conn_a, "sync A while waiting for SAS").await?;
-        sync_once_for_qa(conn_a2, "sync A2 while waiting for SAS").await?;
+        let primary_sync_label = format!("{label}: sync primary while waiting for SAS");
+        let secondary_sync_label = format!("{label}: sync secondary while waiting for SAS");
+        sync_once_for_qa(conn_a, &primary_sync_label).await?;
+        sync_once_for_qa(conn_a2, &secondary_sync_label).await?;
     }
 }
 
@@ -7538,6 +8083,7 @@ struct SendFlowWaiter {
     expected_client_txn_id: String,
     expected_body: String,
     sdk_transaction_id: Option<String>,
+    local_echo_send_state: Option<TimelineSendState>,
     send_transaction_id: Option<String>,
     event_id: Option<String>,
 }
@@ -7555,6 +8101,7 @@ impl SendFlowWaiter {
             expected_client_txn_id: expected_client_txn_id.into(),
             expected_body: expected_body.into(),
             sdk_transaction_id: None,
+            local_echo_send_state: None,
             send_transaction_id: None,
             event_id: None,
         }
@@ -7567,9 +8114,7 @@ impl SendFlowWaiter {
                 diffs,
                 ..
             }) if ev_key == &self.key => {
-                if self.sdk_transaction_id.is_none() {
-                    self.observe_local_echo(diffs);
-                }
+                self.observe_local_echo(diffs);
             }
             CoreEvent::Timeline(TimelineEvent::SendCompleted {
                 request_id: ev_id,
@@ -7594,6 +8139,13 @@ impl SendFlowWaiter {
             }
             _ => {}
         }
+        if matches!(
+            self.local_echo_send_state,
+            Some(TimelineSendState::NotSent { .. })
+        ) && self.send_transaction_id.is_none()
+        {
+            return Err(format!("send flow failed: {}", self.status_summary()));
+        }
         Ok(())
     }
 
@@ -7612,9 +8164,14 @@ impl SendFlowWaiter {
                 .map(|body| body.contains(&self.expected_body))
                 .unwrap_or(false)
             {
+                if let Some(state) = item.send_state.as_ref() {
+                    self.local_echo_send_state = Some(state.clone());
+                }
                 if let koushi_core::event::TimelineItemId::Transaction { transaction_id } = &item.id
                 {
-                    self.sdk_transaction_id = Some(transaction_id.clone());
+                    if self.sdk_transaction_id.is_none() {
+                        self.sdk_transaction_id = Some(transaction_id.clone());
+                    }
                     break;
                 }
             }
@@ -7625,6 +8182,19 @@ impl SendFlowWaiter {
         self.sdk_transaction_id.is_some()
             && self.send_transaction_id.is_some()
             && self.event_id.is_some()
+    }
+
+    fn status_summary(&self) -> String {
+        format!(
+            "local_echo={} local_echo_send_state={} send_completed={} event_id={}",
+            self.sdk_transaction_id.is_some(),
+            self.local_echo_send_state
+                .as_ref()
+                .map(timeline_send_state_label)
+                .unwrap_or("missing"),
+            self.send_transaction_id.is_some(),
+            self.event_id.is_some()
+        )
     }
 
     fn finish(self) -> Result<SendFlowOutcome, String> {
@@ -7642,6 +8212,20 @@ impl SendFlowWaiter {
     }
 }
 
+fn timeline_send_state_label(state: &TimelineSendState) -> &'static str {
+    match state {
+        TimelineSendState::Sending => "Sending",
+        TimelineSendState::NotSent {
+            reason: koushi_core::event::TimelineSendFailureReason::Recoverable,
+        } => "NotSent(recoverable)",
+        TimelineSendState::NotSent {
+            reason: koushi_core::event::TimelineSendFailureReason::Unrecoverable,
+        } => "NotSent(unrecoverable)",
+        TimelineSendState::Cancelled => "Cancelled",
+        TimelineSendState::Sent => "Sent",
+    }
+}
+
 /// Wait for both the local echo diff and `TimelineEvent::SendCompleted`
 /// for a single send sequence, accepting either order.
 async fn wait_for_send_flow_completion(
@@ -7652,12 +8236,38 @@ async fn wait_for_send_flow_completion(
     expected_body: &str,
     label: &str,
 ) -> Result<SendFlowOutcome, String> {
+    wait_for_send_flow_completion_with_timeout(
+        conn,
+        request_id,
+        key,
+        client_txn_id,
+        expected_body,
+        label,
+        EVENT_TIMEOUT,
+    )
+    .await
+}
+
+async fn wait_for_send_flow_completion_with_timeout(
+    conn: &mut CoreConnection,
+    request_id: koushi_core::ids::RequestId,
+    key: &TimelineKey,
+    client_txn_id: &str,
+    expected_body: &str,
+    label: &str,
+    timeout: Duration,
+) -> Result<SendFlowOutcome, String> {
     let mut waiter = SendFlowWaiter::new(request_id, key.clone(), client_txn_id, expected_body);
 
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+        let event = tokio::time::timeout(timeout, conn.recv_event())
             .await
-            .map_err(|_| format!("{label}: timed out waiting for send flow completion"))?
+            .map_err(|_| {
+                format!(
+                    "{label}: timed out waiting for send flow completion ({})",
+                    waiter.status_summary()
+                )
+            })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         waiter.observe(event)?;
@@ -9212,6 +9822,107 @@ async fn wait_for_item_with_body(
     }
 }
 
+async fn wait_for_item_with_body_or_decryption_failure(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    expected_body: &str,
+    label: &str,
+) -> Result<koushi_core::event::TimelineItem, String> {
+    let mut observer = BodyWaitObserver::new(expected_body);
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| observer.timeout_message(label))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref ev_key,
+                items,
+                ..
+            }) if ev_key == key => {
+                if let Some(item) = observer.observe_items(&items) {
+                    return Ok(item);
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                if let Some(item) = observer.observe_diffs(&diffs)? {
+                    return Ok(item);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_item_with_body_or_decryption_failure_with_sync(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    expected_body: &str,
+    label: &str,
+) -> Result<koushi_core::event::TimelineItem, String> {
+    let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
+    let mut sync_request_id: Option<RequestId> = None;
+    let mut observer = BodyWaitObserver::new(expected_body);
+
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(observer.timeout_message(label));
+        }
+
+        if sync_request_id.is_none() {
+            let request_id = conn.next_request_id();
+            conn.command(CoreCommand::Sync(SyncCommand::SyncOnce { request_id }))
+                .await
+                .map_err(|e| format!("{label}: submit SyncOnce failed: {e}"))?;
+            sync_request_id = Some(request_id);
+        }
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let event = tokio::time::timeout(remaining.min(EVENT_TIMEOUT), conn.recv_event())
+            .await
+            .map_err(|_| observer.timeout_message(label))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref ev_key,
+                items,
+                ..
+            }) if ev_key == key => {
+                if let Some(item) = observer.observe_items(&items) {
+                    return Ok(item);
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                if let Some(item) = observer.observe_diffs(&diffs)? {
+                    return Ok(item);
+                }
+            }
+            CoreEvent::Sync(SyncEvent::Stopped {
+                request_id: Some(ev_id),
+            }) if Some(ev_id) == sync_request_id => {
+                sync_request_id = None;
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if Some(ev_id) == sync_request_id => {
+                return Err(format!("{label}: SyncOnce failed: {failure:?}"));
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Wait until all `expected_bodies` are found AND pagination has settled (Idle
 /// or EndReached). Scans `initial_items` first, then both ItemsUpdated diffs
 /// and PaginationStateChanged events in a single loop. This avoids the race
@@ -10205,6 +10916,7 @@ fn projection_timeline_item(event_id: &str, is_redacted: bool) -> TimelineItem {
         can_edit: false,
         actions: TimelineMessageActions::default(),
         send_state: None,
+        unable_to_decrypt: None,
     }
 }
 
@@ -10624,6 +11336,7 @@ mod tests {
                 can_edit: false,
                 actions: TimelineMessageActions::default(),
                 send_state: None,
+                unable_to_decrypt: None,
             },
             koushi_core::event::TimelineItem {
                 id: koushi_core::event::TimelineItemId::Event {
@@ -10653,6 +11366,7 @@ mod tests {
                 can_edit: true,
                 actions: TimelineMessageActions::default(),
                 send_state: None,
+                unable_to_decrypt: None,
             },
         ];
 
@@ -10693,6 +11407,7 @@ mod tests {
             can_edit: false,
             actions: TimelineMessageActions::default(),
             send_state: None,
+            unable_to_decrypt: None,
         }];
 
         assert!(thread_initial_items_need_paginate_backfill(
@@ -10731,6 +11446,7 @@ mod tests {
             can_edit: false,
             actions: TimelineMessageActions::default(),
             send_state: None,
+            unable_to_decrypt: None,
         }];
 
         assert!(!thread_initial_items_need_paginate_backfill(
@@ -10780,6 +11496,7 @@ mod tests {
             can_edit: false,
             actions: TimelineMessageActions::default(),
             send_state: None,
+            unable_to_decrypt: None,
         }
     }
 
@@ -10979,6 +11696,46 @@ mod tests {
     }
 
     #[test]
+    fn body_wait_observer_tolerates_transient_decryption_failure_before_expected_body() {
+        let mut observer = BodyWaitObserver::new("delivered encrypted body");
+        let utd = synthetic_timeline_item(
+            "$utd:test",
+            Some("Unable to decrypt message"),
+            None,
+            None,
+            None,
+        );
+        let delivered = synthetic_timeline_item(
+            "$delivered:test",
+            Some("later delivered encrypted body"),
+            None,
+            None,
+            None,
+        );
+
+        assert!(observer.observe_items(&[utd]).is_none());
+        assert!(observer.saw_decryption_failure);
+        assert!(
+            observer
+                .timeout_message("strict receive")
+                .contains("transient undecryptable")
+        );
+
+        let found = observer
+            .observe_diffs(&[TimelineDiff::Set {
+                index: 0,
+                item: delivered,
+            }])
+            .unwrap()
+            .expect("expected body should still succeed after transient UTD");
+
+        assert_eq!(
+            found.body.as_deref(),
+            Some("later delivered encrypted body")
+        );
+    }
+
+    #[test]
     fn find_timeline_item_with_body_finds_thread_reply_in_one_batch() {
         let items = vec![koushi_core::event::TimelineItem {
             id: koushi_core::event::TimelineItemId::Synthetic {
@@ -11008,6 +11765,7 @@ mod tests {
             can_edit: false,
             actions: TimelineMessageActions::default(),
             send_state: None,
+            unable_to_decrypt: None,
         }];
 
         assert_eq!(
@@ -11048,6 +11806,7 @@ mod tests {
             can_edit: false,
             actions: TimelineMessageActions::default(),
             send_state: None,
+            unable_to_decrypt: None,
         }];
 
         assert!(find_timeline_item_with_body(&items, "thread reply from B").is_none());
@@ -11115,6 +11874,7 @@ mod tests {
                         can_edit: false,
                         actions: TimelineMessageActions::default(),
                         send_state: None,
+                        unable_to_decrypt: None,
                     },
                 }],
             }))
@@ -11124,6 +11884,217 @@ mod tests {
         assert_eq!(result.sdk_transaction_id, "sdk-txn-1");
         assert_eq!(result.send_transaction_id, "qa-phase5-txn-1");
         assert_eq!(result.event_id, "$event:test");
+    }
+
+    #[test]
+    fn send_flow_waiter_status_reports_local_echo_send_state() {
+        let key = TimelineKey::room(
+            AccountKey("@alice:test".to_owned()),
+            "!room:test".to_owned(),
+        );
+        let request_id = koushi_core::ids::RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 1,
+        };
+        let mut waiter = SendFlowWaiter::new(
+            request_id,
+            key.clone(),
+            "qa-phase5-txn-1",
+            "Phase 5 QA message 1",
+        );
+
+        waiter
+            .observe(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key,
+                generation: koushi_core::ids::TimelineGeneration(1),
+                batch_id: koushi_core::ids::TimelineBatchId(1),
+                diffs: vec![koushi_core::event::TimelineDiff::PushBack {
+                    item: koushi_core::event::TimelineItem {
+                        id: koushi_core::event::TimelineItemId::Transaction {
+                            transaction_id: "sdk-txn-1".to_owned(),
+                        },
+                        sender: Some("@alice:test".to_owned()),
+                        sender_label: None,
+                        sender_avatar: None,
+                        body: Some("Phase 5 QA message 1".to_owned()),
+                        notice_i18n_key: None,
+                        message_kind: Default::default(),
+                        spoiler_spans: Vec::new(),
+                        timestamp_ms: None,
+                        in_reply_to_event_id: None,
+                        formatted: None,
+                        reply_quote: None,
+                        thread_root: None,
+                        thread_summary: None,
+                        media: None,
+                        link_previews: None,
+                        reactions: Vec::new(),
+                        can_react: false,
+                        is_redacted: false,
+                        is_hidden: false,
+                        can_redact: false,
+                        is_edited: false,
+                        can_edit: false,
+                        actions: TimelineMessageActions::default(),
+                        send_state: Some(TimelineSendState::Sending),
+                        unable_to_decrypt: None,
+                    },
+                }],
+            }))
+            .unwrap();
+
+        assert!(
+            waiter
+                .status_summary()
+                .contains("local_echo_send_state=Sending")
+        );
+    }
+
+    #[test]
+    fn send_flow_waiter_errors_when_local_echo_becomes_not_sent() {
+        let key = TimelineKey::room(
+            AccountKey("@alice:test".to_owned()),
+            "!room:test".to_owned(),
+        );
+        let request_id = koushi_core::ids::RequestId {
+            connection_id: koushi_core::ids::RuntimeConnectionId(1),
+            sequence: 1,
+        };
+        let mut waiter = SendFlowWaiter::new(
+            request_id,
+            key.clone(),
+            "qa-phase5-txn-1",
+            "Phase 5 QA message 1",
+        );
+
+        let err = waiter
+            .observe(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key,
+                generation: koushi_core::ids::TimelineGeneration(1),
+                batch_id: koushi_core::ids::TimelineBatchId(1),
+                diffs: vec![koushi_core::event::TimelineDiff::PushBack {
+                    item: koushi_core::event::TimelineItem {
+                        id: koushi_core::event::TimelineItemId::Transaction {
+                            transaction_id: "sdk-txn-1".to_owned(),
+                        },
+                        sender: Some("@alice:test".to_owned()),
+                        sender_label: None,
+                        sender_avatar: None,
+                        body: Some("Phase 5 QA message 1".to_owned()),
+                        notice_i18n_key: None,
+                        message_kind: Default::default(),
+                        spoiler_spans: Vec::new(),
+                        timestamp_ms: None,
+                        in_reply_to_event_id: None,
+                        formatted: None,
+                        reply_quote: None,
+                        thread_root: None,
+                        thread_summary: None,
+                        media: None,
+                        link_previews: None,
+                        reactions: Vec::new(),
+                        can_react: false,
+                        is_redacted: false,
+                        is_hidden: false,
+                        can_redact: false,
+                        is_edited: false,
+                        can_edit: false,
+                        actions: TimelineMessageActions::default(),
+                        send_state: Some(TimelineSendState::NotSent {
+                            reason: koushi_core::event::TimelineSendFailureReason::Recoverable,
+                        }),
+                        unable_to_decrypt: None,
+                    },
+                }],
+            }))
+            .unwrap_err();
+
+        assert!(err.contains("send flow failed"));
+        assert!(err.contains("local_echo_send_state=NotSent(recoverable)"));
+    }
+
+    #[test]
+    fn headless_qa_binary_initializes_rust_log_tracing() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/bin/headless-core-qa.rs"
+        ));
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("headless-core-qa source should contain production section");
+
+        assert!(production_source.contains("init_headless_qa_tracing_from_env();"));
+        assert!(production_source.contains("tracing_subscriber::EnvFilter"));
+    }
+
+    #[test]
+    fn e2ee_strict_qa_can_pause_sync_before_multi_device_send() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/bin/headless-core-qa.rs"
+        ));
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("headless-core-qa source should contain production section");
+
+        assert!(production_source.contains("ENV_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND"));
+        assert!(production_source.contains("pause sync A before multi-device send"));
+        assert!(production_source.contains("pause sync B2 before multi-device send"));
+    }
+
+    #[test]
+    fn e2ee_strict_qa_settles_device_lists_after_recipient_second_device_verification() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/bin/headless-core-qa.rs"
+        ));
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("headless-core-qa source should contain production section");
+
+        assert!(production_source.contains("settle_e2ee_device_list_propagation_for_qa"));
+        assert!(production_source.contains("e2ee multi-device settle after B2 verification"));
+        assert!(production_source.contains("best_effort_sync_once_for_qa"));
+        assert!(production_source.contains("DEVICE_LIST_SETTLE_SYNC_TIMEOUT"));
+    }
+
+    #[test]
+    fn e2ee_device_verification_wait_retries_sync_once_for_incoming_request() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/bin/headless-core-qa.rs"
+        ));
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("headless-core-qa source should contain production section");
+
+        assert!(production_source.contains("wait_for_verification_requested_with_sync_once"));
+        assert!(production_source.contains("sync while waiting for verification request"));
+        assert!(
+            production_source
+                .contains("timed out waiting for incoming verification request with SyncOnce")
+        );
+    }
+
+    #[test]
+    fn e2ee_device_verification_labels_distinguish_recipient_second_device() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/bin/headless-core-qa.rs"
+        ));
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("headless-core-qa source should contain production section");
+
+        assert!(production_source.contains("e2ee self verification A/A2"));
+        assert!(production_source.contains("e2ee recipient verification B/B2"));
+        assert!(production_source.contains("request secondary to primary"));
+        assert!(production_source.contains("incoming verification request"));
     }
 
     #[test]
@@ -11555,6 +12526,8 @@ mod tests {
                 "fifo=ok",
                 "unsent_restart=ok",
                 "joined_room_restore=ok",
+                "e2ee_second_device_decrypt=ok",
+                "e2ee_multi_user_multi_device_decrypt=ok",
                 "e2ee_trust=ok",
                 "restore_cleanup=ok",
                 "link_preview_global=ok",
@@ -11572,6 +12545,25 @@ mod tests {
 
         assert!(source.contains("println!(\"joined_room_restore=ok\")"));
         assert!(!source.contains(legacy_token));
+    }
+
+    #[test]
+    fn e2ee_trust_stage_reports_second_device_decrypt_token() {
+        let source = include_str!("headless-core-qa.rs");
+
+        assert!(tokens_for_stage(QaStage::E2eeTrust).contains(&"e2ee_second_device_decrypt=ok"));
+        assert!(source.contains("println!(\"e2ee_second_device_decrypt=ok\")"));
+    }
+
+    #[test]
+    fn e2ee_trust_stage_reports_multi_user_multi_device_decrypt_token() {
+        let source = include_str!("headless-core-qa.rs");
+
+        assert!(
+            tokens_for_stage(QaStage::E2eeTrust)
+                .contains(&"e2ee_multi_user_multi_device_decrypt=ok")
+        );
+        assert!(source.contains("println!(\"e2ee_multi_user_multi_device_decrypt=ok\")"));
     }
 
     #[test]
@@ -11903,6 +12895,8 @@ mod tests {
                 "safety=ok",
                 "login_sync=ok",
                 "joined_room_restore=ok",
+                "e2ee_second_device_decrypt=ok",
+                "e2ee_multi_user_multi_device_decrypt=ok",
                 "e2ee_trust=ok",
                 "restore_cleanup=ok",
             ]
@@ -11979,6 +12973,8 @@ mod tests {
                 "fifo=ok",
                 "unsent_restart=ok",
                 "joined_room_restore=ok",
+                "e2ee_second_device_decrypt=ok",
+                "e2ee_multi_user_multi_device_decrypt=ok",
                 "e2ee_trust=ok",
                 "restore_cleanup=ok",
                 "link_preview_global=ok",

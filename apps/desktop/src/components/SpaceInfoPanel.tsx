@@ -9,38 +9,46 @@ import {
   SlidersHorizontal,
   Users
 } from "lucide-react";
-import { type ReactNode, useRef } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { t } from "../i18n/messages";
 import type { RoomManagementState, RoomSummary, SpaceSummary } from "../domain/types";
 
 export function SpaceInfoPanel({
   fallbackName,
+  localIcon = "",
+  localName = "",
   rooms,
   roomManagement,
   space,
   onInvitePeople,
   onOpenFiles,
   onOpenMembers,
+  onSetLocalPresentation,
   onStartDirectMessage
 }: {
   fallbackName: string;
+  localIcon?: string;
+  localName?: string;
   rooms: RoomSummary[];
   roomManagement?: RoomManagementState;
   space: SpaceSummary | null;
   onInvitePeople?: () => void;
   onOpenFiles?: () => void;
   onOpenMembers?: () => void;
+  onSetLocalPresentation?: (override: { name?: string; icon?: string } | null) => void;
   onStartDirectMessage?: (userId: string) => void;
 }) {
   const membersSectionRef = useRef<HTMLElement>(null);
+  const [localNameDraft, setLocalNameDraft] = useState(localName);
+  const [localIconDraft, setLocalIconDraft] = useState(localIcon);
   const childRooms = space
     ? space.child_room_ids
         .map((roomId) => rooms.find((room) => room.room_id === roomId))
         .filter((room): room is RoomSummary => Boolean(room && !room.is_dm))
     : rooms.filter((room) => !room.is_dm);
   const unreadTotal = childRooms.reduce((sum, room) => sum + room.unread_count, 0);
-  const title = space?.display_name ?? fallbackName;
+  const title = localName.trim() || space?.display_name || fallbackName;
   const loadedSpaceSettings =
     space && roomManagement?.selected_room_id === space.space_id
       ? roomManagement.settings
@@ -50,6 +58,11 @@ export function SpaceInfoPanel({
     roomManagement?.operation.kind === "pending" &&
     roomManagement.operation.room_id === space?.space_id;
   const memberCount = loadedSpaceSettings?.members.length ?? 0;
+
+  useEffect(() => {
+    setLocalNameDraft(localName);
+    setLocalIconDraft(localIcon);
+  }, [localIcon, localName]);
 
   function openMembers() {
     onOpenMembers?.();
@@ -72,6 +85,52 @@ export function SpaceInfoPanel({
         <SummaryTile label={t("room.members")} value={loadedSpaceSettings ? String(memberCount) : "-"} />
         <SummaryTile label={t("room.unread")} value={String(unreadTotal)} />
       </div>
+
+      {space && onSetLocalPresentation ? (
+        <section className="settings-section" aria-label={t("space.localPresentation")}>
+          <h3>{t("space.localPresentation")}</h3>
+          <div className="profile-settings-form">
+            <label className="profile-settings-field">
+              <span>{t("space.localName")}</span>
+              <input
+                value={localNameDraft}
+                placeholder={t("space.localNamePlaceholder")}
+                onChange={(event) => setLocalNameDraft(event.currentTarget.value)}
+              />
+            </label>
+            <label className="profile-settings-field">
+              <span>{t("space.localIcon")}</span>
+              <input
+                value={localIconDraft}
+                placeholder={t("space.localIconPlaceholder")}
+                maxLength={12}
+                onChange={(event) => setLocalIconDraft(event.currentTarget.value)}
+              />
+            </label>
+            <div className="profile-settings-actions">
+              <button
+                className="profile-settings-action"
+                type="button"
+                onClick={() =>
+                  onSetLocalPresentation({
+                    name: localNameDraft,
+                    icon: localIconDraft
+                  })
+                }
+              >
+                {t("space.saveLocalPresentation")}
+              </button>
+              <button
+                className="profile-settings-action"
+                type="button"
+                onClick={() => onSetLocalPresentation(null)}
+              >
+                {t("space.resetLocalPresentation")}
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       <section className="settings-section" aria-label={t("workspace.rooms")}>
         <h3>{t("workspace.rooms")}</h3>

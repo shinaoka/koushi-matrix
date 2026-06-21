@@ -734,6 +734,9 @@ pub enum AppAction {
         request_id: u64,
         message: String,
     },
+    SearchIndexRebuildRequested {
+        request_id: u64,
+    },
     HistoryCrawlStarted {
         request_id: u64,
         room_id: String,

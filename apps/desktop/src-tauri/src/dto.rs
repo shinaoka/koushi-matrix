@@ -904,6 +904,7 @@ mod tests {
             marked_unread: false,
             last_activity_ms: 0,
             parent_space_ids: vec![],
+            dm_space_ids: vec![],
             is_encrypted: false,
             joined_members: 0,
         });
@@ -953,6 +954,10 @@ mod tests {
         assert_eq!(
             value["state"]["domain"]["rooms"][0]["original_display_label"],
             json!("Room")
+        );
+        assert_eq!(
+            value["state"]["domain"]["rooms"][0]["dm_space_ids"],
+            json!([])
         );
         assert_eq!(
             value["sidebar"]["account_home"]["highlight_count"],
@@ -1177,6 +1182,7 @@ mod tests {
             marked_unread: false,
             last_activity_ms: 1_000_000,
             parent_space_ids: vec!["!space:example.invalid".to_owned()],
+            dm_space_ids: vec![],
             is_encrypted: true,
             joined_members: 4,
         });
@@ -1250,6 +1256,7 @@ mod tests {
                     avatar_url: None,
                     power_level: Some(100),
                     role: RoomMemberRole::Administrator,
+                    user_trust: None,
                 }],
             }),
             operation: RoomManagementOperationState::Idle,

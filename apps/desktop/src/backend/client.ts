@@ -82,6 +82,10 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("update_settings", { patch });
   }
 
+  async rebuildSearchIndex(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("rebuild_search_index");
+  }
+
   async setRoomUrlPreviewOverride(
     roomId: string,
     enabled: boolean
@@ -323,16 +327,16 @@ class TauriDesktopApi implements DesktopApi {
     });
   }
 
-  async sendReadReceipt(roomId: string, eventId: string): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("send_read_receipt", { roomId, eventId });
+  async sendReadReceipt(roomId: string, eventId: string): Promise<void> {
+    return invoke<void>("send_read_receipt", { roomId, eventId });
   }
 
-  async setFullyRead(roomId: string, eventId: string): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("set_fully_read", { roomId, eventId });
+  async setFullyRead(roomId: string, eventId: string): Promise<void> {
+    return invoke<void>("set_fully_read", { roomId, eventId });
   }
 
-  async setTyping(roomId: string, isTyping: boolean): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("set_typing", { roomId, isTyping });
+  async setTyping(roomId: string, isTyping: boolean): Promise<void> {
+    return invoke<void>("set_typing", { roomId, isTyping });
   }
 
   async setPresence(presence: PresenceKind): Promise<DesktopSnapshot> {
@@ -387,6 +391,10 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("load_message_source", { roomId, eventId });
   }
 
+  async requestRoomKey(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("request_room_key", { roomId, eventId });
+  }
+
   async forwardMessage(
     roomId: string,
     sourceEventId: string,
@@ -433,6 +441,10 @@ class TauriDesktopApi implements DesktopApi {
 
   async unpinEvent(roomId: string, eventId: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("unpin_event", { roomId, eventId });
+  }
+
+  async reshareRoomKey(roomId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("reshare_room_key", { roomId });
   }
 
   async loadRoomSettings(roomId: string): Promise<DesktopSnapshot> {

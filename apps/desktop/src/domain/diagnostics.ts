@@ -81,16 +81,16 @@ export function diagnosticReport({
     `Timeline downloaded event items: ${timelineDiagnostics.downloadedItems}`,
     `Timeline backfill: ${timelineDiagnostics.backfill}`,
     `Timeline avatars: mxc=${timelineDiagnostics.avatarMxcItems} ready=${timelineDiagnostics.avatarReadyItems} pending=${timelineDiagnostics.avatarPendingItems} failed=${timelineDiagnostics.avatarFailedItems} missing=${timelineDiagnostics.avatarMissingItems} rendered=${timelineDiagnostics.avatarRenderedImages} broken=${timelineDiagnostics.avatarBrokenImages}`,
-    ...(crawler.running > 0
+    ...(crawler.running + crawler.queued > 0
       ? [
-          `Potential UI load: search crawler queued/running in ${crawler.running} room state(s); worker=1`
+          `Potential UI load: search crawler running=${crawler.running} queued=${crawler.queued}; worker=1`
         ]
       : []),
     ...(uiLatencyDiagnostics.maxFrameGapMs >= 100
       ? [`Potential UI lag: max frame gap ${uiLatencyDiagnostics.maxFrameGapMs} ms`]
       : []),
     `UI frame gap: last=${uiLatencyDiagnostics.lastFrameGapMs}ms avg=${uiLatencyDiagnostics.averageFrameGapMs}ms max=${uiLatencyDiagnostics.maxFrameGapMs}ms longFrames=${uiLatencyDiagnostics.longFrameCount} samples=${uiLatencyDiagnostics.samples}`,
-    `Search crawler queued/running room states=${crawler.running}: processed=${crawler.processed} indexed=${crawler.indexed}`,
+    `Search crawler running=${crawler.running} queued=${crawler.queued}: processed=${crawler.processed} indexed=${crawler.indexed}`,
     `Search crawler completed=${crawler.completed} failed=${crawler.failed}`,
     `Right panel: ${panelMode}`,
     `Thread panel: ${threadPanelSummary(snapshot.state.ui.thread)}`,
@@ -223,6 +223,8 @@ function summarizeCrawler(rooms: Record<string, SearchCrawlerRoomState>) {
         summary.running += 1;
         summary.processed += roomState.processed;
         summary.indexed += roomState.indexed;
+      } else if (roomState.kind === "queued") {
+        summary.queued += 1;
       } else if (roomState.kind === "completed") {
         summary.completed += 1;
         summary.indexed += roomState.indexed;
@@ -231,7 +233,7 @@ function summarizeCrawler(rooms: Record<string, SearchCrawlerRoomState>) {
       }
       return summary;
     },
-    { running: 0, completed: 0, failed: 0, processed: 0, indexed: 0 }
+    { running: 0, queued: 0, completed: 0, failed: 0, processed: 0, indexed: 0 }
   );
 }
 

@@ -3,11 +3,13 @@ import {
   type DragEvent,
   type ReactNode,
   type RefObject,
+  useEffect,
   useState
 } from "react";
 import {
   Bell,
   Bug,
+  ChevronDown,
   Clock3,
   Compass,
   Edit3,
@@ -19,16 +21,16 @@ import {
   Search,
   Settings
 } from "lucide-react";
-import { t, type MessageId } from "../i18n/messages";
+import { t } from "../i18n/messages";
 import type {
   DesktopSnapshot,
-  RoomListFilter,
   RoomListItem,
   SearchScopeKind
 } from "../domain/types";
 import { contextMenuItems } from "../domain/contextMenus";
 import { mediaSourceUrl } from "../domain/mediaUrl";
 import { Tooltip } from "./Tooltip";
+import { useRecoverableImageSource } from "./avatarImage";
 import {
   ICON_SIZE,
   syncStatePresentation,
@@ -39,14 +41,10 @@ import {
   EMPTY_ROOM_TAGS
 } from "../app/uiShared";
 import { roomListSections } from "../domain/desktopModel";
+import { type SpaceLocalOverrides, spaceDisplayName } from "../app/localPresentation";
 
-const ROOM_LIST_FILTERS: { filter: RoomListFilter; label: MessageId }[] = [
-  { filter: { kind: "rooms" }, label: "roomList.filterRooms" },
-  { filter: { kind: "unread" }, label: "roomList.filterUnread" },
-  { filter: { kind: "people" }, label: "roomList.filterPeople" },
-  { filter: { kind: "favourites" }, label: "roomList.filterFavourites" },
-  { filter: { kind: "invites" }, label: "roomList.filterInvites" }
-];
+const ROOM_SECTION_COLLAPSE_KEY = "koushi.roomSectionCollapsed.v1";
+const ROOM_RECENCY_KEY = "koushi.roomRecency.v1";
 
 export function TopBar({
   activeSpaceName,
@@ -158,6 +156,7 @@ export function TopBar({
 export function WorkspaceRail({
   activeView,
   snapshot,
+  spaceOverrides = {},
   onCreateSpace,
   onOpenContextMenu,
   onOpenActivity,
@@ -167,6 +166,7 @@ export function WorkspaceRail({
 }: {
   activeView: PrimaryView;
   snapshot: DesktopSnapshot;
+  spaceOverrides?: SpaceLocalOverrides;
   onCreateSpace: () => void;
   onOpenContextMenu: OpenContextMenu;
   onOpenActivity: () => void;
@@ -241,8 +241,15 @@ export function WorkspaceRail({
         </div>
         <div className="workspace-rail-separator" role="separator" aria-orientation="horizontal" />
         <div className="workspace-list workspace-space-list">
-          {snapshot.sidebar.space_rail.map((space) => (
-            <Tooltip label={space.display_name} key={space.space_id}>
+          {snapshot.sidebar.space_rail.map((space) => {
+            const displayName = spaceDisplayName(
+              space.space_id,
+              space.display_name,
+              spaceOverrides
+            );
+            const localIcon = spaceOverrides[space.space_id]?.icon?.trim();
+            return (
+            <Tooltip label={displayName} key={space.space_id}>
               {(tooltipProps) => (
                 <button
                   className={`workspace-button workspace-space-button ${
@@ -254,7 +261,7 @@ export function WorkspaceRail({
                   data-mention-count={space.highlight_count || undefined}
                   draggable
                   type="button"
-                  aria-label={space.display_name}
+                  aria-label={displayName}
                   onClick={() => onSelectSpace(space.space_id)}
                   onDragStart={(event) => {
                     setDraggedSpaceId(space.space_id);
@@ -288,13 +295,14 @@ export function WorkspaceRail({
                   <EntityAvatar
                     avatar={space.avatar}
                     className="workspace-button-avatar is-space"
-                    fallback={compactAvatarLabel(space.display_name)}
+                    fallback={localIcon || compactAvatarLabel(displayName)}
                     fallbackMode="compactLabel"
                   />
                 </button>
               )}
             </Tooltip>
-          ))}
+          );
+          })}
         </div>
       </div>
       <div className="rail-footer">
@@ -320,39 +328,11 @@ export function WorkspaceRail({
   );
 }
 
-function RoomListFilterTabs({
-  activeFilter,
-  onSelectFilter
-}: {
-  activeFilter: RoomListFilter;
-  onSelectFilter: (filter: RoomListFilter) => void;
-}) {
-  return (
-    <div className="room-list-filter-tabs" role="tablist" aria-label={t("workspace.filters")}>
-      {ROOM_LIST_FILTERS.map(({ filter, label }) => {
-        const isActive = filter.kind === activeFilter.kind;
-        return (
-          <button
-            key={filter.kind}
-            className={`room-list-filter-tab ${isActive ? "room-list-filter-tab-active" : ""}`}
-            data-active={isActive || undefined}
-            role="tab"
-            aria-selected={isActive}
-            type="button"
-            onClick={() => onSelectFilter(filter)}
-          >
-            {t(label)}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 export function Sidebar({
   activeRoomId,
   activeView,
   snapshot,
+  spaceOverrides = {},
   onCreateRoom,
   onNewDm,
   onOpenContextMenu,
@@ -361,12 +341,12 @@ export function Sidebar({
   onOpenInvites,
   onOpenSpaceInfo,
   onOpenThreads,
-  onSelectRoom,
-  onSelectRoomListFilter
+  onSelectRoom
 }: {
   activeRoomId: string | null;
   activeView: PrimaryView;
   snapshot: DesktopSnapshot;
+  spaceOverrides?: SpaceLocalOverrides;
   onCreateRoom: () => void;
   onNewDm: () => void;
   onOpenContextMenu: OpenContextMenu;
@@ -376,7 +356,6 @@ export function Sidebar({
   onOpenSpaceInfo: () => void;
   onOpenThreads: () => void;
   onSelectRoom: (roomId: string) => void;
-  onSelectRoomListFilter: (filter: RoomListFilter) => void;
 }) {
   const sections = roomListSections(
     snapshot.state.ui.room_list,
@@ -389,12 +368,45 @@ export function Sidebar({
     snapshot.state.domain.thread_attention.kind === "tracking"
       ? snapshot.state.domain.thread_attention
       : null;
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>(
+    readCollapsedSections
+  );
+  const [recentRoomIds, setRecentRoomIds] = useState<string[]>(readRecentRoomIds);
+  const activeSpace = snapshot.sidebar.space_rail.find((space) => space.is_active);
+  const activeSpaceName = activeSpace
+    ? spaceDisplayName(activeSpace.space_id, activeSpace.display_name, spaceOverrides)
+    : snapshot.sidebar.account_home.display_name;
+  const rooms = sortRoomsByRecency(
+    uniqueRooms([...sections.favourites, ...sections.rooms, ...sections.lowPriority]),
+    recentRoomIds
+  );
+  const dms = sortRoomsByRecency(sections.people, recentRoomIds);
+
+  useEffect(() => {
+    if (!activeRoomId) {
+      return;
+    }
+    setRecentRoomIds((current) => rememberRecentRoomId(current, activeRoomId));
+  }, [activeRoomId]);
+
+  function toggleSection(sectionId: string) {
+    setCollapsedSections((current) => {
+      const next = { ...current, [sectionId]: !current[sectionId] };
+      writeCollapsedSections(next);
+      return next;
+    });
+  }
+
+  function selectRoom(roomId: string) {
+    setRecentRoomIds((current) => rememberRecentRoomId(current, roomId));
+    onSelectRoom(roomId);
+  }
+
   return (
     <aside className="sidebar" aria-label={t("workspace.rooms")}>
       <div className="workspace-header">
         <div className="workspace-name" dir="auto">
-          {snapshot.sidebar.space_rail.find((space) => space.is_active)?.display_name ??
-            snapshot.sidebar.account_home.display_name}
+          {activeSpaceName}
         </div>
         <button
           className="icon-button"
@@ -421,10 +433,6 @@ export function Sidebar({
           <Edit3 size={ICON_SIZE.control} />
         </button>
       </div>
-      <RoomListFilterTabs
-        activeFilter={snapshot.state.ui.room_list.active_filter}
-        onSelectFilter={onSelectRoomListFilter}
-      />
       <div className="sidebar-scroll">
         <NavButton
           active={activeView === "timeline" && snapshot.sidebar.account_home.is_active}
@@ -455,52 +463,27 @@ export function Sidebar({
         />
         <RoomSection
           activeRoomId={activeRoomId}
-          id="invites"
-          kind="invite"
-          label={t("workspace.invites")}
-          rooms={sections.invites}
-          showWhenEmpty={snapshot.state.ui.room_list.active_filter.kind === "invites"}
-          onOpenContextMenu={onOpenContextMenu}
-          onSelectInvite={onOpenInvites}
-          onSelectRoom={onSelectRoom}
-        />
-        <RoomSection
-          activeRoomId={activeRoomId}
-          id="favourites"
-          kind="room"
-          label={t("workspace.favourites")}
-          rooms={sections.favourites}
-          onOpenContextMenu={onOpenContextMenu}
-          onSelectRoom={onSelectRoom}
-        />
-        <RoomSection
-          activeRoomId={activeRoomId}
-          id="people"
-          kind="dm"
-          label={t("workspace.people")}
-          rooms={sections.people}
-          showWhenEmpty={true}
-          onOpenContextMenu={onOpenContextMenu}
-          onSelectRoom={onSelectRoom}
-        />
-        <RoomSection
-          activeRoomId={activeRoomId}
+          collapsed={Boolean(collapsedSections.rooms)}
           id="rooms"
           kind="room"
           label={t("workspace.rooms")}
-          rooms={sections.rooms}
+          rooms={rooms}
           showWhenEmpty={true}
           onOpenContextMenu={onOpenContextMenu}
-          onSelectRoom={onSelectRoom}
+          onSelectRoom={selectRoom}
+          onToggleCollapsed={() => toggleSection("rooms")}
         />
         <RoomSection
           activeRoomId={activeRoomId}
-          id="low-priority"
-          kind="room"
-          label={t("workspace.lowPriority")}
-          rooms={sections.lowPriority}
+          collapsed={Boolean(collapsedSections.people)}
+          id="people"
+          kind="dm"
+          label={t("workspace.people")}
+          rooms={dms}
+          showWhenEmpty={true}
           onOpenContextMenu={onOpenContextMenu}
-          onSelectRoom={onSelectRoom}
+          onSelectRoom={selectRoom}
+          onToggleCollapsed={() => toggleSection("people")}
         />
       </div>
     </aside>
@@ -509,6 +492,7 @@ export function Sidebar({
 
 function RoomSection({
   activeRoomId,
+  collapsed,
   id,
   kind,
   label,
@@ -516,9 +500,11 @@ function RoomSection({
   showWhenEmpty = false,
   onOpenContextMenu,
   onSelectInvite,
-  onSelectRoom
+  onSelectRoom,
+  onToggleCollapsed
 }: {
   activeRoomId: string | null;
+  collapsed: boolean;
   id: string;
   kind: "room" | "dm" | "invite";
   label: string;
@@ -527,6 +513,7 @@ function RoomSection({
   onOpenContextMenu: OpenContextMenu;
   onSelectInvite?: () => void;
   onSelectRoom: (roomId: string) => void;
+  onToggleCollapsed: () => void;
 }) {
   if (!showWhenEmpty && rooms.length === 0) {
     return null;
@@ -534,18 +521,25 @@ function RoomSection({
 
   return (
     <section className="room-section" data-room-section={id} aria-label={label}>
-      <SectionTitle count={rooms.length} label={label} />
-      {rooms.map((room) => (
-        <RoomButton
-          activeRoomId={activeRoomId}
-          kind={kind}
-          key={room.room_id}
-          room={room}
-          onOpenContextMenu={onOpenContextMenu}
-          onSelectInvite={onSelectInvite}
-          onSelectRoom={onSelectRoom}
-        />
-      ))}
+      <SectionTitle
+        collapsed={collapsed}
+        count={rooms.length}
+        label={label}
+        onToggle={onToggleCollapsed}
+      />
+      {!collapsed
+        ? rooms.map((room) => (
+            <RoomButton
+              activeRoomId={activeRoomId}
+              kind={kind}
+              key={room.room_id}
+              room={room}
+              onOpenContextMenu={onOpenContextMenu}
+              onSelectInvite={onSelectInvite}
+              onSelectRoom={onSelectRoom}
+            />
+          ))
+        : null}
     </section>
   );
 }
@@ -583,15 +577,30 @@ function NavButton({
   );
 }
 
-function SectionTitle({ count, label }: { count: number; label: string }) {
+function SectionTitle({
+  collapsed,
+  count,
+  label,
+  onToggle
+}: {
+  collapsed: boolean;
+  count: number;
+  label: string;
+  onToggle: () => void;
+}) {
   return (
-    <div className="section-title">
+    <button
+      className="section-title"
+      type="button"
+      aria-expanded={!collapsed}
+      onClick={onToggle}
+    >
       <span className="section-title-label">{label}</span>
       <span className="section-title-meta">
         <span className="section-count">{count}</span>
-        <Plus size={ICON_SIZE.compact} />
+        <ChevronDown size={ICON_SIZE.compact} aria-hidden="true" />
       </span>
-    </div>
+    </button>
   );
 }
 
@@ -668,8 +677,8 @@ export function EntityAvatar({
 }) {
   const sourceUrl =
     avatar?.thumbnail.kind === "ready" ? mediaSourceUrl(avatar.thumbnail.source_url) : null;
-  const [failedSourceUrl, setFailedSourceUrl] = useState<string | null>(null);
-  const showImage = Boolean(sourceUrl && sourceUrl !== failedSourceUrl);
+  const { displaySourceUrl, onImageError, onImageLoad } = useRecoverableImageSource(sourceUrl);
+  const showImage = Boolean(displaySourceUrl);
   const fallbackClassName =
     fallbackMode === "compactLabel" ? "avatar-fallback compact-label" : "avatar-fallback";
   const fallbackStyle =
@@ -681,7 +690,11 @@ export function EntityAvatar({
   return (
     <span className={className} aria-hidden="true">
       {showImage ? (
-        <img src={sourceUrl ?? undefined} onError={() => setFailedSourceUrl(sourceUrl)} />
+        <img
+          src={displaySourceUrl ?? undefined}
+          onError={onImageError}
+          onLoad={onImageLoad}
+        />
       ) : (
         <span className={fallbackClassName} dir="auto" style={fallbackStyle}>
           {fallback}
@@ -689,4 +702,71 @@ export function EntityAvatar({
       )}
     </span>
   );
+}
+
+function readJsonRecord<T>(key: string, fallback: T): T {
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+  try {
+    return JSON.parse(window.localStorage.getItem(key) ?? "") as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function readCollapsedSections(): Record<string, boolean> {
+  return readJsonRecord<Record<string, boolean>>(ROOM_SECTION_COLLAPSE_KEY, {});
+}
+
+function writeCollapsedSections(collapsedSections: Record<string, boolean>): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(ROOM_SECTION_COLLAPSE_KEY, JSON.stringify(collapsedSections));
+}
+
+function readRecentRoomIds(): string[] {
+  const value = readJsonRecord<unknown>(ROOM_RECENCY_KEY, []);
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function writeRecentRoomIds(roomIds: string[]): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(ROOM_RECENCY_KEY, JSON.stringify(roomIds));
+}
+
+function rememberRecentRoomId(current: string[], roomId: string): string[] {
+  const next = [roomId, ...current.filter((id) => id !== roomId)].slice(0, 200);
+  writeRecentRoomIds(next);
+  return next;
+}
+
+function uniqueRooms(rooms: RoomListItem[]): RoomListItem[] {
+  const seen = new Set<string>();
+  return rooms.filter((room) => {
+    if (seen.has(room.room_id)) {
+      return false;
+    }
+    seen.add(room.room_id);
+    return true;
+  });
+}
+
+function sortRoomsByRecency(rooms: RoomListItem[], recentRoomIds: string[]): RoomListItem[] {
+  const recentIndex = new Map(recentRoomIds.map((roomId, index) => [roomId, index]));
+  return [...rooms].sort((left, right) => {
+    const leftRecent = recentIndex.get(left.room_id);
+    const rightRecent = recentIndex.get(right.room_id);
+    if (leftRecent !== undefined || rightRecent !== undefined) {
+      return (leftRecent ?? Number.MAX_SAFE_INTEGER) - (rightRecent ?? Number.MAX_SAFE_INTEGER);
+    }
+    return (
+      right.highlight_count - left.highlight_count ||
+      right.unread_count - left.unread_count ||
+      left.display_name.localeCompare(right.display_name)
+    );
+  });
 }

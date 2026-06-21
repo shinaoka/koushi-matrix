@@ -1,7 +1,7 @@
 use koushi_state::{
     AppAction, AppEffect, AppState, RoomSummary, RoomTags, SearchCrawlerFailureKind,
     SearchCrawlerRoomState, SearchCrawlerSettings, SearchCrawlerSpeed, SearchCrawlerState,
-    SessionInfo, SessionState, SettingsPatch, UiEvent, reduce,
+    SearchScope, SearchState, SessionInfo, SessionState, SettingsPatch, UiEvent, reduce,
 };
 
 // Bring the Debug format in scope so assert! messages can print effects.
@@ -36,6 +36,7 @@ fn ready_state_with_rooms(room_ids: &[&str]) -> AppState {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: Vec::new(),
+                dm_space_ids: Vec::new(),
                 is_encrypted: false,
                 joined_members: 0,
             })
@@ -74,7 +75,7 @@ fn settings_no_filenames() -> SearchCrawlerSettings {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn crawl_started_sets_running_state_and_emits_event() {
+fn crawl_started_sets_queued_state_and_emits_event() {
     let mut state = ready_state_with_rooms(&["room-a"]);
 
     let effects = reduce(
@@ -87,10 +88,7 @@ fn crawl_started_sets_running_state_and_emits_event() {
 
     assert_eq!(
         state.search_crawler.rooms.get("room-a"),
-        Some(&SearchCrawlerRoomState::Running {
-            processed: 0,
-            indexed: 0
-        })
+        Some(&SearchCrawlerRoomState::Queued)
     );
     assert_eq!(
         effects,
@@ -543,7 +541,7 @@ fn stale_failed_for_already_completed_room_updates_state() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn sequential_crawl_lifecycle_idle_running_completed() {
+fn sequential_crawl_lifecycle_idle_queued_running_completed() {
     let mut state = ready_state_with_rooms(&["room-a"]);
 
     reduce(
@@ -555,7 +553,7 @@ fn sequential_crawl_lifecycle_idle_running_completed() {
     );
     assert!(matches!(
         state.search_crawler.rooms.get("room-a"),
-        Some(SearchCrawlerRoomState::Running { .. })
+        Some(SearchCrawlerRoomState::Queued)
     ));
 
     reduce(
@@ -681,6 +679,88 @@ fn running_room_is_left_running_and_recrawl_effects_are_emitted_on_content_toggl
         has_notify,
         "NotifySearchCrawlerRoomsAvailable must be emitted for re-crawl after \
          content-setting toggle; got {effects:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Explicit search database rebuild
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rebuild_search_index_resets_crawler_state_closes_search_and_reenqueues_when_active() {
+    let mut state = ready_state_with_rooms(&["room-a", "room-b"]);
+    state.search = SearchState::Editing {
+        query: "stale query".to_owned(),
+        scope: SearchScope::AllRooms,
+    };
+    state.search_crawler.rooms.insert(
+        "room-a".to_owned(),
+        SearchCrawlerRoomState::Running {
+            processed: 50,
+            indexed: 30,
+        },
+    );
+    state.search_crawler.rooms.insert(
+        "room-b".to_owned(),
+        SearchCrawlerRoomState::Completed { indexed: 20 },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SearchIndexRebuildRequested { request_id: 77 },
+    );
+
+    assert_eq!(state.search, SearchState::Closed);
+    assert_eq!(
+        state.search_crawler.rooms.get("room-a"),
+        Some(&SearchCrawlerRoomState::Idle)
+    );
+    assert_eq!(
+        state.search_crawler.rooms.get("room-b"),
+        Some(&SearchCrawlerRoomState::Idle)
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::RebuildSearchIndex)),
+        "rebuild must clear the SearchActor document store; got {effects:?}"
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::SearchChanged))),
+        "rebuild must close stale search results; got {effects:?}"
+    );
+    assert!(
+        effects.iter().any(|effect| {
+            matches!(effect, AppEffect::NotifySearchCrawlerRoomsAvailable { room_ids, .. }
+                if room_ids.len() == 2)
+        }),
+        "active crawler should be re-enqueued for all known rooms; got {effects:?}"
+    );
+}
+
+#[test]
+fn rebuild_search_index_does_not_restart_crawler_while_paused() {
+    let mut state = ready_state_with_rooms(&["room-a", "room-b"]);
+    state.settings.values.search_crawler = settings_paused();
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SearchIndexRebuildRequested { request_id: 78 },
+    );
+
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::RebuildSearchIndex)),
+        "rebuild must still clear the local search index while paused; got {effects:?}"
+    );
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::NotifySearchCrawlerRoomsAvailable { .. })),
+        "paused crawler must not be restarted by rebuild; got {effects:?}"
     );
 }
 

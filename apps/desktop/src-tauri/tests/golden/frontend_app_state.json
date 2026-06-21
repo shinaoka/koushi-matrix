@@ -201,9 +201,9 @@
         "dir": "ltr",
         "lang": "en",
         "modifier_labels": {
-          "primary": "Ctrl"
+          "primary": "Cmd"
         },
-        "platform": "linux",
+        "platform": "macos",
         "pseudo_locale": "none"
       },
       "native_attention": {
@@ -316,7 +316,8 @@
               "original_display_label": "Fixture User",
               "power_level": 100,
               "role": "administrator",
-              "user_id": "@fixture:example.invalid"
+              "user_id": "@fixture:example.invalid",
+              "user_trust": null
             }
           ],
           "name": "Fixture Room",
@@ -355,6 +356,7 @@
           },
           "display_label": "Fixture Room",
           "display_name": "Fixture Room",
+          "dm_space_ids": [],
           "dm_user_ids": [],
           "highlight_count": 1,
           "is_dm": false,
@@ -489,7 +491,7 @@
         "emoji_asset": "systemFallback",
         "font": "system",
         "font_asset": "systemFallback",
-        "platform": "linux"
+        "platform": "macos"
       }
     },
     "schema_version": 2,

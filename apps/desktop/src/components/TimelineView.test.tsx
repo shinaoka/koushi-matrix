@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -15,6 +15,7 @@ import { TimelineView, type TimelineTransport } from "./TimelineView";
 afterEach(() => {
   cleanup();
   setActiveLocaleProfile("en", "none");
+  vi.useRealTimers();
 });
 
 const KEY = roomTimelineKey("@alice:example.invalid", "!room:example.invalid");
@@ -58,6 +59,7 @@ function baseTransport(
     downloadMedia: async () => undefined,
     downloadAvatarThumbnail: async () => undefined,
     loadMessageSource: async () => undefined,
+    requestRoomKey: async () => undefined,
     forwardMessage: async () => undefined,
     loadLinkPreviews: async () => undefined,
     hideLinkPreview: async () => undefined,
@@ -535,6 +537,69 @@ describe("TimelineView", () => {
     expect(document.querySelector(".message .avatar")?.textContent).toBe("KE");
   });
 
+  it("retries a transiently broken sender avatar image URL", async () => {
+    vi.useFakeTimers();
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              {
+                ...message("$avatar-retry-render", "Avatar row"),
+                sender_label: "Ken Inayoshi",
+                sender_avatar: {
+                  mxc_uri: "mxc://matrix.org/avatar-retry-render",
+                  thumbnail: {
+                    kind: "ready",
+                    source_url: "asset://transient-avatar.bin",
+                    width: null,
+                    height: null,
+                    mime_type: null
+                  }
+                }
+              }
+            ]
+          }
+        }
+      });
+    });
+
+    const image = document.querySelector<HTMLImageElement>(".message .avatar img");
+    expect(image).not.toBeNull();
+    expect(image?.getAttribute("src")).toBe("asset://transient-avatar.bin");
+    fireEvent.error(image!);
+    expect(document.querySelector(".message .avatar img")).toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+
+    expect(document.querySelector<HTMLImageElement>(".message .avatar img")?.getAttribute("src")).toBe(
+      "asset://transient-avatar.bin"
+    );
+  });
+
   it("backfills an empty thread timeline even when the first Core generation is zero", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const threadKey = threadTimelineKey(
@@ -662,5 +727,51 @@ describe("TimelineView", () => {
       expect(paginateBackwards).toHaveBeenCalledWith(threadKey);
     });
     expect(paginateBackwards).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets users request missing room keys from undecryptable events", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const requestRoomKey = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      requestRoomKey
+    });
+    const encrypted = {
+      ...message("$encrypted", "Unable to decrypt message"),
+      unable_to_decrypt: {
+        session_id: "session-1",
+        reason: "missingRoomKey" as const,
+        can_request_keys: true
+      }
+    };
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [encrypted]
+        }
+      }
+    });
+
+    const button = await screen.findByRole("button", { name: "Request keys and retry" });
+    fireEvent.click(button);
+
+    expect(requestRoomKey).toHaveBeenCalledWith("!room:example.invalid", "$encrypted");
   });
 });

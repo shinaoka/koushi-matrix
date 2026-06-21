@@ -49,6 +49,7 @@ impl CoreCommand {
                 | AppCommand::OpenTimelineAtTimestamp { request_id, .. }
                 | AppCommand::CloseFocusedContext { request_id }
                 | AppCommand::UpdateSettings { request_id, .. }
+                | AppCommand::RebuildSearchIndex { request_id }
                 | AppCommand::SetRoomUrlPreviewOverride { request_id, .. }
                 | AppCommand::OpenActivity { request_id }
                 | AppCommand::CloseActivity { request_id }
@@ -133,6 +134,7 @@ impl CoreCommand {
                 | RoomCommand::QueryDirectory { request_id, .. }
                 | RoomCommand::JoinDirectoryRoom { request_id, .. }
                 | RoomCommand::LoadRoomSettings { request_id, .. }
+                | RoomCommand::ReshareRoomKey { request_id, .. }
                 | RoomCommand::UpdateRoomSetting { request_id, .. }
                 | RoomCommand::ModerateRoomMember { request_id, .. }
                 | RoomCommand::UpdateRoomMemberRole { request_id, .. }
@@ -154,6 +156,7 @@ impl CoreCommand {
                 | TimelineCommand::SendReply { request_id, .. }
                 | TimelineCommand::ForwardMessage { request_id, .. }
                 | TimelineCommand::LoadMessageSource { request_id, .. }
+                | TimelineCommand::RequestRoomKey { request_id, .. }
                 | TimelineCommand::RetrySend { request_id, .. }
                 | TimelineCommand::CancelSend { request_id, .. }
                 | TimelineCommand::UploadAndSendMedia { request_id, .. }
@@ -207,6 +210,7 @@ impl CoreCommand {
                         | AppCommand::UpdateStagedUploadCaption { .. }
                         | AppCommand::UpdateStagedUploadCompression { .. }
                         | AppCommand::ClearUploadStaging { .. }
+                        | AppCommand::RebuildSearchIndex { .. }
                         | AppCommand::SetRoomUrlPreviewOverride { .. }
                         | AppCommand::OpenFilesView { .. }
                         | AppCommand::OpenThreadsList { .. }
@@ -298,6 +302,9 @@ pub enum AppCommand {
     UpdateSettings {
         request_id: RequestId,
         patch: SettingsPatch,
+    },
+    RebuildSearchIndex {
+        request_id: RequestId,
     },
     SetRoomUrlPreviewOverride {
         request_id: RequestId,
@@ -499,6 +506,10 @@ impl fmt::Debug for AppCommand {
                 .debug_struct("UpdateSettings")
                 .field("request_id", request_id)
                 .field("patch_fields", &settings_patch_field_names(patch))
+                .finish(),
+            Self::RebuildSearchIndex { request_id } => formatter
+                .debug_struct("RebuildSearchIndex")
+                .field("request_id", request_id)
                 .finish(),
             Self::SetRoomUrlPreviewOverride {
                 request_id,
@@ -1311,6 +1322,10 @@ pub enum RoomCommand {
         request_id: RequestId,
         room_id: String,
     },
+    ReshareRoomKey {
+        request_id: RequestId,
+        room_id: String,
+    },
     UpdateRoomSetting {
         request_id: RequestId,
         room_id: String,
@@ -1487,6 +1502,11 @@ impl fmt::Debug for RoomCommand {
                 .finish(),
             Self::LoadRoomSettings { request_id, .. } => formatter
                 .debug_struct("LoadRoomSettings")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::ReshareRoomKey { request_id, .. } => formatter
+                .debug_struct("ReshareRoomKey")
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
                 .finish(),
@@ -1824,6 +1844,11 @@ pub enum TimelineCommand {
         key: TimelineKey,
         event_id: String,
     },
+    RequestRoomKey {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+    },
     RetrySend {
         request_id: RequestId,
         key: TimelineKey,
@@ -1981,6 +2006,12 @@ impl fmt::Debug for TimelineCommand {
                 .finish(),
             Self::LoadMessageSource { request_id, .. } => formatter
                 .debug_struct("LoadMessageSource")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::RequestRoomKey { request_id, .. } => formatter
+                .debug_struct("RequestRoomKey")
                 .field("request_id", request_id)
                 .field("key", &"TimelineKey(..)")
                 .field("event_id", &"EventId(..)")

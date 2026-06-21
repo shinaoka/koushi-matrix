@@ -252,6 +252,7 @@ describe("qaWindowTitle", () => {
           search_crawler: {
             rooms: {
               "!private-a:example.test": { kind: "running", processed: 100, indexed: 40 },
+              "!private-q:example.test": { kind: "queued" },
               "!private-b:example.test": { kind: "completed", indexed: 25 },
               "!private-c:example.test": { kind: "failed", failureKind: "sdk" }
             }
@@ -262,6 +263,7 @@ describe("qaWindowTitle", () => {
 
     expect(tokens).toEqual([
       "crawler_running=1",
+      "crawler_queued=1",
       "crawler_completed=1",
       "crawler_failed=1",
       "crawler_processed=100",

@@ -79,10 +79,10 @@ use matrix_sdk::ruma::events::room::{MediaSource, ThumbnailInfo};
 use matrix_sdk::ruma::html::{Html, SanitizerConfig};
 use matrix_sdk::send_queue::{LocalEcho, LocalEchoContent, RoomSendQueueUpdate, SendHandle};
 use matrix_sdk_ui::timeline::{
-    EmbeddedEvent, EventSendState as SdkEventSendState, EventTimelineItem, InReplyToDetails,
-    MembershipChange, Profile, ReactionStatus, ReactionsByKeyBySender, Timeline, TimelineDetails,
-    TimelineEventItemId, TimelineFocus, TimelineItem as SdkTimelineItem, TimelineItemContent,
-    TimelineItemKind,
+    EmbeddedEvent, EncryptedMessage, EventSendState as SdkEventSendState, EventTimelineItem,
+    InReplyToDetails, MembershipChange, Profile, ReactionStatus, ReactionsByKeyBySender, Timeline,
+    TimelineDetails, TimelineEventItemId, TimelineFocus, TimelineItem as SdkTimelineItem,
+    TimelineItemContent, TimelineItemKind,
 };
 use tokio::sync::{broadcast, mpsc};
 
@@ -94,9 +94,9 @@ use crate::event::{
     ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
     TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageActions,
     TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
-    TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan, TimelineUnreadPosition,
-    TimelineViewportObservation, message_actions_for_timeline_item,
-    message_source_for_timeline_item,
+    TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan, TimelineUnableToDecrypt,
+    TimelineUnableToDecryptReason, TimelineUnreadPosition, TimelineViewportObservation,
+    message_actions_for_timeline_item, message_source_for_timeline_item,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -370,6 +370,21 @@ impl TimelineManagerActor {
                     request_id,
                     &key,
                     TimelineActorMessage::LoadMessageSource {
+                        request_id,
+                        event_id,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::RequestRoomKey {
+                request_id,
+                key,
+                event_id,
+            } => {
+                self.route_to_actor_or_fail(
+                    request_id,
+                    &key,
+                    TimelineActorMessage::RequestRoomKey {
                         request_id,
                         event_id,
                     },
@@ -1163,6 +1178,10 @@ enum TimelineActorMessage {
         request_id: RequestId,
         event_id: String,
     },
+    RequestRoomKey {
+        request_id: RequestId,
+        event_id: String,
+    },
     RetrySend {
         request_id: RequestId,
         transaction_id: String,
@@ -1561,6 +1580,12 @@ impl TimelineActor {
             } => {
                 self.handle_load_message_source(request_id, event_id).await;
             }
+            TimelineActorMessage::RequestRoomKey {
+                request_id,
+                event_id,
+            } => {
+                self.handle_request_room_key(request_id, event_id).await;
+            }
             TimelineActorMessage::RetrySend {
                 request_id,
                 transaction_id,
@@ -1954,6 +1979,53 @@ impl TimelineActor {
             key: self.key.clone(),
             source,
         }));
+    }
+
+    async fn handle_request_room_key(&mut self, request_id: RequestId, event_id: String) {
+        let event_id = match matrix_sdk::ruma::EventId::parse(&event_id) {
+            Ok(event_id) => event_id,
+            Err(_) => {
+                self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
+                return;
+            }
+        };
+        let Some(event_item) = self.timeline.item_by_event_id(&event_id).await else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
+            return;
+        };
+        if !event_item.content().is_unable_to_decrypt() {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendState);
+            return;
+        }
+        let Some(raw) = event_item.original_json() else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
+            return;
+        };
+        let room_id = match matrix_sdk::ruma::RoomId::parse(self.key.room_id()) {
+            Ok(room_id) => room_id,
+            Err(_) => {
+                self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
+                return;
+            }
+        };
+        let encrypted_event = raw.cast_ref_unchecked();
+        match self
+            .session
+            .client()
+            .request_room_key_for_event(encrypted_event, room_id.as_ref())
+            .await
+        {
+            Ok(()) => {
+                if let Some(utd) = unable_to_decrypt_from_content(event_item.content()) {
+                    if let Some(session_id) = utd.session_id {
+                        self.timeline.retry_decryption([session_id]).await;
+                    }
+                }
+            }
+            Err(_) => {
+                self.emit_timeline_failure(request_id, TimelineFailureKind::Sdk);
+            }
+        }
     }
 
     async fn handle_forward_message(
@@ -4269,6 +4341,10 @@ fn sdk_item_to_timeline_item_with_send_states(
                 .as_deref()
                 .and_then(|txn_id| send_statuses.get(txn_id).cloned())
                 .or_else(|| timeline_send_state_from_sdk(event_item.send_state()));
+            let mut unable_to_decrypt = unable_to_decrypt_from_content(content);
+            if let Some(utd) = unable_to_decrypt.as_mut() {
+                utd.can_request_keys = event_item.original_json().is_some();
+            }
             let actions = message_actions_for_timeline_item(
                 key.room_id(),
                 &id,
@@ -4301,6 +4377,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 can_redact,
                 is_edited,
                 can_edit,
+                unable_to_decrypt,
                 actions,
                 send_state,
             }
@@ -4337,11 +4414,31 @@ fn sdk_item_to_timeline_item_with_send_states(
                 can_redact: false,
                 is_edited: false,
                 can_edit: false,
+                unable_to_decrypt: None,
                 actions: TimelineMessageActions::default(),
                 send_state: None,
             }
         }
     }
+}
+
+fn unable_to_decrypt_from_content(
+    content: &TimelineItemContent,
+) -> Option<TimelineUnableToDecrypt> {
+    let encrypted = content.as_unable_to_decrypt()?;
+    let session_id = match encrypted {
+        EncryptedMessage::MegolmV1AesSha2 { session_id, .. } => Some(session_id.clone()),
+        EncryptedMessage::OlmV1Curve25519AesSha2 { .. } | EncryptedMessage::Unknown => None,
+    };
+    Some(TimelineUnableToDecrypt {
+        reason: if session_id.is_some() {
+            TimelineUnableToDecryptReason::MissingRoomKey
+        } else {
+            TimelineUnableToDecryptReason::Unknown
+        },
+        session_id,
+        can_request_keys: false,
+    })
 }
 
 fn thread_summary_from_sdk(summary: matrix_sdk_ui::timeline::ThreadSummary) -> ThreadSummaryDto {
@@ -5649,9 +5746,11 @@ mod tests {
 
         assert!(!actor_alive.load(Ordering::SeqCst));
         assert!(!auxiliary_alive.load(Ordering::SeqCst));
-        assert!(auxiliary_sender
-            .try_send(TimelineActorMessage::RelayOverflow)
-            .is_err());
+        assert!(
+            auxiliary_sender
+                .try_send(TimelineActorMessage::RelayOverflow)
+                .is_err()
+        );
     }
 
     fn timeline_item(
@@ -5688,6 +5787,7 @@ mod tests {
             can_edit: false,
             actions: TimelineMessageActions::default(),
             send_state: None,
+            unable_to_decrypt: None,
         }
     }
 
@@ -6424,6 +6524,7 @@ mod tests {
             can_edit: false,
             actions: TimelineMessageActions::default(),
             send_state: None,
+            unable_to_decrypt: None,
         }
     }
 

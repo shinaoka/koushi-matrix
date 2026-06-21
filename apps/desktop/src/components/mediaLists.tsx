@@ -49,6 +49,17 @@ function RoomMediaGallery({
   mediaDownloads: Record<string, TimelineMediaDownloadState>;
   onOpenItem: (index: number) => void;
 }) {
+  if (items.length === 0) {
+    return (
+      <section className="room-media-gallery room-media-gallery-empty" role="region" aria-label={t("mediaGallery.region")}>
+        <div className="room-media-gallery-empty-state">
+          <ImageIcon size={ICON_SIZE.control} aria-hidden="true" />
+          <span>{t("mediaGallery.empty")}</span>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className="room-media-gallery" role="region" aria-label={t("mediaGallery.region")}>
       {items.map((item, index) => {

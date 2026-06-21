@@ -2013,6 +2013,7 @@ pub struct MatrixRoomListSpace {
     pub display_name: String,
     pub avatar_mxc_uri: Option<String>,
     pub child_room_ids: Vec<String>,
+    pub member_user_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2140,6 +2141,7 @@ pub struct MatrixRoomMemberSummary {
     pub avatar_url: Option<String>,
     pub power_level: Option<i64>,
     pub role: MatrixRoomMemberRole,
+    pub user_trust: Option<MatrixUserTrustState>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2148,6 +2150,13 @@ pub enum MatrixRoomMemberRole {
     Administrator,
     Moderator,
     User,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixUserTrustState {
+    Unverified,
+    Verified,
+    IdentityReset,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2899,6 +2908,16 @@ pub async fn get_room_settings_snapshot(
 ) -> Result<MatrixRoomSettingsSnapshot, MatrixRoomOperationError> {
     let room = matrix_room(session, room_id)?;
     Ok(matrix_room_settings_snapshot(&room).await)
+}
+
+pub async fn reshare_room_key(
+    session: &MatrixClientSession,
+    room_id: &str,
+) -> Result<(), MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    room.reshare_room_key()
+        .await
+        .map_err(MatrixRoomOperationError::from_sdk_error)
 }
 
 pub async fn update_room_setting(
@@ -3807,21 +3826,39 @@ async fn matrix_room_member_summaries(room: &matrix_sdk::Room) -> Vec<MatrixRoom
     let Ok(members) = room.members(matrix_sdk::RoomMemberships::ACTIVE).await else {
         return Vec::new();
     };
-    let mut summaries: Vec<MatrixRoomMemberSummary> = members
-        .into_iter()
-        .map(|member| {
-            let power_level = matrix_room_member_power_level(member.power_level());
-            MatrixRoomMemberSummary {
-                user_id: member.user_id().to_string(),
-                display_name: member.display_name().map(ToOwned::to_owned),
-                avatar_url: member.avatar_url().map(ToString::to_string),
-                power_level,
-                role: matrix_room_member_role(power_level),
-            }
-        })
-        .collect();
+    let encryption = room.client().encryption();
+    let mut summaries: Vec<MatrixRoomMemberSummary> = Vec::with_capacity(members.len());
+    for member in members {
+        let power_level = matrix_room_member_power_level(member.power_level());
+        let user_trust = encryption
+            .get_user_identity(member.user_id())
+            .await
+            .ok()
+            .flatten()
+            .map(matrix_user_trust_state_from_sdk_identity);
+        summaries.push(MatrixRoomMemberSummary {
+            user_id: member.user_id().to_string(),
+            display_name: member.display_name().map(ToOwned::to_owned),
+            avatar_url: member.avatar_url().map(ToString::to_string),
+            power_level,
+            role: matrix_room_member_role(power_level),
+            user_trust,
+        });
+    }
     summaries.sort_by(|left, right| left.user_id.cmp(&right.user_id));
     summaries
+}
+
+fn matrix_user_trust_state_from_sdk_identity(
+    identity: matrix_sdk::encryption::identities::UserIdentity,
+) -> MatrixUserTrustState {
+    if identity.has_verification_violation() {
+        MatrixUserTrustState::IdentityReset
+    } else if identity.is_verified() {
+        MatrixUserTrustState::Verified
+    } else {
+        MatrixUserTrustState::Unverified
+    }
 }
 
 fn room_settings_snapshot_with_member_power_level(
@@ -4129,6 +4166,7 @@ async fn matrix_room_list_snapshot_from_rooms(
                 display_name,
                 avatar_mxc_uri: room.avatar_url().map(|uri| uri.to_string()),
                 child_room_ids,
+                member_user_ids: active_user_ids,
             });
             continue;
         }
@@ -5013,6 +5051,7 @@ mod tests {
                 avatar_url: None,
                 power_level: Some(50),
                 role: MatrixRoomMemberRole::Moderator,
+                user_trust: None,
             }],
         };
         let _change = MatrixRoomSettingChange::JoinRule(MatrixRoomJoinRule::Public);
@@ -5120,6 +5159,7 @@ mod tests {
                 avatar_url: None,
                 power_level: Some(0),
                 role: MatrixRoomMemberRole::User,
+                user_trust: None,
             }],
         };
 

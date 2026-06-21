@@ -89,6 +89,13 @@ impl SearchDocumentStore {
         self.pending_edits.values().map(Vec::len).sum()
     }
 
+    pub fn clear(&mut self) {
+        self.documents.clear();
+        self.applied_edits.clear();
+        self.pending_edits.clear();
+        self.edit_aliases.clear();
+    }
+
     pub fn upsert_message(&mut self, event: SearchableEvent) {
         let event_id = event.event_id.clone();
         self.documents.insert(event_id.clone(), event);

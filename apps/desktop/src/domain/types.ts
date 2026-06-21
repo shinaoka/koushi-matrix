@@ -520,6 +520,7 @@ export interface RoomSummary {
   marked_unread?: boolean;
   last_activity_ms?: number;
   parent_space_ids: string[];
+  dm_space_ids: string[];
   is_encrypted: boolean;
   joined_members?: number;
 }
@@ -735,9 +736,15 @@ export interface RoomMemberSummary {
   avatar_url: string | null;
   power_level: number | null;
   role: RoomMemberRole;
+  user_trust?: UserTrustState;
 }
 
 export type RoomMemberRole = "creator" | "administrator" | "moderator" | "user";
+
+export type UserTrustState =
+  | { kind: "unverified" }
+  | { kind: "verified" }
+  | { kind: "identityReset" };
 
 export type RoomJoinRule = "public" | "invite" | "knock" | "restricted" | "private";
 
@@ -1394,6 +1401,7 @@ export type SearchCrawlerFailureKind =
 
 export type SearchCrawlerRoomState =
   | { kind: "idle" }
+  | { kind: "queued" }
   | { kind: "running"; processed: number; indexed: number }
   | { kind: "completed"; indexed: number }
   | { kind: "failed"; failureKind: SearchCrawlerFailureKind };

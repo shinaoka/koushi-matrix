@@ -127,6 +127,8 @@ pub struct RoomMemberSummary {
     pub avatar_url: Option<String>,
     pub power_level: Option<i64>,
     pub role: RoomMemberRole,
+    #[serde(default)]
+    pub user_trust: Option<UserTrustState>,
 }
 
 impl fmt::Debug for RoomMemberSummary {
@@ -146,8 +148,17 @@ impl fmt::Debug for RoomMemberSummary {
             )
             .field("power_level", &self.power_level)
             .field("role", &self.role)
+            .field("user_trust", &self.user_trust)
             .finish()
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum UserTrustState {
+    Unverified,
+    Verified,
+    IdentityReset,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

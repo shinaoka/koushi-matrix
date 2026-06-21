@@ -207,15 +207,36 @@ loop; joined-only observation can leave the invite snapshot stale.
 cross-signing bootstrap, encrypted seed-room backup upload, passphrase-backed
 key-backup enable, wrong-secret restore failure, successful joined-room restore
 on a second same-user device, SAS verification, and identity reset through
-`CoreCommand`/`CoreEvent` only. The runner must not print account keys,
-verification target user/device ids, backup versions, room ids, event ids,
-recovery secrets, or raw SDK errors for this stage. It is a separate Rust-owned
-trust proof and runs after the ordinary room/timeline/search operations in the
-aggregate local lane. The local runner registers separate synthetic users for
-each core backend leg so the trust proof is not affected by devices created by
-the SDK smoke lane. Until a broader SDK/public API path exists, "successful
-restore" means recovery secret import plus currently joined-room key hydration;
-the token must not be described as exhaustive backup-wide restore.
+`CoreCommand`/`CoreEvent` only. `e2ee_second_device_decrypt=ok` additionally
+proves that a newly sent encrypted event can decrypt on the same user's second
+verified device after recovery. `e2ee_multi_user_multi_device_decrypt=ok`
+proves a new encrypted event can decrypt for the original sender's second
+device and for another user in a fresh encrypted room. The runner must not
+print account keys, verification target user/device ids, backup versions, room
+ids, event ids, recovery secrets, or raw SDK errors for this stage. It is a
+separate Rust-owned trust proof and runs after the ordinary room/timeline/search
+operations in the aggregate local lane. The local runner registers separate
+synthetic users for each core backend leg so the trust proof is not affected by
+devices created by the SDK smoke lane. Until a broader SDK/public API path
+exists, "successful restore" means recovery secret import plus currently
+joined-room key hydration; the token must not be described as exhaustive
+backup-wide restore.
+
+The stricter recipient-device lane is opt-in:
+
+```bash
+npm --prefix apps/desktop run qa:headless-core -- --server=conduit --scenario=e2ee_trust --core-backend=probed --e2ee-recipient-second-device --timeout-ms=360000
+```
+
+That lane logs `e2ee_recipient_second_device_decrypt=ok` only after the
+recipient user's second verified device decrypts a fresh encrypted event. It is
+currently a Conduit proof. As of 2026-06-21, the same strict lane on Tuwunel is
+a known local-server failure: the SDK send queue reports a recoverable send
+failure after `/_matrix/client/v3/keys/claim` times out. Use
+`KOUSHI_QA_RUST_LOG=matrix_sdk::send_queue=warn,matrix_sdk::room::futures=trace,matrix_sdk_crypto::session_manager::group_sessions=trace`
+only for private local diagnostics; the runner writes raw logs under
+`.local-secrets/headless-local-qa/` before rejecting public output that contains
+SDK diagnostics.
 
 For room/space checks, the core lane performs bounded `SyncOnce` refreshes
 before asserting `rooms` vs `spaces`. Local homeservers can briefly report a

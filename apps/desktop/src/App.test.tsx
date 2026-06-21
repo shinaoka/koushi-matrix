@@ -828,6 +828,7 @@ describe("ContextualRightPanel", () => {
             unpinEvent: async () => undefined,
             downloadMedia: async () => undefined,
             loadMessageSource: async () => undefined,
+            requestRoomKey: async () => undefined,
             forwardMessage: async () => undefined,
             loadLinkPreviews: async () => undefined,
             hideLinkPreview: async () => undefined
@@ -901,6 +902,7 @@ describe("ContextualRightPanel", () => {
             unpinEvent: async () => undefined,
             downloadMedia: async () => undefined,
             loadMessageSource: async () => undefined,
+            requestRoomKey: async () => undefined,
             forwardMessage: async () => undefined,
             loadLinkPreviews: async () => undefined,
             hideLinkPreview: async () => undefined
@@ -988,6 +990,7 @@ describe("ContextualRightPanel", () => {
             unpinEvent: async () => undefined,
             downloadMedia: async () => undefined,
             loadMessageSource: async () => undefined,
+            requestRoomKey: async () => undefined,
             forwardMessage: async () => undefined,
             loadLinkPreviews: async () => undefined,
             hideLinkPreview: async () => undefined
@@ -1175,6 +1178,28 @@ describe("ContextualRightPanel", () => {
     expect(transportBranch).toContain("async ensureSubscribed");
     expect(transportBranch).toContain("await tauriCoreEventListenerReady");
     expect(transportBranch).toContain("ensure_timeline_subscribed");
+  });
+
+  test("room composer draft input stays local and persists to Rust with debounce", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("const localComposerDraftsRef = useRef<Record<string, string>>({});");
+    expect(source).toContain("composerDraftPersistTimer");
+    expect(source).toContain("queueComposerDraftPersist(roomId, value)");
+    expect(source).toContain("updateComposerTypingSignal(roomId, value)");
+    expect(source).toContain("window.setTimeout");
+    expect(source).toContain("async function sendText(bodyOverride?: string)");
+    expect(source).not.toContain("setSnapshot(await api.setComposerDraft(roomId, value))");
+    expect(source).not.toContain("setLocalComposerDrafts");
+  });
+
+  test("desktop api exposes a search index rebuild command", () => {
+    const source = readFileSync(new URL("./backend/client.ts", import.meta.url), "utf8");
+    const fakeSource = readFileSync(new URL("./backend/browserFakeApi.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("rebuildSearchIndex(): Promise<DesktopSnapshot>");
+    expect(source).toContain('invoke<DesktopSnapshot>("rebuild_search_index"');
+    expect(fakeSource).toContain("async rebuildSearchIndex(): Promise<DesktopSnapshot>");
   });
 
   test("renders encryption recovery as a contextual right panel mode", async () => {

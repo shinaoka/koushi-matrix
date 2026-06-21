@@ -18,8 +18,13 @@ with an Element Desktop/Web-like three-pane desktop UX:
   interaction, encrypted ngram full-text search (CJK-capable).
 - Out of scope for MVP: voice/video calls, screen sharing, bots, widgets,
   app integrations.
-- DMs are global account-level conversations (Element X Android-style
-  two-member classification), never duplicated under Spaces.
+- DMs are account-level conversations (Element X Android-style two-member
+  classification). They are shown in full only in Home (no active Space); when a
+  Space is active, the DM section shows DMs where at least one counterpart is a
+  member of that Space's room (any counterpart for group DMs). A DM matching no
+  Space appears only in Home. DMs are never assigned to Spaces via
+  `m.space.child`/`m.space.parent`; the association is by counterpart space-room
+  membership, computed Rust-side as `RoomSummary.dm_space_ids`.
 - A browser-hosted build (Element Web-like deployment of the same core) is a
   potential future target. It is not scheduled, but the architecture must not
   preclude it; see Platform Portability.

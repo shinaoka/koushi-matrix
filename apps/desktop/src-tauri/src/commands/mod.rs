@@ -1,9 +1,10 @@
 //! Tauri command handlers: transport adapter only.
 //!
-//! Each handler allocates a `RequestId`, submits a `CoreCommand`, and returns
-//! the current `FrontendDesktopSnapshot`. Side-effects (state changes, timeline
-//! diffs) flow back to the webview as Tauri events — not as command return
-//! values.
+//! Each handler allocates a `RequestId` and submits a `CoreCommand`.
+//! Handlers return the current `FrontendDesktopSnapshot` only when the React
+//! caller actually applies it; high-frequency fire-and-forget commands return
+//! a tiny acknowledgement. Side-effects (state changes, timeline diffs) flow
+//! back to the webview as Tauri events — not as command return values.
 //!
 //! No Matrix semantics live here. No SDK types. No `koushi_sdk` calls.
 //! (Secret-bearing QA helpers remain behind `#[cfg(any(debug_assertions, test))]`.)
@@ -586,6 +587,12 @@ pub(crate) fn build_update_settings_command(
     patch: SettingsPatch,
 ) -> CoreCommand {
     CoreCommand::App(AppCommand::UpdateSettings { request_id, patch })
+}
+
+pub(crate) fn build_rebuild_search_index_command(
+    request_id: koushi_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::RebuildSearchIndex { request_id })
 }
 
 pub(crate) fn build_set_room_url_preview_override_command(
@@ -1275,6 +1282,22 @@ pub(crate) fn build_load_message_source_command(
     }))
 }
 
+pub(crate) fn build_request_room_key_command(
+    request_id: koushi_core::RequestId,
+    account_key: AccountKey,
+    room_id: String,
+    event_id: String,
+) -> Option<CoreCommand> {
+    if event_id.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::RequestRoomKey {
+        request_id,
+        key: build_timeline_key(account_key, room_id),
+        event_id,
+    }))
+}
+
 pub(crate) fn build_load_link_previews_command(
     request_id: koushi_core::RequestId,
     account_key: AccountKey,
@@ -1651,6 +1674,16 @@ pub(crate) fn build_load_room_settings_command(
     room_id: String,
 ) -> CoreCommand {
     CoreCommand::Room(RoomCommand::LoadRoomSettings {
+        request_id,
+        room_id,
+    })
+}
+
+pub(crate) fn build_reshare_room_key_command(
+    request_id: koushi_core::RequestId,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::ReshareRoomKey {
         request_id,
         room_id,
     })
@@ -2365,6 +2398,7 @@ mod tests {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: vec![],
+                dm_space_ids: vec![],
                 is_encrypted: false,
                 joined_members: 0,
             },
@@ -2383,6 +2417,7 @@ mod tests {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids: vec![],
+                dm_space_ids: vec![],
                 is_encrypted: false,
                 joined_members: 0,
             },
@@ -4689,6 +4724,29 @@ mod tests {
                 "Tauri command should register {registration_name}"
             );
         }
+    }
+
+    #[test]
+    fn rebuild_search_index_tauri_command_contract_is_present() {
+        let commands_source = commands_source();
+        let lib_source = include_str!("../lib.rs");
+
+        assert!(
+            commands_source.contains("pub async fn rebuild_search_index"),
+            "Tauri command should expose search index rebuild"
+        );
+        assert!(
+            commands_source.contains("build_rebuild_search_index_command"),
+            "Tauri command should route through a testable builder"
+        );
+        assert!(
+            commands_source.contains("AppCommand::RebuildSearchIndex"),
+            "Tauri command should route through app state"
+        );
+        assert!(
+            lib_source.contains("commands::settings::rebuild_search_index"),
+            "Tauri command should be registered in generate_handler"
+        );
     }
 
     #[test]

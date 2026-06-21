@@ -24,7 +24,8 @@ use serde::{Deserialize, Serialize};
 // and Matrix operations go through CoreCommand/CoreEvent — the adapter never
 // touches the credential store or the SDK directly.
 use koushi_core::{
-    AccountCommand, CoreCommand, CoreConnection, CoreEvent, CoreRuntime, TimelineEvent,
+    AccountCommand, CoreCommand, CoreConnection, CoreEvent, CoreRuntime, SearchEvent,
+    TimelineEvent,
     event::AppStateSnapshot,
 };
 
@@ -739,6 +740,11 @@ fn serialize_core_event(event: &CoreEvent) -> Option<serde_json::Value> {
         CoreEvent::Room(e) => serde_json::json!({ "kind": "Room", "event": e }),
         CoreEvent::Timeline(e) => serde_json::json!({ "kind": "Timeline", "event": e }),
         CoreEvent::LiveSignals(e) => serde_json::json!({ "kind": "LiveSignals", "event": e }),
+        CoreEvent::Search(SearchEvent::IndexUpdated { .. }) => {
+            // Internal indexer wake-up signal. Forwarding one WebView IPC event
+            // per indexed message competes with input and scroll rendering.
+            return None;
+        }
         CoreEvent::Search(e) => serde_json::json!({ "kind": "Search", "event": e }),
         CoreEvent::E2eeTrust(e) => serde_json::json!({ "kind": "E2eeTrust", "event": e }),
         CoreEvent::Activity(e) => serde_json::json!({ "kind": "Activity", "event": e }),
@@ -877,6 +883,7 @@ pub fn run() {
             commands::session::logout,
             commands::session::restart_sync,
             commands::settings::update_settings,
+            commands::settings::rebuild_search_index,
             commands::settings::set_room_url_preview_override,
             commands::room::select_room_list_filter,
             commands::room::mark_room_as_read,
@@ -927,6 +934,7 @@ pub fn run() {
             commands::timeline::upload_media,
             commands::timeline::download_media,
             commands::timeline::load_message_source,
+            commands::timeline::request_room_key,
             commands::timeline::load_link_previews,
             commands::timeline::hide_link_preview,
             commands::timeline::forward_message,
@@ -952,6 +960,7 @@ pub fn run() {
             commands::room::pin_event,
             commands::room::unpin_event,
             commands::room::load_room_settings,
+            commands::room::reshare_room_key,
             commands::room::update_room_setting,
             commands::room::moderate_room_member,
             commands::room::update_room_member_role,
@@ -1464,6 +1473,7 @@ mod tests {
                 permalink: Some("https://matrix.to/#/!r%3Aexample.test/%24e1".to_owned()),
             },
             send_state: None,
+            unable_to_decrypt: None,
         };
         let media_item = TimelineItem {
             id: TimelineItemId::Event {
@@ -1522,6 +1532,7 @@ mod tests {
                 permalink: Some("https://matrix.to/#/!r%3Aexample.test/%24media1".to_owned()),
             },
             send_state: None,
+            unable_to_decrypt: None,
         };
         let send_state_item = TimelineItem {
             id: TimelineItemId::Transaction {
@@ -1553,6 +1564,7 @@ mod tests {
             send_state: Some(TimelineSendState::NotSent {
                 reason: TimelineSendFailureReason::Recoverable,
             }),
+            unable_to_decrypt: None,
         };
         let reply_quote_item = TimelineItem {
             id: TimelineItemId::Event {
@@ -1594,6 +1606,7 @@ mod tests {
                 permalink: Some("https://matrix.to/#/!r%3Aexample.test/%24reply1".to_owned()),
             },
             send_state: None,
+            unable_to_decrypt: None,
         };
         let link_preview_item = TimelineItem {
             id: TimelineItemId::Event {
@@ -1649,6 +1662,7 @@ mod tests {
                 permalink: Some("https://matrix.to/#/!r%3Aexample.test/%24linkpreview1".to_owned()),
             },
             send_state: None,
+            unable_to_decrypt: None,
         };
 
         // InitialItems envelope + payload
@@ -2147,6 +2161,7 @@ mod tests {
                 avatar_url: Some("mxc://example.test/member-avatar".to_owned()),
                 power_level: Some(50),
                 role: RoomMemberRole::Moderator,
+                user_trust: None,
             }],
         };
         let room_settings_loaded =
@@ -2414,6 +2429,15 @@ mod tests {
         assert_eq!(
             search_attachments_failed["event"]["AttachmentsFailed"]["message"],
             json!("index unavailable")
+        );
+
+        assert!(
+            serialize_core_event(&CoreEvent::Search(SearchEvent::IndexUpdated {
+                room_id: "!r:example.test".to_owned(),
+                event_id: "$indexed:example.test".to_owned(),
+            }))
+            .is_none(),
+            "per-message index updates are internal and must not cross WebView IPC"
         );
 
         // Search history crawler contract events (#77).

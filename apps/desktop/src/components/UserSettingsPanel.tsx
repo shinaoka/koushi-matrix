@@ -27,6 +27,8 @@ import {
 
 import { t } from "../i18n/messages";
 import { KeyboardSettingsContent } from "./KeyboardSettingsPanel";
+import { TrustHelpButton } from "./TrustHelp";
+import type { DisplayDensity } from "../app/localPresentation";
 import type { ShortcutLabelProfile } from "../domain/shortcuts";
 import { mediaSourceUrl } from "../domain/mediaUrl";
 import type {
@@ -70,6 +72,7 @@ import type {
 
 export function UserSettingsPanel({
   currentSession,
+  displayDensity = "comfortable",
   savedSessions,
   settings,
   searchCrawlerState,
@@ -82,6 +85,7 @@ export function UserSettingsPanel({
   accountManagementCapabilities,
   keyboardLabelProfile,
   onUpdateSettings,
+  onRebuildSearchIndex,
   onSetDisplayName,
   onSetAvatar,
   onBootstrapCrossSigning,
@@ -111,9 +115,11 @@ export function UserSettingsPanel({
   onSubmitAccountManagementUia,
   onStartCrawlRoom,
   onStopCrawlRoom,
+  onDisplayDensityChange = () => undefined,
   rooms
 }: {
   currentSession: SavedSessionInfo | null;
+  displayDensity?: DisplayDensity;
   savedSessions: SavedSessionInfo[];
   settings: SettingsState;
   searchCrawlerState?: SearchCrawlerState;
@@ -127,6 +133,7 @@ export function UserSettingsPanel({
   keyboardLabelProfile?: ShortcutLabelProfile;
   onOpenKeyboardSettings: () => void;
   onUpdateSettings: (patch: SettingsPatch) => void;
+  onRebuildSearchIndex?: () => void;
   onSetDisplayName: (displayName: string | null) => void;
   onSetAvatar: (file: File) => void;
   onBootstrapCrossSigning: () => void;
@@ -163,6 +170,7 @@ export function UserSettingsPanel({
   onSubmitAccountManagementUia: (flowId: number, password: string) => void;
   onStartCrawlRoom?: (roomId: string) => void;
   onStopCrawlRoom?: (roomId: string) => void;
+  onDisplayDensityChange?: (density: DisplayDensity) => void;
   rooms?: RoomSummary[];
 }) {
   useEffect(() => {
@@ -439,6 +447,29 @@ export function UserSettingsPanel({
             onSelect={onUpdateSettings}
           />
         </div>
+        <div className="settings-control-row">
+          <span>{t("settings.displayDensity")}</span>
+          <div className="segmented-control" role="group" aria-label={t("settings.displayDensity")}>
+            <DensityButton
+              label={t("settings.densityCompact")}
+              selected={displayDensity === "compact"}
+              value="compact"
+              onSelect={onDisplayDensityChange}
+            />
+            <DensityButton
+              label={t("settings.densityDefault")}
+              selected={displayDensity === "default"}
+              value="default"
+              onSelect={onDisplayDensityChange}
+            />
+            <DensityButton
+              label={t("settings.densityComfortable")}
+              selected={displayDensity === "comfortable"}
+              value="comfortable"
+              onSelect={onDisplayDensityChange}
+            />
+          </div>
+        </div>
         <h4 className="settings-subheading">{t("settings.typography")}</h4>
         <div className="settings-control-stack">
           <div className="settings-control-row">
@@ -608,6 +639,7 @@ export function UserSettingsPanel({
           rooms={rooms}
           isSaving={isSaving}
           onUpdateSettings={onUpdateSettings}
+          onRebuildSearchIndex={onRebuildSearchIndex}
           onStartCrawlRoom={onStartCrawlRoom}
           onStopCrawlRoom={onStopCrawlRoom}
         />
@@ -1690,6 +1722,7 @@ function SearchHistorySection({
   rooms,
   isSaving,
   onUpdateSettings,
+  onRebuildSearchIndex,
   onStartCrawlRoom,
   onStopCrawlRoom
 }: {
@@ -1698,17 +1731,36 @@ function SearchHistorySection({
   rooms?: RoomSummary[];
   isSaving: boolean;
   onUpdateSettings: (patch: SettingsPatch) => void;
+  onRebuildSearchIndex?: () => void;
   onStartCrawlRoom?: (roomId: string) => void;
   onStopCrawlRoom?: (roomId: string) => void;
 }) {
-  const roomEntries = Object.entries(crawlerState.rooms);
+  const roomEntries = crawlerRoomEntries(crawlerState.rooms, rooms);
+  const crawlerSummary = summarizeCrawlerRooms(roomEntries);
+  const activeRoomEntries = roomEntries.filter((entry) => entry.roomState.kind === "running");
+  const crawlerPaused = crawlerSettings.speed === "paused";
+
+  function toggleCrawlerPaused() {
+    onUpdateSettings({
+      search_crawler: {
+        ...crawlerSettings,
+        speed: crawlerPaused ? "standard" : "paused"
+      }
+    });
+  }
+
+  function confirmRebuildSearchIndex() {
+    if (window.confirm(t("settings.searchHistoryRebuildConfirm"))) {
+      onRebuildSearchIndex?.();
+    }
+  }
 
   return (
     <>
       <div className="settings-control-stack">
-        <div className="settings-control-row">
+        <div className="settings-control-row crawler-speed-row">
           <span>{t("settings.searchHistorySpeed")}</span>
-          <div className="segmented-control" role="group" aria-label={t("settings.searchHistorySpeed")}>
+          <div className="segmented-control crawler-speed-control" role="group" aria-label={t("settings.searchHistorySpeed")}>
             {(["standard", "fast", "slow", "paused"] as const).map((speed) => (
               <CrawlerSpeedButton
                 key={speed}
@@ -1721,7 +1773,58 @@ function SearchHistorySection({
             ))}
           </div>
         </div>
+        <div className="settings-control-row">
+          <span>{t("settings.searchHistoryCrawler")}</span>
+          <div className="settings-inline-actions">
+            <button
+              className="dialog-button secondary"
+              type="button"
+              disabled={isSaving}
+              onClick={toggleCrawlerPaused}
+            >
+              {crawlerPaused ? t("settings.searchHistoryResume") : t("settings.searchHistoryPause")}
+            </button>
+            <button
+              className="dialog-button danger"
+              type="button"
+              disabled={isSaving || !onRebuildSearchIndex}
+              onClick={confirmRebuildSearchIndex}
+            >
+              {t("settings.searchHistoryRebuild")}
+            </button>
+          </div>
+        </div>
       </div>
+      {roomEntries.length > 0 ? (
+        <section
+          className="settings-section crawler-activity-section"
+          aria-label={t("settings.searchHistoryActivity")}
+        >
+          <div className="settings-section-heading">
+            <h4 className="settings-subheading">{t("settings.searchHistoryActivity")}</h4>
+            <span className="settings-save-state">
+              {t("settings.searchHistoryActivitySummary", crawlerSummary)}
+            </span>
+          </div>
+          {activeRoomEntries.length > 0 ? (
+            <div className="settings-detail-list compact">
+              {activeRoomEntries.slice(0, 6).map((entry) => (
+                <CrawlerRoomRow
+                  key={entry.roomId}
+                  roomId={entry.roomId}
+                  displayLabel={entry.displayLabel}
+                  roomState={entry.roomState}
+                  onStart={onStartCrawlRoom}
+                  onStop={onStopCrawlRoom}
+                />
+              ))}
+            </div>
+          ) : (
+            <p className="settings-muted-note">{t("settings.searchHistoryActivityIdle")}</p>
+          )}
+          <p className="settings-muted-note">{t("settings.searchHistoryActivityHint")}</p>
+        </section>
+      ) : null}
       <div className="settings-toggle-list">
         <CrawlerToggle
           label={t("settings.searchHistoryIncludeCaptions")}
@@ -1745,9 +1848,7 @@ function SearchHistorySection({
         >
           <h4 className="settings-subheading">{t("settings.searchHistoryRoomStatus")}</h4>
           <div className="settings-detail-list">
-            {roomEntries.map(([roomId, roomState]) => {
-              const displayLabel =
-                rooms?.find((r) => r.room_id === roomId)?.display_label ?? null;
+            {roomEntries.map(({ roomId, roomState, displayLabel }) => {
               return (
                 <CrawlerRoomRow
                   key={roomId}
@@ -1782,8 +1883,9 @@ function CrawlerSpeedButton({
   const label = crawlerSpeedLabel(value);
   return (
     <button
-      className="segmented-button"
+      className={`segmented-control-option crawler-speed-option ${selected ? "is-selected" : ""}`}
       type="button"
+      aria-label={selected ? `${label}, ${t("settings.searchHistorySpeedCurrent")}` : label}
       aria-pressed={selected}
       disabled={disabled}
       data-speed={value}
@@ -1791,8 +1893,60 @@ function CrawlerSpeedButton({
         onSelect({ search_crawler: { ...currentSettings, speed: value } })
       }
     >
-      {label}
+      <span>{label}</span>
+      {selected ? <small>{t("settings.searchHistorySpeedCurrent")}</small> : null}
     </button>
+  );
+}
+
+type CrawlerRoomEntry = {
+  roomId: string;
+  displayLabel: string | null;
+  roomState: SearchCrawlerRoomState;
+};
+
+function crawlerRoomEntries(
+  roomStates: Record<string, SearchCrawlerRoomState>,
+  rooms?: RoomSummary[]
+): CrawlerRoomEntry[] {
+  const labels = new Map((rooms ?? []).map((room) => [room.room_id, room.display_label]));
+  return Object.entries(roomStates)
+    .map(([roomId, roomState]) => ({
+      roomId,
+      roomState,
+      displayLabel: labels.get(roomId) ?? null
+    }))
+    .sort((a, b) => {
+      const rank = crawlerRoomRank(a.roomState) - crawlerRoomRank(b.roomState);
+      if (rank !== 0) {
+        return rank;
+      }
+      return (a.displayLabel ?? "").localeCompare(b.displayLabel ?? "");
+    });
+}
+
+function crawlerRoomRank(roomState: SearchCrawlerRoomState): number {
+  switch (roomState.kind) {
+    case "running":
+      return 0;
+    case "queued":
+      return 1;
+    case "idle":
+      return 2;
+    case "failed":
+      return 3;
+    case "completed":
+      return 4;
+  }
+}
+
+function summarizeCrawlerRooms(entries: CrawlerRoomEntry[]) {
+  return entries.reduce(
+    (summary, entry) => ({
+      ...summary,
+      [entry.roomState.kind]: summary[entry.roomState.kind] + 1
+    }),
+    { running: 0, idle: 0, completed: 0, failed: 0, queued: 0 }
   );
 }
 
@@ -1896,6 +2050,8 @@ function crawlerRoomStatusLabel(state: SearchCrawlerRoomState): string {
   switch (state.kind) {
     case "idle":
       return t("settings.searchHistoryRoomIdle");
+    case "queued":
+      return t("settings.searchHistoryRoomQueued");
     case "running":
       return t("settings.searchHistoryRoomRunning", {
         processed: state.processed,
@@ -2197,7 +2353,13 @@ function DeviceTrustList({ devices }: { devices: E2eeTrustState["devices"] }) {
   return (
     <section className="trust-devices" aria-label={t("trust.devices")}>
       <div className="trust-devices-heading">
-        <h4>{t("trust.devices")}</h4>
+        <h4>
+          <span>{t("trust.devices")}</span>
+          <TrustHelpButton
+            title={t("help.userTrust.deviceStateTitle")}
+            body={t("help.userTrust.deviceStateBody")}
+          />
+        </h4>
         <span>{t("trust.deviceCount", { count: devices.length })}</span>
       </div>
       <div className="trust-device-list">
@@ -2361,9 +2523,9 @@ function deviceTrustLevelLabel(level: DeviceTrustLevel): string {
     case "unknown":
       return t("trust.deviceUnknown");
     case "unverified":
-      return t("trust.deviceUnverified");
+      return t("trust.deviceNotCrossSigned");
     case "verified":
-      return t("trust.deviceVerified");
+      return t("trust.deviceCrossSigned");
     case "blocked":
       return t("trust.deviceBlocked");
   }
@@ -2475,6 +2637,33 @@ function ThemeButton({
       onClick={() => {
         if (!selected) {
           onSelect({ appearance: { theme: value } });
+        }
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function DensityButton({
+  label,
+  selected,
+  value,
+  onSelect
+}: {
+  label: string;
+  selected: boolean;
+  value: DisplayDensity;
+  onSelect: (density: DisplayDensity) => void;
+}) {
+  return (
+    <button
+      className={`segmented-control-option ${selected ? "is-selected" : ""}`}
+      type="button"
+      aria-pressed={selected}
+      onClick={() => {
+        if (!selected) {
+          onSelect(value);
         }
       }}
     >

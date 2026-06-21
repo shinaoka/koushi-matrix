@@ -24,6 +24,7 @@ fn room_list_smoke_report_counts_without_private_names() {
             display_name: "Private Space Name".into(),
             avatar_mxc_uri: None,
             child_room_ids: Vec::new(),
+            member_user_ids: Vec::new(),
         }],
         rooms: vec![
             MatrixRoomListRoom {
@@ -80,6 +81,7 @@ fn real_account_qa_report_counts_without_private_timeline_data() {
             display_name: "Private Space Name".into(),
             avatar_mxc_uri: None,
             child_room_ids: Vec::new(),
+            member_user_ids: Vec::new(),
         }],
         rooms: vec![MatrixRoomListRoom {
             room_id: "!room:example.invalid".into(),

@@ -1647,11 +1647,17 @@ async function runLocalTimelineNavigationScenario() {
     );
     console.log("gui_local_timeline_bottom_jump=ok");
 
-    const dateInput = await session.browser.$('input[aria-label="Jump to date"]');
-    await dateInput.waitForDisplayed({ timeout: timeoutMs });
     if (!dateJumpEventId) {
       throw new Error("local GUI timeline navigation date setup did not capture an event id");
     }
+    await clickVisibleButtonByTextPrefix(
+      session.browser,
+      "Jump to date",
+      timeoutMs,
+      "local GUI timeline navigation date dialog"
+    );
+    const dateInput = await session.browser.$('input[aria-label="Jump to date"]');
+    await dateInput.waitForDisplayed({ timeout: timeoutMs });
     const dateJumpEvent = await getRoomEvent(
       session.credentials.homeserver,
       session.helperAccessToken,

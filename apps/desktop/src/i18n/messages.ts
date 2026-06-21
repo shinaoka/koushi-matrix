@@ -165,6 +165,19 @@ export type MessageId =
   | "files.sort.sender"
   | "files.sortLabel"
   | "files.title"
+  | "help.learnMore"
+  | "help.userTrust.deviceStateBody"
+  | "help.userTrust.deviceStateTitle"
+  | "help.userTrust.effectiveTrustBody"
+  | "help.userTrust.effectiveTrustTitle"
+  | "help.userTrust.explain"
+  | "help.userTrust.identityResetBody"
+  | "help.userTrust.identityResetTitle"
+  | "help.userTrust.title"
+  | "help.userTrust.unverifiedBody"
+  | "help.userTrust.unverifiedTitle"
+  | "help.userTrust.verifiedBody"
+  | "help.userTrust.verifiedTitle"
   | "directory.failureForbidden"
   | "directory.failureInvalid"
   | "directory.failureNetwork"
@@ -199,6 +212,7 @@ export type MessageId =
   | "invite.unknownInviter"
   | "mediaGallery.close"
   | "mediaGallery.encrypted"
+  | "mediaGallery.empty"
   | "mediaGallery.next"
   | "mediaGallery.noPreview"
   | "mediaGallery.open"
@@ -277,6 +291,11 @@ export type MessageId =
   | "room.roomInfo"
   | "room.roomScoped"
   | "room.roomSettings"
+  | "room.reshareRoomKeys"
+  | "room.reshareRoomKeysHint"
+  | "room.reshareRoomKeysPending"
+  | "room.reshareRoomKeysSuccess"
+  | "room.reshareRoomKeysError"
   | "room.saveAccess"
   | "room.saveAvatar"
   | "room.saveName"
@@ -332,6 +351,10 @@ export type MessageId =
   | "settings.keyboardDescription"
   | "settings.timeline"
   | "settings.display"
+  | "settings.displayDensity"
+  | "settings.densityCompact"
+  | "settings.densityDefault"
+  | "settings.densityComfortable"
   | "settings.codeBlockWrap"
   | "settings.hideRedacted"
   | "settings.media"
@@ -473,6 +496,8 @@ export type MessageId =
   | "trust.deviceUnknown"
   | "trust.deviceUnverified"
   | "trust.deviceVerified"
+  | "trust.deviceCrossSigned"
+  | "trust.deviceNotCrossSigned"
   | "trust.devices"
   | "trust.enableKeyBackup"
   | "trust.encryption"
@@ -513,12 +538,22 @@ export type MessageId =
   | "trust.statusVerificationAccepted"
   | "trust.statusVerificationRequested"
   | "trust.statusVerified"
+  | "trust.userIdentityReset"
+  | "trust.userUnverified"
+  | "trust.userVerified"
   | "trust.verification"
   | "space.allRooms"
   | "space.childRooms"
   | "space.directMessages"
   | "space.home"
   | "space.invite"
+  | "space.localIcon"
+  | "space.localIconPlaceholder"
+  | "space.localName"
+  | "space.localNamePlaceholder"
+  | "space.localPresentation"
+  | "space.resetLocalPresentation"
+  | "space.saveLocalPresentation"
   | "space.noUnread"
   | "space.preferences"
   | "space.roomMembership"
@@ -618,6 +653,8 @@ export type MessageId =
   | "timeline.jumpToFirstUnread"
   | "timeline.jumpToBottom"
   | "timeline.jumpToDate"
+  | "timeline.jumpToDateDialogTitle"
+  | "timeline.closeJumpToDate"
   | "timeline.openDateInTimeline"
   | "timeline.olderMessages"
   | "timeline.saveEdit"
@@ -640,6 +677,7 @@ export type MessageId =
   | "timeline.copyCode"
   | "timeline.copyPermalink"
   | "timeline.viewSource"
+  | "timeline.requestRoomKey"
   | "timeline.forwardMessage"
   | "timeline.messageSource"
   | "timeline.closeMessageSource"
@@ -708,15 +746,26 @@ export type MessageId =
   | "threads.replyCount"
   | "threads.title"
   | "settings.searchHistory"
+  | "settings.searchHistoryCrawler"
+  | "settings.searchHistoryPause"
+  | "settings.searchHistoryResume"
+  | "settings.searchHistoryRebuild"
+  | "settings.searchHistoryRebuildConfirm"
   | "settings.searchHistorySpeed"
   | "settings.searchHistorySpeedStandard"
   | "settings.searchHistorySpeedFast"
   | "settings.searchHistorySpeedSlow"
   | "settings.searchHistorySpeedPaused"
+  | "settings.searchHistorySpeedCurrent"
   | "settings.searchHistoryIncludeCaptions"
   | "settings.searchHistoryIncludeFilenames"
+  | "settings.searchHistoryActivity"
+  | "settings.searchHistoryActivitySummary"
+  | "settings.searchHistoryActivityIdle"
+  | "settings.searchHistoryActivityHint"
   | "settings.searchHistoryRoomStatus"
   | "settings.searchHistoryRoomIdle"
+  | "settings.searchHistoryRoomQueued"
   | "settings.searchHistoryRoomRunning"
   | "settings.searchHistoryRoomCompleted"
   | "settings.searchHistoryRoomFailed"
@@ -994,6 +1043,24 @@ const en: Catalog = {
   "files.sort.sender": "Sender",
   "files.sortLabel": "Sort by",
   "files.title": "Files",
+  "help.learnMore": "Learn more",
+  "help.userTrust.deviceStateBody":
+    "Device state describes whether the device is cross-signed by its owner. This is separate from whether you have verified that user.",
+  "help.userTrust.deviceStateTitle": "Device state",
+  "help.userTrust.effectiveTrustBody":
+    "Effective trust is Koushi's send decision after combining user trust, device state, blocked devices, and identity-reset warnings.",
+  "help.userTrust.effectiveTrustTitle": "Effective trust",
+  "help.userTrust.explain": "Explain user trust",
+  "help.userTrust.identityResetBody":
+    "This user was verified before, but their current identity is different. Verify again, or forget the previous verification and treat them as unverified.",
+  "help.userTrust.identityResetTitle": "Identity reset",
+  "help.userTrust.title": "User trust model",
+  "help.userTrust.unverifiedBody":
+    "Unverified is the normal state for people you have not checked through another channel. Encrypted messages can still be sent.",
+  "help.userTrust.unverifiedTitle": "Unverified",
+  "help.userTrust.verifiedBody":
+    "Verified means you checked this user's identity through QR, emoji, or SAS over another channel. Use it when stronger assurance matters.",
+  "help.userTrust.verifiedTitle": "Verified",
   "directory.failureForbidden": "Forbidden",
   "directory.failureInvalid": "Invalid",
   "directory.failureNetwork": "Network",
@@ -1028,6 +1095,7 @@ const en: Catalog = {
   "invite.unknownInviter": "Unknown inviter",
   "mediaGallery.close": "Close media viewer",
   "mediaGallery.encrypted": "Encrypted",
+  "mediaGallery.empty": "No media in this room",
   "mediaGallery.next": "Next media",
   "mediaGallery.noPreview": "No preview",
   "mediaGallery.open": "Open media gallery",
@@ -1106,6 +1174,11 @@ const en: Catalog = {
   "room.roomInfo": "Room info",
   "room.roomScoped": "Room scoped",
   "room.roomSettings": "Room settings",
+  "room.reshareRoomKeys": "Reshare room keys",
+  "room.reshareRoomKeysHint": "Send this room's known decryption keys again to eligible, unblocked devices.",
+  "room.reshareRoomKeysPending": "Resharing keys…",
+  "room.reshareRoomKeysSuccess": "Room keys were resent.",
+  "room.reshareRoomKeysError": "Could not reshare room keys.",
   "room.saveAccess": "Save access",
   "room.saveAvatar": "Save avatar",
   "room.saveName": "Save room name",
@@ -1161,6 +1234,10 @@ const en: Catalog = {
   "settings.keyboardDescription": "Shortcuts compatible with common Matrix desktop clients for implemented actions.",
   "settings.timeline": "Timeline",
   "settings.display": "Display",
+  "settings.displayDensity": "Display density",
+  "settings.densityCompact": "Compact",
+  "settings.densityDefault": "Default",
+  "settings.densityComfortable": "Comfortable",
   "settings.codeBlockWrap": "Wrap long lines in code blocks",
   "settings.hideRedacted": "Hide deleted messages",
   "settings.urlPreviews": "URL previews",
@@ -1314,6 +1391,8 @@ const en: Catalog = {
   "trust.deviceUnknown": "Unknown",
   "trust.deviceUnverified": "Unverified",
   "trust.deviceVerified": "Verified",
+  "trust.deviceCrossSigned": "Cross-signed",
+  "trust.deviceNotCrossSigned": "Not cross-signed",
   "trust.devices": "Devices",
   "trust.enableKeyBackup": "Enable",
   "trust.encryption": "Encryption",
@@ -1354,12 +1433,22 @@ const en: Catalog = {
   "trust.statusVerificationAccepted": "Accepted",
   "trust.statusVerificationRequested": "Request pending",
   "trust.statusVerified": "Verified",
+  "trust.userIdentityReset": "Identity reset",
+  "trust.userUnverified": "Unverified",
+  "trust.userVerified": "Verified",
   "trust.verification": "Device verification",
   "space.allRooms": "All rooms",
   "space.childRooms": "Child rooms",
   "space.directMessages": "Direct messages",
   "space.home": "Home",
   "space.invite": "Invite",
+  "space.localIcon": "Local icon",
+  "space.localIconPlaceholder": "Emoji or short text",
+  "space.localName": "Local name",
+  "space.localNamePlaceholder": "Space label on this device",
+  "space.localPresentation": "Local presentation",
+  "space.resetLocalPresentation": "Reset local presentation",
+  "space.saveLocalPresentation": "Save local presentation",
   "space.noUnread": "No unread",
   "space.preferences": "Preferences",
   "space.roomMembership": "Room membership",
@@ -1459,6 +1548,8 @@ const en: Catalog = {
   "timeline.jumpToFirstUnread": "Jump to first unread, {count} unread",
   "timeline.jumpToBottom": "Jump to bottom, {count} new messages",
   "timeline.jumpToDate": "Jump to date",
+  "timeline.jumpToDateDialogTitle": "Jump to date",
+  "timeline.closeJumpToDate": "Close jump to date",
   "timeline.openDateInTimeline": "Open date in timeline",
   "timeline.olderMessages": "Older messages",
   "timeline.saveEdit": "Save edit",
@@ -1481,6 +1572,7 @@ const en: Catalog = {
   "timeline.copyCode": "Copy code",
   "timeline.copyPermalink": "Copy permalink",
   "timeline.viewSource": "View source",
+  "timeline.requestRoomKey": "Request keys and retry",
   "timeline.forwardMessage": "Forward",
   "timeline.messageSource": "Message source",
   "timeline.closeMessageSource": "Close message source",
@@ -1549,15 +1641,26 @@ const en: Catalog = {
   "threads.replyCount": "{count} replies",
   "threads.title": "Threads",
   "settings.searchHistory": "Search history",
+  "settings.searchHistoryCrawler": "Crawler",
+  "settings.searchHistoryPause": "Pause crawler",
+  "settings.searchHistoryResume": "Resume crawler",
+  "settings.searchHistoryRebuild": "Rebuild search database",
+  "settings.searchHistoryRebuildConfirm": "Rebuild the search database? This clears the local search index and re-crawls room history.",
   "settings.searchHistorySpeed": "Crawl speed",
   "settings.searchHistorySpeedStandard": "Standard",
   "settings.searchHistorySpeedFast": "Fast",
   "settings.searchHistorySpeedSlow": "Slow",
   "settings.searchHistorySpeedPaused": "Off",
+  "settings.searchHistorySpeedCurrent": "Current",
   "settings.searchHistoryIncludeCaptions": "Index media captions",
   "settings.searchHistoryIncludeFilenames": "Index file names",
+  "settings.searchHistoryActivity": "Search crawler activity",
+  "settings.searchHistoryActivitySummary": "{running} running, {queued} queued, {completed} complete, {failed} failed",
+  "settings.searchHistoryActivityIdle": "No room is indexing right now.",
+  "settings.searchHistoryActivityHint": "Processed means timeline events scanned. Indexed means searchable messages written to the local database.",
   "settings.searchHistoryRoomStatus": "Room index status",
   "settings.searchHistoryRoomIdle": "Not started",
+  "settings.searchHistoryRoomQueued": "Queued",
   "settings.searchHistoryRoomRunning": "Indexing ({processed} processed, {indexed} indexed)",
   "settings.searchHistoryRoomCompleted": "Complete ({indexed} indexed)",
   "settings.searchHistoryRoomFailed": "Failed",
@@ -1725,6 +1828,24 @@ const ja: Catalog = {
   "files.sort.sender": "送信者",
   "files.sortLabel": "並び順",
   "files.title": "ファイル",
+  "help.learnMore": "詳しく見る",
+  "help.userTrust.deviceStateBody":
+    "デバイス状態は、そのデバイスが所有者のIDからクロス署名されているかを表します。あなたがそのユーザーを検証済みかどうかとは別です。",
+  "help.userTrust.deviceStateTitle": "デバイス状態",
+  "help.userTrust.effectiveTrustBody":
+    "実効信頼は、ユーザー信頼、デバイス状態、ブロック、IDリセット警告を合わせたKoushiの送信判断です。",
+  "help.userTrust.effectiveTrustTitle": "実効信頼",
+  "help.userTrust.explain": "ユーザー信頼を説明",
+  "help.userTrust.identityResetBody":
+    "以前検証済みだったユーザーの現在のIDが変わっています。再検証するか、以前の検証を忘れて未検証として扱ってください。",
+  "help.userTrust.identityResetTitle": "IDリセット",
+  "help.userTrust.title": "ユーザー信頼モデル",
+  "help.userTrust.unverifiedBody":
+    "未検証は、別経路で本人確認していない相手の通常状態です。暗号化メッセージは送信できます。",
+  "help.userTrust.unverifiedTitle": "未検証",
+  "help.userTrust.verifiedBody":
+    "検証済みは、QR、絵文字、SASなどを別経路で確認した状態です。高い信頼性が必要な相手に使います。",
+  "help.userTrust.verifiedTitle": "検証済み",
   "directory.failureForbidden": "禁止",
   "directory.failureInvalid": "不正",
   "directory.failureNetwork": "ネットワーク",
@@ -1759,6 +1880,7 @@ const ja: Catalog = {
   "invite.unknownInviter": "不明な招待者",
   "mediaGallery.close": "メディアビューアを閉じる",
   "mediaGallery.encrypted": "暗号化済み",
+  "mediaGallery.empty": "このルームにはメディアがありません",
   "mediaGallery.next": "次のメディア",
   "mediaGallery.noPreview": "プレビューなし",
   "mediaGallery.open": "メディアギャラリーを開く",
@@ -1837,6 +1959,11 @@ const ja: Catalog = {
   "room.roomInfo": "ルーム情報",
   "room.roomScoped": "ルーム内",
   "room.roomSettings": "ルーム設定",
+  "room.reshareRoomKeys": "ルーム鍵を再共有",
+  "room.reshareRoomKeysHint": "このルームで保持している復号鍵を、対象となるブロックされていないデバイスへ再送します。",
+  "room.reshareRoomKeysPending": "鍵を再共有中…",
+  "room.reshareRoomKeysSuccess": "ルーム鍵を再送しました。",
+  "room.reshareRoomKeysError": "ルーム鍵を再共有できませんでした。",
   "room.saveAccess": "アクセス設定を保存",
   "room.saveAvatar": "アバターを保存",
   "room.saveName": "ルーム名を保存",
@@ -1891,6 +2018,10 @@ const ja: Catalog = {
   "settings.keyboardDescription": "実装済み操作の一般的なMatrixデスクトップクライアント互換ショートカットです。",
   "settings.timeline": "タイムライン",
   "settings.display": "表示",
+  "settings.displayDensity": "表示密度",
+  "settings.densityCompact": "コンパクト",
+  "settings.densityDefault": "標準",
+  "settings.densityComfortable": "ゆったり",
   "settings.codeBlockWrap": "コードブロックの長い行を折り返す",
   "settings.hideRedacted": "削除されたメッセージを非表示",
   "settings.urlPreviews": "URLプレビュー",
@@ -2045,6 +2176,8 @@ const ja: Catalog = {
   "trust.deviceUnknown": "不明",
   "trust.deviceUnverified": "未検証",
   "trust.deviceVerified": "検証済み",
+  "trust.deviceCrossSigned": "クロス署名済み",
+  "trust.deviceNotCrossSigned": "未クロス署名",
   "trust.devices": "デバイス",
   "trust.enableKeyBackup": "有効化",
   "trust.encryption": "暗号化",
@@ -2085,12 +2218,22 @@ const ja: Catalog = {
   "trust.statusVerificationAccepted": "承認済み",
   "trust.statusVerificationRequested": "リクエスト待ち",
   "trust.statusVerified": "検証済み",
+  "trust.userIdentityReset": "IDリセット",
+  "trust.userUnverified": "未検証",
+  "trust.userVerified": "検証済み",
   "trust.verification": "デバイス検証",
   "space.allRooms": "すべてのルーム",
   "space.childRooms": "子ルーム",
   "space.directMessages": "ダイレクトメッセージ",
   "space.home": "ホーム",
   "space.invite": "招待",
+  "space.localIcon": "ローカルアイコン",
+  "space.localIconPlaceholder": "絵文字または短い文字",
+  "space.localName": "ローカル名",
+  "space.localNamePlaceholder": "この端末でのスペース名",
+  "space.localPresentation": "ローカル表示",
+  "space.resetLocalPresentation": "ローカル表示をリセット",
+  "space.saveLocalPresentation": "ローカル表示を保存",
   "space.noUnread": "未読なし",
   "space.preferences": "環境設定",
   "space.roomMembership": "ルーム参加状態",
@@ -2190,6 +2333,8 @@ const ja: Catalog = {
   "timeline.jumpToFirstUnread": "最初の未読へ移動、未読 {count} 件",
   "timeline.jumpToBottom": "最新へ移動、新着 {count} 件",
   "timeline.jumpToDate": "日時へ移動",
+  "timeline.jumpToDateDialogTitle": "日時へ移動",
+  "timeline.closeJumpToDate": "日時移動を閉じる",
   "timeline.openDateInTimeline": "タイムラインで開く",
   "timeline.olderMessages": "古いメッセージ",
   "timeline.saveEdit": "編集を保存",
@@ -2212,6 +2357,7 @@ const ja: Catalog = {
   "timeline.copyCode": "コードをコピー",
   "timeline.copyPermalink": "パーマリンクをコピー",
   "timeline.viewSource": "ソースを表示",
+  "timeline.requestRoomKey": "鍵を要求して再試行",
   "timeline.forwardMessage": "転送",
   "timeline.messageSource": "メッセージソース",
   "timeline.closeMessageSource": "メッセージソースを閉じる",
@@ -2279,15 +2425,26 @@ const ja: Catalog = {
   "threads.replyCount": "{count}件の返信",
   "threads.title": "スレッド",
   "settings.searchHistory": "検索履歴",
+  "settings.searchHistoryCrawler": "クローラー",
+  "settings.searchHistoryPause": "クローラーを一時停止",
+  "settings.searchHistoryResume": "クローラーを再開",
+  "settings.searchHistoryRebuild": "検索データベースを再構築",
+  "settings.searchHistoryRebuildConfirm": "検索データベースを再構築しますか？ローカル検索インデックスを消去し、ルーム履歴を再クロールします。",
   "settings.searchHistorySpeed": "クロール速度",
   "settings.searchHistorySpeedStandard": "標準",
   "settings.searchHistorySpeedFast": "高速",
   "settings.searchHistorySpeedSlow": "低速",
   "settings.searchHistorySpeedPaused": "オフ",
+  "settings.searchHistorySpeedCurrent": "選択中",
   "settings.searchHistoryIncludeCaptions": "メディアキャプションをインデックス",
   "settings.searchHistoryIncludeFilenames": "ファイル名をインデックス",
+  "settings.searchHistoryActivity": "検索クローラーの動作状況",
+  "settings.searchHistoryActivitySummary": "実行中 {running}、待機 {queued}、完了 {completed}、失敗 {failed}",
+  "settings.searchHistoryActivityIdle": "現在インデックス中のルームはありません。",
+  "settings.searchHistoryActivityHint": "処理済みは読み取ったタイムラインイベント数、インデックス済みはローカル検索DBに登録した検索可能メッセージ数です。",
   "settings.searchHistoryRoomStatus": "ルームインデックス状況",
   "settings.searchHistoryRoomIdle": "未開始",
+  "settings.searchHistoryRoomQueued": "待機中",
   "settings.searchHistoryRoomRunning": "インデックス中（処理済み: {processed}件、インデックス済み: {indexed}件）",
   "settings.searchHistoryRoomCompleted": "完了（{indexed}件インデックス済み）",
   "settings.searchHistoryRoomFailed": "失敗",

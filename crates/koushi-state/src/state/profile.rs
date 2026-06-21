@@ -288,11 +288,14 @@ pub fn refresh_room_summary_display_projection(
     for room in rooms {
         let (display_label, original_display_label) =
             projected_room_summary_display_labels(room, profiles, own_user_id);
+        let avatar = projected_room_summary_avatar(room, profiles);
         if room.display_label != display_label
             || room.original_display_label != original_display_label
+            || room.avatar != avatar
         {
             room.display_label = display_label;
             room.original_display_label = original_display_label;
+            room.avatar = avatar;
             changed = true;
         }
     }
@@ -321,6 +324,21 @@ fn projected_room_summary_display_labels(
         .then(|| room.room_id.clone())
         .unwrap_or_else(|| room.display_name.trim().to_owned());
     (display_label.clone(), display_label)
+}
+
+fn projected_room_summary_avatar(
+    room: &super::room::RoomSummary,
+    profiles: &ProfileState,
+) -> Option<AvatarImage> {
+    if room.is_dm
+        && room.dm_user_ids.len() == 1
+        && let Some(user_id) = room.dm_user_ids.first()
+        && let Some(profile) = profiles.users.get(user_id)
+    {
+        return profile.avatar.clone().or_else(|| room.avatar.clone());
+    }
+
+    room.avatar.clone()
 }
 
 pub(crate) fn resolve_user_display_name_from_parts(

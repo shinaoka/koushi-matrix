@@ -62,13 +62,14 @@ use koushi_sdk::{
     MatrixRoomHistoryVisibility, MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomMemberSummary,
     MatrixRoomModerationAction, MatrixRoomOperationError, MatrixRoomPermissionFacts,
     MatrixRoomSettingChange, MatrixRoomSettingsSnapshot, MatrixRoomTagKind, MatrixRoomTags,
+    MatrixUserTrustState,
 };
 use koushi_state::{
     AppAction, AvatarImage, AvatarThumbnailState, BasicOperationRequest, DirectoryQuery,
     DirectoryRoomSummary, InvitePreview, OperationFailureKind, PinnedEvent, RoomHistoryVisibility,
     RoomJoinRule, RoomMemberRole, RoomMemberSummary, RoomModerationAction, RoomNotificationMode,
     RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo,
-    RoomTagKind, RoomTags, SpaceSummary, UserProfile,
+    RoomTagKind, RoomTags, SpaceSummary, UserProfile, UserTrustState,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -406,6 +407,12 @@ impl RoomActor {
                 room_id,
             } => {
                 self.handle_load_room_settings(request_id, room_id).await;
+            }
+            RoomCommand::ReshareRoomKey {
+                request_id,
+                room_id,
+            } => {
+                self.handle_reshare_room_key(request_id, room_id).await;
             }
             RoomCommand::UpdateRoomSetting {
                 request_id,
@@ -876,6 +883,26 @@ impl RoomActor {
                 self.emit(CoreEvent::Room(RoomEvent::RoomSettingsLoaded {
                     request_id,
                     settings,
+                }));
+            }
+            Err(error) => {
+                let kind = classify_room_error(&error);
+                self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
+            }
+        }
+    }
+
+    async fn handle_reshare_room_key(&self, request_id: RequestId, room_id: String) {
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+
+        match koushi_sdk::reshare_room_key(session, &room_id).await {
+            Ok(()) => {
+                self.emit(CoreEvent::Room(RoomEvent::RoomKeyReshared {
+                    request_id,
+                    room_id,
                 }));
             }
             Err(error) => {
@@ -1865,7 +1892,7 @@ fn normalize_space_child_room_ids(
 
 /// Convert `MatrixRoomListSnapshot` rooms into `RoomSummary` values.
 fn normalize_rooms(snapshot: &koushi_sdk::MatrixRoomListSnapshot) -> Vec<RoomSummary> {
-    snapshot
+    let mut rooms: Vec<RoomSummary> = snapshot
         .rooms
         .iter()
         .map(|room| {
@@ -1890,11 +1917,25 @@ fn normalize_rooms(snapshot: &koushi_sdk::MatrixRoomListSnapshot) -> Vec<RoomSum
                 marked_unread: room.marked_unread,
                 last_activity_ms: room.last_activity_ms,
                 parent_space_ids: normalize_room_parent_space_ids(snapshot, room),
+                dm_space_ids: Vec::new(),
                 is_encrypted: room.is_encrypted,
                 joined_members: room.joined_members,
             }
         })
-        .collect()
+        .collect();
+    let space_members: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        snapshot
+            .spaces
+            .iter()
+            .map(|s| {
+                (
+                    s.space_id.clone(),
+                    s.member_user_ids.iter().cloned().collect(),
+                )
+            })
+            .collect();
+    assign_dm_space_ids(&mut rooms, &space_members);
+    rooms
 }
 
 fn normalize_room_parent_space_ids(
@@ -1910,6 +1951,33 @@ fn normalize_room_parent_space_ids(
             .map(|space| space.space_id.clone()),
     );
     parent_space_ids.into_iter().collect()
+}
+
+/// Populate `dm_space_ids` on each `RoomSummary` in `rooms`.
+///
+/// For each DM room, `dm_space_ids` is set to the sorted list of space IDs
+/// (keys of `space_members`) whose member set contains at least one of
+/// `room.dm_user_ids`. Non-DM rooms always get an empty `dm_space_ids`.
+///
+/// The result is deterministically ordered because `space_members` is a
+/// `BTreeMap` and iteration yields keys in ascending order.
+pub fn assign_dm_space_ids(
+    rooms: &mut [koushi_state::RoomSummary],
+    space_members: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+) {
+    for room in rooms.iter_mut() {
+        if !room.is_dm {
+            room.dm_space_ids = Vec::new();
+            continue;
+        }
+        room.dm_space_ids = space_members
+            .iter()
+            .filter(|(_space_id, members)| {
+                room.dm_user_ids.iter().any(|uid| members.contains(uid))
+            })
+            .map(|(space_id, _)| space_id.clone())
+            .collect();
+    }
 }
 
 fn normalize_room_tags(tags: &MatrixRoomTags) -> RoomTags {
@@ -2045,6 +2113,15 @@ fn room_member_summary_from_sdk(member: MatrixRoomMemberSummary) -> RoomMemberSu
         avatar_url: member.avatar_url,
         power_level: member.power_level,
         role: room_member_role_from_sdk(member.role),
+        user_trust: member.user_trust.map(user_trust_state_from_sdk),
+    }
+}
+
+fn user_trust_state_from_sdk(state: MatrixUserTrustState) -> UserTrustState {
+    match state {
+        MatrixUserTrustState::Unverified => UserTrustState::Unverified,
+        MatrixUserTrustState::Verified => UserTrustState::Verified,
+        MatrixUserTrustState::IdentityReset => UserTrustState::IdentityReset,
     }
 }
 
@@ -2316,6 +2393,7 @@ pub mod tests {
                 avatar_url: Some("mxc://example.invalid/member-avatar".to_owned()),
                 power_level: Some(50),
                 role: MatrixRoomMemberRole::Moderator,
+                user_trust: None,
             }],
         };
 
@@ -2342,6 +2420,7 @@ pub mod tests {
                 display_name: "My Space".to_owned(),
                 avatar_mxc_uri: None,
                 child_room_ids: Vec::new(),
+                member_user_ids: Vec::new(),
             }],
             rooms: vec![
                 MatrixRoomListRoom {
@@ -2393,6 +2472,7 @@ pub mod tests {
                 display_name: "My Space".to_owned(),
                 avatar_mxc_uri: None,
                 child_room_ids: vec!["!room1:example.test".to_owned()],
+                member_user_ids: Vec::new(),
             }],
             rooms: vec![MatrixRoomListRoom {
                 room_id: "!room1:example.test".to_owned(),
@@ -2427,6 +2507,7 @@ pub mod tests {
                 display_name: "Empty Space".to_owned(),
                 avatar_mxc_uri: None,
                 child_room_ids: Vec::new(),
+                member_user_ids: Vec::new(),
             }],
             rooms: vec![],
             ..MatrixRoomListSnapshot::default()
@@ -2444,6 +2525,7 @@ pub mod tests {
                 display_name: "Space".to_owned(),
                 avatar_mxc_uri: Some("mxc://example.test/space-avatar".to_owned()),
                 child_room_ids: Vec::new(),
+                member_user_ids: Vec::new(),
             }],
             ..MatrixRoomListSnapshot::default()
         };
@@ -2525,6 +2607,7 @@ pub mod tests {
                 display_name: "Space".to_owned(),
                 avatar_mxc_uri: None,
                 child_room_ids: vec!["!room:example.test".to_owned()],
+                member_user_ids: Vec::new(),
             }],
             rooms: vec![MatrixRoomListRoom {
                 room_id: "!room:example.test".to_owned(),
@@ -2549,6 +2632,59 @@ pub mod tests {
 
         assert_eq!(rooms.len(), 1);
         assert_eq!(rooms[0].parent_space_ids, vec!["!space:example.test"]);
+    }
+
+    #[test]
+    fn normalize_rooms_assigns_dm_space_ids_by_counterpart_membership() {
+        let snapshot = MatrixRoomListSnapshot {
+            spaces: vec![MatrixRoomListSpace {
+                space_id: "space-a".to_owned(),
+                display_name: "Space A".to_owned(),
+                avatar_mxc_uri: None,
+                child_room_ids: Vec::new(),
+                member_user_ids: vec!["@alice".to_owned()],
+            }],
+            rooms: vec![
+                MatrixRoomListRoom {
+                    room_id: "dm-alice".to_owned(),
+                    display_name: "Alice".to_owned(),
+                    avatar_mxc_uri: None,
+                    is_dm: true,
+                    dm_user_ids: vec!["@alice".to_owned()],
+                    tags: MatrixRoomTags::default(),
+                    unread_count: 0,
+                    notification_count: 0,
+                    highlight_count: 0,
+                    marked_unread: false,
+                    last_activity_ms: 0,
+                    parent_space_ids: Vec::new(),
+                    is_encrypted: false,
+                    joined_members: 0,
+                },
+                MatrixRoomListRoom {
+                    room_id: "dm-bob".to_owned(),
+                    display_name: "Bob".to_owned(),
+                    avatar_mxc_uri: None,
+                    is_dm: true,
+                    dm_user_ids: vec!["@bob".to_owned()],
+                    tags: MatrixRoomTags::default(),
+                    unread_count: 0,
+                    notification_count: 0,
+                    highlight_count: 0,
+                    marked_unread: false,
+                    last_activity_ms: 0,
+                    parent_space_ids: Vec::new(),
+                    is_encrypted: false,
+                    joined_members: 0,
+                },
+            ],
+            ..MatrixRoomListSnapshot::default()
+        };
+        let rooms = normalize_rooms(&snapshot);
+        let alice_room = rooms.iter().find(|r| r.room_id == "dm-alice").unwrap();
+        let bob_room = rooms.iter().find(|r| r.room_id == "dm-bob").unwrap();
+        assert_eq!(alice_room.dm_space_ids, vec!["space-a"]);
+        assert_eq!(bob_room.dm_space_ids, Vec::<String>::new());
     }
 
     #[test]

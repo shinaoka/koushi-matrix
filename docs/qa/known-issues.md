@@ -167,6 +167,50 @@ Follow-up:
   available, record a manual Element Desktop/iPhone check as part of the release
   gate.
 
+## Tuwunel Local Strict Recipient-Device E2EE
+
+Status: open local-server follow-up. The same strict recipient second-device
+lane passes on Conduit.
+
+Date observed: 2026-06-20.
+
+Evidence:
+
+- Passing Conduit command:
+
+```bash
+npm --prefix apps/desktop run qa:headless-core -- --server=conduit --scenario=e2ee_trust --core-backend=probed --e2ee-recipient-second-device --timeout-ms=360000
+```
+
+- Expected strict token:
+
+```text
+e2ee_recipient_second_device_decrypt=ok
+```
+
+- Tuwunel command with the same strict option fails after the sender observes a
+  recoverable send-queue failure:
+
+```text
+send flow failed: local_echo=true local_echo_send_state=NotSent(recoverable) send_completed=false event_id=false
+```
+
+- With private Rust SDK diagnostics enabled through `KOUSHI_QA_RUST_LOG`, the
+  raw local log shows the SDK send queue disabling itself after:
+
+```text
+/_matrix/client/v3/keys/claim ... TimedOut
+```
+
+Implication:
+
+- This is not evidence that Koushi intentionally omits room-key sharing. The
+  send fails before completion while claiming one-time keys for the recipient
+  second device.
+- Keep the strict recipient second-device gate green on Conduit. Treat Tuwunel
+  strict failure as a local homeserver compatibility issue until the
+  `/keys/claim` timeout is resolved or isolated further.
+
 ## macOS Real Matrix.org GUI Message Sync
 
 Status: resolved on 2026-06-19.
