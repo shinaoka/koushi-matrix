@@ -65,6 +65,11 @@ import {
   type ContextMenuItem
 } from "../domain/contextMenus";
 import type { DiagnosticLogEntry } from "../domain/diagnostics";
+import {
+  avatarThumbnailFailureIsRetryable,
+  avatarThumbnailRequestShouldBeSkipped,
+  MAX_AVATAR_THUMBNAIL_ATTEMPTS
+} from "../domain/avatarThumbnails";
 
 import type {
   AvatarThumbnailState,
@@ -1162,8 +1167,6 @@ export interface TimelineDiagnostics {
 }
 
 export type TimelineDiagnosticLogEntry = DiagnosticLogEntry;
-
-const MAX_AVATAR_THUMBNAIL_ATTEMPTS = 2;
 
 export const TimelineView = memo(function TimelineView({
   timelineKey,
@@ -3358,19 +3361,6 @@ function timelineRenderedAvatarDiagnostics(container: HTMLElement | null): {
     avatarRenderedImages: images.length,
     avatarBrokenImages: images.filter((image) => image.complete && image.naturalWidth === 0).length
   };
-}
-
-function avatarThumbnailRequestShouldBeSkipped(thumbnail: AvatarThumbnailState): boolean {
-  if (thumbnail.kind === "ready") {
-    return true;
-  }
-  return thumbnail.kind === "failed" && !avatarThumbnailFailureIsRetryable(thumbnail);
-}
-
-function avatarThumbnailFailureIsRetryable(thumbnail: AvatarThumbnailState): boolean {
-  return thumbnail.kind === "failed" && (
-    thumbnail.failureKind === "network" || thumbnail.failureKind === "sdk"
-  );
 }
 
 function avatarThumbnailLogMessage(thumbnail: AvatarThumbnailState): string {

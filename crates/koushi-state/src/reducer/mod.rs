@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod account;
 mod activity;
+mod avatar;
 mod basic_operation;
 mod directory;
 mod e2ee;
