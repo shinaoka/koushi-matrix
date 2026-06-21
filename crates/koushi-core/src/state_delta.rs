@@ -1,0 +1,172 @@
+//! Incremental AppState slice deltas.
+
+use std::collections::{BTreeMap, HashMap};
+
+use koushi_state::{
+    compose_sidebar, AccountManagementCapabilities, AccountManagementState, ActivityState,
+    AppError, AppState, AuthDiscoveryState, BasicOperationState, CjkTextPolicyState,
+    DeviceSessionListState, DirectoryState, E2eeTrustState, FilesViewState, FocusedContextState,
+    InvitePreview, LinkPreviewSettingsState, LiveSignalsState, LocalEncryptionState,
+    NativeAttentionState, NavigationState, ProfileState, QrLoginState, RoomInteractionState,
+    RoomListProjection, RoomManagementState, RoomNotificationSettings, RoomSummary,
+    SearchCrawlerState, SearchState, SessionState, SettingsState, SidebarModel,
+    SoftLogoutReauthState, SpaceSummary, SyncMode, SyncState, ThreadAttentionState,
+    ThreadPaneState, ThreadsListState, TimelinePaneState,
+};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StateDelta {
+    pub generation: u64,
+    pub changed: StateDeltaChangedSlices,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StateDeltaChangedSlices {
+    pub session: Option<SessionState>,
+    pub auth: Option<AuthDiscoveryState>,
+    pub device_sessions: Option<DeviceSessionListState>,
+    pub account_management: Option<AccountManagementState>,
+    pub account_management_capabilities: Option<AccountManagementCapabilities>,
+    pub soft_logout_reauth: Option<SoftLogoutReauthState>,
+    pub qr_login: Option<QrLoginState>,
+    pub settings: Option<SettingsState>,
+    pub link_preview_settings: Option<LinkPreviewSettingsState>,
+    pub profile: Option<ProfileState>,
+    pub sync: Option<SyncState>,
+    pub sync_mode: Option<SyncMode>,
+    pub navigation: Option<NavigationState>,
+    pub spaces: Option<Vec<SpaceSummary>>,
+    pub rooms: Option<Vec<RoomSummary>>,
+    pub invites: Option<Vec<InvitePreview>>,
+    pub room_list: Option<RoomListProjection>,
+    pub room_notification_settings: Option<HashMap<String, RoomNotificationSettings>>,
+    pub room_interactions: Option<BTreeMap<String, RoomInteractionState>>,
+    pub directory: Option<DirectoryState>,
+    pub room_management: Option<RoomManagementState>,
+    pub activity: Option<ActivityState>,
+    pub timeline: Option<TimelinePaneState>,
+    pub thread: Option<ThreadPaneState>,
+    pub thread_attention: Option<ThreadAttentionState>,
+    pub threads_list: Option<ThreadsListState>,
+    pub focused_context: Option<FocusedContextState>,
+    pub search: Option<SearchState>,
+    pub search_crawler: Option<SearchCrawlerState>,
+    pub files_view: Option<FilesViewState>,
+    pub basic_operation: Option<BasicOperationState>,
+    pub live_signals: Option<LiveSignalsState>,
+    pub e2ee_trust: Option<E2eeTrustState>,
+    pub local_encryption: Option<LocalEncryptionState>,
+    pub native_attention: Option<NativeAttentionState>,
+    pub cjk_text_policy: Option<CjkTextPolicyState>,
+    pub errors: Option<Vec<AppError>>,
+    pub sidebar: Option<SidebarModel>,
+}
+
+impl StateDeltaChangedSlices {
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+pub fn build_state_delta(
+    generation: u64,
+    previous: &AppState,
+    next: &AppState,
+) -> Option<StateDelta> {
+    let mut changed = StateDeltaChangedSlices::default();
+
+    macro_rules! changed_slice {
+        ($field:ident) => {
+            if previous.$field != next.$field {
+                changed.$field = Some(next.$field.clone());
+            }
+        };
+    }
+
+    changed_slice!(session);
+    changed_slice!(auth);
+    changed_slice!(device_sessions);
+    changed_slice!(account_management);
+    changed_slice!(account_management_capabilities);
+    changed_slice!(soft_logout_reauth);
+    changed_slice!(qr_login);
+    changed_slice!(settings);
+    changed_slice!(link_preview_settings);
+    changed_slice!(profile);
+    changed_slice!(sync);
+    changed_slice!(sync_mode);
+    changed_slice!(navigation);
+    changed_slice!(spaces);
+    changed_slice!(rooms);
+    changed_slice!(invites);
+    changed_slice!(room_list);
+    changed_slice!(room_notification_settings);
+    changed_slice!(room_interactions);
+    changed_slice!(directory);
+    changed_slice!(room_management);
+    changed_slice!(activity);
+    changed_slice!(timeline);
+    changed_slice!(thread);
+    changed_slice!(thread_attention);
+    changed_slice!(threads_list);
+    changed_slice!(focused_context);
+    changed_slice!(search);
+    changed_slice!(search_crawler);
+    changed_slice!(files_view);
+    changed_slice!(basic_operation);
+    changed_slice!(live_signals);
+    changed_slice!(e2ee_trust);
+    changed_slice!(local_encryption);
+    changed_slice!(native_attention);
+    changed_slice!(cjk_text_policy);
+    changed_slice!(errors);
+
+    if previous.navigation != next.navigation
+        || previous.spaces != next.spaces
+        || previous.rooms != next.rooms
+    {
+        changed.sidebar = Some(compose_sidebar(
+            next.navigation.active_space_id.as_deref(),
+            &next.spaces,
+            &next.rooms,
+        ));
+    }
+
+    if changed.is_empty() {
+        return None;
+    }
+
+    Some(StateDelta {
+        generation,
+        changed,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use koushi_state::SearchCrawlerRoomState;
+
+    #[test]
+    fn state_delta_contains_only_changed_slices_and_sidebar_projection() {
+        let previous = AppState::default();
+        let mut next = previous.clone();
+        next.search_crawler.rooms.insert(
+            "!room:example.invalid".to_owned(),
+            SearchCrawlerRoomState::Queued,
+        );
+
+        let delta = build_state_delta(1, &previous, &next).expect("state changed");
+
+        assert_eq!(delta.generation, 1);
+        assert!(delta.changed.search_crawler.is_some());
+        assert!(delta.changed.session.is_none());
+        assert!(delta.changed.sidebar.is_none());
+    }
+
+    #[test]
+    fn state_delta_omits_unchanged_state() {
+        assert!(build_state_delta(1, &AppState::default(), &AppState::default()).is_none());
+    }
+}

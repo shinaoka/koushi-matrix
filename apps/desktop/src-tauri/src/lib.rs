@@ -20,12 +20,13 @@ use tauri::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::dto::FrontendDesktopSnapshotDelta;
+
 // koushi-core: the production runtime host. All session, credential,
 // and Matrix operations go through CoreCommand/CoreEvent — the adapter never
 // touches the credential store or the SDK directly.
 use koushi_core::{
-    AccountCommand, CoreCommand, CoreConnection, CoreEvent, CoreRuntime, SearchEvent,
-    TimelineEvent,
+    AccountCommand, CoreCommand, CoreConnection, CoreEvent, CoreRuntime, SearchEvent, TimelineEvent,
     event::AppStateSnapshot,
 };
 
@@ -664,15 +665,22 @@ fn forwarded_webview_events_for_core_event(
         _ => {}
     }
 
+    if let CoreEvent::StateDelta(delta) = event {
+        forwarded.push(ForwardedWebviewEvent {
+            event_name: CORE_EVENT_NAME,
+            payload: serde_json::json!({
+                "kind": "StateDelta",
+                "generation": delta.generation,
+                "changed": FrontendDesktopSnapshotDelta::from(delta.clone()).changed,
+            }),
+        });
+    }
+
     if let Some(payload) = serialize_core_event(event) {
         forwarded.push(ForwardedWebviewEvent {
             event_name: CORE_EVENT_NAME,
             payload,
         });
-    }
-
-    if let CoreEvent::StateChanged(snapshot) = event {
-        forwarded.extend(forwarded_webview_events_for_state_changed(snapshot));
     }
 
     forwarded
@@ -730,6 +738,9 @@ fn emit_forwarded_webview_events(
 /// The serialization produces structured JSON only — no raw SDK errors.
 fn serialize_core_event(event: &CoreEvent) -> Option<serde_json::Value> {
     Some(match event {
+        CoreEvent::StateDelta(_) => {
+            return None;
+        }
         CoreEvent::StateChanged(_) => {
             // StateChanged snapshots are sent via `koushi-desktop://state`;
             // don't duplicate as a generic event.
@@ -1180,10 +1191,9 @@ mod tests {
     }
 
     #[test]
-    fn state_changed_forwarding_emits_state_event_only() {
+    fn legacy_state_changed_forwarding_is_not_the_webview_state_path() {
         use koushi_core::CoreEvent;
         use koushi_state::AppState;
-        use serde_json::Value;
 
         let timeline_items_count = AtomicUsize::new(17);
         let event = CoreEvent::StateChanged(AppState::default());
@@ -1191,11 +1201,40 @@ mod tests {
         let forwarded = forwarded_webview_events_for_core_event(&event, &timeline_items_count);
 
         assert_eq!(timeline_items_count.load(Ordering::Relaxed), 17);
+        assert!(
+            forwarded.is_empty(),
+            "legacy full StateChanged events must not drive the normal webview state path"
+        );
+    }
+
+    #[test]
+    fn state_delta_forwarding_emits_core_event_changed_slices() {
+        use koushi_core::{CoreEvent, build_state_delta};
+        use koushi_state::{AppState, SearchCrawlerRoomState};
+        use serde_json::json;
+
+        let timeline_items_count = AtomicUsize::new(17);
+        let previous = AppState::default();
+        let mut next = previous.clone();
+        next.search_crawler.rooms.insert(
+            "!crawler:example.invalid".to_owned(),
+            SearchCrawlerRoomState::Queued,
+        );
+        let delta = build_state_delta(1, &previous, &next).expect("delta");
+        let forwarded = forwarded_webview_events_for_core_event(
+            &CoreEvent::StateDelta(delta),
+            &timeline_items_count,
+        );
+
+        assert_eq!(timeline_items_count.load(Ordering::Relaxed), 17);
         assert_eq!(forwarded.len(), 1);
-        assert_eq!(forwarded[0].event_name, STATE_EVENT_NAME);
+        assert_eq!(forwarded[0].event_name, CORE_EVENT_NAME);
+        assert_eq!(forwarded[0].payload["kind"], json!("StateDelta"));
+        assert_eq!(forwarded[0].payload["generation"], json!(1));
         assert_eq!(
-            forwarded[0].payload,
-            Value::String("stateChanged".to_owned())
+            forwarded[0].payload["changed"]["state"]["domain"]["search_crawler"]["rooms"]
+                ["!crawler:example.invalid"]["kind"],
+            json!("queued")
         );
     }
 
@@ -1388,7 +1427,7 @@ mod tests {
     #[test]
     fn core_event_wire_format_matches_checked_in_contract_artifact() {
         use koushi_core::{
-            AccountKey, CoreEvent, TimelineDiff, TimelineKey,
+            AccountKey, CoreEvent, TimelineDiff, TimelineKey, build_state_delta,
             event::{
                 AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent, LinkPreview,
                 LinkPreviewImage, LinkPreviewState, LiveSignalsEvent, LocalEncryptionEvent,
@@ -1405,15 +1444,15 @@ mod tests {
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
         };
         use koushi_state::{
-            ActivityRow, ActivityStream, ActivityTab, AttachmentKind, AttachmentResult,
+            ActivityRow, ActivityStream, ActivityTab, AppState, AttachmentKind, AttachmentResult,
             AvatarThumbnailState, DirectoryQuery, DirectoryRoomSummary, IdentityResetAuthType,
             IdentityResetState, JapaneseCatalogProfile, LiveEventReceipts, LiveReadReceipt,
             LiveRoomSignalUpdate, LocalEncryptionHealth, MediaTransferProgress,
             NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
             PresenceKind, ReplyQuote, ReplyQuoteState, RoomHistoryVisibility, RoomJoinRule,
             RoomMemberRole, RoomModerationAction, RoomPermissionFacts, RoomSettingsSnapshot,
-            RoomTagKind, SasEmoji, SearchCrawlerFailureKind, SyncMode, UserTrustState,
-            VerificationFlowState, VerificationTarget,
+            RoomTagKind, SasEmoji, SearchCrawlerFailureKind, SearchCrawlerRoomState, SyncMode,
+            UserTrustState, VerificationFlowState, VerificationTarget,
         };
         use serde_json::json;
 
@@ -2482,6 +2521,25 @@ mod tests {
             "crawl failure must not carry a raw message field"
         );
 
+        let state_delta_previous = AppState::default();
+        let mut state_delta_next = state_delta_previous.clone();
+        state_delta_next.search_crawler.rooms.insert(
+            "!crawler:example.test".to_owned(),
+            SearchCrawlerRoomState::Queued,
+        );
+        let state_delta_event = CoreEvent::StateDelta(
+            build_state_delta(1, &state_delta_previous, &state_delta_next)
+                .expect("fixture delta"),
+        );
+        let state_delta = forwarded_webview_events_for_core_event(
+            &state_delta_event,
+            &AtomicUsize::new(0),
+        )
+        .into_iter()
+        .next()
+        .expect("state delta should be forwarded")
+        .payload;
+
         let actual_contract = json!({
             "activityOpened": activity_opened,
             "activityMarkedRead": activity_marked_read,
@@ -2502,6 +2560,7 @@ mod tests {
             "searchCrawlProgress": search_crawl_progress,
             "searchCrawlCompleted": search_crawl_completed,
             "searchCrawlFailed": search_crawl_failed,
+            "stateDeltaSearchCrawlerQueued": state_delta,
             "roomDirectoryQueryCompleted": directory_query_completed,
             "roomDirectMessageStarted": room_direct_message_started,
             "roomInviteAccepted": room_invite_accepted,

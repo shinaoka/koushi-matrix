@@ -22,6 +22,7 @@ pub(crate) mod scheduled_send;
 pub mod search;
 pub(crate) mod search_crawler;
 pub mod settings;
+pub mod state_delta;
 pub mod store;
 pub mod sync;
 pub mod threads_list;
@@ -58,3 +59,4 @@ pub use runtime::{
     COMMAND_INBOX_CAPACITY, CommandSubmitError, CoreConnection, CoreRuntime, EVENT_QUEUE_CAPACITY,
     EventStreamLag,
 };
+pub use state_delta::{StateDelta, StateDeltaChangedSlices, build_state_delta};

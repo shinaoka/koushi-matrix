@@ -3,6 +3,7 @@ import type { LinkPreview } from "./linkPreview";
 export type SearchScopeKind = "currentRoom" | "currentSpace" | "dms" | "allRooms";
 
 export interface DesktopSnapshot {
+  state_generation?: number;
   state: AppState;
   sidebar: SidebarModel;
   timeline: TimelineMessage[];

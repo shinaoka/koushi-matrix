@@ -2,10 +2,20 @@ import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 
 import type { MentionCandidate, TimelineForwardDestination } from "./projectionTypes";
-import type { DesktopSnapshot, UserProfile } from "./types";
+import type {
+  AppDomainState,
+  AppState,
+  AppUiState,
+  DesktopSnapshot,
+  SidebarModel,
+  ThreadSnapshot,
+  TimelineMessage,
+  UserProfile
+} from "./types";
 
 interface AppStoreState {
   snapshot: DesktopSnapshot | null;
+  stateGeneration: number | null;
 }
 
 const EMPTY_FORWARD_DESTINATIONS: TimelineForwardDestination[] = [];
@@ -18,7 +28,8 @@ let cachedMentionCandidates: MentionCandidate[] = EMPTY_MENTION_CANDIDATES;
 
 export const useAppStore = create<AppStoreState>()(
   subscribeWithSelector((): AppStoreState => ({
-    snapshot: null
+    snapshot: null,
+    stateGeneration: null
   }))
 );
 
@@ -29,14 +40,92 @@ export function getAppStoreSnapshot(): DesktopSnapshot | null {
 export function setAppStoreSnapshot(next: DesktopSnapshot | null): void {
   const previous = useAppStore.getState().snapshot;
   const snapshot = applySnapshotToState(previous, next);
-  if (Object.is(previous, snapshot)) {
+  const previousGeneration = useAppStore.getState().stateGeneration;
+  const nextGeneration = snapshot?.state_generation ?? null;
+  if (Object.is(previous, snapshot) && previousGeneration === nextGeneration) {
     return;
   }
-  useAppStore.setState({ snapshot });
+  useAppStore.setState({ snapshot, stateGeneration: nextGeneration });
 }
 
 export function clearAppStoreSnapshot(): void {
   setAppStoreSnapshot(null);
+}
+
+export type DesktopSnapshotDelta = {
+  generation: number;
+  changed: DesktopSnapshotChangedSlices;
+};
+
+export type DesktopSnapshotChangedSlices = {
+  state?: AppStateChangedSlices;
+  sidebar?: SidebarModel;
+  timeline?: TimelineMessage[];
+  thread?: ThreadSnapshot | null;
+};
+
+export type AppStateChangedSlices = {
+  schema_version?: number;
+  domain?: Partial<AppDomainState>;
+  ui?: Partial<AppUiState>;
+};
+
+export function applyAppStoreDelta(delta: DesktopSnapshotDelta): boolean {
+  const current = useAppStore.getState();
+  if (current.snapshot === null) {
+    return false;
+  }
+  if (
+    current.stateGeneration !== null &&
+    delta.generation !== current.stateGeneration + 1
+  ) {
+    return false;
+  }
+  const snapshot = applyDeltaToState(current.snapshot, delta);
+  if (snapshot === null) {
+    return false;
+  }
+  if (
+    Object.is(current.snapshot, snapshot) &&
+    current.stateGeneration === delta.generation
+  ) {
+    return true;
+  }
+  useAppStore.setState({ snapshot, stateGeneration: delta.generation });
+  return true;
+}
+
+export function applyDeltaToState(
+  previous: DesktopSnapshot | null,
+  delta: DesktopSnapshotDelta
+): DesktopSnapshot | null {
+  if (previous === null) {
+    return null;
+  }
+  const next: DesktopSnapshot = {
+    state_generation: delta.generation,
+    state: applyStateDelta(previous.state, delta.changed.state),
+    sidebar: delta.changed.sidebar ?? previous.sidebar,
+    timeline: delta.changed.timeline ?? previous.timeline,
+    thread: Object.prototype.hasOwnProperty.call(delta.changed, "thread")
+      ? (delta.changed.thread ?? null)
+      : previous.thread
+  };
+  return reconcileJsonValue(previous, next);
+}
+
+function applyStateDelta(
+  previous: AppState,
+  changed: AppStateChangedSlices | undefined
+): AppState {
+  if (!changed) {
+    return previous;
+  }
+  return {
+    schema_version: changed.schema_version ?? previous.schema_version,
+    domain: changed.domain ? { ...previous.domain, ...changed.domain } : previous.domain,
+    ui: changed.ui ? { ...previous.ui, ...changed.ui } : previous.ui
+  };
 }
 
 export function applySnapshotToState(
@@ -52,11 +141,13 @@ export function applySnapshotToState(
   return reconcileJsonValue(previous, next);
 }
 
-export function selectSnapshot(state: AppStoreState): DesktopSnapshot | null {
+export function selectSnapshot(state: Pick<AppStoreState, "snapshot">): DesktopSnapshot | null {
   return state.snapshot;
 }
 
-export function selectForwardDestinations(state: AppStoreState): TimelineForwardDestination[] {
+export function selectForwardDestinations(
+  state: Pick<AppStoreState, "snapshot">
+): TimelineForwardDestination[] {
   const rooms = state.snapshot?.state.domain.rooms ?? null;
   if (rooms === null) {
     cachedForwardRooms = null;
@@ -74,7 +165,9 @@ export function selectForwardDestinations(state: AppStoreState): TimelineForward
   return cachedForwardDestinations;
 }
 
-export function selectMentionCandidates(state: AppStoreState): MentionCandidate[] {
+export function selectMentionCandidates(
+  state: Pick<AppStoreState, "snapshot">
+): MentionCandidate[] {
   const users = state.snapshot?.state.domain.profile.users ?? null;
   if (users === null) {
     cachedMentionUsers = null;

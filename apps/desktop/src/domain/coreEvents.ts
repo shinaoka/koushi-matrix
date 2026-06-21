@@ -25,7 +25,17 @@
  *     — "Public Runtime API" (CoreEvent enum, TimelineEvent, etc.)
  */
 
-import type { AttachmentResult, SearchCrawlerFailureKind, SyncMode, ThreadsListItem } from "./types";
+import type {
+  AppDomainState,
+  AppUiState,
+  AttachmentResult,
+  SearchCrawlerFailureKind,
+  SidebarModel,
+  SyncMode,
+  ThreadSnapshot,
+  ThreadsListItem,
+  TimelineMessage
+} from "./types";
 import type { LinkPreview } from "./linkPreview";
 
 // ---------------------------------------------------------------------------
@@ -873,6 +883,22 @@ export type ThreadsListEvent =
       failure_kind: OperationFailureKind;
     };
 
+export type StateDeltaPayload = {
+  generation: number;
+  changed: StateDeltaChangedSlices;
+};
+
+export type StateDeltaChangedSlices = {
+  state?: {
+    schema_version?: number;
+    domain?: Partial<AppDomainState>;
+    ui?: Partial<AppUiState>;
+  };
+  sidebar?: SidebarModel;
+  timeline?: TimelineMessage[];
+  thread?: ThreadSnapshot | null;
+};
+
 // ---------------------------------------------------------------------------
 // Failures (externally tagged; unit variants are bare strings)
 // ---------------------------------------------------------------------------
@@ -905,6 +931,7 @@ export type ReportFailureKind =
 // ---------------------------------------------------------------------------
 
 export type CoreEventPayload =
+  | ({ kind: "StateDelta" } & StateDeltaPayload)
   | { kind: "Account"; event: AccountEvent }
   | { kind: "Sync"; event: SyncEvent }
   | { kind: "Room"; event: RoomEvent }

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
+  applyAppStoreDelta,
+  applyDeltaToState,
   applySnapshotToState,
   clearAppStoreSnapshot,
   getAppStoreSnapshot,
@@ -198,6 +200,123 @@ describe("appStore projection cache", () => {
     setAppStoreSnapshot(usersChanged);
     expect(listener).toHaveBeenCalledTimes(1);
     unsubscribe();
+  });
+
+  test("applies state deltas while preserving unchanged slice references", () => {
+    const previous = makeSnapshot();
+    const delta = {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            search_crawler: {
+              rooms: {
+                "!room-crawler:example.invalid": {
+                  kind: "running" as const,
+                  processed: 4,
+                  indexed: 3
+                }
+              }
+            }
+          }
+        }
+      }
+    };
+
+    const projected = applyDeltaToState(previous, delta);
+
+    expect(projected).not.toBe(previous);
+    expect(projected).not.toBeNull();
+    if (!projected) {
+      throw new Error("expected projected snapshot");
+    }
+    expect(projected.state.domain.search_crawler).toEqual(delta.changed.state.domain.search_crawler);
+    expect(projected.state.domain.rooms).toBe(previous.state.domain.rooms);
+    expect(projected.state.ui).toBe(previous.state.ui);
+    expect(projected.sidebar).toBe(previous.sidebar);
+  });
+
+  test("delta-applied snapshots match equivalent full snapshots", () => {
+    const previous = makeSnapshot();
+    const next = structuredClone(previous);
+    next.state_generation = 1;
+    next.state.domain.search_crawler = {
+      rooms: {
+        "!room-crawler:example.invalid": {
+          kind: "running",
+          processed: 8,
+          indexed: 5
+        }
+      }
+    };
+    next.state.ui.navigation = {
+      ...next.state.ui.navigation,
+      active_room_id: "!room-b:example.invalid"
+    };
+
+    const delta = {
+      generation: 1,
+      changed: {
+        state: {
+          domain: {
+            search_crawler: next.state.domain.search_crawler
+          },
+          ui: {
+            navigation: next.state.ui.navigation
+          }
+        }
+      }
+    };
+
+    expect(applyDeltaToState(previous, delta)).toEqual(applySnapshotToState(previous, next));
+  });
+
+  test("uses full snapshot generation to reject stale deltas after reset", () => {
+    const snapshot = makeSnapshot();
+    snapshot.state_generation = 4;
+    setAppStoreSnapshot(snapshot);
+
+    expect(useAppStore.getState().stateGeneration).toBe(4);
+    expect(
+      applyAppStoreDelta({
+        generation: 4,
+        changed: { state: { domain: { search_crawler: { rooms: {} } } } }
+      })
+    ).toBe(false);
+    expect(
+      applyAppStoreDelta({
+        generation: 5,
+        changed: { state: { domain: { search_crawler: { rooms: {} } } } }
+      })
+    ).toBe(true);
+  });
+
+  test("rejects gapped state deltas so the caller can reset from a full snapshot", () => {
+    setAppStoreSnapshot(makeSnapshot());
+
+    expect(
+      applyAppStoreDelta({
+        generation: 1,
+        changed: {
+          state: {
+            ui: {
+              navigation: {
+                active_space_id: null,
+                active_room_id: "!room-a:example.invalid",
+                last_room_by_space_id: {},
+                space_order: []
+              }
+            }
+          }
+        }
+      })
+    ).toBe(true);
+    expect(
+      applyAppStoreDelta({
+        generation: 3,
+        changed: { state: { domain: { search_crawler: { rooms: {} } } } }
+      })
+    ).toBe(false);
   });
 });
 

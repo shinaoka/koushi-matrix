@@ -329,24 +329,26 @@ mechanism:
 
 ```text
 CoreCommand -> actor side effect -> CoreEvent -> AppAction
-            -> reduce(AppState) -> StateChanged(AppStateSnapshot)
+            -> reduce(AppState) -> StateDelta(generation, changed slices)
 ```
 
 `AppState` contains only serializable UI data. SDK handles, task handles,
 subscriptions, and keys live in actor-owned runtime state.
 
 Desktop WebViews consume `AppState` through a selector-subscribed projection
-cache, not as React-owned product state. During the #111 Phase 1 migration the
-Tauri adapter may still deliver complete snapshots, but the WebView must apply
-each snapshot by comparing top-level `DesktopSnapshot`/`AppState` slices and
-preserving references for unchanged `domain`, `ui`, `sidebar`, timeline, and
-thread data. Components should subscribe to selectors or memoized derived
-selectors for the slices they render; background changes to unrelated slices
-must not force hot timeline/composer consumers to receive freshly allocated
-derived arrays. The target transport after Phase 2 is incremental Rust-owned
-slice deltas with a full-snapshot reset fallback for initial load, reconnect,
-or missed generations. Tauri Channels are reserved for measured high-frequency
-streams and must not become a second React-owned state source.
+cache, not as React-owned product state. Runtime/background state updates use
+ordered Rust-owned `StateDelta` events that replace only changed top-level
+`AppState` slices and carry a monotonic generation. Complete snapshots remain
+the initial/reset/reconnect fallback and may still be returned by explicit
+Tauri command responses; the WebView applies those snapshots by comparing
+top-level `DesktopSnapshot`/`AppState` slices and preserving references for
+unchanged `domain`, `ui`, `sidebar`, timeline, and thread data. Components
+subscribe to selectors or memoized derived selectors for the slices they
+render, so background changes to unrelated slices do not force hot timeline or
+composer consumers to receive freshly allocated derived arrays. A delta
+generation gap triggers a full-snapshot reset whose `state_generation` restores
+ordering. Tauri Channels are reserved for measured high-frequency streams and
+must not become a second React-owned state source.
 
 Core identity types are concrete and stable:
 
@@ -513,17 +515,18 @@ stream), and the runtime must relay that model, not fight it.
    projection is part of the same contract: both sync backends must produce
    `AppState.invites` from SDK invited rooms, not from React-local state.
 10. **Backpressure is defined, not accidental.** The event channel policy is
-    explicit: state snapshots are latest-wins (watch semantics, coalesced to
-    at most one `StateChanged` per batch), discrete events use bounded
-    channels with a defined recovery path (drop + full snapshot resync). A
-    slow UI must not stall the core or grow memory without bound.
+    explicit: versioned state snapshots are latest-wins (watch semantics),
+    runtime state changes emit at most one `StateDelta` per batch, and
+    discrete events use bounded channels with a defined recovery path (drop +
+    full snapshot resync). A slow UI must not stall the core or grow memory
+    without bound.
 11. **SDK handles are dropped inside a Tokio runtime context.** Store-backed
     SDK clients panic (`deadpool-runtime`) when dropped outside one. Shutdown
     paths and QA binaries must respect this.
 12. **Shutdown is ordered**: stop accepting commands → stop timeline
     subscriptions → stop search queues → stop sync → persist session state →
     drop SDK handles → (on logout/removal) clear credentials and stores →
-    emit final `StateChanged`.
+    publish the final versioned snapshot / state delta.
 
 ### Desktop Window Model
 

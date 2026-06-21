@@ -537,6 +537,24 @@
     },
     "kind": "Search"
   },
+  "stateDeltaSearchCrawlerQueued": {
+    "changed": {
+      "state": {
+        "domain": {
+          "search_crawler": {
+            "rooms": {
+              "!crawler:example.test": {
+                "kind": "queued"
+              }
+            }
+          }
+        },
+        "schema_version": 2
+      }
+    },
+    "generation": 1,
+    "kind": "StateDelta"
+  },
   "searchCrawlProgress": {
     "event": {
       "HistoryCrawlProgress": {

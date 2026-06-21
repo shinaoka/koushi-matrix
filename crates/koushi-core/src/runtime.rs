@@ -5,7 +5,7 @@
 //! - discrete core events per consumer: broadcast, capacity 1024; a lagged
 //!   consumer observes `EventStreamLag` and resyncs from the snapshot watch
 //! - state snapshots: latest-wins watch, coalesced to at most one
-//!   `StateChanged` per processed command batch
+//!   `StateDelta` per processed command batch
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future;
@@ -28,13 +28,14 @@ use crate::command::{
     TimelineCommand,
 };
 use crate::event::{
-    ActivityEvent, AppStateSnapshot, CoreEvent, TimelineEvent, project_room_event_display_labels,
-    project_timeline_event_display_labels,
+    ActivityEvent, AppStateSnapshot, CoreEvent, TimelineEvent, VersionedAppStateSnapshot,
+    project_room_event_display_labels, project_timeline_event_display_labels,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
 use crate::settings::SettingsStore;
+use crate::state_delta::build_state_delta;
 use crate::store::{StoreActor, session_key_id_from_info};
 
 pub const COMMAND_INBOX_CAPACITY: usize = 256;
@@ -63,7 +64,7 @@ pub struct EventStreamLag {
 pub struct CoreRuntime {
     command_tx: mpsc::Sender<CoreCommand>,
     event_tx: broadcast::Sender<CoreEvent>,
-    snapshot_rx: watch::Receiver<AppStateSnapshot>,
+    snapshot_rx: watch::Receiver<VersionedAppStateSnapshot>,
     next_connection_id: AtomicU64,
     // Internal action channel: actors project side-effect outcomes through
     // the reducer with this in later phases; tests inject through it today.
@@ -164,7 +165,10 @@ impl CoreRuntime {
             },
         };
         let _ = reduce(&mut initial_state, settings_action);
-        let (snapshot_tx, snapshot_rx) = watch::channel(initial_state.clone());
+        let (snapshot_tx, snapshot_rx) = watch::channel(VersionedAppStateSnapshot {
+            generation: 0,
+            state: initial_state.clone(),
+        });
 
         // Spawn AccountActor with shared channels.
         let account_actor = crate::account::AccountActor::spawn(
@@ -185,6 +189,7 @@ impl CoreRuntime {
             composer_draft_loaded_for: None,
             navigation_loaded_for: None,
             scheduled_sends_loaded_for: None,
+            state_generation: 0,
             pending_composer_draft_persist: None,
             account_actor,
             activity_projection: ActivityProjection::default(),
@@ -234,7 +239,7 @@ pub struct CoreConnection {
     connection_id: RuntimeConnectionId,
     command_tx: mpsc::Sender<CoreCommand>,
     event_rx: broadcast::Receiver<CoreEvent>,
-    snapshot_rx: watch::Receiver<AppStateSnapshot>,
+    snapshot_rx: watch::Receiver<VersionedAppStateSnapshot>,
     next_sequence: AtomicU64,
 }
 
@@ -286,14 +291,15 @@ impl CoreConnection {
     fn project_event_for_consumer(&self, mut event: CoreEvent) -> CoreEvent {
         match &mut event {
             CoreEvent::Timeline(timeline_event) => {
-                let snapshot = self.snapshot_rx.borrow().clone();
+                let snapshot = self.snapshot_rx.borrow().state.clone();
                 project_timeline_event_display_labels(timeline_event, &snapshot);
             }
             CoreEvent::Room(room_event) => {
-                let snapshot = self.snapshot_rx.borrow().clone();
+                let snapshot = self.snapshot_rx.borrow().state.clone();
                 project_room_event_display_labels(room_event, &snapshot);
             }
-            CoreEvent::StateChanged(_)
+            CoreEvent::StateDelta(_)
+            | CoreEvent::StateChanged(_)
             | CoreEvent::Account(_)
             | CoreEvent::Sync(_)
             | CoreEvent::LiveSignals(_)
@@ -311,6 +317,11 @@ impl CoreConnection {
 
     /// Latest state snapshot (latest-wins watch semantics).
     pub fn snapshot(&self) -> AppStateSnapshot {
+        self.snapshot_rx.borrow().state.clone()
+    }
+
+    /// Latest state snapshot with the generation used by `StateDelta`.
+    pub fn versioned_snapshot(&self) -> VersionedAppStateSnapshot {
         self.snapshot_rx.borrow().clone()
     }
 }
@@ -319,13 +330,14 @@ struct AppActor {
     command_rx: mpsc::Receiver<CoreCommand>,
     action_rx: mpsc::Receiver<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
-    snapshot_tx: watch::Sender<AppStateSnapshot>,
+    snapshot_tx: watch::Sender<VersionedAppStateSnapshot>,
     state: AppState,
     settings_store: SettingsStore,
     composer_draft_store_actor: StoreActor,
     composer_draft_loaded_for: Option<koushi_key::SessionKeyId>,
     navigation_loaded_for: Option<koushi_key::SessionKeyId>,
     scheduled_sends_loaded_for: Option<koushi_key::SessionKeyId>,
+    state_generation: u64,
     pending_composer_draft_persist: Option<PendingComposerDraftPersist>,
     account_actor: AccountActorHandle,
     activity_projection: ActivityProjection,
@@ -578,12 +590,14 @@ impl AppActor {
                         None => future::pending::<()>().await,
                     }
                 } => {
+                    let before_state = self.state.clone();
                     if self.dispatch_due_scheduled_send().await {
-                        self.publish_snapshot();
+                        self.publish_state_delta(&before_state);
                     }
                 }
                 command = self.command_rx.recv() => {
                     let Some(command) = command else { break };
+                    let before_state = self.state.clone();
                     let mut state_changed = self.handle_command(command).await;
                     // Coalesce: drain whatever is already queued before
                     // emitting a single StateChanged for the batch.
@@ -591,11 +605,12 @@ impl AppActor {
                         state_changed |= self.handle_command(next).await;
                     }
                     if state_changed {
-                        self.publish_snapshot();
+                        self.publish_state_delta(&before_state);
                     }
                 }
                 actions = self.action_rx.recv() => {
                     let Some(actions) = actions else { break };
+                    let before_state = self.state.clone();
                     let mut state_changed = false;
                     for action in actions {
                         if let AppAction::ActivityRowsObserved { rows } = &action {
@@ -624,7 +639,7 @@ impl AppActor {
                         state_changed = true;
                     }
                     if state_changed {
-                        self.publish_snapshot();
+                        self.publish_state_delta(&before_state);
                     }
                 }
             }
@@ -1962,11 +1977,21 @@ impl AppActor {
         let _ = self.event_tx.send(event);
     }
 
-    fn publish_snapshot(&self) {
-        let _ = self.snapshot_tx.send(self.state.clone());
-        let _ = self
-            .event_tx
-            .send(CoreEvent::StateChanged(self.state.clone()));
+    fn publish_state_delta(&mut self, before_state: &AppState) {
+        let Some(delta) = build_state_delta(self.state_generation + 1, before_state, &self.state)
+        else {
+            return;
+        };
+        self.state_generation = delta.generation;
+        let _ = self.snapshot_tx.send(VersionedAppStateSnapshot {
+            generation: self.state_generation,
+            state: self.state.clone(),
+        });
+        self.emit(CoreEvent::StateDelta(delta));
+        // Legacy compatibility for core/headless consumers that still wait on
+        // full snapshots. The Tauri webview adapter ignores this event on the
+        // normal state path and applies StateDelta instead.
+        self.emit(CoreEvent::StateChanged(self.state.clone()));
     }
 }
 
@@ -2288,6 +2313,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn versioned_snapshot_generation_matches_state_delta_generation() {
+        let runtime = CoreRuntime::start_with_event_capacity(8);
+        let mut connection = runtime.attach();
+
+        runtime
+            .inject_actions(vec![AppAction::RestoreSessionSucceeded(SessionInfo {
+                homeserver: "https://example.invalid".to_owned(),
+                user_id: "@me:example.invalid".to_owned(),
+                device_id: "DEVICE".to_owned(),
+            })])
+            .await;
+
+        let event =
+            tokio::time::timeout(std::time::Duration::from_secs(1), connection.recv_event())
+                .await
+                .expect("runtime should emit state delta")
+                .expect("event stream should stay open");
+        let CoreEvent::StateDelta(delta) = event else {
+            panic!("expected state delta event, got {event:?}");
+        };
+
+        let snapshot = connection.versioned_snapshot();
+        assert_eq!(snapshot.generation, delta.generation);
+        assert_eq!(snapshot.generation, 1);
+        assert!(matches!(
+            snapshot.state.session,
+            koushi_state::SessionState::Ready(_)
+        ));
+        runtime.shutdown_handle().abort();
+    }
+
+    #[tokio::test]
     async fn connection_projects_timeline_sender_labels_from_latest_snapshot() {
         let (command_tx, _command_rx) = mpsc::channel(1);
         let (event_tx, event_rx) = broadcast::channel(4);
@@ -2356,7 +2413,10 @@ mod tests {
             local_alias_update: LocalUserAliasUpdateState::Idle,
             update: Default::default(),
         };
-        let (_snapshot_tx, snapshot_rx) = watch::channel(state);
+        let (_snapshot_tx, snapshot_rx) = watch::channel(VersionedAppStateSnapshot {
+            generation: 0,
+            state,
+        });
         let mut connection = CoreConnection {
             connection_id: RuntimeConnectionId(7),
             command_tx,

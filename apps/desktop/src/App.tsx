@@ -126,6 +126,7 @@ import {
   writeDisplayDensity
 } from "./app/localPresentation";
 import {
+  applyAppStoreDelta,
   selectSnapshot,
   setAppStoreSnapshot,
   useAppStore
@@ -1481,6 +1482,38 @@ export function App() {
       const shortcutId = shortcutActionFromMenuPayload(event.payload);
       if (shortcutId) {
         handleShortcutAction(shortcutId);
+      }
+    }).then((dispose) => {
+      if (disposed) {
+        dispose();
+      } else {
+        unlisten = dispose;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<CoreEventPayload>(CORE_EVENT_NAME, (event) => {
+      if (event.payload.kind !== "StateDelta") {
+        return;
+      }
+      const applied = applyAppStoreDelta({
+        generation: event.payload.generation,
+        changed: event.payload.changed
+      });
+      if (!applied) {
+        void refresh();
       }
     }).then((dispose) => {
       if (disposed) {

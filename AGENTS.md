@@ -199,17 +199,19 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   plus a selector-subscribed WebView projection cache. React may cache and
   subscribe to Rust snapshots for rendering, but it must not mutate product
   state, synthesize Matrix semantics, or repair command results locally.
-- During Phase 1, existing full snapshots still enter the WebView. Apply them
-  through the projection store by value-comparing top-level
-  `DesktopSnapshot`/`AppState` slices and preserving references for unchanged
+- Runtime/background state updates enter the WebView as
+  `CoreEvent::StateDelta` changed-slice DTOs. Full snapshots are initial,
+  reset/reconnect, or explicit command-response projections only. Apply both
+  paths through the projection store by preserving references for unchanged
   `domain`, `ui`, `sidebar`, timeline, and thread data. Hot derived arrays such
   as mention candidates and forward destinations must be memoized from Rust DTO
   input references.
-- When Phase 2 adds `CoreEvent::StateDelta` / changed-slice DTOs, update
+- When changing `CoreEvent::StateDelta` / changed-slice DTOs, update
   `apps/desktop/src-tauri/src/dto.rs`, `apps/desktop/src/domain/types.ts`,
   `coreEvents.generated.json`, browser fakes, Tauri IPC mock, app harness
-  snapshots, and serialization-contract tests in the same change. Full
-  snapshots are then initial/reset fallback only, with generation-gap recovery.
+  snapshots, and serialization-contract tests in the same change. Delta
+  generation gaps must recover through a versioned full snapshot
+  (`state_generation`) before later deltas apply.
 - Tauri Channels are high-frequency only and measurement-gated. Keep crawler,
   typing, receipt, and presence semantics Rust-owned; a Channel transports
   Rust projections, not React-local state.
@@ -1344,7 +1346,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   room/space, or reply stages. Permission-guard QA must observe both the
   `OperationFailed(Forbidden)` event and the failed `room_management`
   snapshot; event delivery can lead the connection snapshot by one
-  `StateChanged` event.
+  `StateDelta` generation.
 - Room-management QA output must stay private-data-free: no room IDs, user IDs,
   room names/topics, avatar URLs, moderation reasons, event IDs, or raw SDK
   errors. Success output is limited to `room_settings=ok`,

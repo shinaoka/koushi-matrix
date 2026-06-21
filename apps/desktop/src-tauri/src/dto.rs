@@ -11,19 +11,20 @@
 
 use std::collections::BTreeMap;
 
+use koushi_core::StateDelta;
 use koushi_state::{
-    AccountManagementCapabilities, AccountManagementState, ActivityState, AppError, AppState,
-    AuthDiscoveryState, BasicOperationState, CjkTextPolicyState, ComposerState,
-    DeviceSessionListState, DirectoryState, DisplayPlatform, E2eeTrustState, FilesViewState,
-    FocusedContextState, InvitePreview, LinkPreviewSettingsState, LiveSignalsState,
+    native_attention_capabilities_for_platform, resolve_locale_display_profile,
+    resolve_typography_display_profile, AccountManagementCapabilities, AccountManagementState,
+    ActivityState, AppError, AppState, AuthDiscoveryState, BasicOperationState, CjkTextPolicyState,
+    ComposerState, DeviceSessionListState, DirectoryState, DisplayPlatform, E2eeTrustState,
+    FilesViewState, FocusedContextState, InvitePreview, LinkPreviewSettingsState, LiveSignalsState,
     LocalEncryptionState, LocaleDisplayProfile, NativeAttentionCapabilities, NativeAttentionState,
     NavigationState, ProfileState, QrLoginState, RecoveryMethod, RoomInteractionState,
     RoomListProjection, RoomManagementState, RoomNotificationSettings, RoomSummary,
     SearchCrawlerState, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
     SessionState, SettingsState, SidebarModel, SoftLogoutReauthState, SpaceSummary, SyncMode,
     SyncState, ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
-    TypographyDisplayProfile, native_attention_capabilities_for_platform,
-    resolve_locale_display_profile, resolve_typography_display_profile,
+    TypographyDisplayProfile,
 };
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,8 @@ use serde::{Deserialize, Serialize};
 /// items flow as `TimelineEvent` diffs over `koushi-desktop://event`.
 #[derive(Clone, Debug, Serialize)]
 pub struct FrontendDesktopSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_generation: Option<u64>,
     pub state: FrontendAppState,
     pub sidebar: SidebarModel,
     /// Always empty in Phase 7; timeline items flow as diffs.
@@ -49,10 +52,267 @@ impl From<AppState> for FrontendDesktopSnapshot {
             &state.rooms,
         );
         Self {
+            state_generation: None,
             state: state.into(),
             sidebar,
             timeline: Vec::new(),
             thread: None,
+        }
+    }
+}
+
+impl FrontendDesktopSnapshot {
+    pub fn from_versioned(state: AppState, generation: u64) -> Self {
+        let mut snapshot = Self::from(state);
+        snapshot.state_generation = Some(generation);
+        snapshot
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FrontendDesktopSnapshotDelta {
+    pub generation: u64,
+    pub changed: FrontendDesktopSnapshotChangedSlices,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct FrontendDesktopSnapshotChangedSlices {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<FrontendAppStateChangedSlices>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sidebar: Option<SidebarModel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeline: Option<Vec<()>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread: Option<Option<()>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FrontendAppStateChangedSlices {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<FrontendDomainStateChangedSlices>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ui: Option<FrontendUiStateChangedSlices>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct FrontendDomainStateChangedSlices {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<FrontendSessionState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<AuthDiscoveryState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_sessions: Option<DeviceSessionListState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_management: Option<AccountManagementState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_management_capabilities: Option<AccountManagementCapabilities>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub soft_logout_reauth: Option<SoftLogoutReauthState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qr_login: Option<QrLoginState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<SettingsState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link_preview_settings: Option<LinkPreviewSettingsState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locale_profile: Option<LocaleDisplayProfile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typography_profile: Option<TypographyDisplayProfile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<ProfileState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync: Option<FrontendSyncState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_mode: Option<SyncMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spaces: Option<Vec<SpaceSummary>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rooms: Option<Vec<RoomSummary>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invites: Option<Vec<InvitePreview>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_notification_settings:
+        Option<std::collections::HashMap<String, RoomNotificationSettings>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_interactions: Option<BTreeMap<String, RoomInteractionState>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub directory: Option<DirectoryState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_management: Option<RoomManagementState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<ActivityState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_attention: Option<ThreadAttentionState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search: Option<FrontendSearchState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_crawler: Option<SearchCrawlerState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_signals: Option<LiveSignalsState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub e2ee_trust: Option<E2eeTrustState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_encryption: Option<LocalEncryptionState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_attention: Option<NativeAttentionState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cjk_text_policy: Option<CjkTextPolicyState>,
+}
+
+impl FrontendDomainStateChangedSlices {
+    fn is_empty(&self) -> bool {
+        self.session.is_none()
+            && self.auth.is_none()
+            && self.device_sessions.is_none()
+            && self.account_management.is_none()
+            && self.account_management_capabilities.is_none()
+            && self.soft_logout_reauth.is_none()
+            && self.qr_login.is_none()
+            && self.settings.is_none()
+            && self.link_preview_settings.is_none()
+            && self.locale_profile.is_none()
+            && self.typography_profile.is_none()
+            && self.profile.is_none()
+            && self.sync.is_none()
+            && self.sync_mode.is_none()
+            && self.spaces.is_none()
+            && self.rooms.is_none()
+            && self.invites.is_none()
+            && self.room_notification_settings.is_none()
+            && self.room_interactions.is_none()
+            && self.directory.is_none()
+            && self.room_management.is_none()
+            && self.activity.is_none()
+            && self.thread_attention.is_none()
+            && self.search.is_none()
+            && self.search_crawler.is_none()
+            && self.live_signals.is_none()
+            && self.e2ee_trust.is_none()
+            && self.local_encryption.is_none()
+            && self.native_attention.is_none()
+            && self.cjk_text_policy.is_none()
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct FrontendUiStateChangedSlices {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub navigation: Option<NavigationState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_list: Option<RoomListProjection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeline: Option<TimelinePaneState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread: Option<FrontendThreadPaneState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focused_context: Option<FocusedContextState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_view: Option<FilesViewState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads_list: Option<ThreadsListState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub basic_operation: Option<BasicOperationState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub errors: Option<Vec<AppError>>,
+}
+
+impl FrontendUiStateChangedSlices {
+    fn is_empty(&self) -> bool {
+        self.navigation.is_none()
+            && self.room_list.is_none()
+            && self.timeline.is_none()
+            && self.thread.is_none()
+            && self.focused_context.is_none()
+            && self.files_view.is_none()
+            && self.threads_list.is_none()
+            && self.basic_operation.is_none()
+            && self.errors.is_none()
+    }
+}
+
+impl From<StateDelta> for FrontendDesktopSnapshotDelta {
+    fn from(delta: StateDelta) -> Self {
+        let platform = frontend_display_platform();
+        let changed = delta.changed;
+        let mut domain = FrontendDomainStateChangedSlices::default();
+        let mut ui = FrontendUiStateChangedSlices::default();
+
+        domain.session = changed.session.map(Into::into);
+        domain.auth = changed.auth;
+        domain.device_sessions = changed.device_sessions;
+        domain.account_management = changed.account_management;
+        domain.account_management_capabilities = changed.account_management_capabilities;
+        domain.soft_logout_reauth = changed.soft_logout_reauth;
+        domain.qr_login = changed.qr_login;
+        if let Some(settings) = changed.settings {
+            domain.locale_profile = Some(resolve_locale_display_profile(
+                &settings.values.locale,
+                platform,
+            ));
+            domain.typography_profile = Some(resolve_typography_display_profile(
+                &settings.values.typography,
+                platform,
+            ));
+            domain.settings = Some(settings);
+        }
+        domain.link_preview_settings = changed.link_preview_settings;
+        domain.profile = changed.profile;
+        domain.sync = changed.sync.map(Into::into);
+        domain.sync_mode = changed.sync_mode;
+        domain.spaces = changed.spaces;
+        domain.rooms = changed.rooms;
+        domain.invites = changed.invites;
+        domain.room_notification_settings = changed.room_notification_settings;
+        domain.room_interactions = changed.room_interactions;
+        domain.directory = changed.directory;
+        domain.room_management = changed.room_management;
+        domain.activity = changed.activity;
+        domain.thread_attention = changed.thread_attention;
+        domain.search = changed.search.map(Into::into);
+        domain.search_crawler = changed.search_crawler;
+        domain.live_signals = changed.live_signals;
+        domain.e2ee_trust = changed.e2ee_trust;
+        domain.local_encryption = changed.local_encryption;
+        if let Some(mut native_attention) = changed.native_attention {
+            if native_attention.summary.capabilities == NativeAttentionCapabilities::default() {
+                native_attention.summary.capabilities =
+                    native_attention_capabilities_for_platform(platform);
+            }
+            domain.native_attention = Some(native_attention);
+        }
+        domain.cjk_text_policy = changed.cjk_text_policy;
+
+        ui.navigation = changed.navigation;
+        ui.room_list = changed.room_list;
+        ui.timeline = changed.timeline;
+        ui.thread = changed.thread.map(Into::into);
+        ui.focused_context = changed.focused_context;
+        ui.files_view = changed.files_view;
+        ui.threads_list = changed.threads_list;
+        ui.basic_operation = changed.basic_operation;
+        ui.errors = changed.errors;
+
+        let state = if domain.is_empty() && ui.is_empty() {
+            None
+        } else {
+            Some(FrontendAppStateChangedSlices {
+                schema_version: Some(SNAPSHOT_SCHEMA_VERSION),
+                domain: (!domain.is_empty()).then_some(domain),
+                ui: (!ui.is_empty()).then_some(ui),
+            })
+        };
+
+        Self {
+            generation: delta.generation,
+            changed: FrontendDesktopSnapshotChangedSlices {
+                state,
+                sidebar: changed.sidebar,
+                timeline: None,
+                thread: None,
+            },
         }
     }
 }
@@ -514,12 +774,12 @@ impl From<SearchMatchKind> for FrontendSearchMatchKind {
 mod tests {
     use serde_json::json;
 
-    use super::{FrontendDesktopSnapshot, FrontendSyncState, frontend_display_platform};
+    use super::{frontend_display_platform, FrontendDesktopSnapshot, FrontendSyncState};
     use koushi_state::{
-        AppState, AvatarImage, AvatarThumbnailState, EmojiPreference, FontPreference,
-        InvitePreview, LocaleSettings, OwnProfile, RecoveryMethod, RoomSummary, RoomTags,
-        SessionInfo, SessionState, SpaceSummary, SyncState, TextDirectionPreference,
-        TypographySettings, UserProfile, native_attention_capabilities_for_platform,
+        native_attention_capabilities_for_platform, AppState, AvatarImage, AvatarThumbnailState,
+        EmojiPreference, FontPreference, InvitePreview, LocaleSettings, OwnProfile, RecoveryMethod,
+        RoomSummary, RoomTags, SessionInfo, SessionState, SpaceSummary, SyncState,
+        TextDirectionPreference, TypographySettings, UserProfile,
     };
 
     fn booted_app_state() -> AppState {
@@ -724,7 +984,8 @@ mod tests {
             json!("ask")
         );
         assert_eq!(
-            value["state"]["domain"]["settings"]["values"]["media"]["image_upload_compression_policy"],
+            value["state"]["domain"]["settings"]["values"]["media"]
+                ["image_upload_compression_policy"],
             json!({
                 "threshold_bytes": 1048576,
                 "threshold_long_edge": 2560,
@@ -853,6 +1114,16 @@ mod tests {
     }
 
     #[test]
+    fn frontend_snapshot_can_carry_state_delta_generation_for_reset_recovery() {
+        let state = booted_app_state();
+        let value = serde_json::to_value(FrontendDesktopSnapshot::from_versioned(state, 7))
+            .expect("versioned snapshot should serialize");
+
+        assert_eq!(value["state_generation"], json!(7));
+        assert_eq!(value["state"]["domain"]["session"]["kind"], json!("ready"));
+    }
+
+    #[test]
     fn frontend_snapshot_serializes_profile_and_summary_avatars() {
         let mut state = booted_app_state();
         let ready_avatar = AvatarImage {
@@ -934,7 +1205,8 @@ mod tests {
             json!("ready")
         );
         assert_eq!(
-            value["state"]["domain"]["profile"]["users"]["@bob:matrix.org"]["original_display_label"],
+            value["state"]["domain"]["profile"]["users"]["@bob:matrix.org"]
+                ["original_display_label"],
             json!("Bob")
         );
         assert_eq!(

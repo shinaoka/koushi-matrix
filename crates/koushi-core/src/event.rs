@@ -4,22 +4,30 @@
 use std::fmt;
 
 use koushi_state::{
-    ActivityStream, ActivityTab, AppState, AttachmentResult, AvatarImage, AvatarThumbnailState,
-    CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, IdentityResetState,
-    JapaneseCatalogProfile, KeyBackupStatus, LiveRoomSignalUpdate, LocalEncryptionHealth,
-    MediaTransferProgress, NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind,
-    ProfileState, ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind,
-    SessionState, SyncMode, ThreadsListItem, VerificationFlowState, resolve_user_display_name,
+    resolve_user_display_name, ActivityStream, ActivityTab, AppState, AttachmentResult,
+    AvatarImage, AvatarThumbnailState, CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary,
+    IdentityResetState, JapaneseCatalogProfile, KeyBackupStatus, LiveRoomSignalUpdate,
+    LocalEncryptionHealth, MediaTransferProgress, NativeAttentionSummary, OperationFailureKind,
+    PinnedEvent, PresenceKind, ProfileState, ReplyQuote, RoomModerationAction,
+    RoomSettingsSnapshot, RoomTagKind, SessionState, SyncMode, ThreadsListItem,
+    VerificationFlowState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use crate::failure::{CoreFailure, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, TimelineBatchId, TimelineGeneration, TimelineKey};
+use crate::state_delta::StateDelta;
 
 /// Serializable UI snapshot. The full timeline item lists never live here
 /// (Async rule 4); timeline data flows as diffs.
 pub type AppStateSnapshot = koushi_state::AppState;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VersionedAppStateSnapshot {
+    pub generation: u64,
+    pub state: AppStateSnapshot,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -31,6 +39,7 @@ pub enum ReportKind {
 
 #[derive(Clone, Debug)]
 pub enum CoreEvent {
+    StateDelta(StateDelta),
     StateChanged(AppStateSnapshot),
     Account(AccountEvent),
     Sync(SyncEvent),

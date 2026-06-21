@@ -32,10 +32,11 @@ Reducer state remains Rust-owned even when the desktop WebView caches it for
 selector subscriptions. The frontend projection store may retain unchanged
 snapshot slice references and memoize derived render inputs, but it must not
 create product transitions, repair state-machine state, or decide Matrix
-semantics locally. The #111 transport migration is phased: Phase 1 may still
-receive full `StateChanged` snapshots and apply them slice-by-slice in the
-projection cache; later phases replace the normal update path with ordered
-Rust-owned slice deltas and use full snapshots only as initial/reset fallback.
+semantics locally. Runtime/background state updates now arrive as ordered
+Rust-owned `StateDelta` changed-slice events; full snapshots are initial,
+reset/reconnect, or explicit command-response projections only. A delta
+generation gap forces a full-snapshot reset whose `state_generation` restores
+ordering before later deltas apply.
 
 Reducer guard phrase: "Ready session" means a Matrix-capable authenticated
 session whose runtime may accept room, timeline, thread, search, and composer

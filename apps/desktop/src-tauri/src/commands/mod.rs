@@ -90,8 +90,11 @@ async fn next_request_id(state: &CoreRuntimeState) -> koushi_core::RequestId {
 
 /// Read the latest `AppStateSnapshot` and convert to `FrontendDesktopSnapshot`.
 async fn current_snapshot(state: &CoreRuntimeState) -> Result<FrontendDesktopSnapshot, String> {
-    let snapshot = state.connection.lock().await.snapshot();
-    Ok(FrontendDesktopSnapshot::from(snapshot))
+    let snapshot = state.connection.lock().await.versioned_snapshot();
+    Ok(FrontendDesktopSnapshot::from_versioned(
+        snapshot.state,
+        snapshot.generation,
+    ))
 }
 
 // ---- QA window title ----
