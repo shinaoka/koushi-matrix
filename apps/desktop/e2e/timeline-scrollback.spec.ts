@@ -75,6 +75,22 @@ async function expectTimelineScrolledToBottom(container: ReturnType<Page["locato
     .toBeLessThanOrEqual(ANCHOR_PIXEL_TOLERANCE);
 }
 
+async function waitAnimationFrames(page: Page, count: number) {
+  for (let i = 0; i < count; i += 1) {
+    await page.evaluate(
+      () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    );
+  }
+}
+
+function makeVariableHeightItem(index: number) {
+  const body =
+    index >= 880
+      ? Array.from({ length: 36 }, (_, line) => `message ${index} line ${line}`).join("\n")
+      : `message ${index}`;
+  return makeItem(`$vh${String(index).padStart(3, "0")}`, body);
+}
+
 test("initial timeline load and remount start at the live edge", async ({ page }) => {
   await page.goto("/harness.html");
   await page.waitForSelector("[data-testid=timeline-view]");
@@ -93,6 +109,77 @@ test("initial timeline load and remount start at the live edge", async ({ page }
   const remountedContainer = page.locator("[data-testid=timeline-view]");
   await expect(remountedContainer.locator("[data-item-id]")).toHaveCount(30);
   await expectTimelineScrolledToBottom(remountedContainer);
+});
+
+test("virtualized jump remains stable after variable-height rows are measured", async ({
+  page
+}) => {
+  await page.goto("/harness.html?variableHeights=true");
+  await page.waitForSelector("[data-testid=timeline-view]");
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 1, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 1_000 }, (_, index) => makeVariableHeightItem(index))
+    }
+  );
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container).toHaveAttribute("data-virtualized", "true");
+  await container.evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await expect(page.locator('[data-item-id="$vh999"]')).toBeVisible();
+
+  await page.evaluate(
+    ({ key }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          NavigationUpdated: {
+            key,
+            snapshot: {
+              read_marker_event_id: "$vh099",
+              first_unread_event_id: "$vh100",
+              unread_event_count: 1,
+              unread_position: "aboveViewport",
+              newer_event_count: 0,
+              can_jump_to_bottom: false
+            }
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    { key: timelineKey() }
+  );
+
+  await page.getByRole("button", { name: "Jump to first unread, 1 unread" }).click();
+  await waitAnimationFrames(page, 4);
+
+  const targetOffset = await container.evaluate((node) => {
+    const target = node.querySelector<HTMLElement>('[data-item-id="$vh100"]');
+    if (!target) {
+      return null;
+    }
+    const containerRect = node.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    return Math.abs(
+      targetRect.top + targetRect.height / 2 - (containerRect.top + node.clientHeight / 2)
+    );
+  });
+  expect(targetOffset).not.toBeNull();
+  expect(targetOffset!).toBeLessThanOrEqual(96);
 });
 
 test("scrollback prepend keeps the anchor item visually stable and gates auto-backfill", async ({

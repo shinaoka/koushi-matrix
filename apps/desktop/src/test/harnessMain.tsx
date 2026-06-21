@@ -32,6 +32,12 @@ const ACCOUNT_KEY = "@harness-user:example.invalid";
 const ROOM_ID = "!harness-room:example.invalid";
 const autoLoadOlderMessages =
   new URLSearchParams(window.location.search).get("autoLoadOlderMessages") === "true";
+const variableHeights =
+  new URLSearchParams(window.location.search).get("variableHeights") === "true";
+
+if (variableHeights) {
+  document.body.dataset.variableHeights = "true";
+}
 
 const ipc = new TauriIpcMock();
 

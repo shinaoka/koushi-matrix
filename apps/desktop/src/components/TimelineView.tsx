@@ -318,6 +318,68 @@ type TimelineViewportMetrics = {
   listOffsetTop: number;
 };
 
+type TimelineHeightModel = {
+  fallbackHeight: number;
+  offsets: number[];
+  totalHeight: number;
+};
+
+function estimatedItemHeight(height: number): number {
+  return Math.max(
+    TIMELINE_MIN_ITEM_HEIGHT_PX,
+    Math.min(TIMELINE_MAX_ITEM_HEIGHT_PX, height)
+  );
+}
+
+function measuredItemHeight(height: number): number {
+  return Math.max(1, Math.round(height));
+}
+
+function buildTimelineHeightModel(
+  items: readonly TimelineItem[],
+  measuredHeights: ReadonlyMap<string, number>,
+  fallbackHeight: number
+): TimelineHeightModel {
+  const fallback = estimatedItemHeight(fallbackHeight);
+  const offsets = new Array<number>(items.length + 1);
+  offsets[0] = 0;
+  for (const [index, item] of items.entries()) {
+    const domId = timelineItemDomId(item.id);
+    offsets[index + 1] = offsets[index] + (measuredHeights.get(domId) ?? fallback);
+  }
+  return {
+    fallbackHeight: fallback,
+    offsets,
+    totalHeight: offsets[items.length] ?? 0
+  };
+}
+
+function timelineIndexAtOffset(offsets: readonly number[], offset: number): number {
+  if (offsets.length <= 1) {
+    return 0;
+  }
+  const boundedOffset = Math.max(0, offset);
+  let low = 0;
+  let high = offsets.length - 2;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    if (offsets[mid + 1] <= boundedOffset) {
+      low = mid + 1;
+      continue;
+    }
+    if (offsets[mid] > boundedOffset) {
+      high = mid - 1;
+      continue;
+    }
+    return mid;
+  }
+  return Math.max(0, Math.min(offsets.length - 2, low));
+}
+
+function timelineItemHeightAtIndex(model: TimelineHeightModel, index: number): number {
+  return model.offsets[index + 1] - model.offsets[index] || model.fallbackHeight;
+}
+
 export function renderTimelineMessageText(
   text: string,
   query = "",
@@ -1170,17 +1232,19 @@ export const TimelineView = memo(function TimelineView({
     clientHeight: 0,
     listOffsetTop: 0
   });
-  const [virtualItemHeight, setVirtualItemHeight] = useState(
-    TIMELINE_ESTIMATED_ITEM_HEIGHT_PX
-  );
+  const virtualItemHeight = TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
+  const [measuredHeightVersion, setMeasuredHeightVersion] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const itemHeightByDomIdRef = useRef<Map<string, number>>(new Map());
   /** Anchor captured before the latest prepend batch was applied. */
   const pendingAnchorRef = useRef<ScrollAnchor | null>(null);
   /** True from prepend-apply until anchor restoration completed. */
   const anchorRestorePendingRef = useRef(false);
   /** Tracks whether the current key already got its first live-edge scroll. */
   const initialLiveEdgeScrollAppliedRef = useRef<string | null>(null);
+  /** Keeps the live edge pinned when measured virtual heights change. */
+  const stickToBottomAfterMeasurementRef = useRef(false);
   /** Pagination request currently in flight (suppresses duplicates). */
   const backfillInFlightRef = useRef(false);
   const readSignalEventRef = useRef<string | null>(null);
@@ -1333,11 +1397,23 @@ export const TimelineView = memo(function TimelineView({
     avatarRetryCountsRef.current = new Map();
     emptyThreadBackfillRequestedRef.current = false;
     initialLiveEdgeScrollAppliedRef.current = null;
+    stickToBottomAfterMeasurementRef.current = false;
+    itemHeightByDomIdRef.current = new Map();
+    setMeasuredHeightVersion((current) => current + 1);
     backfillInFlightRef.current = false;
   }, [timelineKeyHash]);
 
   const items = getItems(store, timelineKey);
   const visibleItems = useMemo(() => items.filter((item) => !item.is_hidden), [items]);
+  const timelineHeightModel = useMemo(
+    () =>
+      buildTimelineHeightModel(
+        visibleItems,
+        itemHeightByDomIdRef.current,
+        virtualItemHeight
+      ),
+    [measuredHeightVersion, visibleItems, virtualItemHeight]
+  );
   const virtualWindow = useMemo(() => {
     if (visibleItems.length <= TIMELINE_VIRTUALIZATION_THRESHOLD) {
       return {
@@ -1349,29 +1425,38 @@ export const TimelineView = memo(function TimelineView({
         items: visibleItems
       };
     }
-    const itemHeight = Math.max(
-      TIMELINE_MIN_ITEM_HEIGHT_PX,
-      Math.min(TIMELINE_MAX_ITEM_HEIGHT_PX, virtualItemHeight)
-    );
     const viewportHeight = viewportMetrics.clientHeight || 600;
     const relativeScrollTop = Math.max(
       0,
       viewportMetrics.scrollTop - viewportMetrics.listOffsetTop
     );
-    const firstVisibleIndex = Math.floor(relativeScrollTop / itemHeight);
+    const firstVisibleIndex = timelineIndexAtOffset(
+      timelineHeightModel.offsets,
+      relativeScrollTop
+    );
+    const lastVisibleIndex = timelineIndexAtOffset(
+      timelineHeightModel.offsets,
+      relativeScrollTop + viewportHeight
+    );
     const startIndex = Math.max(0, firstVisibleIndex - TIMELINE_VIRTUAL_OVERSCAN_ITEMS);
-    const windowSize =
-      Math.ceil(viewportHeight / itemHeight) + TIMELINE_VIRTUAL_OVERSCAN_ITEMS * 2;
-    const endIndex = Math.min(visibleItems.length, startIndex + windowSize);
+    const endIndex = Math.min(
+      visibleItems.length,
+      Math.max(
+        startIndex + 1,
+        lastVisibleIndex + TIMELINE_VIRTUAL_OVERSCAN_ITEMS + 1
+      )
+    );
     return {
       virtualized: true,
       startIndex,
       endIndex,
-      paddingTop: Math.round(startIndex * itemHeight),
-      paddingBottom: Math.round((visibleItems.length - endIndex) * itemHeight),
+      paddingTop: Math.round(timelineHeightModel.offsets[startIndex] ?? 0),
+      paddingBottom: Math.round(
+        timelineHeightModel.totalHeight - (timelineHeightModel.offsets[endIndex] ?? 0)
+      ),
       items: visibleItems.slice(startIndex, endIndex)
     };
-  }, [visibleItems, viewportMetrics, virtualItemHeight]);
+  }, [timelineHeightModel, visibleItems, viewportMetrics]);
   const sideEffectItems = virtualWindow.virtualized ? virtualWindow.items : visibleItems;
   useEffect(() => {
     const avatarDiagnostics = timelineAvatarDiagnostics(
@@ -1669,11 +1754,37 @@ export const TimelineView = memo(function TimelineView({
         initialLiveEdgeScrollAppliedRef.current = timelineKeyHash;
       }
     }
+    if (stickToBottomAfterMeasurementRef.current) {
+      const container = containerRef.current;
+      if (container) {
+        scrollContainerToBottom(container);
+      }
+      stickToBottomAfterMeasurementRef.current = false;
+    }
     if (anchorRestorePendingRef.current) {
       const container = containerRef.current;
       const anchor = pendingAnchorRef.current;
+      let restored = false;
       if (container && anchor) {
-        restoreAnchor(container, anchor);
+        restored = restoreAnchor(container, anchor);
+      }
+      if (!restored && container && anchor && virtualWindow.virtualized) {
+        const anchorIndex = visibleItems.findIndex(
+          (item) => timelineItemDomId(item.id) === anchor.itemId
+        );
+        if (anchorIndex >= 0) {
+          container.scrollTop = Math.max(
+            0,
+            viewportMetrics.listOffsetTop +
+              (timelineHeightModel.offsets[anchorIndex] ?? 0) -
+              anchor.offsetTop
+          );
+          requestAnimationFrame(() => {
+            restoreAnchor(container, anchor);
+            updateViewportMetrics();
+            reportViewportObservation();
+          });
+        }
       }
       pendingAnchorRef.current = null;
       // Restoration complete: the next automatic fill request is allowed again.
@@ -1681,7 +1792,15 @@ export const TimelineView = memo(function TimelineView({
     }
     updateViewportMetrics();
     reportViewportObservation();
-  }, [items, reportViewportObservation, updateViewportMetrics]);
+  }, [
+    items,
+    reportViewportObservation,
+    timelineHeightModel,
+    updateViewportMetrics,
+    viewportMetrics.listOffsetTop,
+    virtualWindow.virtualized,
+    visibleItems
+  ]);
 
   useLayoutEffect(() => {
     if (!virtualWindow.virtualized) {
@@ -1691,28 +1810,47 @@ export const TimelineView = memo(function TimelineView({
     if (!list) {
       return;
     }
-    const nodes = Array.from(
-      list.querySelectorAll<HTMLElement>(".timeline-item-frame")
-    ).slice(0, 40);
+    const nextHeights = new Map(itemHeightByDomIdRef.current);
+    const visibleDomIds = new Set(visibleItems.map((item) => timelineItemDomId(item.id)));
+    let changed = false;
+    for (const domId of nextHeights.keys()) {
+      if (!visibleDomIds.has(domId)) {
+        nextHeights.delete(domId);
+        changed = true;
+      }
+    }
+    const nodes = Array.from(list.querySelectorAll<HTMLElement>(".timeline-item-frame"));
     if (nodes.length === 0) {
       return;
     }
-    const totalHeight = nodes.reduce(
-      (total, node) => total + node.getBoundingClientRect().height,
-      0
+    for (const node of nodes) {
+      const domId =
+        node.dataset["frameItemId"] ??
+        node.querySelector<HTMLElement>("[data-item-id]")?.dataset["itemId"];
+      if (!domId) {
+        continue;
+      }
+      const height = measuredItemHeight(node.getBoundingClientRect().height);
+      if (Math.abs((nextHeights.get(domId) ?? 0) - height) <= 1) {
+        continue;
+      }
+      nextHeights.set(domId, height);
+      changed = true;
+    }
+    if (!changed) {
+      return;
+    }
+    const container = containerRef.current;
+    stickToBottomAfterMeasurementRef.current = Boolean(
+      container && isScrolledToBottom(container)
     );
-    const measuredAverage = Math.max(
-      TIMELINE_MIN_ITEM_HEIGHT_PX,
-      Math.min(TIMELINE_MAX_ITEM_HEIGHT_PX, totalHeight / nodes.length)
-    );
-    setVirtualItemHeight((current) =>
-      Math.abs(current - measuredAverage) > 4 ? measuredAverage : current
-    );
+    itemHeightByDomIdRef.current = nextHeights;
+    setMeasuredHeightVersion((current) => current + 1);
   }, [
     virtualWindow.endIndex,
     virtualWindow.startIndex,
     virtualWindow.virtualized,
-    visibleItems.length
+    visibleItems
   ]);
 
   // --- Automatic backfill on scroll near the top ---
@@ -1805,10 +1943,13 @@ export const TimelineView = memo(function TimelineView({
           (item) => "Event" in item.id && item.id.Event.event_id === eventId
         );
         if (itemIndex >= 0) {
+          const itemTop = timelineHeightModel.offsets[itemIndex] ?? 0;
+          const itemHeight = timelineItemHeightAtIndex(timelineHeightModel, itemIndex);
           container.scrollTop = Math.max(
             0,
             viewportMetrics.listOffsetTop +
-              itemIndex * virtualItemHeight -
+              itemTop +
+              itemHeight / 2 -
               container.clientHeight / 2
           );
           updateViewportMetrics();
@@ -1824,9 +1965,9 @@ export const TimelineView = memo(function TimelineView({
     },
     [
       reportViewportObservation,
+      timelineHeightModel,
       updateViewportMetrics,
       viewportMetrics.listOffsetTop,
-      virtualItemHeight,
       virtualWindow.virtualized,
       visibleItems
     ]
@@ -1956,12 +2097,17 @@ export const TimelineView = memo(function TimelineView({
           />
         ) : null}
         {virtualWindow.items.map((item) => {
+          const itemDomId = timelineItemDomId(item.id);
           const eventId = "Event" in item.id ? item.id.Event.event_id : null;
           const isFullyReadMarker = Boolean(
             eventId && navigationMarkerEventId === eventId
           );
           return (
-            <div className="timeline-item-frame" key={timelineItemDomId(item.id)}>
+            <div
+              className="timeline-item-frame"
+              key={itemDomId}
+              data-frame-item-id={itemDomId}
+            >
               {isFullyReadMarker ? (
                 <div className="read-marker" role="separator" aria-label={navigationMarkerLabel}>
                   <span>{navigationMarkerLabel}</span>

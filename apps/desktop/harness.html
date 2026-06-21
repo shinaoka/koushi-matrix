@@ -22,6 +22,14 @@
         border-bottom: 1px solid #eee;
         padding: 4px;
       }
+      body[data-variable-heights="true"] .timeline-view .message {
+        height: auto;
+        min-height: 48px;
+        overflow: visible;
+      }
+      body[data-variable-heights="true"] .timeline-view .message-body {
+        white-space: pre-wrap;
+      }
       .timeline-spinner,
       .timeline-start {
         box-sizing: border-box;
