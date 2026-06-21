@@ -24,7 +24,9 @@ use koushi_sdk::{
     MatrixClientStoreConfig, MatrixClientStoreKey, MatrixSearchIndexKey,
     MatrixSearchIndexStoreConfig,
 };
-use koushi_state::{ComposerDraftStore, LocalEncryptionHealth, ScheduledSendStore};
+use koushi_state::{
+    ComposerDraftStore, LocalEncryptionHealth, NavigationState, ScheduledSendStore,
+};
 
 use crate::failure::CoreFailure;
 
@@ -239,6 +241,39 @@ impl StoreActor {
         std::fs::write(path, payload).map_err(|_| CoreFailure::StoreUnavailable)
     }
 
+    pub fn load_navigation(&self, key_id: &SessionKeyId) -> Result<NavigationState, CoreFailure> {
+        let path = self.account_navigation_file(key_id);
+        let json = match std::fs::read_to_string(&path) {
+            Ok(json) => json,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(NavigationState::default());
+            }
+            Err(_) => return Err(CoreFailure::StoreUnavailable),
+        };
+        serde_json::from_str(&json).map_err(|_| CoreFailure::StoreUnavailable)
+    }
+
+    pub fn save_navigation(
+        &self,
+        key_id: &SessionKeyId,
+        navigation: &NavigationState,
+    ) -> Result<(), CoreFailure> {
+        let path = self.account_navigation_file(key_id);
+        if navigation == &NavigationState::default() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => return Ok(()),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(_) => return Err(CoreFailure::StoreUnavailable),
+            }
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|_| CoreFailure::StoreUnavailable)?;
+        }
+        let json =
+            serde_json::to_string_pretty(navigation).map_err(|_| CoreFailure::StoreUnavailable)?;
+        std::fs::write(path, format!("{json}\n")).map_err(|_| CoreFailure::StoreUnavailable)
+    }
+
     /// Delete the stored unlock secret and the per-account store/cache
     /// directories for an account (shutdown step 7: "clear credentials and
     /// stores"). Called during logout / account removal.
@@ -329,6 +364,12 @@ impl StoreActor {
         self.account_root_dir(key_id)
             .join("scheduled-sends")
             .join("scheduled.v1.enc")
+    }
+
+    fn account_navigation_file(&self, key_id: &SessionKeyId) -> PathBuf {
+        self.account_root_dir(key_id)
+            .join("navigation")
+            .join("navigation.v1.json")
     }
 }
 

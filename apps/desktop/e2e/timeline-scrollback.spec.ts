@@ -65,6 +65,36 @@ async function pushInitialTimelineItems(page: Page, count: number) {
   );
 }
 
+async function expectTimelineScrolledToBottom(container: ReturnType<Page["locator"]>) {
+  await expect
+    .poll(async () =>
+      container.evaluate((node) =>
+        Math.abs(node.scrollHeight - node.clientHeight - node.scrollTop)
+      )
+    )
+    .toBeLessThanOrEqual(ANCHOR_PIXEL_TOLERANCE);
+}
+
+test("initial timeline load and remount start at the live edge", async ({ page }) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+
+  await pushInitialTimelineItems(page, 30);
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container.locator("[data-item-id]")).toHaveCount(30);
+  await expectTimelineScrolledToBottom(container);
+
+  await page.reload();
+  await page.waitForSelector("[data-testid=timeline-view]");
+
+  await pushInitialTimelineItems(page, 30);
+
+  const remountedContainer = page.locator("[data-testid=timeline-view]");
+  await expect(remountedContainer.locator("[data-item-id]")).toHaveCount(30);
+  await expectTimelineScrolledToBottom(remountedContainer);
+});
+
 test("scrollback prepend keeps the anchor item visually stable and gates auto-backfill", async ({
   page
 }) => {
@@ -452,7 +482,7 @@ test("timeline navigation renders Rust-owned unread controls and sends viewport 
     .poll(
       () =>
         page.evaluate(() =>
-          window.__harness.invocationsOf("observe_timeline_viewport")[0]?.args
+          window.__harness.invocationsOf("observe_timeline_viewport").at(-1)?.args
         ),
       { timeout: 1_000 }
     )

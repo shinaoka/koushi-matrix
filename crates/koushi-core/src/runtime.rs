@@ -183,6 +183,7 @@ impl CoreRuntime {
             settings_store,
             composer_draft_store_actor,
             composer_draft_loaded_for: None,
+            navigation_loaded_for: None,
             scheduled_sends_loaded_for: None,
             pending_composer_draft_persist: None,
             account_actor,
@@ -323,6 +324,7 @@ struct AppActor {
     settings_store: SettingsStore,
     composer_draft_store_actor: StoreActor,
     composer_draft_loaded_for: Option<koushi_key::SessionKeyId>,
+    navigation_loaded_for: Option<koushi_key::SessionKeyId>,
     scheduled_sends_loaded_for: Option<koushi_key::SessionKeyId>,
     pending_composer_draft_persist: Option<PendingComposerDraftPersist>,
     account_actor: AccountActorHandle,
@@ -616,6 +618,7 @@ impl AppActor {
                         self.handle_post_projection_effects(&post_projection_effects)
                             .await;
                         self.handle_ui_event_effects(&post_projection_effects).await;
+                        self.load_navigation_for_current_session().await;
                         self.load_composer_drafts_for_current_session().await;
                         self.load_scheduled_sends_for_current_session().await;
                         state_changed = true;
@@ -634,9 +637,18 @@ impl AppActor {
     async fn reduce_app_action(&mut self, action: AppAction) -> Vec<AppEffect> {
         let previous_session = composer_draft_session_key(&self.state);
         let previous_drafts = self.state.composer_drafts.clone();
+        let previous_navigation_session = navigation_session_key(&self.state);
+        let previous_navigation = self.state.navigation.clone();
         let previous_scheduled_session = scheduled_send_session_key(&self.state);
         let previous_scheduled_sends = self.state.scheduled_sends.clone();
         let effects = reduce(&mut self.state, action);
+        if previous_navigation != self.state.navigation {
+            let target_session =
+                navigation_session_key(&self.state).or(previous_navigation_session);
+            if let Some(key_id) = target_session {
+                self.persist_navigation(key_id).await;
+            }
+        }
         if previous_drafts != self.state.composer_drafts {
             let target_session = composer_draft_session_key(&self.state).or(previous_session);
             if let Some(key_id) = target_session {
@@ -652,6 +664,24 @@ impl AppActor {
             }
         }
         effects
+    }
+
+    async fn load_navigation_for_current_session(&mut self) {
+        let Some(key_id) = navigation_session_key(&self.state) else {
+            self.navigation_loaded_for = None;
+            return;
+        };
+        if self.navigation_loaded_for.as_ref() == Some(&key_id) {
+            return;
+        }
+
+        let navigation = self
+            .composer_draft_store_actor
+            .load_navigation(&key_id)
+            .unwrap_or_default();
+        let effects = reduce(&mut self.state, AppAction::NavigationLoaded { navigation });
+        self.navigation_loaded_for = Some(key_id);
+        self.handle_ui_event_effects(&effects).await;
     }
 
     async fn load_composer_drafts_for_current_session(&mut self) {
@@ -697,6 +727,12 @@ impl AppActor {
         let _ = self
             .composer_draft_store_actor
             .save_scheduled_sends(&key_id, &self.state.scheduled_sends);
+    }
+
+    async fn persist_navigation(&mut self, key_id: koushi_key::SessionKeyId) {
+        let _ = self
+            .composer_draft_store_actor
+            .save_navigation(&key_id, &self.state.navigation);
     }
 
     async fn schedule_composer_draft_persist(
@@ -1976,6 +2012,10 @@ fn composer_draft_session_key(state: &AppState) -> Option<koushi_key::SessionKey
         | SessionState::LoggingOut
         | SessionState::Locked(_) => None,
     }
+}
+
+fn navigation_session_key(state: &AppState) -> Option<koushi_key::SessionKeyId> {
+    composer_draft_session_key(state)
 }
 
 fn scheduled_send_session_key(state: &AppState) -> Option<koushi_key::SessionKeyId> {

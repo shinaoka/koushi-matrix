@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     effect::{AppEffect, UiEvent},
-    state::{AppState, AvatarImage, AvatarThumbnailState, RoomListFilter},
+    state::{AppState, AvatarImage, AvatarThumbnailState, NavigationState, RoomListFilter},
 };
 
 use super::{
@@ -25,6 +25,19 @@ pub(crate) fn handle_invite_list_updated(
     if state.room_list.active_filter == RoomListFilter::Invites {
         recompute_room_list_projection(state);
     }
+    vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+}
+
+pub(crate) fn handle_navigation_loaded(
+    state: &mut AppState,
+    navigation: NavigationState,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    state.navigation = navigation;
+    recompute_room_list_projection(state);
     vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
 }
 

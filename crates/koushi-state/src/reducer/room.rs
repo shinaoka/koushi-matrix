@@ -135,6 +135,13 @@ pub(crate) fn handle_room_list_updated(
         retarget_active_room_for_selected_space(state, &mut effects, active_room_id);
     }
 
+    if let Some(active_room_id) = state.navigation.active_room_id.clone()
+        && state.timeline.room_id.as_deref() != Some(active_room_id.as_str())
+        && room_exists(state, &active_room_id)
+    {
+        select_active_room_after_room_list_update(state, &mut effects, active_room_id);
+    }
+
     if !had_active_room_before_update && state.navigation.active_room_id.is_none() {
         let next_room_id = if state.navigation.active_space_id.is_some() {
             preferred_room_id_in_active_space(state)

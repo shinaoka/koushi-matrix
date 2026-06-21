@@ -279,6 +279,10 @@ function isScrolledToBottom(container: HTMLElement): boolean {
   );
 }
 
+function scrollContainerToBottom(container: HTMLElement): void {
+  container.scrollTop = container.scrollHeight;
+}
+
 function cssEscape(value: string): string {
   return value.replace(/["\\]/g, "\\$&");
 }
@@ -1175,6 +1179,8 @@ export const TimelineView = memo(function TimelineView({
   const pendingAnchorRef = useRef<ScrollAnchor | null>(null);
   /** True from prepend-apply until anchor restoration completed. */
   const anchorRestorePendingRef = useRef(false);
+  /** Tracks whether the current key already got its first live-edge scroll. */
+  const initialLiveEdgeScrollAppliedRef = useRef<string | null>(null);
   /** Pagination request currently in flight (suppresses duplicates). */
   const backfillInFlightRef = useRef(false);
   const readSignalEventRef = useRef<string | null>(null);
@@ -1326,6 +1332,7 @@ export const TimelineView = memo(function TimelineView({
     requestedAvatarMxcsRef.current = new Set();
     avatarRetryCountsRef.current = new Map();
     emptyThreadBackfillRequestedRef.current = false;
+    initialLiveEdgeScrollAppliedRef.current = null;
     backfillInFlightRef.current = false;
   }, [timelineKeyHash]);
 
@@ -1651,6 +1658,17 @@ export const TimelineView = memo(function TimelineView({
 
   // --- Anchor restoration: after React commits the prepend ---
   useLayoutEffect(() => {
+    if (
+      timelineInitialized &&
+      items.length > 0 &&
+      initialLiveEdgeScrollAppliedRef.current !== timelineKeyHash
+    ) {
+      const container = containerRef.current;
+      if (container) {
+        scrollContainerToBottom(container);
+        initialLiveEdgeScrollAppliedRef.current = timelineKeyHash;
+      }
+    }
     if (anchorRestorePendingRef.current) {
       const container = containerRef.current;
       const anchor = pendingAnchorRef.current;
@@ -1822,11 +1840,11 @@ export const TimelineView = memo(function TimelineView({
     if (activeElement instanceof HTMLElement && container.contains(activeElement)) {
       activeElement.blur();
     }
-    container.scrollTop = container.scrollHeight;
+    scrollContainerToBottom(container);
     updateViewportMetrics();
     reportViewportObservation();
     requestAnimationFrame(() => {
-      container.scrollTop = container.scrollHeight;
+      scrollContainerToBottom(container);
       updateViewportMetrics();
       reportViewportObservation();
     });

@@ -628,6 +628,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::InviteListUpdated { invites } => {
             navigation::handle_invite_list_updated(state, invites)
         }
+        AppAction::NavigationLoaded { navigation } => {
+            navigation::handle_navigation_loaded(state, navigation)
+        }
         AppAction::SelectSpace { space_id } => navigation::handle_select_space(state, space_id),
         AppAction::ReorderSpaces { space_ids } => {
             navigation::handle_reorder_spaces(state, space_ids)

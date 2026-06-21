@@ -1071,6 +1071,39 @@ fn selecting_space_restores_last_non_dm_room_for_that_space() {
 }
 
 #[test]
+fn room_list_update_reopens_restored_active_room_timeline() {
+    let mut state = ready_state();
+    state.navigation.active_room_id = Some("room-a".to_owned());
+    state.timeline = Default::default();
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: rooms()
+                .into_iter()
+                .filter(|room| room.room_id == "room-a")
+                .collect(),
+        },
+    );
+
+    assert_eq!(state.navigation.active_room_id.as_deref(), Some("room-a"));
+    assert_eq!(state.timeline.room_id.as_deref(), Some("room-a"));
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::SubscribeTimeline { room_id } if room_id == "room-a")),
+        "restored active room should subscribe its timeline after room list reload: {effects:?}"
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }) if room_id == "room-a")),
+        "restored active room should emit timeline changed after room list reload: {effects:?}"
+    );
+}
+
+#[test]
 fn account_home_lists_all_non_dm_rooms_and_keeps_dms_global() {
     let sidebar = compose_sidebar(None, &spaces(), &rooms());
 

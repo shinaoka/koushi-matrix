@@ -6,9 +6,9 @@ use crate::state::{
     AvatarThumbnailState, BasicOperationRequest, CrossSigningStatus, DelegatedAuthLinks,
     DeviceSessionSummary, DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState, FilesViewScope,
     IdentityResetAuthType, JapaneseCatalogProfile, LiveEventReceipts, LiveRoomSignalUpdate,
-    LocalEncryptionHealth, LoginFlow, NativeAttentionState, OperationFailureKind, OwnProfile,
-    PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryKeyDeliveryState, RecoveryMethod,
-    RoomListFilter, RoomListProjection, RoomModerationAction, RoomSettingChange,
+    LocalEncryptionHealth, LoginFlow, NativeAttentionState, NavigationState, OperationFailureKind,
+    OwnProfile, PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryKeyDeliveryState,
+    RecoveryMethod, RoomListFilter, RoomListProjection, RoomModerationAction, RoomSettingChange,
     RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji,
     ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope,
     SessionInfo, SettingsPatch, SettingsValues, SpaceSummary, StagedUploadCompressionChoice,
@@ -586,6 +586,9 @@ pub enum AppAction {
     },
     InviteListUpdated {
         invites: Vec<crate::state::InvitePreview>,
+    },
+    NavigationLoaded {
+        navigation: NavigationState,
     },
     SelectSpace {
         space_id: Option<String>,
