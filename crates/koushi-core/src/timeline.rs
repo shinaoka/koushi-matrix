@@ -1997,10 +1997,10 @@ impl TimelineActor {
             self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendState);
             return;
         }
-        let Some(raw) = event_item.original_json() else {
+        if event_item.original_json().is_none() {
             self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendTarget);
             return;
-        };
+        }
         let room_id = match matrix_sdk::ruma::RoomId::parse(self.key.room_id()) {
             Ok(room_id) => room_id,
             Err(_) => {
@@ -2008,19 +2008,24 @@ impl TimelineActor {
                 return;
             }
         };
-        let encrypted_event = raw.cast_ref_unchecked();
-        match self
-            .session
-            .client()
-            .request_room_key_for_event(encrypted_event, room_id.as_ref())
-            .await
+        let Some(session_id) =
+            unable_to_decrypt_from_content(event_item.content()).and_then(|utd| utd.session_id)
+        else {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidSendState);
+            return;
+        };
+        match koushi_sdk::download_room_key_from_backup(
+            &self.session,
+            room_id.as_str(),
+            &session_id,
+        )
+        .await
         {
-            Ok(()) => {
-                if let Some(utd) = unable_to_decrypt_from_content(event_item.content()) {
-                    if let Some(session_id) = utd.session_id {
-                        self.timeline.retry_decryption([session_id]).await;
-                    }
-                }
+            Ok(true) => {
+                self.timeline.retry_decryption([session_id]).await;
+            }
+            Ok(false) => {
+                self.emit_timeline_failure(request_id, TimelineFailureKind::Sdk);
             }
             Err(_) => {
                 self.emit_timeline_failure(request_id, TimelineFailureKind::Sdk);

@@ -389,7 +389,10 @@
               "original_display_label": "Synthetic Member",
               "power_level": 50,
               "role": "moderator",
-              "user_id": "@member:example.test"
+              "user_id": "@member:example.test",
+              "user_trust": {
+                "kind": "verified"
+              }
             }
           ],
           "name": "Room Settings Sample",
@@ -426,7 +429,10 @@
               "original_display_label": "Synthetic Member",
               "power_level": 50,
               "role": "moderator",
-              "user_id": "@member:example.test"
+              "user_id": "@member:example.test",
+              "user_trust": {
+                "kind": "verified"
+              }
             }
           ],
           "name": "Room Settings Sample",

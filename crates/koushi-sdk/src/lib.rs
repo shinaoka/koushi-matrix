@@ -644,6 +644,22 @@ pub async fn download_joined_room_keys_from_backup(
     })
 }
 
+pub async fn download_room_key_from_backup(
+    session: &MatrixClientSession,
+    room_id: &str,
+    session_id: &str,
+) -> Result<bool, E2eeTrustError> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(room_id)
+        .map_err(|_| E2eeTrustError::Sdk("invalid room id".to_owned()))?;
+    session
+        .client()
+        .encryption()
+        .backups()
+        .download_room_key(room_id.as_ref(), session_id)
+        .await
+        .map_err(E2eeTrustError::from)
+}
+
 #[cfg(not(target_family = "wasm"))]
 pub async fn export_room_keys_to_file(
     session: &MatrixClientSession,
@@ -2915,7 +2931,9 @@ pub async fn reshare_room_key(
     room_id: &str,
 ) -> Result<(), MatrixRoomOperationError> {
     let room = matrix_room(session, room_id)?;
-    room.reshare_room_key()
+    // The vendored Matrix SDK exposes room-key rotation publicly; immediate
+    // pre-sharing remains an internal Room method.
+    room.discard_room_key()
         .await
         .map_err(MatrixRoomOperationError::from_sdk_error)
 }

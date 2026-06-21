@@ -1412,8 +1412,8 @@ mod tests {
             NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
             PresenceKind, ReplyQuote, ReplyQuoteState, RoomHistoryVisibility, RoomJoinRule,
             RoomMemberRole, RoomModerationAction, RoomPermissionFacts, RoomSettingsSnapshot,
-            RoomTagKind, SasEmoji, SearchCrawlerFailureKind, SyncMode, VerificationFlowState,
-            VerificationTarget,
+            RoomTagKind, SasEmoji, SearchCrawlerFailureKind, SyncMode, UserTrustState,
+            VerificationFlowState, VerificationTarget,
         };
         use serde_json::json;
 
@@ -2161,7 +2161,7 @@ mod tests {
                 avatar_url: Some("mxc://example.test/member-avatar".to_owned()),
                 power_level: Some(50),
                 role: RoomMemberRole::Moderator,
-                user_trust: None,
+                user_trust: Some(UserTrustState::Verified),
             }],
         };
         let room_settings_loaded =
