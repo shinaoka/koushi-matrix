@@ -1083,7 +1083,7 @@ describe("desktop release scripts", () => {
       "verify installed Conduit binary",
       "verify installed Tuwunel binary",
       "start disposable local homeserver",
-      "register two synthetic local users",
+      "register synthetic local users",
       "run headless Matrix SDK operations",
       "stop disposable local homeserver"
     ]) {

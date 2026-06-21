@@ -61,7 +61,7 @@ const checks = [
   "verify installed Tuwunel binary",
   "verify local Synapse Docker runtime when --server=synapse",
   "start disposable local homeserver",
-  "register two synthetic local users",
+  "register synthetic local users",
   "run headless Matrix SDK operations",
   "stop disposable local homeserver"
 ];
@@ -266,11 +266,14 @@ async function registerQaUsers(homeserver, label) {
   const userSuffix = `${label}_${safeTimestamp()}`;
   const userA = `qa_a_${userSuffix}`;
   const userB = `qa_b_${userSuffix}`;
+  const userC = `qa_c_${userSuffix}`;
   const passwordA = `koushi-desktop-local-a-${userSuffix}`;
   const passwordB = `koushi-desktop-local-b-${userSuffix}`;
+  const passwordC = `koushi-desktop-local-c-${userSuffix}`;
   await registerUser(homeserver, userA, passwordA);
   await registerUser(homeserver, userB, passwordB);
-  return { userA, passwordA, userB, passwordB };
+  await registerUser(homeserver, userC, passwordC);
+  return { userA, passwordA, userB, passwordB, userC };
 }
 
 function runHeadlessQa({
@@ -339,6 +342,7 @@ function runCoreHeadlessQa({
   passwordA,
   userB,
   passwordB,
+  userC,
   logPath,
   legLabel = "default",
   forceLegacyBackend = false,
@@ -366,6 +370,9 @@ function runCoreHeadlessQa({
     KOUSHI_QA_DATA_DIR: runDataDir,
     KOUSHI_QA_SCENARIO: scenarioOption
   };
+  if (userC) {
+    env.KOUSHI_LOCAL_QA_USER_C = userC;
+  }
   if (forceLegacyBackend) {
     // Debug/test-only override; release builds ignore it entirely.
     env.KOUSHI_QA_FORCE_SYNC_BACKEND = "legacy";

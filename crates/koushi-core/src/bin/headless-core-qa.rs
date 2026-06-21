@@ -28,6 +28,7 @@
 //!   KOUSHI_LOCAL_QA_SERVER_KIND   (optional, defaults to "local")
 //!   KOUSHI_LOCAL_QA_USER_A / _PASSWORD_A
 //!   KOUSHI_LOCAL_QA_USER_B / _PASSWORD_B
+//!   KOUSHI_LOCAL_QA_USER_C (optional; required by invites_dm DM scope QA)
 //!   KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR (mandatory; see guard)
 //!
 //! SDK handles are dropped inside the Tokio runtime context (overview.md Async rule 11).
@@ -74,7 +75,7 @@ use koushi_state::{
     SettingsPatch, SettingsPersistenceState, StagedUploadCompressionChoice, StagedUploadItem,
     StagedUploadKind, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
     TimelineMediaGallerySource, TimelineMediaKind, TrustOperationFailureKind,
-    VerificationFlowState, VerificationTarget, build_formatted_message_draft,
+    VerificationFlowState, VerificationTarget, build_formatted_message_draft, compose_sidebar,
     native_attention_state_from_rooms, reduce, resolve_composer_key_action,
 };
 
@@ -85,6 +86,7 @@ const ENV_USER_A: &str = "KOUSHI_LOCAL_QA_USER_A";
 const ENV_PASSWORD_A: &str = "KOUSHI_LOCAL_QA_PASSWORD_A";
 const ENV_USER_B: &str = "KOUSHI_LOCAL_QA_USER_B";
 const ENV_PASSWORD_B: &str = "KOUSHI_LOCAL_QA_PASSWORD_B";
+const ENV_USER_C: &str = "KOUSHI_LOCAL_QA_USER_C";
 /// Optional assertion input (a plain string, not a credential — no gating
 /// needed): when set, QA fails if the backend reported in SyncEvent::Started
 /// differs. Valid values: "SyncService" | "LegacySync".
@@ -480,6 +482,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "invite_decline=ok",
             "member_list=ok",
             "dm_start=ok",
+            "dm_space_scope=ok",
         ],
         QaStage::RoomSpace => &["room_space=ok"],
         QaStage::Directory => &["directory_query=ok", "directory_join=ok"],
@@ -575,6 +578,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "invite_decline=ok",
         "member_list=ok",
         "dm_start=ok",
+        "dm_space_scope=ok",
         "room_space=ok",
         "directory_query=ok",
         "directory_join=ok",
@@ -1047,6 +1051,7 @@ async fn run_invites_dm_stage(
         &[user_a_full_id.as_str(), user_b_full_id.as_str()],
         "invites_dm accepted space members",
     )?;
+    sync_once_for_qa(conn_a, "invites_dm sync A after space accept").await?;
     println!("invite_accept=ok");
     println!("member_list=ok");
 
@@ -1102,6 +1107,24 @@ async fn run_invites_dm_stage(
     )
     .await?;
     println!("dm_start=ok");
+
+    let user_c_full_id = config.dm_scope_control_user_id()?;
+    let control_dm_room_id = start_direct_message_for_qa(
+        conn_a,
+        &user_c_full_id,
+        "invites_dm start control direct message",
+    )
+    .await?;
+    sync_once_for_qa(conn_a, "invites_dm sync A after control DM start").await?;
+    wait_for_dm_room_in_room_list(
+        conn_a,
+        &control_dm_room_id,
+        "invites_dm A room list after control DM start",
+    )
+    .await?;
+    assert_dm_space_scope_for_qa(conn_a, &accept_space_id, &dm_room_id, &control_dm_room_id)
+        .await?;
+    println!("dm_space_scope=ok");
 
     cleanup_logged_in_runtime(conn_b, runtime_b, account_key_b, "invites_dm cleanup B").await?;
     Ok(())
@@ -5133,6 +5156,124 @@ async fn wait_for_dm_room_in_room_list(
     }
 }
 
+async fn assert_dm_space_scope_for_qa(
+    conn: &mut CoreConnection,
+    member_space_id: &str,
+    member_dm_room_id: &str,
+    control_dm_room_id: &str,
+) -> Result<(), String> {
+    select_space_scope_for_qa(conn, None, "invites_dm select Home for DM scope").await?;
+    wait_for_sidebar_dm_room_ids(
+        conn,
+        &[member_dm_room_id, control_dm_room_id],
+        "invites_dm Home DM scope",
+    )
+    .await?;
+
+    select_space_scope_for_qa(
+        conn,
+        Some(member_space_id),
+        "invites_dm select member Space for DM scope",
+    )
+    .await?;
+    wait_for_sidebar_dm_room_ids(conn, &[member_dm_room_id], "invites_dm Space DM scope").await
+}
+
+async fn select_space_scope_for_qa(
+    conn: &mut CoreConnection,
+    space_id: Option<&str>,
+    label: &str,
+) -> Result<(), String> {
+    let matches_scope =
+        |snapshot: &AppState| snapshot.navigation.active_space_id.as_deref() == space_id;
+    if matches_scope(&conn.snapshot()) {
+        return Ok(());
+    }
+
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::SelectSpace {
+        request_id,
+        space_id: space_id.map(str::to_owned),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit select space failed: {e}"))?;
+
+    loop {
+        let event = tokio::time::timeout(ROOM_LIST_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| {
+                let snapshot = conn.snapshot();
+                format!(
+                    "{label}: timed out waiting for space selection \
+                     (expected_active={}, observed_active={})",
+                    space_id.is_some(),
+                    snapshot.navigation.active_space_id.is_some()
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::StateChanged(snapshot) if matches_scope(&snapshot) => return Ok(()),
+            CoreEvent::Room(RoomEvent::RoomListUpdated) if matches_scope(&conn.snapshot()) => {
+                return Ok(());
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label}: select space failed: {failure:?}"));
+            }
+            _ if matches_scope(&conn.snapshot()) => return Ok(()),
+            _ => continue,
+        }
+    }
+}
+
+async fn wait_for_sidebar_dm_room_ids(
+    conn: &mut CoreConnection,
+    expected_room_ids: &[&str],
+    label: &str,
+) -> Result<(), String> {
+    let expected = expected_room_ids
+        .iter()
+        .map(|room_id| (*room_id).to_owned())
+        .collect::<BTreeSet<_>>();
+
+    for attempt in 0..5 {
+        if sidebar_dm_room_ids(&conn.snapshot()) == expected {
+            return Ok(());
+        }
+        let sync_label = format!("{label} SyncOnce attempt {}", attempt + 1);
+        sync_once_for_qa(conn, &sync_label).await?;
+    }
+
+    let snapshot = conn.snapshot();
+    let observed_count = sidebar_dm_room_ids(&snapshot).len();
+    if sidebar_dm_room_ids(&snapshot) == expected {
+        return Ok(());
+    }
+
+    Err(format!(
+        "{label}: DM section scope mismatch \
+         (expected_count={}, observed_count={}, active_space={})",
+        expected.len(),
+        observed_count,
+        snapshot.navigation.active_space_id.is_some()
+    ))
+}
+
+fn sidebar_dm_room_ids(snapshot: &AppState) -> BTreeSet<String> {
+    compose_sidebar(
+        snapshot.navigation.active_space_id.as_deref(),
+        &snapshot.spaces,
+        &snapshot.rooms,
+    )
+    .global_dms
+    .into_iter()
+    .map(|room| room.room_id)
+    .collect()
+}
+
 async fn wait_for_invite_in_snapshot(
     conn: &mut CoreConnection,
     expected_room_id: &str,
@@ -7626,6 +7767,7 @@ struct QaConfig {
     password_a: String,
     user_b: String,
     password_b: String,
+    user_c: Option<String>,
     /// Expected sync backend ("SyncService" | "LegacySync"); QA fails on
     /// mismatch when set. Plain assertion input, not a credential.
     expect_sync_backend: Option<String>,
@@ -7644,9 +7786,17 @@ impl QaConfig {
             password_a: env_required(ENV_PASSWORD_A)?,
             user_b: env_required(ENV_USER_B)?,
             password_b: env_required(ENV_PASSWORD_B)?,
+            user_c: std::env::var(ENV_USER_C).ok(),
             expect_sync_backend: std::env::var(ENV_EXPECT_SYNC_BACKEND).ok(),
             allow_identity_reset: env_flag_enabled(ENV_ALLOW_IDENTITY_RESET)?,
         })
+    }
+
+    fn dm_scope_control_user_id(&self) -> Result<String, String> {
+        let user_c = self.user_c.as_deref().ok_or_else(|| {
+            format!("{ENV_USER_C} is required for the invites_dm dm_space_scope check")
+        })?;
+        Ok(format!("@{}:{}", user_c, self.server_name))
     }
 }
 
@@ -12474,6 +12624,7 @@ mod tests {
                 "invite_decline=ok",
                 "member_list=ok",
                 "dm_start=ok",
+                "dm_space_scope=ok",
                 "room_space=ok",
                 "directory_query=ok",
                 "directory_join=ok",
@@ -12684,6 +12835,7 @@ mod tests {
                 "invite_decline=ok",
                 "member_list=ok",
                 "dm_start=ok",
+                "dm_space_scope=ok",
                 "restore_cleanup=ok",
             ]
         );
@@ -12921,6 +13073,7 @@ mod tests {
                 "invite_decline=ok",
                 "member_list=ok",
                 "dm_start=ok",
+                "dm_space_scope=ok",
                 "room_space=ok",
                 "directory_query=ok",
                 "directory_join=ok",
