@@ -890,7 +890,10 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             highlight_count: 0,
             marked_unread: false,
             last_activity_ms: 0,
-            parent_space_ids: Vec::new(),
+            parent_space_ids: vec![
+                DEFAULT_SPACE_ID.to_owned(),
+                "!space-beta:example.invalid".to_owned(),
+            ],
             dm_space_ids: Vec::new(),
             is_encrypted: false,
             joined_members: 0,

@@ -47,10 +47,12 @@ pub fn compose_room_list_update(update: DesktopRoomListUpdate) -> AppAction {
         .rooms
         .into_iter()
         .map(|room| {
-            let parent_space_ids = if room.is_dm {
-                Vec::new()
+            let normalized = normalized_parent_space_ids(room.parent_space_ids, &known_space_ids);
+
+            let (parent_space_ids, dm_space_ids) = if room.is_dm {
+                (Vec::new(), normalized)
             } else {
-                normalized_parent_space_ids(room.parent_space_ids, &known_space_ids)
+                (normalized, Vec::new())
             };
 
             for parent_space_id in &parent_space_ids {
@@ -78,7 +80,7 @@ pub fn compose_room_list_update(update: DesktopRoomListUpdate) -> AppAction {
                 marked_unread: false,
                 last_activity_ms: 0,
                 parent_space_ids,
-                dm_space_ids: Vec::new(),
+                dm_space_ids,
                 is_encrypted: false,
                 joined_members: room.joined_members,
             }

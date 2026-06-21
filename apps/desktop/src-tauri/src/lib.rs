@@ -2671,6 +2671,7 @@ mod tests {
             "searchCrawlCompleted",
             "searchCrawlFailed",
             "searchCrawlProgress",
+            "stateDeltaSearchCrawlerQueued",
             "syncModeChanged",
             "threadsListOpened",
             "timelineDisplayLabelsUpdated",
