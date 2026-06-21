@@ -1737,7 +1737,7 @@ function SearchHistorySection({
 }) {
   const roomEntries = crawlerRoomEntries(crawlerState.rooms, rooms);
   const crawlerSummary = summarizeCrawlerRooms(roomEntries);
-  const activeRoomEntries = roomEntries.filter((entry) => entry.roomState.kind === "running");
+  const activeRoomEntry = roomEntries.find((entry) => entry.roomState.kind === "running") ?? roomEntries.find((entry) => entry.roomState.kind === "queued");
   const crawlerPaused = crawlerSettings.speed === "paused";
 
   function toggleCrawlerPaused() {
@@ -1775,56 +1775,57 @@ function SearchHistorySection({
         </div>
         <div className="settings-control-row">
           <span>{t("settings.searchHistoryCrawler")}</span>
-          <div className="settings-inline-actions">
-            <button
-              className="dialog-button secondary"
-              type="button"
-              disabled={isSaving}
-              onClick={toggleCrawlerPaused}
-            >
-              {crawlerPaused ? t("settings.searchHistoryResume") : t("settings.searchHistoryPause")}
-            </button>
-            <button
-              className="dialog-button danger"
-              type="button"
-              disabled={isSaving || !onRebuildSearchIndex}
-              onClick={confirmRebuildSearchIndex}
-            >
-              {t("settings.searchHistoryRebuild")}
-            </button>
+          <div className="crawler-action-row">
+            <div className="settings-inline-actions">
+              <button
+                className={`dialog-button secondary crawler-pause-button ${crawlerPaused ? "is-active" : ""}`}
+                type="button"
+                disabled={isSaving}
+                aria-pressed={crawlerPaused}
+                data-active={crawlerPaused ? "true" : "false"}
+                onClick={toggleCrawlerPaused}
+              >
+                {crawlerPaused ? t("settings.searchHistoryResume") : t("settings.searchHistoryPause")}
+              </button>
+              <button
+                className="dialog-button danger"
+                type="button"
+                disabled={isSaving || !onRebuildSearchIndex}
+                onClick={confirmRebuildSearchIndex}
+              >
+                {t("settings.searchHistoryRebuild")}
+              </button>
+            </div>
+            {isSaving ? <span className="settings-save-state crawler-control-status">{t("settings.saving")}</span> : null}
           </div>
         </div>
       </div>
-      {roomEntries.length > 0 ? (
-        <section
-          className="settings-section crawler-activity-section"
-          aria-label={t("settings.searchHistoryActivity")}
-        >
-          <div className="settings-section-heading">
-            <h4 className="settings-subheading">{t("settings.searchHistoryActivity")}</h4>
-            <span className="settings-save-state">
-              {t("settings.searchHistoryActivitySummary", crawlerSummary)}
-            </span>
+      <section
+        className="settings-section crawler-activity-section"
+        aria-label={t("settings.searchHistoryActivity")}
+      >
+        <div className="settings-section-heading">
+          <h4 className="settings-subheading">{t("settings.searchHistoryActivity")}</h4>
+          <span className="settings-save-state">
+            {t("settings.searchHistoryActivitySummary", crawlerSummary)}
+          </span>
+        </div>
+        {activeRoomEntry ? (
+          <div className="settings-detail-list compact crawler-activity-list">
+            <CrawlerRoomRow
+              roomId={activeRoomEntry.roomId}
+              displayLabel={activeRoomEntry.displayLabel}
+              roomState={activeRoomEntry.roomState}
+              onStart={onStartCrawlRoom}
+              onStop={onStopCrawlRoom}
+              showActions={false}
+            />
           </div>
-          {activeRoomEntries.length > 0 ? (
-            <div className="settings-detail-list compact">
-              {activeRoomEntries.slice(0, 6).map((entry) => (
-                <CrawlerRoomRow
-                  key={entry.roomId}
-                  roomId={entry.roomId}
-                  displayLabel={entry.displayLabel}
-                  roomState={entry.roomState}
-                  onStart={onStartCrawlRoom}
-                  onStop={onStopCrawlRoom}
-                />
-              ))}
-            </div>
-          ) : (
-            <p className="settings-muted-note">{t("settings.searchHistoryActivityIdle")}</p>
-          )}
-          <p className="settings-muted-note">{t("settings.searchHistoryActivityHint")}</p>
-        </section>
-      ) : null}
+        ) : (
+          <p className="settings-muted-note">{t("settings.searchHistoryActivityIdle")}</p>
+        )}
+        <p className="settings-muted-note">{t("settings.searchHistoryActivityHint")}</p>
+      </section>
       <div className="settings-toggle-list">
         <CrawlerToggle
           label={t("settings.searchHistoryIncludeCaptions")}
@@ -1843,11 +1844,11 @@ function SearchHistorySection({
       </div>
       {roomEntries.length > 0 ? (
         <section
-          className="settings-section"
+          className="settings-section crawler-room-status-panel"
           aria-label={t("settings.searchHistoryRoomStatus")}
         >
           <h4 className="settings-subheading">{t("settings.searchHistoryRoomStatus")}</h4>
-          <div className="settings-detail-list">
+          <div className="settings-detail-list crawler-room-status-list">
             {roomEntries.map(({ roomId, roomState, displayLabel }) => {
               return (
                 <CrawlerRoomRow
@@ -1857,6 +1858,7 @@ function SearchHistorySection({
                   roomState={roomState}
                   onStart={onStartCrawlRoom}
                   onStop={onStopCrawlRoom}
+                  showActions={true}
                 />
               );
             })}
@@ -1991,7 +1993,8 @@ function CrawlerRoomRow({
   displayLabel,
   roomState,
   onStart,
-  onStop
+  onStop,
+  showActions = true
 }: {
   roomId: string;
   /** Rust-projected display label from RoomSummary; never render the raw roomId. */
@@ -1999,6 +2002,7 @@ function CrawlerRoomRow({
   roomState: SearchCrawlerRoomState;
   onStart?: (roomId: string) => void;
   onStop?: (roomId: string) => void;
+  showActions?: boolean;
 }) {
   const statusLabel = crawlerRoomStatusLabel(roomState);
   const isRunning = roomState.kind === "running";
@@ -2010,7 +2014,7 @@ function CrawlerRoomRow({
     <div className="settings-detail-row">
       <span dir="auto">{visibleLabel}</span>
       <small data-crawler-room-kind={roomState.kind}>{statusLabel}</small>
-      {isRunning && onStop ? (
+      {showActions && isRunning && onStop ? (
         <button
           className="profile-settings-action"
           type="button"
@@ -2019,7 +2023,7 @@ function CrawlerRoomRow({
         >
           {t("settings.searchHistoryStopRoom")}
         </button>
-      ) : !isRunning && roomState.kind !== "completed" && onStart ? (
+      ) : showActions && !isRunning && roomState.kind !== "completed" && onStart ? (
         <button
           className="profile-settings-action"
           type="button"

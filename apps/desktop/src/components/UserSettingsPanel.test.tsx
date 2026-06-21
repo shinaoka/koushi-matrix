@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { renderToStaticMarkup } from "react-dom/server";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { UserSettingsPanel } from "./UserSettingsPanel";
@@ -291,10 +291,125 @@ describe("UserSettingsPanel", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Resume crawler" }));
+    const resumeButton = screen.getByRole("button", { name: "Resume crawler" });
+    expect(resumeButton.getAttribute("aria-pressed")).toBe("true");
+    expect(resumeButton.getAttribute("data-active")).toBe("true");
+
+    fireEvent.click(resumeButton);
     expect(onUpdateSettings).toHaveBeenCalledWith({
       search_crawler: { ...settings.values.search_crawler, speed: "standard" }
     });
+  });
+
+  test("shows crawler saving feedback and separates activity from room status", () => {
+    const rooms = [
+      {
+        room_id: "!queued:example.invalid",
+        display_name: "Queued room",
+        display_label: "Queued room",
+        original_display_label: "Queued room",
+        avatar: null,
+        is_dm: false,
+        dm_user_ids: [],
+        tags: { favourite: null, low_priority: null },
+        unread_count: 0,
+        parent_space_ids: [],
+        dm_space_ids: [],
+        is_encrypted: true
+      },
+      {
+        room_id: "!running:example.invalid",
+        display_name: "Running room",
+        display_label: "Running room",
+        original_display_label: "Running room",
+        avatar: null,
+        is_dm: false,
+        dm_user_ids: [],
+        tags: { favourite: null, low_priority: null },
+        unread_count: 0,
+        parent_space_ids: [],
+        dm_space_ids: [],
+        is_encrypted: true
+      },
+      {
+        room_id: "!complete:example.invalid",
+        display_name: "Complete room",
+        display_label: "Complete room",
+        original_display_label: "Complete room",
+        avatar: null,
+        is_dm: false,
+        dm_user_ids: [],
+        tags: { favourite: null, low_priority: null },
+        unread_count: 0,
+        parent_space_ids: [],
+        dm_space_ids: [],
+        is_encrypted: true
+      },
+      {
+        room_id: "!failed:example.invalid",
+        display_name: "Failed room",
+        display_label: "Failed room",
+        original_display_label: "Failed room",
+        avatar: null,
+        is_dm: false,
+        dm_user_ids: [],
+        tags: { favourite: null, low_priority: null },
+        unread_count: 0,
+        parent_space_ids: [],
+        dm_space_ids: [],
+        is_encrypted: true
+      }
+    ] satisfies RoomSummary[];
+
+    render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={{
+          ...settings,
+          persistence: { kind: "saving", request_id: 42 }
+        }}
+        searchCrawlerState={{
+          rooms: {
+            "!failed:example.invalid": { kind: "failed", failureKind: "sdk" },
+            "!complete:example.invalid": { kind: "completed", indexed: 10 },
+            "!running:example.invalid": { kind: "running", processed: 4, indexed: 3 },
+            "!queued:example.invalid": { kind: "queued" }
+          }
+        }}
+        rooms={rooms}
+        {...handlers}
+      />
+    );
+
+    const crawlerActivity = screen.getByRole("region", { name: "Search crawler activity" });
+    const crawlerStatus = screen.getByRole("region", { name: "Room index status" });
+    const activityScope = within(crawlerActivity);
+    const statusScope = within(crawlerStatus);
+
+    expect(crawlerActivity).toBeTruthy();
+    expect(crawlerStatus).toBeTruthy();
+    expect(screen.getByText("1 running, 1 queued, 1 complete, 1 failed")).toBeTruthy();
+    expect(activityScope.getByText("Running room")).toBeTruthy();
+    expect(statusScope.getByText("Queued room")).toBeTruthy();
+    expect(
+      screen
+        .getAllByText("Saving")
+        .some((element) => element.classList.contains("crawler-control-status"))
+    ).toBe(true);
+    expect(statusScope.getByText("Complete room")).toBeTruthy();
+    expect(statusScope.getByText("Failed room")).toBeTruthy();
   });
 
   test("confirms search index rebuild before invoking the destructive action", () => {
@@ -330,77 +445,6 @@ describe("UserSettingsPanel", () => {
     confirmSpy.mockReturnValue(true);
     fireEvent.click(screen.getByRole("button", { name: "Rebuild search database" }));
     expect(onRebuildSearchIndex).toHaveBeenCalledTimes(1);
-  });
-
-  test("shows the selected crawl speed and currently indexing rooms first", () => {
-    const rooms = [
-      {
-        room_id: "!running:example.invalid",
-        display_name: "Running room",
-        display_label: "Running room",
-        original_display_label: "Running room",
-        avatar: null,
-        is_dm: false,
-        dm_user_ids: [],
-        tags: { favourite: null, low_priority: null },
-        unread_count: 0,
-        parent_space_ids: [],
-        dm_space_ids: [],
-        is_encrypted: true
-      },
-      {
-        room_id: "!complete:example.invalid",
-        display_name: "Complete room",
-        display_label: "Complete room",
-        original_display_label: "Complete room",
-        avatar: null,
-        is_dm: false,
-        dm_user_ids: [],
-        tags: { favourite: null, low_priority: null },
-        unread_count: 0,
-        parent_space_ids: [],
-        dm_space_ids: [],
-        is_encrypted: true
-      }
-    ] satisfies RoomSummary[];
-
-    render(
-      <UserSettingsPanel
-        currentSession={{
-          homeserver: "https://matrix.org",
-          user_id: "@demo-user:example.invalid",
-          device_id: "FAKEDEVICE"
-        }}
-        e2eeTrust={idleE2eeTrust}
-        localEncryption={{ kind: "healthy" }}
-        platform="linux"
-        deviceSessions={idleDeviceSessions}
-        accountManagement={idleAccountManagement}
-        accountManagementCapabilities={idleAccountManagementCapabilities}
-        savedSessions={[]}
-        profile={profile}
-        settings={settings}
-        searchCrawlerState={{
-          rooms: {
-            "!complete:example.invalid": { kind: "completed", indexed: 10 },
-            "!running:example.invalid": { kind: "running", processed: 4, indexed: 3 }
-          }
-        }}
-        rooms={rooms}
-        {...handlers}
-      />
-    );
-
-    expect(screen.getByRole("button", { name: /Standard, Current/ }).getAttribute("aria-pressed"))
-      .toBe("true");
-    expect(screen.getByText("Search crawler activity")).toBeTruthy();
-    expect(
-      screen.getByText(
-        "Processed means timeline events scanned. Indexed means searchable messages written to the local database."
-      )
-    ).toBeTruthy();
-    expect(screen.getAllByText("Running room").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("1 running, 0 queued, 1 complete, 0 failed")).toBeTruthy();
   });
 
   test("renders the Rust-owned code block wrap display setting", () => {

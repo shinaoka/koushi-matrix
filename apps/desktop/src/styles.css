@@ -4222,6 +4222,22 @@ mark {
   gap: 8px;
 }
 
+.crawler-action-row {
+  display: grid;
+  gap: 6px;
+}
+
+.crawler-pause-button[aria-pressed="true"],
+.crawler-pause-button.is-active {
+  color: var(--brand-hover);
+  border-color: var(--brand);
+  background: var(--brand-weak);
+}
+
+.crawler-control-status {
+  justify-self: start;
+}
+
 .dialog-button.danger {
   border-color: rgb(220 38 38 / 40%);
   color: #dc2626;
@@ -4376,6 +4392,19 @@ mark {
 .crawler-activity-section {
   display: grid;
   gap: 8px;
+}
+
+.crawler-activity-list {
+  overflow: hidden;
+}
+
+.crawler-room-status-panel {
+  gap: 6px;
+}
+
+.crawler-room-status-list {
+  max-block-size: 280px;
+  overflow: auto;
 }
 
 .settings-detail-list {
