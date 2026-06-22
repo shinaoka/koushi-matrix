@@ -430,6 +430,13 @@ export interface NavigationState {
   active_room_id: string | null;
   space_order?: string[];
   last_room_by_space_id?: Record<string, string>;
+  room_scroll_anchors?: Record<string, TimelineScrollAnchor>;
+}
+
+export interface TimelineScrollAnchor {
+  event_id: string;
+  offset_px: number;
+  updated_at_ms: number;
 }
 
 export interface ProfileState {

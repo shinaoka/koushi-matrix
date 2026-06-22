@@ -91,12 +91,13 @@ use crate::command::{
 };
 use crate::event::{
     CoreEvent, LinkPreviewState, LiveSignalsEvent, PaginationDirection, PaginationState,
-    ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
-    TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageActions,
-    TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
-    TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan, TimelineUnableToDecrypt,
-    TimelineUnableToDecryptReason, TimelineUnreadPosition, TimelineViewportObservation,
-    message_actions_for_timeline_item, message_source_for_timeline_item,
+    ThreadSummaryDto, TimelineAnchorRestoreStatus, TimelineDiff, TimelineEvent, TimelineItem,
+    TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
+    TimelineMessageActions, TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot,
+    TimelineResyncReason, TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
+    TimelineUnableToDecrypt, TimelineUnableToDecryptReason, TimelineUnreadPosition,
+    TimelineViewportObservation, message_actions_for_timeline_item,
+    message_source_for_timeline_item,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -174,7 +175,7 @@ impl TimelineManagerActor {
         data_dir: Option<std::path::PathBuf>,
         messages_backpressure: MessagesBackpressure,
     ) -> TimelineManagerHandle {
-        let (tx, msg_rx) = mpsc::channel(64);
+        let (tx, msg_rx) = mpsc::channel(crate::runtime::ACTOR_MESSAGE_QUEUE_CAPACITY);
         let actor = TimelineManagerActor {
             session: None,
             room_list_service: None,
@@ -203,7 +204,7 @@ impl TimelineManagerActor {
         link_preview_policy: LinkPreviewContext,
         messages_backpressure: MessagesBackpressure,
     ) -> TimelineManagerHandle {
-        let (tx, msg_rx) = mpsc::channel(64);
+        let (tx, msg_rx) = mpsc::channel(crate::runtime::ACTOR_MESSAGE_QUEUE_CAPACITY);
         let actor = TimelineManagerActor {
             session: Some(session),
             room_list_service: None,
@@ -275,6 +276,35 @@ impl TimelineManagerActor {
                     },
                 )
                 .await;
+            }
+            TimelineCommand::RestoreTimelineAnchor {
+                request_id,
+                key,
+                event_id,
+                max_batches,
+                event_count,
+            } => {
+                if matches!(&key.kind, TimelineKind::Room { .. }) {
+                    self.route_to_actor_or_fail(
+                        request_id,
+                        &key,
+                        TimelineActorMessage::RestoreTimelineAnchor {
+                            request_id,
+                            event_id,
+                            max_batches,
+                            event_count,
+                        },
+                    )
+                    .await;
+                } else {
+                    self.emit(CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
+                        request_id,
+                        key,
+                        status: TimelineAnchorRestoreStatus::Failed {
+                            kind: TimelineFailureKind::NotSubscribed,
+                        },
+                    }));
+                }
             }
             TimelineCommand::ObserveViewport {
                 request_id,
@@ -691,6 +721,15 @@ impl TimelineManagerActor {
     }
 
     async fn handle_subscribe(&mut self, request_id: RequestId, key: TimelineKey) {
+        // Diagnostic-only, private-data-free stage trace (no room/event ids).
+        // Enable with KOUSHI_SUBSCRIBE_TRACE=1 to find which `.await` stalls
+        // before InitialItems is emitted. Off by default.
+        let trace = |stage: &str| {
+            if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+                eprintln!("koushi.subscribe stage={stage}");
+            }
+        };
+        trace("start");
         let Some(session) = &self.session else {
             self.emit_failure(
                 request_id,
@@ -701,11 +740,35 @@ impl TimelineManagerActor {
             return;
         };
 
-        // If already subscribed, resubscribe: drop old actor, create new one.
-        // TimelineView calls ensure after registering its listener so the
-        // freshly mounted view receives a fresh InitialItems batch.
-        if self.timelines.contains_key(&key) {
-            self.timelines.remove(&key);
+        // Idempotency: if the identical key is already subscribed, do NOT drop
+        // and rebuild the SDK subscription.  The full rebuild was 4-8 expensive
+        // `subscribe_to_rooms` / timeline-build cycles per room on snapshot
+        // churn (issue #116).  Instead, ask the existing actor to re-emit its
+        // current navigation_items as InitialItems for this request_id so a
+        // freshly re-mounted TimelineView is still populated.
+        // Confine the `&self.timelines` borrow to the closure so the Err arm
+        // can `remove` (a `&mut` borrow) without a conflict.
+        let replay_result = self.timelines.get(&key).map(|handle| {
+            handle
+                .tx
+                .try_send(TimelineActorMessage::ReplayInitialItems { request_id })
+        });
+        match replay_result {
+            Some(Ok(())) => {
+                // Re-emit the subscribed action so the reducer re-confirms
+                // `is_subscribed = true` (idempotent in the reducer).
+                self.emit_timeline_subscribed_action(&key);
+                trace("subscribed_done");
+                return;
+            }
+            Some(Err(_)) => {
+                // Mailbox full or closed: the cheap replay could not be
+                // delivered, so drop the stale handle and fall through to a
+                // full rebuild, which is guaranteed to emit InitialItems for
+                // this request_id (a re-mounted view must be populated).
+                self.timelines.remove(&key);
+            }
+            None => {}
         }
 
         let client = session.client();
@@ -747,7 +810,9 @@ impl TimelineManagerActor {
         // only guarantees the initial window on some servers (Conduit).
         // This is the Element X room-open pattern.
         if let Some(service) = &self.room_list_service {
+            trace("subscribe_rooms_begin");
             service.subscribe_to_rooms(&[&room_id]).await;
+            trace("subscribe_rooms_done");
         }
 
         let focus = match &key.kind {
@@ -793,10 +858,12 @@ impl TimelineManagerActor {
             }
         };
 
+        trace("build_begin");
         let timeline_result = matrix_sdk_ui::timeline::TimelineBuilder::new(&room)
             .with_focus(focus)
             .build()
             .await;
+        trace("build_done");
 
         let timeline = match timeline_result {
             Ok(t) => Arc::new(t),
@@ -811,6 +878,7 @@ impl TimelineManagerActor {
             }
         };
 
+        trace("spawn_begin");
         let handle = TimelineActor::spawn(
             key.clone(),
             timeline,
@@ -825,9 +893,11 @@ impl TimelineManagerActor {
             self.messages_backpressure.clone(),
         )
         .await;
+        trace("spawn_done");
 
         self.emit_timeline_subscribed_action(&key);
         self.timelines.insert(key, handle);
+        trace("subscribed_done");
     }
 
     async fn route_to_actor_or_fail(
@@ -1152,6 +1222,15 @@ enum TimelineActorMessage {
         direction: PaginationDirection,
         event_count: u16,
     },
+    RestoreTimelineAnchor {
+        request_id: RequestId,
+        event_id: String,
+        max_batches: u16,
+        event_count: u16,
+    },
+    RestoreTimelineAnchorContinue {
+        serial: u64,
+    },
     ObserveViewport {
         observation: TimelineViewportObservation,
     },
@@ -1258,6 +1337,14 @@ enum TimelineActorMessage {
     SendQueueUpdate(RoomSendQueueUpdate),
     /// Internal: relay task hit overflow — must resync.
     RelayOverflow,
+    /// Internal: re-emit the current navigation_items as InitialItems for a
+    /// new request_id without tearing down the SDK subscription.  Sent by
+    /// `handle_subscribe` when the key is already subscribed (idempotency
+    /// path) so a freshly re-mounted TimelineView still receives an
+    /// InitialItems batch.
+    ReplayInitialItems {
+        request_id: RequestId,
+    },
 }
 
 struct TimelineActorHandle {
@@ -1303,6 +1390,7 @@ struct TimelineActor {
     session: Arc<MatrixClientSession>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
+    msg_tx: mpsc::Sender<TimelineActorMessage>,
     msg_rx: mpsc::Receiver<TimelineActorMessage>,
     generation: TimelineGeneration,
     next_batch_id: TimelineBatchId,
@@ -1345,6 +1433,20 @@ struct TimelineActor {
     /// Application data directory for cached preview images.
     data_dir: Option<std::path::PathBuf>,
     messages_backpressure: MessagesBackpressure,
+    restore_anchor: Option<RestoreTimelineAnchorState>,
+    next_restore_anchor_serial: u64,
+}
+
+#[derive(Clone, Debug)]
+struct RestoreTimelineAnchorState {
+    request_id: RequestId,
+    event_id: String,
+    max_batches_remaining: u16,
+    event_count: u16,
+    in_flight: bool,
+    awaiting_diff_batch: bool,
+    continuation_scheduled: bool,
+    continuation_serial: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1403,6 +1505,13 @@ impl TimelineActor {
 
         // Emit InitialItems (generation 0).
         let generation = TimelineGeneration(0);
+        if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+            // Private-data-free: item count only, no room/event ids or bodies.
+            eprintln!(
+                "koushi.subscribe stage=initial_emitted count={}",
+                initial_items.len()
+            );
+        }
         let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::InitialItems {
             request_id: Some(subscribe_request_id),
             key: key.clone(),
@@ -1483,6 +1592,7 @@ impl TimelineActor {
             session,
             action_tx,
             event_tx,
+            msg_tx: actor_tx.clone(),
             msg_rx: actor_rx,
             generation,
             next_batch_id: TimelineBatchId(0),
@@ -1504,6 +1614,8 @@ impl TimelineActor {
             link_preview_policy,
             data_dir,
             messages_backpressure,
+            restore_anchor: None,
+            next_restore_anchor_serial: 0,
         };
 
         let task = executor::spawn(actor.run());
@@ -1530,6 +1642,18 @@ impl TimelineActor {
             } => {
                 self.handle_paginate(request_id, direction, event_count)
                     .await;
+            }
+            TimelineActorMessage::RestoreTimelineAnchor {
+                request_id,
+                event_id,
+                max_batches,
+                event_count,
+            } => {
+                self.handle_restore_timeline_anchor(request_id, event_id, max_batches, event_count)
+                    .await;
+            }
+            TimelineActorMessage::RestoreTimelineAnchorContinue { serial } => {
+                self.handle_restore_timeline_anchor_continue(serial).await;
             }
             TimelineActorMessage::ObserveViewport { observation } => {
                 self.viewport_observation = observation;
@@ -1709,6 +1833,9 @@ impl TimelineActor {
             TimelineActorMessage::RelayOverflow => {
                 self.handle_relay_overflow().await;
             }
+            TimelineActorMessage::ReplayInitialItems { request_id } => {
+                self.handle_replay_initial_items(request_id);
+            }
         }
     }
 
@@ -1718,6 +1845,15 @@ impl TimelineActor {
         direction: PaginationDirection,
         event_count: u16,
     ) {
+        let _ = self.paginate_once(request_id, direction, event_count).await;
+    }
+
+    async fn paginate_once(
+        &mut self,
+        request_id: RequestId,
+        direction: PaginationDirection,
+        event_count: u16,
+    ) -> Result<bool, TimelineFailureKind> {
         // Enforce direction rule: forward only on Focused (Async rule 5).
         if direction == PaginationDirection::Forward
             && !matches!(self.key.kind, TimelineKind::Focused { .. })
@@ -1728,7 +1864,7 @@ impl TimelineActor {
                     kind: TimelineFailureKind::InvalidDirection,
                 },
             );
-            return;
+            return Err(TimelineFailureKind::InvalidDirection);
         }
 
         // Emit Paginating.
@@ -1758,12 +1894,190 @@ impl TimelineActor {
             }
         };
 
+        let end_reached = matches!(next_state, PaginationState::EndReached);
+        let failure_kind = match &next_state {
+            PaginationState::Failed { kind } => Some(*kind),
+            _ => None,
+        };
         self.emit(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
             request_id: Some(request_id),
             key: self.key.clone(),
             direction,
             state: next_state,
         }));
+        failure_kind.map_or(Ok(end_reached), Err)
+    }
+
+    async fn handle_restore_timeline_anchor(
+        &mut self,
+        request_id: RequestId,
+        event_id: String,
+        max_batches: u16,
+        event_count: u16,
+    ) {
+        if !matches!(self.key.kind, TimelineKind::Room { .. }) {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::NotSubscribed);
+            return;
+        }
+        if event_id.trim().is_empty() || max_batches == 0 || event_count == 0 {
+            self.emit_anchor_restore_finished(
+                request_id,
+                TimelineAnchorRestoreStatus::BudgetExhausted,
+            );
+            return;
+        }
+        if self.timeline_contains_event_id(&event_id) {
+            self.restore_anchor = None;
+            self.emit_anchor_restore_finished(request_id, TimelineAnchorRestoreStatus::Found);
+            return;
+        }
+        if let Some(mut existing) = self.restore_anchor.take() {
+            if existing.event_id == event_id {
+                existing.request_id = request_id;
+                existing.max_batches_remaining = existing.max_batches_remaining.max(max_batches);
+                existing.event_count = event_count;
+                if existing.in_flight
+                    || existing.awaiting_diff_batch
+                    || existing.continuation_scheduled
+                {
+                    self.restore_anchor = Some(existing);
+                } else {
+                    self.schedule_restore_anchor_continue(existing).await;
+                }
+                return;
+            }
+            self.emit_anchor_restore_finished(
+                existing.request_id,
+                TimelineAnchorRestoreStatus::Superseded,
+            );
+        }
+
+        let restore = RestoreTimelineAnchorState {
+            request_id,
+            event_id,
+            max_batches_remaining: max_batches,
+            event_count,
+            in_flight: false,
+            awaiting_diff_batch: false,
+            continuation_scheduled: false,
+            continuation_serial: None,
+        };
+
+        self.schedule_restore_anchor_continue(restore).await;
+    }
+
+    async fn handle_restore_timeline_anchor_continue(&mut self, serial: u64) {
+        let Some(mut restore) = self.restore_anchor.take() else {
+            return;
+        };
+        if restore.continuation_serial != Some(serial) {
+            self.restore_anchor = Some(restore);
+            return;
+        }
+        if restore.in_flight {
+            self.restore_anchor = Some(restore);
+            return;
+        }
+        restore.awaiting_diff_batch = false;
+        restore.continuation_scheduled = false;
+        restore.continuation_serial = None;
+        if self.timeline_contains_event_id(&restore.event_id) {
+            self.emit_anchor_restore_finished(
+                restore.request_id,
+                TimelineAnchorRestoreStatus::Found,
+            );
+            return;
+        }
+        if restore.max_batches_remaining == 0 {
+            self.emit_anchor_restore_finished(
+                restore.request_id,
+                TimelineAnchorRestoreStatus::BudgetExhausted,
+            );
+            return;
+        }
+
+        restore.in_flight = true;
+        restore.max_batches_remaining = restore.max_batches_remaining.saturating_sub(1);
+        let request_id = restore.request_id;
+        let event_count = restore.event_count;
+
+        let result = self
+            .paginate_once(request_id, PaginationDirection::Backward, event_count)
+            .await;
+        restore.in_flight = false;
+
+        if self.timeline_contains_event_id(&restore.event_id) {
+            self.emit_anchor_restore_finished(request_id, TimelineAnchorRestoreStatus::Found);
+            return;
+        }
+
+        let end_reached = match result {
+            Ok(end_reached) => end_reached,
+            Err(kind) => {
+                self.emit_anchor_restore_finished(
+                    request_id,
+                    TimelineAnchorRestoreStatus::Failed { kind },
+                );
+                return;
+            }
+        };
+        if end_reached {
+            self.emit_anchor_restore_finished(request_id, TimelineAnchorRestoreStatus::EndReached);
+            return;
+        }
+        if restore.max_batches_remaining == 0 {
+            self.emit_anchor_restore_finished(
+                request_id,
+                TimelineAnchorRestoreStatus::BudgetExhausted,
+            );
+            return;
+        }
+
+        restore.awaiting_diff_batch = true;
+        self.schedule_restore_anchor_continue(restore).await;
+    }
+
+    async fn maybe_continue_restore_anchor_after_diff(&mut self) {
+        let Some(mut restore) = self.restore_anchor.take() else {
+            return;
+        };
+        if restore.in_flight || !restore.awaiting_diff_batch {
+            self.restore_anchor = Some(restore);
+            return;
+        }
+        if self.timeline_contains_event_id(&restore.event_id) {
+            self.emit_anchor_restore_finished(
+                restore.request_id,
+                TimelineAnchorRestoreStatus::Found,
+            );
+            return;
+        }
+        if restore.max_batches_remaining == 0 {
+            self.emit_anchor_restore_finished(
+                restore.request_id,
+                TimelineAnchorRestoreStatus::BudgetExhausted,
+            );
+            return;
+        }
+        if restore.continuation_scheduled {
+            self.restore_anchor = Some(restore);
+            return;
+        }
+
+        restore.awaiting_diff_batch = false;
+        self.schedule_restore_anchor_continue(restore).await;
+    }
+
+    async fn schedule_restore_anchor_continue(&mut self, mut restore: RestoreTimelineAnchorState) {
+        self.next_restore_anchor_serial = self.next_restore_anchor_serial.wrapping_add(1);
+        let serial = self.next_restore_anchor_serial;
+        restore.continuation_scheduled = true;
+        restore.continuation_serial = Some(serial);
+        self.restore_anchor = Some(restore);
+        let _ = self
+            .msg_tx
+            .send(TimelineActorMessage::RestoreTimelineAnchorContinue { serial })
+            .await;
     }
 
     async fn handle_send_text(
@@ -2730,6 +3044,27 @@ impl TimelineActor {
         }
     }
 
+    /// Re-emit `navigation_items` as `InitialItems` for `request_id` without
+    /// touching the SDK subscription or tearing down the actor.  Called when
+    /// `handle_subscribe` detects that this key is already subscribed (the
+    /// idempotency fast path).  The generation is unchanged; the caller only
+    /// needs a fresh InitialItems batch so a re-mounted TimelineView is
+    /// populated.
+    fn handle_replay_initial_items(&self, request_id: RequestId) {
+        if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+            eprintln!(
+                "koushi.subscribe stage=replay_initial_emitted count={}",
+                self.navigation_items.len()
+            );
+        }
+        self.emit(CoreEvent::Timeline(TimelineEvent::InitialItems {
+            request_id: Some(request_id),
+            key: self.key.clone(),
+            generation: self.generation,
+            items: self.navigation_items.clone(),
+        }));
+    }
+
     async fn handle_diff_batch(
         &mut self,
         diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
@@ -2814,6 +3149,7 @@ impl TimelineActor {
 
         let batch_id = self.next_batch_id;
         self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
+        let restore_diff_is_relevant = timeline_diffs_include_prepend(&core_diffs);
 
         self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
             key: self.key.clone(),
@@ -2822,6 +3158,24 @@ impl TimelineActor {
             diffs: core_diffs,
         }));
         self.emit_navigation_if_changed();
+        if self.restore_anchor.is_some() && restore_diff_is_relevant {
+            let restore_event_id = self
+                .restore_anchor
+                .as_ref()
+                .map(|restore| restore.event_id.clone());
+            if let Some(event_id) = restore_event_id {
+                if self.timeline_contains_event_id(&event_id) {
+                    if let Some(restore) = self.restore_anchor.take() {
+                        self.emit_anchor_restore_finished(
+                            restore.request_id,
+                            TimelineAnchorRestoreStatus::Found,
+                        );
+                    }
+                } else {
+                    self.maybe_continue_restore_anchor_after_diff().await;
+                }
+            }
+        }
     }
 
     async fn handle_ignored_users_updated(&mut self, user_ids: std::collections::BTreeSet<String>) {
@@ -2886,13 +3240,7 @@ impl TimelineActor {
             }
 
             preview.state = LinkPreviewState::Loading;
-            match crate::link_preview::fetch_link_preview(
-                &self.session,
-                &preview.url,
-                self.data_dir.as_deref(),
-            )
-            .await
-            {
+            match crate::link_preview::fetch_link_preview(&self.session, &preview.url).await {
                 Ok(fetched) => {
                     self.link_preview_policy
                         .cache
@@ -3317,6 +3665,12 @@ impl TimelineActor {
         ids
     }
 
+    fn timeline_contains_event_id(&self, event_id: &str) -> bool {
+        self.navigation_items.iter().any(
+            |item| matches!(&item.id, TimelineItemId::Event { event_id: id } if id == event_id),
+        )
+    }
+
     async fn project_message_source_for_event(
         &self,
         event_id: &str,
@@ -3527,10 +3881,30 @@ impl TimelineActor {
             generation: self.generation,
             items,
         }));
+        if let Some(restore) = self.restore_anchor.take() {
+            self.emit_anchor_restore_finished(
+                restore.request_id,
+                TimelineAnchorRestoreStatus::Failed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+            );
+        }
     }
 
     fn emit(&self, event: CoreEvent) {
         let _ = self.event_tx.send(event);
+    }
+
+    fn emit_anchor_restore_finished(
+        &self,
+        request_id: RequestId,
+        status: TimelineAnchorRestoreStatus,
+    ) {
+        self.emit(CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
+            request_id,
+            key: self.key.clone(),
+            status,
+        }));
     }
 
     /// Reliably deliver an `AppAction` to the reducer.  Uses `send` (not
@@ -4022,6 +4396,19 @@ fn apply_timeline_diffs_to_items(items: &mut Vec<TimelineItem>, diffs: &[Timelin
             }
         }
     }
+}
+
+fn timeline_diffs_include_prepend(diffs: &[TimelineDiff]) -> bool {
+    diffs.iter().any(|diff| match diff {
+        TimelineDiff::PushFront { .. } => true,
+        TimelineDiff::Insert { index, .. } => *index == 0,
+        TimelineDiff::Reset { .. } => true,
+        TimelineDiff::PushBack { .. }
+        | TimelineDiff::Set { .. }
+        | TimelineDiff::Remove { .. }
+        | TimelineDiff::Truncate { .. }
+        | TimelineDiff::Clear => false,
+    })
 }
 
 fn apply_ignored_sender_suppression(
@@ -6696,8 +7083,15 @@ mod tests {
         );
     }
 
+    /// Contract: re-ensuring an already-subscribed identical key takes the
+    /// cheap path — ask the existing actor to replay InitialItems for the new
+    /// request_id and return early, so NO `subscribe_to_rooms` / timeline
+    /// teardown happens on snapshot churn. Only when the cheap replay cannot be
+    /// delivered (mailbox full/closed) does it fall back to a full rebuild so a
+    /// re-mounted view is still guaranteed InitialItems. A different (new) key
+    /// always falls through to the full subscribe path.
     #[test]
-    fn timeline_subscribe_replaces_existing_keys_to_replay_initial_items() {
+    fn timeline_subscribe_is_idempotent_for_existing_key() {
         let source = include_str!("timeline.rs");
         let handle_subscribe_source = source
             .split("async fn handle_subscribe")
@@ -6706,21 +7100,45 @@ mod tests {
             .split("async fn route_to_actor_or_fail")
             .next()
             .expect("route helper should follow handle_subscribe");
+
+        // The existing-key branch must be present and must end with an early
+        // return — proving the full SDK rebuild is skipped.
         let existing_key_branch = handle_subscribe_source
-            .split("if self.timelines.contains_key(&key)")
+            .split("let replay_result = self.timelines.get(&key)")
             .nth(1)
-            .expect("handle_subscribe should detect an existing subscription")
+            .expect("handle_subscribe must detect an already-subscribed key via timelines.get")
             .split("let client = session.client()")
             .next()
-            .expect("existing-subscription branch should precede SDK timeline creation");
+            .expect("existing-key branch must precede the new-key SDK path");
 
         assert!(
-            existing_key_branch.contains("self.timelines.remove(&key)"),
-            "re-ensuring an already subscribed timeline must rebuild the actor so a freshly mounted view receives InitialItems"
+            existing_key_branch.contains("ReplayInitialItems"),
+            "re-ensuring an already subscribed timeline must send ReplayInitialItems to the existing actor (no SDK teardown on the success path)"
         );
         assert!(
-            !existing_key_branch.contains("return;"),
-            "existing subscriptions must continue into SDK timeline creation after dropping the old actor"
+            existing_key_branch.contains("return;"),
+            "the cheap replay path must return early, skipping subscribe_to_rooms and the full SDK rebuild"
+        );
+        // The success (Ok) arm does the cheap replay and returns; the existing-key
+        // branch never re-runs the SDK `subscribe_to_rooms` (which lives after
+        // `let client = session.client()`). An undeliverable replay (full/closed
+        // mailbox) intentionally falls back to a full rebuild via
+        // `self.timelines.remove(&key)`, so no "must-not-remove" assertion here.
+
+        // The new-key (full subscribe) path must still call subscribe_to_rooms
+        // and build a fresh timeline.
+        let new_key_path = handle_subscribe_source
+            .split("let client = session.client()")
+            .nth(1)
+            .expect("new-key SDK path must follow the existing-key branch");
+
+        assert!(
+            new_key_path.contains("service.subscribe_to_rooms"),
+            "a new (not yet subscribed) key must still call subscribe_to_rooms"
+        );
+        assert!(
+            new_key_path.contains("TimelineBuilder::new"),
+            "a new (not yet subscribed) key must still build an SDK timeline"
         );
     }
 
@@ -6957,6 +7375,42 @@ mod tests {
             source.contains("TimelineKind::Focused { .. } => Self::None")
                 && source.contains("TimelineKind::Focused { .. } => None"),
             "focused timelines must not own composer state"
+        );
+    }
+
+    #[test]
+    fn restore_anchor_handler_is_room_only_and_bounded() {
+        let source = include_str!("timeline.rs");
+        let helper_source = source
+            .split("async fn handle_restore_timeline_anchor(")
+            .nth(1)
+            .expect("restore anchor handler should exist")
+            .split("async fn handle_restore_timeline_anchor_continue")
+            .next()
+            .expect("restore anchor handler should end before send text");
+        let continue_source = source
+            .split("async fn handle_restore_timeline_anchor_continue")
+            .nth(1)
+            .expect("restore anchor continuation should exist")
+            .split("async fn schedule_restore_anchor_continue")
+            .next()
+            .expect("restore anchor continuation should end before scheduler");
+
+        assert!(
+            helper_source.contains("TimelineKind::Room"),
+            "restore anchor must target the live room timeline actor"
+        );
+        assert!(
+            continue_source.contains("PaginationDirection::Backward"),
+            "restore anchor must drive backward pagination"
+        );
+        assert!(
+            helper_source.contains("max_batches") && helper_source.contains("event_count"),
+            "restore anchor must carry a bounded pagination budget"
+        );
+        assert!(
+            !helper_source.contains("TimelineKind::Focused"),
+            "restore anchor must not bootstrap through the focused timeline path"
         );
     }
 

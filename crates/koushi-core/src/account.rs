@@ -27,9 +27,8 @@
 //! SDK handles dropped inside the Tokio runtime context.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     future::Future,
-    hash::{DefaultHasher, Hasher},
     sync::Arc,
     time::Duration,
 };
@@ -48,20 +47,23 @@ use koushi_state::{
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
 use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
 use matrix_sdk::ruma::{MxcUri, OwnedMxcUri};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
 
-use crate::cached_image::cached_image_kind;
 use crate::command::{
     AccountCommand, RoomCommand, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand,
     SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SyncCommand, ThreadsListCommand,
     TimelineCommand,
 };
 use crate::event::{
-    AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, LocalEncryptionEvent,
+    AccountEvent, CoreEvent, E2eeTrustEvent, EventCacheFailureReasonClass,
+    EventCacheSubscribeStatus, LiveSignalsEvent, LocalEncryptionEvent,
 };
 use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
 use crate::link_preview::LinkPreviewContext;
+use crate::renderable_thumbnail::{
+    RenderableThumbnailKind, clear_renderable_thumbnail_cache, store_renderable_thumbnail,
+};
 use crate::room::{RoomActorHandle, RoomMessage};
 use crate::search::SearchActorHandle;
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
@@ -71,6 +73,10 @@ use crate::timeline::{TimelineManagerHandle, TimelineMessage};
 /// "Credential store healthy, but no stored session for that account"
 /// during restore/switch (canon: `CoreFailure::SessionNotFound`).
 const SESSION_NOT_FOUND_FAILURE: CoreFailure = CoreFailure::SessionNotFound;
+
+/// Maximum number of concurrent avatar thumbnail downloads. Bounded to avoid
+/// flooding the SDK media layer with parallel requests during large room joins.
+const AVATAR_DOWNLOAD_CONCURRENCY: usize = 6;
 const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
 const SERVER_LOGOUT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -136,6 +142,16 @@ pub enum AccountMessage {
     IncomingVerificationRequest {
         target: VerificationTarget,
         handle: koushi_sdk::MatrixVerificationRequestHandle,
+    },
+    /// Internal: a spawned avatar-fetch task completed. Never exposed to
+    /// Tauri/React; carries only the resolved state back into the actor loop.
+    /// `generation` matches `AccountActor::avatar_session_generation` at the
+    /// time the task was spawned; stale completions (wrong generation after a
+    /// session change) are silently dropped by `handle_avatar_fetched`.
+    AvatarFetched {
+        mxc_uri: String,
+        generation: u64,
+        thumbnail: AvatarThumbnailState,
     },
     Shutdown,
 }
@@ -273,6 +289,28 @@ pub struct AccountActor {
     /// it is created so rooms that were already known to the reducer at
     /// session-restore time are not missed by the auto-start logic.
     pending_crawler_notification: Option<(Vec<String>, koushi_state::SearchCrawlerSettings)>,
+    /// Actor-owned avatar thumbnail cache: mxc_uri -> last resolved state.
+    /// Mutated only from the actor loop; no shared lock needed.
+    avatar_cache: HashMap<String, AvatarThumbnailState>,
+    /// In-flight fetches: mxc_uri -> waiting request_ids (single-flight dedup).
+    /// The first `DownloadAvatarThumbnail` for a given mxc spawns a task and
+    /// records its `request_id` here; subsequent ones for the same mxc while
+    /// the task is running simply append their `request_id`. When `AvatarFetched`
+    /// arrives every waiter receives `AvatarThumbnailDownloaded`.
+    /// Entries are removed (and all waiters notified) when `AvatarFetched` arrives.
+    avatar_inflight: HashMap<String, Vec<RequestId>>,
+    /// Semaphore bounding concurrent avatar downloads. Cloned into spawned
+    /// fetch tasks; the actor holds one Arc so it can be replaced on session
+    /// clear.
+    avatar_download_semaphore: Arc<Semaphore>,
+    /// Owns all spawned avatar-fetch tasks. Aborted on session clear and
+    /// shutdown (engineering-rules: every spawned task has an owner).
+    avatar_fetch_tasks: tokio::task::JoinSet<()>,
+    /// Incremented by `abort_avatar_fetch_tasks` on every session clear /
+    /// logout / switch / shutdown so that `AvatarFetched` completions that
+    /// were already enqueued before the abort are detected and silently dropped
+    /// instead of being accepted into the new (or absent) session's state.
+    avatar_session_generation: u64,
 }
 
 impl AccountActor {
@@ -282,7 +320,9 @@ impl AccountActor {
         event_tx: broadcast::Sender<CoreEvent>,
         initial_link_preview_policy: LinkPreviewContext,
     ) -> AccountActorHandle {
-        let (tx, command_rx) = mpsc::channel(64);
+        // AppActor forwards every Room/Timeline/Sync command here via send().await;
+        // sized so heavy sync does not block the AppActor's forwarding.
+        let (tx, command_rx) = mpsc::channel(crate::runtime::ACTOR_MESSAGE_QUEUE_CAPACITY);
         let data_dir = store_actor.data_dir().to_path_buf();
         // Spawn RoomActor once at AccountActor creation. It starts with no
         // session and waits for RoomMessage::SyncStarted.
@@ -323,6 +363,11 @@ impl AccountActor {
             incoming_verification_observer: None,
             next_incoming_verification_sequence: INCOMING_VERIFICATION_FLOW_ID_BASE,
             pending_crawler_notification: None,
+            avatar_cache: HashMap::new(),
+            avatar_inflight: HashMap::new(),
+            avatar_download_semaphore: Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY)),
+            avatar_fetch_tasks: tokio::task::JoinSet::new(),
+            avatar_session_generation: 0,
         };
         crate::executor::spawn(actor.run());
         AccountActorHandle { tx }
@@ -398,10 +443,11 @@ impl AccountActor {
                     self.route_search_command(search_command).await;
                 }
                 AccountMessage::NotifySearchCrawlerRoomsAvailable { room_ids, settings } => {
-                    // Room availability for the crawler is latest-wins
-                    // background state. Store it first, then try a
-                    // non-blocking flush so AccountActor does not stall room
-                    // or timeline commands behind crawler mailbox pressure.
+                    // Background lane: crawler room availability is
+                    // latest-wins/coalesced/recoverable state. Store it first,
+                    // then try a non-blocking flush so AccountActor never stalls
+                    // user-intent or foreground room/timeline commands behind
+                    // crawler mailbox pressure.
                     self.pending_crawler_notification = Some((room_ids, settings));
                     self.flush_pending_crawler_notification();
                 }
@@ -442,6 +488,14 @@ impl AccountActor {
                     self.handle_incoming_verification_request(request_id, target, handle)
                         .await;
                 }
+                AccountMessage::AvatarFetched {
+                    mxc_uri,
+                    generation,
+                    thumbnail,
+                } => {
+                    self.handle_avatar_fetched(mxc_uri, generation, thumbnail)
+                        .await;
+                }
             }
             self.flush_pending_crawler_notification();
         }
@@ -456,6 +510,7 @@ impl AccountActor {
         self.stop_sync_actor().await;
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
+        self.abort_avatar_fetch_tasks();
         self.device_session_ordinals.clear();
         self.pending_uia_operations.clear();
         // Drop the session handle inside the runtime context
@@ -879,6 +934,7 @@ impl AccountActor {
         self.clear_room_actor_session().await;
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
+        self.abort_avatar_fetch_tasks();
         self.device_session_ordinals.clear();
         self.pending_uia_operations.clear();
     }
@@ -1590,33 +1646,187 @@ impl AccountActor {
         }
     }
 
-    async fn handle_download_avatar_thumbnail(&self, request_id: RequestId, mxc_uri: String) {
-        let thumbnail = if let Some(session) = &self.session {
-            download_avatar_thumbnail(session, &mxc_uri, &self.data_dir)
+    /// Non-blocking, cache-first avatar thumbnail handler (Stage R1).
+    ///
+    /// 1. Cache hit (`Ready`): emit immediately; no SDK call.
+    /// 2. Already in-flight: return; the completing task will emit.
+    /// 3. Otherwise: insert into `avatar_inflight`, spawn a bounded fetch task
+    ///    that posts `AvatarFetched` back into this actor's inbox.
+    async fn handle_download_avatar_thumbnail(&mut self, request_id: RequestId, mxc_uri: String) {
+        // 1. Cache hit — serve immediately without any I/O.
+        if let Some(cached) = self.avatar_cache.get(&mxc_uri) {
+            if matches!(cached, AvatarThumbnailState::Ready { .. }) {
+                let thumbnail = cached.clone();
+                self.send_actions(vec![AppAction::AvatarThumbnailUpdated {
+                    mxc_uri: mxc_uri.clone(),
+                    thumbnail: thumbnail.clone(),
+                }])
+                .await;
+                self.emit(CoreEvent::Account(
+                    AccountEvent::AvatarThumbnailDownloaded {
+                        request_id,
+                        mxc_uri,
+                        thumbnail,
+                    },
+                ));
+                return;
+            }
+        }
+
+        // 2. Single-flight dedup — a fetch is already running; record this
+        //    request_id so the completing task will emit a terminal event for
+        //    every waiter, then return without spawning a second task.
+        if let Some(waiters) = self.avatar_inflight.get_mut(&mxc_uri) {
+            waiters.push(request_id);
+            return;
+        }
+
+        // 3. No session — emit failure synchronously rather than spawning.
+        let Some(session) = self.session.clone() else {
+            let thumbnail = AvatarThumbnailState::Failed {
+                request_id: request_id.sequence,
+                kind: AvatarThumbnailFailureKind::Sdk,
+            };
+            self.send_actions(vec![AppAction::AvatarThumbnailUpdated {
+                mxc_uri: mxc_uri.clone(),
+                thumbnail: thumbnail.clone(),
+            }])
+            .await;
+            self.emit(CoreEvent::Account(
+                AccountEvent::AvatarThumbnailDownloaded {
+                    request_id,
+                    mxc_uri,
+                    thumbnail,
+                },
+            ));
+            return;
+        };
+
+        // 4. Spawn a bounded fetch task; return immediately.
+        // Record the originating request_id as the first waiter.
+        self.avatar_inflight
+            .insert(mxc_uri.clone(), vec![request_id]);
+        let generation = self.avatar_session_generation;
+        let semaphore = self.avatar_download_semaphore.clone();
+        let tx = self.self_tx.clone();
+        let mxc_uri_clone = mxc_uri.clone();
+
+        self.avatar_fetch_tasks.spawn(async move {
+            // Acquire a permit before hitting the SDK so at most
+            // AVATAR_DOWNLOAD_CONCURRENCY fetches run concurrently.
+            let _permit = semaphore.acquire().await;
+            let thumbnail = download_avatar_thumbnail(&session, &mxc_uri_clone)
                 .await
                 .unwrap_or_else(|kind| AvatarThumbnailState::Failed {
                     request_id: request_id.sequence,
                     kind,
+                });
+            // Best-effort: if the actor is already shut down, the send fails
+            // silently — that is correct because the session is gone anyway.
+            let _ = tx
+                .send(AccountMessage::AvatarFetched {
+                    mxc_uri: mxc_uri_clone,
+                    generation,
+                    thumbnail,
                 })
-        } else {
-            AvatarThumbnailState::Failed {
-                request_id: request_id.sequence,
-                kind: AvatarThumbnailFailureKind::Sdk,
-            }
-        };
+                .await;
+        });
+    }
 
+    /// Called when a spawned avatar-fetch task completes.  Updates the cache,
+    /// removes the in-flight entry, and emits the same outputs as the old
+    /// inline path (only the timing changed).
+    ///
+    /// Fix 1: stale-generation check — if `generation` does not match the
+    /// current `avatar_session_generation` the completion belongs to a previous
+    /// session; it is silently dropped.
+    ///
+    /// Fix 2: every waiter in the `avatar_inflight` Vec receives a terminal
+    /// `AvatarThumbnailDownloaded` event; only one `AvatarThumbnailUpdated`
+    /// action is reduced (one cache write).
+    ///
+    /// Fix 3: completed/aborted JoinSet entries are reaped non-blockingly at
+    /// the start of each call so the JoinSet does not accumulate finished tasks.
+    async fn handle_avatar_fetched(
+        &mut self,
+        mxc_uri: String,
+        generation: u64,
+        thumbnail: AvatarThumbnailState,
+    ) {
+        // Fix 3: drain completed tasks non-blockingly so the JoinSet stays
+        // bounded.  Only finished entries are removed; no async wait.
+        self.reap_avatar_fetch_tasks();
+
+        // Fix 1: drop stale completions from a prior session.
+        if generation != self.avatar_session_generation {
+            return;
+        }
+
+        // Remove and collect all waiting request_ids for this mxc.
+        let waiters = self.avatar_inflight.remove(&mxc_uri).unwrap_or_default();
+
+        // Cache the result so subsequent requests for the same URI are served
+        // from memory.  Only `Ready` entries are treated as cache hits; failed
+        // entries are cached too so repeated requests during a session don't
+        // retry immediately, but a future session clear resets them.
+        self.avatar_cache.insert(mxc_uri.clone(), thumbnail.clone());
+
+        // Emit one state-delta for the reducer (one cache write, regardless of
+        // how many callers were waiting).
         self.send_actions(vec![AppAction::AvatarThumbnailUpdated {
             mxc_uri: mxc_uri.clone(),
             thumbnail: thumbnail.clone(),
         }])
         .await;
-        self.emit(CoreEvent::Account(
-            AccountEvent::AvatarThumbnailDownloaded {
-                request_id,
-                mxc_uri,
-                thumbnail,
-            },
-        ));
+
+        // Fix 2: deliver a terminal event to every waiter. For a Failed
+        // thumbnail, rebuild the payload with each waiter's own request_id so
+        // the inner AvatarThumbnailState::Failed.request_id matches the outer
+        // event request_id (the old inline path produced a per-request payload).
+        for request_id in waiters {
+            let per_waiter = match &thumbnail {
+                AvatarThumbnailState::Failed { kind, .. } => AvatarThumbnailState::Failed {
+                    request_id: request_id.sequence,
+                    kind: kind.clone(),
+                },
+                other => other.clone(),
+            };
+            self.emit(CoreEvent::Account(
+                AccountEvent::AvatarThumbnailDownloaded {
+                    request_id,
+                    mxc_uri: mxc_uri.clone(),
+                    thumbnail: per_waiter,
+                },
+            ));
+        }
+    }
+
+    /// Non-blocking reap of completed/aborted avatar-fetch JoinSet entries.
+    /// Must not `.await`; called synchronously inside the actor message loop.
+    fn reap_avatar_fetch_tasks(&mut self) {
+        while self.avatar_fetch_tasks.try_join_next().is_some() {}
+    }
+
+    /// Abort all in-flight avatar fetch tasks and clear the per-session cache.
+    /// Called on session clear (logout / account switch) and on shutdown.
+    ///
+    /// Fix 1: increment `avatar_session_generation` so that any `AvatarFetched`
+    /// messages that were already queued before the abort are recognised as
+    /// stale by `handle_avatar_fetched` and silently dropped.
+    fn abort_avatar_fetch_tasks(&mut self) {
+        // Replace (drop) the JoinSet rather than only abort_all(): dropping a
+        // JoinSet aborts all its tasks AND discards their entries, so cancelled
+        // tasks do not linger across repeated request -> session-clear cycles.
+        self.avatar_fetch_tasks = tokio::task::JoinSet::new();
+        self.avatar_inflight.clear();
+        self.avatar_cache.clear();
+        clear_renderable_thumbnail_cache();
+        // Replace the semaphore so any task that manages to run after abort
+        // cannot accidentally re-use a poisoned permit count.
+        self.avatar_download_semaphore = Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY));
+        // Advance the generation counter so stale completions from tasks that
+        // were spawned before this abort are silently rejected.
+        self.avatar_session_generation = self.avatar_session_generation.wrapping_add(1);
     }
 
     async fn handle_ignore_user(&mut self, request_id: RequestId, user_id: String, ignored: bool) {
@@ -3701,7 +3911,10 @@ impl AccountActor {
     /// Restore a persisted session into the per-account encrypted store
     /// (fail-closed: any store init failure is `LocalEncryptionUnavailable`).
     /// The store config includes the search index so the SDK initializes it
-    /// alongside the SQLite store.
+    /// alongside the SQLite store, and event-cache subscription is attempted
+    /// before the restored session is returned to any sync/timeline caller.
+    /// The encrypted-store diagnostic flag is derived from the keyed store
+    /// invariant exposed by `MatrixClientStoreConfig`.
     async fn restore_into_store(
         &self,
         persistable: &PersistableMatrixSession,
@@ -3711,12 +3924,17 @@ impl AccountActor {
         // Derive the search index configuration. Fail-closed: if the
         // credential store is unreachable, deny the restore (LocalEncryptionUnavailable).
         let search_config = self.store.account_search_index_config(key_id)?;
+        let encrypted_store = store_config.store_config.encrypted_at_rest_configured();
         let store_config_with_search = store_config
             .store_config
             .with_search_index_store(search_config.search_index_config);
-        koushi_sdk::restore_session_with_store(persistable, Some(&store_config_with_search))
-            .await
-            .map_err(|_| CoreFailure::LocalEncryptionUnavailable)
+        let session =
+            koushi_sdk::restore_session_with_store(persistable, Some(&store_config_with_search))
+                .await
+                .map_err(|_| CoreFailure::LocalEncryptionUnavailable)?;
+        let event_cache_result = koushi_sdk::enable_event_cache(&session).await;
+        self.emit_event_cache_status(encrypted_store, &event_cache_result);
+        Ok(session)
     }
 
     /// Roll back a failed login bootstrap: best-effort server logout of the
@@ -3785,6 +4003,34 @@ impl AccountActor {
             request_id,
             failure,
         });
+    }
+
+    fn emit_event_cache_status(
+        &self,
+        encrypted_store: bool,
+        result: &Result<koushi_sdk::MatrixEventCacheStatus, koushi_sdk::MatrixEventCacheError>,
+    ) {
+        let (subscribed, subscribe_status, reason_class) = match result {
+            Ok(koushi_sdk::MatrixEventCacheStatus::Enabled) => {
+                (true, EventCacheSubscribeStatus::Enabled, None)
+            }
+            Ok(koushi_sdk::MatrixEventCacheStatus::AlreadyEnabled) => {
+                (true, EventCacheSubscribeStatus::AlreadyEnabled, None)
+            }
+            Err(_) => (
+                false,
+                EventCacheSubscribeStatus::SubscribeFailed,
+                Some(EventCacheFailureReasonClass::SubscribeFailed),
+            ),
+        };
+        self.emit(CoreEvent::LocalEncryption(
+            LocalEncryptionEvent::EventCacheStatus {
+                encrypted_store,
+                subscribed,
+                subscribe_status,
+                reason_class,
+            },
+        ));
     }
 
     fn active_account_key(&self) -> Option<AccountKey> {
@@ -4010,7 +4256,6 @@ fn map_matrix_own_profile(profile: koushi_sdk::MatrixOwnProfile) -> OwnProfile {
 async fn download_avatar_thumbnail(
     session: &MatrixClientSession,
     mxc_uri: &str,
-    data_dir: &std::path::Path,
 ) -> Result<AvatarThumbnailState, AvatarThumbnailFailureKind> {
     let mxc = <&MxcUri>::from(mxc_uri);
     if !mxc.is_valid() {
@@ -4025,30 +4270,16 @@ async fn download_avatar_thumbnail(
                 source: SdkMediaSource::Plain(uri),
                 format: MediaFormat::File,
             },
-            true,
+            false,
         )
         .await
         .map_err(|_| AvatarThumbnailFailureKind::Network)?;
 
-    let mut hasher = DefaultHasher::new();
-    hasher.write(mxc_uri.as_bytes());
-    let cache_dir = data_dir.join("avatar_thumbnails");
-    tokio::fs::create_dir_all(&cache_dir)
-        .await
-        .map_err(|_| AvatarThumbnailFailureKind::Sdk)?;
-    let image_kind = cached_image_kind(&bytes);
-    let extension = image_kind.map_or("bin", |kind| kind.extension);
-    let path = cache_dir.join(format!("{:x}.{extension}", hasher.finish()));
-    tokio::fs::write(&path, &bytes)
-        .await
-        .map_err(|_| AvatarThumbnailFailureKind::Sdk)?;
-
-    Ok(AvatarThumbnailState::Ready {
-        source_url: format!("file://{}", path.display()),
-        width: None,
-        height: None,
-        mime_type: image_kind.map(|kind| kind.mime_type.to_owned()),
-    })
+    Ok(store_renderable_thumbnail(
+        RenderableThumbnailKind::Avatar,
+        mxc_uri,
+        bytes,
+    ))
 }
 
 fn classify_profile_error(error: &koushi_sdk::MatrixProfileError) -> ProfileFailureKind {
@@ -4554,6 +4785,95 @@ mod tests {
         );
     }
 
+    #[test]
+    fn restore_into_store_emits_event_cache_status_without_failing_restore() {
+        let source = include_str!("account.rs");
+        let body = source
+            .split("    async fn restore_into_store")
+            .nth(1)
+            .expect("restore_into_store body")
+            .split("    /// Roll back a failed login bootstrap")
+            .next()
+            .expect("restore_into_store should end before abort_login");
+        let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+        let helper = source
+            .split("    fn emit_event_cache_status(")
+            .nth(1)
+            .expect("emit_event_cache_status body")
+            .split("    fn active_account_key")
+            .next()
+            .expect("emit_event_cache_status should end before active_account_key");
+        let helper_compact: String = helper.chars().filter(|c| !c.is_whitespace()).collect();
+        let restore = compact
+            .find("koushi_sdk::restore_session_with_store")
+            .expect("restore_session_with_store call");
+        let store_config = compact
+            .find("letstore_config=self.store.account_store_config(key_id)?;")
+            .expect("keyed store configuration");
+        let encrypted_store = compact
+            .find("letencrypted_store=store_config.store_config.encrypted_at_rest_configured();")
+            .expect("derived encrypted-store flag");
+        let enable = compact
+            .find("koushi_sdk::enable_event_cache(&session).await")
+            .expect("enable_event_cache call");
+        let emit = compact
+            .find("self.emit_event_cache_status(encrypted_store,&event_cache_result);")
+            .expect("event cache diagnostic emission");
+        let return_ok = compact.find("Ok(session)").expect("return statement");
+
+        assert!(store_config < encrypted_store);
+        assert!(restore < enable);
+        assert!(encrypted_store < emit);
+        assert!(enable < return_ok);
+        assert!(
+            helper_compact.contains("EventCacheSubscribeStatus::Enabled,None"),
+            "enabled diagnostics should carry an explicit subscribe status and no failure reason"
+        );
+        assert!(
+            helper_compact.contains("EventCacheSubscribeStatus::AlreadyEnabled,None"),
+            "already-enabled diagnostics should carry an explicit subscribe status and no failure reason"
+        );
+        assert!(
+            helper_compact.contains(
+                "EventCacheSubscribeStatus::SubscribeFailed,Some(EventCacheFailureReasonClass::SubscribeFailed),",
+            ),
+            "failure diagnostics should carry an explicit subscribe status and a private-data-free reason"
+        );
+        assert!(
+            compact.contains(
+                "letencrypted_store=store_config.store_config.encrypted_at_rest_configured();"
+            ),
+            "restore_into_store must derive the encrypted-store diagnostic from the keyed store invariant"
+        );
+        assert!(
+            compact.contains("self.emit_event_cache_status(encrypted_store,&event_cache_result);"),
+            "restore_into_store must pass the derived encrypted-store flag into the diagnostic"
+        );
+        assert_eq!(
+            compact
+                .matches("self.emit_event_cache_status(encrypted_store,&event_cache_result);")
+                .count(),
+            1,
+            "restore_into_store should call the diagnostic helper exactly once"
+        );
+        assert!(
+            !compact.contains("enable_event_cache(&session).await.map_err"),
+            "event-cache subscription failure must not be mapped into restore failure"
+        );
+        assert!(
+            !compact.contains("enable_event_cache(&session).await?"),
+            "event-cache subscription failure must not use ? to fail the restore path"
+        );
+        assert!(
+            !helper_compact.contains("encrypted_store:true"),
+            "the event-cache diagnostic helper must not hardcode the encrypted-store flag"
+        );
+        assert!(
+            !compact.contains("cache_path().is_some()"),
+            "restore_into_store must not use cache_path presence as an encryption invariant"
+        );
+    }
+
     #[tokio::test]
     async fn server_logout_best_effort_returns_on_timeout() {
         let outcome = wait_for_server_logout_best_effort(
@@ -4866,6 +5186,11 @@ mod tests {
             incoming_verification_observer: None,
             next_incoming_verification_sequence: INCOMING_VERIFICATION_FLOW_ID_BASE,
             pending_crawler_notification: None,
+            avatar_cache: HashMap::new(),
+            avatar_inflight: HashMap::new(),
+            avatar_download_semaphore: Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY)),
+            avatar_fetch_tasks: tokio::task::JoinSet::new(),
+            avatar_session_generation: 0,
         };
         let request_id = test_request_id();
 

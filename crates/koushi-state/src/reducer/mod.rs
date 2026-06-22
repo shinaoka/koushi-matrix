@@ -632,6 +632,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::NavigationLoaded { navigation } => {
             navigation::handle_navigation_loaded(state, navigation)
         }
+        AppAction::TimelineScrollAnchorUpdated { room_id, anchor } => {
+            navigation::handle_timeline_scroll_anchor_updated(state, room_id, anchor)
+        }
         AppAction::SelectSpace { space_id } => navigation::handle_select_space(state, space_id),
         AppAction::ReorderSpaces { space_ids } => {
             navigation::handle_reorder_spaces(state, space_ids)

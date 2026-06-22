@@ -1,5 +1,11 @@
 import type { AvatarImage, AvatarThumbnailState, DesktopSnapshot } from "./types";
 
+/**
+ * #116 kill-switch: avatars are re-enabled with member-avatar bulk requests
+ * removed (#116 Stage F1a); set to false to disable all avatar downloads.
+ */
+export const AVATAR_THUMBNAIL_DOWNLOADS_ENABLED = true;
+
 export const MAX_AVATAR_THUMBNAIL_ATTEMPTS = 2;
 
 export interface AvatarThumbnailRequestPlan {
@@ -73,9 +79,13 @@ function collectSnapshotAvatarThumbnailRequestCandidates(
 ): Map<string, AvatarThumbnailRequestCandidate> {
   const candidates = new Map<string, AvatarThumbnailRequestCandidate>();
   const completed = new Set<string>();
+  // NOTE: profile.users (member avatar cache) is intentionally excluded here.
+  // Eagerly requesting all member avatars caused ~1421 simultaneous downloads on
+  // large Room Info panels and froze the app (#116). Visible message-sender
+  // avatars are requested per-row by the TimelineView virtualized effect;
+  // member-list avatars will be added per-visible-member in Stage F1b.
   const avatars: Array<AvatarImage | null> = [
     snapshot.state.domain.profile.own.avatar,
-    ...Object.values(snapshot.state.domain.profile.users).map((profile) => profile.avatar),
     ...snapshot.state.domain.rooms.map((room) => room.avatar),
     ...snapshot.state.domain.spaces.map((space) => space.avatar),
     ...snapshot.state.domain.invites.map((invite) => invite.avatar)

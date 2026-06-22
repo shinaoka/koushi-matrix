@@ -13,7 +13,8 @@ use crate::state::{
     ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope,
     SessionInfo, SettingsPatch, SettingsValues, SpaceSummary, StagedUploadCompressionChoice,
     StagedUploadItem, SyncMode, TimelineMediaDownloadState, TimelineMediaGalleryItem,
-    TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
+    TimelineScrollAnchor, TrustOperationFailureKind, UserProfile, VerificationCancelReason,
+    VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
@@ -589,6 +590,10 @@ pub enum AppAction {
     },
     NavigationLoaded {
         navigation: NavigationState,
+    },
+    TimelineScrollAnchorUpdated {
+        room_id: String,
+        anchor: TimelineScrollAnchor,
     },
     SelectSpace {
         space_id: Option<String>,

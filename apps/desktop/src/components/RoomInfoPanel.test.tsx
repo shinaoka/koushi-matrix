@@ -1,13 +1,17 @@
 // @vitest-environment jsdom
 import { renderToStaticMarkup } from "react-dom/server";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { RoomInfoPanel } from "./RoomInfoPanel";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 import type {
   LinkPreviewSettingsState,
+  RoomMemberSummary,
   RoomNotificationSettings,
   RoomSummary,
   SettingsState
@@ -67,7 +71,7 @@ const baseAppSettings: SettingsState = {
       }
     },
     timeline: {
-      auto_load_older_messages: false
+      auto_load_older_messages: true
     },
     search_crawler: {
       speed: "standard" as const,
@@ -81,6 +85,51 @@ const baseAppSettings: SettingsState = {
 const baseLinkPreviewSettings: LinkPreviewSettingsState = {
   room_overrides: {}
 };
+
+function makeMember(index: number): RoomMemberSummary {
+  return {
+    user_id: `@member-${index}:example.invalid`,
+    display_name: `Member ${index}`,
+    display_label: `Member ${index}`,
+    original_display_label: `Member ${index}`,
+    avatar_url: `mxc://example.invalid/avatar-${index}`,
+    power_level: 0,
+    role: "user"
+  };
+}
+
+function makeLargeRoomMembers(count: number): RoomMemberSummary[] {
+  return Array.from({ length: count }, (_, index) => makeMember(index));
+}
+
+function getRoomMemberScrollContainer(): HTMLDivElement {
+  const element = document.querySelector(".room-member-scroll-container");
+  expect(element).toBeTruthy();
+  return element as HTMLDivElement;
+}
+
+function setScrollMetrics(
+  element: HTMLElement,
+  {
+    clientHeight,
+    scrollHeight,
+    scrollTop
+  }: { clientHeight: number; scrollHeight: number; scrollTop: number }
+) {
+  Object.defineProperty(element, "clientHeight", {
+    configurable: true,
+    value: clientHeight
+  });
+  Object.defineProperty(element, "scrollHeight", {
+    configurable: true,
+    value: scrollHeight
+  });
+  Object.defineProperty(element, "scrollTop", {
+    configurable: true,
+    value: scrollTop,
+    writable: true
+  });
+}
 
 describe("RoomInfoPanel", () => {
   test("renders room identity, membership context, and Element-like settings entries", () => {
@@ -355,6 +404,153 @@ describe("RoomInfoPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Message Local Remark" }));
 
     expect(startedUserIds).toEqual(["@member:example.invalid"]);
+  });
+
+  test("renders only a bounded member window before scrolling", () => {
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        onStartDirectMessage={() => undefined}
+        roomManagement={{
+          selected_room_id: "!room-alpha:example.invalid",
+          settings: {
+            room_id: "!room-alpha:example.invalid",
+            name: "Alpha Room",
+            topic: null,
+            avatar_url: null,
+            join_rule: "invite",
+            history_visibility: "shared",
+            permissions: {
+              can_edit_settings: true,
+              can_edit_roles: true,
+              can_kick: true,
+              can_ban: true,
+              can_unban: false
+            },
+            members: makeLargeRoomMembers(3000)
+          },
+          operation: { kind: "idle" }
+        }}
+      />
+    );
+
+    expect(screen.getAllByRole("button", { name: /^Message Member / }).length).toBeLessThan(3000);
+    expect(screen.queryByText("Member 2999")).toBeNull();
+  });
+
+  test("scrolling the member list reveals later members and hides early ones", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 0;
+    });
+
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        onStartDirectMessage={() => undefined}
+        roomManagement={{
+          selected_room_id: "!room-alpha:example.invalid",
+          settings: {
+            room_id: "!room-alpha:example.invalid",
+            name: "Alpha Room",
+            topic: null,
+            avatar_url: null,
+            join_rule: "invite",
+            history_visibility: "shared",
+            permissions: {
+              can_edit_settings: true,
+              can_edit_roles: true,
+              can_kick: true,
+              can_ban: true,
+              can_unban: false
+            },
+            members: makeLargeRoomMembers(3000)
+          },
+          operation: { kind: "idle" }
+        }}
+      />
+    );
+
+    const scrollContainer = getRoomMemberScrollContainer();
+    expect(scrollContainer.getAttribute("tabindex")).toBe("0");
+    expect(scrollContainer.getAttribute("role")).toBe("region");
+    setScrollMetrics(scrollContainer, {
+      clientHeight: 456,
+      scrollHeight: 3000 * 92,
+      scrollTop: 3000 * 92 - 456
+    });
+
+    fireEvent.scroll(scrollContainer, {
+      target: {
+        scrollTop: 3000 * 92 - 456
+      }
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Member 999")).toBeTruthy();
+    });
+    expect(screen.queryByText("Member 0")).toBeNull();
+  });
+
+  test("requests avatar thumbnails only for visible member rows", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 0;
+    });
+    const onRequestMemberAvatarThumbnail = vi.fn(async () => undefined);
+
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        onStartDirectMessage={() => undefined}
+        onRequestMemberAvatarThumbnail={onRequestMemberAvatarThumbnail}
+        roomManagement={{
+          selected_room_id: "!room-alpha:example.invalid",
+          settings: {
+            room_id: "!room-alpha:example.invalid",
+            name: "Alpha Room",
+            topic: null,
+            avatar_url: null,
+            join_rule: "invite",
+            history_visibility: "shared",
+            permissions: {
+              can_edit_settings: true,
+              can_edit_roles: true,
+              can_kick: true,
+              can_ban: true,
+              can_unban: false
+            },
+            members: makeLargeRoomMembers(3000)
+          },
+          operation: { kind: "idle" }
+        }}
+      />
+    );
+
+    const scrollContainer = getRoomMemberScrollContainer();
+    setScrollMetrics(scrollContainer, {
+      clientHeight: 456,
+      scrollHeight: 3000 * 92,
+      scrollTop: 0
+    });
+
+    fireEvent.scroll(scrollContainer);
+
+    await waitFor(() => {
+      expect(onRequestMemberAvatarThumbnail).toHaveBeenCalled();
+    });
+
+    const requestedMxcs = onRequestMemberAvatarThumbnail.mock.calls.flat() as string[];
+    expect(requestedMxcs.length).toBeGreaterThan(0);
+    expect(requestedMxcs.length).toBeLessThanOrEqual(12);
+    expect(requestedMxcs).not.toContain("mxc://example.invalid/avatar-2999");
+    expect(new Set(requestedMxcs).size).toBe(requestedMxcs.length);
   });
 
   test("renders every loaded room member with a direct-message entry point", () => {

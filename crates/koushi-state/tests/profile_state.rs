@@ -57,7 +57,7 @@ fn own_profile_updates_are_rust_owned_and_require_ready_session() {
 }
 
 #[test]
-fn user_profile_cache_is_replaced_by_rust_snapshot() {
+fn user_profile_cache_merges_partial_rust_snapshots() {
     let mut state = ready_state();
 
     reduce(
@@ -108,7 +108,15 @@ fn user_profile_cache_is_replaced_by_rust_snapshot() {
     );
     assert_eq!(
         state.profile.users.keys().cloned().collect::<Vec<_>>(),
-        vec!["@carol:localhost".to_owned()]
+        vec![
+            "@alice:localhost".to_owned(),
+            "@bob:localhost".to_owned(),
+            "@carol:localhost".to_owned()
+        ]
+    );
+    assert_eq!(
+        state.profile.users["@bob:localhost"].avatar,
+        Some(avatar("mxc://localhost/bob-avatar"))
     );
 }
 
@@ -817,6 +825,68 @@ fn ignored_user_update_failed_reverts_optimistic_mutation() {
         effects
             .iter()
             .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ErrorChanged)))
+    );
+}
+
+#[test]
+fn user_profile_avatar_thumbnail_is_preserved_across_partial_profile_update() {
+    // Reproduces the DM-avatar flicker root cause: handle_user_profiles_updated previously
+    // replaced state.profile.users wholesale, resetting NotRequested avatars even when
+    // the same mxc_uri already had a Ready thumbnail in state.
+    let mut state = ready_state();
+
+    // Seed the user with a Ready thumbnail.
+    let mxc = "mxc://example.test/bob-avatar";
+    let ready_thumbnail = AvatarThumbnailState::Ready {
+        source_url: "data:image/png;base64,synthetic".to_owned(),
+        width: Some(64),
+        height: Some(64),
+        mime_type: Some("image/png".to_owned()),
+    };
+    state.profile.users.insert(
+        "@bob:example.test".to_owned(),
+        UserProfile {
+            user_id: "@bob:example.test".to_owned(),
+            display_name: Some("Bob".to_owned()),
+            display_label: String::new(),
+            original_display_label: String::new(),
+            mention_search_terms: Vec::new(),
+            avatar: Some(AvatarImage {
+                mxc_uri: mxc.to_owned(),
+                thumbnail: ready_thumbnail.clone(),
+            }),
+        },
+    );
+
+    // Dispatch UserProfilesUpdated carrying the same user with the same mxc_uri
+    // but a NotRequested thumbnail (as a fresh sync observation would produce).
+    reduce(
+        &mut state,
+        AppAction::UserProfilesUpdated {
+            profiles: vec![UserProfile {
+                user_id: "@bob:example.test".to_owned(),
+                display_name: Some("Bob".to_owned()),
+                display_label: String::new(),
+                original_display_label: String::new(),
+                mention_search_terms: Vec::new(),
+                avatar: Some(AvatarImage {
+                    mxc_uri: mxc.to_owned(),
+                    thumbnail: AvatarThumbnailState::NotRequested,
+                }),
+            }],
+        },
+    );
+
+    // The thumbnail must have been preserved from the known state, not reset.
+    assert_eq!(
+        state
+            .profile
+            .users
+            .get("@bob:example.test")
+            .and_then(|p| p.avatar.as_ref())
+            .map(|a| &a.thumbnail),
+        Some(&ready_thumbnail),
+        "thumbnail was reset to NotRequested; DM avatar flicker fix did not apply"
     );
 }
 

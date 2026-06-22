@@ -277,6 +277,13 @@ export interface TimelineNavigationSnapshot {
   can_jump_to_bottom: boolean;
 }
 
+export type TimelineAnchorRestoreStatus =
+  | "Found"
+  | "EndReached"
+  | "BudgetExhausted"
+  | "Superseded"
+  | { Failed: { kind: TimelineFailureKind } };
+
 // ---------------------------------------------------------------------------
 // Timeline events (externally tagged on the wire)
 // ---------------------------------------------------------------------------
@@ -306,6 +313,13 @@ export type TimelineEvent =
         key: TimelineKey;
         direction: PaginationDirection;
         state: PaginationState;
+      };
+    }
+  | {
+      AnchorRestoreFinished: {
+        request_id: RequestId;
+        key: TimelineKey;
+        status: TimelineAnchorRestoreStatus;
       };
     }
   | {
@@ -796,10 +810,25 @@ export type LocalEncryptionHealth =
   | "missingCredential"
   | "resetRequired";
 
-export type LocalEncryptionEvent = {
-  kind: "healthChanged";
-  health: LocalEncryptionHealth;
-};
+export type EventCacheSubscribeStatus =
+  | "enabled"
+  | "already_enabled"
+  | "subscribe_failed";
+
+export type EventCacheFailureReasonClass = "subscribe_failed";
+
+export type LocalEncryptionEvent =
+  | {
+      kind: "healthChanged";
+      health: LocalEncryptionHealth;
+    }
+  | {
+      kind: "eventCacheStatus";
+      encrypted_store: boolean;
+      subscribed: boolean;
+      subscribe_status: EventCacheSubscribeStatus;
+      reason_class?: EventCacheFailureReasonClass;
+    };
 
 export type OperationFailureKind =
   | "forbidden"
@@ -926,6 +955,27 @@ export type ReportFailureKind =
   | "Sdk";
 
 // ---------------------------------------------------------------------------
+// Intent lifecycle (telemetry-lane event, §4.7 Slice 1)
+// ---------------------------------------------------------------------------
+
+/** Reason a SelectRoom intent produced no state change. snake_case wire. */
+export type IntentNoOpReason =
+  | "session_not_ready"
+  | "room_not_in_state"
+  | "already_active";
+
+/**
+ * Terminal outcome of a user-intent command (Slice 1: SelectRoom only).
+ *
+ * Internally tagged with `"kind"` and an optional `"reason"` content field.
+ * This is a TELEMETRY event — never use it to drive product state in React.
+ */
+export type IntentOutcome =
+  | { kind: "committed" }
+  | { kind: "benign_no_op"; reason: IntentNoOpReason }
+  | { kind: "failed_no_op"; reason: IntentNoOpReason };
+
+// ---------------------------------------------------------------------------
 // CoreEvent envelope (the `koushi-desktop://event` payload shape produced by
 // serialize_core_event in src-tauri lib.rs)
 // ---------------------------------------------------------------------------
@@ -948,6 +998,15 @@ export type CoreEventPayload =
       kind: "OperationFailed";
       request_id: RequestId | null;
       failure: CoreFailure;
+    }
+  /**
+   * Telemetry-lane event: terminal outcome of a user-intent command.
+   * Slice 1 covers SelectRoom only. Do NOT use this to drive product state.
+   */
+  | {
+      kind: "IntentLifecycle";
+      request_id: RequestId;
+      outcome: IntentOutcome;
     }
   /** Emitted by the Tauri adapter when EventStreamLag is detected. */
   | { kind: "ResyncMarker" };

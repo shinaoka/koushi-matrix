@@ -1941,6 +1941,7 @@ dependencies = [
  "futures-util",
  "koushi-state",
  "matrix-sdk",
+ "matrix-sdk-base",
  "matrix-sdk-ui",
  "mime",
  "reqwest",

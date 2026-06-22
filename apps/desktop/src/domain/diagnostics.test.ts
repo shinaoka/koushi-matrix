@@ -126,6 +126,7 @@ describe("diagnosticReport", () => {
     expect(report).toContain(
       "Room classification: domain_dms=2 sidebar_dms=0 room_list_items=2 room_list_dm_items=0 active_filter=rooms"
     );
+    expect(report).toContain("Timeline matches active room: true");
     expect(report).toContain("Timeline visible items: 3");
     expect(report).toContain(
       "Timeline avatars: mxc=2 ready=1 pending=1 failed=0 missing=1 rendered=1 broken=0"
@@ -141,6 +142,7 @@ describe("diagnosticReport", () => {
     expect(report).toContain("Thread panel: open subscribed=true");
     expect(report).toContain("Threads list: open items=1 paginating=false end=true");
     expect(report).toContain("ui_frame_max_ms=125");
+    expect(report).toContain("timeline_matches_active=true");
     expect(report).toContain("Latest error code: timeline_subscription_failed");
     expect(report).not.toContain("secret message body");
     expect(report).not.toContain("secret thread body");
@@ -275,6 +277,102 @@ describe("diagnosticReport", () => {
     expect(verboseReport).toContain("security.location_origin=http://localhost:5173");
     expect(verboseReport).toContain("security.avatar_src_schemes=asset:3,data:1");
     expect(verboseReport).toContain("security.avatar_broken_images=1");
+  });
+
+  test("includes state-transport delta health tokens when provided", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+    const report = diagnosticReport({
+      snapshot,
+      panelMode: "closed",
+      sendStatus: "idle",
+      timelineDiagnostics: {
+        visibleItems: 0,
+        downloadedItems: 0,
+        backfill: "Idle",
+        avatarMxcItems: 0,
+        avatarReadyItems: 0,
+        avatarPendingItems: 0,
+        avatarFailedItems: 0,
+        avatarMissingItems: 0,
+        avatarRenderedImages: 0,
+        avatarBrokenImages: 0
+      },
+      domDiagnostics: {
+        screen: "timeline",
+        rootChildren: 1,
+        bodyTextLength: 99
+      },
+      uiLatencyDiagnostics: {
+        samples: 8,
+        lastFrameGapMs: 18,
+        averageFrameGapMs: 26.5,
+        maxFrameGapMs: 30,
+        longFrameCount: 0
+      },
+      stateDeltaStats: { applied: 12, staleIgnored: 340, gapRefreshRequested: 2 },
+      timelineTransportStats: {
+        received: 9,
+        keyMismatchDropped: 9,
+        initialItemsApplied: 0,
+        lastInitialItemsCount: 0,
+        resync: 3
+      }
+    });
+
+    expect(report).toContain(
+      "State transport: delta_applied=12 stale_ignored=340 gap_refresh=2"
+    );
+    expect(report).toContain("state_delta_applied=12");
+    expect(report).toContain("state_delta_stale_ignored=340");
+    expect(report).toContain("state_delta_gap_refresh=2");
+    expect(report).toContain(
+      "Timeline transport: received=9 key_dropped=9 initial_applied=0 last_initial_items=0 resync=3"
+    );
+    expect(report).toContain("timeline_evt_received=9");
+    expect(report).toContain("timeline_evt_key_dropped=9");
+    expect(report).toContain("timeline_initial_applied=0");
+    expect(report).toContain("timeline_last_initial_items=0");
+    expect(report).toContain("timeline_resync=3");
+  });
+
+  test("renders captured JS errors and a count token when provided", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+    const report = diagnosticReport({
+      snapshot,
+      panelMode: "closed",
+      sendStatus: "idle",
+      timelineDiagnostics: {
+        visibleItems: 0,
+        downloadedItems: 0,
+        backfill: "Idle",
+        avatarMxcItems: 0,
+        avatarReadyItems: 0,
+        avatarPendingItems: 0,
+        avatarFailedItems: 0,
+        avatarMissingItems: 0,
+        avatarRenderedImages: 0,
+        avatarBrokenImages: 0
+      },
+      domDiagnostics: { screen: "timeline", rootChildren: 1, bodyTextLength: 99 },
+      uiLatencyDiagnostics: {
+        samples: 8,
+        lastFrameGapMs: 18,
+        averageFrameGapMs: 26.5,
+        maxFrameGapMs: 30,
+        longFrameCount: 0
+      },
+      jsErrors: [
+        { kind: "TypeError", message: "cannot read kind of undefined", source: "App.tsx:12:3" }
+      ]
+    });
+
+    expect(report).toContain("JS errors: 1");
+    expect(report).toContain(
+      "[js-error] kind=TypeError source=App.tsx:12:3 message=cannot read kind of undefined"
+    );
+    expect(report).toContain("js_error_count=1");
   });
 
   test("bounds diagnostic log entries while preserving chronological append order", () => {

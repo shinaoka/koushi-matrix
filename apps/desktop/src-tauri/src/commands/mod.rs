@@ -17,11 +17,12 @@ use std::{
 use koushi_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
     ImageUploadCompressionPolicy, ImageUploadCompressionState, ImageUploadDimensions,
-    ImageUploadVariantKind, MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand,
-    RoomEvent, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand, SearchScope,
-    SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SetAvatarRequest, SyncCommand,
-    TimelineCommand, TimelineKey, TimelineKind, TimelineViewportObservation, UploadMediaKind,
-    UploadMediaRequest, UploadMediaThumbnail,
+    ImageUploadVariantKind, IntentNoOpReason, IntentOutcome, MediaDownloadSelection,
+    PaginationDirection, RequestId, RoomCommand, RoomEvent, RoomKeyExportRequest,
+    RoomKeyImportRequest, SearchCommand, SearchScope, SecureBackupPassphraseChangeRequest,
+    SecureBackupSetupRequest, SetAvatarRequest, SyncCommand, TimelineCommand, TimelineKey,
+    TimelineKind, TimelineViewportObservation, UploadMediaKind, UploadMediaRequest,
+    UploadMediaThumbnail,
 };
 use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentSort, AuthSecret,
@@ -30,7 +31,7 @@ use koushi_state::{
     ImageUploadCompressionMode, LoginRequest, MentionIntent, PresenceKind, RecoveryRequest,
     RoomListFilter, RoomModerationAction, RoomNotificationMode, RoomSettingChange, RoomTagKind,
     SessionInfo, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
-    VerificationCancelReason, build_formatted_message_draft,
+    TimelineScrollAnchor, VerificationCancelReason, build_formatted_message_draft,
 };
 use serde::Deserialize;
 #[cfg(any(debug_assertions, test))]
@@ -48,6 +49,8 @@ static NEXT_TRANSACTION_ID: AtomicU64 = AtomicU64::new(1);
 const QA_RECOVERY_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const QA_TITLE_ENV: &str = "KOUSHI_QA_TITLE";
 const TIMELINE_BACKWARDS_PAGE_EVENT_COUNT: u16 = 100;
+#[cfg(test)]
+const TIMELINE_RESTORE_ANCHOR_MAX_BATCHES: u16 = 6;
 
 pub(crate) mod account;
 pub(crate) mod activity;
@@ -329,38 +332,132 @@ async fn wait_for_selected_room(
     selected_room_id: &str,
     timeout: std::time::Duration,
 ) -> Result<(), String> {
+    // Diagnostic-only, private-data-free probe (no room ids). Enable with
+    // KOUSHI_SUBSCRIBE_TRACE=1 to see WHY select_room times out:
+    //   events=0                      -> runtime/AppActor delivered nothing (hung)
+    //   events>0, active=none         -> deltas flow but the reducer never set
+    //                                    the active room (command unprocessed/rejected)
+    //   events>0, active=other        -> a different room got selected
+    let trace = std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some();
     let deadline = tokio::time::Instant::now() + timeout;
+    let mut events: u32 = 0;
+    let mut state_changed: u32 = 0;
+    let mut state_delta: u32 = 0;
 
     loop {
         if snapshot_has_active_room(&event_conn.snapshot(), selected_room_id) {
+            if trace {
+                eprintln!(
+                    "koushi.select stage=ok_watch events={events} state_changed={state_changed} state_delta={state_delta}"
+                );
+            }
             return Ok(());
         }
 
-        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
-            .await
-            .map_err(|_| "room selection did not complete".to_owned())?;
+        let event = match tokio::time::timeout_at(deadline, event_conn.recv_event()).await {
+            Ok(event) => event,
+            Err(_) => {
+                if trace {
+                    let active =
+                        select_active_room_trace_label(&event_conn.snapshot(), selected_room_id);
+                    eprintln!(
+                        "koushi.select stage=timeout events={events} state_changed={state_changed} state_delta={state_delta} active={active}"
+                    );
+                }
+                return Err("room selection did not complete".to_owned());
+            }
+        };
+        events += 1;
         match event {
-            Ok(CoreEvent::StateChanged(snapshot))
-                if snapshot_has_active_room(&snapshot, selected_room_id) =>
-            {
-                return Ok(());
+            Ok(CoreEvent::StateChanged(snapshot)) => {
+                state_changed += 1;
+                if snapshot_has_active_room(&snapshot, selected_room_id) {
+                    if trace {
+                        eprintln!("koushi.select stage=ok_statechanged events={events}");
+                    }
+                    return Ok(());
+                }
+            }
+            Ok(CoreEvent::StateDelta(_)) => {
+                state_delta += 1;
             }
             Ok(CoreEvent::OperationFailed { request_id, .. })
                 if request_id == select_request_id =>
             {
+                if trace {
+                    eprintln!("koushi.select stage=op_failed events={events}");
+                }
                 return Err("room selection failed".to_owned());
+            }
+            // Telemetry-lane fast path: IntentLifecycle lets us fail fast with
+            // a specific reason instead of waiting the full 10s timeout.
+            Ok(CoreEvent::IntentLifecycle {
+                request_id,
+                outcome,
+            }) if request_id == select_request_id => {
+                match outcome {
+                    IntentOutcome::Committed | IntentOutcome::BenignNoOp(_) => {
+                        if trace {
+                            eprintln!(
+                                "koushi.select stage=ok_intent events={events} outcome={outcome:?}"
+                            );
+                        }
+                        return Ok(());
+                    }
+                    IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState) => {
+                        if trace {
+                            eprintln!("koushi.select stage=failed_not_in_state events={events}");
+                        }
+                        return Err("room not yet loaded".to_owned());
+                    }
+                    IntentOutcome::FailedNoOp(IntentNoOpReason::SessionNotReady) => {
+                        if trace {
+                            eprintln!(
+                                "koushi.select stage=failed_session_not_ready events={events}"
+                            );
+                        }
+                        return Err("session not ready".to_owned());
+                    }
+                    IntentOutcome::FailedNoOp(IntentNoOpReason::AlreadyActive) => {
+                        // AlreadyActive is benign; this arm is unreachable per
+                        // the classification logic but handle it defensively.
+                        if trace {
+                            eprintln!("koushi.select stage=ok_already_active events={events}");
+                        }
+                        return Ok(());
+                    }
+                }
             }
             Ok(_) => {}
             Err(_) if snapshot_has_active_room(&event_conn.snapshot(), selected_room_id) => {
+                if trace {
+                    eprintln!("koushi.select stage=ok_after_lag events={events}");
+                }
                 return Ok(());
             }
-            Err(_) => return Err("room selection event stream lagged".to_owned()),
+            Err(_) => {
+                if trace {
+                    eprintln!("koushi.select stage=lag events={events}");
+                }
+                return Err("room selection event stream lagged".to_owned());
+            }
         }
     }
 }
 
 fn snapshot_has_active_room(snapshot: &koushi_state::AppState, room_id: &str) -> bool {
     snapshot.navigation.active_room_id.as_deref() == Some(room_id)
+}
+
+fn select_active_room_trace_label(
+    snapshot: &koushi_state::AppState,
+    selected_room_id: &str,
+) -> &'static str {
+    match snapshot.navigation.active_room_id.as_deref() {
+        None => "none",
+        Some(id) if id == selected_room_id => "match",
+        Some(_) => "other",
+    }
 }
 
 async fn wait_for_upload_staging_snapshot(
@@ -962,6 +1059,26 @@ pub(crate) fn build_paginate_thread_timeline_backwards_command(
     })
 }
 
+pub(crate) fn build_restore_timeline_anchor_command(
+    request_id: koushi_core::RequestId,
+    account_key: AccountKey,
+    timeline_key: TimelineKey,
+    event_id: String,
+    max_batches: u16,
+    event_count: u16,
+) -> CoreCommand {
+    CoreCommand::Timeline(TimelineCommand::RestoreTimelineAnchor {
+        request_id,
+        key: TimelineKey {
+            account_key,
+            kind: timeline_key.kind,
+        },
+        event_id,
+        max_batches,
+        event_count,
+    })
+}
+
 pub(crate) fn build_open_timeline_at_timestamp_command(
     request_id: koushi_core::RequestId,
     room_id: String,
@@ -971,6 +1088,18 @@ pub(crate) fn build_open_timeline_at_timestamp_command(
         request_id,
         room_id,
         timestamp_ms,
+    })
+}
+
+pub(crate) fn build_update_navigation_scroll_anchor_command(
+    request_id: koushi_core::RequestId,
+    room_id: String,
+    anchor: TimelineScrollAnchor,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::TimelineScrollAnchorUpdated {
+        request_id,
+        room_id,
+        anchor,
     })
 }
 
@@ -2249,6 +2378,9 @@ mod tests {
         ]
         .concat()
     }
+    use crate::commands::{
+        TIMELINE_BACKWARDS_PAGE_EVENT_COUNT, TIMELINE_RESTORE_ANCHOR_MAX_BATCHES,
+    };
     use koushi_core::AccountKey;
     use koushi_core::{
         AccountCommand, AppCommand, CoreCommand, ImageUploadCompressionPolicy,
@@ -2292,12 +2424,13 @@ mod tests {
         build_reorder_spaces_command, build_report_content_command, build_report_room_command,
         build_report_user_command, build_reschedule_scheduled_send_command,
         build_reset_identity_command, build_reset_local_data_command, build_restart_sync_command,
-        build_retry_send_command, build_schedule_send_command, build_select_room_command,
-        build_select_space_command, build_send_reaction_command, build_send_read_receipt_command,
-        build_send_reply_command, build_send_text_command, build_send_thread_reply_command,
-        build_set_activity_tab_command, build_set_avatar_command, build_set_composer_draft_command,
-        build_set_display_name_command, build_set_fully_read_command,
-        build_set_local_user_alias_command, build_set_presence_command, build_set_room_tag_command,
+        build_restore_timeline_anchor_command, build_retry_send_command,
+        build_schedule_send_command, build_select_room_command, build_select_space_command,
+        build_send_reaction_command, build_send_read_receipt_command, build_send_reply_command,
+        build_send_text_command, build_send_thread_reply_command, build_set_activity_tab_command,
+        build_set_avatar_command, build_set_composer_draft_command, build_set_display_name_command,
+        build_set_fully_read_command, build_set_local_user_alias_command,
+        build_set_presence_command, build_set_room_tag_command,
         build_set_room_url_preview_override_command, build_set_space_child_command,
         build_set_thread_composer_draft_command, build_set_typing_command,
         build_start_direct_message_command, build_submit_identity_reset_oauth_command,
@@ -2702,8 +2835,38 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
-        match build_send_text_command(
+        match build_restore_timeline_anchor_command(
             fake_request_id(10),
+            active_account_key.clone(),
+            koushi_core::TimelineKey::room(active_account_key.clone(), room_id.clone()),
+            "$anchor:example.invalid".to_owned(),
+            TIMELINE_RESTORE_ANCHOR_MAX_BATCHES,
+            TIMELINE_BACKWARDS_PAGE_EVENT_COUNT,
+        ) {
+            CoreCommand::Timeline(TimelineCommand::RestoreTimelineAnchor {
+                request_id,
+                key,
+                event_id,
+                max_batches,
+                event_count,
+            }) => {
+                assert_eq!(request_id, fake_request_id(10));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    koushi_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(event_id, "$anchor:example.invalid");
+                assert_eq!(max_batches, TIMELINE_RESTORE_ANCHOR_MAX_BATCHES);
+                assert_eq!(event_count, TIMELINE_BACKWARDS_PAGE_EVENT_COUNT);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_send_text_command(
+            fake_request_id(11),
             active_account_key.clone(),
             room_id.clone(),
             transaction_id.clone(),
@@ -2724,7 +2887,7 @@ mod tests {
                 body: route_body,
                 mentions,
             }) => {
-                assert_eq!(request_id, fake_request_id(10));
+                assert_eq!(request_id, fake_request_id(11));
                 assert_eq!(
                     mentions,
                     MentionIntent {

@@ -311,6 +311,55 @@ Rules:
    production runtime executes it or the behavior is redesigned as an explicit
    `CoreCommand`/actor command. Discarding such effects is allowed only for
    fixture/demo effects that are documented as non-production.
+11. Core async channels are sized for large-account (100+ room) sync bursts via
+   named capacity constants (`COMMAND_INBOX_CAPACITY`,
+   `ACTOR_MESSAGE_QUEUE_CAPACITY`, `ACTION_QUEUE_CAPACITY`,
+   `EVENT_QUEUE_CAPACITY`), never small magic literals (16/64/256) — a too-small
+   core inbox is invisible to small-account CI and only fails on real accounts.
+   This makes rule 9 concrete: drop-on-full `try_send` (with an ignored `Err`)
+   is forbidden for one-shot, non-re-projected actions — navigation
+   (`SelectRoom`/`SelectSpace`/`ReorderSpaces`) and command-result projections —
+   which MUST use reliable `send().await`. `try_send` is permitted only for
+   high-frequency data re-projected on the next sync (room-list snapshots),
+   where a dropped update self-heals. Silently dropping `SelectRoom` under a
+   saturated `ACTION_QUEUE_CAPACITY` inbox was the large-account "room selection
+   did not complete" / blank-timeline / unloaded-members regression; it passed
+   every small-account headless lane.
+12. User-intent commands resolve to a correlated, observable terminal outcome —
+   never a silent no-op. A foreground one-shot command
+   (`SelectRoom`/`SelectSpace`, send/edit/redact, pin/unpin, mark-read, invite
+   accept/decline, start DM, join/leave) carries its `request_id` end to end and
+   settles as exactly one of `committed`, `benign-noop(reason)`, or
+   `failed-noop(reason)`. A reducer that returns `Vec::new()` for such a command
+   (room absent from `state.rooms`, session not ready) MUST surface that as a
+   correlated outcome, and the command waiter returns the specific reason, never
+   a generic "did not complete" timeout. On the submit → route → project →
+   reduce → settle path, discarding a failure with `let _ =`,
+   `unwrap_or_default()`, `.ok()`, or a catch-all `_ => {}` is forbidden. The
+   #116 blocker was three stacked silent no-ops (`handle_select_room`
+   `Vec::new()` → empty `build_state_delta` → neither `StateDelta` nor
+   `StateChanged` → opaque 10s timeout) that collapsed four distinct failure
+   modes into one undiagnosable string.
+13. Telemetry and diagnostics travel on a dedicated lane, not the product-state
+   channel. Lifecycle/diagnostic events such as `CoreEvent::IntentLifecycle` are
+   never folded into product `StateDelta`/`StateChanged`, never drive product
+   state in the WebView, and never cause a user-intent to be dropped when a
+   telemetry buffer saturates. A UI must not infer product success from a
+   telemetry event; success comes from the projected snapshot.
+14. Each submitted user-intent resolves exactly once, in submission order.
+   Request-to-intent correlation state is drained per submission, so concurrent
+   intents for the same target each receive their own terminal outcome. A
+   single-value, target-keyed correlation map that overwrites an in-flight
+   `request_id` — leaving the older request unsettled until its timeout — is
+   forbidden; use a per-target FIFO queue or carry the `request_id` on the
+   projected action.
+15. Every user-intent command class ships a real-account-shaped scale stress
+   test (about 110 rooms / 5 spaces / 57 DMs) that drives the real command path
+   and asserts the lifecycle invariant — every submission reaches a terminal
+   outcome, none vanishes. #116 stayed invisible because every lane used small
+   accounts; the runtime and reducer are exonerated for a scale bug only by such
+   a test, and a transient room-list projection that drops a known-joined room
+   is caught here, not in CI.
 
 ## GUI Automation
 

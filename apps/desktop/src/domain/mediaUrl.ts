@@ -10,6 +10,7 @@ export function mediaSourceUrl(sourceUrl: string): string {
     sourceUrl.startsWith("http://") ||
     sourceUrl.startsWith("https://") ||
     sourceUrl.startsWith("asset://") ||
+    sourceUrl.startsWith("koushi-thumbnail://") ||
     sourceUrl.startsWith("data:") ||
     sourceUrl.startsWith("blob:")
   ) {

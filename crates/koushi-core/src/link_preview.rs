@@ -1,7 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
-use std::hash::{DefaultHasher, Hasher};
-use std::path::Path;
 use std::sync::OnceLock;
 
 use koushi_sdk::MatrixClientSession;
@@ -10,11 +8,10 @@ use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
 use matrix_sdk::ruma::MxcUri;
 use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
 use regex::Regex;
-use tokio::fs;
 
-use crate::cached_image::cached_image_kind;
 use crate::event::{LinkPreview, LinkPreviewImage, LinkPreviewState};
 use crate::event::{TimelineFormattedBody, TimelineMediaSource};
+use crate::renderable_thumbnail::{RenderableThumbnailKind, store_renderable_thumbnail};
 
 pub const MAX_LINK_PREVIEWS_PER_MESSAGE: usize = 3;
 
@@ -219,12 +216,11 @@ pub fn link_preview_image_from_mxc(mxc_uri: String) -> LinkPreviewImage {
 }
 
 /// Fetch link preview metadata for `url` from the homeserver's URL preview
-/// endpoint. Image thumbnails are downloaded and cached under `data_dir` when
-/// available.
+/// endpoint. Image thumbnails are stored only in the in-memory renderable
+/// thumbnail cache.
 pub async fn fetch_link_preview(
     session: &MatrixClientSession,
     url: &str,
-    data_dir: Option<&Path>,
 ) -> Result<LinkPreview, ()> {
     let client = session.client();
     let mut preview_url = client.homeserver();
@@ -257,9 +253,7 @@ pub async fn fetch_link_preview(
         let mxc = <&MxcUri>::from(image_url);
         if mxc.is_valid() {
             let uri = mxc.to_owned();
-            let thumbnail = download_preview_image(session, &uri, url, data_dir)
-                .await
-                .ok();
+            let thumbnail = download_preview_image(session, &uri, url).await.ok();
             if let Some(thumbnail) = thumbnail {
                 image = Some(LinkPreviewImage {
                     source: TimelineMediaSource {
@@ -288,7 +282,6 @@ async fn download_preview_image(
     session: &MatrixClientSession,
     uri: &matrix_sdk::ruma::OwnedMxcUri,
     url: &str,
-    data_dir: Option<&Path>,
 ) -> Result<AvatarThumbnailState, ()> {
     let client = session.client();
     let bytes = client
@@ -298,31 +291,16 @@ async fn download_preview_image(
                 source: SdkMediaSource::Plain(uri.clone()),
                 format: MediaFormat::File,
             },
-            true,
+            false,
         )
         .await
         .map_err(|_| ())?;
 
-    let Some(dir) = data_dir else {
-        return Ok(AvatarThumbnailState::NotRequested);
-    };
-
-    let mut hasher = DefaultHasher::new();
-    hasher.write(url.as_bytes());
-    let hash = hasher.finish();
-    let thumb_dir = dir.join("link_preview_thumbnails");
-    fs::create_dir_all(&thumb_dir).await.map_err(|_| ())?;
-    let image_kind = cached_image_kind(&bytes);
-    let extension = image_kind.map_or("bin", |kind| kind.extension);
-    let path = thumb_dir.join(format!("{hash:x}.{extension}"));
-    fs::write(&path, &bytes).await.map_err(|_| ())?;
-
-    Ok(AvatarThumbnailState::Ready {
-        source_url: format!("file://{}", path.display()),
-        width: None,
-        height: None,
-        mime_type: image_kind.map(|kind| kind.mime_type.to_owned()),
-    })
+    Ok(store_renderable_thumbnail(
+        RenderableThumbnailKind::LinkPreview,
+        url,
+        bytes,
+    ))
 }
 
 #[cfg(test)]

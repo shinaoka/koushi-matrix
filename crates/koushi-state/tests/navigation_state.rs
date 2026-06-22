@@ -1493,3 +1493,47 @@ fn selecting_dm_room_preserves_current_space_scope() {
         ]
     );
 }
+
+#[test]
+fn legacy_navigation_json_without_scroll_anchors_loads_with_empty_map() {
+    let json = r#"{
+        "active_space_id": "!space:test.example.com",
+        "active_room_id": "!room:test.example.com",
+        "space_order": ["!space:test.example.com"],
+        "last_room_by_space_id": {"!space:test.example.com": "!room:test.example.com"}
+    }"#;
+
+    let navigation: koushi_state::NavigationState =
+        serde_json::from_str(json).expect("deserialize legacy navigation");
+
+    assert!(navigation.room_scroll_anchors.is_empty());
+    assert_eq!(navigation.active_space_id.as_deref(), Some("!space:test.example.com"));
+    assert_eq!(navigation.active_room_id.as_deref(), Some("!room:test.example.com"));
+}
+
+#[test]
+fn navigation_state_round_trips_scroll_anchors_through_serde() {
+    let navigation = koushi_state::NavigationState {
+        active_space_id: Some("!space:test.example.com".to_owned()),
+        active_room_id: Some("!room:test.example.com".to_owned()),
+        space_order: vec!["!space:test.example.com".to_owned()],
+        last_room_by_space_id: BTreeMap::from([(
+            "!space:test.example.com".to_owned(),
+            "!room:test.example.com".to_owned(),
+        )]),
+        room_scroll_anchors: BTreeMap::from([(
+            "!room:test.example.com".to_owned(),
+            koushi_state::TimelineScrollAnchor {
+                event_id: "$anchor:event".to_owned(),
+                offset_px: 24,
+                updated_at_ms: 1_820_000_000_000,
+            },
+        )]),
+    };
+
+    let encoded = serde_json::to_string(&navigation).expect("serialize navigation");
+    let decoded: koushi_state::NavigationState =
+        serde_json::from_str(&encoded).expect("deserialize navigation");
+
+    assert_eq!(decoded, navigation);
+}

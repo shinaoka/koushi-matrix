@@ -348,10 +348,18 @@ impl Default for ImageUploadCompressionPolicy {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelineSettings {
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub auto_load_older_messages: bool,
+}
+
+impl Default for TimelineSettings {
+    fn default() -> Self {
+        Self {
+            auto_load_older_messages: true,
+        }
+    }
 }
 
 // SearchCrawlerSettings and SearchCrawlerSpeed live in state/search_crawler.rs

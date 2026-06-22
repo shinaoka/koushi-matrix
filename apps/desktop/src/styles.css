@@ -71,6 +71,7 @@
   --room-count-font-size: 12px;
   --room-avatar-size: 22px;
   --room-avatar-font-size: 10px;
+  --room-member-row-height: 92px;
   --message-avatar-column-inline-size: 44px;
   --message-avatar-size: 40px;
   --message-avatar-font-size: 14px;
@@ -5047,9 +5048,26 @@ kbd {
   font-weight: 800;
 }
 
+.room-member-scroll-container {
+  max-block-size: min(60vh, 720px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.room-member-virtual-list {
+  display: grid;
+  min-block-size: 100%;
+}
+
+.room-member-spacer {
+  block-size: 0;
+}
+
 .room-member-list {
   display: grid;
-  gap: 8px;
   padding: 0;
   margin: 0;
   list-style: none;
@@ -5058,18 +5076,18 @@ kbd {
 .room-member-row {
   display: grid;
   grid-template-columns: minmax(160px, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  min-height: 46px;
-  padding: 7px 8px;
-  border: 1px solid var(--line);
+  gap: 8px;
+  align-items: start;
+  block-size: var(--room-member-row-height);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
 }
 
 .room-member-main {
   display: grid;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
 }
 
@@ -5164,7 +5182,7 @@ kbd {
 .room-member-name-button span {
   display: block;
   color: var(--text);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 800;
 }
 
@@ -5174,20 +5192,21 @@ kbd {
 
 .room-member-main small {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .room-member-main small.room-member-original-context {
-  overflow: visible;
-  text-overflow: clip;
-  white-space: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .room-member-actions {
   position: relative;
-  display: inline-flex;
-  flex-wrap: nowrap;
-  justify-content: flex-end;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, auto));
+  justify-content: end;
+  align-content: start;
   gap: 6px;
 }
 
@@ -5666,17 +5685,17 @@ kbd {
     grid-template-columns: 34px minmax(0, 1fr);
   }
 
+  .room-member-role-field,
+  .room-member-role-field select {
+    width: auto;
+  }
+
   .room-member-row {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .room-member-actions {
-    justify-content: flex-start;
-  }
-
-  .room-member-role-field,
-  .room-member-role-field select {
-    width: 100%;
+    justify-content: end;
   }
 
   .account-switcher-action {

@@ -1,9 +1,13 @@
+import type { AppStoreDeltaStats } from "./appStore";
+import type { CapturedJsError } from "./jsErrorLog";
+import type { TimelineTransportStats } from "./timelineTransportStats";
 import type { DesktopSnapshot, SearchCrawlerRoomState, SyncState } from "./types";
 import {
   qaDomDiagnosticTokens,
   qaSearchCrawlerDiagnosticTokens,
   qaTimelineDiagnosticTokens,
   qaUiLatencyDiagnosticTokens,
+  timelineMatchesActiveRoom,
   type QaDomDiagnostics,
   type QaTimelineDiagnostics
 } from "./qaTitle";
@@ -48,6 +52,9 @@ export interface DiagnosticReportInput {
   timelineDiagnostics: QaTimelineDiagnostics;
   domDiagnostics: QaDomDiagnostics;
   uiLatencyDiagnostics: UiLatencyDiagnostics;
+  stateDeltaStats?: AppStoreDeltaStats;
+  timelineTransportStats?: TimelineTransportStats;
+  jsErrors?: readonly CapturedJsError[];
   logEntries?: readonly DiagnosticLogEntry[];
   verboseDiagnostics?: VerboseDiagnostics;
 }
@@ -59,6 +66,9 @@ export function diagnosticReport({
   timelineDiagnostics,
   domDiagnostics,
   uiLatencyDiagnostics,
+  stateDeltaStats,
+  timelineTransportStats,
+  jsErrors,
   logEntries = [],
   verboseDiagnostics
 }: DiagnosticReportInput): string {
@@ -76,6 +86,7 @@ export function diagnosticReport({
     `Room classification: domain_dms=${roomClassification.domainDms} sidebar_dms=${roomClassification.sidebarDms} room_list_items=${roomClassification.roomListItems} room_list_dm_items=${roomClassification.roomListDmItems} active_filter=${roomClassification.activeFilter}`,
     `Active room selected: ${Boolean(snapshot.state.ui.navigation.active_room_id)}`,
     `Timeline room open: ${Boolean(snapshot.state.ui.timeline.room_id)}`,
+    `Timeline matches active room: ${timelineMatchesActiveRoom(snapshot)}`,
     `Timeline subscribed: ${snapshot.state.ui.timeline.is_subscribed}`,
     `Timeline visible items: ${timelineDiagnostics.visibleItems}`,
     `Timeline downloaded event items: ${timelineDiagnostics.downloadedItems}`,
@@ -90,6 +101,16 @@ export function diagnosticReport({
       ? [`Potential UI lag: max frame gap ${uiLatencyDiagnostics.maxFrameGapMs} ms`]
       : []),
     `UI frame gap: last=${uiLatencyDiagnostics.lastFrameGapMs}ms avg=${uiLatencyDiagnostics.averageFrameGapMs}ms max=${uiLatencyDiagnostics.maxFrameGapMs}ms longFrames=${uiLatencyDiagnostics.longFrameCount} samples=${uiLatencyDiagnostics.samples}`,
+    ...(stateDeltaStats
+      ? [
+          `State transport: delta_applied=${stateDeltaStats.applied} stale_ignored=${stateDeltaStats.staleIgnored} gap_refresh=${stateDeltaStats.gapRefreshRequested}`
+        ]
+      : []),
+    ...(timelineTransportStats
+      ? [
+          `Timeline transport: received=${timelineTransportStats.received} key_dropped=${timelineTransportStats.keyMismatchDropped} initial_applied=${timelineTransportStats.initialItemsApplied} last_initial_items=${timelineTransportStats.lastInitialItemsCount} resync=${timelineTransportStats.resync}`
+        ]
+      : []),
     `Search crawler running=${crawler.running} queued=${crawler.queued}: processed=${crawler.processed} indexed=${crawler.indexed}`,
     `Search crawler completed=${crawler.completed} failed=${crawler.failed}`,
     `Right panel: ${panelMode}`,
@@ -98,12 +119,41 @@ export function diagnosticReport({
     `QA send: ${sendStatus}`,
     `Errors: ${snapshot.state.ui.errors.length}`,
     `Latest error code: ${snapshot.state.ui.errors.at(-1)?.code ?? "none"}`,
+    ...(jsErrors
+      ? [
+          `JS errors: ${jsErrors.length}`,
+          ...jsErrors
+            .slice(-5)
+            .map(
+              (error) =>
+                `[js-error] kind=${error.kind} source=${error.source} message=${error.message}`
+            )
+        ]
+      : []),
     ...verboseDiagnosticLog,
     ...diagnosticLog,
+    `timeline_matches_active=${timelineMatchesActiveRoom(snapshot)}`,
     ...qaSearchCrawlerDiagnosticTokens(snapshot),
     ...qaTimelineDiagnosticTokens(timelineDiagnostics),
     ...qaDomDiagnosticTokens(domDiagnostics),
-    ...qaUiLatencyDiagnosticTokens(uiLatencyDiagnostics)
+    ...qaUiLatencyDiagnosticTokens(uiLatencyDiagnostics),
+    ...(stateDeltaStats
+      ? [
+          `state_delta_applied=${stateDeltaStats.applied}`,
+          `state_delta_stale_ignored=${stateDeltaStats.staleIgnored}`,
+          `state_delta_gap_refresh=${stateDeltaStats.gapRefreshRequested}`
+        ]
+      : []),
+    ...(timelineTransportStats
+      ? [
+          `timeline_evt_received=${timelineTransportStats.received}`,
+          `timeline_evt_key_dropped=${timelineTransportStats.keyMismatchDropped}`,
+          `timeline_initial_applied=${timelineTransportStats.initialItemsApplied}`,
+          `timeline_last_initial_items=${timelineTransportStats.lastInitialItemsCount}`,
+          `timeline_resync=${timelineTransportStats.resync}`
+        ]
+      : []),
+    ...(jsErrors ? [`js_error_count=${jsErrors.length}`] : [])
   ];
   return lines.join("\n");
 }

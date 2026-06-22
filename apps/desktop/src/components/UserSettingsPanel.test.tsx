@@ -37,7 +37,7 @@ describe("UserSettingsPanel", () => {
         }
       },
       timeline: {
-        auto_load_older_messages: false
+        auto_load_older_messages: true
       },
       search_crawler: {
         speed: "standard" as const,
@@ -302,7 +302,7 @@ describe("UserSettingsPanel", () => {
     });
   });
 
-  test("shows crawler saving feedback and separates activity from room status", () => {
+  test("shows active crawler progress copy and raw counts in the activity section", () => {
     const rooms = [
       {
         room_id: "!queued:example.invalid",
@@ -402,6 +402,7 @@ describe("UserSettingsPanel", () => {
 
     expect(crawlerActivity).toBeTruthy();
     expect(crawlerStatus).toBeTruthy();
+    expect(activityScope.getByText("Indexing message history... 1 of 4 rooms")).toBeTruthy();
     expect(screen.getByText("1 running, 1 queued, 1 complete, 1 failed")).toBeTruthy();
     expect(activityScope.getByText("Running room")).toBeTruthy();
     expect(statusScope.getByText("Queued room")).toBeTruthy();
@@ -412,6 +413,116 @@ describe("UserSettingsPanel", () => {
     ).toBe(true);
     expect(statusScope.getByText("Complete room")).toBeTruthy();
     expect(statusScope.getByText("Failed room")).toBeTruthy();
+  });
+
+  test("shows paused crawler progress copy and raw counts in the activity section", () => {
+    const rooms = [
+      {
+        room_id: "!queued:example.invalid",
+        display_name: "Queued room",
+        display_label: "Queued room",
+        original_display_label: "Queued room",
+        avatar: null,
+        is_dm: false,
+        dm_user_ids: [],
+        tags: { favourite: null, low_priority: null },
+        unread_count: 0,
+        parent_space_ids: [],
+        dm_space_ids: [],
+        is_encrypted: true
+      },
+      {
+        room_id: "!complete:example.invalid",
+        display_name: "Complete room",
+        display_label: "Complete room",
+        original_display_label: "Complete room",
+        avatar: null,
+        is_dm: false,
+        dm_user_ids: [],
+        tags: { favourite: null, low_priority: null },
+        unread_count: 0,
+        parent_space_ids: [],
+        dm_space_ids: [],
+        is_encrypted: true
+      },
+      {
+        room_id: "!failed:example.invalid",
+        display_name: "Failed room",
+        display_label: "Failed room",
+        original_display_label: "Failed room",
+        avatar: null,
+        is_dm: false,
+        dm_user_ids: [],
+        tags: { favourite: null, low_priority: null },
+        unread_count: 0,
+        parent_space_ids: [],
+        dm_space_ids: [],
+        is_encrypted: true
+      },
+      {
+        room_id: "!idle:example.invalid",
+        display_name: "Idle room",
+        display_label: "Idle room",
+        original_display_label: "Idle room",
+        avatar: null,
+        is_dm: false,
+        dm_user_ids: [],
+        tags: { favourite: null, low_priority: null },
+        unread_count: 0,
+        parent_space_ids: [],
+        dm_space_ids: [],
+        is_encrypted: true
+      }
+    ] satisfies RoomSummary[];
+
+    render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={{
+          ...settings,
+          values: {
+            ...settings.values,
+            search_crawler: { ...settings.values.search_crawler, speed: "paused" }
+          }
+        }}
+        searchCrawlerState={{
+          rooms: {
+            "!idle:example.invalid": { kind: "idle" },
+            "!failed:example.invalid": { kind: "failed", failureKind: "sdk" },
+            "!complete:example.invalid": { kind: "completed", indexed: 10 },
+            "!queued:example.invalid": { kind: "queued" }
+          },
+          last_active: null
+        }}
+        rooms={rooms}
+        {...handlers}
+      />
+    );
+
+    const crawlerActivity = screen.getByRole("region", { name: "Search crawler activity" });
+    const crawlerStatus = screen.getByRole("region", { name: "Room index status" });
+    const activityScope = within(crawlerActivity);
+    const statusScope = within(crawlerStatus);
+
+    expect(activityScope.getByText("Message history indexing is paused. 1 of 4 rooms indexed")).toBeTruthy();
+    expect(screen.getByText("0 running, 1 queued, 1 complete, 1 failed")).toBeTruthy();
+    expect(activityScope.getByText("Queued room")).toBeTruthy();
+    expect(statusScope.getByText("Queued room")).toBeTruthy();
+    expect(statusScope.getByText("Complete room")).toBeTruthy();
+    expect(statusScope.getByText("Failed room")).toBeTruthy();
+    expect(statusScope.getByText("Idle room")).toBeTruthy();
   });
 
   test("shows the Rust-owned last indexed room when crawler activity is idle", () => {

@@ -888,6 +888,7 @@ export function TimelinePane({
               codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
               searchQuery={searchQuery}
               mediaDownloads={mediaDownloads}
+              roomScrollAnchor={snapshot.state.ui.navigation.room_scroll_anchors?.[timelineRoomId] ?? null}
               onDiagnosticsChange={onTimelineDiagnosticsChangeStable}
               onDiagnosticLogEntry={onTimelineDiagnosticLogEntryStable}
             />

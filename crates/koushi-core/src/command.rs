@@ -9,7 +9,8 @@ use koushi_state::{
     ImageUploadCompressionMode, JapaneseCatalogProfile, LocalEncryptionHealth, LoginRequest,
     MentionIntent, NativeAttentionState, PresenceKind, RecoveryRequest, RoomListFilter,
     RoomModerationAction, RoomSettingChange, RoomTagKind, SettingsPatch,
-    StagedUploadCompressionChoice, StagedUploadItem, VerificationCancelReason, VerificationTarget,
+    StagedUploadCompressionChoice, StagedUploadItem, TimelineScrollAnchor,
+    VerificationCancelReason, VerificationTarget,
 };
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +48,7 @@ impl CoreCommand {
                 | AppCommand::CloseThread { request_id }
                 | AppCommand::OpenFocusedContext { request_id, .. }
                 | AppCommand::OpenTimelineAtTimestamp { request_id, .. }
+                | AppCommand::TimelineScrollAnchorUpdated { request_id, .. }
                 | AppCommand::CloseFocusedContext { request_id }
                 | AppCommand::UpdateSettings { request_id, .. }
                 | AppCommand::RebuildSearchIndex { request_id }
@@ -151,6 +153,7 @@ impl CoreCommand {
                 TimelineCommand::Subscribe { request_id, .. }
                 | TimelineCommand::Unsubscribe { request_id, .. }
                 | TimelineCommand::Paginate { request_id, .. }
+                | TimelineCommand::RestoreTimelineAnchor { request_id, .. }
                 | TimelineCommand::ObserveViewport { request_id, .. }
                 | TimelineCommand::SendText { request_id, .. }
                 | TimelineCommand::SendReply { request_id, .. }
@@ -216,6 +219,7 @@ impl CoreCommand {
                         | AppCommand::OpenThreadsList { .. }
                         | AppCommand::CloseThreadsList { .. }
                         | AppCommand::PaginateThreadsList { .. }
+                        | AppCommand::TimelineScrollAnchorUpdated { .. }
                 )
             )
     }
@@ -295,6 +299,11 @@ pub enum AppCommand {
         request_id: RequestId,
         room_id: String,
         timestamp_ms: u64,
+    },
+    TimelineScrollAnchorUpdated {
+        request_id: RequestId,
+        room_id: String,
+        anchor: TimelineScrollAnchor,
     },
     CloseFocusedContext {
         request_id: RequestId,
@@ -497,6 +506,16 @@ impl fmt::Debug for AppCommand {
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
                 .field("timestamp_ms", &"Timestamp(..)")
+                .finish(),
+            Self::TimelineScrollAnchorUpdated {
+                request_id, anchor, ..
+            } => formatter
+                .debug_struct("TimelineScrollAnchorUpdated")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("event_id", &"EventId(..)")
+                .field("offset_px", &anchor.offset_px)
+                .field("updated_at_ms", &anchor.updated_at_ms)
                 .finish(),
             Self::CloseFocusedContext { request_id } => formatter
                 .debug_struct("CloseFocusedContext")
@@ -1352,6 +1371,9 @@ pub enum RoomCommand {
         request_id: RequestId,
         space_ids: Vec<String>,
     },
+    /// User-intent lane: room selection is request-id correlated and must be
+    /// routed through the reliable command path, not a drop-on-full background
+    /// queue.
     SelectRoom {
         request_id: RequestId,
         room_id: String,
@@ -1812,6 +1834,13 @@ pub enum TimelineCommand {
         direction: crate::event::PaginationDirection,
         event_count: u16,
     },
+    RestoreTimelineAnchor {
+        request_id: RequestId,
+        key: TimelineKey,
+        event_id: String,
+        max_batches: u16,
+        event_count: u16,
+    },
     ObserveViewport {
         request_id: RequestId,
         key: TimelineKey,
@@ -1959,6 +1988,19 @@ impl fmt::Debug for TimelineCommand {
                 .field("request_id", request_id)
                 .field("key", key)
                 .field("direction", direction)
+                .field("event_count", event_count)
+                .finish(),
+            Self::RestoreTimelineAnchor {
+                request_id,
+                max_batches,
+                event_count,
+                ..
+            } => formatter
+                .debug_struct("RestoreTimelineAnchor")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("event_id", &"EventId(..)")
+                .field("max_batches", max_batches)
                 .field("event_count", event_count)
                 .finish(),
             Self::ObserveViewport { request_id, .. } => formatter

@@ -2,7 +2,7 @@
 //!
 //! Channel topology (overview.md, Async rule 10):
 //! - command inbox per runtime: bounded mpsc, capacity 256
-//! - discrete core events per consumer: broadcast, capacity 1024; a lagged
+//! - discrete core events per consumer: broadcast, capacity 16384; a lagged
 //!   consumer observes `EventStreamLag` and resyncs from the snapshot watch
 //! - state snapshots: latest-wins watch, coalesced to at most one
 //!   `StateDelta` per processed command batch
@@ -28,8 +28,9 @@ use crate::command::{
     TimelineCommand,
 };
 use crate::event::{
-    ActivityEvent, AppStateSnapshot, CoreEvent, TimelineEvent, VersionedAppStateSnapshot,
-    project_room_event_display_labels, project_timeline_event_display_labels,
+    ActivityEvent, AppStateSnapshot, CoreEvent, IntentNoOpReason, IntentOutcome, TimelineEvent,
+    VersionedAppStateSnapshot, project_room_event_display_labels,
+    project_timeline_event_display_labels,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -39,9 +40,52 @@ use crate::state_delta::build_state_delta;
 use crate::store::{StoreActor, session_key_id_from_info};
 
 pub const COMMAND_INBOX_CAPACITY: usize = 256;
-pub const EVENT_QUEUE_CAPACITY: usize = 1024;
+/// Per-consumer broadcast capacity. On large accounts (100+ rooms) initial and
+/// room-open sync bursts can emit thousands of `CoreEvent`s faster than a
+/// consumer (the Tauri forwarder, or a transient command connection waiting for
+/// a correlated event) drains them. `tokio::broadcast` silently drops the
+/// overflowed messages for a lagged consumer, which previously dropped a room's
+/// `InitialItems` (blank timeline) and `select_room`'s correlated event ("room
+/// selection did not complete"). Sized to absorb a full large-account burst;
+/// genuine lag still self-heals via `EventStreamLag` -> resync.
+pub const EVENT_QUEUE_CAPACITY: usize = 16384;
+/// AppActor action-projection inbox. Actors project a high volume of
+/// `Vec<AppAction>` here during large-account (100+ room) sync. It MUST be large
+/// enough that bursts never overflow.
+///
+/// Lane contract:
+/// - user-intent commands use the reliable command lane (`send().await`) and
+///   keep request-id correlation; they are never routed through a drop-on-full
+///   path;
+/// - foreground active-room work (timeline subscription, pagination, visible
+///   avatars) may wait on bounded actor capacity but must not wait behind
+///   background crawler availability;
+/// - background work (search-crawler room availability, inactive enrichment,
+///   non-visible media) is latest-wins / coalesced / drop-recoverable only.
+///
+/// The action queue remains large because the RoomActor projects through a
+/// drop-on-full `try_send`: an overflow silently drops one-shot actions such as
+/// room selection (`SelectRoom`) and room-settings/member loads, which is the
+/// large-account "room selection did not complete" / blank-timeline bug. See
+/// the async channel-capacity rule in docs/policies/engineering-rules.md.
+pub const ACTION_QUEUE_CAPACITY: usize = 16384;
+/// Inter-actor command/message inboxes (AppActor -> AccountActor ->
+/// Room/Timeline actors). Sized so that forwarding a command under heavy sync
+/// does not block the forwarding actor's loop.
+pub const ACTOR_MESSAGE_QUEUE_CAPACITY: usize = 1024;
 pub const COMPOSER_DRAFT_PERSIST_DEBOUNCE: Duration = Duration::from_millis(150);
 const INTERNAL_RUNTIME_CONNECTION_ID: RuntimeConnectionId = RuntimeConnectionId(0);
+/// Diagnostic-only, private-data-free trace of slow AppActor loop iterations.
+/// Enable with KOUSHI_SUBSCRIBE_TRACE=1. A loop iteration that takes hundreds of
+/// ms (e.g. a full `self.state.clone()` of a 100+ room account) starves the
+/// command arm, which is why `select_room` can time out under large-account
+/// sync. Logs the arm, items handled, the state-clone cost, and total time.
+fn app_loop_trace(arm: &str, count: u32, clone_ms: u128, total: std::time::Duration) {
+    let total_ms = total.as_millis();
+    if total_ms >= 100 && std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+        eprintln!("koushi.apploop arm={arm} count={count} clone_ms={clone_ms} total_ms={total_ms}");
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CommandSubmitError {
@@ -153,8 +197,11 @@ impl CoreRuntime {
         composer_draft_store_actor: StoreActor,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(COMMAND_INBOX_CAPACITY);
+        // NOTE: action_tx is the high-volume action-projection inbox; it must be
+        // ACTION_QUEUE_CAPACITY (not COMMAND_INBOX_CAPACITY) so large-account
+        // sync bursts never overflow the RoomActor's drop-on-full try_send.
         let (event_tx, _) = broadcast::channel(event_capacity);
-        let (action_tx, action_rx) = mpsc::channel(COMMAND_INBOX_CAPACITY);
+        let (action_tx, action_rx) = mpsc::channel(ACTION_QUEUE_CAPACITY);
         let settings_store = SettingsStore::new(&data_dir);
 
         let mut initial_state = AppState::default();
@@ -194,6 +241,7 @@ impl CoreRuntime {
             account_actor,
             activity_projection: ActivityProjection::default(),
             next_internal_request_sequence: 1,
+            pending_select: HashMap::new(),
         };
         let actor = executor::spawn(actor.run());
 
@@ -310,7 +358,8 @@ impl CoreConnection {
             | CoreEvent::NativeAttention(_)
             | CoreEvent::CjkTextPolicy(_)
             | CoreEvent::ThreadsList(_)
-            | CoreEvent::OperationFailed { .. } => {}
+            | CoreEvent::OperationFailed { .. }
+            | CoreEvent::IntentLifecycle { .. } => {}
         }
         event
     }
@@ -342,6 +391,12 @@ struct AppActor {
     account_actor: AccountActorHandle,
     activity_projection: ActivityProjection,
     next_internal_request_sequence: u64,
+    /// Correlation map for SelectRoom intents: room_id → FIFO queue of request_ids.
+    /// Multiple concurrent SelectRoom commands for the same room are queued in
+    /// submission order; each `AppAction::SelectRoom` pops the oldest entry so
+    /// every submitted command receives a terminal `IntentLifecycle` outcome.
+    /// Private-data-free: stores opaque ids only, never room names or content.
+    pending_select: HashMap<String, std::collections::VecDeque<RequestId>>,
 }
 
 struct PendingComposerDraftPersist {
@@ -597,25 +652,64 @@ impl AppActor {
                 }
                 command = self.command_rx.recv() => {
                     let Some(command) = command else { break };
+                    let loop_started = std::time::Instant::now();
                     let before_state = self.state.clone();
+                    let clone_ms = loop_started.elapsed().as_millis();
                     let mut state_changed = self.handle_command(command).await;
+                    let mut handled = 1u32;
                     // Coalesce: drain whatever is already queued before
                     // emitting a single StateChanged for the batch.
                     while let Ok(next) = self.command_rx.try_recv() {
                         state_changed |= self.handle_command(next).await;
+                        handled += 1;
                     }
                     if state_changed {
                         self.publish_state_delta(&before_state);
                     }
+                    app_loop_trace("command", handled, clone_ms, loop_started.elapsed());
                 }
                 actions = self.action_rx.recv() => {
                     let Some(actions) = actions else { break };
+                    let loop_started = std::time::Instant::now();
+                    let action_batch = actions.len() as u32;
                     let before_state = self.state.clone();
+                    let clone_ms = loop_started.elapsed().as_millis();
                     let mut state_changed = false;
                     for action in actions {
                         if let AppAction::ActivityRowsObserved { rows } = &action {
                             self.activity_projection.ingest(rows.clone());
                         }
+                        // For SelectRoom: capture observable facts BEFORE reduce so
+                        // we can classify the outcome afterwards and emit the
+                        // telemetry-lane IntentLifecycle event. Private-data-free:
+                        // we capture only boolean flags and a count.
+                        let select_intent_pre: Option<(String, bool, bool, bool, usize)> =
+                            if let AppAction::SelectRoom { room_id } = &action {
+                                let session_ready = matches!(
+                                    self.state.session,
+                                    SessionState::Ready(_)
+                                        | SessionState::NeedsRecovery { .. }
+                                        | SessionState::Recovering { .. }
+                                );
+                                let found =
+                                    self.state.rooms.iter().any(|r| r.room_id == *room_id);
+                                let already = self
+                                    .state
+                                    .navigation
+                                    .active_room_id
+                                    .as_deref()
+                                    == Some(room_id.as_str());
+                                let rooms_len = self.state.rooms.len();
+                                Some((
+                                    room_id.clone(),
+                                    session_ready,
+                                    found,
+                                    already,
+                                    rooms_len,
+                                ))
+                            } else {
+                                None
+                            };
                         // Actor-originated actions are post-side-effect
                         // projections: the owner actor has already performed
                         // the corresponding Matrix/store/sync operation.
@@ -623,6 +717,53 @@ impl AppActor {
                         // actor-projection effects here would double-execute
                         // login, restore, sync, or recovery work.
                         let post_projection_effects = self.reduce_app_action(action).await;
+                        // After reduce: determine outcome and emit IntentLifecycle
+                        // for correlated pending SelectRoom intents.
+                        if let Some((room_id, session_ready, found, already, rooms_len)) =
+                            select_intent_pre
+                        {
+                            let committed = self
+                                .state
+                                .navigation
+                                .active_room_id
+                                .as_deref()
+                                == Some(room_id.as_str());
+                            let outcome = if !session_ready {
+                                IntentOutcome::FailedNoOp(IntentNoOpReason::SessionNotReady)
+                            } else if !found {
+                                IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState)
+                            } else if already {
+                                IntentOutcome::BenignNoOp(IntentNoOpReason::AlreadyActive)
+                            } else if committed {
+                                IntentOutcome::Committed
+                            } else {
+                                // Room was present, session ready, but reduce
+                                // did not commit — classify as FailedNoOp to
+                                // prevent a silent timeout (defensive case).
+                                IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState)
+                            };
+                            // Env-gated private-data-free trace (counts/flags only).
+                            if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+                                eprintln!(
+                                    "koushi.select_reduce found={found} session_ready={session_ready} rooms_len={rooms_len}"
+                                );
+                            }
+                            let request_id_to_emit = self
+                                .pending_select
+                                .get_mut(&room_id)
+                                .and_then(|q| q.pop_front());
+                            if self
+                                .pending_select
+                                .get(&room_id)
+                                .map(|q| q.is_empty())
+                                .unwrap_or(false)
+                            {
+                                self.pending_select.remove(&room_id);
+                            }
+                            if let Some(request_id) = request_id_to_emit {
+                                self.emit(CoreEvent::IntentLifecycle { request_id, outcome });
+                            }
+                        }
                         if let Some(activity_update) = self
                             .activity_projection
                             .update_action_for_open_state(&self.state)
@@ -641,6 +782,7 @@ impl AppActor {
                     if state_changed {
                         self.publish_state_delta(&before_state);
                     }
+                    app_loop_trace("action", action_batch, clone_ms, loop_started.elapsed());
                 }
             }
         }
@@ -1200,6 +1342,20 @@ impl AppActor {
                         .await;
                     true
                 }
+                AppCommand::TimelineScrollAnchorUpdated {
+                    request_id,
+                    room_id,
+                    anchor,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::TimelineScrollAnchorUpdated {
+                            room_id,
+                            anchor,
+                        })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
                 AppCommand::CloseFocusedContext { request_id } => {
                     let focused_key = self.current_focused_context_timeline_key();
                     let effects = self.reduce_app_action(AppAction::CloseFocusedContext).await;
@@ -1454,6 +1610,20 @@ impl AppActor {
                 false
             }
             CoreCommand::Room(room_command) => {
+                // User-intent lane: for SelectRoom, record the request_id→room_id
+                // correlation BEFORE forwarding so the action loop can emit the
+                // terminal IntentLifecycle outcome. This command path is reliable
+                // and must never be converted into a drop-on-full background path.
+                if let crate::command::RoomCommand::SelectRoom {
+                    request_id,
+                    ref room_id,
+                } = room_command
+                {
+                    self.pending_select
+                        .entry(room_id.clone())
+                        .or_default()
+                        .push_back(request_id);
+                }
                 // Route to AccountActor (which forwards to RoomActor).
                 let _ = self
                     .account_actor

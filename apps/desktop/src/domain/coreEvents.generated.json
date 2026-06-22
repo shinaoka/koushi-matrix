@@ -141,7 +141,7 @@
         "emojis": [
           {
             "description": "Dog",
-            "symbol": "🐶"
+            "symbol": "\ud83d\udc36"
           }
         ],
         "kind": "sasPresented",
@@ -153,6 +153,27 @@
       }
     },
     "kind": "E2eeTrust"
+  },
+  "intentLifecycleCommitted": {
+    "kind": "IntentLifecycle",
+    "outcome": {
+      "kind": "committed"
+    },
+    "request_id": {
+      "connection_id": 3,
+      "sequence": 7
+    }
+  },
+  "intentLifecycleFailedNoOpRoomNotInState": {
+    "kind": "IntentLifecycle",
+    "outcome": {
+      "kind": "failed_no_op",
+      "reason": "room_not_in_state"
+    },
+    "request_id": {
+      "connection_id": 3,
+      "sequence": 7
+    }
   },
   "liveSignalsPresenceSet": {
     "event": {
@@ -196,6 +217,16 @@
     "event": {
       "health": "healthy",
       "kind": "healthChanged"
+    },
+    "kind": "LocalEncryption"
+  },
+  "localEncryptionEventCacheStatus": {
+    "event": {
+      "encrypted_store": true,
+      "kind": "eventCacheStatus",
+      "subscribe_status": "subscribe_failed",
+      "reason_class": "subscribe_failed",
+      "subscribed": false
     },
     "kind": "LocalEncryption"
   },
@@ -537,6 +568,16 @@
     },
     "kind": "Search"
   },
+  "searchCrawlProgress": {
+    "event": {
+      "HistoryCrawlProgress": {
+        "indexed": 42,
+        "processed": 100,
+        "room_id": "!r:example.test"
+      }
+    },
+    "kind": "Search"
+  },
   "stateDeltaSearchCrawlerQueued": {
     "changed": {
       "state": {
@@ -555,16 +596,6 @@
     },
     "generation": 1,
     "kind": "StateDelta"
-  },
-  "searchCrawlProgress": {
-    "event": {
-      "HistoryCrawlProgress": {
-        "indexed": 42,
-        "processed": 100,
-        "room_id": "!r:example.test"
-      }
-    },
-    "kind": "Search"
   },
   "syncModeChanged": {
     "event": {
@@ -650,7 +681,7 @@
             "reactions": [
               {
                 "count": 2,
-                "key": "👍",
+                "key": "\ud83d\udc4d",
                 "my_reaction_event_id": "$reaction:test",
                 "reacted_by_me": true,
                 "sender_preview": [
@@ -730,7 +761,7 @@
                 "reactions": [
                   {
                     "count": 2,
-                    "key": "👍",
+                    "key": "\ud83d\udc4d",
                     "my_reaction_event_id": "$reaction:test",
                     "reacted_by_me": true,
                     "sender_preview": [
@@ -813,7 +844,7 @@
                     "height": 315,
                     "kind": "ready",
                     "mime_type": "image/png",
-                    "source_url": "file:///tmp/link-preview-thumbnails/fixture.bin",
+                    "source_url": "koushi-thumbnail://localhost/link-preview/fixture.bin",
                     "width": 600
                   },
                   "width": 1200
@@ -840,30 +871,6 @@
               "room_id": "!r:example.test"
             }
           }
-        },
-        "request_id": {
-          "connection_id": 3,
-          "sequence": 7
-        }
-      }
-    },
-    "kind": "Timeline"
-  },
-  "timelineMediaDownloadProgress": {
-    "event": {
-      "MediaDownloadProgress": {
-        "event_id": "$media1",
-        "key": {
-          "account_key": "@u:example.test",
-          "kind": {
-            "Room": {
-              "room_id": "!r:example.test"
-            }
-          }
-        },
-        "progress": {
-          "current": 0,
-          "total": 68
         },
         "request_id": {
           "connection_id": 3,
@@ -911,6 +918,30 @@
           }
         },
         "kind": "Sdk",
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        }
+      }
+    },
+    "kind": "Timeline"
+  },
+  "timelineMediaDownloadProgress": {
+    "event": {
+      "MediaDownloadProgress": {
+        "event_id": "$media1",
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "progress": {
+          "current": 0,
+          "total": 68
+        },
         "request_id": {
           "connection_id": 3,
           "sequence": 7
@@ -1096,6 +1127,26 @@
           "unread_event_count": 2,
           "unread_position": "belowViewport"
         }
+      }
+    },
+    "kind": "Timeline"
+  },
+  "timelineAnchorRestoreFinished": {
+    "event": {
+      "AnchorRestoreFinished": {
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "status": "BudgetExhausted"
       }
     },
     "kind": "Timeline"

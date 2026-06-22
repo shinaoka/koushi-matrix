@@ -1399,6 +1399,17 @@ describe("Tauri state refresh wiring", () => {
     ).toContain("transport={timelineTransport}");
   });
 
+  test("member-panel avatar thumbnail requests respect the global avatar download gate", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const renderStart = source.indexOf("<ContextualRightPanel");
+    const renderEnd = source.indexOf("</ContextualRightPanel>", renderStart);
+    const panelPropsSource = source.slice(renderStart, renderEnd);
+
+    expect(panelPropsSource).toMatch(
+      /onRequestMemberAvatarThumbnail=\{\s*AVATAR_THUMBNAIL_DOWNLOADS_ENABLED\s*\?\s*tauriTimelineTransport\?\.downloadAvatarThumbnail\s*:\s*undefined\s*\}/
+    );
+  });
+
   test("closing an active focused context goes through Rust before hiding the panel", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const closeFocusedContextStart = source.indexOf("async function closeFocusedContextIfHiddenBy");

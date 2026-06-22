@@ -5,6 +5,7 @@ import {
   applyDeltaToState,
   applySnapshotToState,
   clearAppStoreSnapshot,
+  getAppStoreDeltaStats,
   getAppStoreSnapshot,
   selectForwardDestinations,
   selectMentionCandidates,
@@ -306,24 +307,46 @@ describe("appStore projection cache", () => {
     expect(applyDeltaToState(previous, delta)).toEqual(applySnapshotToState(previous, next));
   });
 
-  test("uses full snapshot generation to reject stale deltas after reset", () => {
+  test("ignores stale deltas after a full snapshot reset without applying or refreshing", () => {
     const snapshot = makeSnapshot();
     snapshot.state_generation = 4;
     setAppStoreSnapshot(snapshot);
 
     expect(useAppStore.getState().stateGeneration).toBe(4);
+
+    // A stale delta (same generation as the just-applied full snapshot) is
+    // already reflected. It must be ignored as handled (no refresh) AND must
+    // not clobber the reset state with its trailing payload.
     expect(
       applyAppStoreDelta({
         generation: 4,
-        changed: { state: { domain: { search_crawler: { rooms: {}, last_active: null } } } }
+        changed: {
+          state: {
+            ui: {
+              navigation: {
+                active_space_id: null,
+                active_room_id: "!stale-room:example.invalid",
+                last_room_by_space_id: {},
+                space_order: []
+              }
+            }
+          }
+        }
       })
-    ).toBe(false);
+    ).toBe(true);
+    expect(useAppStore.getState().stateGeneration).toBe(4);
+    expect(getAppStoreSnapshot()?.state.ui.navigation.active_room_id).toBe(
+      "!room-alpha:example.invalid"
+    );
+
+    // The next contiguous delta still applies.
     expect(
       applyAppStoreDelta({
         generation: 5,
         changed: { state: { domain: { search_crawler: { rooms: {}, last_active: null } } } }
       })
     ).toBe(true);
+    expect(useAppStore.getState().stateGeneration).toBe(5);
   });
 
   test("rejects stale full snapshots after a newer state delta has applied", () => {
@@ -392,6 +415,87 @@ describe("appStore projection cache", () => {
       })
     ).toBe(false);
   });
+
+  test("ignores already-applied deltas without requesting a full refresh", () => {
+    const snapshot = makeSnapshot();
+    snapshot.state_generation = 10;
+    setAppStoreSnapshot(snapshot);
+
+    const staleChange = {
+      changed: { state: { domain: { search_crawler: { rooms: {}, last_active: null } } } }
+    };
+
+    // A full snapshot (command response or refresh) just landed generation 10.
+    // Background StateDeltas emitted at or before generation 10 are already
+    // reflected, so they must be ignored as handled (return true) and must NOT
+    // ask the caller to refresh. Returning false here is what makes App.tsx
+    // call get_snapshot again, which lands a newer generation and turns every
+    // trailing delta stale -> a self-amplifying refresh storm at scale.
+    expect(applyAppStoreDelta({ generation: 8, ...staleChange })).toBe(true);
+    expect(applyAppStoreDelta({ generation: 9, ...staleChange })).toBe(true);
+    expect(applyAppStoreDelta({ generation: 10, ...staleChange })).toBe(true);
+
+    // The next contiguous delta still applies normally.
+    expect(applyAppStoreDelta({ generation: 11, ...staleChange })).toBe(true);
+    expect(useAppStore.getState().stateGeneration).toBe(11);
+
+    // A genuine forward gap still requests a refresh.
+    expect(applyAppStoreDelta({ generation: 13, ...staleChange })).toBe(false);
+  });
+
+  test("does not storm refreshes when background deltas trail a full snapshot under load", () => {
+    // The core has churned far ahead from large-account background sync.
+    const CORE_LATEST = 200;
+    const base = makeSnapshot();
+    base.state_generation = 0;
+    setAppStoreSnapshot(base);
+
+    let refreshCount = 0;
+    const refresh = () => {
+      refreshCount += 1;
+      const full = makeSnapshot();
+      full.state_generation = CORE_LATEST;
+      setAppStoreSnapshot(full);
+    };
+
+    // A selectRoom/refresh command response lands the latest generation first.
+    refresh();
+
+    // Then the in-flight background deltas (generations 1..CORE_LATEST) arrive,
+    // every one now stale relative to the applied full snapshot. App.tsx calls
+    // refresh() on each non-applied delta, so the bug produces one full
+    // get_snapshot per trailing delta; the fix ignores them.
+    for (let generation = 1; generation <= CORE_LATEST; generation += 1) {
+      const applied = applyAppStoreDelta({
+        generation,
+        changed: { state: { domain: { search_crawler: { rooms: {}, last_active: null } } } }
+      });
+      if (!applied) {
+        refresh();
+      }
+    }
+
+    expect(refreshCount).toBe(1);
+  });
+
+  test("counts applied, stale-ignored, and forward-gap deltas for transport diagnostics", () => {
+    const snapshot = makeSnapshot();
+    snapshot.state_generation = 2;
+    setAppStoreSnapshot(snapshot);
+    const change = {
+      changed: { state: { domain: { search_crawler: { rooms: {}, last_active: null } } } }
+    };
+
+    applyAppStoreDelta({ generation: 3, ...change }); // contiguous -> applied
+    applyAppStoreDelta({ generation: 2, ...change }); // stale -> ignored, no refresh
+    applyAppStoreDelta({ generation: 99, ...change }); // forward gap -> refresh requested
+
+    expect(getAppStoreDeltaStats()).toEqual({
+      applied: 1,
+      staleIgnored: 1,
+      gapRefreshRequested: 1
+    });
+  });
 });
 
 function makeSnapshot(): DesktopSnapshot {
@@ -430,7 +534,7 @@ function makeSnapshot(): DesktopSnapshot {
               }
             },
             timeline: {
-              auto_load_older_messages: false
+              auto_load_older_messages: true
             },
             search_crawler: {
               speed: "standard",

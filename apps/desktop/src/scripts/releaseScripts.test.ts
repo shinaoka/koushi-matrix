@@ -78,8 +78,9 @@ describe("desktop release scripts", () => {
     expect(output).toContain("windows.signCommand");
     expect(output).toContain("windows.wix.upgradeCode");
     expect(output).toContain("security.assetProtocol.enable");
-    expect(output).toContain("security.assetProtocol.scope.appdata");
-    expect(output).toContain("security.assetProtocol.scope.koushiData");
+    expect(output).toContain("security.assetProtocol.scope.noBroadAppdata");
+    expect(output).toContain("security.assetProtocol.scope.mediaDownloads");
+    expect(output).toContain("security.csp.img-src.koushiThumbnail");
   });
 
   test("manual QA script lists every Milestone 9 flow", () => {
@@ -798,6 +799,7 @@ describe("desktop release scripts", () => {
     expect(output).toContain("KOUSHI_DATA_DIR");
     expect(output).toContain("KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR");
     expect(output).toContain("KOUSHI_QA_LOGIN_PIPE");
+    expect(output).toContain("KOUSHI_QA_CONTROL_PIPE");
     expect(output).not.toContain("DEEPSEEK_API_KEY");
     expect(output).not.toContain("KOUSHI_TEST_SECRET");
   });
@@ -874,7 +876,11 @@ describe("desktop release scripts", () => {
     );
 
     expect(transport.trim()).toBe("fifo");
+    expect(source).toContain("readRealLoginCredentials");
+    expect(source).toContain("writeRealLoginPipe");
+    expect(source).toContain("requestQaLogout(qaControlPipePath)");
     expect(source).toContain("KOUSHI_QA_LOGIN_PIPE");
+    expect(source).toContain("KOUSHI_QA_CONTROL_PIPE");
     expect(source).not.toContain("--password");
   });
 
@@ -999,12 +1005,16 @@ describe("desktop release scripts", () => {
     const sendReady = runScript("scripts/desktop-linux-gui-qa.mjs", [
       "--qa-title-send-ready=koushi-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_subscribed=true timeline_items=1 errors=0 send=sent panel=closed"
     ]);
+    const mismatchedTimeline = runScript("scripts/desktop-linux-gui-qa.mjs", [
+      "--qa-title-ready=koushi-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_room=true timeline_matches_active=false timeline_subscribed=true timeline_items=1 errors=0 panel=closed"
+    ]);
 
     expect(ready.trim()).toBe("ready");
     expect(readyRecovered.trim()).toBe("ready");
     expect(panel.trim()).toBe("keyboardSettings");
     expect(panelReady.trim()).toBe("ready");
     expect(sendReady.trim()).toBe("ready");
+    expect(mismatchedTimeline.trim()).toBe("not-ready");
   });
 
   test("linux GUI smoke QA title contract uses the local send statuses", () => {
@@ -1716,7 +1726,12 @@ describe("desktop release scripts", () => {
       expect(csp).toContain("img-src");
       expect(csp).toContain("asset:");
       expect(csp).toContain("http://asset.localhost");
+      expect(csp).toContain("koushi-thumbnail:");
+      expect(csp).toContain("http://koushi-thumbnail.localhost");
     }
+    expect(tauriConfig.app.security.assetProtocol.scope).toEqual([
+      "$LOCALDATA/koushi-desktop/media_downloads/**"
+    ]);
   });
 
   test("QA file credential store is gated to debug and test builds in core", () => {
@@ -1786,6 +1801,14 @@ describe("desktop release scripts", () => {
 
     expect(strict.trim()).toBe("not-ready");
     expect(relaxed.trim()).toBe("ready");
+  });
+
+  test("mac GUI smoke rejects active/timeline room mismatches", () => {
+    const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
+      "--qa-title-ready=koushi-desktop qa session=ready sync=running rooms=2 spaces=1 active_room=true timeline_room=true timeline_matches_active=false timeline_subscribed=true timeline_items=1 errors=0 panel=closed"
+    ]);
+
+    expect(output.trim()).toBe("not-ready");
   });
 
   test("mac GUI smoke rejects ready titles with backend errors", () => {

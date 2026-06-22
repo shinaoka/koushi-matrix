@@ -242,7 +242,7 @@ function makeSnapshot(): DesktopSnapshot {
               }
             },
             timeline: {
-              auto_load_older_messages: false
+              auto_load_older_messages: true
             },
             search_crawler: {
               speed: "standard",

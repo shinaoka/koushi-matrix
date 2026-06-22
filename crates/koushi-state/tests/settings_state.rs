@@ -62,7 +62,7 @@ fn app_state_carries_default_non_secret_settings() {
     assert_eq!(
         state.settings.values.timeline,
         TimelineSettings {
-            auto_load_older_messages: false,
+            auto_load_older_messages: true,
         }
     );
     assert_eq!(state.settings.persistence, SettingsPersistenceState::Idle);
@@ -203,7 +203,7 @@ fn settings_values_deserialize_legacy_without_media_as_default_ask() {
 }
 
 #[test]
-fn settings_values_deserialize_legacy_without_timeline_as_default_manual() {
+fn settings_values_deserialize_legacy_without_timeline_as_default_true() {
     let values = serde_json::from_str::<SettingsValues>(
         r#"{
   "locale": { "language_tag": null, "text_direction": "auto" },
@@ -221,9 +221,46 @@ fn settings_values_deserialize_legacy_without_timeline_as_default_manual() {
     assert_eq!(
         values.timeline,
         TimelineSettings {
-            auto_load_older_messages: false,
+            auto_load_older_messages: true,
         }
     );
+}
+
+#[test]
+fn timeline_auto_load_older_messages_defaults_to_true() {
+    let values = koushi_state::SettingsValues::default();
+    assert!(values.timeline.auto_load_older_messages);
+}
+
+#[test]
+fn missing_timeline_settings_backfill_auto_load_to_true() {
+    let json = r#"{
+      "locale": {"language_tag": null, "text_direction": "auto"},
+      "appearance": {"theme": "system"},
+      "typography": {"font": "system", "emoji": "system"},
+      "keyboard": {"composer_send_shortcut": "enter"},
+      "notifications": {"desktop_notifications": true, "sound": true, "badges": true},
+      "display": {"code_block_wrap": true, "hide_redacted": true},
+      "media": {"image_upload_compression": "ask"}
+    }"#;
+    let values: koushi_state::SettingsValues = serde_json::from_str(json).unwrap();
+    assert!(values.timeline.auto_load_older_messages);
+}
+
+#[test]
+fn explicit_false_auto_load_older_messages_is_preserved() {
+    let json = r#"{
+      "locale": {"language_tag": null, "text_direction": "auto"},
+      "appearance": {"theme": "system"},
+      "typography": {"font": "system", "emoji": "system"},
+      "keyboard": {"composer_send_shortcut": "enter"},
+      "notifications": {"desktop_notifications": true, "sound": true, "badges": true},
+      "display": {"code_block_wrap": true, "hide_redacted": true},
+      "media": {"image_upload_compression": "ask"},
+      "timeline": {"auto_load_older_messages": false}
+    }"#;
+    let values: koushi_state::SettingsValues = serde_json::from_str(json).unwrap();
+    assert!(!values.timeline.auto_load_older_messages);
 }
 
 #[test]

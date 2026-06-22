@@ -18,6 +18,12 @@ describe("mediaSourceUrl", () => {
     expect(mediaSourceUrl("asset://localhost/avatar.png")).toBe("asset://localhost/avatar.png");
   });
 
+  it("passes custom thumbnail protocol URLs through unchanged", () => {
+    expect(mediaSourceUrl("koushi-thumbnail://localhost/avatar/abc123")).toBe(
+      "koushi-thumbnail://localhost/avatar/abc123"
+    );
+  });
+
   it("converts file URLs to Tauri asset URLs using the local path", () => {
     expect(mediaSourceUrl("file:///tmp/avatar%20image.png")).toBe(
       "asset:///tmp/avatar image.png"

@@ -16,6 +16,7 @@ afterEach(() => {
   cleanup();
   setActiveLocaleProfile("en", "none");
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 const KEY = roomTimelineKey("@alice:example.invalid", "!room:example.invalid");
@@ -63,8 +64,38 @@ function baseTransport(
     forwardMessage: async () => undefined,
     loadLinkPreviews: async () => undefined,
     hideLinkPreview: async () => undefined,
+    updateScrollAnchor: async () => undefined,
     ...overrides
   };
+}
+
+function mockTimelineRects(
+  rects: Record<string, { top: number; height: number }>,
+  container: { top?: number; height?: number } = {}
+) {
+  return vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    const eventId = this.getAttribute("data-event-id");
+    const testId = this.getAttribute("data-testid");
+    const top = testId === "timeline-view" ? container.top ?? 0 : rects[eventId ?? ""]?.top ?? 0;
+    const height =
+      testId === "timeline-view"
+        ? container.height ?? 600
+        : rects[eventId ?? ""]?.height ?? 0;
+    const bottom = top + height;
+    return {
+      x: 0,
+      y: top,
+      top,
+      left: 0,
+      right: 0,
+      width: 0,
+      height,
+      bottom,
+      toJSON: () => ({})
+    } as DOMRect;
+  });
 }
 
 describe("TimelineView", () => {
@@ -218,6 +249,321 @@ describe("TimelineView", () => {
     });
   });
 
+  it("throttles room scroll anchor captures to once per second per room", async () => {
+    vi.useFakeTimers();
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const updateScrollAnchor = vi.fn(async () => undefined);
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 0;
+    });
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      updateScrollAnchor
+    });
+
+    mockTimelineRects({
+      "$first:example.invalid": { top: 120, height: 48 },
+      "$second:example.invalid": { top: 420, height: 48 }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              message("$first:example.invalid", "First"),
+              message("$second:example.invalid", "Second")
+            ]
+          }
+        }
+      });
+    });
+
+    const timeline = screen.getByTestId("timeline-view");
+
+    act(() => {
+      fireEvent.scroll(timeline);
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(500);
+      fireEvent.scroll(timeline);
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(499);
+    });
+    expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(updateScrollAnchor).toHaveBeenCalledTimes(2);
+    expect(updateScrollAnchor).toHaveBeenCalledWith(
+      "!room:example.invalid",
+      expect.objectContaining({
+        event_id: "$first:example.invalid",
+        offset_px: 120,
+        updated_at_ms: expect.any(Number)
+      })
+    );
+  });
+
+  it("restores a persisted room anchor when the event is already rendered", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    mockTimelineRects(
+      {
+        "$anchor:example.invalid": { top: 500, height: 48 },
+        "$after:example.invalid": { top: 560, height: 48 }
+      },
+      { top: 0, height: 600 }
+    );
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        roomScrollAnchor={{
+          event_id: "$anchor:example.invalid",
+          offset_px: 50,
+          updated_at_ms: Date.now()
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [
+            message("$first:example.invalid", "First"),
+            message("$anchor:example.invalid", "Anchor"),
+            message("$after:example.invalid", "After")
+          ]
+        }
+      }
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(450);
+    });
+  });
+
+  it("requests a live anchor restore once and restores when the anchor enters live items", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const roomId = "!room:example.invalid";
+    const anchorEventId = "$anchor:example.invalid";
+    const restoreTimelineAnchor = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      restoreTimelineAnchor
+    });
+
+    mockTimelineRects(
+      {
+        "$live-top:example.invalid": { top: 120, height: 48 },
+        "$live-bottom:example.invalid": { top: 560, height: 48 },
+        [anchorEventId]: { top: 500, height: 48 }
+      },
+      { top: 0, height: 600 }
+    );
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId={roomId}
+        transport={transport}
+        roomScrollAnchor={{
+          event_id: anchorEventId,
+          offset_px: 50,
+          updated_at_ms: Date.now()
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollHeight", { value: 2000, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              message("$live-top:example.invalid", "Live top"),
+              message("$live-bottom:example.invalid", "Live bottom")
+            ]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Live top")).toBeTruthy();
+      expect(timeline.getAttribute("data-timeline-generation")).toBe("1");
+      expect(restoreTimelineAnchor).toHaveBeenCalledTimes(1);
+      expect(restoreTimelineAnchor).toHaveBeenCalledWith(
+        KEY,
+        anchorEventId,
+        expect.any(Number),
+        expect.any(Number)
+      );
+    });
+
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 550,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 2,
+            items: [
+              message("$live-top:example.invalid", "Live top"),
+              message(anchorEventId, "Live anchor visible"),
+              message("$live-bottom:example.invalid", "Live bottom")
+            ]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("Bootstrap anchor")).toBeNull();
+      expect(screen.queryByText("Focused bootstrap context")).toBeNull();
+      expect(screen.getByText("Live anchor visible")).toBeTruthy();
+      expect(timeline.getAttribute("data-timeline-generation")).toBe("2");
+      expect(timeline.scrollTop).toBe(1000);
+    });
+  });
+
+  it("falls back to the live edge when live anchor restore exhausts its budget", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const roomId = "!room:example.invalid";
+    const anchorEventId = "$anchor:example.invalid";
+    const restoreTimelineAnchor = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      restoreTimelineAnchor
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId={roomId}
+        transport={transport}
+        roomScrollAnchor={{
+          event_id: anchorEventId,
+          offset_px: 50,
+          updated_at_ms: Date.now()
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollHeight", { value: 2000, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              message("$live-top:example.invalid", "Live top"),
+              message("$live-bottom:example.invalid", "Live bottom")
+            ]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(restoreTimelineAnchor).toHaveBeenCalledTimes(1);
+      expect(timeline.scrollTop).toBe(0);
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          AnchorRestoreFinished: {
+            request_id: { connection_id: 1, sequence: 99 },
+            key: KEY,
+            status: "BudgetExhausted"
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(2000);
+    });
+    expect(restoreTimelineAnchor).toHaveBeenCalledTimes(1);
+  });
+
   it("restores the live edge after a same-key timeline resync generation arrives", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({
@@ -303,6 +649,7 @@ describe("TimelineView", () => {
         roomId="!room:example.invalid"
         transport={transport}
         onReply={vi.fn()}
+        enableAvatarThumbnailDownloads={true}
       />
     );
 
@@ -351,6 +698,7 @@ describe("TimelineView", () => {
         transport={transport}
         onReply={vi.fn()}
         onDiagnosticLogEntry={onDiagnosticLogEntry}
+        enableAvatarThumbnailDownloads={true}
       />
     );
 
@@ -417,7 +765,7 @@ describe("TimelineView", () => {
           mxc_uri: "mxc://matrix.org/avatar-retry",
           thumbnail: {
             kind: "ready",
-            source_url: "file:///tmp/avatar-retry.bin",
+            source_url: "koushi-thumbnail://localhost/avatar/retry",
             width: null,
             height: null,
             mime_type: null
@@ -468,6 +816,7 @@ describe("TimelineView", () => {
           }
         }}
         onReply={vi.fn()}
+        enableAvatarThumbnailDownloads={true}
       />
     );
 
@@ -487,6 +836,53 @@ describe("TimelineView", () => {
       expect(downloadAvatarThumbnail).toHaveBeenCalledWith("mxc://matrix.org/profile-avatar");
     });
     expect(downloadAvatarThumbnail).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT call downloadAvatarThumbnail when enableAvatarThumbnailDownloads is explicitly false (kill-switch)", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const downloadAvatarThumbnail = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      downloadAvatarThumbnail
+    });
+
+    // Explicitly disable via the kill-switch prop (#116 Stage F1a: default is now ON).
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        enableAvatarThumbnailDownloads={false}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [
+            {
+              ...message("$avatar-gated", "Avatar row (kill-switch off)"),
+              sender_avatar: {
+                mxc_uri: "mxc://matrix.org/avatar-gated",
+                thumbnail: { kind: "notRequested" }
+              }
+            }
+          ]
+        }
+      }
+    });
+
+    // Give React time to flush any effects that might fire.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(downloadAvatarThumbnail).not.toHaveBeenCalled();
   });
 
   it("renders a downloaded sender avatar thumbnail from account events", async () => {
@@ -534,7 +930,7 @@ describe("TimelineView", () => {
           mxc_uri: "mxc://matrix.org/avatar",
           thumbnail: {
             kind: "ready",
-            source_url: "file:///tmp/avatar.bin",
+            source_url: "koushi-thumbnail://localhost/avatar/sender",
             width: null,
             height: null,
             mime_type: null
@@ -545,8 +941,89 @@ describe("TimelineView", () => {
 
     await waitFor(() => {
       const image = document.querySelector<HTMLImageElement>(".message .avatar img");
-      expect(image?.getAttribute("src")).toBe("file:///tmp/avatar.bin");
+      expect(image?.getAttribute("src")).toBe("koushi-thumbnail://localhost/avatar/sender");
     });
+  });
+
+  it("ignores avatar thumbnail events that are not relevant to the mounted timeline", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const onDiagnosticLogEntry = vi.fn();
+    const onDiagnosticsChange = vi.fn();
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onDiagnosticsChange={onDiagnosticsChange}
+        onDiagnosticLogEntry={onDiagnosticLogEntry}
+        onReply={vi.fn()}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [
+            {
+              ...message("$avatar-relevant", "Avatar row"),
+              sender_avatar: {
+                mxc_uri: "mxc://matrix.org/relevant-avatar",
+                thumbnail: { kind: "notRequested" }
+              }
+            }
+          ]
+        }
+      }
+    });
+    await waitFor(() =>
+      expect(onDiagnosticsChange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          avatarMxcItems: 1,
+          avatarPendingItems: 1,
+          visibleItems: 1
+        })
+      )
+    );
+    onDiagnosticLogEntry.mockClear();
+    onDiagnosticsChange.mockClear();
+
+    emit({
+      kind: "Account",
+      event: {
+        AvatarThumbnailDownloaded: {
+          request_id: { connection_id: 1, sequence: 2 },
+          mxc_uri: "mxc://matrix.org/unrelated-avatar",
+          thumbnail: {
+            kind: "ready",
+            source_url: "koushi-thumbnail://localhost/avatar/unrelated",
+            width: null,
+            height: null,
+            mime_type: null
+          }
+        }
+      }
+    });
+
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(onDiagnosticLogEntry).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "timeline.avatar",
+        message: "avatar thumbnail ready"
+      })
+    );
+    expect(onDiagnosticsChange).not.toHaveBeenCalled();
+    expect(document.querySelector(".message .avatar img")).toBeNull();
   });
 
   it("renders downloaded thumbnails for multiple visible sender avatars", async () => {
@@ -602,7 +1079,7 @@ describe("TimelineView", () => {
           mxc_uri: "mxc://matrix.org/avatar-a",
           thumbnail: {
             kind: "ready",
-            source_url: "file:///tmp/avatar-a.bin",
+            source_url: "koushi-thumbnail://localhost/avatar/a",
             width: null,
             height: null,
             mime_type: null
@@ -618,7 +1095,7 @@ describe("TimelineView", () => {
           mxc_uri: "mxc://matrix.org/avatar-b",
           thumbnail: {
             kind: "ready",
-            source_url: "file:///tmp/avatar-b.bin",
+            source_url: "koushi-thumbnail://localhost/avatar/b",
             width: null,
             height: null,
             mime_type: null
@@ -634,8 +1111,8 @@ describe("TimelineView", () => {
       const secondImage = document.querySelector<HTMLImageElement>(
         '[data-event-id="$avatar-ready-b"] .avatar img'
       );
-      expect(firstImage?.getAttribute("src")).toBe("file:///tmp/avatar-a.bin");
-      expect(secondImage?.getAttribute("src")).toBe("file:///tmp/avatar-b.bin");
+      expect(firstImage?.getAttribute("src")).toBe("koushi-thumbnail://localhost/avatar/a");
+      expect(secondImage?.getAttribute("src")).toBe("koushi-thumbnail://localhost/avatar/b");
     });
   });
 

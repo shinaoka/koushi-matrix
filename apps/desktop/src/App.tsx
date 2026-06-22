@@ -90,7 +90,10 @@ import {
   qaSendSmokeTargetRoom,
   qaSendSmokeTargetUserIdFromEnv
 } from "./domain/qaSendSmoke";
-import { planSnapshotAvatarThumbnailRequests } from "./domain/avatarThumbnails";
+import {
+  AVATAR_THUMBNAIL_DOWNLOADS_ENABLED,
+  planSnapshotAvatarThumbnailRequests
+} from "./domain/avatarThumbnails";
 import type {
   ActivityMarkReadTarget,
   ActivityTab,
@@ -112,6 +115,7 @@ import type {
   SettingsPatch,
   StagedUploadCompressionChoice,
   StagedUploadItem,
+  TimelineScrollAnchor,
   UploadStagingRequestItem
 } from "./domain/types";
 import { SNAPSHOT_SCHEMA_VERSION } from "./domain/types";
@@ -127,10 +131,13 @@ import {
 } from "./app/localPresentation";
 import {
   applyAppStoreDelta,
+  getAppStoreDeltaStats,
   selectSnapshot,
   setAppStoreSnapshot,
   useAppStore
 } from "./domain/appStore";
+import { getRecentJsErrors } from "./domain/jsErrorLog";
+import { getTimelineTransportStats } from "./domain/timelineTransportStats";
 
 import {
   EMPTY_MENTION_INTENT,
@@ -258,6 +265,23 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
           });
         }
       },
+      async restoreTimelineAnchor(
+        timelineKey: TimelineKey,
+        eventId: string,
+        maxBatches: number,
+        eventCount: number
+      ) {
+        await tauriCoreEventListenerReady;
+        if (!("Room" in timelineKey.kind)) {
+          return;
+        }
+        await invoke("restore_timeline_anchor", {
+          timelineKey,
+          eventId,
+          maxBatches,
+          eventCount
+        });
+      },
       async sendReaction(roomId: string, eventId: string, reactionKey: string) {
         await invoke("send_reaction", { roomId, eventId, reactionKey });
       },
@@ -338,6 +362,9 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
           lastVisibleEventId,
           atBottom
         });
+      },
+      async updateScrollAnchor(roomId: string, anchor: TimelineScrollAnchor) {
+        await invoke("update_navigation_scroll_anchor", { roomId, anchor });
       },
       async openAtTimestamp(roomId: string, timestampMs: number) {
         await invoke("open_timeline_at_timestamp", { roomId, timestampMs });
@@ -1070,6 +1097,11 @@ export function App() {
     if (!snapshot || !tauriTimelineTransport?.downloadAvatarThumbnail) {
       requestedAvatarMxcsRef.current.clear();
       avatarRetryCountsRef.current.clear();
+      return;
+    }
+    // #116 perf gate: avatar downloads are disabled by default to prevent the
+    // AccountActor command flood that froze room selection.
+    if (!AVATAR_THUMBNAIL_DOWNLOADS_ENABLED) {
       return;
     }
 
@@ -3105,6 +3137,11 @@ export function App() {
           onSetLocalUserAlias={(userId, alias) => {
             void setLocalUserAlias(userId, alias);
           }}
+          onRequestMemberAvatarThumbnail={
+            AVATAR_THUMBNAIL_DOWNLOADS_ENABLED
+              ? tauriTimelineTransport?.downloadAvatarThumbnail
+              : undefined
+          }
           onSetRoomNotificationMode={(roomId, mode) => {
             void setRoomNotificationMode(roomId, mode);
           }}
@@ -3314,6 +3351,9 @@ export function App() {
             timelineDiagnostics,
             domDiagnostics: qaRenderedDomDiagnostics(),
             uiLatencyDiagnostics,
+            stateDeltaStats: getAppStoreDeltaStats(),
+            timelineTransportStats: getTimelineTransportStats(),
+            jsErrors: getRecentJsErrors(),
             logEntries: diagnosticLogEntries,
             verboseDiagnostics: {
               enabled: verboseDiagnosticBuild,

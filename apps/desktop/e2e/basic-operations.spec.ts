@@ -57,6 +57,8 @@
  *      screen and refuse the normal shell instead of crashing (Phase 4 IPC guard).
  *  25. Keep room/space navigation on the newer StateDelta when a command later
  *      returns a stale full snapshot.
+ *  26. Keep room navigation responsive and diagnostics quiet when unrelated
+ *      account avatar thumbnail events burst around a mounted timeline.
  */
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
@@ -2607,6 +2609,155 @@ test("room selection keeps a newer StateDelta when the command returns a stale s
     .toEqual({ roomId: "!delta-selected-room:example.invalid" });
   await expect(targetRoom).toHaveClass(/is-active/);
   await expect(page.locator(".channel-title").first()).toContainText("Delta Selected Room");
+});
+
+test("room selection ignores unrelated avatar thumbnail bursts headlessly", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const current = window.__harness.currentSnapshot();
+    const targetRoomId = "!avatar-burst-target:example.invalid";
+    const targetRoom = {
+      room_id: targetRoomId,
+      display_name: "Avatar Burst Target",
+      display_label: "Avatar Burst Target",
+      original_display_label: "Avatar Burst Target",
+      avatar: null,
+      is_dm: false,
+      dm_user_ids: [],
+      tags: { favourite: null, low_priority: null },
+      unread_count: 0,
+      notification_count: 0,
+      highlight_count: 0,
+      parent_space_ids: []
+    };
+    const rooms = [
+      ...current.state.domain.rooms.filter((room) => room.room_id !== targetRoomId),
+      targetRoom
+    ];
+    const spaceRooms = [
+      ...current.sidebar.space_rooms.filter((room) => room.room_id !== targetRoomId),
+      {
+        room_id: targetRoom.room_id,
+        display_name: targetRoom.display_label,
+        avatar: targetRoom.avatar,
+        tags: targetRoom.tags,
+        unread_count: targetRoom.unread_count,
+        highlight_count: targetRoom.highlight_count
+      }
+    ];
+    const seeded = {
+      ...current,
+      state: {
+        ...current.state,
+        domain: {
+          ...current.state.domain,
+          rooms
+        }
+      },
+      sidebar: {
+        ...current.sidebar,
+        space_rooms: spaceRooms
+      }
+    };
+    window.__harness.setSnapshot(seeded);
+    window.__harness.setCommandResponse("select_room", ({ roomId }: { roomId: string }) => {
+      const snapshot = window.__harness.currentSnapshot();
+      const selectedRoomId = String(roomId);
+      const next = {
+        ...snapshot,
+        state_generation: snapshot.state_generation + 1,
+        state: {
+          ...snapshot.state,
+          ui: {
+            ...snapshot.state.ui,
+            navigation: {
+              ...snapshot.state.ui.navigation,
+              active_room_id: selectedRoomId
+            },
+            timeline: {
+              ...snapshot.state.ui.timeline,
+              room_id: selectedRoomId,
+              is_subscribed: true
+            },
+            thread: { kind: "closed" },
+            focused_context: { kind: "closed" }
+          }
+        },
+        sidebar: {
+          ...snapshot.sidebar,
+          space_rooms: spaceRooms
+        },
+        thread: null
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+
+  await seedTimelineItems(page, [
+    {
+      id: { Event: { event_id: "$avatar-burst-mounted:example.invalid" } },
+      sender: "@avatar-burst-sender:example.invalid",
+      sender_label: "Avatar Burst Sender",
+      body: "Mounted avatar row",
+      timestamp_ms: 1_800_000_011_000,
+      in_reply_to_event_id: null,
+      thread_root: null,
+      thread_summary: null,
+      sender_avatar: {
+        mxc_uri: "mxc://example.invalid/avatar-burst-mounted",
+        thumbnail: { kind: "notRequested" }
+      },
+      media: null,
+      is_redacted: false,
+      is_hidden: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false,
+      reactions: []
+    }
+  ]);
+
+  await page.evaluate(async () => {
+    for (let index = 0; index < 40; index += 1) {
+      await window.__harness.pushCoreEvent({
+        kind: "Account",
+        event: {
+          AvatarThumbnailDownloaded: {
+            request_id: { connection_id: 3, sequence: 10_000 + index },
+            mxc_uri: `mxc://example.invalid/unrelated-avatar-${index}`,
+            thumbnail: {
+              kind: "ready",
+              source_url: "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+              width: 1,
+              height: 1,
+              mime_type: "image/gif"
+            }
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    }
+  });
+
+  const targetRoom = page.getByRole("button", { name: "Avatar Burst Target" });
+  await expect(targetRoom).toBeVisible();
+  await targetRoom.click();
+
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("select_room")[0]?.args))
+    .toEqual({ roomId: "!avatar-burst-target:example.invalid" });
+  await expect(targetRoom).toHaveClass(/is-active/);
+  await expect(page.locator(".channel-title").first()).toContainText("Avatar Burst Target");
+
+  await page.getByRole("button", { name: "Open diagnostics" }).click();
+  const report = page.locator(".diagnostics-output");
+  await expect(report).toContainText("timeline_matches_active=true");
+  await expect(report).not.toContainText("avatar thumbnail ready");
 });
 
 test("main composer keeps an emptied local draft across stale snapshot refresh", async ({

@@ -27,6 +27,7 @@ export function qaWindowTitle(
     `spaces=${snapshot.state.domain.spaces.length}`,
     `active_room=${Boolean(snapshot.state.ui.navigation.active_room_id)}`,
     `timeline_room=${Boolean(snapshot.state.ui.timeline.room_id)}`,
+    `timeline_matches_active=${timelineMatchesActiveRoom(snapshot)}`,
     `timeline_subscribed=${snapshot.state.ui.timeline.is_subscribed}`,
     `timeline_items=${snapshot.timeline.length}`,
     ...qaSearchCrawlerDiagnosticTokens(snapshot),
@@ -149,6 +150,12 @@ function summarizeCrawlerRoomState(
 
 function latestErrorCode(snapshot: DesktopSnapshot): string {
   return snapshot.state.ui.errors.at(-1)?.code ?? "none";
+}
+
+export function timelineMatchesActiveRoom(snapshot: DesktopSnapshot): boolean {
+  const activeRoomId = snapshot.state.ui.navigation.active_room_id;
+  const timelineRoomId = snapshot.state.ui.timeline.room_id;
+  return Boolean(activeRoomId && timelineRoomId && activeRoomId === timelineRoomId);
 }
 
 function safeQaToken(value: string): string {

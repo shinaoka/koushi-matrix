@@ -22,6 +22,7 @@ describe("qaWindowTitle", () => {
     expect(title).toContain("rooms=");
     expect(title).toContain("active_room=true");
     expect(title).toContain("timeline_room=true");
+    expect(title).toContain("timeline_matches_active=true");
     expect(title).toContain("timeline_subscribed=true");
     expect(title).toContain("timeline_items=");
     expect(title).toContain("pinned=");
@@ -54,6 +55,7 @@ describe("qaWindowTitle", () => {
 
     expect(title).toContain("active_room=true");
     expect(title).toContain("timeline_room=false");
+    expect(title).toContain("timeline_matches_active=false");
   });
 
   test("uses Rust-owned native attention tokens instead of room-list aggregation", async () => {

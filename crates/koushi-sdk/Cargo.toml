@@ -35,6 +35,7 @@ url = "2"
 zeroize = "1"
 
 [dev-dependencies]
+matrix-sdk-base = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk-base" }
 tempfile = "3"
 
 # cargo-machete ignore list: ruma types are accessed through matrix_sdk::ruma
