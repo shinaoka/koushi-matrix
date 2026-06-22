@@ -4142,6 +4142,7 @@ async fn wait_for_room_created(
 
 fn core_event_kind(event: &CoreEvent) -> &'static str {
     match event {
+        CoreEvent::StateDelta(_) => "StateDelta",
         CoreEvent::StateChanged(_) => "StateChanged",
         CoreEvent::Account(_) => "Account",
         CoreEvent::Sync(_) => "Sync",

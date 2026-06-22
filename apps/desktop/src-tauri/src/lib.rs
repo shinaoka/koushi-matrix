@@ -299,6 +299,21 @@ pub(crate) fn app_data_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "local application data directory is unavailable".to_owned())
 }
 
+fn renderable_asset_cache_dirs(data_dir: &Path) -> [PathBuf; 3] {
+    [
+        data_dir.join("avatar_thumbnails"),
+        data_dir.join("media_downloads"),
+        data_dir.join("link_preview_thumbnails"),
+    ]
+}
+
+fn allow_runtime_asset_cache_dirs(app: &tauri::App, data_dir: &Path) {
+    let asset_scope = app.asset_protocol_scope();
+    for cache_dir in renderable_asset_cache_dirs(data_dir) {
+        let _ = asset_scope.allow_directory(cache_dir, true);
+    }
+}
+
 fn start_core_runtime_for_tauri(data_dir: PathBuf) -> CoreRuntime {
     #[cfg(any(debug_assertions, test))]
     {
@@ -797,6 +812,7 @@ pub fn run() {
             // starts its tokio runtime before invoking setup; we enter the
             // handle so `tokio::task::spawn` can find it from the main thread.
             let data_dir = app_data_dir().unwrap_or_else(|_| PathBuf::from("koushi-desktop-data"));
+            allow_runtime_asset_cache_dirs(app, &data_dir);
             // Enter Tauri's tokio runtime so `executor::spawn` (tokio::task::spawn)
             // can find a runtime handle from this non-tokio-worker thread.
             let async_handle = tauri::async_runtime::handle();
@@ -1068,6 +1084,19 @@ mod tests {
     }
 
     #[test]
+    fn renderable_asset_cache_scope_is_limited_to_media_cache_dirs() {
+        let base = Path::new("/tmp/koushi-data");
+        assert_eq!(
+            super::renderable_asset_cache_dirs(base),
+            [
+                base.join("avatar_thumbnails"),
+                base.join("media_downloads"),
+                base.join("link_preview_thumbnails"),
+            ]
+        );
+    }
+
+    #[test]
     fn qa_login_pipe_env_uses_path_only() {
         assert_eq!(
             qa_login_pipe_path_from_env_value(Some(" /tmp/koushi-desktop-login.pipe ")),
@@ -1216,6 +1245,8 @@ mod tests {
         let timeline_items_count = AtomicUsize::new(17);
         let previous = AppState::default();
         let mut next = previous.clone();
+        next.navigation.active_room_id = Some("!selected:example.invalid".to_owned());
+        next.navigation.active_space_id = Some("!space:example.invalid".to_owned());
         next.search_crawler.rooms.insert(
             "!crawler:example.invalid".to_owned(),
             SearchCrawlerRoomState::Queued,
@@ -1235,6 +1266,14 @@ mod tests {
             forwarded[0].payload["changed"]["state"]["domain"]["search_crawler"]["rooms"]
                 ["!crawler:example.invalid"]["kind"],
             json!("queued")
+        );
+        assert_eq!(
+            forwarded[0].payload["changed"]["state"]["ui"]["navigation"]["active_room_id"],
+            json!("!selected:example.invalid")
+        );
+        assert_eq!(
+            forwarded[0].payload["changed"]["state"]["ui"]["navigation"]["active_space_id"],
+            json!("!space:example.invalid")
         );
     }
 
