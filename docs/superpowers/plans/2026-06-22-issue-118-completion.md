@@ -253,7 +253,7 @@ git commit -m "feat: enable encrypted event cache persistence"
 - Modify: `apps/desktop/src/components/TimelineView.tsx`
 - Modify: relevant DTO/types/mocks after Rust state shape changes
 
-- [ ] **Step 1: Add state tests**
+- [x] **Step 1: Add state tests**
 
 Add tests proving encrypted navigation save/load preserves:
 
@@ -267,7 +267,7 @@ TimelineScrollAnchor {
 
 Also test legacy navigation JSON without `room_scroll_anchors` loads with an empty map.
 
-- [ ] **Step 2: Add bounded model**
+- [x] **Step 2: Add bounded model**
 
 Add:
 
@@ -282,7 +282,7 @@ pub struct TimelineScrollAnchor {
 
 Add `room_scroll_anchors: BTreeMap<String, TimelineScrollAnchor>` to `NavigationState` with `#[serde(default)]`.
 
-- [ ] **Step 3: Add reducer action**
+- [x] **Step 3: Add reducer action**
 
 Add an `AppAction::TimelineScrollAnchorUpdated { room_id, anchor }` and reducer branch that:
 
@@ -291,14 +291,14 @@ Add an `AppAction::TimelineScrollAnchorUpdated { room_id, anchor }` and reducer 
 3. evicts entries beyond 200 by oldest `updated_at_ms`;
 4. emits existing navigation persistence effects.
 
-- [ ] **Step 4: Add frontend capture**
+- [x] **Step 4: Add frontend capture**
 
 In `TimelineView.tsx`, reuse the stable timeline item ids already used for scroll anchoring. Throttle dispatch to avoid more than one anchor update per 1000ms per room. Store offset relative to the top of the anchored message element.
 
 - [x] **Step 5: Add restore behavior**
   Room anchors now restore through the live room timeline actor with bounded backward pagination. When the anchor is already rendered, the existing DOM restore path runs. When it is missing from the live window, the frontend requests a one-shot live restore and the actor continues paging until the anchor enters the normal live `navigation_items` stream or the budget is exhausted. The focused-event timeline bootstrap path remains unused.
 
-- [ ] **Step 6: Verify**
+- [x] **Step 6: Verify**
 
 Run:
 
@@ -309,7 +309,7 @@ cd apps/desktop && npm test -- TimelineView
 cd apps/desktop && npm run typecheck
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/koushi-state crates/koushi-core apps/desktop/src apps/desktop/src-tauri
