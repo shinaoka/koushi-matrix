@@ -1,4 +1,5 @@
 import type { AppStoreDeltaStats } from "./appStore";
+import type { TimelineTransportStats } from "./timelineTransportStats";
 import type { DesktopSnapshot, SearchCrawlerRoomState, SyncState } from "./types";
 import {
   qaDomDiagnosticTokens,
@@ -51,6 +52,7 @@ export interface DiagnosticReportInput {
   domDiagnostics: QaDomDiagnostics;
   uiLatencyDiagnostics: UiLatencyDiagnostics;
   stateDeltaStats?: AppStoreDeltaStats;
+  timelineTransportStats?: TimelineTransportStats;
   logEntries?: readonly DiagnosticLogEntry[];
   verboseDiagnostics?: VerboseDiagnostics;
 }
@@ -63,6 +65,7 @@ export function diagnosticReport({
   domDiagnostics,
   uiLatencyDiagnostics,
   stateDeltaStats,
+  timelineTransportStats,
   logEntries = [],
   verboseDiagnostics
 }: DiagnosticReportInput): string {
@@ -100,6 +103,11 @@ export function diagnosticReport({
           `State transport: delta_applied=${stateDeltaStats.applied} stale_ignored=${stateDeltaStats.staleIgnored} gap_refresh=${stateDeltaStats.gapRefreshRequested}`
         ]
       : []),
+    ...(timelineTransportStats
+      ? [
+          `Timeline transport: received=${timelineTransportStats.received} key_dropped=${timelineTransportStats.keyMismatchDropped} initial_applied=${timelineTransportStats.initialItemsApplied} last_initial_items=${timelineTransportStats.lastInitialItemsCount}`
+        ]
+      : []),
     `Search crawler running=${crawler.running} queued=${crawler.queued}: processed=${crawler.processed} indexed=${crawler.indexed}`,
     `Search crawler completed=${crawler.completed} failed=${crawler.failed}`,
     `Right panel: ${panelMode}`,
@@ -120,6 +128,14 @@ export function diagnosticReport({
           `state_delta_applied=${stateDeltaStats.applied}`,
           `state_delta_stale_ignored=${stateDeltaStats.staleIgnored}`,
           `state_delta_gap_refresh=${stateDeltaStats.gapRefreshRequested}`
+        ]
+      : []),
+    ...(timelineTransportStats
+      ? [
+          `timeline_evt_received=${timelineTransportStats.received}`,
+          `timeline_evt_key_dropped=${timelineTransportStats.keyMismatchDropped}`,
+          `timeline_initial_applied=${timelineTransportStats.initialItemsApplied}`,
+          `timeline_last_initial_items=${timelineTransportStats.lastInitialItemsCount}`
         ]
       : [])
   ];

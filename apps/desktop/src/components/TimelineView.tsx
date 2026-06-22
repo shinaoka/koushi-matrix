@@ -83,6 +83,11 @@ import type {
   TimelineMessageSource
 } from "../domain/coreEvents";
 import { mediaSourceUrl } from "../domain/mediaUrl";
+import {
+  recordTimelineEventReceived,
+  recordTimelineInitialItems,
+  recordTimelineKeyMismatch
+} from "../domain/timelineTransportStats";
 import { timelineItemDomId, timelineKeyEquals } from "../domain/coreEvents";
 import {
   applyGlobalResync,
@@ -1330,6 +1335,7 @@ export const TimelineView = memo(function TimelineView({
       if (payload.kind !== "Timeline") {
         return;
       }
+      recordTimelineEventReceived();
       const event = payload.event;
 
       if ("DisplayLabelsUpdated" in event || "DisplayPolicyUpdated" in event) {
@@ -1370,9 +1376,13 @@ export const TimelineView = memo(function TimelineView({
                               ? event.NavigationUpdated.key
                               : event.ResyncRequired.key;
       if (!timelineKeyEquals(eventKey, timelineKeyRef.current)) {
+        recordTimelineKeyMismatch();
         return;
       }
       emitTimelineEventDiagnosticLog(event, eventKey, emitDiagnosticLog);
+      if ("InitialItems" in event) {
+        recordTimelineInitialItems(event.InitialItems.items.length);
+      }
       if (timelineEventCompletesBackfillRequest(event)) {
         backfillInFlightRef.current = false;
       }

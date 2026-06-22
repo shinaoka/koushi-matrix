@@ -132,6 +132,7 @@ import {
   setAppStoreSnapshot,
   useAppStore
 } from "./domain/appStore";
+import { getTimelineTransportStats } from "./domain/timelineTransportStats";
 
 import {
   EMPTY_MENTION_INTENT,
@@ -3316,6 +3317,7 @@ export function App() {
             domDiagnostics: qaRenderedDomDiagnostics(),
             uiLatencyDiagnostics,
             stateDeltaStats: getAppStoreDeltaStats(),
+            timelineTransportStats: getTimelineTransportStats(),
             logEntries: diagnosticLogEntries,
             verboseDiagnostics: {
               enabled: verboseDiagnosticBuild,

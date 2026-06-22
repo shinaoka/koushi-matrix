@@ -310,7 +310,13 @@ describe("diagnosticReport", () => {
         maxFrameGapMs: 30,
         longFrameCount: 0
       },
-      stateDeltaStats: { applied: 12, staleIgnored: 340, gapRefreshRequested: 2 }
+      stateDeltaStats: { applied: 12, staleIgnored: 340, gapRefreshRequested: 2 },
+      timelineTransportStats: {
+        received: 9,
+        keyMismatchDropped: 9,
+        initialItemsApplied: 0,
+        lastInitialItemsCount: 0
+      }
     });
 
     expect(report).toContain(
@@ -319,6 +325,13 @@ describe("diagnosticReport", () => {
     expect(report).toContain("state_delta_applied=12");
     expect(report).toContain("state_delta_stale_ignored=340");
     expect(report).toContain("state_delta_gap_refresh=2");
+    expect(report).toContain(
+      "Timeline transport: received=9 key_dropped=9 initial_applied=0 last_initial_items=0"
+    );
+    expect(report).toContain("timeline_evt_received=9");
+    expect(report).toContain("timeline_evt_key_dropped=9");
+    expect(report).toContain("timeline_initial_applied=0");
+    expect(report).toContain("timeline_last_initial_items=0");
   });
 
   test("bounds diagnostic log entries while preserving chronological append order", () => {
