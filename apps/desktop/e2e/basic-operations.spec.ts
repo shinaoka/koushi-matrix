@@ -370,6 +370,67 @@ test("create-space dialog submits create_space and closes on success", async ({ 
   await expect(spaceNameInput).toBeHidden();
 });
 
+test("workspace rail space and Home clicks apply returned navigation snapshots", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse(
+      "select_space",
+      ({ spaceId }: { spaceId: string | null }) => {
+        const snapshot = window.__harness.currentSnapshot();
+        const next = {
+          ...snapshot,
+          state: {
+            ...snapshot.state,
+            ui: {
+              ...snapshot.state.ui,
+              navigation: {
+                ...snapshot.state.ui.navigation,
+                active_space_id: spaceId
+              }
+            }
+          },
+          sidebar: {
+            ...snapshot.sidebar,
+            active_space_id: spaceId,
+            account_home: {
+              ...snapshot.sidebar.account_home,
+              is_active: spaceId === null
+            },
+            space_rail: snapshot.sidebar.space_rail.map((space) => ({
+              ...space,
+              is_active: space.space_id === spaceId
+            }))
+          }
+        };
+        window.__harness.setSnapshot(next);
+        return next;
+      }
+    );
+    window.__harness.clearInvocations();
+  });
+
+  const rail = page.getByRole("navigation", { name: "Workspaces" });
+  const home = rail.getByRole("button", { name: "Home", exact: true });
+  const space = rail.getByRole("button", { name: "Harness Space", exact: true });
+
+  await space.click({ force: true });
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("select_space")[0]?.args))
+    .toEqual({ spaceId: "!harness-space:example.invalid" });
+  await expect(space).toHaveClass(/is-active/);
+  await expect(home).not.toHaveClass(/is-active/);
+
+  await page.evaluate(() => window.__harness.clearInvocations());
+  await home.click({ force: true });
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("select_space")[0]?.args))
+    .toEqual({ spaceId: null });
+  await expect(home).toHaveClass(/is-active/);
+  await expect(space).not.toHaveClass(/is-active/);
+});
+
 test("space rail separates system buttons, reorders Spaces, and leaves a Space headlessly", async ({
   page
 }) => {
@@ -2350,6 +2411,183 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
   await expect(composer).toHaveValue("Room A draft");
   await page.getByRole("button", { name: "Draft Room B" }).click();
   await expect(composer).toHaveValue("Room B draft");
+});
+
+test("main composer keeps an emptied local draft across stale snapshot refresh", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const roomId = "!harness-room:example.invalid";
+    const current = window.__harness.currentSnapshot();
+    const staleDraftSnapshot = {
+      ...current,
+      state: {
+        ...current.state,
+        ui: {
+          ...current.state.ui,
+          timeline: {
+            ...current.state.ui.timeline,
+            room_id: roomId,
+            composer: {
+              ...current.state.ui.timeline.composer,
+              draft: "stale draft from Rust"
+            }
+          }
+        }
+      }
+    };
+    window.__harness.setSnapshot(staleDraftSnapshot);
+    window.__harness.setCommandResponse(
+      "set_composer_draft",
+      ({ draft }: { draft: string }) => {
+        const snapshot = window.__harness.currentSnapshot();
+        return {
+          ...snapshot,
+          state: {
+            ...snapshot.state,
+            ui: {
+              ...snapshot.state.ui,
+              timeline: {
+                ...snapshot.state.ui.timeline,
+                composer: {
+                  ...snapshot.state.ui.timeline.composer,
+                  draft
+                }
+              }
+            }
+          }
+        };
+      }
+    );
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await expect(composer).toHaveValue("stale draft from Rust");
+  await composer.fill("typed then removed");
+  await expect(composer).toHaveValue("typed then removed");
+
+  await composer.fill("");
+  await expect(composer).toHaveValue("");
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("set_composer_draft").at(-1)?.args)
+    )
+    .toEqual({ roomId: HARNESS_ROOM_ID, draft: "" });
+
+  await page.evaluate(() => {
+    window.__harness.pushStateChanged();
+  });
+  await expect(composer).toHaveValue("");
+});
+
+test("timeline sender avatars render after headless account thumbnail events", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => window.__harness.clearInvocations());
+
+  await seedTimelineItems(page, [
+    {
+      id: { Event: { event_id: "$headless-avatar-a:example.invalid" } },
+      sender: "@avatar-a:example.invalid",
+      sender_label: "Avatar Alpha",
+      body: "Avatar headless row A",
+      timestamp_ms: 1_800_000_010_000,
+      in_reply_to_event_id: null,
+      thread_root: null,
+      thread_summary: null,
+      sender_avatar: {
+        mxc_uri: "mxc://example.invalid/headless-avatar-a",
+        thumbnail: { kind: "notRequested" }
+      },
+      media: null,
+      is_redacted: false,
+      is_hidden: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false,
+      reactions: []
+    },
+    {
+      id: { Event: { event_id: "$headless-avatar-b:example.invalid" } },
+      sender: "@avatar-b:example.invalid",
+      sender_label: "Avatar Beta",
+      body: "Avatar headless row B",
+      timestamp_ms: 1_800_000_010_500,
+      in_reply_to_event_id: null,
+      thread_root: null,
+      thread_summary: null,
+      sender_avatar: {
+        mxc_uri: "mxc://example.invalid/headless-avatar-b",
+        thumbnail: { kind: "notRequested" }
+      },
+      media: null,
+      is_redacted: false,
+      is_hidden: false,
+      can_redact: false,
+      is_edited: false,
+      can_edit: false,
+      reactions: []
+    }
+  ]);
+
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        window.__harness
+          .invocationsOf("download_avatar_thumbnail")
+          .map((invocation) => invocation.args.mxcUri)
+      )
+    )
+    .toEqual(
+      expect.arrayContaining([
+        "mxc://example.invalid/headless-avatar-a",
+        "mxc://example.invalid/headless-avatar-b"
+      ])
+    );
+
+  await page.evaluate(async () => {
+    for (const [mxcUri, sourceUrl, sequence] of [
+      [
+        "mxc://example.invalid/headless-avatar-a",
+        "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+        31
+      ],
+      [
+        "mxc://example.invalid/headless-avatar-b",
+        "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+        32
+      ]
+    ] as const) {
+      await window.__harness.pushCoreEvent({
+        kind: "Account",
+        event: {
+          AvatarThumbnailDownloaded: {
+            request_id: { connection_id: 1, sequence },
+            mxc_uri: mxcUri,
+            thumbnail: {
+              kind: "ready",
+              source_url: sourceUrl,
+              width: 1,
+              height: 1,
+              mime_type: "image/gif"
+            }
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    }
+  });
+
+  const firstRow = page.locator('[data-event-id="$headless-avatar-a:example.invalid"]');
+  const secondRow = page.locator('[data-event-id="$headless-avatar-b:example.invalid"]');
+  await expect(firstRow.getByText("Avatar headless row A")).toBeVisible();
+  await expect(secondRow.getByText("Avatar headless row B")).toBeVisible();
+  await expect(firstRow.locator(".avatar img")).toHaveAttribute("src", /data:image\/gif;base64/);
+  await expect(secondRow.locator(".avatar img")).toHaveAttribute("src", /data:image\/gif;base64/);
 });
 
 test("scheduled send UI dispatches typed commands and waits for Rust snapshot changes", async ({

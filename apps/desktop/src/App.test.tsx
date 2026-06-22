@@ -1187,6 +1187,8 @@ describe("ContextualRightPanel", () => {
     expect(source).toContain("composerDraftPersistTimer");
     expect(source).toContain("queueComposerDraftPersist(roomId, value)");
     expect(source).toContain("updateComposerTypingSignal(roomId, value)");
+    expect(source).toContain("localComposerDraftsRef.current[roomId] = value;");
+    expect(source).not.toContain("if (value) {\n      localComposerDraftsRef.current[roomId] = value;");
     expect(source).toContain("window.setTimeout");
     expect(source).toContain("async function sendText(bodyOverride?: string)");
     expect(source).not.toContain("setSnapshot(await api.setComposerDraft(roomId, value))");

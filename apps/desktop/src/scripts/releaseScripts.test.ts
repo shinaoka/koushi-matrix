@@ -761,6 +761,7 @@ describe("desktop release scripts", () => {
         env: {
           ...process.env,
           DEEPSEEK_API_KEY: "synthetic-secret",
+          KOUSHI_CORE_ACTOR_TRACE: "1",
           KOUSHI_TEST_SECRET: "synthetic-secret"
         }
       }
@@ -772,6 +773,7 @@ describe("desktop release scripts", () => {
     expect(output).toContain("KOUSHI_SKIP_SAVED_SESSIONS=1");
     expect(output).toContain("KOUSHI_SKIP_KEYCHAIN_PERSISTENCE=1");
     expect(output).toContain("KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR=");
+    expect(output).toContain("KOUSHI_CORE_ACTOR_TRACE=1");
     expect(output).toContain("/qa-credential-store");
     expect(output).toContain("NO_COLOR=1");
     expect(output).not.toContain("DEEPSEEK_API_KEY");

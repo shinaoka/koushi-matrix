@@ -4144,6 +4144,7 @@ function childEnvironment(dataDir, qaLoginPipePath = null, qaControlPipePath = n
     "DISPLAY",
     "GDK_BACKEND",
     "HOME",
+    "KOUSHI_CORE_ACTOR_TRACE",
     "LANG",
     "LC_ALL",
     "LDFLAGS",
