@@ -140,7 +140,10 @@ fn secret_bearing_commands_redact_debug() {
             &timeline_scroll_anchor,
             vec!["!room:example.test", "$anchor:example.test"],
         ),
-        (&restore_timeline_anchor, vec!["!room:example.test", "$anchor:example.test"]),
+        (
+            &restore_timeline_anchor,
+            vec!["!room:example.test", "$anchor:example.test"],
+        ),
     ] {
         let debug = format!("{command:?}");
         for secret in secrets {

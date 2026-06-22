@@ -78,6 +78,7 @@ import type {
   MediaTransferProgress,
   PaginationState,
   TimelineEvent,
+  TimelineAnchorRestoreStatus,
   TimelineItem,
   TimelineKey,
   TimelineNavigationSnapshot,
@@ -1316,6 +1317,7 @@ export const TimelineView = memo(function TimelineView({
     clientHeight: 0,
     listOffsetTop: 0
   });
+  const [anchorRestoreCompletionVersion, setAnchorRestoreCompletionVersion] = useState(0);
   const virtualItemHeight = TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
   const [measuredHeightVersion, setMeasuredHeightVersion] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1334,6 +1336,7 @@ export const TimelineView = memo(function TimelineView({
   const scrollAnchorDispatchTimerRef = useRef<number | null>(null);
   const restoredRoomScrollAnchorSignatureRef = useRef<string | null>(null);
   const requestedRoomScrollAnchorRestoreSignatureRef = useRef<string | null>(null);
+  const exhaustedRoomScrollAnchorRestoreSignatureRef = useRef<string | null>(null);
   /** Tracks whether the current key already got its first live-edge scroll. */
   const initialLiveEdgeScrollAppliedRef = useRef<string | null>(null);
   /** Keeps the live edge pinned when measured virtual heights change. */
@@ -1461,6 +1464,7 @@ export const TimelineView = memo(function TimelineView({
         anchorRestorePendingRef.current = false;
         roomScrollAnchorRestorePendingRef.current = false;
         requestedRoomScrollAnchorRestoreSignatureRef.current = null;
+        exhaustedRoomScrollAnchorRestoreSignatureRef.current = null;
         restoredRoomScrollAnchorSignatureRef.current = null;
         setNavigationSnapshot(null);
         setStore((current) => {
@@ -1518,23 +1522,25 @@ export const TimelineView = memo(function TimelineView({
             ? event.ItemsUpdated.key
             : "PaginationStateChanged" in event
               ? event.PaginationStateChanged.key
-              : "SendCompleted" in event
-                ? event.SendCompleted.key
-                : "MediaUploadProgress" in event
-                  ? event.MediaUploadProgress.key
-                  : "MediaDownloadProgress" in event
-                    ? event.MediaDownloadProgress.key
-                    : "MediaDownloadCompleted" in event
-                      ? event.MediaDownloadCompleted.key
-                      : "MediaDownloadFailed" in event
-                        ? event.MediaDownloadFailed.key
-                        : "MessageForwarded" in event
-                          ? event.MessageForwarded.key
-                          : "MessageSourceLoaded" in event
-                          ? event.MessageSourceLoaded.key
-                            : "NavigationUpdated" in event
-                              ? event.NavigationUpdated.key
-                              : event.ResyncRequired.key;
+              : "AnchorRestoreFinished" in event
+                ? event.AnchorRestoreFinished.key
+                : "SendCompleted" in event
+                  ? event.SendCompleted.key
+                  : "MediaUploadProgress" in event
+                    ? event.MediaUploadProgress.key
+                    : "MediaDownloadProgress" in event
+                      ? event.MediaDownloadProgress.key
+                      : "MediaDownloadCompleted" in event
+                        ? event.MediaDownloadCompleted.key
+                        : "MediaDownloadFailed" in event
+                          ? event.MediaDownloadFailed.key
+                          : "MessageForwarded" in event
+                            ? event.MessageForwarded.key
+                            : "MessageSourceLoaded" in event
+                            ? event.MessageSourceLoaded.key
+                              : "NavigationUpdated" in event
+                                ? event.NavigationUpdated.key
+                                : event.ResyncRequired.key;
       if (!timelineKeyEquals(eventKey, timelineKeyRef.current)) {
         recordTimelineKeyMismatch();
         return;
@@ -1560,7 +1566,24 @@ export const TimelineView = memo(function TimelineView({
       if ("ResyncRequired" in event) {
         pendingAnchorRef.current = null;
         anchorRestorePendingRef.current = false;
+        roomScrollAnchorRestorePendingRef.current = false;
         setNavigationSnapshot(null);
+      }
+
+      if ("AnchorRestoreFinished" in event) {
+        if (event.AnchorRestoreFinished.status === "Superseded") {
+          return;
+        }
+        const restoreSignature = requestedRoomScrollAnchorRestoreSignatureRef.current;
+        if (
+          restoreSignature !== null &&
+          event.AnchorRestoreFinished.status !== "Found"
+        ) {
+          exhaustedRoomScrollAnchorRestoreSignatureRef.current = restoreSignature;
+        }
+        roomScrollAnchorRestorePendingRef.current = false;
+        setAnchorRestoreCompletionVersion((current) => current + 1);
+        return;
       }
 
       if ("MessageSourceLoaded" in event) {
@@ -1609,6 +1632,7 @@ export const TimelineView = memo(function TimelineView({
     lastScrollAnchorDispatchAtRef.current = 0;
     restoredRoomScrollAnchorSignatureRef.current = null;
     requestedRoomScrollAnchorRestoreSignatureRef.current = null;
+    exhaustedRoomScrollAnchorRestoreSignatureRef.current = null;
     if (scrollAnchorDispatchTimerRef.current !== null) {
       window.clearTimeout(scrollAnchorDispatchTimerRef.current);
       scrollAnchorDispatchTimerRef.current = null;
@@ -1996,6 +2020,10 @@ export const TimelineView = memo(function TimelineView({
     const activeRoomAnchorRestoreSignature = activeRoomAnchorSignature
       ? `${activeRoomAnchorSignature}\u0000${generation}`
       : null;
+    const roomAnchorRestoreExhausted =
+      activeRoomAnchorRestoreSignature !== null &&
+      exhaustedRoomScrollAnchorRestoreSignatureRef.current ===
+        activeRoomAnchorRestoreSignature;
     const roomAnchorAlreadyRestored =
       activeRoomAnchorSignature !== null &&
       restoredRoomScrollAnchorSignatureRef.current === activeRoomAnchorSignature;
@@ -2005,7 +2033,8 @@ export const TimelineView = memo(function TimelineView({
       items.length > 0 &&
       activeRoomAnchor &&
       activeRoomAnchorSignature !== null &&
-      restoredRoomScrollAnchorSignatureRef.current !== activeRoomAnchorSignature
+      restoredRoomScrollAnchorSignatureRef.current !== activeRoomAnchorSignature &&
+      !roomAnchorRestoreExhausted
     ) {
       const restoreActiveRoomAnchor = () => {
         if (!container) {
@@ -2074,6 +2103,7 @@ export const TimelineView = memo(function TimelineView({
       ) {
         roomScrollAnchorRestorePendingRef.current = true;
         requestedRoomScrollAnchorRestoreSignatureRef.current = activeRoomAnchorRestoreSignature;
+        exhaustedRoomScrollAnchorRestoreSignatureRef.current = null;
         const restorePromise = transport.restoreTimelineAnchor(
           timelineKeyRef.current,
           activeRoomAnchor.event_id,
@@ -2145,6 +2175,7 @@ export const TimelineView = memo(function TimelineView({
     reportViewportObservation();
   }, [
     generation,
+    anchorRestoreCompletionVersion,
     roomId,
     roomTimelineRoomId,
     initialLiveEdgeScrollKey,
@@ -3635,6 +3666,13 @@ function emitTimelineEventDiagnosticLog(
     );
     return;
   }
+  if ("AnchorRestoreFinished" in event) {
+    emit(
+      "timeline.event",
+      `kind=${kind} anchor restore status=${anchorRestoreStatusLogLabel(event.AnchorRestoreFinished.status)}`
+    );
+    return;
+  }
   if ("NavigationUpdated" in event) {
     emit(
       "timeline.event",
@@ -3678,6 +3716,13 @@ function paginationStateLogLabel(state: PaginationState): string {
     return state;
   }
   return `Failed(${state.Failed.kind})`;
+}
+
+function anchorRestoreStatusLogLabel(status: TimelineAnchorRestoreStatus): string {
+  if (typeof status === "string") {
+    return status;
+  }
+  return `Failed(${status.Failed.kind})`;
 }
 
 function paginationStateDiagnosticLabel(

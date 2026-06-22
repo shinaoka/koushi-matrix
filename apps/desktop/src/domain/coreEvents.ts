@@ -277,6 +277,13 @@ export interface TimelineNavigationSnapshot {
   can_jump_to_bottom: boolean;
 }
 
+export type TimelineAnchorRestoreStatus =
+  | "Found"
+  | "EndReached"
+  | "BudgetExhausted"
+  | "Superseded"
+  | { Failed: { kind: TimelineFailureKind } };
+
 // ---------------------------------------------------------------------------
 // Timeline events (externally tagged on the wire)
 // ---------------------------------------------------------------------------
@@ -306,6 +313,13 @@ export type TimelineEvent =
         key: TimelineKey;
         direction: PaginationDirection;
         state: PaginationState;
+      };
+    }
+  | {
+      AnchorRestoreFinished: {
+        request_id: RequestId;
+        key: TimelineKey;
+        status: TimelineAnchorRestoreStatus;
       };
     }
   | {

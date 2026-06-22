@@ -91,12 +91,13 @@ use crate::command::{
 };
 use crate::event::{
     CoreEvent, LinkPreviewState, LiveSignalsEvent, PaginationDirection, PaginationState,
-    ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia,
-    TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageActions,
-    TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
-    TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan, TimelineUnableToDecrypt,
-    TimelineUnableToDecryptReason, TimelineUnreadPosition, TimelineViewportObservation,
-    message_actions_for_timeline_item, message_source_for_timeline_item,
+    ThreadSummaryDto, TimelineAnchorRestoreStatus, TimelineDiff, TimelineEvent, TimelineItem,
+    TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
+    TimelineMessageActions, TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot,
+    TimelineResyncReason, TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
+    TimelineUnableToDecrypt, TimelineUnableToDecryptReason, TimelineUnreadPosition,
+    TimelineViewportObservation, message_actions_for_timeline_item,
+    message_source_for_timeline_item,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -296,12 +297,13 @@ impl TimelineManagerActor {
                     )
                     .await;
                 } else {
-                    self.emit_failure(
+                    self.emit(CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
                         request_id,
-                        CoreFailure::TimelineOperationFailed {
+                        key,
+                        status: TimelineAnchorRestoreStatus::Failed {
                             kind: TimelineFailureKind::NotSubscribed,
                         },
-                    );
+                    }));
                 }
             }
             TimelineCommand::ObserveViewport {
@@ -1226,7 +1228,9 @@ enum TimelineActorMessage {
         max_batches: u16,
         event_count: u16,
     },
-    RestoreTimelineAnchorContinue,
+    RestoreTimelineAnchorContinue {
+        serial: u64,
+    },
     ObserveViewport {
         observation: TimelineViewportObservation,
     },
@@ -1338,7 +1342,9 @@ enum TimelineActorMessage {
     /// `handle_subscribe` when the key is already subscribed (idempotency
     /// path) so a freshly re-mounted TimelineView still receives an
     /// InitialItems batch.
-    ReplayInitialItems { request_id: RequestId },
+    ReplayInitialItems {
+        request_id: RequestId,
+    },
 }
 
 struct TimelineActorHandle {
@@ -1428,6 +1434,7 @@ struct TimelineActor {
     data_dir: Option<std::path::PathBuf>,
     messages_backpressure: MessagesBackpressure,
     restore_anchor: Option<RestoreTimelineAnchorState>,
+    next_restore_anchor_serial: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -1438,6 +1445,8 @@ struct RestoreTimelineAnchorState {
     event_count: u16,
     in_flight: bool,
     awaiting_diff_batch: bool,
+    continuation_scheduled: bool,
+    continuation_serial: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1606,6 +1615,7 @@ impl TimelineActor {
             data_dir,
             messages_backpressure,
             restore_anchor: None,
+            next_restore_anchor_serial: 0,
         };
 
         let task = executor::spawn(actor.run());
@@ -1639,16 +1649,11 @@ impl TimelineActor {
                 max_batches,
                 event_count,
             } => {
-                self.handle_restore_timeline_anchor(
-                    request_id,
-                    event_id,
-                    max_batches,
-                    event_count,
-                )
-                .await;
+                self.handle_restore_timeline_anchor(request_id, event_id, max_batches, event_count)
+                    .await;
             }
-            TimelineActorMessage::RestoreTimelineAnchorContinue => {
-                self.handle_restore_timeline_anchor_continue().await;
+            TimelineActorMessage::RestoreTimelineAnchorContinue { serial } => {
+                self.handle_restore_timeline_anchor_continue(serial).await;
             }
             TimelineActorMessage::ObserveViewport { observation } => {
                 self.viewport_observation = observation;
@@ -1915,48 +1920,79 @@ impl TimelineActor {
             return;
         }
         if event_id.trim().is_empty() || max_batches == 0 || event_count == 0 {
+            self.emit_anchor_restore_finished(
+                request_id,
+                TimelineAnchorRestoreStatus::BudgetExhausted,
+            );
             return;
         }
         if self.timeline_contains_event_id(&event_id) {
             self.restore_anchor = None;
+            self.emit_anchor_restore_finished(request_id, TimelineAnchorRestoreStatus::Found);
             return;
         }
-        if self
-            .restore_anchor
-            .as_ref()
-            .map(|state| state.event_id == event_id)
-            .unwrap_or(false)
-        {
-            return;
+        if let Some(mut existing) = self.restore_anchor.take() {
+            if existing.event_id == event_id {
+                existing.request_id = request_id;
+                existing.max_batches_remaining = existing.max_batches_remaining.max(max_batches);
+                existing.event_count = event_count;
+                if existing.in_flight
+                    || existing.awaiting_diff_batch
+                    || existing.continuation_scheduled
+                {
+                    self.restore_anchor = Some(existing);
+                } else {
+                    self.schedule_restore_anchor_continue(existing).await;
+                }
+                return;
+            }
+            self.emit_anchor_restore_finished(
+                existing.request_id,
+                TimelineAnchorRestoreStatus::Superseded,
+            );
         }
 
-        self.restore_anchor = Some(RestoreTimelineAnchorState {
+        let restore = RestoreTimelineAnchorState {
             request_id,
             event_id,
             max_batches_remaining: max_batches,
             event_count,
             in_flight: false,
             awaiting_diff_batch: false,
-        });
+            continuation_scheduled: false,
+            continuation_serial: None,
+        };
 
-        let _ = self
-            .msg_tx
-            .send(TimelineActorMessage::RestoreTimelineAnchorContinue)
-            .await;
+        self.schedule_restore_anchor_continue(restore).await;
     }
 
-    async fn handle_restore_timeline_anchor_continue(&mut self) {
+    async fn handle_restore_timeline_anchor_continue(&mut self, serial: u64) {
         let Some(mut restore) = self.restore_anchor.take() else {
             return;
         };
+        if restore.continuation_serial != Some(serial) {
+            self.restore_anchor = Some(restore);
+            return;
+        }
         if restore.in_flight {
             self.restore_anchor = Some(restore);
             return;
         }
+        restore.awaiting_diff_batch = false;
+        restore.continuation_scheduled = false;
+        restore.continuation_serial = None;
         if self.timeline_contains_event_id(&restore.event_id) {
+            self.emit_anchor_restore_finished(
+                restore.request_id,
+                TimelineAnchorRestoreStatus::Found,
+            );
             return;
         }
         if restore.max_batches_remaining == 0 {
+            self.emit_anchor_restore_finished(
+                restore.request_id,
+                TimelineAnchorRestoreStatus::BudgetExhausted,
+            );
             return;
         }
 
@@ -1971,18 +2007,34 @@ impl TimelineActor {
         restore.in_flight = false;
 
         if self.timeline_contains_event_id(&restore.event_id) {
+            self.emit_anchor_restore_finished(request_id, TimelineAnchorRestoreStatus::Found);
             return;
         }
 
-        let Ok(end_reached) = result else {
-            return;
+        let end_reached = match result {
+            Ok(end_reached) => end_reached,
+            Err(kind) => {
+                self.emit_anchor_restore_finished(
+                    request_id,
+                    TimelineAnchorRestoreStatus::Failed { kind },
+                );
+                return;
+            }
         };
-        if end_reached || restore.max_batches_remaining == 0 {
+        if end_reached {
+            self.emit_anchor_restore_finished(request_id, TimelineAnchorRestoreStatus::EndReached);
+            return;
+        }
+        if restore.max_batches_remaining == 0 {
+            self.emit_anchor_restore_finished(
+                request_id,
+                TimelineAnchorRestoreStatus::BudgetExhausted,
+            );
             return;
         }
 
         restore.awaiting_diff_batch = true;
-        self.restore_anchor = Some(restore);
+        self.schedule_restore_anchor_continue(restore).await;
     }
 
     async fn maybe_continue_restore_anchor_after_diff(&mut self) {
@@ -1993,15 +2045,38 @@ impl TimelineActor {
             self.restore_anchor = Some(restore);
             return;
         }
-        if restore.max_batches_remaining == 0 || self.timeline_contains_event_id(&restore.event_id) {
+        if self.timeline_contains_event_id(&restore.event_id) {
+            self.emit_anchor_restore_finished(
+                restore.request_id,
+                TimelineAnchorRestoreStatus::Found,
+            );
+            return;
+        }
+        if restore.max_batches_remaining == 0 {
+            self.emit_anchor_restore_finished(
+                restore.request_id,
+                TimelineAnchorRestoreStatus::BudgetExhausted,
+            );
+            return;
+        }
+        if restore.continuation_scheduled {
+            self.restore_anchor = Some(restore);
             return;
         }
 
         restore.awaiting_diff_batch = false;
+        self.schedule_restore_anchor_continue(restore).await;
+    }
+
+    async fn schedule_restore_anchor_continue(&mut self, mut restore: RestoreTimelineAnchorState) {
+        self.next_restore_anchor_serial = self.next_restore_anchor_serial.wrapping_add(1);
+        let serial = self.next_restore_anchor_serial;
+        restore.continuation_scheduled = true;
+        restore.continuation_serial = Some(serial);
         self.restore_anchor = Some(restore);
         let _ = self
             .msg_tx
-            .send(TimelineActorMessage::RestoreTimelineAnchorContinue)
+            .send(TimelineActorMessage::RestoreTimelineAnchorContinue { serial })
             .await;
     }
 
@@ -3074,6 +3149,7 @@ impl TimelineActor {
 
         let batch_id = self.next_batch_id;
         self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
+        let restore_diff_is_relevant = timeline_diffs_include_prepend(&core_diffs);
 
         self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
             key: self.key.clone(),
@@ -3082,15 +3158,22 @@ impl TimelineActor {
             diffs: core_diffs,
         }));
         self.emit_navigation_if_changed();
-        let restore_event_id = self
-            .restore_anchor
-            .as_ref()
-            .map(|restore| restore.event_id.clone());
-        if let Some(event_id) = restore_event_id {
-            if self.timeline_contains_event_id(&event_id) {
-                self.restore_anchor = None;
-            } else {
-                self.maybe_continue_restore_anchor_after_diff().await;
+        if self.restore_anchor.is_some() && restore_diff_is_relevant {
+            let restore_event_id = self
+                .restore_anchor
+                .as_ref()
+                .map(|restore| restore.event_id.clone());
+            if let Some(event_id) = restore_event_id {
+                if self.timeline_contains_event_id(&event_id) {
+                    if let Some(restore) = self.restore_anchor.take() {
+                        self.emit_anchor_restore_finished(
+                            restore.request_id,
+                            TimelineAnchorRestoreStatus::Found,
+                        );
+                    }
+                } else {
+                    self.maybe_continue_restore_anchor_after_diff().await;
+                }
             }
         }
     }
@@ -3589,9 +3672,9 @@ impl TimelineActor {
     }
 
     fn timeline_contains_event_id(&self, event_id: &str) -> bool {
-        self.navigation_items
-            .iter()
-            .any(|item| matches!(&item.id, TimelineItemId::Event { event_id: id } if id == event_id))
+        self.navigation_items.iter().any(
+            |item| matches!(&item.id, TimelineItemId::Event { event_id: id } if id == event_id),
+        )
     }
 
     async fn project_message_source_for_event(
@@ -3804,11 +3887,30 @@ impl TimelineActor {
             generation: self.generation,
             items,
         }));
-        self.restore_anchor = None;
+        if let Some(restore) = self.restore_anchor.take() {
+            self.emit_anchor_restore_finished(
+                restore.request_id,
+                TimelineAnchorRestoreStatus::Failed {
+                    kind: TimelineFailureKind::QueueOverflow,
+                },
+            );
+        }
     }
 
     fn emit(&self, event: CoreEvent) {
         let _ = self.event_tx.send(event);
+    }
+
+    fn emit_anchor_restore_finished(
+        &self,
+        request_id: RequestId,
+        status: TimelineAnchorRestoreStatus,
+    ) {
+        self.emit(CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
+            request_id,
+            key: self.key.clone(),
+            status,
+        }));
     }
 
     /// Reliably deliver an `AppAction` to the reducer.  Uses `send` (not
@@ -4300,6 +4402,19 @@ fn apply_timeline_diffs_to_items(items: &mut Vec<TimelineItem>, diffs: &[Timelin
             }
         }
     }
+}
+
+fn timeline_diffs_include_prepend(diffs: &[TimelineDiff]) -> bool {
+    diffs.iter().any(|diff| match diff {
+        TimelineDiff::PushFront { .. } => true,
+        TimelineDiff::Insert { index, .. } => *index == 0,
+        TimelineDiff::Reset { .. } => true,
+        TimelineDiff::PushBack { .. }
+        | TimelineDiff::Set { .. }
+        | TimelineDiff::Remove { .. }
+        | TimelineDiff::Truncate { .. }
+        | TimelineDiff::Clear => false,
+    })
 }
 
 fn apply_ignored_sender_suppression(

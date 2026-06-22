@@ -1488,12 +1488,12 @@ mod tests {
                 LinkPreviewImage, LinkPreviewState, LiveSignalsEvent, LocalEncryptionEvent,
                 NativeAttentionEvent, PaginationDirection, PaginationState, ReactionGroup,
                 RoomEvent, SearchEvent, SyncEvent, ThreadsListEvent, TimelineCodeBlock,
-                TimelineDisplayLabelUpdate, TimelineEvent, TimelineFormattedBody, TimelineItem,
-                TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
-                TimelineMediaThumbnail, TimelineMessageActions, TimelineMessageKind,
-                TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
-                TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
-                TimelineUnreadPosition,
+                TimelineAnchorRestoreStatus, TimelineDisplayLabelUpdate, TimelineEvent,
+                TimelineFormattedBody, TimelineItem, TimelineItemId, TimelineMedia,
+                TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
+                TimelineMessageActions, TimelineMessageKind, TimelineMessageSource,
+                TimelineNavigationSnapshot, TimelineResyncReason, TimelineSendFailureReason,
+                TimelineSendState, TimelineSpoilerSpan, TimelineUnreadPosition,
             },
             failure::{CoreFailure, TimelineFailureKind},
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
@@ -2055,6 +2055,18 @@ mod tests {
         assert_eq!(pagination["request_id"], json!(null));
         assert_eq!(pagination["direction"], json!("Backward"));
         assert_eq!(pagination["state"], json!("EndReached"));
+
+        let anchor_restore_finished =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
+                request_id,
+                key: key.clone(),
+                status: TimelineAnchorRestoreStatus::BudgetExhausted,
+            }))
+            .expect("serialize anchor restore finished");
+        assert_eq!(
+            anchor_restore_finished["event"]["AnchorRestoreFinished"]["status"],
+            json!("BudgetExhausted")
+        );
 
         // ResyncRequired reason is a string
         let resync = serialize_core_event(&CoreEvent::Timeline(TimelineEvent::ResyncRequired {
@@ -2695,6 +2707,7 @@ mod tests {
             "timelineMessageForwarded": message_forwarded,
             "timelineMessageSourceLoaded": message_source_loaded,
             "timelineNavigationUpdated": navigation_updated,
+            "timelineAnchorRestoreFinished": anchor_restore_finished,
             "timelinePaginationEndReached": serialize_core_event(&CoreEvent::Timeline(
                 TimelineEvent::PaginationStateChanged {
                     request_id: None,

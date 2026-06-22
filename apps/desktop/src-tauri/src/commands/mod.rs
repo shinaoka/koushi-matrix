@@ -21,8 +21,8 @@ use koushi_core::{
     PaginationDirection, RequestId, RoomCommand, RoomEvent, RoomKeyExportRequest,
     RoomKeyImportRequest, SearchCommand, SearchScope, SecureBackupPassphraseChangeRequest,
     SecureBackupSetupRequest, SetAvatarRequest, SyncCommand, TimelineCommand, TimelineKey,
-    TimelineKind, TimelineScrollAnchor, TimelineViewportObservation, UploadMediaKind,
-    UploadMediaRequest, UploadMediaThumbnail,
+    TimelineKind, TimelineViewportObservation, UploadMediaKind, UploadMediaRequest,
+    UploadMediaThumbnail,
 };
 use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentSort, AuthSecret,
@@ -31,7 +31,7 @@ use koushi_state::{
     ImageUploadCompressionMode, LoginRequest, MentionIntent, PresenceKind, RecoveryRequest,
     RoomListFilter, RoomModerationAction, RoomNotificationMode, RoomSettingChange, RoomTagKind,
     SessionInfo, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
-    VerificationCancelReason, build_formatted_message_draft,
+    TimelineScrollAnchor, VerificationCancelReason, build_formatted_message_draft,
 };
 use serde::Deserialize;
 #[cfg(any(debug_assertions, test))]
@@ -49,6 +49,7 @@ static NEXT_TRANSACTION_ID: AtomicU64 = AtomicU64::new(1);
 const QA_RECOVERY_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const QA_TITLE_ENV: &str = "KOUSHI_QA_TITLE";
 const TIMELINE_BACKWARDS_PAGE_EVENT_COUNT: u16 = 100;
+#[cfg(test)]
 const TIMELINE_RESTORE_ANCHOR_MAX_BATCHES: u16 = 6;
 
 pub(crate) mod account;
@@ -2381,6 +2382,9 @@ mod tests {
         ]
         .concat()
     }
+    use crate::commands::{
+        TIMELINE_BACKWARDS_PAGE_EVENT_COUNT, TIMELINE_RESTORE_ANCHOR_MAX_BATCHES,
+    };
     use koushi_core::AccountKey;
     use koushi_core::{
         AccountCommand, AppCommand, CoreCommand, ImageUploadCompressionPolicy,
