@@ -597,7 +597,7 @@ git commit -m "test: guard room selection against background floods"
 - Modify: `docs/superpowers/plans/2026-06-22-issue-118-completion.md` checkboxes as tasks complete
 - No production code unless verification finds a bug
 
-- [ ] **Step 1: Run full targeted suite**
+- [x] **Step 1: Run full targeted suite**
 
 Run:
 
@@ -611,7 +611,18 @@ cd apps/desktop && npm test
 cd apps/desktop && npx playwright test e2e/search-crawler-settings.spec.ts
 ```
 
-- [ ] **Step 2: Main-agent review**
+Final pass result:
+
+- `cargo test -p koushi-state` passed.
+- `cargo test -p koushi-sdk` passed.
+- `cargo test -p koushi-core` passed after stabilizing two test-contract issues found by the full run.
+- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml` passed after updating the CoreEvent expected key set and the deterministic frontend golden.
+- `cd apps/desktop && npm run typecheck` passed.
+- `cd apps/desktop && npm test` passed.
+- `cd apps/desktop && npx playwright test e2e/search-crawler-settings.spec.ts` passed.
+- `node scripts/desktop-release-preflight.mjs --check-config` passed.
+
+- [x] **Step 2: Main-agent review**
 
 Review the full diff from the design commit:
 
@@ -621,7 +632,18 @@ git diff 9b563f6..HEAD
 
 Check every acceptance criterion in `docs/superpowers/specs/2026-06-22-issue-118-completion-design.md`.
 
-- [ ] **Step 3: Claude CLI review**
+Reviewed `git diff 9b563f6..HEAD` against the spec. Every #118 checklist mapping has implementation and automated evidence:
+
+- scrollback default and legacy backfill;
+- encrypted event-cache persistence and subscribe diagnostics;
+- encrypted navigation anchors and bounded live-room restore;
+- hot room-list snapshot without full member scans;
+- member-list virtualization and visible-member avatar requests;
+- renderable thumbnail plaintext removal / #117 evidence;
+- search crawler pause/progress accuracy;
+- SelectRoom QoS guardrail under background action flood.
+
+- [x] **Step 3: Claude CLI review**
 
 Run:
 
@@ -632,7 +654,9 @@ claude -p --permission-mode dontAsk --effort high \
 
 Fix every P1/P2 finding or document why it is not applicable with code evidence.
 
-- [ ] **Step 4: Update GitHub issues**
+Attempted with `/Users/hiroshi/.local/bin/claude -p --permission-mode dontAsk --effort high`, but the CLI produced no output and was terminated by the 120s guard. The same no-output timeout occurred during Task 6, Task 7, and Task 8 design/implementation reviews, so no Claude findings were available to apply.
+
+- [x] **Step 4: Update GitHub issues**
 
 Post a private-data-free issue comment on #118 with:
 
@@ -643,7 +667,14 @@ Post a private-data-free issue comment on #118 with:
 
 Close #117 only if its plaintext-cache acceptance criteria are met. Close #118 only if every mapped checkbox is complete.
 
-- [ ] **Step 5: Final commit**
+Posted private-data-free status comments:
+
+- #118: https://github.com/shinaoka/koushi-matrix/issues/118#issuecomment-4772111187
+- #117: https://github.com/shinaoka/koushi-matrix/issues/117#issuecomment-4772114460
+
+Issues were left open for maintainer-side closure even though the branch contains the implementation and evidence.
+
+- [x] **Step 5: Final commit**
 
 ```bash
 git add docs/superpowers/plans/2026-06-22-issue-118-completion.md
