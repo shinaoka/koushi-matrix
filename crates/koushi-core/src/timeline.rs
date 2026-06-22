@@ -3240,13 +3240,7 @@ impl TimelineActor {
             }
 
             preview.state = LinkPreviewState::Loading;
-            match crate::link_preview::fetch_link_preview(
-                &self.session,
-                &preview.url,
-                self.data_dir.as_deref(),
-            )
-            .await
-            {
+            match crate::link_preview::fetch_link_preview(&self.session, &preview.url).await {
                 Ok(fetched) => {
                     self.link_preview_policy
                         .cache

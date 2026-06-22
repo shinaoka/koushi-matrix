@@ -29,7 +29,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
     future::Future,
-    hash::{DefaultHasher, Hasher},
     sync::Arc,
     time::Duration,
 };
@@ -50,7 +49,6 @@ use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
 use matrix_sdk::ruma::{MxcUri, OwnedMxcUri};
 use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
 
-use crate::cached_image::cached_image_kind;
 use crate::command::{
     AccountCommand, RoomCommand, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand,
     SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SyncCommand, ThreadsListCommand,
@@ -63,6 +61,7 @@ use crate::event::{
 use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
 use crate::link_preview::LinkPreviewContext;
+use crate::renderable_thumbnail::{RenderableThumbnailKind, store_renderable_thumbnail};
 use crate::room::{RoomActorHandle, RoomMessage};
 use crate::search::SearchActorHandle;
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
@@ -1650,11 +1649,7 @@ impl AccountActor {
     /// 2. Already in-flight: return; the completing task will emit.
     /// 3. Otherwise: insert into `avatar_inflight`, spawn a bounded fetch task
     ///    that posts `AvatarFetched` back into this actor's inbox.
-    async fn handle_download_avatar_thumbnail(
-        &mut self,
-        request_id: RequestId,
-        mxc_uri: String,
-    ) {
+    async fn handle_download_avatar_thumbnail(&mut self, request_id: RequestId, mxc_uri: String) {
         // 1. Cache hit — serve immediately without any I/O.
         if let Some(cached) = self.avatar_cache.get(&mxc_uri) {
             if matches!(cached, AvatarThumbnailState::Ready { .. }) {
@@ -1706,9 +1701,9 @@ impl AccountActor {
 
         // 4. Spawn a bounded fetch task; return immediately.
         // Record the originating request_id as the first waiter.
-        self.avatar_inflight.insert(mxc_uri.clone(), vec![request_id]);
+        self.avatar_inflight
+            .insert(mxc_uri.clone(), vec![request_id]);
         let generation = self.avatar_session_generation;
-        let data_dir = self.data_dir.clone();
         let semaphore = self.avatar_download_semaphore.clone();
         let tx = self.self_tx.clone();
         let mxc_uri_clone = mxc_uri.clone();
@@ -1717,7 +1712,7 @@ impl AccountActor {
             // Acquire a permit before hitting the SDK so at most
             // AVATAR_DOWNLOAD_CONCURRENCY fetches run concurrently.
             let _permit = semaphore.acquire().await;
-            let thumbnail = download_avatar_thumbnail(&session, &mxc_uri_clone, &data_dir)
+            let thumbnail = download_avatar_thumbnail(&session, &mxc_uri_clone)
                 .await
                 .unwrap_or_else(|kind| AvatarThumbnailState::Failed {
                     request_id: request_id.sequence,
@@ -1824,8 +1819,7 @@ impl AccountActor {
         self.avatar_cache.clear();
         // Replace the semaphore so any task that manages to run after abort
         // cannot accidentally re-use a poisoned permit count.
-        self.avatar_download_semaphore =
-            Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY));
+        self.avatar_download_semaphore = Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY));
         // Advance the generation counter so stale completions from tasks that
         // were spawned before this abort are silently rejected.
         self.avatar_session_generation = self.avatar_session_generation.wrapping_add(1);
@@ -4258,7 +4252,6 @@ fn map_matrix_own_profile(profile: koushi_sdk::MatrixOwnProfile) -> OwnProfile {
 async fn download_avatar_thumbnail(
     session: &MatrixClientSession,
     mxc_uri: &str,
-    data_dir: &std::path::Path,
 ) -> Result<AvatarThumbnailState, AvatarThumbnailFailureKind> {
     let mxc = <&MxcUri>::from(mxc_uri);
     if !mxc.is_valid() {
@@ -4273,30 +4266,16 @@ async fn download_avatar_thumbnail(
                 source: SdkMediaSource::Plain(uri),
                 format: MediaFormat::File,
             },
-            true,
+            false,
         )
         .await
         .map_err(|_| AvatarThumbnailFailureKind::Network)?;
 
-    let mut hasher = DefaultHasher::new();
-    hasher.write(mxc_uri.as_bytes());
-    let cache_dir = data_dir.join("avatar_thumbnails");
-    tokio::fs::create_dir_all(&cache_dir)
-        .await
-        .map_err(|_| AvatarThumbnailFailureKind::Sdk)?;
-    let image_kind = cached_image_kind(&bytes);
-    let extension = image_kind.map_or("bin", |kind| kind.extension);
-    let path = cache_dir.join(format!("{:x}.{extension}", hasher.finish()));
-    tokio::fs::write(&path, &bytes)
-        .await
-        .map_err(|_| AvatarThumbnailFailureKind::Sdk)?;
-
-    Ok(AvatarThumbnailState::Ready {
-        source_url: format!("file://{}", path.display()),
-        width: None,
-        height: None,
-        mime_type: image_kind.map(|kind| kind.mime_type.to_owned()),
-    })
+    Ok(store_renderable_thumbnail(
+        RenderableThumbnailKind::Avatar,
+        mxc_uri,
+        bytes,
+    ))
 }
 
 fn classify_profile_error(error: &koushi_sdk::MatrixProfileError) -> ProfileFailureKind {
@@ -4857,7 +4836,9 @@ mod tests {
             "failure diagnostics should carry an explicit subscribe status and a private-data-free reason"
         );
         assert!(
-            compact.contains("letencrypted_store=store_config.store_config.encrypted_at_rest_configured();"),
+            compact.contains(
+                "letencrypted_store=store_config.store_config.encrypted_at_rest_configured();"
+            ),
             "restore_into_store must derive the encrypted-store diagnostic from the keyed store invariant"
         );
         assert!(

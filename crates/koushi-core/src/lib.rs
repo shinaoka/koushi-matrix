@@ -16,6 +16,7 @@ pub mod failure;
 pub mod ids;
 pub(crate) mod link_preview;
 pub(crate) mod messages_backpressure;
+pub mod renderable_thumbnail;
 pub mod room;
 pub mod runtime;
 pub(crate) mod scheduled_send;
@@ -39,9 +40,9 @@ pub use command::{
 pub use event::{
     AccountEvent, ActivityEvent, AppStateSnapshot, CjkTextPolicyEvent, CoreEvent, E2eeTrustEvent,
     IntentNoOpReason, IntentOutcome, LinkPreview, LinkPreviewImage, LinkPreviewState,
-    LocalEncryptionEvent, NativeAttentionEvent, PaginationDirection, PaginationState, ReactionGroup,
-    RoomEvent, SearchEvent, SearchResultItem, SyncBackendKind, SyncEvent, TimelineDiff,
-    TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
+    LocalEncryptionEvent, NativeAttentionEvent, PaginationDirection, PaginationState,
+    ReactionGroup, RoomEvent, SearchEvent, SearchResultItem, SyncBackendKind, SyncEvent,
+    TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
     TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageKind, TimelineNavigationSnapshot,
     TimelineResyncReason, TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
     TimelineUnreadPosition, TimelineViewportObservation,

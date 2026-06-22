@@ -25,9 +25,12 @@ use crate::dto::FrontendDesktopSnapshotDelta;
 // koushi-core: the production runtime host. All session, credential,
 // and Matrix operations go through CoreCommand/CoreEvent — the adapter never
 // touches the credential store or the SDK directly.
+use koushi_core::renderable_thumbnail::{
+    cleanup_legacy_plaintext_thumbnail_dirs, lookup_renderable_thumbnail,
+};
 use koushi_core::{
-    AccountCommand, CoreCommand, CoreConnection, CoreEvent, CoreRuntime, SearchEvent, TimelineEvent,
-    event::AppStateSnapshot,
+    AccountCommand, CoreCommand, CoreConnection, CoreEvent, CoreRuntime, SearchEvent,
+    TimelineEvent, event::AppStateSnapshot,
 };
 
 // koushi-backend: fixture/demo preview only; never on a production
@@ -278,9 +281,7 @@ fn qa_control_pipe_path_from_env() -> Option<PathBuf> {
 /// command boundary stays untouched.
 pub(crate) fn saved_sessions_disabled_from_env() -> bool {
     saved_sessions_disabled_from_env_value(
-        std::env::var("KOUSHI_SKIP_SAVED_SESSIONS")
-            .ok()
-            .as_deref(),
+        std::env::var("KOUSHI_SKIP_SAVED_SESSIONS").ok().as_deref(),
     )
 }
 
@@ -299,12 +300,8 @@ pub(crate) fn app_data_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "local application data directory is unavailable".to_owned())
 }
 
-fn renderable_asset_cache_dirs(data_dir: &Path) -> [PathBuf; 3] {
-    [
-        data_dir.join("avatar_thumbnails"),
-        data_dir.join("media_downloads"),
-        data_dir.join("link_preview_thumbnails"),
-    ]
+fn renderable_asset_cache_dirs(data_dir: &Path) -> [PathBuf; 1] {
+    [data_dir.join("media_downloads")]
 }
 
 fn allow_runtime_asset_cache_dirs(app: &tauri::App, data_dir: &Path) {
@@ -312,6 +309,31 @@ fn allow_runtime_asset_cache_dirs(app: &tauri::App, data_dir: &Path) {
     for cache_dir in renderable_asset_cache_dirs(data_dir) {
         let _ = asset_scope.allow_directory(cache_dir, true);
     }
+}
+
+fn renderable_thumbnail_protocol_response(
+    request: tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    let Some(content) = lookup_renderable_thumbnail(request.uri().path()) else {
+        return tauri::http::Response::builder()
+            .status(tauri::http::StatusCode::NOT_FOUND)
+            .header(tauri::http::header::CACHE_CONTROL, "no-store")
+            .body(Vec::new())
+            .expect("thumbnail 404 response");
+    };
+
+    tauri::http::Response::builder()
+        .status(tauri::http::StatusCode::OK)
+        .header(
+            tauri::http::header::CONTENT_TYPE,
+            content
+                .mime_type
+                .as_deref()
+                .unwrap_or("application/octet-stream"),
+        )
+        .header(tauri::http::header::CACHE_CONTROL, "no-store")
+        .body(content.bytes)
+        .expect("thumbnail response")
 }
 
 fn start_core_runtime_for_tauri(data_dir: PathBuf) -> CoreRuntime {
@@ -538,10 +560,7 @@ fn order_macos_ns_window_front(ns_window_addr: usize) {
 
 #[cfg(target_os = "macos")]
 fn qa_window_visibility_mode_enabled() -> bool {
-    matches!(
-        std::env::var("KOUSHI_QA_TITLE").ok().as_deref(),
-        Some("1")
-    )
+    matches!(std::env::var("KOUSHI_QA_TITLE").ok().as_deref(), Some("1"))
 }
 
 fn persisted_window_state_from_window<R: tauri::Runtime>(
@@ -809,12 +828,13 @@ fn serialize_core_event(event: &CoreEvent) -> Option<serde_json::Value> {
 
 pub fn run() {
     let restore_session = restore_session_enabled_from_env_value(
-        std::env::var("KOUSHI_RESTORE_SESSION")
-            .ok()
-            .as_deref(),
+        std::env::var("KOUSHI_RESTORE_SESSION").ok().as_deref(),
     );
 
     tauri::Builder::default()
+        .register_uri_scheme_protocol("koushi-thumbnail", move |_, request| {
+            renderable_thumbnail_protocol_response(request)
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
@@ -824,6 +844,7 @@ pub fn run() {
             // starts its tokio runtime before invoking setup; we enter the
             // handle so `tokio::task::spawn` can find it from the main thread.
             let data_dir = app_data_dir().unwrap_or_else(|_| PathBuf::from("koushi-desktop-data"));
+            let _ = cleanup_legacy_plaintext_thumbnail_dirs(&data_dir);
             allow_runtime_asset_cache_dirs(app, &data_dir);
             // Enter Tauri's tokio runtime so `executor::spawn` (tokio::task::spawn)
             // can find a runtime handle from this non-tokio-worker thread.
@@ -1102,12 +1123,54 @@ mod tests {
         let base = Path::new("/tmp/koushi-data");
         assert_eq!(
             super::renderable_asset_cache_dirs(base),
-            [
-                base.join("avatar_thumbnails"),
-                base.join("media_downloads"),
-                base.join("link_preview_thumbnails"),
-            ]
+            [base.join("media_downloads")]
         );
+    }
+
+    #[test]
+    fn renderable_thumbnail_protocol_serves_known_cached_bytes() {
+        let ready = koushi_core::renderable_thumbnail::store_renderable_thumbnail(
+            koushi_core::renderable_thumbnail::RenderableThumbnailKind::Avatar,
+            "mxc://example.test/avatar",
+            b"protocol-bytes".to_vec(),
+        );
+        let source_url = match ready {
+            koushi_state::AvatarThumbnailState::Ready { source_url, .. } => source_url,
+            other => panic!("unexpected thumbnail state: {other:?}"),
+        };
+        let response = super::renderable_thumbnail_protocol_response(
+            tauri::http::Request::builder()
+                .uri(source_url)
+                .body(Vec::new())
+                .expect("request"),
+        );
+        assert_eq!(response.status(), tauri::http::StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(tauri::http::header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(tauri::http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/octet-stream")
+        );
+        assert_eq!(response.body(), &b"protocol-bytes".to_vec());
+    }
+
+    #[test]
+    fn renderable_thumbnail_protocol_rejects_unknown_refs() {
+        let response = super::renderable_thumbnail_protocol_response(
+            tauri::http::Request::builder()
+                .uri("koushi-thumbnail://localhost/avatar/unknown")
+                .body(Vec::new())
+                .expect("request"),
+        );
+        assert_eq!(response.status(), tauri::http::StatusCode::NOT_FOUND);
     }
 
     #[test]
@@ -1277,8 +1340,8 @@ mod tests {
         assert_eq!(forwarded[0].payload["kind"], json!("StateDelta"));
         assert_eq!(forwarded[0].payload["generation"], json!(1));
         assert_eq!(
-            forwarded[0].payload["changed"]["state"]["domain"]["search_crawler"]["rooms"]
-                ["!crawler:example.invalid"]["kind"],
+            forwarded[0].payload["changed"]["state"]["domain"]["search_crawler"]["rooms"]["!crawler:example.invalid"]
+                ["kind"],
             json!("queued")
         );
         assert_eq!(
@@ -1484,12 +1547,11 @@ mod tests {
             event::{
                 AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent,
                 EventCacheFailureReasonClass, EventCacheSubscribeStatus, IntentNoOpReason,
-                IntentOutcome, LinkPreview,
-                LinkPreviewImage, LinkPreviewState, LiveSignalsEvent, LocalEncryptionEvent,
-                NativeAttentionEvent, PaginationDirection, PaginationState, ReactionGroup,
-                RoomEvent, SearchEvent, SyncEvent, ThreadsListEvent, TimelineCodeBlock,
-                TimelineAnchorRestoreStatus, TimelineDisplayLabelUpdate, TimelineEvent,
-                TimelineFormattedBody, TimelineItem, TimelineItemId, TimelineMedia,
+                IntentOutcome, LinkPreview, LinkPreviewImage, LinkPreviewState, LiveSignalsEvent,
+                LocalEncryptionEvent, NativeAttentionEvent, PaginationDirection, PaginationState,
+                ReactionGroup, RoomEvent, SearchEvent, SyncEvent, ThreadsListEvent,
+                TimelineAnchorRestoreStatus, TimelineCodeBlock, TimelineDisplayLabelUpdate,
+                TimelineEvent, TimelineFormattedBody, TimelineItem, TimelineItemId, TimelineMedia,
                 TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
                 TimelineMessageActions, TimelineMessageKind, TimelineMessageSource,
                 TimelineNavigationSnapshot, TimelineResyncReason, TimelineSendFailureReason,
@@ -1733,7 +1795,8 @@ mod tests {
                     width: Some(1200),
                     height: Some(630),
                     thumbnail: AvatarThumbnailState::Ready {
-                        source_url: "file:///tmp/link-preview-thumbnails/fixture.bin".to_owned(),
+                        source_url: "koushi-thumbnail://localhost/link-preview/fixture.bin"
+                            .to_owned(),
                         width: Some(600),
                         height: Some(315),
                         mime_type: Some("image/png".to_owned()),
@@ -1949,7 +2012,7 @@ mod tests {
                         "height": 630,
                         "thumbnail": {
                             "kind": "ready",
-                            "source_url": "file:///tmp/link-preview-thumbnails/fixture.bin",
+                            "source_url": "koushi-thumbnail://localhost/link-preview/fixture.bin",
                             "width": 600,
                             "height": 315,
                             "mime_type": "image/png"
@@ -2645,17 +2708,14 @@ mod tests {
             SearchCrawlerRoomState::Queued,
         );
         let state_delta_event = CoreEvent::StateDelta(
-            build_state_delta(1, &state_delta_previous, &state_delta_next)
-                .expect("fixture delta"),
+            build_state_delta(1, &state_delta_previous, &state_delta_next).expect("fixture delta"),
         );
-        let state_delta = forwarded_webview_events_for_core_event(
-            &state_delta_event,
-            &AtomicUsize::new(0),
-        )
-        .into_iter()
-        .next()
-        .expect("state delta should be forwarded")
-        .payload;
+        let state_delta =
+            forwarded_webview_events_for_core_event(&state_delta_event, &AtomicUsize::new(0))
+                .into_iter()
+                .next()
+                .expect("state delta should be forwarded")
+                .payload;
 
         let actual_contract = json!({
             "activityOpened": activity_opened,
