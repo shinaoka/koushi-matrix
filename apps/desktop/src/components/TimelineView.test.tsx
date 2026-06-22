@@ -391,11 +391,19 @@ describe("TimelineView", () => {
     const roomId = "!room:example.invalid";
     const anchorEventId = "$anchor:example.invalid";
     const focusedKey = focusedTimelineKey("@alice:example.invalid", roomId, anchorEventId);
+    const observeViewport = vi.fn(async () => undefined);
+    const sendReadReceipt = vi.fn(async () => undefined);
+    const setFullyRead = vi.fn(async () => undefined);
+    const paginateBackwards = vi.fn(async () => undefined);
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
         emit = nextListener;
         return () => undefined;
-      }
+      },
+      observeViewport,
+      sendReadReceipt,
+      setFullyRead,
+      paginateBackwards
     });
 
     mockTimelineRects(
@@ -475,6 +483,41 @@ describe("TimelineView", () => {
       expect(screen.getByText("Bootstrap anchor")).toBeTruthy();
       expect(screen.getByText("Focused bootstrap context")).toBeTruthy();
       expect(timeline.scrollTop).toBe(550);
+    });
+
+    observeViewport.mockClear();
+    sendReadReceipt.mockClear();
+    setFullyRead.mockClear();
+    paginateBackwards.mockClear();
+
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 1400,
+      writable: true,
+      configurable: true
+    });
+    fireEvent.scroll(timeline);
+
+    await waitFor(() => {
+      expect(observeViewport).not.toHaveBeenCalled();
+      expect(sendReadReceipt).not.toHaveBeenCalled();
+      expect(setFullyRead).not.toHaveBeenCalled();
+    });
+
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+    fireEvent.scroll(timeline);
+
+    await waitFor(() => {
+      expect(paginateBackwards).not.toHaveBeenCalledWith(focusedKey);
+    });
+
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 550,
+      writable: true,
+      configurable: true
     });
 
     act(() => {

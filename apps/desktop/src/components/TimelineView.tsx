@@ -1346,6 +1346,7 @@ export const TimelineView = memo(function TimelineView({
   const timelineKeyRef = useRef(timelineKey);
   timelineKeyRef.current = timelineKey;
   const displayTimelineKeyRef = useRef<TimelineKey>(timelineKey);
+  const isShowingBootstrapTimelineRef = useRef(false);
   const timelineKeyHash = JSON.stringify(timelineKey);
   const roomTimelineRoomId = "Room" in timelineKey.kind ? timelineKey.kind.Room.room_id : null;
   const emitDiagnosticLog = useCallback(
@@ -1395,6 +1396,7 @@ export const TimelineView = memo(function TimelineView({
     if (
       !transport.updateScrollAnchor ||
       roomTimelineRoomId !== roomId ||
+      isShowingBootstrapTimelineRef.current ||
       anchorRestorePendingRef.current ||
       roomScrollAnchorRestorePendingRef.current ||
       suppressScrollAnchorCaptureRef.current
@@ -1429,7 +1431,12 @@ export const TimelineView = memo(function TimelineView({
       scrollAnchorDispatchTimerRef.current = null;
       flushPendingScrollAnchorUpdate();
     }, delayMs);
-  }, [flushPendingScrollAnchorUpdate, roomId, roomTimelineRoomId, transport]);
+  }, [
+    flushPendingScrollAnchorUpdate,
+    roomId,
+    roomTimelineRoomId,
+    transport
+  ]);
 
   const runWithSuppressedScrollAnchorCapture = useCallback((action: () => void) => {
     suppressScrollAnchorCaptureRef.current = true;
@@ -1486,6 +1493,8 @@ export const TimelineView = memo(function TimelineView({
     : false;
   const displayTimelineKey =
     bootstrapTimelineKey && bootstrapAnchorVisible ? bootstrapTimelineKey : timelineKey;
+  const isShowingBootstrapTimeline = !timelineKeyEquals(displayTimelineKey, timelineKey);
+  isShowingBootstrapTimelineRef.current = isShowingBootstrapTimeline;
   const displayTimelineKeyHash = JSON.stringify(displayTimelineKey);
   const bootstrapTimelineKeyHash = bootstrapTimelineKey
     ? JSON.stringify(bootstrapTimelineKey)
@@ -1991,6 +2000,9 @@ export const TimelineView = memo(function TimelineView({
       : [{ room_id: roomId, display_name: roomId }];
   const sendReadSignalsForEvent = useCallback(
     (eventId: string) => {
+      if (isShowingBootstrapTimeline) {
+        return;
+      }
       const signalKey = `${roomId}\u0000${eventId}`;
       if (readSignalEventRef.current === signalKey) {
         return;
@@ -1999,10 +2011,10 @@ export const TimelineView = memo(function TimelineView({
       void transport.sendReadReceipt(roomId, eventId).catch(() => undefined);
       void transport.setFullyRead(roomId, eventId).catch(() => undefined);
     },
-    [roomId, transport]
+    [isShowingBootstrapTimeline, roomId, transport]
   );
   const reportViewportObservation = useCallback(() => {
-    if (!transport.observeViewport || roomTimelineRoomId !== roomId) {
+    if (!transport.observeViewport || roomTimelineRoomId !== roomId || isShowingBootstrapTimeline) {
       return;
     }
     const container = containerRef.current;
@@ -2038,6 +2050,7 @@ export const TimelineView = memo(function TimelineView({
       .catch(() => undefined);
   }, [
     latestReadableEventId,
+    isShowingBootstrapTimeline,
     roomId,
     roomTimelineRoomId,
     sendReadSignalsForEvent,
@@ -2045,7 +2058,7 @@ export const TimelineView = memo(function TimelineView({
   ]);
 
   useEffect(() => {
-    if (!latestReadableEventId || roomTimelineRoomId !== roomId) {
+    if (!latestReadableEventId || roomTimelineRoomId !== roomId || isShowingBootstrapTimeline) {
       return;
     }
     const container = containerRef.current;
@@ -2055,6 +2068,7 @@ export const TimelineView = memo(function TimelineView({
     sendReadSignalsForEvent(latestReadableEventId);
   }, [
     latestReadableEventId,
+    isShowingBootstrapTimeline,
     roomId,
     roomTimelineRoomId,
     sendReadSignalsForEvent,
@@ -2282,7 +2296,7 @@ export const TimelineView = memo(function TimelineView({
 
   // --- Automatic backfill on scroll near the top ---
   const maybeAutoBackfill = useCallback(() => {
-    if (suppressPaginationUi) {
+    if (suppressPaginationUi || isShowingBootstrapTimeline) {
       return;
     }
     const container = containerRef.current;
@@ -2309,7 +2323,14 @@ export const TimelineView = memo(function TimelineView({
       .catch(() => {
         backfillInFlightRef.current = false;
       });
-  }, [store, transport, suppressPaginationUi, autoLoadOlderMessages, virtualItemHeight]);
+  }, [
+    autoLoadOlderMessages,
+    isShowingBootstrapTimeline,
+    store,
+    suppressPaginationUi,
+    transport,
+    virtualItemHeight
+  ]);
   const onTimelineScroll = useCallback(() => {
     updateViewportMetrics();
     reportViewportObservation();
@@ -2329,6 +2350,7 @@ export const TimelineView = memo(function TimelineView({
       !timelineInitialized ||
       items.length > 0 ||
       suppressPaginationUi ||
+      isShowingBootstrapTimeline ||
       isPaginating ||
       endReached ||
       emptyThreadBackfillRequestedRef.current ||
@@ -2351,6 +2373,7 @@ export const TimelineView = memo(function TimelineView({
     timelineKey.kind,
     timelineKeyHash,
     timelineInitialized,
+    isShowingBootstrapTimeline,
     transport
   ]);
   const jumpToEvent = useCallback(
