@@ -188,6 +188,19 @@ The progress summary should use user-facing language:
 - Paused: `Message history indexing is paused. N of M rooms indexed`
 - Error detail: keep failed/running/queued counts in an expandable or detail area.
 
+Concrete Task 7 design:
+
+- `handle_settings_update_requested` must treat a transition from any active speed to `SearchCrawlerSpeed::Paused` as a reducer-visible crawler-state transition. Every `SearchCrawlerRoomState::Running { .. }` becomes `Queued`, completed/failed/idle rooms are preserved, and `UiEvent::SearchCrawlerChanged` is emitted if any room state changed. This keeps the UI from showing a stopped actor as still running.
+- The same pause transition still notifies the SearchActor with the new paused settings so in-flight work stops. If the known room list is empty, the actor notification may contain an empty room list because the speed change itself is the stop signal.
+- Do not add a serialized `Paused` room state unless a later UI needs per-room paused labels. For #118, global settings speed plus queued room states are sufficient and avoid a migration of persisted crawler state.
+- The frontend activity heading should show a product-level progress sentence as the primary status. Compute `total = roomEntries.length`, `completed = count(completed)`, and render active vs paused copy from i18n keys such as `settings.searchHistoryIndexingProgress` and `settings.searchHistoryPausedProgress`. Keep the raw `running/queued/complete/failed` counts in detail text, not as the primary heading.
+- The activity section must not render a running room as active when the crawler is globally paused and the reducer has already queued it. If no active room exists, the section may show the last completed room or idle copy as it does today.
+- Existing crawl-speed `aria-pressed`, separate Room index status panel, long-list scrollability, and row start/stop snapshot-driven behavior remain intact.
+- Tests must prove:
+  - Rust reducer active-to-paused converts all running rooms to queued, preserves completed/failed/idle rooms, emits `SearchCrawlerChanged`, and sends a paused actor notification;
+  - React renders paused and active progress copy with completed/total counts while preserving raw counts in the activity details;
+  - e2e still verifies active speed selection, separate room-index panel, and scrollable long room list.
+
 ## Frontend Design
 
 The first screen remains the application shell. Settings changes are contained to the existing User Settings panel.
