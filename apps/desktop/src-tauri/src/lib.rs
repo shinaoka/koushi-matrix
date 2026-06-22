@@ -318,6 +318,7 @@ fn renderable_thumbnail_protocol_response(
         return tauri::http::Response::builder()
             .status(tauri::http::StatusCode::NOT_FOUND)
             .header(tauri::http::header::CACHE_CONTROL, "no-store")
+            .header("X-Content-Type-Options", "nosniff")
             .body(Vec::new())
             .expect("thumbnail 404 response");
     };
@@ -332,6 +333,7 @@ fn renderable_thumbnail_protocol_response(
                 .unwrap_or("application/octet-stream"),
         )
         .header(tauri::http::header::CACHE_CONTROL, "no-store")
+        .header("X-Content-Type-Options", "nosniff")
         .body(content.bytes)
         .expect("thumbnail response")
 }
@@ -1159,6 +1161,13 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("application/octet-stream")
         );
+        assert_eq!(
+            response
+                .headers()
+                .get("X-Content-Type-Options")
+                .and_then(|value| value.to_str().ok()),
+            Some("nosniff")
+        );
         assert_eq!(response.body(), &b"protocol-bytes".to_vec());
     }
 
@@ -1171,6 +1180,13 @@ mod tests {
                 .expect("request"),
         );
         assert_eq!(response.status(), tauri::http::StatusCode::NOT_FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get("X-Content-Type-Options")
+                .and_then(|value| value.to_str().ok()),
+            Some("nosniff")
+        );
     }
 
     #[test]

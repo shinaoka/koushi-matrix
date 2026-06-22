@@ -765,7 +765,7 @@ describe("TimelineView", () => {
           mxc_uri: "mxc://matrix.org/avatar-retry",
           thumbnail: {
             kind: "ready",
-            source_url: "file:///tmp/avatar-retry.bin",
+            source_url: "koushi-thumbnail://localhost/avatar/retry",
             width: null,
             height: null,
             mime_type: null
@@ -930,7 +930,7 @@ describe("TimelineView", () => {
           mxc_uri: "mxc://matrix.org/avatar",
           thumbnail: {
             kind: "ready",
-            source_url: "file:///tmp/avatar.bin",
+            source_url: "koushi-thumbnail://localhost/avatar/sender",
             width: null,
             height: null,
             mime_type: null
@@ -941,7 +941,7 @@ describe("TimelineView", () => {
 
     await waitFor(() => {
       const image = document.querySelector<HTMLImageElement>(".message .avatar img");
-      expect(image?.getAttribute("src")).toBe("file:///tmp/avatar.bin");
+      expect(image?.getAttribute("src")).toBe("koushi-thumbnail://localhost/avatar/sender");
     });
   });
 
@@ -1006,7 +1006,7 @@ describe("TimelineView", () => {
           mxc_uri: "mxc://matrix.org/unrelated-avatar",
           thumbnail: {
             kind: "ready",
-            source_url: "file:///tmp/unrelated-avatar.bin",
+            source_url: "koushi-thumbnail://localhost/avatar/unrelated",
             width: null,
             height: null,
             mime_type: null
@@ -1079,7 +1079,7 @@ describe("TimelineView", () => {
           mxc_uri: "mxc://matrix.org/avatar-a",
           thumbnail: {
             kind: "ready",
-            source_url: "file:///tmp/avatar-a.bin",
+            source_url: "koushi-thumbnail://localhost/avatar/a",
             width: null,
             height: null,
             mime_type: null
@@ -1095,7 +1095,7 @@ describe("TimelineView", () => {
           mxc_uri: "mxc://matrix.org/avatar-b",
           thumbnail: {
             kind: "ready",
-            source_url: "file:///tmp/avatar-b.bin",
+            source_url: "koushi-thumbnail://localhost/avatar/b",
             width: null,
             height: null,
             mime_type: null
@@ -1111,8 +1111,8 @@ describe("TimelineView", () => {
       const secondImage = document.querySelector<HTMLImageElement>(
         '[data-event-id="$avatar-ready-b"] .avatar img'
       );
-      expect(firstImage?.getAttribute("src")).toBe("file:///tmp/avatar-a.bin");
-      expect(secondImage?.getAttribute("src")).toBe("file:///tmp/avatar-b.bin");
+      expect(firstImage?.getAttribute("src")).toBe("koushi-thumbnail://localhost/avatar/a");
+      expect(secondImage?.getAttribute("src")).toBe("koushi-thumbnail://localhost/avatar/b");
     });
   });
 

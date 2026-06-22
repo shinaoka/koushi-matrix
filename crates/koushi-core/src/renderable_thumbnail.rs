@@ -181,6 +181,13 @@ pub fn lookup_renderable_thumbnail(path: &str) -> Option<RenderableThumbnailCont
     cache.get(&cache_key)
 }
 
+pub fn clear_renderable_thumbnail_cache() {
+    let mut cache = renderable_thumbnail_cache()
+        .lock()
+        .expect("renderable thumbnail cache should not be poisoned");
+    *cache = RenderableThumbnailCache::default();
+}
+
 pub fn cleanup_legacy_plaintext_thumbnail_dirs(data_dir: &Path) -> std::io::Result<()> {
     for dir in [
         data_dir.join("avatar_thumbnails"),
@@ -256,6 +263,27 @@ mod tests {
             content.mime_type.as_deref(),
             Some("application/octet-stream")
         );
+    }
+
+    #[test]
+    fn clear_renderable_thumbnail_cache_drops_previous_session_bytes() {
+        let ready = store_renderable_thumbnail(
+            RenderableThumbnailKind::Avatar,
+            "mxc://example.test/session-scoped",
+            b"session-bytes".to_vec(),
+        );
+        let AvatarThumbnailState::Ready { source_url, .. } = ready else {
+            panic!("thumbnail should be ready");
+        };
+        let path = source_url
+            .strip_prefix("koushi-thumbnail://localhost")
+            .expect("protocol url should have localhost authority");
+
+        assert!(lookup_renderable_thumbnail(path).is_some());
+
+        clear_renderable_thumbnail_cache();
+
+        assert!(lookup_renderable_thumbnail(path).is_none());
     }
 
     #[test]

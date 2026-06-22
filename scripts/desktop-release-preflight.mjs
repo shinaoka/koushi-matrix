@@ -66,21 +66,24 @@ requireCheck(
   "Tauri asset protocol enabled for local media/avatar images"
 );
 requireCheck(
-  assetProtocolScope.includes("$APPDATA/**") || assetProtocolScope.includes("$APPDATA/*"),
-  "security.assetProtocol.scope.appdata",
-  "app data directory allowed for local media/avatar images"
+  !assetProtocolScope.some(
+    (scope) => scope === "$APPDATA/**" || scope === "$APPDATA/*"
+  ),
+  "security.assetProtocol.scope.noBroadAppdata",
+  "broad app data asset scope is not allowed"
 );
 requireCheck(
-  assetProtocolScope.includes("$APPLOCALDATA/**") ||
-    assetProtocolScope.includes("$APPLOCALDATA/*"),
-  "security.assetProtocol.scope.applocaldata",
-  "app local data directory allowed for local media/avatar images"
+  !assetProtocolScope.some(
+    (scope) => scope === "$APPLOCALDATA/**" || scope === "$APPLOCALDATA/*"
+  ),
+  "security.assetProtocol.scope.noBroadAppLocalData",
+  "broad app-local data asset scope is not allowed"
 );
 requireCheck(
-  assetProtocolScope.includes("$LOCALDATA/koushi-desktop/**") ||
-    assetProtocolScope.includes("$LOCALDATA/koushi-desktop/*"),
-  "security.assetProtocol.scope.koushiData",
-  "Koushi runtime data directory allowed for local media/avatar images"
+  assetProtocolScope.includes("$LOCALDATA/koushi-desktop/media_downloads/**") ||
+    assetProtocolScope.includes("$LOCALDATA/koushi-desktop/media_downloads/*"),
+  "security.assetProtocol.scope.mediaDownloads",
+  "only explicit media downloads are statically exposed through the asset protocol"
 );
 for (const [label, csp] of [
   ["security.csp", security.csp],
@@ -95,6 +98,11 @@ for (const [label, csp] of [
     typeof csp === "string" && csp.includes("http://asset.localhost"),
     `${label}.img-src.assetLocalhost`,
     "Tauri asset localhost allowed for WebView local media/avatar images"
+  );
+  requireCheck(
+    typeof csp === "string" && csp.includes("koushi-thumbnail:"),
+    `${label}.img-src.koushiThumbnail`,
+    "custom in-memory thumbnail protocol allowed for avatar/link-preview images"
   );
 }
 

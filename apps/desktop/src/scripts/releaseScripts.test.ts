@@ -78,8 +78,9 @@ describe("desktop release scripts", () => {
     expect(output).toContain("windows.signCommand");
     expect(output).toContain("windows.wix.upgradeCode");
     expect(output).toContain("security.assetProtocol.enable");
-    expect(output).toContain("security.assetProtocol.scope.appdata");
-    expect(output).toContain("security.assetProtocol.scope.koushiData");
+    expect(output).toContain("security.assetProtocol.scope.noBroadAppdata");
+    expect(output).toContain("security.assetProtocol.scope.mediaDownloads");
+    expect(output).toContain("security.csp.img-src.koushiThumbnail");
   });
 
   test("manual QA script lists every Milestone 9 flow", () => {
@@ -1725,7 +1726,12 @@ describe("desktop release scripts", () => {
       expect(csp).toContain("img-src");
       expect(csp).toContain("asset:");
       expect(csp).toContain("http://asset.localhost");
+      expect(csp).toContain("koushi-thumbnail:");
+      expect(csp).toContain("http://koushi-thumbnail.localhost");
     }
+    expect(tauriConfig.app.security.assetProtocol.scope).toEqual([
+      "$LOCALDATA/koushi-desktop/media_downloads/**"
+    ]);
   });
 
   test("QA file credential store is gated to debug and test builds in core", () => {

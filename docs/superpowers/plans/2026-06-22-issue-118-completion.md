@@ -438,11 +438,11 @@ git commit -m "perf: virtualize room member list"
 - Modify: `apps/desktop/src/domain/mediaUrl.ts`
 - Modify: focused tests in `crates/koushi-core`, `apps/desktop/src-tauri`, and `apps/desktop/src/domain/mediaUrl.test.ts`
 
-- [ ] **Step 1: Write plaintext regression tests**
+- [x] **Step 1: Write plaintext regression tests**
 
-Add tests that seed `avatar_thumbnails/` and `link_preview_thumbnails/`, run cleanup, and assert no plaintext files remain while `media_downloads/` survives. Add tests that the new renderable thumbnail helper returns `koushi-thumbnail://localhost/<kind>/<key>` rather than `file://`, and that the Tauri protocol handler serves only known in-memory refs.
+Add tests that seed `avatar_thumbnails/` and `link_preview_thumbnails/`, run cleanup, and assert no plaintext files remain while `media_downloads/` survives. Add tests that the new renderable thumbnail helper returns `koushi-thumbnail://localhost/<kind>/<key>` rather than `file://`, account/session cleanup clears the in-memory cache, the Tauri protocol handler serves only known in-memory refs, CSP permits `koushi-thumbnail`, and release preflight rejects broad app-data asset scope.
 
-- [ ] **Step 2: Implement encrypted render path**
+- [x] **Step 2: Implement encrypted render path**
 
 Use a custom-protocol backed in-memory renderable cache:
 
@@ -455,7 +455,9 @@ pub enum RenderableThumbnailKind {
 
 `download_avatar_thumbnail` and `download_preview_image` still fetch through the SDK media layer, but automatic thumbnails must avoid persistent SDK media caching when the SDK API exposes that choice. They store the resulting decrypted bytes only in a bounded process-memory cache and return `koushi-thumbnail://localhost/avatar/<key>` or `koushi-thumbnail://localhost/link-preview/<key>`. The Tauri `koushi-thumbnail` protocol handler resolves only these opaque refs from memory and responds with bytes plus MIME type; it never reads arbitrary files. A cold process may refetch automatic thumbnails through the existing bounded visible-range request path.
 
-- [ ] **Step 3: Cleanup old plaintext**
+The Tauri CSP must allow `koushi-thumbnail:` in `img-src`, and static `assetProtocol.scope` must not expose broad app-data paths. Leave only explicit `media_downloads` in static/runtime asset scope.
+
+- [x] **Step 3: Cleanup old plaintext**
 
 Add a startup cleanup after the encrypted serve path is registered:
 
@@ -467,18 +469,21 @@ for dir in ["avatar_thumbnails", "link_preview_thumbnails"] {
 
 Do not remove `media_downloads`, because those are explicit user-requested downloads. Remove only `avatar_thumbnails` and `link_preview_thumbnails` from the Tauri asset scope; keep `media_downloads`.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run:
 
 ```bash
 cargo test -p koushi-core thumbnail link_preview
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml renderable_asset_cache
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml renderable_thumbnail_protocol
 cd apps/desktop && npm test -- mediaUrl
+cd apps/desktop && npm test -- TimelineView
+cd apps/desktop && npm test -- releaseScripts
 cd apps/desktop && npm run typecheck
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/koushi-core apps/desktop/src-tauri apps/desktop/src

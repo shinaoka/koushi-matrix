@@ -61,7 +61,9 @@ use crate::event::{
 use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
 use crate::link_preview::LinkPreviewContext;
-use crate::renderable_thumbnail::{RenderableThumbnailKind, store_renderable_thumbnail};
+use crate::renderable_thumbnail::{
+    RenderableThumbnailKind, clear_renderable_thumbnail_cache, store_renderable_thumbnail,
+};
 use crate::room::{RoomActorHandle, RoomMessage};
 use crate::search::SearchActorHandle;
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
@@ -1817,6 +1819,7 @@ impl AccountActor {
         self.avatar_fetch_tasks = tokio::task::JoinSet::new();
         self.avatar_inflight.clear();
         self.avatar_cache.clear();
+        clear_renderable_thumbnail_cache();
         // Replace the semaphore so any task that manages to run after abort
         // cannot accidentally re-use a poisoned permit count.
         self.avatar_download_semaphore = Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY));

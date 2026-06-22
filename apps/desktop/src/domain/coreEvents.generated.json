@@ -844,7 +844,7 @@
                     "height": 315,
                     "kind": "ready",
                     "mime_type": "image/png",
-                            "source_url": "koushi-thumbnail://localhost/link-preview/fixture.bin",
+                    "source_url": "koushi-thumbnail://localhost/link-preview/fixture.bin",
                     "width": 600
                   },
                   "width": 1200
