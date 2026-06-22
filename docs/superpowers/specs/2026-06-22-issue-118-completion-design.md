@@ -234,6 +234,22 @@ Close #118 with pragmatic QoS guardrails:
 
 Do not block user intent on background member/profile/media fetches.
 
+Concrete Task 8 design:
+
+- Keep the existing high-capacity `ACTION_QUEUE_CAPACITY` and correlated `IntentLifecycle` path, but document the lane contract next to the runtime/account queues:
+  - command/user-intent lane: bounded `send().await`, request-id correlated, never `try_send`/drop-on-full for one-shot user commands;
+  - foreground active-room lane: active timeline subscription, pagination, and visible avatars may wait on actor capacity but must not wait behind search-crawler room availability;
+  - background lane: search-crawler room availability, inactive enrichment, and non-visible media work must be latest-wins/coalesced/drop-recoverable only.
+- Add a deterministic regression test in `crates/koushi-core/tests/runtime_intent_lifecycle.rs` that starts a ready runtime with at least two rooms, launches a background flood of reducer actions (`RoomListUpdated`, `HistoryCrawlProgress`, and avatar/profile-style updates using synthetic IDs), then submits `CoreCommand::Room(RoomCommand::SelectRoom)` through the real command path while the flood is active. The test must assert a matching `CoreEvent::IntentLifecycle { outcome: Committed }` arrives within a 1 second timeout.
+- Keep private-data-free fixtures: synthetic `example.test` room/user IDs, no message bodies, no raw event IDs in assertion output.
+- The deterministic test should measure terminal intent lifecycle, not real Matrix SDK fetch latency. If the test also observes first active-room timeline state, it may only use locally injected synthetic timeline/subscription actions; it must not require a homeserver.
+- Extend or add a code-guard test that inspects the AccountActor search-crawler notification arm and runtime command-routing comments so future refactors cannot accidentally await crawler mailbox capacity or route `SelectRoom` through a drop-on-full path.
+- `headless-core-qa.rs` may add an optional real-account/manual diagnostic for first timeline paint under background load, but #118 Task 8 automated acceptance must not depend on external homeserver availability.
+- Verification for Task 8 is:
+  - `cargo test -p koushi-core runtime_intent_lifecycle`
+  - `cargo test -p koushi-core search_crawler_room_notifications_are_latest_wins_and_nonblocking`
+  - any added focused test name for user-intent-under-background-flood.
+
 ## Error Handling
 
 All formerly silent background failures that affect #118 completion should become diagnostics:
