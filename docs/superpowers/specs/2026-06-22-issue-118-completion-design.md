@@ -122,6 +122,21 @@ Room summaries should not contain every active member. Replace hot-path `active_
 
 The hot room-list snapshot target is O(number of rooms) plus the small number of DM counterpart lookups, not O(total active members).
 
+Concrete Task 4 design:
+
+- `matrix_room_list_snapshot_from_rooms` must not call `collect_active_member_profiles`, `room.members(RoomMemberships::ACTIVE)`, or `joined_user_ids`.
+- `joined_members` should come from `room.joined_members_count()`.
+- Space `member_user_ids` may be populated only from `room.members_no_sync(RoomMemberships::ACTIVE)` in a space-specific helper. This preserves the existing Rust-side DM-to-space grouping contract without syncing/fetching a full member list from the homeserver. Treat it as best-effort local state; if lazy-loaded space membership is incomplete, DMs can temporarily fall back to Home until local state catches up.
+- DM target resolution order is:
+  1. `m.direct` account data from `direct_targets_by_room`;
+  2. `room.direct_targets()` when the SDK room already has cached direct targets;
+  3. `room.heroes()` filtered against `room.own_user_id()` for rooms that are already considered DM;
+  4. `room.get_member_no_sync(candidate)` only for the small candidate set discovered above, to populate `snapshot.user_profiles`.
+- If no counterpart can be resolved without a full member-list scan, leave `dm_user_ids` empty and rely on `display_name`/avatar already projected by the SDK. Do not fall back to a raw full-room member load in the snapshot path.
+- `snapshot.user_profiles` becomes a partial profile update, usually containing only resolved DM counterparts. The reducer must merge these profiles into the existing cache, not replace `state.profile.users` wholesale.
+- Full member enumeration remains allowed in member-list/Room Info functions such as `matrix_room_member_summaries`, where the user explicitly opens the member list.
+- Source guards must check the body of `matrix_room_list_snapshot_from_rooms` independently from helper functions so a future refactor cannot hide a full member scan behind another helper called from the hot path.
+
 ### Renderable Thumbnail Cache
 
 SDK event-cache/media stores can be encrypted through `SqliteStoreConfig::key`, but Koushi's renderable thumbnail files are separate plaintext artifacts. Closing #117 means removing or encrypting these artifacts:

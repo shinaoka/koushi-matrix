@@ -320,9 +320,11 @@ git commit -m "feat: persist per-room timeline anchors"
 
 **Files:**
 - Modify: `crates/koushi-sdk/src/lib.rs`
+- Modify: `crates/koushi-state/src/reducer/profile.rs`
+- Modify: `crates/koushi-state/tests/profile_state.rs`
 - Test: `crates/koushi-sdk/src/lib.rs`
 
-- [ ] **Step 1: Write source-guard tests**
+- [x] **Step 1: Write source-guard tests**
 
 Add tests asserting the body of `matrix_room_list_snapshot_from_rooms` does not contain:
 
@@ -333,11 +335,11 @@ Add tests asserting the body of `matrix_room_list_snapshot_from_rooms` does not 
 
 Keep a separate test allowing `matrix_room_member_summaries` to use `room.members(...)` for Room Info.
 
-- [ ] **Step 2: Preserve DM behavior tests**
+- [x] **Step 2: Preserve DM behavior tests**
 
 Add tests/source guards for direct account-data helper and DM fallback so one-to-one DMs still resolve counterpart labels and avatar profile fallback.
 
-- [ ] **Step 3: Implement hot-path rewrite**
+- [x] **Step 3: Implement hot-path rewrite**
 
 Replace `active_user_ids` usage in `matrix_room_list_snapshot_from_rooms`:
 
@@ -353,20 +355,26 @@ let dm_user_ids = if !direct_dm_user_ids.is_empty() {
 };
 ```
 
-Implement `resolve_dm_counterpart_user_ids_lightweight` so it does not fetch all active members for every non-DM room.
+Implemented as `matrix_room_list_dm_user_ids`, preserving valid direct/cached/hero DM IDs even when local profile data is absent. Space membership remains best-effort via a space-only `members_no_sync` helper so existing DM-to-space grouping does not regress. `UserProfilesUpdated` now merges partial profile updates instead of replacing the cache.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run:
 
 ```bash
-cargo test -p koushi-sdk room_list direct_account_data dm
+cargo test -p koushi-sdk room_list
+cargo test -p koushi-sdk direct_account_data
+cargo test -p koushi-sdk dm
+cargo test -p koushi-sdk space_member_ids_are_no_sync_and_space_only
+cargo test -p koushi-state user_profile_cache_merges_partial_rust_snapshots
+cargo test -p koushi-state user_profile_avatar_thumbnail_is_preserved_across_partial_profile_update
+cargo test -p koushi-core normalize_rooms_assigns_dm_space_ids_by_counterpart_membership
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
-git add crates/koushi-sdk/src/lib.rs
+git add crates/koushi-sdk/src/lib.rs crates/koushi-state/src/reducer/profile.rs crates/koushi-state/tests/profile_state.rs
 git commit -m "perf: avoid full member loads in room-list projection"
 ```
 
