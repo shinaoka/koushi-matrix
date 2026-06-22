@@ -33,7 +33,7 @@
 - Modify: `crates/koushi-state/tests/settings_state.rs`
 - Check generated/mocks after tests: `apps/desktop/src/test/tauriIpcMock.ts`, `apps/desktop/src/test/appHarnessMain.tsx`, focused tests that hard-code `auto_load_older_messages: false`
 
-- [ ] **Step 1: Write failing Rust tests**
+- [x] **Step 1: Write failing Rust tests**
 
 Add tests in `crates/koushi-state/tests/settings_state.rs`:
 
@@ -76,7 +76,7 @@ fn explicit_false_auto_load_older_messages_is_preserved() {
 }
 ```
 
-- [ ] **Step 2: Run failing tests**
+- [x] **Step 2: Run failing tests**
 
 Run:
 
@@ -86,7 +86,7 @@ cargo test -p koushi-state timeline_auto_load_older_messages_defaults_to_true mi
 
 Expected before implementation: at least the default/backfill tests fail.
 
-- [ ] **Step 3: Implement the default**
+- [x] **Step 3: Implement the default**
 
 Change `TimelineSettings` to use a custom default:
 
@@ -108,11 +108,11 @@ impl Default for TimelineSettings {
 
 Do not rewrite explicit persisted `false`.
 
-- [ ] **Step 4: Update frontend test fixtures**
+- [x] **Step 4: Update frontend test fixtures**
 
 Only change fixtures that represent a default snapshot. Leave tests that intentionally cover disabled prefetch at `false`.
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run:
 
@@ -123,7 +123,7 @@ cd apps/desktop && npm run typecheck
 
 Expected: both pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/koushi-state/src/state/settings.rs crates/koushi-state/tests/settings_state.rs apps/desktop/src/test apps/desktop/src/domain apps/desktop/src/components
