@@ -74,6 +74,9 @@ pub fn build_state_delta(
     previous: &AppState,
     next: &AppState,
 ) -> Option<StateDelta> {
+    audit_app_state_delta_slices(previous);
+    audit_app_state_delta_slices(next);
+
     let mut changed = StateDeltaChangedSlices::default();
 
     macro_rules! changed_slice {
@@ -122,15 +125,23 @@ pub fn build_state_delta(
     changed_slice!(cjk_text_policy);
     changed_slice!(errors);
 
-    if previous.navigation != next.navigation
+    if previous.navigation.active_space_id != next.navigation.active_space_id
         || previous.spaces != next.spaces
         || previous.rooms != next.rooms
     {
-        changed.sidebar = Some(compose_sidebar(
+        let previous_sidebar = compose_sidebar(
+            previous.navigation.active_space_id.as_deref(),
+            &previous.spaces,
+            &previous.rooms,
+        );
+        let next_sidebar = compose_sidebar(
             next.navigation.active_space_id.as_deref(),
             &next.spaces,
             &next.rooms,
-        ));
+        );
+        if previous_sidebar != next_sidebar {
+            changed.sidebar = Some(next_sidebar);
+        }
     }
 
     if changed.is_empty() {
@@ -141,6 +152,52 @@ pub fn build_state_delta(
         generation,
         changed,
     })
+}
+
+fn audit_app_state_delta_slices(state: &AppState) {
+    let AppState {
+        session: _,
+        auth: _,
+        device_sessions: _,
+        account_management: _,
+        account_management_capabilities: _,
+        soft_logout_reauth: _,
+        qr_login: _,
+        settings: _,
+        link_preview_settings: _,
+        profile: _,
+        sync: _,
+        sync_mode: _,
+        navigation: _,
+        spaces: _,
+        rooms: _,
+        invites: _,
+        room_list: _,
+        room_notification_settings: _,
+        room_interactions: _,
+        composer_drafts: _,
+        scheduled_sends: _,
+        upload_staging: _,
+        media_gallery: _,
+        directory: _,
+        room_management: _,
+        activity: _,
+        timeline: _,
+        thread: _,
+        thread_attention: _,
+        threads_list: _,
+        focused_context: _,
+        search: _,
+        search_crawler: _,
+        files_view: _,
+        basic_operation: _,
+        live_signals: _,
+        e2ee_trust: _,
+        local_encryption: _,
+        native_attention: _,
+        cjk_text_policy: _,
+        errors: _,
+    } = state;
 }
 
 #[cfg(test)]
@@ -168,5 +225,17 @@ mod tests {
     #[test]
     fn state_delta_omits_unchanged_state() {
         assert!(build_state_delta(1, &AppState::default(), &AppState::default()).is_none());
+    }
+
+    #[test]
+    fn state_delta_omits_sidebar_when_navigation_change_does_not_change_sidebar_projection() {
+        let previous = AppState::default();
+        let mut next = previous.clone();
+        next.navigation.active_room_id = Some("!room:example.invalid".to_owned());
+
+        let delta = build_state_delta(1, &previous, &next).expect("navigation changed");
+
+        assert!(delta.changed.navigation.is_some());
+        assert!(delta.changed.sidebar.is_none());
     }
 }
