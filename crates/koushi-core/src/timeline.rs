@@ -1419,6 +1419,13 @@ impl TimelineActor {
 
         // Emit InitialItems (generation 0).
         let generation = TimelineGeneration(0);
+        if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+            // Private-data-free: item count only, no room/event ids or bodies.
+            eprintln!(
+                "koushi.subscribe stage=initial_emitted count={}",
+                initial_items.len()
+            );
+        }
         let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::InitialItems {
             request_id: Some(subscribe_request_id),
             key: key.clone(),
