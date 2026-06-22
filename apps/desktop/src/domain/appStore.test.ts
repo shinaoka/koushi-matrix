@@ -326,6 +326,45 @@ describe("appStore projection cache", () => {
     ).toBe(true);
   });
 
+  test("rejects stale full snapshots after a newer state delta has applied", () => {
+    const initial = makeSnapshot();
+    initial.state_generation = 4;
+    initial.state.ui.navigation.active_space_id = "!space-alpha:example.invalid";
+    initial.state.ui.navigation.active_room_id = "!room-alpha:example.invalid";
+    setAppStoreSnapshot(initial);
+
+    expect(
+      applyAppStoreDelta({
+        generation: 5,
+        changed: {
+          state: {
+            ui: {
+              navigation: {
+                ...initial.state.ui.navigation,
+                active_space_id: "!space-beta:example.invalid",
+                active_room_id: "!room-beta:example.invalid"
+              }
+            }
+          }
+        }
+      })
+    ).toBe(true);
+
+    const stale = structuredClone(initial);
+    stale.state_generation = 4;
+    stale.state.ui.navigation.active_space_id = "!space-alpha:example.invalid";
+    stale.state.ui.navigation.active_room_id = "!room-alpha:example.invalid";
+    setAppStoreSnapshot(stale);
+
+    expect(useAppStore.getState().stateGeneration).toBe(5);
+    expect(getAppStoreSnapshot()?.state.ui.navigation.active_space_id).toBe(
+      "!space-beta:example.invalid"
+    );
+    expect(getAppStoreSnapshot()?.state.ui.navigation.active_room_id).toBe(
+      "!room-beta:example.invalid"
+    );
+  });
+
   test("rejects gapped state deltas so the caller can reset from a full snapshot", () => {
     setAppStoreSnapshot(makeSnapshot());
 
