@@ -138,7 +138,7 @@ git commit -m "fix: enable timeline prefetch by default"
 - Test: `crates/koushi-sdk/src/lib.rs` unit/source tests or `crates/koushi-sdk/tests/event_cache_persistence.rs`
 - Test: `crates/koushi-core/src/account.rs` source guard if a full SDK integration test is too heavy
 
-- [ ] **Step 1: Write tests for encryption evidence and lifecycle**
+- [x] **Step 1: Write tests for encryption evidence and lifecycle**
 
 Add tests that prove these concrete properties:
 
@@ -170,7 +170,7 @@ async fn enable_event_cache_is_idempotent() {
 
 If direct sentinel insertion is easier through `client.event_cache().for_room(...).await`, use the SDK's event-cache room storage tests as reference.
 
-- [ ] **Step 2: Add the helper**
+- [x] **Step 2: Add the helper**
 
 In `crates/koushi-sdk/src/lib.rs` add:
 
@@ -195,7 +195,7 @@ pub async fn enable_event_cache(
 
 Define `MatrixEventCacheError` without logging private data.
 
-- [ ] **Step 3: Call it after store-backed restore**
+- [x] **Step 3: Call it after store-backed restore**
 
 In `crates/koushi-core/src/account.rs`, call the helper only on store-backed sessions:
 
@@ -212,7 +212,7 @@ match koushi_sdk::enable_event_cache(&store_backed).await {
 
 Apply this in login restore, restore last session, switch account, and soft logout reauth paths after `restore_into_store` succeeds and before sync starts.
 
-- [ ] **Step 4: Add kill/relaunch verification path**
+- [x] **Step 4: Add kill/relaunch verification path**
 
 Extend an existing headless or SDK smoke test path to:
 
@@ -225,7 +225,7 @@ Extend an existing headless or SDK smoke test path to:
 
 Skip real message bodies in diagnostics; test fixtures may use synthetic content.
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run:
 
@@ -236,7 +236,7 @@ cargo test -p koushi-core event_cache
 
 Expected: new tests pass and no private identifiers appear in logs/assertion messages.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/koushi-sdk/src/lib.rs crates/koushi-core/src/account.rs crates/koushi-sdk/tests crates/koushi-core/tests
