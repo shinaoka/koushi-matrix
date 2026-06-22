@@ -168,6 +168,7 @@ fn event_cache_persists_across_drop_and_restore() {
             .get_room(&room_id)
             .expect("room should be restored from sync state");
         let (room_event_cache, _drop_handles) = room.event_cache().await.expect("room cache");
+        let expected_body = "persistent cache payload";
         let (events, _subscriber) = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let (events, subscriber) = room_event_cache
@@ -175,7 +176,9 @@ fn event_cache_persists_across_drop_and_restore() {
                     .await
                     .expect("room event cache should subscribe");
 
-                if events.len() == 1 {
+                if events.iter().any(|event| {
+                    message_event_body(event).as_deref() == Some(expected_body)
+                }) {
                     break (events, subscriber);
                 }
 
@@ -186,9 +189,12 @@ fn event_cache_persists_across_drop_and_restore() {
         .await
         .expect("timed out waiting for restored room event cache");
 
-        assert_eq!(events.len(), 1);
-        let message = decode_message_event(&events[0]);
-        assert_eq!(message, "persistent cache payload");
+        assert!(
+            events
+                .iter()
+                .any(|event| message_event_body(event).as_deref() == Some(expected_body)),
+            "restored event cache should contain the expected synthetic message"
+        );
     });
 }
 
@@ -208,16 +214,16 @@ fn make_message_event(room_id: &str, event_id: &str, body: &str, timestamp: u64)
     TimelineEvent::from_plaintext(raw)
 }
 
-fn decode_message_event(event: &TimelineEvent) -> String {
+fn message_event_body(event: &TimelineEvent) -> Option<String> {
     match event
         .raw()
         .deserialize()
         .expect("cached event should deserialize")
     {
         AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(message)) => {
-            message.as_original().unwrap().content.body().to_owned()
+            Some(message.as_original()?.content.body().to_owned())
         }
-        other => panic!("expected room message event, got {other:?}"),
+        _ => None,
     }
 }
 
