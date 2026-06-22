@@ -431,27 +431,29 @@ git commit -m "perf: virtualize room member list"
 ## Task 6: Renderable Thumbnail Cache Encryption / Plaintext Removal
 
 **Files:**
+- Add: `crates/koushi-core/src/renderable_thumbnail.rs`
 - Modify: `crates/koushi-core/src/account.rs`
 - Modify: `crates/koushi-core/src/link_preview.rs`
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
-- Modify: frontend URL handling where `file://` thumbnail URLs are consumed
+- Modify: `apps/desktop/src/domain/mediaUrl.ts`
+- Modify: focused tests in `crates/koushi-core`, `apps/desktop/src-tauri`, and `apps/desktop/src/domain/mediaUrl.test.ts`
 
 - [ ] **Step 1: Write plaintext regression tests**
 
-Add tests that seed `avatar_thumbnails/` and `link_preview_thumbnails/`, run cleanup, and assert no plaintext files remain. Add tests that `download_avatar_thumbnail` and `download_preview_image` no longer return `file://` URLs for sensitive thumbnails.
+Add tests that seed `avatar_thumbnails/` and `link_preview_thumbnails/`, run cleanup, and assert no plaintext files remain while `media_downloads/` survives. Add tests that the new renderable thumbnail helper returns `koushi-thumbnail://localhost/<kind>/<key>` rather than `file://`, and that the Tauri protocol handler serves only known in-memory refs.
 
 - [ ] **Step 2: Implement encrypted render path**
 
-Prefer command/custom-protocol backed bytes:
+Use a custom-protocol backed in-memory renderable cache:
 
 ```rust
-pub enum RenderableThumbnailRef {
-    Avatar { cache_key: String },
-    LinkPreview { cache_key: String },
+pub enum RenderableThumbnailKind {
+    Avatar,
+    LinkPreview,
 }
 ```
 
-Return an app-owned URL/ref instead of a `file://` path. The protocol handler resolves the ref, reads encrypted SDK media/Koushi cache bytes, decrypts in memory, and streams bytes.
+`download_avatar_thumbnail` and `download_preview_image` still fetch through the SDK media layer with cache enabled, but they store the resulting decrypted bytes only in a bounded process-memory cache and return `koushi-thumbnail://localhost/avatar/<key>` or `koushi-thumbnail://localhost/link-preview/<key>`. The Tauri `koushi-thumbnail` protocol handler resolves only these opaque refs from memory and responds with bytes plus MIME type; it never reads arbitrary files. Persistent media bytes remain in the encrypted SDK media cache.
 
 - [ ] **Step 3: Cleanup old plaintext**
 
@@ -463,7 +465,7 @@ for dir in ["avatar_thumbnails", "link_preview_thumbnails"] {
 }
 ```
 
-Do not remove `media_downloads`, because those are explicit user-requested downloads.
+Do not remove `media_downloads`, because those are explicit user-requested downloads. Remove only `avatar_thumbnails` and `link_preview_thumbnails` from the Tauri asset scope; keep `media_downloads`.
 
 - [ ] **Step 4: Verify**
 
@@ -472,6 +474,7 @@ Run:
 ```bash
 cargo test -p koushi-core thumbnail link_preview
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml renderable_asset_cache
+cd apps/desktop && npm test -- mediaUrl
 cd apps/desktop && npm run typecheck
 ```
 
