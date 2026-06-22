@@ -443,10 +443,11 @@ impl AccountActor {
                     self.route_search_command(search_command).await;
                 }
                 AccountMessage::NotifySearchCrawlerRoomsAvailable { room_ids, settings } => {
-                    // Room availability for the crawler is latest-wins
-                    // background state. Store it first, then try a
-                    // non-blocking flush so AccountActor does not stall room
-                    // or timeline commands behind crawler mailbox pressure.
+                    // Background lane: crawler room availability is
+                    // latest-wins/coalesced/recoverable state. Store it first,
+                    // then try a non-blocking flush so AccountActor never stalls
+                    // user-intent or foreground room/timeline commands behind
+                    // crawler mailbox pressure.
                     self.pending_crawler_notification = Some((room_ids, settings));
                     self.flush_pending_crawler_notification();
                 }

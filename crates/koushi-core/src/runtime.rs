@@ -51,11 +51,23 @@ pub const COMMAND_INBOX_CAPACITY: usize = 256;
 pub const EVENT_QUEUE_CAPACITY: usize = 16384;
 /// AppActor action-projection inbox. Actors project a high volume of
 /// `Vec<AppAction>` here during large-account (100+ room) sync. It MUST be large
-/// enough that bursts never overflow, because the RoomActor projects through a
+/// enough that bursts never overflow.
+///
+/// Lane contract:
+/// - user-intent commands use the reliable command lane (`send().await`) and
+///   keep request-id correlation; they are never routed through a drop-on-full
+///   path;
+/// - foreground active-room work (timeline subscription, pagination, visible
+///   avatars) may wait on bounded actor capacity but must not wait behind
+///   background crawler availability;
+/// - background work (search-crawler room availability, inactive enrichment,
+///   non-visible media) is latest-wins / coalesced / drop-recoverable only.
+///
+/// The action queue remains large because the RoomActor projects through a
 /// drop-on-full `try_send`: an overflow silently drops one-shot actions such as
 /// room selection (`SelectRoom`) and room-settings/member loads, which is the
-/// large-account "room selection did not complete" / blank-timeline bug. See the
-/// async channel-capacity rule in docs/policies/engineering-rules.md.
+/// large-account "room selection did not complete" / blank-timeline bug. See
+/// the async channel-capacity rule in docs/policies/engineering-rules.md.
 pub const ACTION_QUEUE_CAPACITY: usize = 16384;
 /// Inter-actor command/message inboxes (AppActor -> AccountActor ->
 /// Room/Timeline actors). Sized so that forwarding a command under heavy sync
@@ -1598,8 +1610,10 @@ impl AppActor {
                 false
             }
             CoreCommand::Room(room_command) => {
-                // For SelectRoom, record the request_id→room_id correlation
-                // BEFORE forwarding so the action loop can emit IntentLifecycle.
+                // User-intent lane: for SelectRoom, record the request_id→room_id
+                // correlation BEFORE forwarding so the action loop can emit the
+                // terminal IntentLifecycle outcome. This command path is reliable
+                // and must never be converted into a drop-on-full background path.
                 if let crate::command::RoomCommand::SelectRoom {
                     request_id,
                     ref room_id,

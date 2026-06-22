@@ -1371,6 +1371,9 @@ pub enum RoomCommand {
         request_id: RequestId,
         space_ids: Vec<String>,
     },
+    /// User-intent lane: room selection is request-id correlated and must be
+    /// routed through the reliable command path, not a drop-on-full background
+    /// queue.
     SelectRoom {
         request_id: RequestId,
         room_id: String,

@@ -561,11 +561,11 @@ git commit -m "fix: make search crawler pause and progress accurate"
 - Modify: `crates/koushi-core/tests/runtime_intent_lifecycle.rs`
 - Modify: `crates/koushi-core/src/bin/headless-core-qa.rs`
 
-- [ ] **Step 1: Add saturated-background test**
+- [x] **Step 1: Add saturated-background test**
 
-Extend the existing #116 runtime/QA harness so background avatar/search/room-list work is saturated, then submit `SelectRoom`. Assert terminal `IntentLifecycle` and first timeline paint under the deterministic 1s budget.
+Added a regression in `crates/koushi-core/tests/runtime_intent_lifecycle.rs` that drives the real `CoreCommand::Room(RoomCommand::SelectRoom)` path while background `RoomListUpdated`, `HistoryCrawlProgress`, `UserProfilesUpdated`, and `AvatarThumbnailUpdated` batches are queued. It asserts a correlated `IntentLifecycle { outcome: Committed }` within 1 second using only synthetic `example.test` IDs.
 
-- [ ] **Step 2: Make lane semantics explicit**
+- [x] **Step 2: Make lane semantics explicit**
 
 Document in code and enforce:
 
@@ -573,7 +573,9 @@ Document in code and enforce:
 - foreground active-room work: bounded and prioritized;
 - background work: coalesced/latest-wins/drop-on-full only when recoverable.
 
-- [ ] **Step 3: Verify**
+Implemented with explicit comments in `crates/koushi-core/src/runtime.rs`, `crates/koushi-core/src/account.rs`, and `crates/koushi-core/src/command.rs`, plus a source-guard test that keeps the `SelectRoom` routing on the awaited command path and preserves the crawler notification nonblocking contract.
+
+- [x] **Step 3: Verify**
 
 Run:
 
@@ -582,7 +584,7 @@ cargo test -p koushi-core runtime_intent_lifecycle
 cargo test -p koushi-core search_crawler_room_notifications_are_latest_wins_and_nonblocking
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/koushi-core

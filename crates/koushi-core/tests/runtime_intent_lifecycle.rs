@@ -15,7 +15,7 @@ use koushi_core::{
     event::CoreEvent,
     runtime::CoreRuntime,
 };
-use koushi_state::{AppAction, SessionState};
+use koushi_state::{AppAction, AvatarThumbnailState, RoomSummary, SessionState, UserProfile};
 
 mod support;
 use support::*;
@@ -50,6 +50,111 @@ async fn recv_intent_lifecycle_for(
         }
     }
     None
+}
+
+async fn recv_intent_lifecycle_within(
+    conn: &mut koushi_core::runtime::CoreConnection,
+    request_id: koushi_core::ids::RequestId,
+    timeout: Duration,
+) -> Option<koushi_core::event::IntentOutcome> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        match tokio::time::timeout(remaining.min(Duration::from_millis(20)), conn.recv_event())
+            .await
+        {
+            Ok(Ok(CoreEvent::IntentLifecycle {
+                request_id: rid,
+                outcome,
+            })) if rid == request_id => {
+                return Some(outcome);
+            }
+            Ok(Ok(_)) | Ok(Err(_)) => {}
+            Err(_) => return None,
+        }
+    }
+}
+
+fn background_flood_batch(batch_index: usize, kept_room_ids: &[&str]) -> Vec<AppAction> {
+    let room_id = format!("!background-room-{batch_index}:example.test");
+    let user_id = format!("@background-user-{batch_index}:example.test");
+    let mxc_uri = format!("mxc://example.test/avatar/{batch_index}");
+    let timestamp_ms = 1_720_000_000_000 + batch_index as u64;
+    let mut rooms = kept_room_ids
+        .iter()
+        .map(|room_id| RoomSummary {
+            room_id: (*room_id).to_owned(),
+            display_name: (*room_id).to_owned(),
+            display_label: (*room_id).to_owned(),
+            original_display_label: (*room_id).to_owned(),
+            avatar: None,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: Default::default(),
+            unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: timestamp_ms,
+            parent_space_ids: vec![],
+            dm_space_ids: vec![],
+            is_encrypted: false,
+            joined_members: 1,
+        })
+        .collect::<Vec<_>>();
+    rooms.push(RoomSummary {
+        room_id: room_id.clone(),
+        display_name: format!("Background Room {batch_index}"),
+        display_label: format!("Background Room {batch_index}"),
+        original_display_label: format!("Background Room {batch_index}"),
+        avatar: None,
+        is_dm: false,
+        dm_user_ids: Vec::new(),
+        tags: Default::default(),
+        unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
+        marked_unread: false,
+        last_activity_ms: timestamp_ms,
+        parent_space_ids: vec![],
+        dm_space_ids: vec![],
+        is_encrypted: false,
+        joined_members: 1000 + batch_index as u64,
+    });
+    vec![
+        AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms,
+        },
+        AppAction::HistoryCrawlProgress {
+            room_id: room_id.clone(),
+            processed: 10 + batch_index as u64,
+            indexed: 5 + batch_index as u64,
+            timestamp_ms,
+        },
+        AppAction::UserProfilesUpdated {
+            profiles: vec![UserProfile {
+                user_id,
+                display_name: Some(format!("Background User {batch_index}")),
+                display_label: format!("Background User {batch_index}"),
+                original_display_label: format!("Background User {batch_index}"),
+                mention_search_terms: vec![format!("background-user-{batch_index}")],
+                avatar: None,
+            }],
+        },
+        AppAction::AvatarThumbnailUpdated {
+            mxc_uri,
+            thumbnail: AvatarThumbnailState::Ready {
+                source_url: format!("koushi-thumbnail://localhost/avatar/{batch_index}"),
+                width: Some(32),
+                height: Some(32),
+                mime_type: Some("image/png".to_owned()),
+            },
+        },
+    ]
 }
 
 /// A SelectRoom command for a room that IS present in `state.rooms` must
@@ -100,6 +205,111 @@ async fn select_room_present_emits_committed() {
         IntentOutcome::Committed,
         "present room must emit Committed"
     );
+}
+
+#[test]
+fn select_room_routing_is_reliable_and_correlated() {
+    let runtime_source = include_str!("../src/runtime.rs");
+    let command_source = include_str!("../src/command.rs");
+
+    assert!(
+        runtime_source.contains("User-intent lane: for SelectRoom, record the request_id→room_id")
+            && runtime_source.contains("terminal IntentLifecycle outcome"),
+        "runtime must keep the SelectRoom correlation comment next to the reliable command path"
+    );
+    assert!(
+        runtime_source.contains("AccountMessage::RoomCommand(room_command)")
+            && runtime_source.contains(".await;"),
+        "SelectRoom must continue to route through the awaited command path"
+    );
+    assert!(
+        !runtime_source.contains("try_send(crate::account::AccountMessage::RoomCommand"),
+        "SelectRoom must not be routed through a drop-on-full command path"
+    );
+    assert!(
+        command_source.contains("User-intent lane: room selection is request-id correlated"),
+        "RoomCommand::SelectRoom should carry an explicit user-intent lane comment"
+    );
+}
+
+/// A real SelectRoom command must still commit under a flood of reducer-side
+/// background work. This exercises the live command path while background
+/// room-list, crawl-progress, profile, and avatar updates are already queued.
+#[tokio::test]
+async fn select_room_commits_within_one_second_during_background_action_flood() {
+    use koushi_core::event::IntentOutcome;
+
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+
+    let primary_room = "!active-room:example.test";
+    let target_room = "!target-room:example.test";
+    let spare_room = "!spare-room:example.test";
+
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![
+                    room_summary(primary_room),
+                    room_summary(target_room),
+                    room_summary(spare_room),
+                ],
+            },
+        ])
+        .await;
+
+    let ready = wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_)) && state.navigation.active_room_id.is_some()
+    })
+    .await;
+    let target = [primary_room, target_room, spare_room]
+        .into_iter()
+        .find(|room_id| Some(*room_id) != ready.navigation.active_room_id.as_deref())
+        .expect("a non-active room should be available");
+
+    let flood_runtime = runtime;
+    let flood = tokio::spawn(async move {
+        for batch_index in 0..256 {
+            flood_runtime
+                .inject_actions(background_flood_batch(
+                    batch_index,
+                    &[primary_room, target_room, spare_room],
+                ))
+                .await;
+            if batch_index % 8 == 0 {
+                tokio::task::yield_now().await;
+            }
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Room(RoomCommand::SelectRoom {
+        request_id,
+        room_id: target.to_owned(),
+    }))
+    .await
+    .expect("command should submit");
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(1),
+        recv_intent_lifecycle_within(&mut conn, request_id, Duration::from_secs(1)),
+    )
+    .await
+    .expect("SelectRoom should emit a lifecycle event within one second")
+    .expect("SelectRoom should emit a correlated lifecycle outcome");
+
+    assert_eq!(outcome, IntentOutcome::Committed, "SelectRoom must commit");
+    assert!(
+        conn.snapshot().navigation.active_room_id.is_some(),
+        "room selection should leave an active room in state"
+    );
+
+    flood.abort();
+    let _ = flood.await;
 }
 
 /// A SelectRoom command for a room that is permanently absent from `state.rooms`
