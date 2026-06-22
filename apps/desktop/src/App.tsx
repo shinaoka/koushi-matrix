@@ -2248,11 +2248,7 @@ export function App() {
     if (!roomId) {
       return;
     }
-    if (value) {
-      localComposerDraftsRef.current[roomId] = value;
-    } else {
-      delete localComposerDraftsRef.current[roomId];
-    }
+    localComposerDraftsRef.current[roomId] = value;
     updateComposerTypingSignal(roomId, value);
     queueComposerDraftPersist(roomId, value);
   }

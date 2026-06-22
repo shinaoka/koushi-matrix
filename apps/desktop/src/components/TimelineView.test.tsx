@@ -549,6 +549,96 @@ describe("TimelineView", () => {
     });
   });
 
+  it("renders downloaded thumbnails for multiple visible sender avatars", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [
+            {
+              ...message("$avatar-ready-a", "Avatar row A"),
+              sender_avatar: {
+                mxc_uri: "mxc://matrix.org/avatar-a",
+                thumbnail: { kind: "notRequested" }
+              }
+            },
+            {
+              ...message("$avatar-ready-b", "Avatar row B"),
+              sender: "@carol:example.invalid",
+              sender_avatar: {
+                mxc_uri: "mxc://matrix.org/avatar-b",
+                thumbnail: { kind: "notRequested" }
+              }
+            }
+          ]
+        }
+      }
+    });
+    emit({
+      kind: "Account",
+      event: {
+        AvatarThumbnailDownloaded: {
+          request_id: { connection_id: 1, sequence: 2 },
+          mxc_uri: "mxc://matrix.org/avatar-a",
+          thumbnail: {
+            kind: "ready",
+            source_url: "file:///tmp/avatar-a.bin",
+            width: null,
+            height: null,
+            mime_type: null
+          }
+        }
+      }
+    });
+    emit({
+      kind: "Account",
+      event: {
+        AvatarThumbnailDownloaded: {
+          request_id: { connection_id: 1, sequence: 3 },
+          mxc_uri: "mxc://matrix.org/avatar-b",
+          thumbnail: {
+            kind: "ready",
+            source_url: "file:///tmp/avatar-b.bin",
+            width: null,
+            height: null,
+            mime_type: null
+          }
+        }
+      }
+    });
+
+    await waitFor(() => {
+      const firstImage = document.querySelector<HTMLImageElement>(
+        '[data-event-id="$avatar-ready-a"] .avatar img'
+      );
+      const secondImage = document.querySelector<HTMLImageElement>(
+        '[data-event-id="$avatar-ready-b"] .avatar img'
+      );
+      expect(firstImage?.getAttribute("src")).toBe("file:///tmp/avatar-a.bin");
+      expect(secondImage?.getAttribute("src")).toBe("file:///tmp/avatar-b.bin");
+    });
+  });
+
   it("falls back to sender initials when a downloaded sender avatar image is broken", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({
