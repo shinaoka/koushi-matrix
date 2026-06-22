@@ -2,7 +2,7 @@
 //!
 //! Channel topology (overview.md, Async rule 10):
 //! - command inbox per runtime: bounded mpsc, capacity 256
-//! - discrete core events per consumer: broadcast, capacity 1024; a lagged
+//! - discrete core events per consumer: broadcast, capacity 16384; a lagged
 //!   consumer observes `EventStreamLag` and resyncs from the snapshot watch
 //! - state snapshots: latest-wins watch, coalesced to at most one
 //!   `StateDelta` per processed command batch
@@ -39,7 +39,15 @@ use crate::state_delta::build_state_delta;
 use crate::store::{StoreActor, session_key_id_from_info};
 
 pub const COMMAND_INBOX_CAPACITY: usize = 256;
-pub const EVENT_QUEUE_CAPACITY: usize = 1024;
+/// Per-consumer broadcast capacity. On large accounts (100+ rooms) initial and
+/// room-open sync bursts can emit thousands of `CoreEvent`s faster than a
+/// consumer (the Tauri forwarder, or a transient command connection waiting for
+/// a correlated event) drains them. `tokio::broadcast` silently drops the
+/// overflowed messages for a lagged consumer, which previously dropped a room's
+/// `InitialItems` (blank timeline) and `select_room`'s correlated event ("room
+/// selection did not complete"). Sized to absorb a full large-account burst;
+/// genuine lag still self-heals via `EventStreamLag` -> resync.
+pub const EVENT_QUEUE_CAPACITY: usize = 16384;
 pub const COMPOSER_DRAFT_PERSIST_DEBOUNCE: Duration = Duration::from_millis(150);
 const INTERNAL_RUNTIME_CONNECTION_ID: RuntimeConnectionId = RuntimeConnectionId(0);
 

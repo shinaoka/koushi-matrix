@@ -86,7 +86,8 @@ import { mediaSourceUrl } from "../domain/mediaUrl";
 import {
   recordTimelineEventReceived,
   recordTimelineInitialItems,
-  recordTimelineKeyMismatch
+  recordTimelineKeyMismatch,
+  recordTimelineResync
 } from "../domain/timelineTransportStats";
 import { timelineItemDomId, timelineKeyEquals } from "../domain/coreEvents";
 import {
@@ -1300,7 +1301,11 @@ export const TimelineView = memo(function TimelineView({
   useEffect(() => {
     const unsubscribe = transport.listenCoreEvents((payload) => {
       if (payload.kind === "ResyncMarker") {
-        // EventStreamLag: clear and await fresh InitialItems.
+        // EventStreamLag: the core event broadcast overflowed and dropped
+        // events for this consumer (likely including this room's InitialItems).
+        // Clear, then RE-SUBSCRIBE so the core re-emits a fresh InitialItems;
+        // clearing alone would leave the timeline permanently blank.
+        recordTimelineResync();
         pendingAnchorRef.current = null;
         anchorRestorePendingRef.current = false;
         setNavigationSnapshot(null);
@@ -1312,6 +1317,7 @@ export const TimelineView = memo(function TimelineView({
           );
           return next;
         });
+        void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
         return;
       }
       if (payload.kind === "Account" && "AvatarThumbnailDownloaded" in payload.event) {

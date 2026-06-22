@@ -15,14 +15,26 @@ export interface TimelineTransportStats {
   keyMismatchDropped: number;
   initialItemsApplied: number;
   lastInitialItemsCount: number;
+  /**
+   * Count of `ResyncMarker` events (a consumer lagged the core event broadcast
+   * and the in-between events were dropped). A nonzero value confirms the
+   * broadcast-overflow path is being hit; the timeline must re-subscribe to
+   * recover the dropped `InitialItems`.
+   */
+  resync: number;
 }
 
-let stats: TimelineTransportStats = {
-  received: 0,
-  keyMismatchDropped: 0,
-  initialItemsApplied: 0,
-  lastInitialItemsCount: 0
-};
+function zeroed(): TimelineTransportStats {
+  return {
+    received: 0,
+    keyMismatchDropped: 0,
+    initialItemsApplied: 0,
+    lastInitialItemsCount: 0,
+    resync: 0
+  };
+}
+
+let stats: TimelineTransportStats = zeroed();
 
 export function recordTimelineEventReceived(): void {
   stats.received += 1;
@@ -37,15 +49,14 @@ export function recordTimelineInitialItems(count: number): void {
   stats.lastInitialItemsCount = Math.max(0, Math.trunc(count));
 }
 
+export function recordTimelineResync(): void {
+  stats.resync += 1;
+}
+
 export function getTimelineTransportStats(): TimelineTransportStats {
   return { ...stats };
 }
 
 export function resetTimelineTransportStats(): void {
-  stats = {
-    received: 0,
-    keyMismatchDropped: 0,
-    initialItemsApplied: 0,
-    lastInitialItemsCount: 0
-  };
+  stats = zeroed();
 }

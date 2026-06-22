@@ -108,7 +108,7 @@ export function diagnosticReport({
       : []),
     ...(timelineTransportStats
       ? [
-          `Timeline transport: received=${timelineTransportStats.received} key_dropped=${timelineTransportStats.keyMismatchDropped} initial_applied=${timelineTransportStats.initialItemsApplied} last_initial_items=${timelineTransportStats.lastInitialItemsCount}`
+          `Timeline transport: received=${timelineTransportStats.received} key_dropped=${timelineTransportStats.keyMismatchDropped} initial_applied=${timelineTransportStats.initialItemsApplied} last_initial_items=${timelineTransportStats.lastInitialItemsCount} resync=${timelineTransportStats.resync}`
         ]
       : []),
     `Search crawler running=${crawler.running} queued=${crawler.queued}: processed=${crawler.processed} indexed=${crawler.indexed}`,
@@ -149,7 +149,8 @@ export function diagnosticReport({
           `timeline_evt_received=${timelineTransportStats.received}`,
           `timeline_evt_key_dropped=${timelineTransportStats.keyMismatchDropped}`,
           `timeline_initial_applied=${timelineTransportStats.initialItemsApplied}`,
-          `timeline_last_initial_items=${timelineTransportStats.lastInitialItemsCount}`
+          `timeline_last_initial_items=${timelineTransportStats.lastInitialItemsCount}`,
+          `timeline_resync=${timelineTransportStats.resync}`
         ]
       : []),
     ...(jsErrors ? [`js_error_count=${jsErrors.length}`] : [])
