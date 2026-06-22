@@ -691,6 +691,15 @@ impl TimelineManagerActor {
     }
 
     async fn handle_subscribe(&mut self, request_id: RequestId, key: TimelineKey) {
+        // Diagnostic-only, private-data-free stage trace (no room/event ids).
+        // Enable with KOUSHI_SUBSCRIBE_TRACE=1 to find which `.await` stalls
+        // before InitialItems is emitted. Off by default.
+        let trace = |stage: &str| {
+            if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+                eprintln!("koushi.subscribe stage={stage}");
+            }
+        };
+        trace("start");
         let Some(session) = &self.session else {
             self.emit_failure(
                 request_id,
@@ -747,7 +756,9 @@ impl TimelineManagerActor {
         // only guarantees the initial window on some servers (Conduit).
         // This is the Element X room-open pattern.
         if let Some(service) = &self.room_list_service {
+            trace("subscribe_rooms_begin");
             service.subscribe_to_rooms(&[&room_id]).await;
+            trace("subscribe_rooms_done");
         }
 
         let focus = match &key.kind {
@@ -793,10 +804,12 @@ impl TimelineManagerActor {
             }
         };
 
+        trace("build_begin");
         let timeline_result = matrix_sdk_ui::timeline::TimelineBuilder::new(&room)
             .with_focus(focus)
             .build()
             .await;
+        trace("build_done");
 
         let timeline = match timeline_result {
             Ok(t) => Arc::new(t),
@@ -811,6 +824,7 @@ impl TimelineManagerActor {
             }
         };
 
+        trace("spawn_begin");
         let handle = TimelineActor::spawn(
             key.clone(),
             timeline,
@@ -825,9 +839,11 @@ impl TimelineManagerActor {
             self.messages_backpressure.clone(),
         )
         .await;
+        trace("spawn_done");
 
         self.emit_timeline_subscribed_action(&key);
         self.timelines.insert(key, handle);
+        trace("subscribed_done");
     }
 
     async fn route_to_actor_or_fail(
