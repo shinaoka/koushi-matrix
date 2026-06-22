@@ -329,38 +329,93 @@ async fn wait_for_selected_room(
     selected_room_id: &str,
     timeout: std::time::Duration,
 ) -> Result<(), String> {
+    // Diagnostic-only, private-data-free probe (no room ids). Enable with
+    // KOUSHI_SUBSCRIBE_TRACE=1 to see WHY select_room times out:
+    //   events=0                      -> runtime/AppActor delivered nothing (hung)
+    //   events>0, active=none         -> deltas flow but the reducer never set
+    //                                    the active room (command unprocessed/rejected)
+    //   events>0, active=other        -> a different room got selected
+    let trace = std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some();
     let deadline = tokio::time::Instant::now() + timeout;
+    let mut events: u32 = 0;
+    let mut state_changed: u32 = 0;
+    let mut state_delta: u32 = 0;
 
     loop {
         if snapshot_has_active_room(&event_conn.snapshot(), selected_room_id) {
+            if trace {
+                eprintln!(
+                    "koushi.select stage=ok_watch events={events} state_changed={state_changed} state_delta={state_delta}"
+                );
+            }
             return Ok(());
         }
 
-        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
-            .await
-            .map_err(|_| "room selection did not complete".to_owned())?;
+        let event = match tokio::time::timeout_at(deadline, event_conn.recv_event()).await {
+            Ok(event) => event,
+            Err(_) => {
+                if trace {
+                    let active =
+                        select_active_room_trace_label(&event_conn.snapshot(), selected_room_id);
+                    eprintln!(
+                        "koushi.select stage=timeout events={events} state_changed={state_changed} state_delta={state_delta} active={active}"
+                    );
+                }
+                return Err("room selection did not complete".to_owned());
+            }
+        };
+        events += 1;
         match event {
-            Ok(CoreEvent::StateChanged(snapshot))
-                if snapshot_has_active_room(&snapshot, selected_room_id) =>
-            {
-                return Ok(());
+            Ok(CoreEvent::StateChanged(snapshot)) => {
+                state_changed += 1;
+                if snapshot_has_active_room(&snapshot, selected_room_id) {
+                    if trace {
+                        eprintln!("koushi.select stage=ok_statechanged events={events}");
+                    }
+                    return Ok(());
+                }
+            }
+            Ok(CoreEvent::StateDelta(_)) => {
+                state_delta += 1;
             }
             Ok(CoreEvent::OperationFailed { request_id, .. })
                 if request_id == select_request_id =>
             {
+                if trace {
+                    eprintln!("koushi.select stage=op_failed events={events}");
+                }
                 return Err("room selection failed".to_owned());
             }
             Ok(_) => {}
             Err(_) if snapshot_has_active_room(&event_conn.snapshot(), selected_room_id) => {
+                if trace {
+                    eprintln!("koushi.select stage=ok_after_lag events={events}");
+                }
                 return Ok(());
             }
-            Err(_) => return Err("room selection event stream lagged".to_owned()),
+            Err(_) => {
+                if trace {
+                    eprintln!("koushi.select stage=lag events={events}");
+                }
+                return Err("room selection event stream lagged".to_owned());
+            }
         }
     }
 }
 
 fn snapshot_has_active_room(snapshot: &koushi_state::AppState, room_id: &str) -> bool {
     snapshot.navigation.active_room_id.as_deref() == Some(room_id)
+}
+
+fn select_active_room_trace_label(
+    snapshot: &koushi_state::AppState,
+    selected_room_id: &str,
+) -> &'static str {
+    match snapshot.navigation.active_room_id.as_deref() {
+        None => "none",
+        Some(id) if id == selected_room_id => "match",
+        Some(_) => "other",
+    }
 }
 
 async fn wait_for_upload_staging_snapshot(
