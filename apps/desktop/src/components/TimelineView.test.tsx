@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  focusedTimelineKey,
   roomTimelineKey,
   threadTimelineKey,
   type CoreEventPayload,
@@ -382,6 +383,122 @@ describe("TimelineView", () => {
 
     await waitFor(() => {
       expect(timeline.scrollTop).toBe(450);
+    });
+  });
+
+  it("boots through a focused timeline when a fresh room anchor is missing from the live room view", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const roomId = "!room:example.invalid";
+    const anchorEventId = "$anchor:example.invalid";
+    const focusedKey = focusedTimelineKey("@alice:example.invalid", roomId, anchorEventId);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    mockTimelineRects(
+      {
+        "$live-top:example.invalid": { top: 120, height: 48 },
+        "$live-bottom:example.invalid": { top: 560, height: 48 },
+        "$focus-before:example.invalid": { top: 420, height: 48 },
+        "$focus-after:example.invalid": { top: 620, height: 48 },
+        [anchorEventId]: { top: 500, height: 48 }
+      },
+      { top: 0, height: 600 }
+    );
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId={roomId}
+        transport={transport}
+        roomScrollAnchor={{
+          event_id: anchorEventId,
+          offset_px: 50,
+          updated_at_ms: Date.now()
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 100,
+      writable: true,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "scrollHeight", { value: 2000, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              message("$live-top:example.invalid", "Live top"),
+              message("$live-bottom:example.invalid", "Live bottom")
+            ]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(100);
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: focusedKey,
+            generation: 1,
+            items: [
+              message("$focus-before:example.invalid", "Focused bootstrap context"),
+              message(anchorEventId, "Bootstrap anchor"),
+              message("$focus-after:example.invalid", "Focused after")
+            ]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Bootstrap anchor")).toBeTruthy();
+      expect(screen.getByText("Focused bootstrap context")).toBeTruthy();
+      expect(timeline.scrollTop).toBe(550);
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 2,
+            items: [
+              message("$live-top:example.invalid", "Live top"),
+              message(anchorEventId, "Live anchor visible"),
+              message("$live-bottom:example.invalid", "Live bottom")
+            ]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("Focused bootstrap context")).toBeNull();
+      expect(screen.getByText("Live anchor visible")).toBeTruthy();
+      expect(timeline.scrollTop).toBe(550);
     });
   });
 

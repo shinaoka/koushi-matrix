@@ -90,7 +90,11 @@ import {
   recordTimelineKeyMismatch,
   recordTimelineResync
 } from "../domain/timelineTransportStats";
-import { timelineItemDomId, timelineKeyEquals } from "../domain/coreEvents";
+import {
+  focusedTimelineKey,
+  timelineItemDomId,
+  timelineKeyEquals
+} from "../domain/coreEvents";
 import {
   applyGlobalResync,
   applyTimelineEvent,
@@ -306,6 +310,15 @@ function restoreRoomScrollAnchor(container: HTMLElement, anchor: TimelineScrollA
 
 function roomScrollAnchorIsStale(anchor: TimelineScrollAnchor): boolean {
   return Date.now() - anchor.updated_at_ms > TIMELINE_SCROLL_ANCHOR_MAX_AGE_MS;
+}
+
+function timelineItemsContainEventId(
+  items: readonly TimelineItem[],
+  eventId: string
+): boolean {
+  return items.some(
+    (item) => "Event" in item.id && item.id.Event.event_id === eventId
+  );
 }
 
 function visibleEventIds(container: HTMLElement): {
@@ -1332,6 +1345,7 @@ export const TimelineView = memo(function TimelineView({
   profileUsersRef.current = profileUsers;
   const timelineKeyRef = useRef(timelineKey);
   timelineKeyRef.current = timelineKey;
+  const displayTimelineKeyRef = useRef<TimelineKey>(timelineKey);
   const timelineKeyHash = JSON.stringify(timelineKey);
   const roomTimelineRoomId = "Room" in timelineKey.kind ? timelineKey.kind.Room.room_id : null;
   const emitDiagnosticLog = useCallback(
@@ -1425,6 +1439,69 @@ export const TimelineView = memo(function TimelineView({
     });
   }, []);
 
+  const liveRoomScrollAnchor =
+    roomScrollAnchor &&
+    roomTimelineRoomId === roomId &&
+    !roomScrollAnchorIsStale(roomScrollAnchor)
+      ? roomScrollAnchor
+      : null;
+  const liveItems = getItems(store, timelineKey);
+  const liveAnchorVisible = liveRoomScrollAnchor
+    ? timelineItemsContainEventId(liveItems, liveRoomScrollAnchor.event_id)
+    : false;
+  const bootstrapTimelineKeyCandidate = useMemo(() => {
+    if (
+      !liveRoomScrollAnchor ||
+      liveAnchorVisible ||
+      roomTimelineRoomId !== roomId ||
+      !("Room" in timelineKey.kind)
+    ) {
+      return null;
+    }
+    return focusedTimelineKey(
+      timelineKey.account_key,
+      roomId,
+      liveRoomScrollAnchor.event_id
+    );
+  }, [
+    liveAnchorVisible,
+    liveRoomScrollAnchor?.event_id,
+    liveRoomScrollAnchor?.updated_at_ms,
+    roomId,
+    roomTimelineRoomId,
+    timelineKeyHash
+  ]);
+
+  const bootstrapTimelineKey = bootstrapTimelineKeyCandidate;
+  const bootstrapItems = bootstrapTimelineKey ? getItems(store, bootstrapTimelineKey) : [];
+  const bootstrapFocusedEventId =
+    bootstrapTimelineKey && "Focused" in bootstrapTimelineKey.kind
+      ? bootstrapTimelineKey.kind.Focused.event_id
+      : null;
+  const bootstrapAnchorVisible = bootstrapFocusedEventId
+    ? timelineItemsContainEventId(
+        bootstrapItems,
+        bootstrapFocusedEventId
+      )
+    : false;
+  const displayTimelineKey =
+    bootstrapTimelineKey && bootstrapAnchorVisible ? bootstrapTimelineKey : timelineKey;
+  const displayTimelineKeyHash = JSON.stringify(displayTimelineKey);
+  const bootstrapTimelineKeyHash = bootstrapTimelineKey
+    ? JSON.stringify(bootstrapTimelineKey)
+    : null;
+  displayTimelineKeyRef.current = displayTimelineKey;
+
+  useEffect(() => {
+    if (
+      !bootstrapTimelineKey ||
+      timelineKeyEquals(bootstrapTimelineKey, timelineKeyRef.current)
+    ) {
+      return;
+    }
+    void transport.ensureSubscribed?.(bootstrapTimelineKey).catch(() => undefined);
+  }, [bootstrapTimelineKey, transport]);
+
   // --- Event subscription: apply CoreEvents to the store ---
   useEffect(() => {
     const unsubscribe = transport.listenCoreEvents((payload) => {
@@ -1440,12 +1517,18 @@ export const TimelineView = memo(function TimelineView({
         setStore((current) => {
           const next = applyGlobalResync(current);
           relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-            getItems(next, timelineKeyRef.current),
+            getItems(next, displayTimelineKeyRef.current),
             profileUsersRef.current
           );
           return next;
         });
         void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
+        if (
+          bootstrapTimelineKey &&
+          !timelineKeyEquals(bootstrapTimelineKey, timelineKeyRef.current)
+        ) {
+          void transport.ensureSubscribed?.(bootstrapTimelineKey).catch(() => undefined);
+        }
         return;
       }
       if (payload.kind === "Account" && "AvatarThumbnailDownloaded" in payload.event) {
@@ -1476,7 +1559,7 @@ export const TimelineView = memo(function TimelineView({
         setStore((current) => {
           const next = applyTimelineEvent(current, event);
           relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-            getItems(next, timelineKeyRef.current),
+            getItems(next, displayTimelineKeyRef.current),
             profileUsersRef.current
           );
           return next;
@@ -1484,7 +1567,7 @@ export const TimelineView = memo(function TimelineView({
         return;
       }
 
-      // Key filter: only this timeline's events.
+      // Key filter: only the live room timeline or its transient focused bootstrap.
       const eventKey =
         "InitialItems" in event
           ? event.InitialItems.key
@@ -1505,11 +1588,20 @@ export const TimelineView = memo(function TimelineView({
                         : "MessageForwarded" in event
                           ? event.MessageForwarded.key
                           : "MessageSourceLoaded" in event
-                            ? event.MessageSourceLoaded.key
+                          ? event.MessageSourceLoaded.key
                             : "NavigationUpdated" in event
                               ? event.NavigationUpdated.key
                               : event.ResyncRequired.key;
-      if (!timelineKeyEquals(eventKey, timelineKeyRef.current)) {
+      const relevantTimelineKeys: TimelineKey[] = [timelineKeyRef.current];
+      if (
+        bootstrapTimelineKey &&
+        !timelineKeyEquals(bootstrapTimelineKey, timelineKeyRef.current)
+      ) {
+        relevantTimelineKeys.push(bootstrapTimelineKey);
+      }
+      if (
+        !relevantTimelineKeys.some((candidate) => timelineKeyEquals(eventKey, candidate))
+      ) {
         recordTimelineKeyMismatch();
         return;
       }
@@ -1554,15 +1646,27 @@ export const TimelineView = memo(function TimelineView({
       setStore((current) => {
         const next = applyTimelineEvent(current, event);
         relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-          getItems(next, timelineKeyRef.current),
+          getItems(next, displayTimelineKeyRef.current),
           profileUsersRef.current
         );
         return next;
       });
     });
     void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
+    if (
+      bootstrapTimelineKey &&
+      !timelineKeyEquals(bootstrapTimelineKey, timelineKeyRef.current)
+    ) {
+      void transport.ensureSubscribed?.(bootstrapTimelineKey).catch(() => undefined);
+    }
     return unsubscribe;
-  }, [emitDiagnosticLog, timelineKeyHash, transport]);
+  }, [
+    bootstrapTimelineKeyHash,
+    displayTimelineKeyHash,
+    emitDiagnosticLog,
+    timelineKeyHash,
+    transport
+  ]);
 
   useEffect(() => {
     setNavigationSnapshot(null);
@@ -1600,7 +1704,7 @@ export const TimelineView = memo(function TimelineView({
     []
   );
 
-  const items = getItems(store, timelineKey);
+  const items = getItems(store, displayTimelineKey);
   useEffect(() => {
     relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(items, profileUsers);
   }, [items, profileUsers]);
@@ -1672,7 +1776,9 @@ export const TimelineView = memo(function TimelineView({
     onDiagnosticsChange?.({
       visibleItems: visibleItems.length,
       downloadedItems: downloadedEventIdsRef.current.size,
-      backfill: paginationStateDiagnosticLabel(getPaginationState(store, timelineKey, "Backward")),
+      backfill: paginationStateDiagnosticLabel(
+        getPaginationState(store, displayTimelineKey, "Backward")
+      ),
       ...avatarDiagnostics,
       ...timelineRenderedAvatarDiagnostics(containerRef.current)
     });
@@ -1682,6 +1788,7 @@ export const TimelineView = memo(function TimelineView({
     onDiagnosticsChange,
     profileUsers,
     store,
+    displayTimelineKeyHash,
     timelineKeyHash,
     visibleItems
   ]);
@@ -1732,12 +1839,12 @@ export const TimelineView = memo(function TimelineView({
     }
     return [item.id.Transaction.transaction_id];
   });
-  const backwardState = getPaginationState(store, timelineKey, "Backward");
+  const backwardState = getPaginationState(store, displayTimelineKey, "Backward");
   const isPaginating = backwardState === "Paginating";
   const endReached = backwardState === "EndReached";
   const roomSignals = liveSignals?.rooms[roomId] ?? null;
   const latestReadableEventId = latestEventBackedItemId(items);
-  const timelineKeyState = getKeyState(store, timelineKey);
+  const timelineKeyState = getKeyState(store, displayTimelineKey);
   const timelineInitialized = Boolean(timelineKeyState && !timelineKeyState.awaitingResync);
   // Stable, render-visible timeline generation for this key. Bumps when the
   // store replaces the list for a new generation (InitialItems / resync), so
@@ -1745,7 +1852,7 @@ export const TimelineView = memo(function TimelineView({
   // Core generation; use timelineInitialized to distinguish "not initialized".
   const generation = timelineKeyState?.generation ?? 0;
   const initialLiveEdgeScrollKey = timelineInitialized
-    ? `${timelineKeyHash}:${generation}`
+    ? `${displayTimelineKeyHash}:${generation}`
     : null;
   const onSendReaction = useCallback(
     (targetRoomId: string, eventId: string, reactionKey: string) => {
@@ -1957,7 +2064,7 @@ export const TimelineView = memo(function TimelineView({
   // --- Anchor restoration: after React commits the prepend ---
   useLayoutEffect(() => {
     const container = containerRef.current;
-    const activeRoomAnchor =
+    const activeRoomAnchor = 
       roomScrollAnchor &&
       roomTimelineRoomId === roomId &&
       !roomScrollAnchorIsStale(roomScrollAnchor)
@@ -1966,6 +2073,15 @@ export const TimelineView = memo(function TimelineView({
     const activeRoomAnchorSignature = activeRoomAnchor
       ? `${roomId}\u0000${activeRoomAnchor.event_id}\u0000${activeRoomAnchor.updated_at_ms}`
       : null;
+    const roomAnchorAlreadyRestored =
+      activeRoomAnchorSignature !== null &&
+      restoredRoomScrollAnchorSignatureRef.current === activeRoomAnchorSignature;
+    const waitingForBootstrap =
+      Boolean(
+        bootstrapTimelineKeyCandidate &&
+        !bootstrapAnchorVisible &&
+        timelineKeyEquals(displayTimelineKey, timelineKey)
+      );
     let roomAnchorRestored = false;
     if (
       timelineInitialized &&
@@ -2029,19 +2145,24 @@ export const TimelineView = memo(function TimelineView({
         }
       }
       if (!roomAnchorRestored) {
-        roomScrollAnchorRestorePendingRef.current = false;
-        if (container) {
-          runWithSuppressedScrollAnchorCapture(() => {
-            scrollContainerToBottom(container);
-          });
-          initialLiveEdgeScrollAppliedRef.current = initialLiveEdgeScrollKey;
+        if (waitingForBootstrap || roomAnchorAlreadyRestored) {
+          roomScrollAnchorRestorePendingRef.current = true;
+        } else {
+          roomScrollAnchorRestorePendingRef.current = false;
+          if (container) {
+            runWithSuppressedScrollAnchorCapture(() => {
+              scrollContainerToBottom(container);
+            });
+            initialLiveEdgeScrollAppliedRef.current = initialLiveEdgeScrollKey;
+          }
         }
       }
     } else if (
       timelineInitialized &&
       items.length > 0 &&
       initialLiveEdgeScrollKey !== null &&
-      initialLiveEdgeScrollAppliedRef.current !== initialLiveEdgeScrollKey
+      initialLiveEdgeScrollAppliedRef.current !== initialLiveEdgeScrollKey &&
+      !roomAnchorAlreadyRestored
     ) {
       if (container) {
         runWithSuppressedScrollAnchorCapture(() => {
@@ -2179,12 +2300,12 @@ export const TimelineView = memo(function TimelineView({
     if (anchorRestorePendingRef.current || backfillInFlightRef.current) {
       return;
     }
-    if (shouldSuppressAutoBackfill(store, timelineKeyRef.current)) {
+    if (shouldSuppressAutoBackfill(store, displayTimelineKeyRef.current)) {
       return;
     }
     backfillInFlightRef.current = true;
     void transport
-      .paginateBackwards(timelineKeyRef.current)
+      .paginateBackwards(displayTimelineKeyRef.current)
       .catch(() => {
         backfillInFlightRef.current = false;
       });
@@ -2218,7 +2339,7 @@ export const TimelineView = memo(function TimelineView({
     emptyThreadBackfillRequestedRef.current = true;
     backfillInFlightRef.current = true;
     void transport
-      .paginateBackwards(timelineKeyRef.current)
+      .paginateBackwards(displayTimelineKeyRef.current)
       .catch(() => {
         backfillInFlightRef.current = false;
       });
@@ -2313,7 +2434,8 @@ export const TimelineView = memo(function TimelineView({
       reportViewportObservation();
     });
   }, [reportViewportObservation, runWithSuppressedScrollAnchorCapture, updateViewportMetrics]);
-  const canRenderRoomNavigation = roomTimelineRoomId === roomId;
+  const canRenderRoomNavigation =
+    roomTimelineRoomId === roomId && timelineKeyEquals(displayTimelineKey, timelineKey);
   const firstUnreadEventId = navigationSnapshot?.first_unread_event_id ?? null;
   const firstUnreadCount = navigationSnapshot?.unread_event_count ?? 0;
   const canJumpToFirstUnread = Boolean(
@@ -2444,7 +2566,7 @@ export const TimelineView = memo(function TimelineView({
                 onReply={onReply}
                 onOpenThread={onOpenThread}
                 resolveComposerKeyAction={resolveComposerKeyAction}
-                mediaUploadProgress={mediaUploadProgressForItem(store, timelineKey, item)}
+                mediaUploadProgress={mediaUploadProgressForItem(store, displayTimelineKey, item)}
                 onSendReaction={onSendReaction}
                 onRedactReaction={onRedactReaction}
                 onEdit={onEdit}
