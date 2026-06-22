@@ -492,7 +492,7 @@ describe("TimelineView", () => {
     expect(downloadAvatarThumbnail).toHaveBeenCalledTimes(1);
   });
 
-  it("does NOT call downloadAvatarThumbnail when enableAvatarThumbnailDownloads is false (default #116 gate)", async () => {
+  it("does NOT call downloadAvatarThumbnail when enableAvatarThumbnailDownloads is explicitly false (kill-switch)", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const downloadAvatarThumbnail = vi.fn(async () => undefined);
     const transport = baseTransport({
@@ -503,13 +503,14 @@ describe("TimelineView", () => {
       downloadAvatarThumbnail
     });
 
-    // Render WITHOUT enableAvatarThumbnailDownloads — it should default to OFF.
+    // Explicitly disable via the kill-switch prop (#116 Stage F1a: default is now ON).
     render(
       <TimelineView
         timelineKey={KEY}
         roomId="!room:example.invalid"
         transport={transport}
         onReply={vi.fn()}
+        enableAvatarThumbnailDownloads={false}
       />
     );
 
@@ -522,7 +523,7 @@ describe("TimelineView", () => {
           generation: 1,
           items: [
             {
-              ...message("$avatar-gated", "Avatar row (gate off)"),
+              ...message("$avatar-gated", "Avatar row (kill-switch off)"),
               sender_avatar: {
                 mxc_uri: "mxc://matrix.org/avatar-gated",
                 thumbnail: { kind: "notRequested" }
