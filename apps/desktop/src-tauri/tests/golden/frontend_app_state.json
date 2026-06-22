@@ -454,7 +454,7 @@
             "speed": "standard"
           },
           "timeline": {
-            "auto_load_older_messages": false
+            "auto_load_older_messages": true
           },
           "typography": {
             "emoji": "system",

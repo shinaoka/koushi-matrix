@@ -2896,6 +2896,7 @@ mod tests {
             "timelineMediaUploadProgress",
             "timelineMessageForwarded",
             "timelineMessageSourceLoaded",
+            "timelineAnchorRestoreFinished",
             "timelineNavigationUpdated",
             "timelinePaginationEndReached",
             "timelineReplyQuoteInitialItems",

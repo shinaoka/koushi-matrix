@@ -378,62 +378,63 @@ pub struct FrontendUiState {
 
 impl From<AppState> for FrontendAppState {
     fn from(state: AppState) -> Self {
-        let platform = frontend_display_platform();
-        let locale_profile =
-            resolve_locale_display_profile(&state.settings.values.locale, platform);
-        let typography_profile =
-            resolve_typography_display_profile(&state.settings.values.typography, platform);
-        let mut native_attention = state.native_attention;
-        if native_attention.summary.capabilities == NativeAttentionCapabilities::default() {
-            native_attention.summary.capabilities =
-                native_attention_capabilities_for_platform(platform);
-        }
-        Self {
-            schema_version: SNAPSHOT_SCHEMA_VERSION,
-            domain: FrontendDomainState {
-                session: state.session.into(),
-                auth: state.auth,
-                device_sessions: state.device_sessions,
-                account_management: state.account_management,
-                account_management_capabilities: state.account_management_capabilities,
-                soft_logout_reauth: state.soft_logout_reauth,
-                qr_login: state.qr_login,
-                settings: state.settings,
-                link_preview_settings: state.link_preview_settings,
-                locale_profile,
-                typography_profile,
-                profile: state.profile,
-                sync: state.sync.into(),
-                sync_mode: state.sync_mode,
-                spaces: state.spaces,
-                rooms: state.rooms,
-                invites: state.invites,
-                room_notification_settings: state.room_notification_settings,
-                room_interactions: state.room_interactions,
-                directory: state.directory,
-                room_management: state.room_management,
-                activity: state.activity,
-                thread_attention: state.thread_attention,
-                search: state.search.into(),
-                search_crawler: state.search_crawler,
-                live_signals: state.live_signals,
-                e2ee_trust: state.e2ee_trust,
-                local_encryption: state.local_encryption,
-                native_attention,
-                cjk_text_policy: state.cjk_text_policy,
-            },
-            ui: FrontendUiState {
-                navigation: state.navigation,
-                room_list: state.room_list,
-                timeline: state.timeline,
-                thread: state.thread.into(),
-                focused_context: state.focused_context,
-                files_view: state.files_view,
-                threads_list: state.threads_list,
-                basic_operation: state.basic_operation,
-                errors: state.errors,
-            },
-        }
+        frontend_app_state_for_platform(state, frontend_display_platform())
+    }
+}
+
+fn frontend_app_state_for_platform(state: AppState, platform: DisplayPlatform) -> FrontendAppState {
+    let locale_profile = resolve_locale_display_profile(&state.settings.values.locale, platform);
+    let typography_profile =
+        resolve_typography_display_profile(&state.settings.values.typography, platform);
+    let mut native_attention = state.native_attention;
+    if native_attention.summary.capabilities == NativeAttentionCapabilities::default() {
+        native_attention.summary.capabilities = native_attention_capabilities_for_platform(platform);
+    }
+    FrontendAppState {
+        schema_version: SNAPSHOT_SCHEMA_VERSION,
+        domain: FrontendDomainState {
+            session: state.session.into(),
+            auth: state.auth,
+            device_sessions: state.device_sessions,
+            account_management: state.account_management,
+            account_management_capabilities: state.account_management_capabilities,
+            soft_logout_reauth: state.soft_logout_reauth,
+            qr_login: state.qr_login,
+            settings: state.settings,
+            link_preview_settings: state.link_preview_settings,
+            locale_profile,
+            typography_profile,
+            profile: state.profile,
+            sync: state.sync.into(),
+            sync_mode: state.sync_mode,
+            spaces: state.spaces,
+            rooms: state.rooms,
+            invites: state.invites,
+            room_notification_settings: state.room_notification_settings,
+            room_interactions: state.room_interactions,
+            directory: state.directory,
+            room_management: state.room_management,
+            activity: state.activity,
+            thread_attention: state.thread_attention,
+            search: state.search.into(),
+            search_crawler: state.search_crawler,
+            live_signals: state.live_signals,
+            e2ee_trust: state.e2ee_trust,
+            local_encryption: state.local_encryption,
+            native_attention,
+            cjk_text_policy: state.cjk_text_policy,
+        },
+        ui: FrontendUiState {
+            navigation: state.navigation,
+            room_list: state.room_list,
+            timeline: state.timeline,
+            thread: state.thread.into(),
+            focused_context: state.focused_context,
+            files_view: state.files_view,
+            threads_list: state.threads_list,
+            basic_operation: state.basic_operation,
+            errors: state.errors,
+        },
     }
 }
 
@@ -1772,7 +1773,21 @@ mod tests {
         };
 
         // Serialize
-        let value = serde_json::to_value(FrontendDesktopSnapshot::from(state))
+        let sidebar = koushi_state::compose_sidebar(
+            state.navigation.active_space_id.as_deref(),
+            &state.spaces,
+            &state.rooms,
+        );
+        let value = serde_json::to_value(FrontendDesktopSnapshot {
+            state_generation: None,
+            state: super::frontend_app_state_for_platform(
+                state,
+                koushi_state::DisplayPlatform::Linux,
+            ),
+            sidebar,
+            timeline: Vec::new(),
+            thread: None,
+        })
             .expect("maximally-populated state should serialize to JSON");
 
         let golden_path = concat!(

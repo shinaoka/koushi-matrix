@@ -7382,19 +7382,26 @@ mod tests {
     fn restore_anchor_handler_is_room_only_and_bounded() {
         let source = include_str!("timeline.rs");
         let helper_source = source
-            .split("async fn handle_restore_timeline_anchor")
+            .split("async fn handle_restore_timeline_anchor(")
             .nth(1)
             .expect("restore anchor handler should exist")
-            .split("async fn handle_send_text")
+            .split("async fn handle_restore_timeline_anchor_continue")
             .next()
             .expect("restore anchor handler should end before send text");
+        let continue_source = source
+            .split("async fn handle_restore_timeline_anchor_continue")
+            .nth(1)
+            .expect("restore anchor continuation should exist")
+            .split("async fn schedule_restore_anchor_continue")
+            .next()
+            .expect("restore anchor continuation should end before scheduler");
 
         assert!(
             helper_source.contains("TimelineKind::Room"),
             "restore anchor must target the live room timeline actor"
         );
         assert!(
-            helper_source.contains("PaginationDirection::Backward"),
+            continue_source.contains("PaginationDirection::Backward"),
             "restore anchor must drive backward pagination"
         );
         assert!(

@@ -206,9 +206,20 @@ pub fn cleanup_legacy_plaintext_thumbnail_dirs(data_dir: &Path) -> std::io::Resu
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::{Mutex as TestMutex, MutexGuard, OnceLock as TestOnceLock};
+
+    fn cache_test_lock() -> MutexGuard<'static, ()> {
+        static LOCK: TestOnceLock<TestMutex<()>> = TestOnceLock::new();
+        LOCK.get_or_init(|| TestMutex::new(()))
+            .lock()
+            .expect("renderable thumbnail cache test lock should not be poisoned")
+    }
 
     #[test]
     fn stores_avatar_and_link_preview_thumbnails_in_memory_with_protocol_urls() {
+        let _guard = cache_test_lock();
+        clear_renderable_thumbnail_cache();
+
         let avatar = store_renderable_thumbnail(
             RenderableThumbnailKind::Avatar,
             "mxc://example.test/avatar",
@@ -245,6 +256,9 @@ mod tests {
 
     #[test]
     fn lookup_renderable_thumbnail_returns_bytes_for_protocol_path() {
+        let _guard = cache_test_lock();
+        clear_renderable_thumbnail_cache();
+
         let ready = store_renderable_thumbnail(
             RenderableThumbnailKind::Avatar,
             "mxc://example.test/lookup",
@@ -267,6 +281,9 @@ mod tests {
 
     #[test]
     fn clear_renderable_thumbnail_cache_drops_previous_session_bytes() {
+        let _guard = cache_test_lock();
+        clear_renderable_thumbnail_cache();
+
         let ready = store_renderable_thumbnail(
             RenderableThumbnailKind::Avatar,
             "mxc://example.test/session-scoped",
