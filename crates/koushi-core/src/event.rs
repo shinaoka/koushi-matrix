@@ -185,15 +185,23 @@ pub enum LocalEncryptionEvent {
     EventCacheStatus {
         encrypted_store: bool,
         subscribed: bool,
-        reason_class: EventCacheStatusReasonClass,
+        subscribe_status: EventCacheSubscribeStatus,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason_class: Option<EventCacheFailureReasonClass>,
     },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum EventCacheStatusReasonClass {
+pub enum EventCacheSubscribeStatus {
     Enabled,
     AlreadyEnabled,
+    SubscribeFailed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventCacheFailureReasonClass {
     SubscribeFailed,
 }
 

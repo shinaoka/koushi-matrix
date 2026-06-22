@@ -801,6 +801,8 @@ export type EventCacheSubscribeStatus =
   | "already_enabled"
   | "subscribe_failed";
 
+export type EventCacheFailureReasonClass = "subscribe_failed";
+
 export type LocalEncryptionEvent =
   | {
       kind: "healthChanged";
@@ -810,7 +812,8 @@ export type LocalEncryptionEvent =
       kind: "eventCacheStatus";
       encrypted_store: boolean;
       subscribed: boolean;
-      reason_class: EventCacheSubscribeStatus;
+      subscribe_status: EventCacheSubscribeStatus;
+      reason_class?: EventCacheFailureReasonClass;
     };
 
 export type OperationFailureKind =

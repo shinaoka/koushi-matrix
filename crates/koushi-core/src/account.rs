@@ -57,8 +57,8 @@ use crate::command::{
     TimelineCommand,
 };
 use crate::event::{
-    AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, LocalEncryptionEvent,
-    EventCacheStatusReasonClass,
+    AccountEvent, CoreEvent, E2eeTrustEvent, EventCacheFailureReasonClass, EventCacheSubscribeStatus,
+    LiveSignalsEvent, LocalEncryptionEvent,
 };
 use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
@@ -4004,19 +4004,24 @@ impl AccountActor {
         &self,
         result: &Result<koushi_sdk::MatrixEventCacheStatus, koushi_sdk::MatrixEventCacheError>,
     ) {
-        let (subscribed, reason_class) = match result {
+        let (subscribed, subscribe_status, reason_class) = match result {
             Ok(koushi_sdk::MatrixEventCacheStatus::Enabled) => {
-                (true, EventCacheStatusReasonClass::Enabled)
+                (true, EventCacheSubscribeStatus::Enabled, None)
             }
             Ok(koushi_sdk::MatrixEventCacheStatus::AlreadyEnabled) => {
-                (true, EventCacheStatusReasonClass::AlreadyEnabled)
+                (true, EventCacheSubscribeStatus::AlreadyEnabled, None)
             }
-            Err(_) => (false, EventCacheStatusReasonClass::SubscribeFailed),
+            Err(_) => (
+                false,
+                EventCacheSubscribeStatus::SubscribeFailed,
+                Some(EventCacheFailureReasonClass::SubscribeFailed),
+            ),
         };
         self.emit(CoreEvent::LocalEncryption(
             LocalEncryptionEvent::EventCacheStatus {
                 encrypted_store: true,
                 subscribed,
+                subscribe_status,
                 reason_class,
             },
         ));
@@ -4815,18 +4820,27 @@ mod tests {
         let enable = compact
             .find("koushi_sdk::enable_event_cache(&session).await")
             .expect("enable_event_cache call");
-        let helper_emit = helper_compact
-            .find("LocalEncryptionEvent::EventCacheStatus{")
-            .expect("event cache diagnostic emission");
         let return_ok = compact.find("Ok(session)").expect("return statement");
 
         assert!(restore < enable);
         assert!(enable < return_ok);
         assert!(
-            helper_compact
-                .find("Err(_)=>(false,EventCacheStatusReasonClass::SubscribeFailed)")
-                .expect("failure mapping")
-                < helper_emit
+            helper_compact.contains("EventCacheSubscribeStatus::Enabled,None"),
+            "enabled diagnostics should carry an explicit subscribe status and no failure reason"
+        );
+        assert!(
+            helper_compact.contains("EventCacheSubscribeStatus::AlreadyEnabled,None"),
+            "already-enabled diagnostics should carry an explicit subscribe status and no failure reason"
+        );
+        assert!(
+            helper_compact.contains(
+                "EventCacheSubscribeStatus::SubscribeFailed,Some(EventCacheFailureReasonClass::SubscribeFailed),",
+            ),
+            "failure diagnostics should carry an explicit subscribe status and a private-data-free reason"
+        );
+        assert!(
+            compact.contains("self.emit_event_cache_status(&event_cache_result);"),
+            "restore_into_store must emit the diagnostic outcome"
         );
         assert!(
             !compact.contains("enable_event_cache(&session).await.map_err"),
@@ -4835,10 +4849,6 @@ mod tests {
         assert!(
             !compact.contains("enable_event_cache(&session).await?"),
             "event-cache subscription failure must not use ? to fail the restore path"
-        );
-        assert!(
-            compact.contains("self.emit_event_cache_status(&event_cache_result);"),
-            "restore_into_store must emit the diagnostic outcome"
         );
     }
 

@@ -1481,7 +1481,8 @@ mod tests {
             AccountKey, CoreEvent, TimelineDiff, TimelineKey, build_state_delta,
             event::{
                 AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent,
-                EventCacheStatusReasonClass, IntentNoOpReason, IntentOutcome, LinkPreview,
+                EventCacheFailureReasonClass, EventCacheSubscribeStatus, IntentNoOpReason,
+                IntentOutcome, LinkPreview,
                 LinkPreviewImage, LinkPreviewState, LiveSignalsEvent, LocalEncryptionEvent,
                 NativeAttentionEvent, PaginationDirection, PaginationState, ReactionGroup,
                 RoomEvent, SearchEvent, SyncEvent, ThreadsListEvent, TimelineCodeBlock,
@@ -2443,28 +2444,53 @@ mod tests {
         assert_eq!(local_encryption["event"]["kind"], json!("healthChanged"));
         assert_eq!(local_encryption["event"]["health"], json!("healthy"));
 
-        let local_encryption_event_cache = serialize_core_event(&CoreEvent::LocalEncryption(
-            LocalEncryptionEvent::EventCacheStatus {
+        let local_encryption_event_cache_enabled = serialize_core_event(
+            &CoreEvent::LocalEncryption(LocalEncryptionEvent::EventCacheStatus {
                 encrypted_store: true,
-                subscribed: false,
-                reason_class: EventCacheStatusReasonClass::SubscribeFailed,
-            },
-        ))
-        .expect("serialize local encryption event cache status");
+                subscribed: true,
+                subscribe_status: EventCacheSubscribeStatus::AlreadyEnabled,
+                reason_class: None,
+            }),
+        )
+        .expect("serialize enabled local encryption event cache status");
         assert_eq!(
-            local_encryption_event_cache["event"]["kind"],
+            local_encryption_event_cache_enabled["event"]["kind"],
             json!("eventCacheStatus")
         );
         assert_eq!(
-            local_encryption_event_cache["event"]["encrypted_store"],
+            local_encryption_event_cache_enabled["event"]["encrypted_store"],
             json!(true)
         );
         assert_eq!(
-            local_encryption_event_cache["event"]["subscribed"],
-            json!(false)
+            local_encryption_event_cache_enabled["event"]["subscribed"],
+            json!(true)
         );
         assert_eq!(
-            local_encryption_event_cache["event"]["reason_class"],
+            local_encryption_event_cache_enabled["event"]["subscribe_status"],
+            json!("already_enabled")
+        );
+        assert!(
+            local_encryption_event_cache_enabled["event"]
+                .get("reason_class")
+                .is_none(),
+            "success diagnostics should omit the optional failure reason"
+        );
+
+        let local_encryption_event_cache_failed = serialize_core_event(
+            &CoreEvent::LocalEncryption(LocalEncryptionEvent::EventCacheStatus {
+                encrypted_store: true,
+                subscribed: false,
+                subscribe_status: EventCacheSubscribeStatus::SubscribeFailed,
+                reason_class: Some(EventCacheFailureReasonClass::SubscribeFailed),
+            }),
+        )
+        .expect("serialize failed local encryption event cache status");
+        assert_eq!(
+            local_encryption_event_cache_failed["event"]["subscribe_status"],
+            json!("subscribe_failed")
+        );
+        assert_eq!(
+            local_encryption_event_cache_failed["event"]["reason_class"],
             json!("subscribe_failed")
         );
 
@@ -2628,7 +2654,7 @@ mod tests {
             "accountSavedSessionsListed": listed,
             "e2eeTrustVerificationProgress": e2ee_trust,
             "localEncryptionHealthChanged": local_encryption,
-            "localEncryptionEventCacheStatus": local_encryption_event_cache,
+            "localEncryptionEventCacheStatus": local_encryption_event_cache_failed,
             "liveSignalsPresenceSet": live_presence,
             "liveSignalsRoomSignalsUpdated": live_signals,
             "nativeAttentionSummaryUpdated": native_attention,

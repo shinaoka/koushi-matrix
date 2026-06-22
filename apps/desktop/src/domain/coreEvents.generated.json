@@ -224,6 +224,7 @@
     "event": {
       "encrypted_store": true,
       "kind": "eventCacheStatus",
+      "subscribe_status": "subscribe_failed",
       "reason_class": "subscribe_failed",
       "subscribed": false
     },
