@@ -1649,11 +1649,7 @@ impl AccountActor {
     /// 2. Already in-flight: return; the completing task will emit.
     /// 3. Otherwise: insert into `avatar_inflight`, spawn a bounded fetch task
     ///    that posts `AvatarFetched` back into this actor's inbox.
-    async fn handle_download_avatar_thumbnail(
-        &mut self,
-        request_id: RequestId,
-        mxc_uri: String,
-    ) {
+    async fn handle_download_avatar_thumbnail(&mut self, request_id: RequestId, mxc_uri: String) {
         // 1. Cache hit — serve immediately without any I/O.
         if let Some(cached) = self.avatar_cache.get(&mxc_uri) {
             if matches!(cached, AvatarThumbnailState::Ready { .. }) {
@@ -1705,7 +1701,8 @@ impl AccountActor {
 
         // 4. Spawn a bounded fetch task; return immediately.
         // Record the originating request_id as the first waiter.
-        self.avatar_inflight.insert(mxc_uri.clone(), vec![request_id]);
+        self.avatar_inflight
+            .insert(mxc_uri.clone(), vec![request_id]);
         let generation = self.avatar_session_generation;
         let data_dir = self.data_dir.clone();
         let semaphore = self.avatar_download_semaphore.clone();
@@ -1823,8 +1820,7 @@ impl AccountActor {
         self.avatar_cache.clear();
         // Replace the semaphore so any task that manages to run after abort
         // cannot accidentally re-use a poisoned permit count.
-        self.avatar_download_semaphore =
-            Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY));
+        self.avatar_download_semaphore = Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY));
         // Advance the generation counter so stale completions from tasks that
         // were spawned before this abort are silently rejected.
         self.avatar_session_generation = self.avatar_session_generation.wrapping_add(1);
@@ -3912,7 +3908,8 @@ impl AccountActor {
     /// Restore a persisted session into the per-account encrypted store
     /// (fail-closed: any store init failure is `LocalEncryptionUnavailable`).
     /// The store config includes the search index so the SDK initializes it
-    /// alongside the SQLite store.
+    /// alongside the SQLite store, and the event cache is enabled before the
+    /// restored session is returned to any sync/timeline caller.
     async fn restore_into_store(
         &self,
         persistable: &PersistableMatrixSession,
@@ -3925,9 +3922,14 @@ impl AccountActor {
         let store_config_with_search = store_config
             .store_config
             .with_search_index_store(search_config.search_index_config);
-        koushi_sdk::restore_session_with_store(persistable, Some(&store_config_with_search))
+        let session =
+            koushi_sdk::restore_session_with_store(persistable, Some(&store_config_with_search))
+                .await
+                .map_err(|_| CoreFailure::LocalEncryptionUnavailable)?;
+        koushi_sdk::enable_event_cache(&session)
             .await
-            .map_err(|_| CoreFailure::LocalEncryptionUnavailable)
+            .map_err(|_| CoreFailure::LocalEncryptionUnavailable)?;
+        Ok(session)
     }
 
     /// Roll back a failed login bootstrap: best-effort server logout of the
@@ -4763,6 +4765,29 @@ mod tests {
             !notification_arm.contains("notify_rooms_available(room_ids, settings).await"),
             "AccountActor must not block user commands on background crawler notification delivery"
         );
+    }
+
+    #[test]
+    fn restore_into_store_enables_event_cache_before_returning() {
+        let source = include_str!("account.rs");
+        let body = source
+            .split("    async fn restore_into_store")
+            .nth(1)
+            .expect("restore_into_store body")
+            .split("    /// Roll back a failed login bootstrap")
+            .next()
+            .expect("restore_into_store should end before abort_login");
+
+        let restore = body
+            .find("koushi_sdk::restore_session_with_store")
+            .expect("restore_session_with_store call");
+        let enable = body
+            .find("koushi_sdk::enable_event_cache(&session)")
+            .expect("enable_event_cache call");
+        let return_ok = body.find("Ok(session)").expect("return statement");
+
+        assert!(restore < enable);
+        assert!(enable < return_ok);
     }
 
     #[tokio::test]

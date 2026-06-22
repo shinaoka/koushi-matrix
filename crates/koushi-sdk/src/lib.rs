@@ -1711,6 +1711,18 @@ impl std::fmt::Debug for MatrixClientSession {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixEventCacheStatus {
+    AlreadyEnabled,
+    Enabled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("Matrix event cache subscription failed")]
+pub enum MatrixEventCacheError {
+    SubscribeFailed,
+}
+
 #[derive(Clone)]
 pub struct PersistableMatrixSession {
     pub info: SessionInfo,
@@ -2646,6 +2658,21 @@ pub async fn restore_session_with_store(
         client,
         info: session.info.clone(),
     })
+}
+
+pub async fn enable_event_cache(
+    session: &MatrixClientSession,
+) -> Result<MatrixEventCacheStatus, MatrixEventCacheError> {
+    let client = session.client();
+    let event_cache = client.event_cache();
+    if event_cache.has_subscribed() {
+        return Ok(MatrixEventCacheStatus::AlreadyEnabled);
+    }
+
+    event_cache
+        .subscribe()
+        .map_err(|_| MatrixEventCacheError::SubscribeFailed)?;
+    Ok(MatrixEventCacheStatus::Enabled)
 }
 
 async fn build_client(
@@ -4742,6 +4769,7 @@ mod tests {
 
     use super::{
         LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE, MatrixLocalUserAliases,
+        MatrixEventCacheError,
         MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom, MatrixRoomHistoryVisibility,
         MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomModerationAction,
         MatrixRoomPermissionFacts, MatrixRoomSettingChange, MatrixRoomSettingsSnapshot,
@@ -4836,6 +4864,14 @@ mod tests {
             by_room.get(other_room.as_str()),
             Some(&vec!["@alice:example.invalid".to_owned()])
         );
+    }
+
+    #[test]
+    fn event_cache_error_is_private_data_free() {
+        let error = MatrixEventCacheError::SubscribeFailed;
+
+        assert_eq!(error.to_string(), "Matrix event cache subscription failed");
+        assert_eq!(format!("{error:?}"), "SubscribeFailed");
     }
 
     #[test]

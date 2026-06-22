@@ -1116,10 +1116,21 @@ mod tests {
 
         // Path is inside our data dir.
         assert!(config.store_config.path().starts_with(data_dir.path()));
+        assert!(
+            config
+                .store_config
+                .cache_path()
+                .expect("cache path should be configured")
+                .starts_with(data_dir.path())
+        );
 
         // Calling again yields a consistent store path (same key_id).
         let config2 = actor.account_store_config(&key_id).expect("second call");
         assert_eq!(config.store_config.path(), config2.store_config.path());
+        assert_eq!(
+            config.store_config.cache_path(),
+            config2.store_config.cache_path()
+        );
     }
 
     #[test]
