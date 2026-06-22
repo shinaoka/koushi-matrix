@@ -710,11 +710,35 @@ impl TimelineManagerActor {
             return;
         };
 
-        // If already subscribed, resubscribe: drop old actor, create new one.
-        // TimelineView calls ensure after registering its listener so the
-        // freshly mounted view receives a fresh InitialItems batch.
-        if self.timelines.contains_key(&key) {
-            self.timelines.remove(&key);
+        // Idempotency: if the identical key is already subscribed, do NOT drop
+        // and rebuild the SDK subscription.  The full rebuild was 4-8 expensive
+        // `subscribe_to_rooms` / timeline-build cycles per room on snapshot
+        // churn (issue #116).  Instead, ask the existing actor to re-emit its
+        // current navigation_items as InitialItems for this request_id so a
+        // freshly re-mounted TimelineView is still populated.
+        // Confine the `&self.timelines` borrow to the closure so the Err arm
+        // can `remove` (a `&mut` borrow) without a conflict.
+        let replay_result = self.timelines.get(&key).map(|handle| {
+            handle
+                .tx
+                .try_send(TimelineActorMessage::ReplayInitialItems { request_id })
+        });
+        match replay_result {
+            Some(Ok(())) => {
+                // Re-emit the subscribed action so the reducer re-confirms
+                // `is_subscribed = true` (idempotent in the reducer).
+                self.emit_timeline_subscribed_action(&key);
+                trace("subscribed_done");
+                return;
+            }
+            Some(Err(_)) => {
+                // Mailbox full or closed: the cheap replay could not be
+                // delivered, so drop the stale handle and fall through to a
+                // full rebuild, which is guaranteed to emit InitialItems for
+                // this request_id (a re-mounted view must be populated).
+                self.timelines.remove(&key);
+            }
+            None => {}
         }
 
         let client = session.client();
@@ -1274,6 +1298,12 @@ enum TimelineActorMessage {
     SendQueueUpdate(RoomSendQueueUpdate),
     /// Internal: relay task hit overflow — must resync.
     RelayOverflow,
+    /// Internal: re-emit the current navigation_items as InitialItems for a
+    /// new request_id without tearing down the SDK subscription.  Sent by
+    /// `handle_subscribe` when the key is already subscribed (idempotency
+    /// path) so a freshly re-mounted TimelineView still receives an
+    /// InitialItems batch.
+    ReplayInitialItems { request_id: RequestId },
 }
 
 struct TimelineActorHandle {
@@ -1731,6 +1761,9 @@ impl TimelineActor {
             }
             TimelineActorMessage::RelayOverflow => {
                 self.handle_relay_overflow().await;
+            }
+            TimelineActorMessage::ReplayInitialItems { request_id } => {
+                self.handle_replay_initial_items(request_id);
             }
         }
     }
@@ -2751,6 +2784,27 @@ impl TimelineActor {
                 );
             }
         }
+    }
+
+    /// Re-emit `navigation_items` as `InitialItems` for `request_id` without
+    /// touching the SDK subscription or tearing down the actor.  Called when
+    /// `handle_subscribe` detects that this key is already subscribed (the
+    /// idempotency fast path).  The generation is unchanged; the caller only
+    /// needs a fresh InitialItems batch so a re-mounted TimelineView is
+    /// populated.
+    fn handle_replay_initial_items(&self, request_id: RequestId) {
+        if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+            eprintln!(
+                "koushi.subscribe stage=replay_initial_emitted count={}",
+                self.navigation_items.len()
+            );
+        }
+        self.emit(CoreEvent::Timeline(TimelineEvent::InitialItems {
+            request_id: Some(request_id),
+            key: self.key.clone(),
+            generation: self.generation,
+            items: self.navigation_items.clone(),
+        }));
     }
 
     async fn handle_diff_batch(
@@ -6719,8 +6773,15 @@ mod tests {
         );
     }
 
+    /// Contract: re-ensuring an already-subscribed identical key takes the
+    /// cheap path — ask the existing actor to replay InitialItems for the new
+    /// request_id and return early, so NO `subscribe_to_rooms` / timeline
+    /// teardown happens on snapshot churn. Only when the cheap replay cannot be
+    /// delivered (mailbox full/closed) does it fall back to a full rebuild so a
+    /// re-mounted view is still guaranteed InitialItems. A different (new) key
+    /// always falls through to the full subscribe path.
     #[test]
-    fn timeline_subscribe_replaces_existing_keys_to_replay_initial_items() {
+    fn timeline_subscribe_is_idempotent_for_existing_key() {
         let source = include_str!("timeline.rs");
         let handle_subscribe_source = source
             .split("async fn handle_subscribe")
@@ -6729,21 +6790,45 @@ mod tests {
             .split("async fn route_to_actor_or_fail")
             .next()
             .expect("route helper should follow handle_subscribe");
+
+        // The existing-key branch must be present and must end with an early
+        // return — proving the full SDK rebuild is skipped.
         let existing_key_branch = handle_subscribe_source
-            .split("if self.timelines.contains_key(&key)")
+            .split("let replay_result = self.timelines.get(&key)")
             .nth(1)
-            .expect("handle_subscribe should detect an existing subscription")
+            .expect("handle_subscribe must detect an already-subscribed key via timelines.get")
             .split("let client = session.client()")
             .next()
-            .expect("existing-subscription branch should precede SDK timeline creation");
+            .expect("existing-key branch must precede the new-key SDK path");
 
         assert!(
-            existing_key_branch.contains("self.timelines.remove(&key)"),
-            "re-ensuring an already subscribed timeline must rebuild the actor so a freshly mounted view receives InitialItems"
+            existing_key_branch.contains("ReplayInitialItems"),
+            "re-ensuring an already subscribed timeline must send ReplayInitialItems to the existing actor (no SDK teardown on the success path)"
         );
         assert!(
-            !existing_key_branch.contains("return;"),
-            "existing subscriptions must continue into SDK timeline creation after dropping the old actor"
+            existing_key_branch.contains("return;"),
+            "the cheap replay path must return early, skipping subscribe_to_rooms and the full SDK rebuild"
+        );
+        // The success (Ok) arm does the cheap replay and returns; the existing-key
+        // branch never re-runs the SDK `subscribe_to_rooms` (which lives after
+        // `let client = session.client()`). An undeliverable replay (full/closed
+        // mailbox) intentionally falls back to a full rebuild via
+        // `self.timelines.remove(&key)`, so no "must-not-remove" assertion here.
+
+        // The new-key (full subscribe) path must still call subscribe_to_rooms
+        // and build a fresh timeline.
+        let new_key_path = handle_subscribe_source
+            .split("let client = session.client()")
+            .nth(1)
+            .expect("new-key SDK path must follow the existing-key branch");
+
+        assert!(
+            new_key_path.contains("service.subscribe_to_rooms"),
+            "a new (not yet subscribed) key must still call subscribe_to_rooms"
+        );
+        assert!(
+            new_key_path.contains("TimelineBuilder::new"),
+            "a new (not yet subscribed) key must still build an SDK timeline"
         );
     }
 
