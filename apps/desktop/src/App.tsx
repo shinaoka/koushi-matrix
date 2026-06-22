@@ -132,6 +132,7 @@ import {
   setAppStoreSnapshot,
   useAppStore
 } from "./domain/appStore";
+import { getRecentJsErrors } from "./domain/jsErrorLog";
 import { getTimelineTransportStats } from "./domain/timelineTransportStats";
 
 import {
@@ -3318,6 +3319,7 @@ export function App() {
             uiLatencyDiagnostics,
             stateDeltaStats: getAppStoreDeltaStats(),
             timelineTransportStats: getTimelineTransportStats(),
+            jsErrors: getRecentJsErrors(),
             logEntries: diagnosticLogEntries,
             verboseDiagnostics: {
               enabled: verboseDiagnosticBuild,

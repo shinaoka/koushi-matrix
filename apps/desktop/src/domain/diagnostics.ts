@@ -1,4 +1,5 @@
 import type { AppStoreDeltaStats } from "./appStore";
+import type { CapturedJsError } from "./jsErrorLog";
 import type { TimelineTransportStats } from "./timelineTransportStats";
 import type { DesktopSnapshot, SearchCrawlerRoomState, SyncState } from "./types";
 import {
@@ -53,6 +54,7 @@ export interface DiagnosticReportInput {
   uiLatencyDiagnostics: UiLatencyDiagnostics;
   stateDeltaStats?: AppStoreDeltaStats;
   timelineTransportStats?: TimelineTransportStats;
+  jsErrors?: readonly CapturedJsError[];
   logEntries?: readonly DiagnosticLogEntry[];
   verboseDiagnostics?: VerboseDiagnostics;
 }
@@ -66,6 +68,7 @@ export function diagnosticReport({
   uiLatencyDiagnostics,
   stateDeltaStats,
   timelineTransportStats,
+  jsErrors,
   logEntries = [],
   verboseDiagnostics
 }: DiagnosticReportInput): string {
@@ -116,6 +119,17 @@ export function diagnosticReport({
     `QA send: ${sendStatus}`,
     `Errors: ${snapshot.state.ui.errors.length}`,
     `Latest error code: ${snapshot.state.ui.errors.at(-1)?.code ?? "none"}`,
+    ...(jsErrors
+      ? [
+          `JS errors: ${jsErrors.length}`,
+          ...jsErrors
+            .slice(-5)
+            .map(
+              (error) =>
+                `[js-error] kind=${error.kind} source=${error.source} message=${error.message}`
+            )
+        ]
+      : []),
     ...verboseDiagnosticLog,
     ...diagnosticLog,
     `timeline_matches_active=${timelineMatchesActiveRoom(snapshot)}`,
@@ -137,7 +151,8 @@ export function diagnosticReport({
           `timeline_initial_applied=${timelineTransportStats.initialItemsApplied}`,
           `timeline_last_initial_items=${timelineTransportStats.lastInitialItemsCount}`
         ]
-      : [])
+      : []),
+    ...(jsErrors ? [`js_error_count=${jsErrors.length}`] : [])
   ];
   return lines.join("\n");
 }

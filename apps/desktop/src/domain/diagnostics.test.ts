@@ -334,6 +334,45 @@ describe("diagnosticReport", () => {
     expect(report).toContain("timeline_last_initial_items=0");
   });
 
+  test("renders captured JS errors and a count token when provided", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+    const report = diagnosticReport({
+      snapshot,
+      panelMode: "closed",
+      sendStatus: "idle",
+      timelineDiagnostics: {
+        visibleItems: 0,
+        downloadedItems: 0,
+        backfill: "Idle",
+        avatarMxcItems: 0,
+        avatarReadyItems: 0,
+        avatarPendingItems: 0,
+        avatarFailedItems: 0,
+        avatarMissingItems: 0,
+        avatarRenderedImages: 0,
+        avatarBrokenImages: 0
+      },
+      domDiagnostics: { screen: "timeline", rootChildren: 1, bodyTextLength: 99 },
+      uiLatencyDiagnostics: {
+        samples: 8,
+        lastFrameGapMs: 18,
+        averageFrameGapMs: 26.5,
+        maxFrameGapMs: 30,
+        longFrameCount: 0
+      },
+      jsErrors: [
+        { kind: "TypeError", message: "cannot read kind of undefined", source: "App.tsx:12:3" }
+      ]
+    });
+
+    expect(report).toContain("JS errors: 1");
+    expect(report).toContain(
+      "[js-error] kind=TypeError source=App.tsx:12:3 message=cannot read kind of undefined"
+    );
+    expect(report).toContain("js_error_count=1");
+  });
+
   test("bounds diagnostic log entries while preserving chronological append order", () => {
     expect(DEFAULT_DIAGNOSTIC_LOG_LIMIT).toBeGreaterThanOrEqual(10_000);
 
