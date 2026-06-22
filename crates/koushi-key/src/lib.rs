@@ -20,6 +20,7 @@ const SDK_STORE_INFO: &[u8] = b"koushi-desktop:sdk-store";
 const SEARCH_INDEX_INFO: &[u8] = b"koushi-desktop:search-index";
 const COMPOSER_DRAFTS_INFO: &[u8] = b"koushi-desktop:composer-drafts";
 const SCHEDULED_SENDS_INFO: &[u8] = b"koushi-desktop:scheduled-sends";
+const NAVIGATION_INFO: &[u8] = b"koushi-desktop:navigation";
 const LAST_SESSION_ACCOUNT_NAME: &str = "koushi-desktop:last-session:v1";
 const SAVED_SESSIONS_ACCOUNT_NAME: &str = "koushi-desktop:saved-sessions:v1";
 
@@ -381,6 +382,22 @@ impl fmt::Debug for ScheduledSendsKey {
     }
 }
 
+pub struct NavigationKey {
+    key: Zeroizing<[u8; LOCAL_UNLOCK_SECRET_LEN]>,
+}
+
+impl NavigationKey {
+    pub fn as_bytes(&self) -> &[u8; LOCAL_UNLOCK_SECRET_LEN] {
+        &self.key
+    }
+}
+
+impl fmt::Debug for NavigationKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NavigationKey(..)")
+    }
+}
+
 pub struct StoredLocalUnlockSecret {
     value: Zeroizing<String>,
 }
@@ -498,6 +515,14 @@ impl LocalUnlockSecret {
         ScheduledSendsKey {
             key: self
                 .derive_key(SCHEDULED_SENDS_INFO)
+                .expect("32-byte HKDF output length is valid"),
+        }
+    }
+
+    pub fn derive_navigation_key(&self) -> NavigationKey {
+        NavigationKey {
+            key: self
+                .derive_key(NAVIGATION_INFO)
                 .expect("32-byte HKDF output length is valid"),
         }
     }

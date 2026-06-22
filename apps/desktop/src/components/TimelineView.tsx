@@ -1537,6 +1537,9 @@ export const TimelineView = memo(function TimelineView({
   // tests can poll a concrete attribute instead of sleeping. 0 is a valid
   // Core generation; use timelineInitialized to distinguish "not initialized".
   const generation = timelineKeyState?.generation ?? 0;
+  const initialLiveEdgeScrollKey = timelineInitialized
+    ? `${timelineKeyHash}:${generation}`
+    : null;
   const onSendReaction = useCallback(
     (targetRoomId: string, eventId: string, reactionKey: string) => {
       void transport.sendReaction(targetRoomId, eventId, reactionKey).catch(() => undefined);
@@ -1749,12 +1752,13 @@ export const TimelineView = memo(function TimelineView({
     if (
       timelineInitialized &&
       items.length > 0 &&
-      initialLiveEdgeScrollAppliedRef.current !== timelineKeyHash
+      initialLiveEdgeScrollKey !== null &&
+      initialLiveEdgeScrollAppliedRef.current !== initialLiveEdgeScrollKey
     ) {
       const container = containerRef.current;
       if (container) {
         scrollContainerToBottom(container);
-        initialLiveEdgeScrollAppliedRef.current = timelineKeyHash;
+        initialLiveEdgeScrollAppliedRef.current = initialLiveEdgeScrollKey;
       }
     }
     if (stickToBottomAfterMeasurementRef.current) {
@@ -1796,9 +1800,11 @@ export const TimelineView = memo(function TimelineView({
     updateViewportMetrics();
     reportViewportObservation();
   }, [
+    initialLiveEdgeScrollKey,
     items,
     reportViewportObservation,
     timelineHeightModel,
+    timelineInitialized,
     updateViewportMetrics,
     viewportMetrics.listOffsetTop,
     virtualWindow.virtualized,

@@ -11,8 +11,12 @@ use support::*;
 #[tokio::test]
 async fn navigation_selection_persists_when_runtime_restarts() {
     let data_dir = tempfile::tempdir().expect("data dir");
+    let credential_dir = tempfile::tempdir().expect("credential dir");
     {
-        let runtime = CoreRuntime::start_with_data_dir(data_dir.path().to_path_buf());
+        let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+            data_dir.path().to_path_buf(),
+            credential_dir.path().to_path_buf(),
+        );
         let mut connection = runtime.attach();
         runtime
             .inject_actions(vec![
@@ -43,7 +47,10 @@ async fn navigation_selection_persists_when_runtime_restarts() {
         .await;
     }
 
-    let restarted = CoreRuntime::start_with_data_dir(data_dir.path().to_path_buf());
+    let restarted = CoreRuntime::start_with_data_dir_and_file_credentials(
+        data_dir.path().to_path_buf(),
+        credential_dir.path().to_path_buf(),
+    );
     let mut connection = restarted.attach();
     restarted
         .inject_actions(vec![
