@@ -162,7 +162,7 @@ impl RoomActor {
         action_tx: mpsc::Sender<Vec<AppAction>>,
         event_tx: broadcast::Sender<CoreEvent>,
     ) -> RoomActorHandle {
-        let (tx, command_rx) = mpsc::channel(64);
+        let (tx, command_rx) = mpsc::channel(crate::runtime::ACTOR_MESSAGE_QUEUE_CAPACITY);
         let actor = RoomActor {
             session: None,
             observation: None,
@@ -458,14 +458,18 @@ impl RoomActor {
             } => {
                 // Pure navigation: project to reducer; no domain event.
                 // request_id correlation via StateChanged is implicit per spec.
-                self.reduce(vec![AppAction::SelectSpace { space_id }]);
+                // One-shot navigation MUST be delivered reliably (see reduce_reliable).
+                self.reduce_reliable(vec![AppAction::SelectSpace { space_id }])
+                    .await;
             }
             RoomCommand::ReorderSpaces {
                 request_id: _,
                 space_ids,
             } => {
                 // Pure navigation preference: project to reducer; no domain event.
-                self.reduce(vec![AppAction::ReorderSpaces { space_ids }]);
+                // One-shot navigation MUST be delivered reliably (see reduce_reliable).
+                self.reduce_reliable(vec![AppAction::ReorderSpaces { space_ids }])
+                    .await;
             }
             RoomCommand::SelectRoom {
                 request_id: _,
@@ -473,8 +477,11 @@ impl RoomActor {
             } => {
                 // Pure navigation: project to reducer; no domain event.
                 // Core updates navigation state here and does not consume
-                // reducer effects in this actor.
-                self.reduce(vec![AppAction::SelectRoom { room_id }]);
+                // reducer effects in this actor. One-shot navigation MUST be
+                // delivered reliably: a dropped SelectRoom is the large-account
+                // "room selection did not complete" bug (see reduce_reliable).
+                self.reduce_reliable(vec![AppAction::SelectRoom { room_id }])
+                    .await;
             }
             RoomCommand::MarkRoomAsRead {
                 request_id,
@@ -1644,8 +1651,30 @@ impl RoomActor {
         });
     }
 
+    /// Non-blocking projection for high-frequency, RE-PROJECTED data only
+    /// (room-list snapshots, command-result status). `try_send` DROPS on a full
+    /// channel; that is acceptable here only because this data is re-sent on the
+    /// next sync. One-shot, non-re-projected actions (navigation, etc.) MUST use
+    /// [`Self::reduce_reliable`]. See the channel-capacity / delivery rule in
+    /// docs/policies/engineering-rules.md.
     fn reduce(&self, actions: Vec<AppAction>) {
-        let _ = self.action_tx.try_send(actions);
+        if let Err(err) = self.action_tx.try_send(actions) {
+            if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+                let reason = match err {
+                    mpsc::error::TrySendError::Full(_) => "full",
+                    mpsc::error::TrySendError::Closed(_) => "closed",
+                };
+                eprintln!("koushi.roomactor stage=action_dropped reason={reason}");
+            }
+        }
+    }
+
+    /// Reliable projection for one-shot, non-re-projected actions (navigation,
+    /// command results) that MUST NOT be dropped under large-account sync load.
+    /// Backpressures instead of dropping; the AppActor drains the action inbox
+    /// continuously, so this does not deadlock.
+    async fn reduce_reliable(&self, actions: Vec<AppAction>) {
+        let _ = self.action_tx.send(actions).await;
     }
 }
 

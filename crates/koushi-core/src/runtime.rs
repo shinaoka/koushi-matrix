@@ -48,6 +48,18 @@ pub const COMMAND_INBOX_CAPACITY: usize = 256;
 /// selection did not complete"). Sized to absorb a full large-account burst;
 /// genuine lag still self-heals via `EventStreamLag` -> resync.
 pub const EVENT_QUEUE_CAPACITY: usize = 16384;
+/// AppActor action-projection inbox. Actors project a high volume of
+/// `Vec<AppAction>` here during large-account (100+ room) sync. It MUST be large
+/// enough that bursts never overflow, because the RoomActor projects through a
+/// drop-on-full `try_send`: an overflow silently drops one-shot actions such as
+/// room selection (`SelectRoom`) and room-settings/member loads, which is the
+/// large-account "room selection did not complete" / blank-timeline bug. See the
+/// async channel-capacity rule in docs/policies/engineering-rules.md.
+pub const ACTION_QUEUE_CAPACITY: usize = 16384;
+/// Inter-actor command/message inboxes (AppActor -> AccountActor ->
+/// Room/Timeline actors). Sized so that forwarding a command under heavy sync
+/// does not block the forwarding actor's loop.
+pub const ACTOR_MESSAGE_QUEUE_CAPACITY: usize = 1024;
 pub const COMPOSER_DRAFT_PERSIST_DEBOUNCE: Duration = Duration::from_millis(150);
 const INTERNAL_RUNTIME_CONNECTION_ID: RuntimeConnectionId = RuntimeConnectionId(0);
 
@@ -173,8 +185,11 @@ impl CoreRuntime {
         composer_draft_store_actor: StoreActor,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(COMMAND_INBOX_CAPACITY);
+        // NOTE: action_tx is the high-volume action-projection inbox; it must be
+        // ACTION_QUEUE_CAPACITY (not COMMAND_INBOX_CAPACITY) so large-account
+        // sync bursts never overflow the RoomActor's drop-on-full try_send.
         let (event_tx, _) = broadcast::channel(event_capacity);
-        let (action_tx, action_rx) = mpsc::channel(COMMAND_INBOX_CAPACITY);
+        let (action_tx, action_rx) = mpsc::channel(ACTION_QUEUE_CAPACITY);
         let settings_store = SettingsStore::new(&data_dir);
 
         let mut initial_state = AppState::default();

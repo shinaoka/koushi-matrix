@@ -311,6 +311,20 @@ Rules:
    production runtime executes it or the behavior is redesigned as an explicit
    `CoreCommand`/actor command. Discarding such effects is allowed only for
    fixture/demo effects that are documented as non-production.
+11. Core async channels are sized for large-account (100+ room) sync bursts via
+   named capacity constants (`COMMAND_INBOX_CAPACITY`,
+   `ACTOR_MESSAGE_QUEUE_CAPACITY`, `ACTION_QUEUE_CAPACITY`,
+   `EVENT_QUEUE_CAPACITY`), never small magic literals (16/64/256) — a too-small
+   core inbox is invisible to small-account CI and only fails on real accounts.
+   This makes rule 9 concrete: drop-on-full `try_send` (with an ignored `Err`)
+   is forbidden for one-shot, non-re-projected actions — navigation
+   (`SelectRoom`/`SelectSpace`/`ReorderSpaces`) and command-result projections —
+   which MUST use reliable `send().await`. `try_send` is permitted only for
+   high-frequency data re-projected on the next sync (room-list snapshots),
+   where a dropped update self-heals. Silently dropping `SelectRoom` under a
+   saturated `ACTION_QUEUE_CAPACITY` inbox was the large-account "room selection
+   did not complete" / blank-timeline / unloaded-members regression; it passed
+   every small-account headless lane.
 
 ## GUI Automation
 

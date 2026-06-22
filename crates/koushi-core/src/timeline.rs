@@ -174,7 +174,7 @@ impl TimelineManagerActor {
         data_dir: Option<std::path::PathBuf>,
         messages_backpressure: MessagesBackpressure,
     ) -> TimelineManagerHandle {
-        let (tx, msg_rx) = mpsc::channel(64);
+        let (tx, msg_rx) = mpsc::channel(crate::runtime::ACTOR_MESSAGE_QUEUE_CAPACITY);
         let actor = TimelineManagerActor {
             session: None,
             room_list_service: None,
@@ -203,7 +203,7 @@ impl TimelineManagerActor {
         link_preview_policy: LinkPreviewContext,
         messages_backpressure: MessagesBackpressure,
     ) -> TimelineManagerHandle {
-        let (tx, msg_rx) = mpsc::channel(64);
+        let (tx, msg_rx) = mpsc::channel(crate::runtime::ACTOR_MESSAGE_QUEUE_CAPACITY);
         let actor = TimelineManagerActor {
             session: Some(session),
             room_list_service: None,

@@ -596,12 +596,31 @@ is debounced and size-bounded; empty stores remove the encrypted draft file.
 Tauri exposes only typed draft commands (`set_composer_draft`,
 `set_thread_composer_draft`) and the active composer snapshot.
 
-Initial channel capacities are named constants, not scattered literals:
+Channel capacities are named constants, not scattered literals, and MUST be
+sized for large-account (100+ room) sync bursts — never for the handful of
+rooms in headless tests. A too-small core channel is invisible to CI and only
+fails on real accounts:
 
-- command inbox per runtime: 256
-- discrete core events per consumer: 1024
+- command inbox per runtime: `COMMAND_INBOX_CAPACITY`
+- inter-actor command/message inboxes (AppActor -> Account -> Room/Timeline):
+  `ACTOR_MESSAGE_QUEUE_CAPACITY`
+- AppActor action-projection inbox (actors project `Vec<AppAction>` here at high
+  volume during sync): `ACTION_QUEUE_CAPACITY`
+- discrete core events per consumer: `EVENT_QUEUE_CAPACITY`
 - timeline diff batches per subscribed timeline: 128
 - search index mutation queue: 512
+
+Delivery discipline by payload type:
+
+- One-shot, non-re-projected actions — navigation (`SelectRoom`, `SelectSpace`,
+  `ReorderSpaces`) and command-result projections — MUST use reliable delivery
+  (`send().await`), never a drop-on-full `try_send`. A dropped one-shot action
+  is lost forever; an overflow that silently drops `SelectRoom` is the
+  large-account "room selection did not complete" / blank-timeline /
+  unloaded-members regression class.
+- Drop-on-full `try_send` is permitted ONLY for high-frequency data that is
+  re-projected on the next sync (e.g. room-list snapshots), where a dropped
+  update self-heals. Such channels still must be sized for large-account bursts.
 
 If a bounded event or diff queue overflows, the runtime marks that consumer or
 timeline generation dirty, drops further incremental diffs for that generation,

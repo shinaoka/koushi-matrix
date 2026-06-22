@@ -282,7 +282,9 @@ impl AccountActor {
         event_tx: broadcast::Sender<CoreEvent>,
         initial_link_preview_policy: LinkPreviewContext,
     ) -> AccountActorHandle {
-        let (tx, command_rx) = mpsc::channel(64);
+        // AppActor forwards every Room/Timeline/Sync command here via send().await;
+        // sized so heavy sync does not block the AppActor's forwarding.
+        let (tx, command_rx) = mpsc::channel(crate::runtime::ACTOR_MESSAGE_QUEUE_CAPACITY);
         let data_dir = store_actor.data_dir().to_path_buf();
         // Spawn RoomActor once at AccountActor creation. It starts with no
         // session and waits for RoomMessage::SyncStarted.
