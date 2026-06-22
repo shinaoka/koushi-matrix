@@ -201,9 +201,9 @@
         "dir": "ltr",
         "lang": "en",
         "modifier_labels": {
-          "primary": "Cmd"
+          "primary": "Ctrl"
         },
-        "platform": "macos",
+        "platform": "linux",
         "pseudo_locale": "none"
       },
       "native_attention": {
@@ -402,6 +402,7 @@
         "scope": "allRooms"
       },
       "search_crawler": {
+        "last_active": null,
         "rooms": {}
       },
       "session": {
@@ -491,7 +492,7 @@
         "emoji_asset": "systemFallback",
         "font": "system",
         "font_asset": "systemFallback",
-        "platform": "macos"
+        "platform": "linux"
       }
     },
     "schema_version": 2,

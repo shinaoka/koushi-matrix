@@ -1,15 +1,14 @@
-use std::collections::BTreeMap;
-
 use crate::{
     effect::{AppEffect, UiEvent},
-    state::{AppState, AvatarImage, AvatarThumbnailState, NavigationState, RoomListFilter},
+    state::{AppState, NavigationState, RoomListFilter},
 };
 
 use super::{
-    apply_space_order, clear_active_room_for_navigation, first_default_room_id,
-    is_complete_space_order, is_session_ready, preferred_room_id_in_space,
-    recompute_room_list_projection, remember_active_room_for_current_space,
-    select_active_room_for_navigation,
+    apply_space_order,
+    avatar::{collect_known_avatar_thumbnails, preserve_avatar_thumbnail},
+    clear_active_room_for_navigation, first_default_room_id, is_complete_space_order,
+    is_session_ready, preferred_room_id_in_space, recompute_room_list_projection,
+    remember_active_room_for_current_space, select_active_room_for_navigation,
 };
 
 pub(crate) fn handle_invite_list_updated(
@@ -45,54 +44,11 @@ fn preserve_known_avatar_thumbnails(
     state: &AppState,
     next_invites: &mut [crate::state::InvitePreview],
 ) {
-    let mut known_thumbnails = BTreeMap::new();
-    remember_known_avatar_thumbnail(&mut known_thumbnails, state.profile.own.avatar.as_ref());
-    for profile in state.profile.users.values() {
-        remember_known_avatar_thumbnail(&mut known_thumbnails, profile.avatar.as_ref());
-    }
-    for room in &state.rooms {
-        remember_known_avatar_thumbnail(&mut known_thumbnails, room.avatar.as_ref());
-    }
-    for space in &state.spaces {
-        remember_known_avatar_thumbnail(&mut known_thumbnails, space.avatar.as_ref());
-    }
-    for invite in &state.invites {
-        remember_known_avatar_thumbnail(&mut known_thumbnails, invite.avatar.as_ref());
-    }
+    let known_thumbnails = collect_known_avatar_thumbnails(state, true);
 
     for invite in next_invites {
         preserve_avatar_thumbnail(&known_thumbnails, &mut invite.avatar);
     }
-}
-
-fn remember_known_avatar_thumbnail(
-    known_thumbnails: &mut BTreeMap<String, AvatarThumbnailState>,
-    avatar: Option<&AvatarImage>,
-) {
-    let Some(avatar) = avatar else {
-        return;
-    };
-    if avatar.thumbnail == AvatarThumbnailState::NotRequested {
-        return;
-    }
-    known_thumbnails.insert(avatar.mxc_uri.clone(), avatar.thumbnail.clone());
-}
-
-fn preserve_avatar_thumbnail(
-    known_thumbnails: &BTreeMap<String, AvatarThumbnailState>,
-    avatar: &mut Option<AvatarImage>,
-) -> bool {
-    let Some(avatar) = avatar.as_mut() else {
-        return false;
-    };
-    if avatar.thumbnail != AvatarThumbnailState::NotRequested {
-        return false;
-    }
-    let Some(thumbnail) = known_thumbnails.get(&avatar.mxc_uri) else {
-        return false;
-    };
-    avatar.thumbnail = thumbnail.clone();
-    true
 }
 
 pub(crate) fn handle_select_space(

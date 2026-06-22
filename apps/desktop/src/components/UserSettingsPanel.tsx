@@ -633,9 +633,9 @@ export function UserSettingsPanel({
           <h3>{t("settings.searchHistory")}</h3>
           {isSaving ? <span className="settings-save-state">{t("settings.saving")}</span> : null}
         </div>
-        <SearchHistorySection
-          crawlerSettings={settings.values.search_crawler}
-          crawlerState={searchCrawlerState ?? { rooms: {} }}
+          <SearchHistorySection
+            crawlerSettings={settings.values.search_crawler}
+            crawlerState={searchCrawlerState ?? { rooms: {}, last_active: null }}
           rooms={rooms}
           isSaving={isSaving}
           onUpdateSettings={onUpdateSettings}
@@ -1738,6 +1738,7 @@ function SearchHistorySection({
   const roomEntries = crawlerRoomEntries(crawlerState.rooms, rooms);
   const crawlerSummary = summarizeCrawlerRooms(roomEntries);
   const activeRoomEntry = roomEntries.find((entry) => entry.roomState.kind === "running") ?? roomEntries.find((entry) => entry.roomState.kind === "queued");
+  const lastActiveEntry = crawlerLastActiveEntry(crawlerState.last_active, rooms);
   const crawlerPaused = crawlerSettings.speed === "paused";
 
   function toggleCrawlerPaused() {
@@ -1761,7 +1762,7 @@ function SearchHistorySection({
         <div className="settings-control-row crawler-speed-row">
           <span>{t("settings.searchHistorySpeed")}</span>
           <div className="segmented-control crawler-speed-control" role="group" aria-label={t("settings.searchHistorySpeed")}>
-            {(["standard", "fast", "slow", "paused"] as const).map((speed) => (
+            {(["standard", "fast", "slow"] as const).map((speed) => (
               <CrawlerSpeedButton
                 key={speed}
                 value={speed}
@@ -1821,6 +1822,13 @@ function SearchHistorySection({
               showActions={false}
             />
           </div>
+        ) : lastActiveEntry ? (
+          <p className="settings-muted-note">
+            {t("settings.searchHistoryActivityLastIndexed", {
+              room: lastActiveEntry.displayLabel,
+              age: crawlerActivityAgeLabel(lastActiveEntry.updatedAtMs)
+            })}
+          </p>
         ) : (
           <p className="settings-muted-note">{t("settings.searchHistoryActivityIdle")}</p>
         )}
@@ -1907,6 +1915,12 @@ type CrawlerRoomEntry = {
   roomState: SearchCrawlerRoomState;
 };
 
+type CrawlerLastActiveEntry = {
+  roomId: string;
+  displayLabel: string;
+  updatedAtMs: number;
+};
+
 function crawlerRoomEntries(
   roomStates: Record<string, SearchCrawlerRoomState>,
   rooms?: RoomSummary[]
@@ -1950,6 +1964,37 @@ function summarizeCrawlerRooms(entries: CrawlerRoomEntry[]) {
     }),
     { running: 0, idle: 0, completed: 0, failed: 0, queued: 0 }
   );
+}
+
+function crawlerLastActiveEntry(
+  lastActive: SearchCrawlerState["last_active"],
+  rooms?: RoomSummary[]
+): CrawlerLastActiveEntry | null {
+  if (!lastActive || lastActive.status !== "completed") {
+    return null;
+  }
+  const room = rooms?.find((candidate) => candidate.room_id === lastActive.room_id);
+  return {
+    roomId: lastActive.room_id,
+    displayLabel: room?.display_label ?? t("settings.searchHistoryRoomUnknown"),
+    updatedAtMs: lastActive.updated_at_ms
+  };
+}
+
+function crawlerActivityAgeLabel(timestampMs: number, nowMs = Date.now()): string {
+  const elapsedSeconds = Math.max(0, Math.floor((nowMs - timestampMs) / 1000));
+  if (elapsedSeconds < 60) {
+    return t("settings.searchHistoryActivityJustNow");
+  }
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) {
+    return t("settings.searchHistoryActivityMinutesAgo", { count: elapsedMinutes });
+  }
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) {
+    return t("settings.searchHistoryActivityHoursAgo", { count: elapsedHours });
+  }
+  return t("settings.searchHistoryActivityDaysAgo", { count: Math.floor(elapsedHours / 24) });
 }
 
 function CrawlerToggle({

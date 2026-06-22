@@ -35,6 +35,7 @@ use crate::failure::CoreFailure;
 const CREDENTIAL_STORE_SERVICE_NAME: &str = "koushi-desktop";
 const COMPOSER_DRAFTS_FILE_MAGIC: &[u8] = b"KOUSHI-DRAFTS-V1\0";
 const SCHEDULED_SENDS_FILE_MAGIC: &[u8] = b"KOUSHI-SCHEDULED-SENDS-V1\0";
+const NAVIGATION_FILE_MAGIC: &[u8] = b"KOUSHI-NAVIGATION-V1\0";
 const COMPOSER_DRAFTS_NONCE_LEN: usize = 12;
 
 /// Env var for QA/debug file-based credential store override.
@@ -243,14 +244,14 @@ impl StoreActor {
 
     pub fn load_navigation(&self, key_id: &SessionKeyId) -> Result<NavigationState, CoreFailure> {
         let path = self.account_navigation_file(key_id);
-        let json = match std::fs::read_to_string(&path) {
-            Ok(json) => json,
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(NavigationState::default());
+                return self.load_legacy_navigation(key_id);
             }
             Err(_) => return Err(CoreFailure::StoreUnavailable),
         };
-        serde_json::from_str(&json).map_err(|_| CoreFailure::StoreUnavailable)
+        decrypt_navigation_payload(&self.load_unlock_secret(key_id)?, &bytes)
     }
 
     pub fn save_navigation(
@@ -259,19 +260,46 @@ impl StoreActor {
         navigation: &NavigationState,
     ) -> Result<(), CoreFailure> {
         let path = self.account_navigation_file(key_id);
+        let legacy_path = self.account_navigation_legacy_file(key_id);
         if navigation == &NavigationState::default() {
             match std::fs::remove_file(&path) {
-                Ok(()) => return Ok(()),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                 Err(_) => return Err(CoreFailure::StoreUnavailable),
             }
+            match std::fs::remove_file(&legacy_path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(CoreFailure::StoreUnavailable),
+            }
+            return Ok(());
         }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|_| CoreFailure::StoreUnavailable)?;
         }
-        let json =
-            serde_json::to_string_pretty(navigation).map_err(|_| CoreFailure::StoreUnavailable)?;
-        std::fs::write(path, format!("{json}\n")).map_err(|_| CoreFailure::StoreUnavailable)
+        let payload =
+            encrypt_navigation_payload(&self.load_or_create_unlock_secret(key_id)?, navigation)?;
+        std::fs::write(path, payload).map_err(|_| CoreFailure::StoreUnavailable)?;
+        match std::fs::remove_file(&legacy_path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(CoreFailure::StoreUnavailable),
+        }
+    }
+
+    fn load_legacy_navigation(
+        &self,
+        key_id: &SessionKeyId,
+    ) -> Result<NavigationState, CoreFailure> {
+        let path = self.account_navigation_legacy_file(key_id);
+        let json = match std::fs::read_to_string(&path) {
+            Ok(json) => json,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(NavigationState::default());
+            }
+            Err(_) => return Err(CoreFailure::StoreUnavailable),
+        };
+        serde_json::from_str(&json).map_err(|_| CoreFailure::StoreUnavailable)
     }
 
     /// Delete the stored unlock secret and the per-account store/cache
@@ -369,6 +397,12 @@ impl StoreActor {
     fn account_navigation_file(&self, key_id: &SessionKeyId) -> PathBuf {
         self.account_root_dir(key_id)
             .join("navigation")
+            .join("navigation.v1.enc")
+    }
+
+    fn account_navigation_legacy_file(&self, key_id: &SessionKeyId) -> PathBuf {
+        self.account_root_dir(key_id)
+            .join("navigation")
             .join("navigation.v1.json")
     }
 }
@@ -447,6 +481,46 @@ fn decrypt_scheduled_sends_payload(
     let nonce_end = nonce_start + COMPOSER_DRAFTS_NONCE_LEN;
     let nonce = Nonce::from_slice(&payload[nonce_start..nonce_end]);
     let key = secret.derive_scheduled_sends_key();
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(key.as_bytes()));
+    let plaintext = cipher
+        .decrypt(nonce, &payload[nonce_end..])
+        .map_err(|_| CoreFailure::StoreUnavailable)?;
+    serde_json::from_slice(&plaintext).map_err(|_| CoreFailure::StoreUnavailable)
+}
+
+fn encrypt_navigation_payload(
+    secret: &LocalUnlockSecret,
+    navigation: &NavigationState,
+) -> Result<Vec<u8>, CoreFailure> {
+    let plaintext = serde_json::to_vec(navigation).map_err(|_| CoreFailure::StoreUnavailable)?;
+    let key = secret.derive_navigation_key();
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(key.as_bytes()));
+    let mut nonce_bytes = [0_u8; COMPOSER_DRAFTS_NONCE_LEN];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_ref())
+        .map_err(|_| CoreFailure::StoreUnavailable)?;
+    let mut payload = Vec::with_capacity(
+        NAVIGATION_FILE_MAGIC.len() + COMPOSER_DRAFTS_NONCE_LEN + ciphertext.len(),
+    );
+    payload.extend_from_slice(NAVIGATION_FILE_MAGIC);
+    payload.extend_from_slice(&nonce_bytes);
+    payload.extend_from_slice(&ciphertext);
+    Ok(payload)
+}
+
+fn decrypt_navigation_payload(
+    secret: &LocalUnlockSecret,
+    payload: &[u8],
+) -> Result<NavigationState, CoreFailure> {
+    let header_len = NAVIGATION_FILE_MAGIC.len() + COMPOSER_DRAFTS_NONCE_LEN;
+    if payload.len() < header_len || !payload.starts_with(NAVIGATION_FILE_MAGIC) {
+        return Err(CoreFailure::StoreUnavailable);
+    }
+    let nonce_start = NAVIGATION_FILE_MAGIC.len();
+    let nonce_end = nonce_start + COMPOSER_DRAFTS_NONCE_LEN;
+    let nonce = Nonce::from_slice(&payload[nonce_start..nonce_end]);
+    let key = secret.derive_navigation_key();
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key.as_bytes()));
     let plaintext = cipher
         .decrypt(nonce, &payload[nonce_end..])
@@ -1317,6 +1391,136 @@ mod tests {
                 .expect("load removed scheduled sends")
                 .items
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn navigation_state_is_encrypted_and_rejects_corruption() {
+        let data_dir = tempdir().expect("tempdir");
+        let cred_dir = tempdir().expect("tempdir");
+        let key_id = make_key_id();
+        let actor = file_store_actor(&data_dir, &cred_dir);
+        let navigation = NavigationState {
+            active_space_id: Some("!space:test.example.com".to_owned()),
+            active_room_id: Some("!room:test.example.com".to_owned()),
+            space_order: vec!["!space:test.example.com".to_owned()],
+            last_room_by_space_id: std::collections::BTreeMap::from([(
+                "!space:test.example.com".to_owned(),
+                "!room:test.example.com".to_owned(),
+            )]),
+        };
+
+        actor
+            .save_navigation(&key_id, &navigation)
+            .expect("save encrypted navigation");
+
+        let path = actor.account_navigation_file(&key_id);
+        let bytes = std::fs::read(&path).expect("read encrypted navigation");
+        for plaintext in ["!space:test.example.com", "!room:test.example.com"] {
+            assert!(
+                !bytes
+                    .windows(plaintext.len())
+                    .any(|window| window == plaintext.as_bytes())
+            );
+        }
+
+        let loaded = actor
+            .load_navigation(&key_id)
+            .expect("load encrypted navigation");
+        assert_eq!(loaded, navigation);
+
+        let mut corrupted = bytes;
+        let last = corrupted
+            .last_mut()
+            .expect("non-empty encrypted navigation");
+        *last ^= 0x01;
+        std::fs::write(&path, corrupted).expect("write corrupted navigation");
+        assert!(matches!(
+            actor.load_navigation(&key_id),
+            Err(CoreFailure::StoreUnavailable)
+        ));
+    }
+
+    #[test]
+    fn legacy_navigation_json_loads_and_next_save_migrates_to_encrypted_file() {
+        let data_dir = tempdir().expect("tempdir");
+        let cred_dir = tempdir().expect("tempdir");
+        let key_id = make_key_id();
+        let actor = file_store_actor(&data_dir, &cred_dir);
+        let navigation = NavigationState {
+            active_space_id: Some("!space:test.example.com".to_owned()),
+            active_room_id: Some("!room:test.example.com".to_owned()),
+            space_order: vec!["!space:test.example.com".to_owned()],
+            last_room_by_space_id: std::collections::BTreeMap::from([(
+                "!space:test.example.com".to_owned(),
+                "!room:test.example.com".to_owned(),
+            )]),
+        };
+        let legacy_path = actor.account_navigation_legacy_file(&key_id);
+        std::fs::create_dir_all(legacy_path.parent().expect("navigation parent"))
+            .expect("create navigation parent");
+        std::fs::write(
+            &legacy_path,
+            serde_json::to_string(&navigation).expect("serialize legacy navigation"),
+        )
+        .expect("write legacy navigation");
+
+        let loaded = actor
+            .load_navigation(&key_id)
+            .expect("load legacy navigation");
+        assert_eq!(loaded, navigation);
+
+        actor
+            .save_navigation(&key_id, &navigation)
+            .expect("migrate navigation");
+        assert!(!legacy_path.exists());
+
+        let encrypted_path = actor.account_navigation_file(&key_id);
+        let bytes = std::fs::read(&encrypted_path).expect("read encrypted navigation");
+        for plaintext in ["!space:test.example.com", "!room:test.example.com"] {
+            assert!(
+                !bytes
+                    .windows(plaintext.len())
+                    .any(|window| window == plaintext.as_bytes())
+            );
+        }
+    }
+
+    #[test]
+    fn default_navigation_removes_encrypted_and_legacy_files() {
+        let data_dir = tempdir().expect("tempdir");
+        let cred_dir = tempdir().expect("tempdir");
+        let key_id = make_key_id();
+        let actor = file_store_actor(&data_dir, &cred_dir);
+        let navigation = NavigationState {
+            active_space_id: None,
+            active_room_id: Some("!room:test.example.com".to_owned()),
+            space_order: Vec::new(),
+            last_room_by_space_id: std::collections::BTreeMap::new(),
+        };
+
+        actor
+            .save_navigation(&key_id, &navigation)
+            .expect("save encrypted navigation");
+        let encrypted_path = actor.account_navigation_file(&key_id);
+        assert!(encrypted_path.exists());
+
+        let legacy_path = actor.account_navigation_legacy_file(&key_id);
+        std::fs::create_dir_all(legacy_path.parent().expect("navigation parent"))
+            .expect("create navigation parent");
+        std::fs::write(&legacy_path, "{}").expect("write legacy navigation");
+        assert!(legacy_path.exists());
+
+        actor
+            .save_navigation(&key_id, &NavigationState::default())
+            .expect("clear navigation");
+        assert!(!encrypted_path.exists());
+        assert!(!legacy_path.exists());
+        assert_eq!(
+            actor
+                .load_navigation(&key_id)
+                .expect("load cleared navigation"),
+            NavigationState::default()
         );
     }
 

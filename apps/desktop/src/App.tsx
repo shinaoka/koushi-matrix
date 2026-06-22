@@ -90,13 +90,13 @@ import {
   qaSendSmokeTargetRoom,
   qaSendSmokeTargetUserIdFromEnv
 } from "./domain/qaSendSmoke";
+import { planSnapshotAvatarThumbnailRequests } from "./domain/avatarThumbnails";
 import type {
   ActivityMarkReadTarget,
   ActivityTab,
   AttachmentFilter,
   AttachmentScope,
   AttachmentSort,
-  AvatarImage,
   DesktopSnapshot,
   DirectoryRoomSummary,
   FilesViewScope,
@@ -642,26 +642,6 @@ function releaseImageCompressionPlan(plan: ImageCompressionPlan) {
   }
 }
 
-function collectSnapshotAvatarMxcs(snapshot: DesktopSnapshot): string[] {
-  const mxcs = new Set<string>();
-  const avatars: Array<AvatarImage | null> = [
-    snapshot.state.domain.profile.own.avatar,
-    ...Object.values(snapshot.state.domain.profile.users).map((profile) => profile.avatar),
-    ...snapshot.state.domain.rooms.map((room) => room.avatar),
-    ...snapshot.state.domain.spaces.map((space) => space.avatar),
-    ...snapshot.state.domain.invites.map((invite) => invite.avatar)
-  ];
-
-  for (const avatar of avatars) {
-    if (!avatar || avatar.thumbnail.kind !== "notRequested") {
-      continue;
-    }
-    mxcs.add(avatar.mxc_uri);
-  }
-
-  return [...mxcs];
-}
-
 function createStagedUploadId(index: number): string {
   const random =
     typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -926,6 +906,7 @@ export function App() {
   const qaSendTargetSelectionRequested = useRef<string | null>(null);
   const qaSendBaselineErrorCount = useRef(0);
   const requestedAvatarMxcsRef = useRef<Set<string>>(new Set());
+  const avatarRetryCountsRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
     const refreshOverrides = () => setSpaceLocalOverrides(readSpaceLocalOverrides());
@@ -1088,25 +1069,21 @@ export function App() {
   useEffect(() => {
     if (!snapshot || !tauriTimelineTransport?.downloadAvatarThumbnail) {
       requestedAvatarMxcsRef.current.clear();
+      avatarRetryCountsRef.current.clear();
       return;
     }
 
-    const requestedAvatarMxcs = requestedAvatarMxcsRef.current;
-    const notRequestedAvatarMxcs = new Set(collectSnapshotAvatarMxcs(snapshot));
+    const plan = planSnapshotAvatarThumbnailRequests(
+      snapshot,
+      requestedAvatarMxcsRef.current,
+      avatarRetryCountsRef.current
+    );
+    requestedAvatarMxcsRef.current = plan.requestedMxcUris;
+    avatarRetryCountsRef.current = plan.retryCounts;
 
-    for (const mxcUri of [...requestedAvatarMxcs]) {
-      if (!notRequestedAvatarMxcs.has(mxcUri)) {
-        requestedAvatarMxcs.delete(mxcUri);
-      }
-    }
-
-    for (const mxcUri of notRequestedAvatarMxcs) {
-      if (requestedAvatarMxcs.has(mxcUri)) {
-        continue;
-      }
-      requestedAvatarMxcs.add(mxcUri);
+    for (const mxcUri of plan.requestMxcUris) {
       void tauriTimelineTransport.downloadAvatarThumbnail(mxcUri).catch(() => {
-        requestedAvatarMxcs.delete(mxcUri);
+        requestedAvatarMxcsRef.current.delete(mxcUri);
       });
     }
   }, [snapshot]);

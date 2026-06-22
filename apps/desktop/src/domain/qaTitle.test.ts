@@ -255,7 +255,8 @@ describe("qaWindowTitle", () => {
               "!private-q:example.test": { kind: "queued" },
               "!private-b:example.test": { kind: "completed", indexed: 25 },
               "!private-c:example.test": { kind: "failed", failureKind: "sdk" }
-            }
+            },
+            last_active: null
           }
         }
       }

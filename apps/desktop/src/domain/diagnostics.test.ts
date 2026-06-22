@@ -38,6 +38,13 @@ describe("diagnosticReport", () => {
                   processed: 42,
                   indexed: 24
                 }
+              },
+              last_active: {
+                room_id: "!private-room:example.invalid",
+                updated_at_ms: 1_800_000_000_000,
+                status: "running",
+                processed: 42,
+                indexed: 24
               }
             }
           },
@@ -117,7 +124,7 @@ describe("diagnosticReport", () => {
     expect(report).toContain("Koushi diagnostics");
     expect(report).toContain("Generated at:");
     expect(report).toContain(
-      "Room classification: domain_dms=2 sidebar_dms=2 room_list_items=2 room_list_dm_items=0 active_filter=rooms"
+      "Room classification: domain_dms=2 sidebar_dms=0 room_list_items=2 room_list_dm_items=0 active_filter=rooms"
     );
     expect(report).toContain("Timeline visible items: 3");
     expect(report).toContain(

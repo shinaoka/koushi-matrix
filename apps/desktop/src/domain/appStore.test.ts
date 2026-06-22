@@ -34,6 +34,13 @@ describe("appStore projection cache", () => {
     next.state.domain.search_crawler = {
       rooms: {
         "!room-crawler:example.invalid": { kind: "running", processed: 3, indexed: 2 }
+      },
+      last_active: {
+        room_id: "!room-crawler:example.invalid",
+        updated_at_ms: 1_800_000_000_000,
+        status: "running",
+        processed: 3,
+        indexed: 2
       }
     };
 
@@ -95,6 +102,13 @@ describe("appStore projection cache", () => {
     next.state.domain.search_crawler = {
       rooms: {
         "!room-crawler:example.invalid": { kind: "queued" }
+      },
+      last_active: {
+        room_id: "!room-crawler:example.invalid",
+        updated_at_ms: 1_800_000_000_000,
+        status: "queued",
+        processed: 0,
+        indexed: 0
       }
     };
     setAppStoreSnapshot(next);
@@ -183,6 +197,13 @@ describe("appStore projection cache", () => {
     next.state.domain.search_crawler = {
       rooms: {
         "!room-crawler:example.invalid": { kind: "running", processed: 1, indexed: 1 }
+      },
+      last_active: {
+        room_id: "!room-crawler:example.invalid",
+        updated_at_ms: 1_800_000_000_000,
+        status: "running",
+        processed: 1,
+        indexed: 1
       }
     };
     setAppStoreSnapshot(next);
@@ -216,6 +237,13 @@ describe("appStore projection cache", () => {
                   processed: 4,
                   indexed: 3
                 }
+              },
+              last_active: {
+                room_id: "!room-crawler:example.invalid",
+                updated_at_ms: 1_800_000_000_000,
+                status: "running" as const,
+                processed: 4,
+                indexed: 3
               }
             }
           }
@@ -247,6 +275,13 @@ describe("appStore projection cache", () => {
           processed: 8,
           indexed: 5
         }
+      },
+      last_active: {
+        room_id: "!room-crawler:example.invalid",
+        updated_at_ms: 1_800_000_000_000,
+        status: "running",
+        processed: 8,
+        indexed: 5
       }
     };
     next.state.ui.navigation = {
@@ -280,13 +315,13 @@ describe("appStore projection cache", () => {
     expect(
       applyAppStoreDelta({
         generation: 4,
-        changed: { state: { domain: { search_crawler: { rooms: {} } } } }
+        changed: { state: { domain: { search_crawler: { rooms: {}, last_active: null } } } }
       })
     ).toBe(false);
     expect(
       applyAppStoreDelta({
         generation: 5,
-        changed: { state: { domain: { search_crawler: { rooms: {} } } } }
+        changed: { state: { domain: { search_crawler: { rooms: {}, last_active: null } } } }
       })
     ).toBe(true);
   });
@@ -314,7 +349,7 @@ describe("appStore projection cache", () => {
     expect(
       applyAppStoreDelta({
         generation: 3,
-        changed: { state: { domain: { search_crawler: { rooms: {} } } } }
+        changed: { state: { domain: { search_crawler: { rooms: {}, last_active: null } } } }
       })
     ).toBe(false);
   });
@@ -454,7 +489,7 @@ function makeSnapshot(): DesktopSnapshot {
         activity: { kind: "closed" },
         thread_attention: { kind: "closed" },
         search: { kind: "closed" },
-        search_crawler: { rooms: {} },
+        search_crawler: { rooms: {}, last_active: null },
         live_signals: { rooms: {}, presence: {} },
         e2ee_trust: {
           verification: { kind: "idle" },

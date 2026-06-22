@@ -762,6 +762,11 @@ export type MessageId =
   | "settings.searchHistoryActivity"
   | "settings.searchHistoryActivitySummary"
   | "settings.searchHistoryActivityIdle"
+  | "settings.searchHistoryActivityLastIndexed"
+  | "settings.searchHistoryActivityJustNow"
+  | "settings.searchHistoryActivityMinutesAgo"
+  | "settings.searchHistoryActivityHoursAgo"
+  | "settings.searchHistoryActivityDaysAgo"
   | "settings.searchHistoryActivityHint"
   | "settings.searchHistoryRoomStatus"
   | "settings.searchHistoryRoomIdle"
@@ -1657,6 +1662,11 @@ const en: Catalog = {
   "settings.searchHistoryActivity": "Search crawler activity",
   "settings.searchHistoryActivitySummary": "{running} running, {queued} queued, {completed} complete, {failed} failed",
   "settings.searchHistoryActivityIdle": "No room is indexing right now.",
+  "settings.searchHistoryActivityLastIndexed": "Last indexed {room} {age}.",
+  "settings.searchHistoryActivityJustNow": "just now",
+  "settings.searchHistoryActivityMinutesAgo": "{count} min ago",
+  "settings.searchHistoryActivityHoursAgo": "{count} hr ago",
+  "settings.searchHistoryActivityDaysAgo": "{count} d ago",
   "settings.searchHistoryActivityHint": "Processed means timeline events scanned. Indexed means searchable messages written to the local database.",
   "settings.searchHistoryRoomStatus": "Room index status",
   "settings.searchHistoryRoomIdle": "Not started",
@@ -2441,6 +2451,11 @@ const ja: Catalog = {
   "settings.searchHistoryActivity": "検索クローラーの動作状況",
   "settings.searchHistoryActivitySummary": "実行中 {running}、待機 {queued}、完了 {completed}、失敗 {failed}",
   "settings.searchHistoryActivityIdle": "現在インデックス中のルームはありません。",
+  "settings.searchHistoryActivityLastIndexed": "最後にインデックスしたルーム: {room}（{age}）。",
+  "settings.searchHistoryActivityJustNow": "たった今",
+  "settings.searchHistoryActivityMinutesAgo": "{count}分前",
+  "settings.searchHistoryActivityHoursAgo": "{count}時間前",
+  "settings.searchHistoryActivityDaysAgo": "{count}日前",
   "settings.searchHistoryActivityHint": "処理済みは読み取ったタイムラインイベント数、インデックス済みはローカル検索DBに登録した検索可能メッセージ数です。",
   "settings.searchHistoryRoomStatus": "ルームインデックス状況",
   "settings.searchHistoryRoomIdle": "未開始",

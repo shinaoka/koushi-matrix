@@ -1,7 +1,8 @@
 use koushi_state::{
     AppAction, AppEffect, AppState, RoomSummary, RoomTags, SearchCrawlerFailureKind,
-    SearchCrawlerRoomState, SearchCrawlerSettings, SearchCrawlerSpeed, SearchCrawlerState,
-    SearchScope, SearchState, SessionInfo, SessionState, SettingsPatch, UiEvent, reduce,
+    SearchCrawlerLastActiveStatus, SearchCrawlerRoomState, SearchCrawlerSettings,
+    SearchCrawlerSpeed, SearchCrawlerState, SearchScope, SearchState, SessionInfo, SessionState,
+    SettingsPatch, UiEvent, reduce,
 };
 
 // Bring the Debug format in scope so assert! messages can print effects.
@@ -83,6 +84,7 @@ fn crawl_started_sets_queued_state_and_emits_event() {
         AppAction::HistoryCrawlStarted {
             request_id: 1,
             room_id: "room-a".to_owned(),
+            timestamp_ms: 1_000,
         },
     );
 
@@ -106,6 +108,7 @@ fn crawl_progress_updates_running_counters_and_emits_event() {
         AppAction::HistoryCrawlStarted {
             request_id: 1,
             room_id: "room-a".to_owned(),
+            timestamp_ms: 1_000,
         },
     );
 
@@ -115,6 +118,7 @@ fn crawl_progress_updates_running_counters_and_emits_event() {
             room_id: "room-a".to_owned(),
             processed: 50,
             indexed: 42,
+            timestamp_ms: 2_000,
         },
     );
 
@@ -140,6 +144,7 @@ fn crawl_completed_sets_completed_state_and_emits_event() {
         AppAction::HistoryCrawlStarted {
             request_id: 1,
             room_id: "room-a".to_owned(),
+            timestamp_ms: 1_000,
         },
     );
 
@@ -148,6 +153,7 @@ fn crawl_completed_sets_completed_state_and_emits_event() {
         AppAction::HistoryCrawlCompleted {
             room_id: "room-a".to_owned(),
             indexed: 17,
+            timestamp_ms: 3_000,
         },
     );
 
@@ -170,6 +176,7 @@ fn crawl_failed_carries_only_coarse_kind_and_emits_event() {
         AppAction::HistoryCrawlStarted {
             request_id: 1,
             room_id: "room-a".to_owned(),
+            timestamp_ms: 1_000,
         },
     );
 
@@ -185,6 +192,7 @@ fn crawl_failed_carries_only_coarse_kind_and_emits_event() {
             AppAction::HistoryCrawlFailed {
                 room_id: "room-a".to_owned(),
                 kind: kind.clone(),
+                timestamp_ms: 4_000,
             },
         );
 
@@ -495,6 +503,7 @@ fn duplicate_completion_for_already_completed_room_is_idempotent() {
         AppAction::HistoryCrawlCompleted {
             room_id: "room-a".to_owned(),
             indexed: 12,
+            timestamp_ms: 5_000,
         },
     );
 
@@ -522,6 +531,7 @@ fn stale_failed_for_already_completed_room_updates_state() {
         AppAction::HistoryCrawlFailed {
             room_id: "room-a".to_owned(),
             kind: SearchCrawlerFailureKind::Sdk,
+            timestamp_ms: 6_000,
         },
     );
 
@@ -549,6 +559,7 @@ fn sequential_crawl_lifecycle_idle_queued_running_completed() {
         AppAction::HistoryCrawlStarted {
             request_id: 1,
             room_id: "room-a".to_owned(),
+            timestamp_ms: 1_000,
         },
     );
     assert!(matches!(
@@ -562,6 +573,7 @@ fn sequential_crawl_lifecycle_idle_queued_running_completed() {
             room_id: "room-a".to_owned(),
             processed: 10,
             indexed: 8,
+            timestamp_ms: 2_000,
         },
     );
     assert!(matches!(
@@ -577,11 +589,68 @@ fn sequential_crawl_lifecycle_idle_queued_running_completed() {
         AppAction::HistoryCrawlCompleted {
             room_id: "room-a".to_owned(),
             indexed: 8,
+            timestamp_ms: 3_000,
         },
     );
     assert_eq!(
         state.search_crawler.rooms.get("room-a"),
         Some(&SearchCrawlerRoomState::Completed { indexed: 8 })
+    );
+}
+
+#[test]
+fn crawl_lifecycle_tracks_last_active_room_without_debug_identifiers() {
+    let mut state = ready_state_with_rooms(&["room-a", "room-b"]);
+
+    reduce(
+        &mut state,
+        AppAction::HistoryCrawlProgress {
+            room_id: "room-a".to_owned(),
+            processed: 10,
+            indexed: 8,
+            timestamp_ms: 2_000,
+        },
+    );
+    assert_eq!(
+        state.search_crawler.last_active.as_ref().map(|last| (
+            last.room_id.as_str(),
+            last.updated_at_ms,
+            last.status,
+            last.processed,
+            last.indexed
+        )),
+        Some((
+            "room-a",
+            2_000,
+            SearchCrawlerLastActiveStatus::Running,
+            10,
+            8
+        ))
+    );
+
+    reduce(
+        &mut state,
+        AppAction::HistoryCrawlCompleted {
+            room_id: "room-b".to_owned(),
+            indexed: 12,
+            timestamp_ms: 3_000,
+        },
+    );
+
+    let last_active = state
+        .search_crawler
+        .last_active
+        .as_ref()
+        .expect("crawler activity should be tracked");
+    assert_eq!(last_active.room_id, "room-b");
+    assert_eq!(last_active.updated_at_ms, 3_000);
+    assert_eq!(last_active.status, SearchCrawlerLastActiveStatus::Completed);
+    assert_eq!(last_active.indexed, 12);
+
+    let debug_output = format!("{:?}", state.search_crawler);
+    assert!(
+        !debug_output.contains("room-b"),
+        "last active room id must not appear in SearchCrawlerState Debug"
     );
 }
 

@@ -1,15 +1,11 @@
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 
+import type { StateDeltaChangedSlices, StateDeltaPayload } from "./coreEvents";
 import type { MentionCandidate, TimelineForwardDestination } from "./projectionTypes";
 import type {
-  AppDomainState,
   AppState,
-  AppUiState,
   DesktopSnapshot,
-  SidebarModel,
-  ThreadSnapshot,
-  TimelineMessage,
   UserProfile
 } from "./types";
 
@@ -52,23 +48,9 @@ export function clearAppStoreSnapshot(): void {
   setAppStoreSnapshot(null);
 }
 
-export type DesktopSnapshotDelta = {
-  generation: number;
-  changed: DesktopSnapshotChangedSlices;
-};
-
-export type DesktopSnapshotChangedSlices = {
-  state?: AppStateChangedSlices;
-  sidebar?: SidebarModel;
-  timeline?: TimelineMessage[];
-  thread?: ThreadSnapshot | null;
-};
-
-export type AppStateChangedSlices = {
-  schema_version?: number;
-  domain?: Partial<AppDomainState>;
-  ui?: Partial<AppUiState>;
-};
+export type DesktopSnapshotDelta = StateDeltaPayload;
+export type DesktopSnapshotChangedSlices = StateDeltaChangedSlices;
+export type AppStateChangedSlices = NonNullable<StateDeltaChangedSlices["state"]>;
 
 export function applyAppStoreDelta(delta: DesktopSnapshotDelta): boolean {
   const current = useAppStore.getState();

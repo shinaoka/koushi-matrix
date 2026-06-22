@@ -1060,7 +1060,7 @@ describe("desktop release scripts", () => {
       /qaSendStarted\.current = true;[\s\S]*qaSendPending\.current = true;[\s\S]*setQaSendStatus\("pending"\);/
     );
     expect(source).toMatch(
-      /async function sendText\(\)[\s\S]*qaSendPending\.current = true;[\s\S]*setQaSendStatus\("pending"\);/
+      /async function sendText\([^)]*\)[\s\S]*qaSendPending\.current = true;[\s\S]*setQaSendStatus\("pending"\);/
     );
   });
 

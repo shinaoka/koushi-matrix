@@ -259,6 +259,7 @@ describe("UserSettingsPanel", () => {
       />
     );
 
+    expect(screen.queryByRole("button", { name: "Off" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Pause crawler" }));
     expect(onUpdateSettings).toHaveBeenCalledWith({
       search_crawler: { ...settings.values.search_crawler, speed: "paused" }
@@ -386,7 +387,8 @@ describe("UserSettingsPanel", () => {
             "!complete:example.invalid": { kind: "completed", indexed: 10 },
             "!running:example.invalid": { kind: "running", processed: 4, indexed: 3 },
             "!queued:example.invalid": { kind: "queued" }
-          }
+          },
+          last_active: null
         }}
         rooms={rooms}
         {...handlers}
@@ -410,6 +412,63 @@ describe("UserSettingsPanel", () => {
     ).toBe(true);
     expect(statusScope.getByText("Complete room")).toBeTruthy();
     expect(statusScope.getByText("Failed room")).toBeTruthy();
+  });
+
+  test("shows the Rust-owned last indexed room when crawler activity is idle", () => {
+    const rooms = [
+      {
+        room_id: "!complete:example.invalid",
+        display_name: "Complete room",
+        display_label: "Complete room",
+        original_display_label: "Complete room",
+        avatar: null,
+        is_dm: false,
+        dm_user_ids: [],
+        tags: { favourite: null, low_priority: null },
+        unread_count: 0,
+        parent_space_ids: [],
+        dm_space_ids: [],
+        is_encrypted: true
+      }
+    ] satisfies RoomSummary[];
+
+    render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        searchCrawlerState={{
+          rooms: {
+            "!complete:example.invalid": { kind: "completed", indexed: 10 }
+          },
+          last_active: {
+            room_id: "!complete:example.invalid",
+            updated_at_ms: Date.now(),
+            status: "completed",
+            processed: 10,
+            indexed: 10
+          }
+        }}
+        rooms={rooms}
+        {...handlers}
+      />
+    );
+
+    const crawlerActivity = screen.getByRole("region", { name: "Search crawler activity" });
+    const activityScope = within(crawlerActivity);
+    expect(activityScope.getByText(/Last indexed Complete room just now\./)).toBeTruthy();
+    expect(activityScope.queryByText("No room is indexing right now.")).toBeNull();
   });
 
   test("confirms search index rebuild before invoking the destructive action", () => {

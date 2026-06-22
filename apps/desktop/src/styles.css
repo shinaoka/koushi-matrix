@@ -5141,7 +5141,7 @@ kbd {
 }
 
 .trust-help-popover a {
-  color: var(--accent);
+  color: var(--brand);
   font-weight: 800;
 }
 

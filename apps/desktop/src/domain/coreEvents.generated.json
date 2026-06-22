@@ -542,6 +542,7 @@
       "state": {
         "domain": {
           "search_crawler": {
+            "last_active": null,
             "rooms": {
               "!crawler:example.test": {
                 "kind": "queued"
