@@ -3,6 +3,7 @@ use std::{
     net::TcpListener,
     path::Path,
     thread,
+    time::Duration,
 };
 
 use koushi_sdk::{MatrixClientStoreConfig, MatrixClientStoreKey};
@@ -167,10 +168,23 @@ fn event_cache_persists_across_drop_and_restore() {
             .get_room(&room_id)
             .expect("room should be restored from sync state");
         let (room_event_cache, _drop_handles) = room.event_cache().await.expect("room cache");
-        let (events, _subscriber) = room_event_cache
-            .subscribe()
-            .await
-            .expect("room event cache should subscribe");
+        let (events, _subscriber) = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let (events, subscriber) = room_event_cache
+                    .subscribe()
+                    .await
+                    .expect("room event cache should subscribe");
+
+                if events.len() == 1 {
+                    break (events, subscriber);
+                }
+
+                drop(subscriber);
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for restored room event cache");
 
         assert_eq!(events.len(), 1);
         let message = decode_message_event(&events[0]);

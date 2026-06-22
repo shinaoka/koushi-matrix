@@ -3915,6 +3915,8 @@ impl AccountActor {
     /// The store config includes the search index so the SDK initializes it
     /// alongside the SQLite store, and event-cache subscription is attempted
     /// before the restored session is returned to any sync/timeline caller.
+    /// The encrypted-store diagnostic flag is derived from the keyed store
+    /// config so non-keyed restore paths cannot report a false positive.
     async fn restore_into_store(
         &self,
         persistable: &PersistableMatrixSession,
@@ -3924,6 +3926,7 @@ impl AccountActor {
         // Derive the search index configuration. Fail-closed: if the
         // credential store is unreachable, deny the restore (LocalEncryptionUnavailable).
         let search_config = self.store.account_search_index_config(key_id)?;
+        let encrypted_store = store_config.store_config.cache_path().is_some();
         let store_config_with_search = store_config
             .store_config
             .with_search_index_store(search_config.search_index_config);
@@ -3932,7 +3935,7 @@ impl AccountActor {
                 .await
                 .map_err(|_| CoreFailure::LocalEncryptionUnavailable)?;
         let event_cache_result = koushi_sdk::enable_event_cache(&session).await;
-        self.emit_event_cache_status(&event_cache_result);
+        self.emit_event_cache_status(encrypted_store, &event_cache_result);
         Ok(session)
     }
 
@@ -4006,6 +4009,7 @@ impl AccountActor {
 
     fn emit_event_cache_status(
         &self,
+        encrypted_store: bool,
         result: &Result<koushi_sdk::MatrixEventCacheStatus, koushi_sdk::MatrixEventCacheError>,
     ) {
         let (subscribed, subscribe_status, reason_class) = match result {
@@ -4023,7 +4027,7 @@ impl AccountActor {
         };
         self.emit(CoreEvent::LocalEncryption(
             LocalEncryptionEvent::EventCacheStatus {
-                encrypted_store: true,
+                encrypted_store,
                 subscribed,
                 subscribe_status,
                 reason_class,
@@ -4821,12 +4825,23 @@ mod tests {
         let restore = compact
             .find("koushi_sdk::restore_session_with_store")
             .expect("restore_session_with_store call");
+        let store_config = compact
+            .find("letstore_config=self.store.account_store_config(key_id)?;")
+            .expect("keyed store configuration");
+        let encrypted_store = compact
+            .find("letencrypted_store=store_config.store_config.cache_path().is_some();")
+            .expect("derived encrypted-store flag");
         let enable = compact
             .find("koushi_sdk::enable_event_cache(&session).await")
             .expect("enable_event_cache call");
+        let emit = compact
+            .find("self.emit_event_cache_status(encrypted_store,&event_cache_result);")
+            .expect("event cache diagnostic emission");
         let return_ok = compact.find("Ok(session)").expect("return statement");
 
+        assert!(store_config < encrypted_store);
         assert!(restore < enable);
+        assert!(encrypted_store < emit);
         assert!(enable < return_ok);
         assert!(
             helper_compact.contains("EventCacheSubscribeStatus::Enabled,None"),
@@ -4843,8 +4858,12 @@ mod tests {
             "failure diagnostics should carry an explicit subscribe status and a private-data-free reason"
         );
         assert!(
-            compact.contains("self.emit_event_cache_status(&event_cache_result);"),
-            "restore_into_store must emit the diagnostic outcome"
+            compact.contains("letencrypted_store=store_config.store_config.cache_path().is_some();"),
+            "restore_into_store must derive the encrypted-store diagnostic from the keyed store config"
+        );
+        assert!(
+            compact.contains("self.emit_event_cache_status(encrypted_store,&event_cache_result);"),
+            "restore_into_store must pass the derived encrypted-store flag into the diagnostic"
         );
         assert!(
             !compact.contains("enable_event_cache(&session).await.map_err"),
@@ -4853,6 +4872,10 @@ mod tests {
         assert!(
             !compact.contains("enable_event_cache(&session).await?"),
             "event-cache subscription failure must not use ? to fail the restore path"
+        );
+        assert!(
+            !helper_compact.contains("encrypted_store:true"),
+            "the event-cache diagnostic helper must not hardcode the encrypted-store flag"
         );
     }
 
