@@ -8,7 +8,8 @@ use koushi_core::command::{
 use koushi_core::ids::{AccountKey, TimelineKey};
 use koushi_state::{
     AuthSecret, IdentityResetAuthRequest, LoginRequest, MentionIntent, PresenceKind,
-    RecoveryRequest, RoomTagKind, VerificationCancelReason, VerificationTarget,
+    RecoveryRequest, RoomTagKind, TimelineScrollAnchor, VerificationCancelReason,
+    VerificationTarget,
 };
 
 mod support;
@@ -103,6 +104,15 @@ fn secret_bearing_commands_redact_debug() {
         body: BODY.to_owned(),
         send_at_ms: 1_900_000_000_000,
     });
+    let timeline_scroll_anchor = CoreCommand::App(AppCommand::TimelineScrollAnchorUpdated {
+        request_id: fake_request_id(),
+        room_id: "!room:example.test".to_owned(),
+        anchor: TimelineScrollAnchor {
+            event_id: "$anchor:example.test".to_owned(),
+            offset_px: 32,
+            updated_at_ms: 1_900_000_000_000,
+        },
+    });
 
     for (command, secrets) in [
         (&login, vec![PASSWORD, "alice-login-name", "Alice Laptop"]),
@@ -119,6 +129,10 @@ fn secret_bearing_commands_redact_debug() {
         (&search, vec![QUERY]),
         (&thread_draft, vec![BODY, "$root"]),
         (&scheduled_send, vec![BODY, "!room:example.test"]),
+        (
+            &timeline_scroll_anchor,
+            vec!["!room:example.test", "$anchor:example.test"],
+        ),
     ] {
         let debug = format!("{command:?}");
         for secret in secrets {

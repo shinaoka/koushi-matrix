@@ -8,8 +8,9 @@ use koushi_state::{
     DirectoryQuery, FilesViewScope, FormattedMessageDraft, IdentityResetAuthRequest,
     ImageUploadCompressionMode, JapaneseCatalogProfile, LocalEncryptionHealth, LoginRequest,
     MentionIntent, NativeAttentionState, PresenceKind, RecoveryRequest, RoomListFilter,
-    RoomModerationAction, RoomSettingChange, RoomTagKind, SettingsPatch, StagedUploadCompressionChoice,
-    StagedUploadItem, TimelineScrollAnchor, VerificationCancelReason, VerificationTarget,
+    RoomModerationAction, RoomSettingChange, RoomTagKind, SettingsPatch,
+    StagedUploadCompressionChoice, StagedUploadItem, TimelineScrollAnchor,
+    VerificationCancelReason, VerificationTarget,
 };
 use serde::{Deserialize, Serialize};
 
@@ -506,13 +507,11 @@ impl fmt::Debug for AppCommand {
                 .field("timestamp_ms", &"Timestamp(..)")
                 .finish(),
             Self::TimelineScrollAnchorUpdated {
-                request_id,
-                room_id,
-                anchor,
+                request_id, anchor, ..
             } => formatter
                 .debug_struct("TimelineScrollAnchorUpdated")
                 .field("request_id", request_id)
-                .field("room_id", room_id)
+                .field("room_id", &"RoomId(..)")
                 .field("event_id", &"EventId(..)")
                 .field("offset_px", &anchor.offset_px)
                 .field("updated_at_ms", &anchor.updated_at_ms)
