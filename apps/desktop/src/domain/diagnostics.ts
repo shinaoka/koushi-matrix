@@ -4,6 +4,7 @@ import {
   qaSearchCrawlerDiagnosticTokens,
   qaTimelineDiagnosticTokens,
   qaUiLatencyDiagnosticTokens,
+  timelineMatchesActiveRoom,
   type QaDomDiagnostics,
   type QaTimelineDiagnostics
 } from "./qaTitle";
@@ -76,6 +77,7 @@ export function diagnosticReport({
     `Room classification: domain_dms=${roomClassification.domainDms} sidebar_dms=${roomClassification.sidebarDms} room_list_items=${roomClassification.roomListItems} room_list_dm_items=${roomClassification.roomListDmItems} active_filter=${roomClassification.activeFilter}`,
     `Active room selected: ${Boolean(snapshot.state.ui.navigation.active_room_id)}`,
     `Timeline room open: ${Boolean(snapshot.state.ui.timeline.room_id)}`,
+    `Timeline matches active room: ${timelineMatchesActiveRoom(snapshot)}`,
     `Timeline subscribed: ${snapshot.state.ui.timeline.is_subscribed}`,
     `Timeline visible items: ${timelineDiagnostics.visibleItems}`,
     `Timeline downloaded event items: ${timelineDiagnostics.downloadedItems}`,
@@ -100,6 +102,7 @@ export function diagnosticReport({
     `Latest error code: ${snapshot.state.ui.errors.at(-1)?.code ?? "none"}`,
     ...verboseDiagnosticLog,
     ...diagnosticLog,
+    `timeline_matches_active=${timelineMatchesActiveRoom(snapshot)}`,
     ...qaSearchCrawlerDiagnosticTokens(snapshot),
     ...qaTimelineDiagnosticTokens(timelineDiagnostics),
     ...qaDomDiagnosticTokens(domDiagnostics),

@@ -126,6 +126,7 @@ describe("diagnosticReport", () => {
     expect(report).toContain(
       "Room classification: domain_dms=2 sidebar_dms=0 room_list_items=2 room_list_dm_items=0 active_filter=rooms"
     );
+    expect(report).toContain("Timeline matches active room: true");
     expect(report).toContain("Timeline visible items: 3");
     expect(report).toContain(
       "Timeline avatars: mxc=2 ready=1 pending=1 failed=0 missing=1 rendered=1 broken=0"
@@ -141,6 +142,7 @@ describe("diagnosticReport", () => {
     expect(report).toContain("Thread panel: open subscribed=true");
     expect(report).toContain("Threads list: open items=1 paginating=false end=true");
     expect(report).toContain("ui_frame_max_ms=125");
+    expect(report).toContain("timeline_matches_active=true");
     expect(report).toContain("Latest error code: timeline_subscription_failed");
     expect(report).not.toContain("secret message body");
     expect(report).not.toContain("secret thread body");

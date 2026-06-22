@@ -1253,9 +1253,12 @@ export const TimelineView = memo(function TimelineView({
   const readSignalEventRef = useRef<string | null>(null);
   const lastViewportObservationRef = useRef<string | null>(null);
   const downloadedEventIdsRef = useRef<Set<string>>(new Set());
+  const relevantAvatarMxcsRef = useRef<Set<string>>(new Set());
   const requestedAvatarMxcsRef = useRef<Set<string>>(new Set());
   const avatarRetryCountsRef = useRef<Map<string, number>>(new Map());
   const emptyThreadBackfillRequestedRef = useRef(false);
+  const profileUsersRef = useRef(profileUsers);
+  profileUsersRef.current = profileUsers;
   const timelineKeyRef = useRef(timelineKey);
   timelineKeyRef.current = timelineKey;
   const timelineKeyHash = JSON.stringify(timelineKey);
@@ -1296,11 +1299,24 @@ export const TimelineView = memo(function TimelineView({
         pendingAnchorRef.current = null;
         anchorRestorePendingRef.current = false;
         setNavigationSnapshot(null);
-        setStore((current) => applyGlobalResync(current));
+        setStore((current) => {
+          const next = applyGlobalResync(current);
+          relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
+            getItems(next, timelineKeyRef.current),
+            profileUsersRef.current
+          );
+          return next;
+        });
         return;
       }
       if (payload.kind === "Account" && "AvatarThumbnailDownloaded" in payload.event) {
         const { mxc_uri, thumbnail } = payload.event.AvatarThumbnailDownloaded;
+        if (
+          !requestedAvatarMxcsRef.current.has(mxc_uri) &&
+          !relevantAvatarMxcsRef.current.has(mxc_uri)
+        ) {
+          return;
+        }
         if (thumbnail.kind === "failed" && avatarThumbnailFailureIsRetryable(thumbnail)) {
           const attempts = avatarRetryCountsRef.current.get(mxc_uri) ?? 0;
           if (attempts < MAX_AVATAR_THUMBNAIL_ATTEMPTS) {
@@ -1317,7 +1333,14 @@ export const TimelineView = memo(function TimelineView({
       const event = payload.event;
 
       if ("DisplayLabelsUpdated" in event || "DisplayPolicyUpdated" in event) {
-        setStore((current) => applyTimelineEvent(current, event));
+        setStore((current) => {
+          const next = applyTimelineEvent(current, event);
+          relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
+            getItems(next, timelineKeyRef.current),
+            profileUsersRef.current
+          );
+          return next;
+        });
         return;
       }
 
@@ -1384,7 +1407,14 @@ export const TimelineView = memo(function TimelineView({
         return;
       }
 
-      setStore((current) => applyTimelineEvent(current, event));
+      setStore((current) => {
+        const next = applyTimelineEvent(current, event);
+        relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
+          getItems(next, timelineKeyRef.current),
+          profileUsersRef.current
+        );
+        return next;
+      });
     });
     void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
     return unsubscribe;
@@ -1396,6 +1426,7 @@ export const TimelineView = memo(function TimelineView({
     lastViewportObservationRef.current = null;
     readSignalEventRef.current = null;
     downloadedEventIdsRef.current = new Set();
+    relevantAvatarMxcsRef.current = new Set();
     requestedAvatarMxcsRef.current = new Set();
     avatarRetryCountsRef.current = new Map();
     emptyThreadBackfillRequestedRef.current = false;
@@ -1407,6 +1438,9 @@ export const TimelineView = memo(function TimelineView({
   }, [timelineKeyHash]);
 
   const items = getItems(store, timelineKey);
+  useEffect(() => {
+    relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(items, profileUsers);
+  }, [items, profileUsers]);
   const visibleItems = useMemo(() => items.filter((item) => !item.is_hidden), [items]);
   const timelineHeightModel = useMemo(
     () =>
@@ -3318,6 +3352,21 @@ function paginationStateDiagnosticLabel(
     return "Failed";
   }
   return "Unknown";
+}
+
+function timelineAvatarMxcsForItems(
+  items: readonly TimelineItem[],
+  profileUsers: Record<string, UserProfile>
+): Set<string> {
+  const mxcs = new Set<string>();
+  for (const item of items) {
+    const profileAvatar = item.sender ? profileUsers[item.sender]?.avatar : null;
+    const avatar = item.sender_avatar ?? profileAvatar;
+    if (avatar) {
+      mxcs.add(avatar.mxc_uri);
+    }
+  }
+  return mxcs;
 }
 
 function timelineAvatarDiagnostics(

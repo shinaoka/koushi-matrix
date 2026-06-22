@@ -307,15 +307,24 @@ async function run() {
 
 async function runSignedOutScenario() {
   checkLinuxTools();
+  const realLogin = realLoginFromStdin ? await readRealLoginCredentials() : null;
 
   const runDir = join(artifactRoot, timestamp());
   const screenshotDir = join(runDir, "screenshots");
   const dataDir = qaDataDirForRun(runDir);
   const logPath = join(runDir, "run.log");
+  const qaLoginPipePath = realLogin ? join(dataDir, "qa-login.pipe") : null;
+  const qaControlPipePath = realLogin ? join(dataDir, "qa-control.pipe") : null;
   mkdirSync(screenshotDir, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
+  if (qaLoginPipePath) {
+    createNamedPipe(qaLoginPipePath);
+  }
+  if (qaControlPipePath) {
+    createNamedPipe(qaControlPipePath);
+  }
 
-  const baseEnv = childEnvironment(dataDir);
+  const baseEnv = childEnvironment(dataDir, qaLoginPipePath, qaControlPipePath);
   const dbusSession = ensureDbusSession(logPath, baseEnv);
   const buildEnv = {
     ...baseEnv,
@@ -339,6 +348,7 @@ async function runSignedOutScenario() {
   let browser;
   let appLaunched = false;
   let dbusMonitor = null;
+  let realLoginCleanupRequired = false;
   try {
     const appBinary = await ensureAppBinary({ cwd: desktopDir, env: buildEnv, logPath });
     await waitForPort("127.0.0.1", driverPort, timeoutMs);
@@ -364,6 +374,15 @@ async function runSignedOutScenario() {
     requireNonEmptyFile(screenshotPath, "signed-out screenshot");
     console.log("screenshot=ok");
 
+    if (realLogin) {
+      await writeRealLoginPipe(qaLoginPipePath, realLogin);
+      realLoginCleanupRequired = true;
+      await waitForLocalLoginReady(browser, timeoutMs);
+      console.log("gui_real_login=ok");
+      await exerciseRealRoomSelection(browser, timeoutMs);
+      await exerciseRealSpaceSelection(browser, timeoutMs);
+    }
+
     dbusMonitor = startDbusMonitor(logPath, buildEnv);
     await waitForDbusMonitorReady(dbusMonitor, timeoutMs);
     await triggerNotificationSmoke(browser, timeoutMs);
@@ -373,6 +392,15 @@ async function runSignedOutScenario() {
     console.log("run_dir=artifact");
   } finally {
     try {
+      if (qaControlPipePath && realLoginCleanupRequired && browser) {
+        try {
+          await requestQaLogout(qaControlPipePath);
+          await waitForSignedOutTitle(browser, timeoutMs);
+          console.log("gui_real_logout=ok");
+        } catch (cleanupError) {
+          console.error(`real login logout cleanup failed: ${cleanupError.message}`);
+        }
+      }
       if (dbusMonitor) {
         terminateProcessGroup(dbusMonitor.child, "SIGTERM");
         await settleChild(dbusMonitor.child);
@@ -2030,7 +2058,7 @@ async function waitForQaTitle(browser, predicate, timeout, description) {
     if (status.errors > 0) {
       throw new Error(`${description} reported errors. Last title: ${lastTitle}`);
     }
-    if (predicate(status)) {
+    if (await predicate(status)) {
       return lastTitle;
     }
     await sleep(250);
@@ -4028,6 +4056,168 @@ function shouldSelectFirstRoom(status, selectedRoom) {
   return status.active_room === false || status.timeline_subscribed === false;
 }
 
+function readRealLoginCredentials() {
+  return new Promise((resolve, reject) => {
+    let input = "";
+    let settled = false;
+    const settle = (callback) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      callback();
+    };
+    const parseInput = () => {
+      try {
+        const credentials = realLoginCredentialsFromInput(input);
+        settle(() => resolve(credentials));
+      } catch (error) {
+        settle(() => reject(error));
+      }
+    };
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      input += chunk;
+      if (completeRealLoginInputWasReceived(input)) {
+        parseInput();
+      }
+    });
+    process.stdin.on("error", reject);
+    process.stdin.on("end", () => {
+      parseInput();
+    });
+    process.stdin.resume();
+  });
+}
+
+function completeRealLoginInputWasReceived(input) {
+  return (input.replace(/\r/g, "").match(/\n/g) ?? []).length >= 5;
+}
+
+function realLoginCredentialsFromInput(input) {
+  const [homeserverInput, username, password, deviceNameInput, recoverySecretInput] = input
+    .replace(/\r/g, "")
+    .split("\n");
+  const homeserver = homeserverInput.trim() || "https://matrix.org";
+  const deviceName = deviceNameInput?.trim() || "Koushi Linux GUI QA";
+  const recoverySecret = recoverySecretInput?.trim() || null;
+  if (!username?.trim() || !password?.trim()) {
+    throw new Error("real login stdin must contain homeserver, username, and password lines");
+  }
+  return {
+    homeserver,
+    username: username.trim(),
+    password: password.trim(),
+    deviceName,
+    recoverySecret
+  };
+}
+
+async function exerciseRealRoomSelection(browser, timeout) {
+  const initial = await realRoomSelectionDiagnostics(browser);
+  if (initial.count < 2) {
+    console.log("gui_real_room_switch=skipped");
+    return;
+  }
+  const targetIndex = initial.activeIndex === 0 ? 1 : 0;
+  const targetLabel = await browser.execute((index) => {
+    const rows = Array.from(
+      document.querySelectorAll('button[data-testid="room-item"]:not([data-room-kind="invite"])')
+    );
+    const name = rows[index]?.querySelector(".room-name")?.textContent?.trim();
+    return name && name.length > 0 ? name : null;
+  }, targetIndex);
+  if (!targetLabel) {
+    throw new Error("real GUI room switch target label was unavailable");
+  }
+  const roomItems = await browser.$$(
+    'button[data-testid="room-item"]:not([data-room-kind="invite"])'
+  );
+  await roomItems[targetIndex].waitForDisplayed({ timeout });
+  await roomItems[targetIndex].click();
+  await waitForQaTitle(
+    browser,
+    async (status) => {
+      const current = await realRoomSelectionDiagnostics(browser, targetLabel);
+      return (
+        current.targetIsActive &&
+        qaStatusIsReady(status, false, true)
+      );
+    },
+    timeout,
+    "real GUI room switch"
+  );
+  console.log("gui_real_room_switch=ok");
+}
+
+async function realRoomSelectionDiagnostics(browser, targetLabel = null) {
+  return await browser.execute((target) => {
+    const normalize = (value) => (value ?? "").replace(/\s+/g, " ").trim();
+    const rows = Array.from(
+      document.querySelectorAll('button[data-testid="room-item"]:not([data-room-kind="invite"])')
+    );
+    const activeRow = rows.find((row) => row.classList.contains("is-active"));
+    const activeLabel = normalize(activeRow?.querySelector(".room-name")?.textContent);
+    const headerLabel = normalize(document.querySelector(".channel-title")?.textContent);
+    const targetText = normalize(target);
+    return {
+      count: rows.length,
+      activeIndex: rows.findIndex((row) => row.classList.contains("is-active")),
+      targetIsActive: Boolean(
+        targetText &&
+          (activeLabel === targetText ||
+            headerLabel === targetText ||
+            headerLabel.endsWith(targetText))
+      )
+    };
+  }, targetLabel);
+}
+
+async function exerciseRealSpaceSelection(browser, timeout) {
+  const initial = await realSpaceSelectionDiagnostics(browser);
+  if (initial.spaceCount < 1) {
+    console.log("gui_real_space_switch=skipped");
+    return;
+  }
+  const spaceButtons = await browser.$$("button.workspace-space-button");
+  await spaceButtons[0].waitForDisplayed({ timeout });
+  await spaceButtons[0].click();
+  await waitForQaTitle(
+    browser,
+    async (status) => {
+      const current = await realSpaceSelectionDiagnostics(browser);
+      return current.spaceActiveIndex === 0 && status.errors === 0;
+    },
+    timeout,
+    "real GUI space switch"
+  );
+  const homeButton = await browser.$('button[aria-label="Home"]');
+  await homeButton.waitForDisplayed({ timeout });
+  await homeButton.click();
+  await waitForQaTitle(
+    browser,
+    async (status) => {
+      const current = await realSpaceSelectionDiagnostics(browser);
+      return current.homeActive && status.errors === 0;
+    },
+    timeout,
+    "real GUI home switch"
+  );
+  console.log("gui_real_space_switch=ok");
+}
+
+async function realSpaceSelectionDiagnostics(browser) {
+  return await browser.execute(() => {
+    const spaces = Array.from(document.querySelectorAll("button.workspace-space-button"));
+    const home = document.querySelector("button.workspace-home-button");
+    return {
+      spaceCount: spaces.length,
+      spaceActiveIndex: spaces.findIndex((row) => row.classList.contains("is-active")),
+      homeActive: Boolean(home?.classList.contains("is-active"))
+    };
+  });
+}
+
 async function writeLocalLoginPipe(path, credentials) {
   const payloadObject = {
     homeserver: credentials.homeserver,
@@ -4035,6 +4225,20 @@ async function writeLocalLoginPipe(path, credentials) {
     password: credentials.password,
     device_display_name: credentials.deviceName
   };
+  const payload = JSON.stringify(payloadObject) + "\n";
+  await writeSensitivePayloadToPath(path, payload, 10000);
+}
+
+async function writeRealLoginPipe(path, credentials) {
+  const payloadObject = {
+    homeserver: credentials.homeserver,
+    username: credentials.username,
+    password: credentials.password,
+    device_display_name: credentials.deviceName
+  };
+  if (credentials.recoverySecret) {
+    payloadObject.recovery_secret = credentials.recoverySecret;
+  }
   const payload = JSON.stringify(payloadObject) + "\n";
   await writeSensitivePayloadToPath(path, payload, 10000);
 }
@@ -4190,6 +4394,8 @@ function childEnvironment(dataDir, qaLoginPipePath = null, qaControlPipePath = n
   }
   if (qaControlPipePath) {
     env.KOUSHI_QA_CONTROL_PIPE = qaControlPipePath;
+  } else if (realLoginFromStdin) {
+    env.KOUSHI_QA_CONTROL_PIPE = join(dataDir, "qa-control.pipe");
   }
   Object.assign(env, nssWrapperEnvironment(dataDir));
   return env;
@@ -4393,7 +4599,9 @@ function parseQaTitle(title) {
       ["rooms", "spaces", "timeline_items", "pinned", "pin_ops", "errors", "unread", "badge"].includes(key)
     ) {
       status[key] = Number(value);
-    } else if (["active_room", "timeline_room", "timeline_subscribed"].includes(key)) {
+    } else if (
+      ["active_room", "timeline_room", "timeline_matches_active", "timeline_subscribed"].includes(key)
+    ) {
       status[key] = value === "true";
     } else {
       status[key] = value;
@@ -4474,6 +4682,7 @@ function qaStatusIsReady(status, requireRecovered, allowEmptyTimeline = false) {
     status.rooms > 0 &&
     status.active_room === true &&
     status.timeline_room !== false &&
+    status.timeline_matches_active !== false &&
     status.timeline_subscribed === true &&
     status.errors === 0 &&
     timelineReady

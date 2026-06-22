@@ -549,6 +549,87 @@ describe("TimelineView", () => {
     });
   });
 
+  it("ignores avatar thumbnail events that are not relevant to the mounted timeline", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const onDiagnosticLogEntry = vi.fn();
+    const onDiagnosticsChange = vi.fn();
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onDiagnosticsChange={onDiagnosticsChange}
+        onDiagnosticLogEntry={onDiagnosticLogEntry}
+        onReply={vi.fn()}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [
+            {
+              ...message("$avatar-relevant", "Avatar row"),
+              sender_avatar: {
+                mxc_uri: "mxc://matrix.org/relevant-avatar",
+                thumbnail: { kind: "notRequested" }
+              }
+            }
+          ]
+        }
+      }
+    });
+    await waitFor(() =>
+      expect(onDiagnosticsChange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          avatarMxcItems: 1,
+          avatarPendingItems: 1,
+          visibleItems: 1
+        })
+      )
+    );
+    onDiagnosticLogEntry.mockClear();
+    onDiagnosticsChange.mockClear();
+
+    emit({
+      kind: "Account",
+      event: {
+        AvatarThumbnailDownloaded: {
+          request_id: { connection_id: 1, sequence: 2 },
+          mxc_uri: "mxc://matrix.org/unrelated-avatar",
+          thumbnail: {
+            kind: "ready",
+            source_url: "file:///tmp/unrelated-avatar.bin",
+            width: null,
+            height: null,
+            mime_type: null
+          }
+        }
+      }
+    });
+
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(onDiagnosticLogEntry).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "timeline.avatar",
+        message: "avatar thumbnail ready"
+      })
+    );
+    expect(onDiagnosticsChange).not.toHaveBeenCalled();
+    expect(document.querySelector(".message .avatar img")).toBeNull();
+  });
+
   it("renders downloaded thumbnails for multiple visible sender avatars", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({

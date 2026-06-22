@@ -673,7 +673,9 @@ function parseQaTitle(title) {
       ].includes(key)
     ) {
       status[key] = Number(value);
-    } else if (["active_room", "timeline_subscribed"].includes(key)) {
+    } else if (
+      ["active_room", "timeline_room", "timeline_matches_active", "timeline_subscribed"].includes(key)
+    ) {
       status[key] = value === "true";
     } else {
       status[key] = value;
@@ -719,6 +721,8 @@ function qaStatusIsReady(status, requireRecovered, allowEmptyTimeline = false) {
     status.sync === "running" &&
     status.rooms > 0 &&
     status.active_room === true &&
+    status.timeline_room !== false &&
+    status.timeline_matches_active !== false &&
     status.timeline_subscribed === true &&
     status.errors === 0 &&
     timelineReady
