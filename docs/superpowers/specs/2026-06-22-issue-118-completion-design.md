@@ -175,6 +175,15 @@ Timeline anchor capture stays in the timeline UI layer because the DOM viewport 
 
 Member lists should render with virtualization for large rooms. Use existing component patterns and CSS density; do not add decorative cards. Rows keep stable heights so avatar loading cannot shift layout.
 
+Concrete Task 5 design:
+
+- `RoomInfoPanel` keeps the existing Room Info layout and member-row actions, but replaces the all-member `<ul>` render with a fixed-row-height virtual list. The row height is a CSS/TS contract, defaulting to 76px so current multi-line member rows and action controls do not overlap.
+- The member list owns a bounded scroll container, not the full right panel. For small lists it still renders naturally inside the same section; for large lists it uses top/bottom spacer rows and renders only `visibleMembers = members.slice(start, end)` with overscan.
+- Scroll state is local to the room/member list and resets when `roomId` or `memberProfiles.length` changes. The existing “People” shortcut and `initialSection="members"` behavior continue to scroll the section into view, not a specific row.
+- Visible avatar requests are driven from the same virtual `visibleMembers` slice. Add an optional `onRequestMemberAvatarThumbnail(mxcUri)` prop to `RoomInfoPanel` and plumb it through `ContextualRightPanel` from the existing Tauri avatar-thumbnail transport. The request loop must skip null `avatar_url`, de-duplicate MXC URIs per mounted panel, and retry only when a previous request rejected by removing the MXC from the in-flight set.
+- Do not restore eager snapshot-level member avatar requests. `profile.users` remains excluded from the global avatar request planner; Room Info may request only currently rendered member rows.
+- Tests must prove a 3000-member room does not render every row, late rows appear after scrolling, and avatar requests are made only for the initially rendered/overscanned member rows rather than all 3000 members.
+
 ## Backend Design
 
 ### Event Cache Lifecycle
