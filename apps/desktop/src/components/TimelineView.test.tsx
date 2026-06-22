@@ -632,6 +632,227 @@ describe("TimelineView", () => {
     });
   });
 
+  it("scrolls to the sent local echo even when the user was reading above the bottom", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        currentUserId="@alice:example.invalid"
+        onReply={vi.fn()}
+      />
+    );
+
+    const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollHeight", { value: 2400, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$older", "Older message")]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(2400);
+    });
+
+    timeline.scrollTop = 400;
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key: KEY,
+            generation: 1,
+            batch_id: 1,
+            diffs: [
+              {
+                PushBack: {
+                  item: {
+                    ...message("$local-echo", "Message I just sent"),
+                    id: { Transaction: { transaction_id: "txn-1" } },
+                    sender: "@alice:example.invalid",
+                    send_state: { kind: "sending" }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Message I just sent")).toBeTruthy();
+      expect(timeline.scrollTop).toBe(2400);
+    });
+  });
+
+  it("renders read receipts as a compact avatar stack without an inline text label", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        liveSignals={{
+          presence: {},
+          rooms: {
+            "!room:example.invalid": {
+              fully_read_event_id: null,
+              typing_user_ids: [],
+              receipts_by_event: {
+                "$seen": {
+                  total_count: 2,
+                  overflow_count: 0,
+                  readers: [
+                    {
+                      user_id: "@ken:example.invalid",
+                      display_name: "Ken Inayoshi",
+                      original_display_label: "Ken Inayoshi",
+                      avatar: null,
+                      timestamp_ms: null
+                    },
+                    {
+                      user_id: "@satoshi:example.invalid",
+                      display_name: "Satoshi Terasaki",
+                      original_display_label: "Satoshi Terasaki",
+                      avatar: null,
+                      timestamp_ms: null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$seen", "Seen message")]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      const receipts = document.querySelector(".message-receipts");
+      expect(receipts).not.toBeNull();
+      expect(receipts?.textContent).toContain("KE");
+      expect(receipts?.textContent).toContain("SA");
+      expect(receipts?.textContent).not.toContain("Read by 2");
+      expect(receipts?.getAttribute("aria-label")).toContain("Read by 2");
+    });
+  });
+
+  it("surfaces reaction senders in a hoverable tooltip using profile labels", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        profileUsers={{
+          "@ken:example.invalid": {
+            user_id: "@ken:example.invalid",
+            display_name: "Ken Inayoshi",
+            display_label: "Ken Inayoshi",
+            original_display_label: "Ken Inayoshi",
+            mention_search_terms: [],
+            avatar: null
+          },
+          "@satoshi:example.invalid": {
+            user_id: "@satoshi:example.invalid",
+            display_name: "Satoshi Terasaki",
+            display_label: "Satoshi Terasaki",
+            original_display_label: "Satoshi Terasaki",
+            mention_search_terms: [],
+            avatar: null
+          }
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              {
+                ...message("$reacted", "Reacted message"),
+                reactions: [
+                  {
+                    key: "😢",
+                    count: 2,
+                    reacted_by_me: false,
+                    my_reaction_event_id: null,
+                    sender_preview: ["@ken:example.invalid", "@satoshi:example.invalid"]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("😢")).toBeTruthy();
+      expect(screen.getByText("Ken Inayoshi and Satoshi Terasaki reacted with 😢")).toBeTruthy();
+    });
+  });
+
   it("requests visible sender avatar thumbnails that are not yet downloaded", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const downloadAvatarThumbnail = vi.fn(async () => undefined);

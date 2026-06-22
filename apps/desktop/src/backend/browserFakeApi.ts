@@ -65,6 +65,7 @@ export interface DesktopApi {
   ): Promise<DesktopSnapshot>;
   listSavedSessions(): Promise<SavedSessionInfo[]>;
   switchAccount(session: SavedSessionInfo): Promise<DesktopSnapshot>;
+  logout(): Promise<DesktopSnapshot>;
   submitRecovery(secret: string): Promise<DesktopSnapshot>;
   restartSync(): Promise<DesktopSnapshot>;
   updateSettings(patch: SettingsPatch): Promise<DesktopSnapshot>;
@@ -307,6 +308,12 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.domain.sync = "stopped";
     this.clearSessionViews();
     this.snapshot = createReadySnapshot(knownSession);
+    return this.getSnapshot();
+  }
+
+  async logout(): Promise<DesktopSnapshot> {
+    this.snapshot.state.domain.session = { kind: "signedOut" };
+    this.clearSessionViews();
     return this.getSnapshot();
   }
 

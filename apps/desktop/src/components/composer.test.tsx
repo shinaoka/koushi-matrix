@@ -10,6 +10,39 @@ afterEach(() => {
 });
 
 describe("Composer", () => {
+  it("does not submit while an IME composition is being confirmed with Enter", async () => {
+    const onSend = vi.fn();
+    const resolveComposerKeyAction = vi.fn(async () => "send" as const);
+
+    const { container } = render(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        roomName="Direct room"
+        value="日本語"
+        resolveComposerKeyAction={resolveComposerKeyAction}
+        onCancelReply={() => undefined}
+        onSend={onSend}
+        onValueChange={() => undefined}
+      />
+    );
+
+    const textarea = container.querySelector("textarea");
+    expect(textarea).not.toBeNull();
+
+    fireEvent.compositionStart(textarea!);
+    fireEvent.keyDown(textarea!, {
+      key: "Enter",
+      code: "Enter",
+      keyCode: 13
+    });
+
+    await Promise.resolve();
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(resolveComposerKeyAction).not.toHaveBeenCalled();
+  });
+
   it("keeps typed text local and sends it before parent state catches up", () => {
     const onSend = vi.fn();
     const onValueChange = vi.fn();
