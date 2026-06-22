@@ -85,7 +85,7 @@ pub use room_interactions::{
 // ── Re-exports: navigation ──────────────────────────────────────────────────
 pub use navigation::{
     FocusedContextState, NavigationState, RoomListEntryKind, RoomListFilter, RoomListProjection,
-    RoomListProjectionItem, RoomListSort, compute_room_list_projection,
+    RoomListProjectionItem, RoomListSort, TimelineScrollAnchor, compute_room_list_projection,
 };
 
 // ── Re-exports: activity ────────────────────────────────────────────────────

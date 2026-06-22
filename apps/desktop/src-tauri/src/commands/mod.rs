@@ -21,8 +21,8 @@ use koushi_core::{
     PaginationDirection, RequestId, RoomCommand, RoomEvent, RoomKeyExportRequest,
     RoomKeyImportRequest, SearchCommand, SearchScope, SecureBackupPassphraseChangeRequest,
     SecureBackupSetupRequest, SetAvatarRequest, SyncCommand, TimelineCommand, TimelineKey,
-    TimelineKind, TimelineViewportObservation, UploadMediaKind, UploadMediaRequest,
-    UploadMediaThumbnail,
+    TimelineKind, TimelineScrollAnchor, TimelineViewportObservation, UploadMediaKind,
+    UploadMediaRequest, UploadMediaThumbnail,
 };
 use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentSort, AuthSecret,
@@ -1070,6 +1070,18 @@ pub(crate) fn build_open_timeline_at_timestamp_command(
         request_id,
         room_id,
         timestamp_ms,
+    })
+}
+
+pub(crate) fn build_update_navigation_scroll_anchor_command(
+    request_id: koushi_core::RequestId,
+    room_id: String,
+    anchor: TimelineScrollAnchor,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::TimelineScrollAnchorUpdated {
+        request_id,
+        room_id,
+        anchor,
     })
 }
 

@@ -2,6 +2,13 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineScrollAnchor {
+    pub event_id: String,
+    pub offset_px: i32,
+    pub updated_at_ms: u64,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NavigationState {
     pub active_space_id: Option<String>,
@@ -10,6 +17,8 @@ pub struct NavigationState {
     pub space_order: Vec<String>,
     #[serde(default)]
     pub last_room_by_space_id: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub room_scroll_anchors: BTreeMap<String, TimelineScrollAnchor>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

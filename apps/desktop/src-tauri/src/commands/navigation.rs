@@ -170,6 +170,23 @@ pub async fn open_timeline_at_timestamp(
 }
 
 #[tauri::command]
+pub async fn update_navigation_scroll_anchor(
+    room_id: String,
+    anchor: koushi_state::TimelineScrollAnchor,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<(), String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_update_navigation_scroll_anchor_command(request_id, room_id, anchor),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn observe_timeline_viewport(
     room_id: String,
     first_visible_event_id: Option<String>,

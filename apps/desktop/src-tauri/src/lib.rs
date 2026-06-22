@@ -956,6 +956,7 @@ pub fn run() {
             commands::navigation::select_search_result,
             commands::navigation::close_focused_context,
             commands::navigation::open_timeline_at_timestamp,
+            commands::navigation::update_navigation_scroll_anchor,
             commands::navigation::observe_timeline_viewport,
             commands::timeline::ensure_timeline_subscribed,
             commands::timeline::paginate_timeline_backwards,

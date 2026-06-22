@@ -115,6 +115,7 @@ import type {
   SettingsPatch,
   StagedUploadCompressionChoice,
   StagedUploadItem,
+  TimelineScrollAnchor,
   UploadStagingRequestItem
 } from "./domain/types";
 import { SNAPSHOT_SCHEMA_VERSION } from "./domain/types";
@@ -344,6 +345,9 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
           lastVisibleEventId,
           atBottom
         });
+      },
+      async updateScrollAnchor(roomId: string, anchor: TimelineScrollAnchor) {
+        await invoke("update_navigation_scroll_anchor", { roomId, anchor });
       },
       async openAtTimestamp(roomId: string, timestampMs: number) {
         await invoke("open_timeline_at_timestamp", { roomId, timestampMs });

@@ -16,6 +16,7 @@ afterEach(() => {
   cleanup();
   setActiveLocaleProfile("en", "none");
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 const KEY = roomTimelineKey("@alice:example.invalid", "!room:example.invalid");
@@ -63,8 +64,38 @@ function baseTransport(
     forwardMessage: async () => undefined,
     loadLinkPreviews: async () => undefined,
     hideLinkPreview: async () => undefined,
+    updateScrollAnchor: async () => undefined,
     ...overrides
   };
+}
+
+function mockTimelineRects(
+  rects: Record<string, { top: number; height: number }>,
+  container: { top?: number; height?: number } = {}
+) {
+  return vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    const eventId = this.getAttribute("data-event-id");
+    const testId = this.getAttribute("data-testid");
+    const top = testId === "timeline-view" ? container.top ?? 0 : rects[eventId ?? ""]?.top ?? 0;
+    const height =
+      testId === "timeline-view"
+        ? container.height ?? 600
+        : rects[eventId ?? ""]?.height ?? 0;
+    const bottom = top + height;
+    return {
+      x: 0,
+      y: top,
+      top,
+      left: 0,
+      right: 0,
+      width: 0,
+      height,
+      bottom,
+      toJSON: () => ({})
+    } as DOMRect;
+  });
 }
 
 describe("TimelineView", () => {
@@ -215,6 +246,142 @@ describe("TimelineView", () => {
 
     await waitFor(() => {
       expect(paginateBackwards).toHaveBeenCalledWith(KEY);
+    });
+  });
+
+  it("throttles room scroll anchor captures to once per second per room", async () => {
+    vi.useFakeTimers();
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const updateScrollAnchor = vi.fn(async () => undefined);
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 0;
+    });
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      updateScrollAnchor
+    });
+
+    mockTimelineRects({
+      "$first:example.invalid": { top: 120, height: 48 },
+      "$second:example.invalid": { top: 420, height: 48 }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              message("$first:example.invalid", "First"),
+              message("$second:example.invalid", "Second")
+            ]
+          }
+        }
+      });
+    });
+
+    const timeline = screen.getByTestId("timeline-view");
+
+    act(() => {
+      fireEvent.scroll(timeline);
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(500);
+      fireEvent.scroll(timeline);
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(499);
+    });
+    expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(updateScrollAnchor).toHaveBeenCalledTimes(2);
+    expect(updateScrollAnchor).toHaveBeenCalledWith(
+      "!room:example.invalid",
+      expect.objectContaining({
+        event_id: "$first:example.invalid",
+        offset_px: 120,
+        updated_at_ms: expect.any(Number)
+      })
+    );
+  });
+
+  it("restores a persisted room anchor when the event is already rendered", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    mockTimelineRects(
+      {
+        "$anchor:example.invalid": { top: 500, height: 48 },
+        "$after:example.invalid": { top: 560, height: 48 }
+      },
+      { top: 0, height: 600 }
+    );
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        roomScrollAnchor={{
+          event_id: "$anchor:example.invalid",
+          offset_px: 50,
+          updated_at_ms: Date.now()
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [
+            message("$first:example.invalid", "First"),
+            message("$anchor:example.invalid", "Anchor"),
+            message("$after:example.invalid", "After")
+          ]
+        }
+      }
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(450);
     });
   });
 

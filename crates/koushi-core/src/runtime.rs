@@ -1330,6 +1330,20 @@ impl AppActor {
                         .await;
                     true
                 }
+                AppCommand::TimelineScrollAnchorUpdated {
+                    request_id,
+                    room_id,
+                    anchor,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::TimelineScrollAnchorUpdated {
+                            room_id,
+                            anchor,
+                        })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
                 AppCommand::CloseFocusedContext { request_id } => {
                     let focused_key = self.current_focused_context_timeline_key();
                     let effects = self.reduce_app_action(AppAction::CloseFocusedContext).await;

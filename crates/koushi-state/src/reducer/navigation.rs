@@ -11,6 +11,8 @@ use super::{
     remember_active_room_for_current_space, select_active_room_for_navigation,
 };
 
+const MAX_ROOM_SCROLL_ANCHORS: usize = 200;
+
 pub(crate) fn handle_invite_list_updated(
     state: &mut AppState,
     mut invites: Vec<crate::state::InvitePreview>,
@@ -35,9 +37,32 @@ pub(crate) fn handle_navigation_loaded(
         return Vec::new();
     }
 
-    state.navigation = navigation;
+    state.navigation = normalize_navigation_state(navigation);
     recompute_room_list_projection(state);
     vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+}
+
+pub(crate) fn handle_timeline_scroll_anchor_updated(
+    state: &mut AppState,
+    room_id: String,
+    anchor: crate::state::TimelineScrollAnchor,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    let should_update = state
+        .navigation
+        .room_scroll_anchors
+        .get(&room_id)
+        != Some(&anchor);
+    if !should_update {
+        return Vec::new();
+    }
+
+    state.navigation.room_scroll_anchors.insert(room_id, anchor);
+    prune_room_scroll_anchors(&mut state.navigation.room_scroll_anchors);
+    Vec::new()
 }
 
 fn preserve_known_avatar_thumbnails(
@@ -48,6 +73,34 @@ fn preserve_known_avatar_thumbnails(
 
     for invite in next_invites {
         preserve_avatar_thumbnail(&known_thumbnails, &mut invite.avatar);
+    }
+}
+
+fn normalize_navigation_state(mut navigation: NavigationState) -> NavigationState {
+    prune_room_scroll_anchors(&mut navigation.room_scroll_anchors);
+    navigation
+}
+
+fn prune_room_scroll_anchors(
+    room_scroll_anchors: &mut std::collections::BTreeMap<String, crate::state::TimelineScrollAnchor>,
+) {
+    if room_scroll_anchors.len() <= MAX_ROOM_SCROLL_ANCHORS {
+        return;
+    }
+
+    let mut ordered_room_ids: Vec<(String, u64)> = room_scroll_anchors
+        .iter()
+        .map(|(room_id, anchor)| (room_id.clone(), anchor.updated_at_ms))
+        .collect();
+    ordered_room_ids.sort_by(|(left_room_id, left_updated_at_ms), (right_room_id, right_updated_at_ms)| {
+        left_updated_at_ms
+            .cmp(right_updated_at_ms)
+            .then_with(|| left_room_id.cmp(right_room_id))
+    });
+    let overflow = room_scroll_anchors.len().saturating_sub(MAX_ROOM_SCROLL_ANCHORS);
+
+    for (room_id, _) in ordered_room_ids.into_iter().take(overflow) {
+        room_scroll_anchors.remove(&room_id);
     }
 }
 

@@ -1419,6 +1419,7 @@ mod tests {
                 "!space:test.example.com".to_owned(),
                 "!room:test.example.com".to_owned(),
             )]),
+            room_scroll_anchors: std::collections::BTreeMap::new(),
         };
 
         actor
@@ -1466,6 +1467,7 @@ mod tests {
                 "!space:test.example.com".to_owned(),
                 "!room:test.example.com".to_owned(),
             )]),
+            room_scroll_anchors: std::collections::BTreeMap::new(),
         };
         let legacy_path = actor.account_navigation_legacy_file(&key_id);
         std::fs::create_dir_all(legacy_path.parent().expect("navigation parent"))
@@ -1508,6 +1510,7 @@ mod tests {
             active_room_id: Some("!room:test.example.com".to_owned()),
             space_order: Vec::new(),
             last_room_by_space_id: std::collections::BTreeMap::new(),
+            room_scroll_anchors: std::collections::BTreeMap::new(),
         };
 
         actor
@@ -1533,6 +1536,68 @@ mod tests {
                 .expect("load cleared navigation"),
             NavigationState::default()
         );
+    }
+
+    #[test]
+    fn encrypted_navigation_state_preserves_room_scroll_anchor() {
+        let data_dir = tempdir().expect("tempdir");
+        let cred_dir = tempdir().expect("tempdir");
+        let key_id = make_key_id();
+        let actor = file_store_actor(&data_dir, &cred_dir);
+        let navigation = NavigationState {
+            active_space_id: Some("!space:test.example.com".to_owned()),
+            active_room_id: Some("!room:test.example.com".to_owned()),
+            space_order: vec!["!space:test.example.com".to_owned()],
+            last_room_by_space_id: std::collections::BTreeMap::from([(
+                "!space:test.example.com".to_owned(),
+                "!room:test.example.com".to_owned(),
+            )]),
+            room_scroll_anchors: std::collections::BTreeMap::from([(
+                "!room:test.example.com".to_owned(),
+                koushi_state::TimelineScrollAnchor {
+                    event_id: "$anchor:event".to_owned(),
+                    offset_px: -32,
+                    updated_at_ms: 1_820_000_000_000,
+                },
+            )]),
+        };
+
+        actor
+            .save_navigation(&key_id, &navigation)
+            .expect("save encrypted navigation");
+        let loaded = actor
+            .load_navigation(&key_id)
+            .expect("load encrypted navigation");
+
+        assert_eq!(loaded, navigation);
+    }
+
+    #[test]
+    fn legacy_navigation_json_without_scroll_anchors_loads_with_empty_map() {
+        let data_dir = tempdir().expect("tempdir");
+        let cred_dir = tempdir().expect("tempdir");
+        let key_id = make_key_id();
+        let actor = file_store_actor(&data_dir, &cred_dir);
+        let legacy_path = actor.account_navigation_legacy_file(&key_id);
+        std::fs::create_dir_all(legacy_path.parent().expect("navigation parent"))
+            .expect("create navigation parent");
+        std::fs::write(
+            &legacy_path,
+            r#"{
+                "active_space_id":"!space:test.example.com",
+                "active_room_id":"!room:test.example.com",
+                "space_order":["!space:test.example.com"],
+                "last_room_by_space_id":{"!space:test.example.com":"!room:test.example.com"}
+            }"#,
+        )
+        .expect("write legacy navigation");
+
+        let loaded = actor
+            .load_navigation(&key_id)
+            .expect("load legacy navigation");
+
+        assert!(loaded.room_scroll_anchors.is_empty());
+        assert_eq!(loaded.active_room_id.as_deref(), Some("!room:test.example.com"));
     }
 
     #[test]
