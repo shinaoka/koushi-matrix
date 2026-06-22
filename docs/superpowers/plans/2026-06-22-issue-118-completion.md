@@ -545,7 +545,7 @@ cd apps/desktop && npm test -- UserSettingsPanel
 cd apps/desktop && npx playwright test e2e/search-crawler-settings.spec.ts
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/koushi-state apps/desktop/src/components/UserSettingsPanel.tsx apps/desktop/src/components/UserSettingsPanel.test.tsx apps/desktop/e2e/search-crawler-settings.spec.ts apps/desktop/src/i18n/messages.ts
