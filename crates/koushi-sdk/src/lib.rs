@@ -4768,8 +4768,7 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use super::{
-        LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE, MatrixLocalUserAliases,
-        MatrixEventCacheError,
+        LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE, MatrixEventCacheError, MatrixLocalUserAliases,
         MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom, MatrixRoomHistoryVisibility,
         MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomModerationAction,
         MatrixRoomPermissionFacts, MatrixRoomSettingChange, MatrixRoomSettingsSnapshot,

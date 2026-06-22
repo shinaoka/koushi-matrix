@@ -57,8 +57,8 @@ use crate::command::{
     TimelineCommand,
 };
 use crate::event::{
-    AccountEvent, CoreEvent, E2eeTrustEvent, EventCacheFailureReasonClass, EventCacheSubscribeStatus,
-    LiveSignalsEvent, LocalEncryptionEvent,
+    AccountEvent, CoreEvent, E2eeTrustEvent, EventCacheFailureReasonClass,
+    EventCacheSubscribeStatus, LiveSignalsEvent, LocalEncryptionEvent,
 };
 use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
@@ -1650,7 +1650,11 @@ impl AccountActor {
     /// 2. Already in-flight: return; the completing task will emit.
     /// 3. Otherwise: insert into `avatar_inflight`, spawn a bounded fetch task
     ///    that posts `AvatarFetched` back into this actor's inbox.
-    async fn handle_download_avatar_thumbnail(&mut self, request_id: RequestId, mxc_uri: String) {
+    async fn handle_download_avatar_thumbnail(
+        &mut self,
+        request_id: RequestId,
+        mxc_uri: String,
+    ) {
         // 1. Cache hit — serve immediately without any I/O.
         if let Some(cached) = self.avatar_cache.get(&mxc_uri) {
             if matches!(cached, AvatarThumbnailState::Ready { .. }) {
@@ -1702,8 +1706,7 @@ impl AccountActor {
 
         // 4. Spawn a bounded fetch task; return immediately.
         // Record the originating request_id as the first waiter.
-        self.avatar_inflight
-            .insert(mxc_uri.clone(), vec![request_id]);
+        self.avatar_inflight.insert(mxc_uri.clone(), vec![request_id]);
         let generation = self.avatar_session_generation;
         let data_dir = self.data_dir.clone();
         let semaphore = self.avatar_download_semaphore.clone();
@@ -1821,7 +1824,8 @@ impl AccountActor {
         self.avatar_cache.clear();
         // Replace the semaphore so any task that manages to run after abort
         // cannot accidentally re-use a poisoned permit count.
-        self.avatar_download_semaphore = Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY));
+        self.avatar_download_semaphore =
+            Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY));
         // Advance the generation counter so stale completions from tasks that
         // were spawned before this abort are silently rejected.
         self.avatar_session_generation = self.avatar_session_generation.wrapping_add(1);

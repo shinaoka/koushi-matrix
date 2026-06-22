@@ -5,9 +5,9 @@ use std::{
     thread,
 };
 
+use koushi_sdk::{MatrixClientStoreConfig, MatrixClientStoreKey};
 use koushi_state::AuthSecret;
 use koushi_state::LoginRequest;
-use koushi_sdk::{MatrixClientStoreConfig, MatrixClientStoreKey};
 use matrix_sdk::deserialized_responses::TimelineEvent;
 use matrix_sdk::ruma::{
     RoomId,

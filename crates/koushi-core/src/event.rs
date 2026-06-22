@@ -4,13 +4,12 @@
 use std::fmt;
 
 use koushi_state::{
-    resolve_user_display_name, ActivityStream, ActivityTab, AppState, AttachmentResult,
-    AvatarImage, AvatarThumbnailState, CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary,
-    IdentityResetState, JapaneseCatalogProfile, KeyBackupStatus, LiveRoomSignalUpdate,
-    LocalEncryptionHealth, MediaTransferProgress, NativeAttentionSummary, OperationFailureKind,
-    PinnedEvent, PresenceKind, ProfileState, ReplyQuote, RoomModerationAction,
-    RoomSettingsSnapshot, RoomTagKind, SessionState, SyncMode, ThreadsListItem,
-    VerificationFlowState,
+    ActivityStream, ActivityTab, AppState, AttachmentResult, AvatarImage, AvatarThumbnailState,
+    CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, IdentityResetState,
+    JapaneseCatalogProfile, KeyBackupStatus, LiveRoomSignalUpdate, LocalEncryptionHealth,
+    MediaTransferProgress, NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind,
+    ProfileState, ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind,
+    SessionState, SyncMode, ThreadsListItem, VerificationFlowState, resolve_user_display_name,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -181,7 +180,9 @@ impl fmt::Debug for ActivityEvent {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum LocalEncryptionEvent {
-    HealthChanged { health: LocalEncryptionHealth },
+    HealthChanged {
+        health: LocalEncryptionHealth,
+    },
     EventCacheStatus {
         encrypted_store: bool,
         subscribed: bool,
