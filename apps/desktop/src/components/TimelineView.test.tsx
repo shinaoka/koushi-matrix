@@ -758,6 +758,85 @@ describe("TimelineView", () => {
     );
   });
 
+  it("jumps to an unread event outside the mounted virtual window", async () => {
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      let emit: (payload: CoreEventPayload) => void = () => undefined;
+      const transport = baseTransport({
+        listenCoreEvents(nextListener) {
+          emit = nextListener;
+          return () => undefined;
+        }
+      });
+      const items = Array.from({ length: 650 }, (_, index) =>
+        message(`$virtual-${index}:example.invalid`, `Virtual message ${index}`)
+      );
+
+      render(
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+        />
+      );
+
+      const timeline = await screen.findByTestId("timeline-view");
+      Object.defineProperty(timeline, "clientHeight", { value: 500, configurable: true });
+      Object.defineProperty(timeline, "scrollHeight", { value: 650 * 72, configurable: true });
+      Object.defineProperty(timeline, "scrollTop", {
+        value: 0,
+        writable: true,
+        configurable: true
+      });
+
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            InitialItems: {
+              request_id: null,
+              key: KEY,
+              generation: 1,
+              items
+            }
+          }
+        });
+        emit({
+          kind: "Timeline",
+          event: {
+            NavigationUpdated: {
+              key: KEY,
+              snapshot: {
+                can_jump_to_bottom: false,
+                first_unread_event_id: "$virtual-500:example.invalid",
+                newer_event_count: 0,
+                read_marker_event_id: null,
+                unread_event_count: 3,
+                unread_position: "belowViewport"
+              }
+            }
+          }
+        });
+      });
+
+      await waitFor(() => {
+        expect(timeline.getAttribute("data-virtualized")).toBe("true");
+        expect(screen.getByRole("button", { name: /Jump to first unread/ })).toBeTruthy();
+        expect(document.querySelector('[data-event-id="$virtual-500:example.invalid"]')).toBeNull();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: /Jump to first unread/ }));
+
+      expect(timeline.scrollTop).toBeGreaterThan(30_000);
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+    } finally {
+      Element.prototype.scrollIntoView = originalScrollIntoView;
+    }
+  });
+
   it("backfills an empty thread timeline even when the first Core generation is zero", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const threadKey = threadTimelineKey(

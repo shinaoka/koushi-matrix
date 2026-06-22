@@ -34,9 +34,18 @@ export function getAppStoreSnapshot(): DesktopSnapshot | null {
 }
 
 export function setAppStoreSnapshot(next: DesktopSnapshot | null): void {
-  const previous = useAppStore.getState().snapshot;
+  const current = useAppStore.getState();
+  const previous = current.snapshot;
+  const incomingGeneration = next?.state_generation ?? null;
+  if (
+    current.stateGeneration !== null &&
+    incomingGeneration !== null &&
+    incomingGeneration < current.stateGeneration
+  ) {
+    return;
+  }
   const snapshot = applySnapshotToState(previous, next);
-  const previousGeneration = useAppStore.getState().stateGeneration;
+  const previousGeneration = current.stateGeneration;
   const nextGeneration = snapshot?.state_generation ?? null;
   if (Object.is(previous, snapshot) && previousGeneration === nextGeneration) {
     return;

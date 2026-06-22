@@ -55,6 +55,8 @@
  *  24. Fail closed on an incompatible snapshot: a stale flat (v1) snapshot with no
  *      domain/ui sections, and a future schema_version, both surface the recovery
  *      screen and refuse the normal shell instead of crashing (Phase 4 IPC guard).
+ *  25. Keep room/space navigation on the newer StateDelta when a command later
+ *      returns a stale full snapshot.
  */
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
@@ -429,6 +431,90 @@ test("workspace rail space and Home clicks apply returned navigation snapshots",
     .toEqual({ spaceId: null });
   await expect(home).toHaveClass(/is-active/);
   await expect(space).not.toHaveClass(/is-active/);
+});
+
+test("workspace rail keeps a newer StateDelta when the command returns a stale snapshot", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const targetSpaceId = "!harness-space:example.invalid";
+    const current = window.__harness.currentSnapshot();
+    const staleSnapshot = {
+      ...current,
+      state_generation: 1,
+      state: {
+        ...current.state,
+        ui: {
+          ...current.state.ui,
+          navigation: {
+            ...current.state.ui.navigation,
+            active_space_id: null
+          }
+        }
+      },
+      sidebar: {
+        ...current.sidebar,
+        active_space_id: null,
+        account_home: {
+          ...current.sidebar.account_home,
+          is_active: true
+        },
+        space_rail: current.sidebar.space_rail.map((space) => ({
+          ...space,
+          is_active: false
+        }))
+      }
+    };
+    window.__harness.setSnapshot(staleSnapshot);
+    window.__harness.setCommandResponse(
+      "select_space",
+      async ({ spaceId }: { spaceId: string | null }) => {
+        await window.__harness.pushCoreEvent({
+          kind: "StateDelta",
+          generation: 2,
+          changed: {
+            state: {
+              ui: {
+                navigation: {
+                  ...staleSnapshot.state.ui.navigation,
+                  active_space_id: spaceId
+                }
+              }
+            },
+            sidebar: {
+              ...staleSnapshot.sidebar,
+              active_space_id: spaceId,
+              account_home: {
+                ...staleSnapshot.sidebar.account_home,
+                is_active: spaceId === null
+              },
+              space_rail: staleSnapshot.sidebar.space_rail.map((space) => ({
+                ...space,
+                is_active: space.space_id === spaceId
+              }))
+            }
+          }
+        });
+        return staleSnapshot;
+      }
+    );
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+
+  const rail = page.getByRole("navigation", { name: "Workspaces" });
+  const home = rail.getByRole("button", { name: "Home", exact: true });
+  const space = rail.getByRole("button", { name: "Harness Space", exact: true });
+
+  await expect(home).toHaveClass(/is-active/);
+  await space.click({ force: true });
+
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("select_space")[0]?.args))
+    .toEqual({ spaceId: "!harness-space:example.invalid" });
+  await expect(space).toHaveClass(/is-active/);
+  await expect(home).not.toHaveClass(/is-active/);
 });
 
 test("space rail separates system buttons, reorders Spaces, and leaves a Space headlessly", async ({
@@ -2411,6 +2497,116 @@ test("main composer draft is Rust snapshot scoped per room", async ({ page }) =>
   await expect(composer).toHaveValue("Room A draft");
   await page.getByRole("button", { name: "Draft Room B" }).click();
   await expect(composer).toHaveValue("Room B draft");
+});
+
+test("room selection keeps a newer StateDelta when the command returns a stale snapshot", async ({
+  page
+}) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const primaryRoomId = "!harness-room:example.invalid";
+    const secondaryRoomId = "!delta-selected-room:example.invalid";
+    const current = window.__harness.currentSnapshot();
+    const secondaryRoom = {
+      room_id: secondaryRoomId,
+      display_name: "Delta Selected Room",
+      display_label: "Delta Selected Room",
+      original_display_label: "Delta Selected Room",
+      avatar: null,
+      is_dm: false,
+      dm_user_ids: [],
+      tags: { favourite: null, low_priority: null },
+      unread_count: 0,
+      notification_count: 0,
+      highlight_count: 0,
+      parent_space_ids: []
+    };
+    const rooms = [
+      ...current.state.domain.rooms.filter((room) => room.room_id !== secondaryRoomId),
+      secondaryRoom
+    ];
+    const roomListItems = rooms.map((room) => ({
+      room_id: room.room_id,
+      display_name: room.display_label,
+      avatar: room.avatar,
+      tags: room.tags,
+      unread_count: room.unread_count,
+      highlight_count: room.highlight_count
+    }));
+    const staleSnapshot = {
+      ...current,
+      state_generation: 1,
+      state: {
+        ...current.state,
+        domain: {
+          ...current.state.domain,
+          rooms
+        },
+        ui: {
+          ...current.state.ui,
+          navigation: {
+            ...current.state.ui.navigation,
+            active_room_id: primaryRoomId
+          },
+          timeline: {
+            ...current.state.ui.timeline,
+            room_id: primaryRoomId,
+            is_subscribed: true
+          },
+          thread: { kind: "closed" },
+          focused_context: { kind: "closed" }
+        }
+      },
+      sidebar: {
+        ...current.sidebar,
+        space_rooms: roomListItems
+      },
+      thread: null
+    };
+    window.__harness.setSnapshot(staleSnapshot);
+    window.__harness.setCommandResponse("select_room", async ({ roomId }: { roomId: string }) => {
+      const targetRoomId = String(roomId);
+      await window.__harness.pushCoreEvent({
+        kind: "StateDelta",
+        generation: 2,
+        changed: {
+          state: {
+            ui: {
+              navigation: {
+                ...staleSnapshot.state.ui.navigation,
+                active_room_id: targetRoomId
+              },
+              timeline: {
+                ...staleSnapshot.state.ui.timeline,
+                room_id: targetRoomId,
+                is_subscribed: true
+              },
+              thread: { kind: "closed" },
+              focused_context: { kind: "closed" }
+            }
+          },
+          sidebar: {
+            ...staleSnapshot.sidebar,
+            space_rooms: roomListItems
+          },
+          thread: null
+        }
+      });
+      return staleSnapshot;
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  });
+
+  const targetRoom = page.getByRole("button", { name: "Delta Selected Room" });
+  await expect(targetRoom).toBeVisible();
+  await targetRoom.click();
+
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("select_room")[0]?.args))
+    .toEqual({ roomId: "!delta-selected-room:example.invalid" });
+  await expect(targetRoom).toHaveClass(/is-active/);
+  await expect(page.locator(".channel-title").first()).toContainText("Delta Selected Room");
 });
 
 test("main composer keeps an emptied local draft across stale snapshot refresh", async ({
