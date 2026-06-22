@@ -57,7 +57,7 @@ fn own_profile_updates_are_rust_owned_and_require_ready_session() {
 }
 
 #[test]
-fn user_profile_cache_is_replaced_by_rust_snapshot() {
+fn user_profile_cache_merges_partial_rust_snapshots() {
     let mut state = ready_state();
 
     reduce(
@@ -108,7 +108,15 @@ fn user_profile_cache_is_replaced_by_rust_snapshot() {
     );
     assert_eq!(
         state.profile.users.keys().cloned().collect::<Vec<_>>(),
-        vec!["@carol:localhost".to_owned()]
+        vec![
+            "@alice:localhost".to_owned(),
+            "@bob:localhost".to_owned(),
+            "@carol:localhost".to_owned()
+        ]
+    );
+    assert_eq!(
+        state.profile.users["@bob:localhost"].avatar,
+        Some(avatar("mxc://localhost/bob-avatar"))
     );
 }
 
@@ -821,7 +829,7 @@ fn ignored_user_update_failed_reverts_optimistic_mutation() {
 }
 
 #[test]
-fn user_profile_avatar_thumbnail_is_preserved_across_wholesale_profile_replace() {
+fn user_profile_avatar_thumbnail_is_preserved_across_partial_profile_update() {
     // Reproduces the DM-avatar flicker root cause: handle_user_profiles_updated previously
     // replaced state.profile.users wholesale, resetting NotRequested avatars even when
     // the same mxc_uri already had a Ready thumbnail in state.

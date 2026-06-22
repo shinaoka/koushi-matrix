@@ -4235,8 +4235,6 @@ async fn matrix_room_list_snapshot_from_rooms(
             continue;
         }
 
-        let active_user_ids = collect_active_member_profiles(&room, &mut user_profiles).await;
-
         let room_id = room.room_id().to_string();
         let display_name = room
             .cached_display_name()
@@ -4245,12 +4243,13 @@ async fn matrix_room_list_snapshot_from_rooms(
 
         if room.is_space() {
             let child_room_ids = matrix_space_child_room_ids(&room).await;
+            let member_user_ids = matrix_space_member_user_ids_no_sync(&room).await;
             snapshot.spaces.push(MatrixRoomListSpace {
                 space_id: room_id,
                 display_name,
                 avatar_mxc_uri: room.avatar_url().map(|uri| uri.to_string()),
                 child_room_ids,
-                member_user_ids: active_user_ids,
+                member_user_ids,
             });
             continue;
         }
@@ -4268,24 +4267,17 @@ async fn matrix_room_list_snapshot_from_rooms(
         let parent_space_ids = matrix_parent_space_ids(&room).await;
         let tags = matrix_room_tags(&room).await;
 
-        let direct_dm_user_ids = direct_targets_by_room
-            .get(&room_id)
-            .cloned()
-            .unwrap_or_default();
-        let is_dm = !direct_dm_user_ids.is_empty()
-            || room.is_direct().await.unwrap_or_else(|_| room.is_dm());
-        let joined_members = active_user_ids.len() as u64;
-        let own_user_id = room.own_user_id().to_string();
-        let dm_user_ids = if !direct_dm_user_ids.is_empty() {
-            direct_dm_user_ids
-        } else if is_dm {
-            active_user_ids
-                .into_iter()
-                .filter(|user_id| user_id != &own_user_id)
-                .collect()
+        let is_dm = if direct_targets_by_room.contains_key(&room_id) {
+            true
+        } else if !room.direct_targets().is_empty() {
+            true
         } else {
-            Vec::new()
+            room.is_direct().await.unwrap_or_else(|_| room.is_dm())
         };
+        let dm_user_ids =
+            matrix_room_list_dm_user_ids(&room, direct_targets_by_room, is_dm, &mut user_profiles)
+                .await;
+        let joined_members = room.joined_members_count();
 
         let is_encrypted = room
             .latest_encryption_state()
@@ -4357,25 +4349,85 @@ fn direct_account_data_targets_by_room(
         .collect()
 }
 
-async fn collect_active_member_profiles(
+async fn matrix_room_list_dm_user_ids(
     room: &matrix_sdk::Room,
+    direct_targets_by_room: &BTreeMap<String, Vec<String>>,
+    is_dm: bool,
     user_profiles: &mut BTreeMap<String, MatrixUserProfile>,
 ) -> Vec<String> {
-    let Ok(members) = room.members(matrix_sdk::RoomMemberships::ACTIVE).await else {
+    let room_id = room.room_id().to_string();
+    let own_user_id = room.own_user_id().to_string();
+    let mut candidate_user_ids = if let Some(targets) = direct_targets_by_room.get(&room_id) {
+        targets.clone()
+    } else {
+        let cached_direct_targets: Vec<String> = room
+            .direct_targets()
+            .into_iter()
+            .map(|user_id| user_id.to_string())
+            .collect();
+        if !cached_direct_targets.is_empty() {
+            cached_direct_targets
+        } else if is_dm {
+            room.heroes()
+                .into_iter()
+                .map(|hero| hero.user_id.to_string())
+                .filter(|user_id| user_id != &own_user_id)
+                .collect()
+        } else {
+            Vec::new()
+        }
+    };
+
+    candidate_user_ids.sort();
+    candidate_user_ids.dedup();
+
+    let mut dm_user_ids = Vec::new();
+    for candidate_user_id in candidate_user_ids {
+        if candidate_user_id == own_user_id {
+            continue;
+        }
+
+        let Ok(candidate_user_id) =
+            matrix_sdk::ruma::OwnedUserId::try_from(candidate_user_id.as_str())
+        else {
+            continue;
+        };
+
+        let candidate_user_id_string = candidate_user_id.to_string();
+        dm_user_ids.push(candidate_user_id_string.clone());
+
+        if let Some(member) = room
+            .get_member_no_sync(&candidate_user_id)
+            .await
+            .ok()
+            .flatten()
+        {
+            user_profiles
+                .entry(candidate_user_id_string.clone())
+                .or_insert_with(|| MatrixUserProfile {
+                    user_id: candidate_user_id_string,
+                    display_name: member.display_name().map(ToOwned::to_owned),
+                    avatar_mxc_uri: member.avatar_url().map(ToString::to_string),
+                });
+        }
+    }
+
+    dm_user_ids.sort();
+    dm_user_ids.dedup();
+    dm_user_ids
+}
+
+async fn matrix_space_member_user_ids_no_sync(room: &matrix_sdk::Room) -> Vec<String> {
+    let Ok(members) = room
+        .members_no_sync(matrix_sdk::RoomMemberships::ACTIVE)
+        .await
+    else {
         return Vec::new();
     };
-    let mut user_ids = Vec::new();
-    for member in members {
-        let user_id = member.user_id().to_string();
-        user_ids.push(user_id.clone());
-        user_profiles
-            .entry(user_id.clone())
-            .or_insert_with(|| MatrixUserProfile {
-                user_id,
-                display_name: member.display_name().map(ToOwned::to_owned),
-                avatar_mxc_uri: member.avatar_url().map(ToString::to_string),
-            });
-    }
+    let mut user_ids: Vec<String> = members
+        .into_iter()
+        .map(|member| member.user_id().to_string())
+        .collect();
     user_ids.sort();
     user_ids.dedup();
     user_ids
@@ -4845,9 +4897,9 @@ mod tests {
             .split("async fn matrix_room_list_snapshot_from_rooms")
             .nth(1)
             .expect("joined room projection should exist")
-            .split("async fn collect_active_member_profiles")
+            .split("async fn matrix_direct_account_data_targets_by_room")
             .next()
-            .expect("member collection should follow joined room projection");
+            .expect("direct account data helper should follow joined room projection");
 
         assert!(
             projection_body.contains("room.is_direct().await"),
@@ -4856,6 +4908,109 @@ mod tests {
         assert!(
             projection_body.contains("unwrap_or_else(|_| room.is_dm())"),
             "joined room projection should fall back to cached is_dm when direct lookup fails"
+        );
+    }
+
+    #[test]
+    fn joined_room_list_snapshot_avoids_full_member_scans() {
+        let source = include_str!("lib.rs");
+        let projection_body = source
+            .split("async fn matrix_room_list_snapshot_from_rooms")
+            .nth(1)
+            .expect("joined room projection should exist")
+            .split("async fn matrix_direct_account_data_targets_by_room")
+            .next()
+            .expect("direct account data helper should follow joined room projection");
+
+        assert!(projection_body.contains("room.joined_members_count()"));
+        assert!(projection_body.contains("matrix_space_member_user_ids_no_sync(&room).await"));
+        assert!(!projection_body.contains("collect_active_member_profiles"));
+        assert!(
+            !projection_body.contains("room.members(matrix_sdk::RoomMemberships::ACTIVE)"),
+            "room-list projection must not load the full active member list"
+        );
+        assert!(
+            !projection_body.contains("joined_user_ids"),
+            "room-list projection should not derive joined members from joined_user_ids"
+        );
+    }
+
+    #[test]
+    fn joined_room_list_dm_resolution_uses_account_data_cached_and_heroes_candidates() {
+        let source = include_str!("lib.rs");
+        let helper_body = source
+            .split("async fn matrix_room_list_dm_user_ids")
+            .nth(1)
+            .expect("DM resolution helper should exist")
+            .split("async fn matrix_space_member_user_ids_no_sync")
+            .next()
+            .expect("space member helper should follow DM resolution helper");
+
+        assert!(
+            helper_body.contains("direct_targets_by_room.get(&room_id)"),
+            "DM resolution should prefer direct account-data targets first"
+        );
+        assert!(
+            helper_body.contains(".direct_targets()"),
+            "DM resolution should fall back to cached SDK direct targets"
+        );
+        assert!(
+            helper_body.contains("room.heroes()"),
+            "DM resolution should use heroes when the room is already considered a DM"
+        );
+        assert!(
+            helper_body.contains("get_member_no_sync"),
+            "DM resolution should only probe candidate members without syncing the full list"
+        );
+        assert!(
+            helper_body.contains("dm_user_ids.push(candidate_user_id_string.clone())"),
+            "DM resolution should preserve valid direct/cached/hero IDs even when a local member profile is absent"
+        );
+        assert!(
+            !helper_body.contains("room.members(matrix_sdk::RoomMemberships::ACTIVE)"),
+            "DM resolution helper must not hide a full active-member scan behind the hot path"
+        );
+        assert!(
+            !helper_body.contains("room.members_no_sync(matrix_sdk::RoomMemberships::ACTIVE)"),
+            "DM resolution helper must not enumerate every active member even without syncing"
+        );
+    }
+
+    #[test]
+    fn space_member_ids_are_no_sync_and_space_only() {
+        let source = include_str!("lib.rs");
+        let helper_body = source
+            .split("async fn matrix_space_member_user_ids_no_sync")
+            .nth(1)
+            .expect("space member helper should exist")
+            .split("async fn matrix_invite_previews_from_rooms")
+            .next()
+            .expect("invite previews should follow space member helper");
+
+        assert!(
+            helper_body.contains("members_no_sync(matrix_sdk::RoomMemberships::ACTIVE)"),
+            "space membership may read only already-synced local state"
+        );
+        assert!(
+            !helper_body.contains("room.members(matrix_sdk::RoomMemberships::ACTIVE)"),
+            "space membership helper must not sync/fetch the full member list"
+        );
+    }
+
+    #[test]
+    fn matrix_room_member_summaries_still_scans_full_members() {
+        let source = include_str!("lib.rs");
+        let helper_body = source
+            .split("async fn matrix_room_member_summaries")
+            .nth(1)
+            .expect("member summary helper should exist")
+            .split("fn matrix_user_trust_state_from_sdk_identity")
+            .next()
+            .expect("trust-state helper should follow member summary helper");
+
+        assert!(
+            helper_body.contains("room.members(matrix_sdk::RoomMemberships::ACTIVE)"),
+            "member summaries should still be allowed to load the full active member list"
         );
     }
 

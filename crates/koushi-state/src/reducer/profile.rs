@@ -50,9 +50,10 @@ pub(crate) fn handle_user_profiles_updated(
 
     let own_user_id = session_user_id(state).map(str::to_owned);
     // Preserve avatar thumbnails that are already known (Ready/Loading/Failed) so that
-    // a wholesale profile replacement (e.g. every sync batch) does not reset
-    // counterpart-profile avatars to NotRequested and cause DM room avatar flicker.
-    let known = super::avatar::collect_known_avatar_thumbnails(state, /*include_invites*/ false);
+    // partial profile updates from room-list sync do not reset counterpart-profile
+    // avatars to NotRequested and cause DM room avatar flicker.
+    let known =
+        super::avatar::collect_known_avatar_thumbnails(state, /*include_invites*/ false);
     let mut profiles_map: std::collections::BTreeMap<String, crate::state::UserProfile> = profiles
         .into_iter()
         .map(|profile| (profile.user_id.clone(), profile))
@@ -60,7 +61,7 @@ pub(crate) fn handle_user_profiles_updated(
     for profile in profiles_map.values_mut() {
         super::avatar::preserve_avatar_thumbnail(&known, &mut profile.avatar);
     }
-    state.profile.users = profiles_map;
+    state.profile.users.extend(profiles_map);
     crate::state::refresh_profile_user_display_projection(
         &mut state.profile,
         own_user_id.as_deref(),
