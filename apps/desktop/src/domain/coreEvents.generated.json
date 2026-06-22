@@ -220,6 +220,15 @@
     },
     "kind": "LocalEncryption"
   },
+  "localEncryptionEventCacheStatus": {
+    "event": {
+      "encrypted_store": true,
+      "kind": "eventCacheStatus",
+      "reason_class": "subscribe_failed",
+      "subscribed": false
+    },
+    "kind": "LocalEncryption"
+  },
   "nativeAttentionSummaryUpdated": {
     "event": {
       "kind": "summaryUpdated",

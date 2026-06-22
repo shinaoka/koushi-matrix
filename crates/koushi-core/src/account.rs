@@ -58,6 +58,7 @@ use crate::command::{
 };
 use crate::event::{
     AccountEvent, CoreEvent, E2eeTrustEvent, LiveSignalsEvent, LocalEncryptionEvent,
+    EventCacheStatusReasonClass,
 };
 use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
@@ -3908,8 +3909,8 @@ impl AccountActor {
     /// Restore a persisted session into the per-account encrypted store
     /// (fail-closed: any store init failure is `LocalEncryptionUnavailable`).
     /// The store config includes the search index so the SDK initializes it
-    /// alongside the SQLite store, and the event cache is enabled before the
-    /// restored session is returned to any sync/timeline caller.
+    /// alongside the SQLite store, and event-cache subscription is attempted
+    /// before the restored session is returned to any sync/timeline caller.
     async fn restore_into_store(
         &self,
         persistable: &PersistableMatrixSession,
@@ -3926,9 +3927,8 @@ impl AccountActor {
             koushi_sdk::restore_session_with_store(persistable, Some(&store_config_with_search))
                 .await
                 .map_err(|_| CoreFailure::LocalEncryptionUnavailable)?;
-        koushi_sdk::enable_event_cache(&session)
-            .await
-            .map_err(|_| CoreFailure::LocalEncryptionUnavailable)?;
+        let event_cache_result = koushi_sdk::enable_event_cache(&session).await;
+        self.emit_event_cache_status(&event_cache_result);
         Ok(session)
     }
 
@@ -3998,6 +3998,28 @@ impl AccountActor {
             request_id,
             failure,
         });
+    }
+
+    fn emit_event_cache_status(
+        &self,
+        result: &Result<koushi_sdk::MatrixEventCacheStatus, koushi_sdk::MatrixEventCacheError>,
+    ) {
+        let (subscribed, reason_class) = match result {
+            Ok(koushi_sdk::MatrixEventCacheStatus::Enabled) => {
+                (true, EventCacheStatusReasonClass::Enabled)
+            }
+            Ok(koushi_sdk::MatrixEventCacheStatus::AlreadyEnabled) => {
+                (true, EventCacheStatusReasonClass::AlreadyEnabled)
+            }
+            Err(_) => (false, EventCacheStatusReasonClass::SubscribeFailed),
+        };
+        self.emit(CoreEvent::LocalEncryption(
+            LocalEncryptionEvent::EventCacheStatus {
+                encrypted_store: true,
+                subscribed,
+                reason_class,
+            },
+        ));
     }
 
     fn active_account_key(&self) -> Option<AccountKey> {
@@ -4768,7 +4790,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_into_store_enables_event_cache_before_returning() {
+    fn restore_into_store_emits_event_cache_status_without_failing_restore() {
         let source = include_str!("account.rs");
         let body = source
             .split("    async fn restore_into_store")
@@ -4777,17 +4799,47 @@ mod tests {
             .split("    /// Roll back a failed login bootstrap")
             .next()
             .expect("restore_into_store should end before abort_login");
+        let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+        let helper = source
+            .split("    fn emit_event_cache_status(")
+            .nth(1)
+            .expect("emit_event_cache_status body")
+            .split("    fn active_account_key")
+            .next()
+            .expect("emit_event_cache_status should end before active_account_key");
+        let helper_compact: String = helper.chars().filter(|c| !c.is_whitespace()).collect();
 
-        let restore = body
+        let restore = compact
             .find("koushi_sdk::restore_session_with_store")
             .expect("restore_session_with_store call");
-        let enable = body
-            .find("koushi_sdk::enable_event_cache(&session)")
+        let enable = compact
+            .find("koushi_sdk::enable_event_cache(&session).await")
             .expect("enable_event_cache call");
-        let return_ok = body.find("Ok(session)").expect("return statement");
+        let helper_emit = helper_compact
+            .find("LocalEncryptionEvent::EventCacheStatus{")
+            .expect("event cache diagnostic emission");
+        let return_ok = compact.find("Ok(session)").expect("return statement");
 
         assert!(restore < enable);
         assert!(enable < return_ok);
+        assert!(
+            helper_compact
+                .find("Err(_)=>(false,EventCacheStatusReasonClass::SubscribeFailed)")
+                .expect("failure mapping")
+                < helper_emit
+        );
+        assert!(
+            !compact.contains("enable_event_cache(&session).await.map_err"),
+            "event-cache subscription failure must not be mapped into restore failure"
+        );
+        assert!(
+            !compact.contains("enable_event_cache(&session).await?"),
+            "event-cache subscription failure must not use ? to fail the restore path"
+        );
+        assert!(
+            compact.contains("self.emit_event_cache_status(&event_cache_result);"),
+            "restore_into_store must emit the diagnostic outcome"
+        );
     }
 
     #[tokio::test]

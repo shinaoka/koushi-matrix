@@ -796,10 +796,22 @@ export type LocalEncryptionHealth =
   | "missingCredential"
   | "resetRequired";
 
-export type LocalEncryptionEvent = {
-  kind: "healthChanged";
-  health: LocalEncryptionHealth;
-};
+export type EventCacheSubscribeStatus =
+  | "enabled"
+  | "already_enabled"
+  | "subscribe_failed";
+
+export type LocalEncryptionEvent =
+  | {
+      kind: "healthChanged";
+      health: LocalEncryptionHealth;
+    }
+  | {
+      kind: "eventCacheStatus";
+      encrypted_store: boolean;
+      subscribed: boolean;
+      reason_class: EventCacheSubscribeStatus;
+    };
 
 export type OperationFailureKind =
   | "forbidden"

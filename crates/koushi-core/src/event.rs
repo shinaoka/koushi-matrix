@@ -182,6 +182,19 @@ impl fmt::Debug for ActivityEvent {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum LocalEncryptionEvent {
     HealthChanged { health: LocalEncryptionHealth },
+    EventCacheStatus {
+        encrypted_store: bool,
+        subscribed: bool,
+        reason_class: EventCacheStatusReasonClass,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventCacheStatusReasonClass {
+    Enabled,
+    AlreadyEnabled,
+    SubscribeFailed,
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]

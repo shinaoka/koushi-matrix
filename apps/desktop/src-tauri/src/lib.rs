@@ -1481,7 +1481,7 @@ mod tests {
             AccountKey, CoreEvent, TimelineDiff, TimelineKey, build_state_delta,
             event::{
                 AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent,
-                IntentNoOpReason, IntentOutcome, LinkPreview,
+                EventCacheStatusReasonClass, IntentNoOpReason, IntentOutcome, LinkPreview,
                 LinkPreviewImage, LinkPreviewState, LiveSignalsEvent, LocalEncryptionEvent,
                 NativeAttentionEvent, PaginationDirection, PaginationState, ReactionGroup,
                 RoomEvent, SearchEvent, SyncEvent, ThreadsListEvent, TimelineCodeBlock,
@@ -2443,6 +2443,31 @@ mod tests {
         assert_eq!(local_encryption["event"]["kind"], json!("healthChanged"));
         assert_eq!(local_encryption["event"]["health"], json!("healthy"));
 
+        let local_encryption_event_cache = serialize_core_event(&CoreEvent::LocalEncryption(
+            LocalEncryptionEvent::EventCacheStatus {
+                encrypted_store: true,
+                subscribed: false,
+                reason_class: EventCacheStatusReasonClass::SubscribeFailed,
+            },
+        ))
+        .expect("serialize local encryption event cache status");
+        assert_eq!(
+            local_encryption_event_cache["event"]["kind"],
+            json!("eventCacheStatus")
+        );
+        assert_eq!(
+            local_encryption_event_cache["event"]["encrypted_store"],
+            json!(true)
+        );
+        assert_eq!(
+            local_encryption_event_cache["event"]["subscribed"],
+            json!(false)
+        );
+        assert_eq!(
+            local_encryption_event_cache["event"]["reason_class"],
+            json!("subscribe_failed")
+        );
+
         let native_attention = serialize_core_event(&CoreEvent::NativeAttention(
             NativeAttentionEvent::SummaryUpdated {
                 summary: NativeAttentionSummary {
@@ -2603,6 +2628,7 @@ mod tests {
             "accountSavedSessionsListed": listed,
             "e2eeTrustVerificationProgress": e2ee_trust,
             "localEncryptionHealthChanged": local_encryption,
+            "localEncryptionEventCacheStatus": local_encryption_event_cache,
             "liveSignalsPresenceSet": live_presence,
             "liveSignalsRoomSignalsUpdated": live_signals,
             "nativeAttentionSummaryUpdated": native_attention,
@@ -2716,6 +2742,7 @@ mod tests {
             "liveSignalsPresenceSet",
             "liveSignalsRoomSignalsUpdated",
             "localEncryptionHealthChanged",
+            "localEncryptionEventCacheStatus",
             "nativeAttentionSummaryUpdated",
             "operationFailedSessionNotFound",
             "roomDirectMessageStarted",
