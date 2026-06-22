@@ -1511,6 +1511,26 @@ GYW19pdjg0qdXNk/eqZsQTsNWVo6A\n\
             IdentityResetAuthType::OAuth
         );
     }
+
+    #[test]
+    fn matrix_client_store_config_uses_the_required_key_for_sqlite_builder() {
+        let source = include_str!("lib.rs");
+        let impl_body = source
+            .split("fn apply_to_builder(&self, builder: matrix_sdk::ClientBuilder)")
+            .nth(1)
+            .expect("apply_to_builder body");
+
+        assert!(
+            impl_body.contains(".key(Some(self.key.expose_key()))"),
+            "apply_to_builder must pass the required MatrixClientStoreKey into sqlite_store"
+        );
+
+        let config = crate::MatrixClientStoreConfig::new(
+            "/tmp/example-store",
+            crate::MatrixClientStoreKey::new([7; 32]),
+        );
+        assert!(config.encrypted_at_rest_configured());
+    }
 }
 
 #[derive(Clone)]
@@ -1550,6 +1570,13 @@ impl MatrixClientStoreConfig {
 
     pub fn cache_path(&self) -> Option<&Path> {
         self.cache_path.as_deref()
+    }
+
+    /// The store is keyed by construction: `MatrixClientStoreConfig::new`
+    /// requires a [`MatrixClientStoreKey`], and `apply_to_builder` always
+    /// passes that key into the SQLite store config.
+    pub fn encrypted_at_rest_configured(&self) -> bool {
+        true
     }
 
     fn apply_to_builder(&self, builder: matrix_sdk::ClientBuilder) -> matrix_sdk::ClientBuilder {

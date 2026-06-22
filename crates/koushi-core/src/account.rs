@@ -3916,7 +3916,7 @@ impl AccountActor {
     /// alongside the SQLite store, and event-cache subscription is attempted
     /// before the restored session is returned to any sync/timeline caller.
     /// The encrypted-store diagnostic flag is derived from the keyed store
-    /// config so non-keyed restore paths cannot report a false positive.
+    /// invariant exposed by `MatrixClientStoreConfig`.
     async fn restore_into_store(
         &self,
         persistable: &PersistableMatrixSession,
@@ -3926,7 +3926,7 @@ impl AccountActor {
         // Derive the search index configuration. Fail-closed: if the
         // credential store is unreachable, deny the restore (LocalEncryptionUnavailable).
         let search_config = self.store.account_search_index_config(key_id)?;
-        let encrypted_store = store_config.store_config.cache_path().is_some();
+        let encrypted_store = store_config.store_config.encrypted_at_rest_configured();
         let store_config_with_search = store_config
             .store_config
             .with_search_index_store(search_config.search_index_config);
@@ -4821,7 +4821,6 @@ mod tests {
             .next()
             .expect("emit_event_cache_status should end before active_account_key");
         let helper_compact: String = helper.chars().filter(|c| !c.is_whitespace()).collect();
-
         let restore = compact
             .find("koushi_sdk::restore_session_with_store")
             .expect("restore_session_with_store call");
@@ -4829,7 +4828,7 @@ mod tests {
             .find("letstore_config=self.store.account_store_config(key_id)?;")
             .expect("keyed store configuration");
         let encrypted_store = compact
-            .find("letencrypted_store=store_config.store_config.cache_path().is_some();")
+            .find("letencrypted_store=store_config.store_config.encrypted_at_rest_configured();")
             .expect("derived encrypted-store flag");
         let enable = compact
             .find("koushi_sdk::enable_event_cache(&session).await")
@@ -4858,12 +4857,19 @@ mod tests {
             "failure diagnostics should carry an explicit subscribe status and a private-data-free reason"
         );
         assert!(
-            compact.contains("letencrypted_store=store_config.store_config.cache_path().is_some();"),
-            "restore_into_store must derive the encrypted-store diagnostic from the keyed store config"
+            compact.contains("letencrypted_store=store_config.store_config.encrypted_at_rest_configured();"),
+            "restore_into_store must derive the encrypted-store diagnostic from the keyed store invariant"
         );
         assert!(
             compact.contains("self.emit_event_cache_status(encrypted_store,&event_cache_result);"),
             "restore_into_store must pass the derived encrypted-store flag into the diagnostic"
+        );
+        assert_eq!(
+            compact
+                .matches("self.emit_event_cache_status(encrypted_store,&event_cache_result);")
+                .count(),
+            1,
+            "restore_into_store should call the diagnostic helper exactly once"
         );
         assert!(
             !compact.contains("enable_event_cache(&session).await.map_err"),
@@ -4876,6 +4882,10 @@ mod tests {
         assert!(
             !helper_compact.contains("encrypted_store:true"),
             "the event-cache diagnostic helper must not hardcode the encrypted-store flag"
+        );
+        assert!(
+            !compact.contains("cache_path().is_some()"),
+            "restore_into_store must not use cache_path presence as an encryption invariant"
         );
     }
 
