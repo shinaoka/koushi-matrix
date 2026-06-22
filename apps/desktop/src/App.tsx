@@ -90,7 +90,10 @@ import {
   qaSendSmokeTargetRoom,
   qaSendSmokeTargetUserIdFromEnv
 } from "./domain/qaSendSmoke";
-import { planSnapshotAvatarThumbnailRequests } from "./domain/avatarThumbnails";
+import {
+  AVATAR_THUMBNAIL_DOWNLOADS_ENABLED,
+  planSnapshotAvatarThumbnailRequests
+} from "./domain/avatarThumbnails";
 import type {
   ActivityMarkReadTarget,
   ActivityTab,
@@ -1073,6 +1076,11 @@ export function App() {
     if (!snapshot || !tauriTimelineTransport?.downloadAvatarThumbnail) {
       requestedAvatarMxcsRef.current.clear();
       avatarRetryCountsRef.current.clear();
+      return;
+    }
+    // #116 perf gate: avatar downloads are disabled by default to prevent the
+    // AccountActor command flood that froze room selection.
+    if (!AVATAR_THUMBNAIL_DOWNLOADS_ENABLED) {
       return;
     }
 

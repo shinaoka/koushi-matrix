@@ -1,5 +1,13 @@
 import type { AvatarImage, AvatarThumbnailState, DesktopSnapshot } from "./types";
 
+/**
+ * Temporary #116 perf gate: default OFF until avatar downloads are re-enabled
+ * behind a Rust-owned setting + encrypted cache + bounded worker pool.
+ * Set to true to restore the pre-#116 firing behaviour (for tests or future
+ * re-enablement).
+ */
+export const AVATAR_THUMBNAIL_DOWNLOADS_ENABLED = false;
+
 export const MAX_AVATAR_THUMBNAIL_ATTEMPTS = 2;
 
 export interface AvatarThumbnailRequestPlan {

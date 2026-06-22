@@ -303,6 +303,7 @@ describe("TimelineView", () => {
         roomId="!room:example.invalid"
         transport={transport}
         onReply={vi.fn()}
+        enableAvatarThumbnailDownloads={true}
       />
     );
 
@@ -351,6 +352,7 @@ describe("TimelineView", () => {
         transport={transport}
         onReply={vi.fn()}
         onDiagnosticLogEntry={onDiagnosticLogEntry}
+        enableAvatarThumbnailDownloads={true}
       />
     );
 
@@ -468,6 +470,7 @@ describe("TimelineView", () => {
           }
         }}
         onReply={vi.fn()}
+        enableAvatarThumbnailDownloads={true}
       />
     );
 
@@ -487,6 +490,52 @@ describe("TimelineView", () => {
       expect(downloadAvatarThumbnail).toHaveBeenCalledWith("mxc://matrix.org/profile-avatar");
     });
     expect(downloadAvatarThumbnail).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT call downloadAvatarThumbnail when enableAvatarThumbnailDownloads is false (default #116 gate)", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const downloadAvatarThumbnail = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      downloadAvatarThumbnail
+    });
+
+    // Render WITHOUT enableAvatarThumbnailDownloads — it should default to OFF.
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [
+            {
+              ...message("$avatar-gated", "Avatar row (gate off)"),
+              sender_avatar: {
+                mxc_uri: "mxc://matrix.org/avatar-gated",
+                thumbnail: { kind: "notRequested" }
+              }
+            }
+          ]
+        }
+      }
+    });
+
+    // Give React time to flush any effects that might fire.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(downloadAvatarThumbnail).not.toHaveBeenCalled();
   });
 
   it("renders a downloaded sender avatar thumbnail from account events", async () => {

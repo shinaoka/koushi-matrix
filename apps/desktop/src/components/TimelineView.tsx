@@ -66,6 +66,7 @@ import {
 } from "../domain/contextMenus";
 import type { DiagnosticLogEntry } from "../domain/diagnostics";
 import {
+  AVATAR_THUMBNAIL_DOWNLOADS_ENABLED,
   avatarThumbnailFailureIsRetryable,
   avatarThumbnailRequestShouldBeSkipped,
   MAX_AVATAR_THUMBNAIL_ATTEMPTS
@@ -1194,6 +1195,7 @@ export const TimelineView = memo(function TimelineView({
   codeBlockWrap = true,
   searchQuery = "",
   mediaDownloads = {},
+  enableAvatarThumbnailDownloads = AVATAR_THUMBNAIL_DOWNLOADS_ENABLED,
   onDiagnosticsChange,
   onDiagnosticLogEntry
 }: {
@@ -1223,6 +1225,12 @@ export const TimelineView = memo(function TimelineView({
   codeBlockWrap?: boolean;
   searchQuery?: string;
   mediaDownloads?: Record<string, TimelineMediaDownloadState>;
+  /**
+   * Temporary #116 perf gate. Defaults to AVATAR_THUMBNAIL_DOWNLOADS_ENABLED
+   * (currently false). Set to true in tests that verify the firing path, or
+   * when re-enabling downloads behind a Rust-owned setting + cache.
+   */
+  enableAvatarThumbnailDownloads?: boolean;
   onDiagnosticsChange?: (diagnostics: TimelineDiagnostics) => void;
   onDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
 }) {
@@ -1539,6 +1547,10 @@ export const TimelineView = memo(function TimelineView({
     visibleItems
   ]);
   useEffect(() => {
+    // #116 perf gate: skip avatar downloads when disabled (default).
+    if (!enableAvatarThumbnailDownloads) {
+      return;
+    }
     if (!transport.downloadAvatarThumbnail) {
       return;
     }
@@ -1567,7 +1579,14 @@ export const TimelineView = memo(function TimelineView({
         emitDiagnosticLog("timeline.avatar", "avatar thumbnail command failed");
       });
     }
-  }, [avatarThumbnails, emitDiagnosticLog, profileUsers, sideEffectItems, transport]);
+  }, [
+    avatarThumbnails,
+    emitDiagnosticLog,
+    enableAvatarThumbnailDownloads,
+    profileUsers,
+    sideEffectItems,
+    transport
+  ]);
   const notSentTransactionIds = items.flatMap((item) => {
     if (item.send_state?.kind !== "notSent" || !("Transaction" in item.id)) {
       return [];

@@ -210,3 +210,26 @@ The reverted design was: AppActor-side, `koushi-state` UNTOUCHED, no AppState/DT
 2. Correlation: Option 1 (intent id on the action, reducer reports) vs Option 2 (AppActor post-reduce correlation). Recommend Option 1.
 3. Lanes: start with the 3-lane split (§4.5) or go straight to the issue memo's 5 lanes?
 4. Sequencing: observability-first then fix (recommended), or confirm the repro and ship the minimal #116 fix first to unblock the blocker, then layer observability?
+
+## 11. Root cause CONFIRMED on the real Mac account (2026-06-22, supersedes §7's lib.rs:4180 hypothesis)
+
+Running the shipped observability build (`e2c5f40`) on the large real account showed the decisive trace:
+
+```
+koushi.apploop arm=command count=1421 clone_ms=1 total_ms=62371
+koushi.select_reduce found=true session_ready=true rooms_len=109
+```
+
+This **exonerates both prior hypotheses**: the reducer is fine (`found=true session_ready=true rooms_len=109` — the clicked room IS in `state.rooms`), and it is NOT the `lib.rs:4180` projection drop. The real root cause is **actor head-of-line blocking / I/O starvation from a background command flood**:
+
+- Opening Room Info on a large room makes the snapshot planner (`apps/desktop/src/domain/avatarThumbnails.ts` `planSnapshotAvatarThumbnailRequests`, driven from `App.tsx:1079`) fire one `download_avatar_thumbnail` per `profile.users` avatar — ~1421 commands at once.
+- `download_avatar_thumbnail` (`account.rs:4012`) has **no cache check** — it always `get_media_content().await` + rewrites the file, even for already-downloaded avatars. The `AccountActor` processes these **inline and serially** in its message loop.
+- The `AppActor` command arm coalesces (`while try_recv`) the whole flood and forwards each via `account_actor.send(...).await`; backpressure from the serial AccountActor blocks the AppActor for **62 s**, during which the `select!` cannot service `action_rx` (SelectRoom reduce) or emit `StateDelta` → freeze + room-selection timeout.
+- `SelectRoom` (user intent) shares the same `command_rx` AND the same `AccountActor` inbox as the avatar flood — there is **no QoS lane separation** (the branch only sized capacities + reliable/lossy send disciplines on shared channels; it never separated user-intent from background). Pre-Room-Info congestion has the same shape, dominated by the room-list re-projection (`matrix_room_list_snapshot_from_rooms` awaits ~5 SDK calls × 109 rooms on every VectorDiff batch).
+
+**Fix plan (replaces Fix A/B):**
+- **Minimal (now):** disable avatar-thumbnail downloads by default (GUI flag, fallback colored-initial renders) → confirm room switching/freeze is resolved minimally on the real account. Diagnostic: if resolved, the avatar flood was the cause; if not, the room-list re-projection is the next target (make it incremental).
+- **Proper (next):** user-intent QoS lane separation (dedicated prioritized command lane at the AppActor + AccountActor; background slow I/O dispatched to a bounded worker, never awaited inline in an actor message loop) + an **encrypted, cache-first, single-flight** avatar cache (see Privacy below) + GUI throttle/virtualize of the member list + incremental room-list projection.
+- **Privacy:** avatar thumbnails are currently written **plaintext** to `data_dir/avatar_thumbnails/` and served via `file://`. Contact avatars are sensitive social-graph metadata; on re-enable the cache must use encrypted storage (consistent with the SDK store / search index), not a plaintext copy.
+
+**Rules to codify (extends §8):** user-intent commands travel on a dedicated prioritized lane, never sharing a FIFO with high-volume background work; slow SDK I/O (media/avatar) is served cache-first and runs on a bounded worker, never awaited inline in an actor message loop; re-fetchable sensitive assets (avatars) are cached in encrypted storage, cache-checked before any network fetch.
