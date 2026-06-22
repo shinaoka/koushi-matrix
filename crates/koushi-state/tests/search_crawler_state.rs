@@ -326,6 +326,110 @@ fn pause_from_active_notifies_actor_without_invalidating_completed_rooms() {
 }
 
 #[test]
+fn pause_from_active_converts_running_rooms_to_queued_and_emits_search_crawler_changed() {
+    let mut state = ready_state_with_rooms(&[
+        "room-a",
+        "room-b",
+        "room-c",
+        "room-d",
+        "room-e",
+        "room-f",
+    ]);
+    state.search_crawler.rooms.insert(
+        "room-a".to_owned(),
+        SearchCrawlerRoomState::Running {
+            processed: 8,
+            indexed: 5,
+        },
+    );
+    state.search_crawler.rooms.insert(
+        "room-b".to_owned(),
+        SearchCrawlerRoomState::Running {
+            processed: 2,
+            indexed: 1,
+        },
+    );
+    state.search_crawler.rooms.insert(
+        "room-c".to_owned(),
+        SearchCrawlerRoomState::Completed { indexed: 10 },
+    );
+    state.search_crawler.rooms.insert(
+        "room-d".to_owned(),
+        SearchCrawlerRoomState::Failed {
+            kind: SearchCrawlerFailureKind::Sdk,
+        },
+    );
+    state.search_crawler.rooms.insert(
+        "room-e".to_owned(),
+        SearchCrawlerRoomState::Idle,
+    );
+    state.search_crawler.rooms.insert(
+        "room-f".to_owned(),
+        SearchCrawlerRoomState::Queued,
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 1,
+            patch: SettingsPatch {
+                search_crawler: Some(settings_paused()),
+                ..Default::default()
+            },
+        },
+    );
+
+    assert_eq!(
+        state.search_crawler.rooms.get("room-a"),
+        Some(&SearchCrawlerRoomState::Queued)
+    );
+    assert_eq!(
+        state.search_crawler.rooms.get("room-b"),
+        Some(&SearchCrawlerRoomState::Queued)
+    );
+    assert_eq!(
+        state.search_crawler.rooms.get("room-c"),
+        Some(&SearchCrawlerRoomState::Completed { indexed: 10 })
+    );
+    assert_eq!(
+        state.search_crawler.rooms.get("room-d"),
+        Some(&SearchCrawlerRoomState::Failed {
+            kind: SearchCrawlerFailureKind::Sdk,
+        })
+    );
+    assert_eq!(
+        state.search_crawler.rooms.get("room-e"),
+        Some(&SearchCrawlerRoomState::Idle)
+    );
+    assert_eq!(
+        state.search_crawler.rooms.get("room-f"),
+        Some(&SearchCrawlerRoomState::Queued)
+    );
+
+    let has_crawler_changed = effects
+        .iter()
+        .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)));
+    assert!(
+        has_crawler_changed,
+        "pausing with running rooms must emit SearchCrawlerChanged; got {effects:?}"
+    );
+
+    let notify = effects.iter().find(|effect| {
+        matches!(
+            effect,
+            AppEffect::NotifySearchCrawlerRoomsAvailable {
+                settings,
+                ..
+            } if settings.speed == SearchCrawlerSpeed::Paused
+        )
+    });
+    assert!(
+        notify.is_some(),
+        "pausing must notify the actor with paused settings; got {effects:?}"
+    );
+}
+
+#[test]
 fn pure_speed_change_does_not_invalidate_completed_rooms() {
     let mut state = ready_state_with_rooms(&["room-a", "room-b"]);
     // Mark both as Completed.

@@ -760,6 +760,8 @@ export type MessageId =
   | "settings.searchHistoryIncludeCaptions"
   | "settings.searchHistoryIncludeFilenames"
   | "settings.searchHistoryActivity"
+  | "settings.searchHistoryIndexingProgress"
+  | "settings.searchHistoryPausedProgress"
   | "settings.searchHistoryActivitySummary"
   | "settings.searchHistoryActivityIdle"
   | "settings.searchHistoryActivityLastIndexed"
@@ -1660,6 +1662,8 @@ const en: Catalog = {
   "settings.searchHistoryIncludeCaptions": "Index media captions",
   "settings.searchHistoryIncludeFilenames": "Index file names",
   "settings.searchHistoryActivity": "Search crawler activity",
+  "settings.searchHistoryIndexingProgress": "Indexing message history... {completed} of {total} rooms",
+  "settings.searchHistoryPausedProgress": "Message history indexing is paused. {completed} of {total} rooms indexed",
   "settings.searchHistoryActivitySummary": "{running} running, {queued} queued, {completed} complete, {failed} failed",
   "settings.searchHistoryActivityIdle": "No room is indexing right now.",
   "settings.searchHistoryActivityLastIndexed": "Last indexed {room} {age}.",
@@ -2449,6 +2453,8 @@ const ja: Catalog = {
   "settings.searchHistoryIncludeCaptions": "メディアキャプションをインデックス",
   "settings.searchHistoryIncludeFilenames": "ファイル名をインデックス",
   "settings.searchHistoryActivity": "検索クローラーの動作状況",
+  "settings.searchHistoryIndexingProgress": "メッセージ履歴をインデックス中... {completed}/{total}ルーム",
+  "settings.searchHistoryPausedProgress": "メッセージ履歴のインデックスは一時停止中です。{completed}/{total}ルームをインデックス済み",
   "settings.searchHistoryActivitySummary": "実行中 {running}、待機 {queued}、完了 {completed}、失敗 {failed}",
   "settings.searchHistoryActivityIdle": "現在インデックス中のルームはありません。",
   "settings.searchHistoryActivityLastIndexed": "最後にインデックスしたルーム: {room}（{age}）。",

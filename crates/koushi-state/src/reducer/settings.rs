@@ -53,6 +53,7 @@ pub(crate) fn handle_settings_update_requested(
         },
         AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
     ];
+    let mut emit_search_crawler_changed = false;
 
     // Guard: if content-indexing settings changed, invalidate the
     // reducer state AND the actor's completed-room cache so rooms are
@@ -69,7 +70,7 @@ pub(crate) fn handle_settings_update_requested(
                 *room_state = crate::state::SearchCrawlerRoomState::Idle;
             }
         }
-        effects.push(AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged));
+        emit_search_crawler_changed = true;
         // Tell the actor to drop its completed-room cache so the
         // following re-enqueue actually starts new crawls.
         effects.push(AppEffect::InvalidateSearchCrawlerCache);
@@ -102,10 +103,23 @@ pub(crate) fn handle_settings_update_requested(
         && new_crawler.speed == SearchCrawlerSpeed::Paused
     {
         let room_ids: Vec<String> = state.rooms.iter().map(|r| r.room_id.clone()).collect();
+        for room_state in state.search_crawler.rooms.values_mut() {
+            if matches!(
+                room_state,
+                crate::state::SearchCrawlerRoomState::Running { .. }
+            ) {
+                *room_state = crate::state::SearchCrawlerRoomState::Queued;
+                emit_search_crawler_changed = true;
+            }
+        }
         effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
             room_ids,
             settings: new_crawler.clone(),
         });
+    }
+
+    if emit_search_crawler_changed {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged));
     }
 
     effects

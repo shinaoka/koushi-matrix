@@ -1737,9 +1737,21 @@ function SearchHistorySection({
 }) {
   const roomEntries = crawlerRoomEntries(crawlerState.rooms, rooms);
   const crawlerSummary = summarizeCrawlerRooms(roomEntries);
-  const activeRoomEntry = roomEntries.find((entry) => entry.roomState.kind === "running") ?? roomEntries.find((entry) => entry.roomState.kind === "queued");
-  const lastActiveEntry = crawlerLastActiveEntry(crawlerState.last_active, rooms);
   const crawlerPaused = crawlerSettings.speed === "paused";
+  const activeRoomEntry = crawlerPaused
+    ? roomEntries.find((entry) => entry.roomState.kind === "queued")
+    : roomEntries.find((entry) => entry.roomState.kind === "running") ??
+      roomEntries.find((entry) => entry.roomState.kind === "queued");
+  const lastActiveEntry = crawlerLastActiveEntry(crawlerState.last_active, rooms);
+  const crawlerProgressLabel = crawlerPaused
+    ? t("settings.searchHistoryPausedProgress", {
+        completed: crawlerSummary.completed,
+        total: roomEntries.length
+      })
+    : t("settings.searchHistoryIndexingProgress", {
+        completed: crawlerSummary.completed,
+        total: roomEntries.length
+      });
 
   function toggleCrawlerPaused() {
     onUpdateSettings({
@@ -1803,19 +1815,20 @@ function SearchHistorySection({
       </div>
       <section
         className="settings-section crawler-activity-section"
-        aria-label={t("settings.searchHistoryActivity")}
-      >
-        <div className="settings-section-heading">
-          <h4 className="settings-subheading">{t("settings.searchHistoryActivity")}</h4>
-          <span className="settings-save-state">
-            {t("settings.searchHistoryActivitySummary", crawlerSummary)}
-          </span>
-        </div>
-        {activeRoomEntry ? (
-          <div className="settings-detail-list compact crawler-activity-list">
-            <CrawlerRoomRow
-              roomId={activeRoomEntry.roomId}
-              displayLabel={activeRoomEntry.displayLabel}
+      aria-label={t("settings.searchHistoryActivity")}
+    >
+      <div className="settings-section-heading">
+        <h4 className="settings-subheading">{t("settings.searchHistoryActivity")}</h4>
+        <span className="settings-save-state crawler-progress-state">{crawlerProgressLabel}</span>
+      </div>
+      <p className="settings-muted-note crawler-activity-summary">
+        {t("settings.searchHistoryActivitySummary", crawlerSummary)}
+      </p>
+      {activeRoomEntry ? (
+        <div className="settings-detail-list compact crawler-activity-list">
+          <CrawlerRoomRow
+            roomId={activeRoomEntry.roomId}
+            displayLabel={activeRoomEntry.displayLabel}
               roomState={activeRoomEntry.roomState}
               onStart={onStartCrawlRoom}
               onStop={onStopCrawlRoom}

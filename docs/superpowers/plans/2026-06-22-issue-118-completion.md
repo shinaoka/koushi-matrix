@@ -494,17 +494,16 @@ git commit -m "fix: remove plaintext renderable thumbnail cache"
 
 **Files:**
 - Modify: `crates/koushi-state/src/reducer/settings.rs`
-- Modify: `crates/koushi-state/src/state/search_crawler.rs` if adding `Paused`
 - Modify: `crates/koushi-state/tests/search_crawler_state.rs`
 - Modify: `apps/desktop/src/components/UserSettingsPanel.tsx`
 - Modify: `apps/desktop/src/components/UserSettingsPanel.test.tsx`
 - Modify: `apps/desktop/e2e/search-crawler-settings.spec.ts`
 
-- [ ] **Step 1: Write reducer test**
+- [x] **Step 1: Write reducer test**
 
 Add a test that starts with a `Running` room, applies settings patch to `SearchCrawlerSpeed::Paused`, and asserts no room remains `Running`.
 
-- [ ] **Step 2: Implement pause transition**
+- [x] **Step 2: Implement pause transition**
 
 In the settings reducer pause branch:
 
@@ -519,7 +518,7 @@ effects.push(AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged));
 
 Use a new `Paused` state only if the UI needs a distinct state.
 
-- [ ] **Step 3: Improve summary UI**
+- [x] **Step 3: Improve summary UI**
 
 Replace raw summary as primary text with:
 
@@ -532,11 +531,11 @@ const summary =
 
 Keep raw counts in detail rows.
 
-- [ ] **Step 4: Verify existing done items**
+- [x] **Step 4: Verify existing done items**
 
 Keep tests for active speed `aria-pressed`, separate Room index panel, and scrollable long list.
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run:
 
