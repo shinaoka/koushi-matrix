@@ -75,6 +75,7 @@ export function ContextualRightPanel({
   onInviteUser = () => undefined,
   onModerateMember = () => undefined,
   onSetLocalUserAlias = () => undefined,
+  onRequestMemberAvatarThumbnail = undefined,
   onSetRoomNotificationMode = () => undefined,
   onStartDirectMessage = () => undefined,
   onUpdateMemberRole = () => undefined,
@@ -158,6 +159,7 @@ export function ContextualRightPanel({
     reason: string | null
   ) => void;
   onSetLocalUserAlias?: (userId: string, alias: string | null) => void;
+  onRequestMemberAvatarThumbnail?: (mxcUri: string) => void | Promise<void>;
   onSetRoomNotificationMode?: (roomId: string, mode: RoomNotificationMode) => void;
   onStartDirectMessage?: (userId: string) => void;
   onUpdateMemberRole?: (
@@ -345,6 +347,7 @@ export function ContextualRightPanel({
           onUnignoreUser={onUnignoreUser}
           onReportUser={onReportUser}
           onModerateMember={onModerateMember}
+          onRequestMemberAvatarThumbnail={onRequestMemberAvatarThumbnail}
           onOpenFiles={
             activeRoom
               ? () => onOpenFiles({ kind: "room", room_id: activeRoom.room_id })
