@@ -51,6 +51,18 @@ pub const EVENT_QUEUE_CAPACITY: usize = 16384;
 pub const COMPOSER_DRAFT_PERSIST_DEBOUNCE: Duration = Duration::from_millis(150);
 const INTERNAL_RUNTIME_CONNECTION_ID: RuntimeConnectionId = RuntimeConnectionId(0);
 
+/// Diagnostic-only, private-data-free trace of slow AppActor loop iterations.
+/// Enable with KOUSHI_SUBSCRIBE_TRACE=1. A loop iteration that takes hundreds of
+/// ms (e.g. a full `self.state.clone()` of a 100+ room account) starves the
+/// command arm, which is why `select_room` can time out under large-account
+/// sync. Logs the arm, items handled, the state-clone cost, and total time.
+fn app_loop_trace(arm: &str, count: u32, clone_ms: u128, total: std::time::Duration) {
+    let total_ms = total.as_millis();
+    if total_ms >= 100 && std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+        eprintln!("koushi.apploop arm={arm} count={count} clone_ms={clone_ms} total_ms={total_ms}");
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CommandSubmitError {
     #[error("core runtime is closed")]
@@ -605,20 +617,28 @@ impl AppActor {
                 }
                 command = self.command_rx.recv() => {
                     let Some(command) = command else { break };
+                    let loop_started = std::time::Instant::now();
                     let before_state = self.state.clone();
+                    let clone_ms = loop_started.elapsed().as_millis();
                     let mut state_changed = self.handle_command(command).await;
+                    let mut handled = 1u32;
                     // Coalesce: drain whatever is already queued before
                     // emitting a single StateChanged for the batch.
                     while let Ok(next) = self.command_rx.try_recv() {
                         state_changed |= self.handle_command(next).await;
+                        handled += 1;
                     }
                     if state_changed {
                         self.publish_state_delta(&before_state);
                     }
+                    app_loop_trace("command", handled, clone_ms, loop_started.elapsed());
                 }
                 actions = self.action_rx.recv() => {
                     let Some(actions) = actions else { break };
+                    let loop_started = std::time::Instant::now();
+                    let action_batch = actions.len() as u32;
                     let before_state = self.state.clone();
+                    let clone_ms = loop_started.elapsed().as_millis();
                     let mut state_changed = false;
                     for action in actions {
                         if let AppAction::ActivityRowsObserved { rows } = &action {
@@ -649,6 +669,7 @@ impl AppActor {
                     if state_changed {
                         self.publish_state_delta(&before_state);
                     }
+                    app_loop_trace("action", action_batch, clone_ms, loop_started.elapsed());
                 }
             }
         }
