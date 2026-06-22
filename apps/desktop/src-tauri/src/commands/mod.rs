@@ -17,11 +17,12 @@ use std::{
 use koushi_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
     ImageUploadCompressionPolicy, ImageUploadCompressionState, ImageUploadDimensions,
-    ImageUploadVariantKind, MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand,
-    RoomEvent, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand, SearchScope,
-    SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SetAvatarRequest, SyncCommand,
-    TimelineCommand, TimelineKey, TimelineKind, TimelineViewportObservation, UploadMediaKind,
-    UploadMediaRequest, UploadMediaThumbnail,
+    ImageUploadVariantKind, IntentNoOpReason, IntentOutcome, MediaDownloadSelection,
+    PaginationDirection, RequestId, RoomCommand, RoomEvent, RoomKeyExportRequest,
+    RoomKeyImportRequest, SearchCommand, SearchScope, SecureBackupPassphraseChangeRequest,
+    SecureBackupSetupRequest, SetAvatarRequest, SyncCommand, TimelineCommand, TimelineKey,
+    TimelineKind, TimelineViewportObservation, UploadMediaKind, UploadMediaRequest,
+    UploadMediaThumbnail,
 };
 use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentSort, AuthSecret,
@@ -385,6 +386,49 @@ async fn wait_for_selected_room(
                     eprintln!("koushi.select stage=op_failed events={events}");
                 }
                 return Err("room selection failed".to_owned());
+            }
+            // Telemetry-lane fast path: IntentLifecycle lets us fail fast with
+            // a specific reason instead of waiting the full 10s timeout.
+            Ok(CoreEvent::IntentLifecycle {
+                request_id,
+                outcome,
+            }) if request_id == select_request_id => {
+                match outcome {
+                    IntentOutcome::Committed | IntentOutcome::BenignNoOp(_) => {
+                        if trace {
+                            eprintln!(
+                                "koushi.select stage=ok_intent events={events} outcome={outcome:?}"
+                            );
+                        }
+                        return Ok(());
+                    }
+                    IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState) => {
+                        if trace {
+                            eprintln!(
+                                "koushi.select stage=failed_not_in_state events={events}"
+                            );
+                        }
+                        return Err("room not yet loaded".to_owned());
+                    }
+                    IntentOutcome::FailedNoOp(IntentNoOpReason::SessionNotReady) => {
+                        if trace {
+                            eprintln!(
+                                "koushi.select stage=failed_session_not_ready events={events}"
+                            );
+                        }
+                        return Err("session not ready".to_owned());
+                    }
+                    IntentOutcome::FailedNoOp(IntentNoOpReason::AlreadyActive) => {
+                        // AlreadyActive is benign; this arm is unreachable per
+                        // the classification logic but handle it defensively.
+                        if trace {
+                            eprintln!(
+                                "koushi.select stage=ok_already_active events={events}"
+                            );
+                        }
+                        return Ok(());
+                    }
+                }
             }
             Ok(_) => {}
             Err(_) if snapshot_has_active_room(&event_conn.snapshot(), selected_room_id) => {

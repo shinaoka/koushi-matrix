@@ -37,6 +37,46 @@ pub enum ReportKind {
     User,
 }
 
+/// Reason a SelectRoom intent produced no state change.
+///
+/// `AlreadyActive` is a benign idempotent no-op (the room was already
+/// selected). `SessionNotReady` and `RoomNotInState` are retryable failure
+/// no-ops; the caller should surface a specific diagnostic rather than a
+/// generic timeout.
+///
+/// Private-data-free: never carries room ids, user ids, or message bodies.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntentNoOpReason {
+    /// The session was not in a ready state at reduce time.
+    SessionNotReady,
+    /// The targeted room was not present in `state.rooms` at reduce time.
+    RoomNotInState,
+    /// The room was already the active room (idempotent, not a failure).
+    AlreadyActive,
+}
+
+/// Terminal outcome of a user-intent command (§4.7 Slice 1 telemetry-lane
+/// event). Carried by `CoreEvent::IntentLifecycle`.
+///
+/// Slice 1 covers `SelectRoom` only. Future slices will extend this to
+/// `SelectSpace`, send, pin/unpin, etc.
+///
+/// `BenignNoOp` means the intent was received but had no effect for a
+/// harmless reason (e.g. already active). `FailedNoOp` means the intent
+/// could not be applied and should be retried or surfaced as an error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
+pub enum IntentOutcome {
+    /// The reducer applied the intent and state was mutated as expected.
+    Committed,
+    /// The intent had no effect for a harmless, idempotent reason.
+    BenignNoOp(IntentNoOpReason),
+    /// The intent could not be applied; the caller should surface this as an
+    /// error rather than a silent timeout.
+    FailedNoOp(IntentNoOpReason),
+}
+
 #[derive(Clone, Debug)]
 pub enum CoreEvent {
     StateDelta(StateDelta),
@@ -56,6 +96,18 @@ pub enum CoreEvent {
     OperationFailed {
         request_id: RequestId,
         failure: CoreFailure,
+    },
+    /// Telemetry-lane event: the terminal outcome of a user-intent command.
+    ///
+    /// This event is on a DEDICATED TELEMETRY LANE — it must never be mixed
+    /// into product `StateDelta` or `StateChanged`, and product state must
+    /// never be derived from it. It is emitted after the reducer runs so the
+    /// AppActor can correlate the outcome with the originating `request_id`.
+    ///
+    /// Slice 1 covers `SelectRoom` only.
+    IntentLifecycle {
+        request_id: RequestId,
+        outcome: IntentOutcome,
     },
 }
 

@@ -792,6 +792,18 @@ fn serialize_core_event(event: &CoreEvent) -> Option<serde_json::Value> {
                 "failure": failure,
             })
         }
+        // Telemetry-lane event: emitted after reduce, never mixed with
+        // StateDelta/StateChanged, never drives product state in React.
+        CoreEvent::IntentLifecycle {
+            request_id,
+            outcome,
+        } => {
+            serde_json::json!({
+                "kind": "IntentLifecycle",
+                "request_id": request_id,
+                "outcome": outcome,
+            })
+        }
     })
 }
 
@@ -1468,7 +1480,8 @@ mod tests {
         use koushi_core::{
             AccountKey, CoreEvent, TimelineDiff, TimelineKey, build_state_delta,
             event::{
-                AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent, LinkPreview,
+                AccountEvent, ActivityEvent, CjkTextPolicyEvent, E2eeTrustEvent,
+                IntentNoOpReason, IntentOutcome, LinkPreview,
                 LinkPreviewImage, LinkPreviewState, LiveSignalsEvent, LocalEncryptionEvent,
                 NativeAttentionEvent, PaginationDirection, PaginationState, ReactionGroup,
                 RoomEvent, SearchEvent, SyncEvent, ThreadsListEvent, TimelineCodeBlock,
@@ -2649,6 +2662,18 @@ mod tests {
                 },
             ))
             .expect("serialize threads list opened"),
+            "intentLifecycleCommitted": serialize_core_event(&CoreEvent::IntentLifecycle {
+                request_id,
+                outcome: IntentOutcome::Committed,
+            })
+            .expect("serialize intent lifecycle committed"),
+            "intentLifecycleFailedNoOpRoomNotInState": serialize_core_event(
+                &CoreEvent::IntentLifecycle {
+                    request_id,
+                    outcome: IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState),
+                },
+            )
+            .expect("serialize intent lifecycle failed noop room not in state"),
         });
         let checked_in_contract: serde_json::Value =
             serde_json::from_str(include_str!("../../src/domain/coreEvents.generated.json"))
@@ -2686,6 +2711,8 @@ mod tests {
             "cjkTextPolicyJapaneseCatalogProfileChanged",
             "e2eeTrustIdentityResetChanged",
             "e2eeTrustVerificationProgress",
+            "intentLifecycleCommitted",
+            "intentLifecycleFailedNoOpRoomNotInState",
             "liveSignalsPresenceSet",
             "liveSignalsRoomSignalsUpdated",
             "localEncryptionHealthChanged",
