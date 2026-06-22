@@ -91,7 +91,6 @@ import {
   recordTimelineResync
 } from "../domain/timelineTransportStats";
 import {
-  focusedTimelineKey,
   timelineItemDomId,
   timelineKeyEquals
 } from "../domain/coreEvents";
@@ -310,15 +309,6 @@ function restoreRoomScrollAnchor(container: HTMLElement, anchor: TimelineScrollA
 
 function roomScrollAnchorIsStale(anchor: TimelineScrollAnchor): boolean {
   return Date.now() - anchor.updated_at_ms > TIMELINE_SCROLL_ANCHOR_MAX_AGE_MS;
-}
-
-function timelineItemsContainEventId(
-  items: readonly TimelineItem[],
-  eventId: string
-): boolean {
-  return items.some(
-    (item) => "Event" in item.id && item.id.Event.event_id === eventId
-  );
 }
 
 function visibleEventIds(container: HTMLElement): {
@@ -1345,8 +1335,6 @@ export const TimelineView = memo(function TimelineView({
   profileUsersRef.current = profileUsers;
   const timelineKeyRef = useRef(timelineKey);
   timelineKeyRef.current = timelineKey;
-  const displayTimelineKeyRef = useRef<TimelineKey>(timelineKey);
-  const isShowingBootstrapTimelineRef = useRef(false);
   const timelineKeyHash = JSON.stringify(timelineKey);
   const roomTimelineRoomId = "Room" in timelineKey.kind ? timelineKey.kind.Room.room_id : null;
   const emitDiagnosticLog = useCallback(
@@ -1396,7 +1384,6 @@ export const TimelineView = memo(function TimelineView({
     if (
       !transport.updateScrollAnchor ||
       roomTimelineRoomId !== roomId ||
-      isShowingBootstrapTimelineRef.current ||
       anchorRestorePendingRef.current ||
       roomScrollAnchorRestorePendingRef.current ||
       suppressScrollAnchorCaptureRef.current
@@ -1445,72 +1432,6 @@ export const TimelineView = memo(function TimelineView({
       suppressScrollAnchorCaptureRef.current = false;
     });
   }, []);
-
-  const liveRoomScrollAnchor =
-    roomScrollAnchor &&
-    roomTimelineRoomId === roomId &&
-    !roomScrollAnchorIsStale(roomScrollAnchor)
-      ? roomScrollAnchor
-      : null;
-  const liveItems = getItems(store, timelineKey);
-  const liveAnchorVisible = liveRoomScrollAnchor
-    ? timelineItemsContainEventId(liveItems, liveRoomScrollAnchor.event_id)
-    : false;
-  const bootstrapTimelineKeyCandidate = useMemo(() => {
-    if (
-      !liveRoomScrollAnchor ||
-      liveAnchorVisible ||
-      roomTimelineRoomId !== roomId ||
-      !("Room" in timelineKey.kind)
-    ) {
-      return null;
-    }
-    return focusedTimelineKey(
-      timelineKey.account_key,
-      roomId,
-      liveRoomScrollAnchor.event_id
-    );
-  }, [
-    liveAnchorVisible,
-    liveRoomScrollAnchor?.event_id,
-    liveRoomScrollAnchor?.updated_at_ms,
-    roomId,
-    roomTimelineRoomId,
-    timelineKeyHash
-  ]);
-
-  const bootstrapTimelineKey = bootstrapTimelineKeyCandidate;
-  const bootstrapItems = bootstrapTimelineKey ? getItems(store, bootstrapTimelineKey) : [];
-  const bootstrapFocusedEventId =
-    bootstrapTimelineKey && "Focused" in bootstrapTimelineKey.kind
-      ? bootstrapTimelineKey.kind.Focused.event_id
-      : null;
-  const bootstrapAnchorVisible = bootstrapFocusedEventId
-    ? timelineItemsContainEventId(
-        bootstrapItems,
-        bootstrapFocusedEventId
-      )
-    : false;
-  const displayTimelineKey =
-    bootstrapTimelineKey && bootstrapAnchorVisible ? bootstrapTimelineKey : timelineKey;
-  const isShowingBootstrapTimeline = !timelineKeyEquals(displayTimelineKey, timelineKey);
-  isShowingBootstrapTimelineRef.current = isShowingBootstrapTimeline;
-  const displayTimelineKeyHash = JSON.stringify(displayTimelineKey);
-  const bootstrapTimelineKeyHash = bootstrapTimelineKey
-    ? JSON.stringify(bootstrapTimelineKey)
-    : null;
-  displayTimelineKeyRef.current = displayTimelineKey;
-
-  useEffect(() => {
-    if (
-      !bootstrapTimelineKey ||
-      timelineKeyEquals(bootstrapTimelineKey, timelineKeyRef.current)
-    ) {
-      return;
-    }
-    void transport.ensureSubscribed?.(bootstrapTimelineKey).catch(() => undefined);
-  }, [bootstrapTimelineKey, transport]);
-
   // --- Event subscription: apply CoreEvents to the store ---
   useEffect(() => {
     const unsubscribe = transport.listenCoreEvents((payload) => {
@@ -1526,18 +1447,12 @@ export const TimelineView = memo(function TimelineView({
         setStore((current) => {
           const next = applyGlobalResync(current);
           relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-            getItems(next, displayTimelineKeyRef.current),
+            getItems(next, timelineKeyRef.current),
             profileUsersRef.current
           );
           return next;
         });
         void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
-        if (
-          bootstrapTimelineKey &&
-          !timelineKeyEquals(bootstrapTimelineKey, timelineKeyRef.current)
-        ) {
-          void transport.ensureSubscribed?.(bootstrapTimelineKey).catch(() => undefined);
-        }
         return;
       }
       if (payload.kind === "Account" && "AvatarThumbnailDownloaded" in payload.event) {
@@ -1568,7 +1483,7 @@ export const TimelineView = memo(function TimelineView({
         setStore((current) => {
           const next = applyTimelineEvent(current, event);
           relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-            getItems(next, displayTimelineKeyRef.current),
+            getItems(next, timelineKeyRef.current),
             profileUsersRef.current
           );
           return next;
@@ -1576,7 +1491,7 @@ export const TimelineView = memo(function TimelineView({
         return;
       }
 
-      // Key filter: only the live room timeline or its transient focused bootstrap.
+      // Key filter: only this timeline's events.
       const eventKey =
         "InitialItems" in event
           ? event.InitialItems.key
@@ -1601,16 +1516,7 @@ export const TimelineView = memo(function TimelineView({
                             : "NavigationUpdated" in event
                               ? event.NavigationUpdated.key
                               : event.ResyncRequired.key;
-      const relevantTimelineKeys: TimelineKey[] = [timelineKeyRef.current];
-      if (
-        bootstrapTimelineKey &&
-        !timelineKeyEquals(bootstrapTimelineKey, timelineKeyRef.current)
-      ) {
-        relevantTimelineKeys.push(bootstrapTimelineKey);
-      }
-      if (
-        !relevantTimelineKeys.some((candidate) => timelineKeyEquals(eventKey, candidate))
-      ) {
+      if (!timelineKeyEquals(eventKey, timelineKeyRef.current)) {
         recordTimelineKeyMismatch();
         return;
       }
@@ -1655,27 +1561,15 @@ export const TimelineView = memo(function TimelineView({
       setStore((current) => {
         const next = applyTimelineEvent(current, event);
         relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-          getItems(next, displayTimelineKeyRef.current),
+          getItems(next, timelineKeyRef.current),
           profileUsersRef.current
         );
         return next;
       });
     });
     void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
-    if (
-      bootstrapTimelineKey &&
-      !timelineKeyEquals(bootstrapTimelineKey, timelineKeyRef.current)
-    ) {
-      void transport.ensureSubscribed?.(bootstrapTimelineKey).catch(() => undefined);
-    }
     return unsubscribe;
-  }, [
-    bootstrapTimelineKeyHash,
-    displayTimelineKeyHash,
-    emitDiagnosticLog,
-    timelineKeyHash,
-    transport
-  ]);
+  }, [emitDiagnosticLog, timelineKeyHash, transport]);
 
   useEffect(() => {
     setNavigationSnapshot(null);
@@ -1713,7 +1607,7 @@ export const TimelineView = memo(function TimelineView({
     []
   );
 
-  const items = getItems(store, displayTimelineKey);
+  const items = getItems(store, timelineKey);
   useEffect(() => {
     relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(items, profileUsers);
   }, [items, profileUsers]);
@@ -1785,9 +1679,7 @@ export const TimelineView = memo(function TimelineView({
     onDiagnosticsChange?.({
       visibleItems: visibleItems.length,
       downloadedItems: downloadedEventIdsRef.current.size,
-      backfill: paginationStateDiagnosticLabel(
-        getPaginationState(store, displayTimelineKey, "Backward")
-      ),
+      backfill: paginationStateDiagnosticLabel(getPaginationState(store, timelineKey, "Backward")),
       ...avatarDiagnostics,
       ...timelineRenderedAvatarDiagnostics(containerRef.current)
     });
@@ -1797,7 +1689,6 @@ export const TimelineView = memo(function TimelineView({
     onDiagnosticsChange,
     profileUsers,
     store,
-    displayTimelineKeyHash,
     timelineKeyHash,
     visibleItems
   ]);
@@ -1848,12 +1739,12 @@ export const TimelineView = memo(function TimelineView({
     }
     return [item.id.Transaction.transaction_id];
   });
-  const backwardState = getPaginationState(store, displayTimelineKey, "Backward");
+  const backwardState = getPaginationState(store, timelineKey, "Backward");
   const isPaginating = backwardState === "Paginating";
   const endReached = backwardState === "EndReached";
   const roomSignals = liveSignals?.rooms[roomId] ?? null;
   const latestReadableEventId = latestEventBackedItemId(items);
-  const timelineKeyState = getKeyState(store, displayTimelineKey);
+  const timelineKeyState = getKeyState(store, timelineKey);
   const timelineInitialized = Boolean(timelineKeyState && !timelineKeyState.awaitingResync);
   // Stable, render-visible timeline generation for this key. Bumps when the
   // store replaces the list for a new generation (InitialItems / resync), so
@@ -1861,7 +1752,7 @@ export const TimelineView = memo(function TimelineView({
   // Core generation; use timelineInitialized to distinguish "not initialized".
   const generation = timelineKeyState?.generation ?? 0;
   const initialLiveEdgeScrollKey = timelineInitialized
-    ? `${displayTimelineKeyHash}:${generation}`
+    ? `${timelineKeyHash}:${generation}`
     : null;
   const onSendReaction = useCallback(
     (targetRoomId: string, eventId: string, reactionKey: string) => {
@@ -2000,9 +1891,6 @@ export const TimelineView = memo(function TimelineView({
       : [{ room_id: roomId, display_name: roomId }];
   const sendReadSignalsForEvent = useCallback(
     (eventId: string) => {
-      if (isShowingBootstrapTimeline) {
-        return;
-      }
       const signalKey = `${roomId}\u0000${eventId}`;
       if (readSignalEventRef.current === signalKey) {
         return;
@@ -2011,10 +1899,10 @@ export const TimelineView = memo(function TimelineView({
       void transport.sendReadReceipt(roomId, eventId).catch(() => undefined);
       void transport.setFullyRead(roomId, eventId).catch(() => undefined);
     },
-    [isShowingBootstrapTimeline, roomId, transport]
+    [roomId, transport]
   );
   const reportViewportObservation = useCallback(() => {
-    if (!transport.observeViewport || roomTimelineRoomId !== roomId || isShowingBootstrapTimeline) {
+    if (!transport.observeViewport || roomTimelineRoomId !== roomId) {
       return;
     }
     const container = containerRef.current;
@@ -2050,7 +1938,6 @@ export const TimelineView = memo(function TimelineView({
       .catch(() => undefined);
   }, [
     latestReadableEventId,
-    isShowingBootstrapTimeline,
     roomId,
     roomTimelineRoomId,
     sendReadSignalsForEvent,
@@ -2058,7 +1945,7 @@ export const TimelineView = memo(function TimelineView({
   ]);
 
   useEffect(() => {
-    if (!latestReadableEventId || roomTimelineRoomId !== roomId || isShowingBootstrapTimeline) {
+    if (!latestReadableEventId || roomTimelineRoomId !== roomId) {
       return;
     }
     const container = containerRef.current;
@@ -2068,7 +1955,6 @@ export const TimelineView = memo(function TimelineView({
     sendReadSignalsForEvent(latestReadableEventId);
   }, [
     latestReadableEventId,
-    isShowingBootstrapTimeline,
     roomId,
     roomTimelineRoomId,
     sendReadSignalsForEvent,
@@ -2090,12 +1976,6 @@ export const TimelineView = memo(function TimelineView({
     const roomAnchorAlreadyRestored =
       activeRoomAnchorSignature !== null &&
       restoredRoomScrollAnchorSignatureRef.current === activeRoomAnchorSignature;
-    const waitingForBootstrap =
-      Boolean(
-        bootstrapTimelineKeyCandidate &&
-        !bootstrapAnchorVisible &&
-        timelineKeyEquals(displayTimelineKey, timelineKey)
-      );
     let roomAnchorRestored = false;
     if (
       timelineInitialized &&
@@ -2159,7 +2039,7 @@ export const TimelineView = memo(function TimelineView({
         }
       }
       if (!roomAnchorRestored) {
-        if (waitingForBootstrap || roomAnchorAlreadyRestored) {
+        if (roomAnchorAlreadyRestored) {
           roomScrollAnchorRestorePendingRef.current = true;
         } else {
           roomScrollAnchorRestorePendingRef.current = false;
@@ -2296,7 +2176,7 @@ export const TimelineView = memo(function TimelineView({
 
   // --- Automatic backfill on scroll near the top ---
   const maybeAutoBackfill = useCallback(() => {
-    if (suppressPaginationUi || isShowingBootstrapTimeline) {
+    if (suppressPaginationUi) {
       return;
     }
     const container = containerRef.current;
@@ -2314,23 +2194,16 @@ export const TimelineView = memo(function TimelineView({
     if (anchorRestorePendingRef.current || backfillInFlightRef.current) {
       return;
     }
-    if (shouldSuppressAutoBackfill(store, displayTimelineKeyRef.current)) {
+    if (shouldSuppressAutoBackfill(store, timelineKeyRef.current)) {
       return;
     }
     backfillInFlightRef.current = true;
     void transport
-      .paginateBackwards(displayTimelineKeyRef.current)
+      .paginateBackwards(timelineKeyRef.current)
       .catch(() => {
         backfillInFlightRef.current = false;
       });
-  }, [
-    autoLoadOlderMessages,
-    isShowingBootstrapTimeline,
-    store,
-    suppressPaginationUi,
-    transport,
-    virtualItemHeight
-  ]);
+  }, [store, transport, suppressPaginationUi, autoLoadOlderMessages, virtualItemHeight]);
   const onTimelineScroll = useCallback(() => {
     updateViewportMetrics();
     reportViewportObservation();
@@ -2350,7 +2223,6 @@ export const TimelineView = memo(function TimelineView({
       !timelineInitialized ||
       items.length > 0 ||
       suppressPaginationUi ||
-      isShowingBootstrapTimeline ||
       isPaginating ||
       endReached ||
       emptyThreadBackfillRequestedRef.current ||
@@ -2361,7 +2233,7 @@ export const TimelineView = memo(function TimelineView({
     emptyThreadBackfillRequestedRef.current = true;
     backfillInFlightRef.current = true;
     void transport
-      .paginateBackwards(displayTimelineKeyRef.current)
+      .paginateBackwards(timelineKeyRef.current)
       .catch(() => {
         backfillInFlightRef.current = false;
       });
@@ -2373,7 +2245,6 @@ export const TimelineView = memo(function TimelineView({
     timelineKey.kind,
     timelineKeyHash,
     timelineInitialized,
-    isShowingBootstrapTimeline,
     transport
   ]);
   const jumpToEvent = useCallback(
@@ -2458,7 +2329,7 @@ export const TimelineView = memo(function TimelineView({
     });
   }, [reportViewportObservation, runWithSuppressedScrollAnchorCapture, updateViewportMetrics]);
   const canRenderRoomNavigation =
-    roomTimelineRoomId === roomId && timelineKeyEquals(displayTimelineKey, timelineKey);
+    roomTimelineRoomId === roomId;
   const firstUnreadEventId = navigationSnapshot?.first_unread_event_id ?? null;
   const firstUnreadCount = navigationSnapshot?.unread_event_count ?? 0;
   const canJumpToFirstUnread = Boolean(
@@ -2589,7 +2460,7 @@ export const TimelineView = memo(function TimelineView({
                 onReply={onReply}
                 onOpenThread={onOpenThread}
                 resolveComposerKeyAction={resolveComposerKeyAction}
-                mediaUploadProgress={mediaUploadProgressForItem(store, displayTimelineKey, item)}
+                mediaUploadProgress={mediaUploadProgressForItem(store, timelineKey, item)}
                 onSendReaction={onSendReaction}
                 onRedactReaction={onRedactReaction}
                 onEdit={onEdit}

@@ -386,32 +386,22 @@ describe("TimelineView", () => {
     });
   });
 
-  it("boots through a focused timeline when a fresh room anchor is missing from the live room view", async () => {
+  it("does not keep a focused bootstrap visible when the live room never receives the anchor", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const roomId = "!room:example.invalid";
     const anchorEventId = "$anchor:example.invalid";
     const focusedKey = focusedTimelineKey("@alice:example.invalid", roomId, anchorEventId);
-    const observeViewport = vi.fn(async () => undefined);
-    const sendReadReceipt = vi.fn(async () => undefined);
-    const setFullyRead = vi.fn(async () => undefined);
-    const paginateBackwards = vi.fn(async () => undefined);
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
         emit = nextListener;
         return () => undefined;
-      },
-      observeViewport,
-      sendReadReceipt,
-      setFullyRead,
-      paginateBackwards
+      }
     });
 
     mockTimelineRects(
       {
         "$live-top:example.invalid": { top: 120, height: 48 },
         "$live-bottom:example.invalid": { top: 560, height: 48 },
-        "$focus-before:example.invalid": { top: 420, height: 48 },
-        "$focus-after:example.invalid": { top: 620, height: 48 },
         [anchorEventId]: { top: 500, height: 48 }
       },
       { top: 0, height: 600 }
@@ -432,11 +422,6 @@ describe("TimelineView", () => {
     );
 
     const timeline = await screen.findByTestId("timeline-view");
-    Object.defineProperty(timeline, "scrollTop", {
-      value: 100,
-      writable: true,
-      configurable: true
-    });
     Object.defineProperty(timeline, "scrollHeight", { value: 2000, configurable: true });
     Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
 
@@ -458,7 +443,8 @@ describe("TimelineView", () => {
     });
 
     await waitFor(() => {
-      expect(timeline.scrollTop).toBe(100);
+      expect(screen.getByText("Live top")).toBeTruthy();
+      expect(timeline.getAttribute("data-timeline-generation")).toBe("1");
     });
 
     act(() => {
@@ -480,38 +466,9 @@ describe("TimelineView", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText("Bootstrap anchor")).toBeTruthy();
-      expect(screen.getByText("Focused bootstrap context")).toBeTruthy();
-      expect(timeline.scrollTop).toBe(550);
-    });
-
-    observeViewport.mockClear();
-    sendReadReceipt.mockClear();
-    setFullyRead.mockClear();
-    paginateBackwards.mockClear();
-
-    Object.defineProperty(timeline, "scrollTop", {
-      value: 1400,
-      writable: true,
-      configurable: true
-    });
-    fireEvent.scroll(timeline);
-
-    await waitFor(() => {
-      expect(observeViewport).not.toHaveBeenCalled();
-      expect(sendReadReceipt).not.toHaveBeenCalled();
-      expect(setFullyRead).not.toHaveBeenCalled();
-    });
-
-    Object.defineProperty(timeline, "scrollTop", {
-      value: 0,
-      writable: true,
-      configurable: true
-    });
-    fireEvent.scroll(timeline);
-
-    await waitFor(() => {
-      expect(paginateBackwards).not.toHaveBeenCalledWith(focusedKey);
+      expect(screen.queryByText("Bootstrap anchor")).toBeNull();
+      expect(screen.queryByText("Focused bootstrap context")).toBeNull();
+      expect(timeline.getAttribute("data-timeline-generation")).toBe("1");
     });
 
     Object.defineProperty(timeline, "scrollTop", {
@@ -541,7 +498,8 @@ describe("TimelineView", () => {
     await waitFor(() => {
       expect(screen.queryByText("Focused bootstrap context")).toBeNull();
       expect(screen.getByText("Live anchor visible")).toBeTruthy();
-      expect(timeline.scrollTop).toBe(550);
+      expect(timeline.getAttribute("data-timeline-generation")).toBe("2");
+      expect(timeline.scrollTop).toBe(1000);
     });
   });
 
