@@ -13,8 +13,8 @@ use matrix_sdk::{
     room::ParentSpace,
     ruma::{
         events::{
-            AnyGlobalAccountDataEventContent, GlobalAccountDataEventType, SyncStateEvent,
-            direct::DirectEventContent, space::child::SpaceChildEventContent,
+            AnyGlobalAccountDataEventContent, AnySyncTimelineEvent, GlobalAccountDataEventType,
+            SyncStateEvent, direct::DirectEventContent, space::child::SpaceChildEventContent,
         },
         serde::Raw,
     },
@@ -2931,9 +2931,21 @@ pub async fn reshare_room_key(
     room_id: &str,
 ) -> Result<(), MatrixRoomOperationError> {
     let room = matrix_room(session, room_id)?;
-    // The vendored Matrix SDK exposes room-key rotation publicly; immediate
-    // pre-sharing remains an internal Room method.
-    room.discard_room_key()
+    room.reshare_room_key()
+        .await
+        .map_err(MatrixRoomOperationError::from_sdk_error)
+}
+
+pub async fn request_room_key_for_event(
+    session: &MatrixClientSession,
+    room_id: &str,
+    event: &Raw<AnySyncTimelineEvent>,
+) -> Result<(), MatrixRoomOperationError> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(room_id)
+        .map_err(|_| MatrixRoomOperationError::InvalidRoomId)?;
+    session
+        .client()
+        .request_room_key_for_event(event, room_id.as_ref())
         .await
         .map_err(MatrixRoomOperationError::from_sdk_error)
 }
