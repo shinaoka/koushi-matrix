@@ -279,6 +279,48 @@ describe("diagnosticReport", () => {
     expect(verboseReport).toContain("security.avatar_broken_images=1");
   });
 
+  test("includes state-transport delta health tokens when provided", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+    const report = diagnosticReport({
+      snapshot,
+      panelMode: "closed",
+      sendStatus: "idle",
+      timelineDiagnostics: {
+        visibleItems: 0,
+        downloadedItems: 0,
+        backfill: "Idle",
+        avatarMxcItems: 0,
+        avatarReadyItems: 0,
+        avatarPendingItems: 0,
+        avatarFailedItems: 0,
+        avatarMissingItems: 0,
+        avatarRenderedImages: 0,
+        avatarBrokenImages: 0
+      },
+      domDiagnostics: {
+        screen: "timeline",
+        rootChildren: 1,
+        bodyTextLength: 99
+      },
+      uiLatencyDiagnostics: {
+        samples: 8,
+        lastFrameGapMs: 18,
+        averageFrameGapMs: 26.5,
+        maxFrameGapMs: 30,
+        longFrameCount: 0
+      },
+      stateDeltaStats: { applied: 12, staleIgnored: 340, gapRefreshRequested: 2 }
+    });
+
+    expect(report).toContain(
+      "State transport: delta_applied=12 stale_ignored=340 gap_refresh=2"
+    );
+    expect(report).toContain("state_delta_applied=12");
+    expect(report).toContain("state_delta_stale_ignored=340");
+    expect(report).toContain("state_delta_gap_refresh=2");
+  });
+
   test("bounds diagnostic log entries while preserving chronological append order", () => {
     expect(DEFAULT_DIAGNOSTIC_LOG_LIMIT).toBeGreaterThanOrEqual(10_000);
 

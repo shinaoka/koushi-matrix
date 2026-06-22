@@ -127,6 +127,7 @@ import {
 } from "./app/localPresentation";
 import {
   applyAppStoreDelta,
+  getAppStoreDeltaStats,
   selectSnapshot,
   setAppStoreSnapshot,
   useAppStore
@@ -3314,6 +3315,7 @@ export function App() {
             timelineDiagnostics,
             domDiagnostics: qaRenderedDomDiagnostics(),
             uiLatencyDiagnostics,
+            stateDeltaStats: getAppStoreDeltaStats(),
             logEntries: diagnosticLogEntries,
             verboseDiagnostics: {
               enabled: verboseDiagnosticBuild,

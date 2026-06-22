@@ -1,3 +1,4 @@
+import type { AppStoreDeltaStats } from "./appStore";
 import type { DesktopSnapshot, SearchCrawlerRoomState, SyncState } from "./types";
 import {
   qaDomDiagnosticTokens,
@@ -49,6 +50,7 @@ export interface DiagnosticReportInput {
   timelineDiagnostics: QaTimelineDiagnostics;
   domDiagnostics: QaDomDiagnostics;
   uiLatencyDiagnostics: UiLatencyDiagnostics;
+  stateDeltaStats?: AppStoreDeltaStats;
   logEntries?: readonly DiagnosticLogEntry[];
   verboseDiagnostics?: VerboseDiagnostics;
 }
@@ -60,6 +62,7 @@ export function diagnosticReport({
   timelineDiagnostics,
   domDiagnostics,
   uiLatencyDiagnostics,
+  stateDeltaStats,
   logEntries = [],
   verboseDiagnostics
 }: DiagnosticReportInput): string {
@@ -92,6 +95,11 @@ export function diagnosticReport({
       ? [`Potential UI lag: max frame gap ${uiLatencyDiagnostics.maxFrameGapMs} ms`]
       : []),
     `UI frame gap: last=${uiLatencyDiagnostics.lastFrameGapMs}ms avg=${uiLatencyDiagnostics.averageFrameGapMs}ms max=${uiLatencyDiagnostics.maxFrameGapMs}ms longFrames=${uiLatencyDiagnostics.longFrameCount} samples=${uiLatencyDiagnostics.samples}`,
+    ...(stateDeltaStats
+      ? [
+          `State transport: delta_applied=${stateDeltaStats.applied} stale_ignored=${stateDeltaStats.staleIgnored} gap_refresh=${stateDeltaStats.gapRefreshRequested}`
+        ]
+      : []),
     `Search crawler running=${crawler.running} queued=${crawler.queued}: processed=${crawler.processed} indexed=${crawler.indexed}`,
     `Search crawler completed=${crawler.completed} failed=${crawler.failed}`,
     `Right panel: ${panelMode}`,
@@ -106,7 +114,14 @@ export function diagnosticReport({
     ...qaSearchCrawlerDiagnosticTokens(snapshot),
     ...qaTimelineDiagnosticTokens(timelineDiagnostics),
     ...qaDomDiagnosticTokens(domDiagnostics),
-    ...qaUiLatencyDiagnosticTokens(uiLatencyDiagnostics)
+    ...qaUiLatencyDiagnosticTokens(uiLatencyDiagnostics),
+    ...(stateDeltaStats
+      ? [
+          `state_delta_applied=${stateDeltaStats.applied}`,
+          `state_delta_stale_ignored=${stateDeltaStats.staleIgnored}`,
+          `state_delta_gap_refresh=${stateDeltaStats.gapRefreshRequested}`
+        ]
+      : [])
   ];
   return lines.join("\n");
 }

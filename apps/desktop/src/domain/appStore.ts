@@ -54,7 +54,29 @@ export function setAppStoreSnapshot(next: DesktopSnapshot | null): void {
 }
 
 export function clearAppStoreSnapshot(): void {
+  resetAppStoreDeltaStats();
   setAppStoreSnapshot(null);
+}
+
+/**
+ * Private-data-free counters for the #111 state-delta transport, surfaced in
+ * the diagnostic report. A large `gapRefreshRequested` relative to `applied`
+ * is the signature of a delta/refresh storm under high background-sync volume.
+ */
+export interface AppStoreDeltaStats {
+  applied: number;
+  staleIgnored: number;
+  gapRefreshRequested: number;
+}
+
+let deltaStats: AppStoreDeltaStats = { applied: 0, staleIgnored: 0, gapRefreshRequested: 0 };
+
+export function getAppStoreDeltaStats(): AppStoreDeltaStats {
+  return { ...deltaStats };
+}
+
+function resetAppStoreDeltaStats(): void {
+  deltaStats = { applied: 0, staleIgnored: 0, gapRefreshRequested: 0 };
 }
 
 export type DesktopSnapshotDelta = StateDeltaPayload;
@@ -66,12 +88,25 @@ export function applyAppStoreDelta(delta: DesktopSnapshotDelta): boolean {
   if (current.snapshot === null) {
     return false;
   }
-  if (
-    current.stateGeneration !== null &&
-    delta.generation !== current.stateGeneration + 1
-  ) {
-    return false;
+  if (current.stateGeneration !== null) {
+    // Already-applied / duplicate delta: the current state (advanced by a
+    // newer delta or a full command-response/refresh snapshot) already
+    // subsumes it, so ignore it as handled. Returning false here would make
+    // the caller refresh, which lands a still-newer generation and turns the
+    // next trailing background delta stale too — a self-amplifying refresh
+    // storm under large-account sync volume.
+    if (delta.generation <= current.stateGeneration) {
+      deltaStats.staleIgnored += 1;
+      return true;
+    }
+    // Genuine forward gap: a delta was missed, so the caller must resync from
+    // a full snapshot before later deltas can apply contiguously.
+    if (delta.generation !== current.stateGeneration + 1) {
+      deltaStats.gapRefreshRequested += 1;
+      return false;
+    }
   }
+  deltaStats.applied += 1;
   const snapshot = applyDeltaToState(current.snapshot, delta);
   if (snapshot === null) {
     return false;
