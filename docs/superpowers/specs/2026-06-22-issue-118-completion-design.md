@@ -161,7 +161,7 @@ Concrete Task 6 design:
 
 - Do not write automatic avatar or link-preview thumbnails to persistent renderable files. `download_avatar_thumbnail` and `download_preview_image` must stop creating `data_dir/avatar_thumbnails/*` and `data_dir/link_preview_thumbnails/*`, and must never return `file://` URLs for those automatic thumbnails.
 - Introduce a core-owned bounded in-memory renderable thumbnail cache, for example `renderable_thumbnail::{store_renderable_thumbnail, lookup_renderable_thumbnail, cleanup_legacy_plaintext_thumbnail_dirs}`. The cache key is an opaque hash derived from the MXC/URL plus kind; the bytes are the already-decrypted media bytes returned by the SDK media layer. The cache stores only process-memory plaintext, evicts by count/byte budget, and returns `AvatarThumbnailState::Ready { source_url: "koushi-thumbnail://localhost/<kind>/<key>", ... }`.
-- The SDK media layer remains the persistent cache. Because the Matrix SDK store is configured with the per-account encrypted store key, persistent thumbnail bytes must live in that encrypted SDK media cache, not in Koushi renderable directories. A cold process may refetch or read through the SDK cache before re-populating the in-memory renderable cache.
+- Do not rely on the SDK media cache as a persistent encrypted thumbnail cache: #117 records that the vendored SDK media cache is distinct from the encrypted state store and is not encrypted with the account store key. Automatic avatar/link-preview thumbnail fetches must avoid persistent SDK media caching when the SDK API allows it, then populate only the process-memory renderable cache. A cold process may refetch automatic thumbnails through the existing bounded visible-range request path.
 - Register a Tauri custom URI scheme `koushi-thumbnail` in `apps/desktop/src-tauri/src/lib.rs`. The handler parses only `/avatar/<key>` and `/link-preview/<key>`, looks up bytes in the core in-memory cache, returns the detected MIME type and `Cache-Control: no-store`, and returns 404 for unknown/malformed refs. It must not read arbitrary file paths.
 - Keep `media_downloads/` as an explicit user-download renderable directory and leave it in the Tauri asset scope. Remove `avatar_thumbnails/` and `link_preview_thumbnails/` from `allow_runtime_asset_cache_dirs`.
 - Run one-time best-effort startup cleanup after `data_dir` is resolved and before normal runtime work: remove only `avatar_thumbnails/` and `link_preview_thumbnails/`. Never delete `media_downloads/`.
@@ -169,6 +169,7 @@ Concrete Task 6 design:
 - Tests must prove:
   - storing avatar/link-preview thumbnail bytes returns `koushi-thumbnail://` and not `file://`;
   - no `avatar_thumbnails` / `link_preview_thumbnails` files are created by the new helper path;
+  - automatic thumbnail media fetches do not opt into persistent SDK media caching where the SDK API exposes that choice;
   - cleanup deletes seeded legacy plaintext thumbnail directories but preserves `media_downloads`;
   - the Tauri protocol handler serves known in-memory refs with the correct content type, rejects unknown refs, and never exposes filesystem paths;
   - frontend URL conversion passes `koushi-thumbnail://` through.

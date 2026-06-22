@@ -453,7 +453,7 @@ pub enum RenderableThumbnailKind {
 }
 ```
 
-`download_avatar_thumbnail` and `download_preview_image` still fetch through the SDK media layer with cache enabled, but they store the resulting decrypted bytes only in a bounded process-memory cache and return `koushi-thumbnail://localhost/avatar/<key>` or `koushi-thumbnail://localhost/link-preview/<key>`. The Tauri `koushi-thumbnail` protocol handler resolves only these opaque refs from memory and responds with bytes plus MIME type; it never reads arbitrary files. Persistent media bytes remain in the encrypted SDK media cache.
+`download_avatar_thumbnail` and `download_preview_image` still fetch through the SDK media layer, but automatic thumbnails must avoid persistent SDK media caching when the SDK API exposes that choice. They store the resulting decrypted bytes only in a bounded process-memory cache and return `koushi-thumbnail://localhost/avatar/<key>` or `koushi-thumbnail://localhost/link-preview/<key>`. The Tauri `koushi-thumbnail` protocol handler resolves only these opaque refs from memory and responds with bytes plus MIME type; it never reads arbitrary files. A cold process may refetch automatic thumbnails through the existing bounded visible-range request path.
 
 - [ ] **Step 3: Cleanup old plaintext**
 
