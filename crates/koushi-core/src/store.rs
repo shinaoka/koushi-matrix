@@ -1597,7 +1597,10 @@ mod tests {
             .expect("load legacy navigation");
 
         assert!(loaded.room_scroll_anchors.is_empty());
-        assert_eq!(loaded.active_room_id.as_deref(), Some("!room:test.example.com"));
+        assert_eq!(
+            loaded.active_room_id.as_deref(),
+            Some("!room:test.example.com")
+        );
     }
 
     #[test]

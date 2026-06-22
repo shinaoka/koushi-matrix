@@ -505,7 +505,8 @@ pub async fn request_room_key(
 ) -> Result<FrontendDesktopSnapshot, String> {
     let account_key = account_key_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_request_room_key_command(request_id, account_key, room_id, event_id)
+    if let Some(command) =
+        build_request_room_key_command(request_id, account_key, room_id, event_id)
     {
         submit_core_command(state.inner(), command).await?;
     }

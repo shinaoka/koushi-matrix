@@ -2001,9 +2001,7 @@ pub fn assign_dm_space_ids(
         }
         room.dm_space_ids = space_members
             .iter()
-            .filter(|(_space_id, members)| {
-                room.dm_user_ids.iter().any(|uid| members.contains(uid))
-            })
+            .filter(|(_space_id, members)| room.dm_user_ids.iter().any(|uid| members.contains(uid)))
             .map(|(space_id, _)| space_id.clone())
             .collect();
     }

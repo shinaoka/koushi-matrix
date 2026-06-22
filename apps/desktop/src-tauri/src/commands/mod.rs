@@ -406,9 +406,7 @@ async fn wait_for_selected_room(
                     }
                     IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState) => {
                         if trace {
-                            eprintln!(
-                                "koushi.select stage=failed_not_in_state events={events}"
-                            );
+                            eprintln!("koushi.select stage=failed_not_in_state events={events}");
                         }
                         return Err("room not yet loaded".to_owned());
                     }
@@ -424,9 +422,7 @@ async fn wait_for_selected_room(
                         // AlreadyActive is benign; this arm is unreachable per
                         // the classification logic but handle it defensively.
                         if trace {
-                            eprintln!(
-                                "koushi.select stage=ok_already_active events={events}"
-                            );
+                            eprintln!("koushi.select stage=ok_already_active events={events}");
                         }
                         return Ok(());
                     }
@@ -2423,18 +2419,18 @@ mod tests {
         build_open_timeline_at_timestamp_command, build_paginate_activity_command,
         build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_pin_event_command,
-        build_restore_timeline_anchor_command,
         build_probe_local_encryption_health_command, build_query_directory_command,
         build_redact_message_command, build_redact_reaction_command, build_remove_room_tag_command,
         build_reorder_spaces_command, build_report_content_command, build_report_room_command,
         build_report_user_command, build_reschedule_scheduled_send_command,
         build_reset_identity_command, build_reset_local_data_command, build_restart_sync_command,
-        build_retry_send_command, build_schedule_send_command, build_select_room_command,
-        build_select_space_command, build_send_reaction_command, build_send_read_receipt_command,
-        build_send_reply_command, build_send_text_command, build_send_thread_reply_command,
-        build_set_activity_tab_command, build_set_avatar_command, build_set_composer_draft_command,
-        build_set_display_name_command, build_set_fully_read_command,
-        build_set_local_user_alias_command, build_set_presence_command, build_set_room_tag_command,
+        build_restore_timeline_anchor_command, build_retry_send_command,
+        build_schedule_send_command, build_select_room_command, build_select_space_command,
+        build_send_reaction_command, build_send_read_receipt_command, build_send_reply_command,
+        build_send_text_command, build_send_thread_reply_command, build_set_activity_tab_command,
+        build_set_avatar_command, build_set_composer_draft_command, build_set_display_name_command,
+        build_set_fully_read_command, build_set_local_user_alias_command,
+        build_set_presence_command, build_set_room_tag_command,
         build_set_room_url_preview_override_command, build_set_space_child_command,
         build_set_thread_composer_draft_command, build_set_typing_command,
         build_start_direct_message_command, build_submit_identity_reset_oauth_command,

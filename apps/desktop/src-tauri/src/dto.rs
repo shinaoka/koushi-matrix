@@ -13,18 +13,18 @@ use std::collections::BTreeMap;
 
 use koushi_core::StateDelta;
 use koushi_state::{
-    native_attention_capabilities_for_platform, resolve_locale_display_profile,
-    resolve_typography_display_profile, AccountManagementCapabilities, AccountManagementState,
-    ActivityState, AppError, AppState, AuthDiscoveryState, BasicOperationState, CjkTextPolicyState,
-    ComposerState, DeviceSessionListState, DirectoryState, DisplayPlatform, E2eeTrustState,
-    FilesViewState, FocusedContextState, InvitePreview, LinkPreviewSettingsState, LiveSignalsState,
+    AccountManagementCapabilities, AccountManagementState, ActivityState, AppError, AppState,
+    AuthDiscoveryState, BasicOperationState, CjkTextPolicyState, ComposerState,
+    DeviceSessionListState, DirectoryState, DisplayPlatform, E2eeTrustState, FilesViewState,
+    FocusedContextState, InvitePreview, LinkPreviewSettingsState, LiveSignalsState,
     LocalEncryptionState, LocaleDisplayProfile, NativeAttentionCapabilities, NativeAttentionState,
     NavigationState, ProfileState, QrLoginState, RecoveryMethod, RoomInteractionState,
     RoomListProjection, RoomManagementState, RoomNotificationSettings, RoomSummary,
     SearchCrawlerState, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
     SessionState, SettingsState, SidebarModel, SoftLogoutReauthState, SpaceSummary, SyncMode,
     SyncState, ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
-    TypographyDisplayProfile,
+    TypographyDisplayProfile, native_attention_capabilities_for_platform,
+    resolve_locale_display_profile, resolve_typography_display_profile,
 };
 use serde::{Deserialize, Serialize};
 
@@ -775,12 +775,12 @@ impl From<SearchMatchKind> for FrontendSearchMatchKind {
 mod tests {
     use serde_json::json;
 
-    use super::{frontend_display_platform, FrontendDesktopSnapshot, FrontendSyncState};
+    use super::{FrontendDesktopSnapshot, FrontendSyncState, frontend_display_platform};
     use koushi_state::{
-        native_attention_capabilities_for_platform, AppState, AvatarImage, AvatarThumbnailState,
-        EmojiPreference, FontPreference, InvitePreview, LocaleSettings, OwnProfile, RecoveryMethod,
-        RoomSummary, RoomTags, SessionInfo, SessionState, SpaceSummary, SyncState,
-        TextDirectionPreference, TypographySettings, UserProfile,
+        AppState, AvatarImage, AvatarThumbnailState, EmojiPreference, FontPreference,
+        InvitePreview, LocaleSettings, OwnProfile, RecoveryMethod, RoomSummary, RoomTags,
+        SessionInfo, SessionState, SpaceSummary, SyncState, TextDirectionPreference,
+        TypographySettings, UserProfile, native_attention_capabilities_for_platform,
     };
 
     fn booted_app_state() -> AppState {
@@ -985,8 +985,7 @@ mod tests {
             json!("ask")
         );
         assert_eq!(
-            value["state"]["domain"]["settings"]["values"]["media"]
-                ["image_upload_compression_policy"],
+            value["state"]["domain"]["settings"]["values"]["media"]["image_upload_compression_policy"],
             json!({
                 "threshold_bytes": 1048576,
                 "threshold_long_edge": 2560,
@@ -1206,8 +1205,7 @@ mod tests {
             json!("ready")
         );
         assert_eq!(
-            value["state"]["domain"]["profile"]["users"]["@bob:matrix.org"]
-                ["original_display_label"],
+            value["state"]["domain"]["profile"]["users"]["@bob:matrix.org"]["original_display_label"],
             json!("Bob")
         );
         assert_eq!(
