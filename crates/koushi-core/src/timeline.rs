@@ -276,6 +276,34 @@ impl TimelineManagerActor {
                 )
                 .await;
             }
+            TimelineCommand::RestoreTimelineAnchor {
+                request_id,
+                key,
+                event_id,
+                max_batches,
+                event_count,
+            } => {
+                if matches!(&key.kind, TimelineKind::Room { .. }) {
+                    self.route_to_actor_or_fail(
+                        request_id,
+                        &key,
+                        TimelineActorMessage::RestoreTimelineAnchor {
+                            request_id,
+                            event_id,
+                            max_batches,
+                            event_count,
+                        },
+                    )
+                    .await;
+                } else {
+                    self.emit_failure(
+                        request_id,
+                        CoreFailure::TimelineOperationFailed {
+                            kind: TimelineFailureKind::NotSubscribed,
+                        },
+                    );
+                }
+            }
             TimelineCommand::ObserveViewport {
                 request_id,
                 key,
@@ -1192,6 +1220,13 @@ enum TimelineActorMessage {
         direction: PaginationDirection,
         event_count: u16,
     },
+    RestoreTimelineAnchor {
+        request_id: RequestId,
+        event_id: String,
+        max_batches: u16,
+        event_count: u16,
+    },
+    RestoreTimelineAnchorContinue,
     ObserveViewport {
         observation: TimelineViewportObservation,
     },
@@ -1349,6 +1384,7 @@ struct TimelineActor {
     session: Arc<MatrixClientSession>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
+    msg_tx: mpsc::Sender<TimelineActorMessage>,
     msg_rx: mpsc::Receiver<TimelineActorMessage>,
     generation: TimelineGeneration,
     next_batch_id: TimelineBatchId,
@@ -1391,6 +1427,17 @@ struct TimelineActor {
     /// Application data directory for cached preview images.
     data_dir: Option<std::path::PathBuf>,
     messages_backpressure: MessagesBackpressure,
+    restore_anchor: Option<RestoreTimelineAnchorState>,
+}
+
+#[derive(Clone, Debug)]
+struct RestoreTimelineAnchorState {
+    request_id: RequestId,
+    event_id: String,
+    max_batches_remaining: u16,
+    event_count: u16,
+    in_flight: bool,
+    awaiting_diff_batch: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1536,6 +1583,7 @@ impl TimelineActor {
             session,
             action_tx,
             event_tx,
+            msg_tx: actor_tx.clone(),
             msg_rx: actor_rx,
             generation,
             next_batch_id: TimelineBatchId(0),
@@ -1557,6 +1605,7 @@ impl TimelineActor {
             link_preview_policy,
             data_dir,
             messages_backpressure,
+            restore_anchor: None,
         };
 
         let task = executor::spawn(actor.run());
@@ -1583,6 +1632,23 @@ impl TimelineActor {
             } => {
                 self.handle_paginate(request_id, direction, event_count)
                     .await;
+            }
+            TimelineActorMessage::RestoreTimelineAnchor {
+                request_id,
+                event_id,
+                max_batches,
+                event_count,
+            } => {
+                self.handle_restore_timeline_anchor(
+                    request_id,
+                    event_id,
+                    max_batches,
+                    event_count,
+                )
+                .await;
+            }
+            TimelineActorMessage::RestoreTimelineAnchorContinue => {
+                self.handle_restore_timeline_anchor_continue().await;
             }
             TimelineActorMessage::ObserveViewport { observation } => {
                 self.viewport_observation = observation;
@@ -1774,6 +1840,15 @@ impl TimelineActor {
         direction: PaginationDirection,
         event_count: u16,
     ) {
+        let _ = self.paginate_once(request_id, direction, event_count).await;
+    }
+
+    async fn paginate_once(
+        &mut self,
+        request_id: RequestId,
+        direction: PaginationDirection,
+        event_count: u16,
+    ) -> Result<bool, TimelineFailureKind> {
         // Enforce direction rule: forward only on Focused (Async rule 5).
         if direction == PaginationDirection::Forward
             && !matches!(self.key.kind, TimelineKind::Focused { .. })
@@ -1784,7 +1859,7 @@ impl TimelineActor {
                     kind: TimelineFailureKind::InvalidDirection,
                 },
             );
-            return;
+            return Err(TimelineFailureKind::InvalidDirection);
         }
 
         // Emit Paginating.
@@ -1814,12 +1889,120 @@ impl TimelineActor {
             }
         };
 
+        let end_reached = matches!(next_state, PaginationState::EndReached);
+        let failure_kind = match &next_state {
+            PaginationState::Failed { kind } => Some(*kind),
+            _ => None,
+        };
         self.emit(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
             request_id: Some(request_id),
             key: self.key.clone(),
             direction,
             state: next_state,
         }));
+        failure_kind.map_or(Ok(end_reached), Err)
+    }
+
+    async fn handle_restore_timeline_anchor(
+        &mut self,
+        request_id: RequestId,
+        event_id: String,
+        max_batches: u16,
+        event_count: u16,
+    ) {
+        if !matches!(self.key.kind, TimelineKind::Room { .. }) {
+            self.emit_timeline_failure(request_id, TimelineFailureKind::NotSubscribed);
+            return;
+        }
+        if event_id.trim().is_empty() || max_batches == 0 || event_count == 0 {
+            return;
+        }
+        if self.timeline_contains_event_id(&event_id) {
+            self.restore_anchor = None;
+            return;
+        }
+        if self
+            .restore_anchor
+            .as_ref()
+            .map(|state| state.event_id == event_id)
+            .unwrap_or(false)
+        {
+            return;
+        }
+
+        self.restore_anchor = Some(RestoreTimelineAnchorState {
+            request_id,
+            event_id,
+            max_batches_remaining: max_batches,
+            event_count,
+            in_flight: false,
+            awaiting_diff_batch: false,
+        });
+
+        let _ = self
+            .msg_tx
+            .send(TimelineActorMessage::RestoreTimelineAnchorContinue)
+            .await;
+    }
+
+    async fn handle_restore_timeline_anchor_continue(&mut self) {
+        let Some(mut restore) = self.restore_anchor.take() else {
+            return;
+        };
+        if restore.in_flight {
+            self.restore_anchor = Some(restore);
+            return;
+        }
+        if self.timeline_contains_event_id(&restore.event_id) {
+            return;
+        }
+        if restore.max_batches_remaining == 0 {
+            return;
+        }
+
+        restore.in_flight = true;
+        restore.max_batches_remaining = restore.max_batches_remaining.saturating_sub(1);
+        let request_id = restore.request_id;
+        let event_count = restore.event_count;
+
+        let result = self
+            .paginate_once(request_id, PaginationDirection::Backward, event_count)
+            .await;
+        restore.in_flight = false;
+
+        if self.timeline_contains_event_id(&restore.event_id) {
+            return;
+        }
+
+        let Ok(end_reached) = result else {
+            return;
+        };
+        if end_reached || restore.max_batches_remaining == 0 {
+            return;
+        }
+
+        restore.awaiting_diff_batch = true;
+        self.restore_anchor = Some(restore);
+    }
+
+    async fn maybe_continue_restore_anchor_after_diff(&mut self) {
+        let Some(mut restore) = self.restore_anchor.take() else {
+            return;
+        };
+        if restore.in_flight || !restore.awaiting_diff_batch {
+            self.restore_anchor = Some(restore);
+            return;
+        }
+        if restore.max_batches_remaining == 0 || self.timeline_contains_event_id(&restore.event_id) {
+            return;
+        }
+
+        restore.awaiting_diff_batch = false;
+        self.restore_anchor = Some(restore);
+        let _ = self
+            .msg_tx
+            .send(TimelineActorMessage::RestoreTimelineAnchorContinue)
+            .await;
     }
 
     async fn handle_send_text(
@@ -2899,6 +3082,17 @@ impl TimelineActor {
             diffs: core_diffs,
         }));
         self.emit_navigation_if_changed();
+        let restore_event_id = self
+            .restore_anchor
+            .as_ref()
+            .map(|restore| restore.event_id.clone());
+        if let Some(event_id) = restore_event_id {
+            if self.timeline_contains_event_id(&event_id) {
+                self.restore_anchor = None;
+            } else {
+                self.maybe_continue_restore_anchor_after_diff().await;
+            }
+        }
     }
 
     async fn handle_ignored_users_updated(&mut self, user_ids: std::collections::BTreeSet<String>) {
@@ -3394,6 +3588,12 @@ impl TimelineActor {
         ids
     }
 
+    fn timeline_contains_event_id(&self, event_id: &str) -> bool {
+        self.navigation_items
+            .iter()
+            .any(|item| matches!(&item.id, TimelineItemId::Event { event_id: id } if id == event_id))
+    }
+
     async fn project_message_source_for_event(
         &self,
         event_id: &str,
@@ -3604,6 +3804,7 @@ impl TimelineActor {
             generation: self.generation,
             items,
         }));
+        self.restore_anchor = None;
     }
 
     fn emit(&self, event: CoreEvent) {
@@ -7065,6 +7266,35 @@ mod tests {
             source.contains("TimelineKind::Focused { .. } => Self::None")
                 && source.contains("TimelineKind::Focused { .. } => None"),
             "focused timelines must not own composer state"
+        );
+    }
+
+    #[test]
+    fn restore_anchor_handler_is_room_only_and_bounded() {
+        let source = include_str!("timeline.rs");
+        let helper_source = source
+            .split("async fn handle_restore_timeline_anchor")
+            .nth(1)
+            .expect("restore anchor handler should exist")
+            .split("async fn handle_send_text")
+            .next()
+            .expect("restore anchor handler should end before send text");
+
+        assert!(
+            helper_source.contains("TimelineKind::Room"),
+            "restore anchor must target the live room timeline actor"
+        );
+        assert!(
+            helper_source.contains("PaginationDirection::Backward"),
+            "restore anchor must drive backward pagination"
+        );
+        assert!(
+            helper_source.contains("max_batches") && helper_source.contains("event_count"),
+            "restore anchor must carry a bounded pagination budget"
+        );
+        assert!(
+            !helper_source.contains("TimelineKind::Focused"),
+            "restore anchor must not bootstrap through the focused timeline path"
         );
     }
 

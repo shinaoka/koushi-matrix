@@ -960,6 +960,7 @@ pub fn run() {
             commands::navigation::observe_timeline_viewport,
             commands::timeline::ensure_timeline_subscribed,
             commands::timeline::paginate_timeline_backwards,
+            commands::timeline::restore_timeline_anchor,
             commands::timeline::paginate_thread_timeline_backwards,
             commands::timeline::send_text,
             commands::timeline::schedule_send,

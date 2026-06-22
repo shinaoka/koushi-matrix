@@ -295,14 +295,8 @@ Add an `AppAction::TimelineScrollAnchorUpdated { room_id, anchor }` and reducer 
 
 In `TimelineView.tsx`, reuse the stable timeline item ids already used for scroll anchoring. Throttle dispatch to avoid more than one anchor update per 1000ms per room. Store offset relative to the top of the anchored message element.
 
-- [ ] **Step 5: Add restore behavior**  
-  Unresolved: the SDK's focused-event timeline is a separate event-focused controller path and this branch does not yet have a proven bridge back to the live room actor when the anchor is absent from the live window.
-
-On room activation, if an anchor exists and is newer than 30 days:
-
-1. try live timeline restore if the event is already rendered;
-2. otherwise open focused event timeline as transient bootstrap;
-3. once anchor is visible, return to normal live room timeline.
+- [x] **Step 5: Add restore behavior**
+  Room anchors now restore through the live room timeline actor with bounded backward pagination. When the anchor is already rendered, the existing DOM restore path runs. When it is missing from the live window, the frontend requests a one-shot live restore and the actor continues paging until the anchor enters the normal live `navigation_items` stream or the budget is exhausted. The focused-event timeline bootstrap path remains unused.
 
 - [ ] **Step 6: Verify**
 

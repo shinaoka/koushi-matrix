@@ -49,6 +49,7 @@ static NEXT_TRANSACTION_ID: AtomicU64 = AtomicU64::new(1);
 const QA_RECOVERY_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const QA_TITLE_ENV: &str = "KOUSHI_QA_TITLE";
 const TIMELINE_BACKWARDS_PAGE_EVENT_COUNT: u16 = 100;
+const TIMELINE_RESTORE_ANCHOR_MAX_BATCHES: u16 = 6;
 
 pub(crate) mod account;
 pub(crate) mod activity;
@@ -1058,6 +1059,26 @@ pub(crate) fn build_paginate_thread_timeline_backwards_command(
         },
         direction: PaginationDirection::Backward,
         event_count: TIMELINE_BACKWARDS_PAGE_EVENT_COUNT,
+    })
+}
+
+pub(crate) fn build_restore_timeline_anchor_command(
+    request_id: koushi_core::RequestId,
+    account_key: AccountKey,
+    timeline_key: TimelineKey,
+    event_id: String,
+    max_batches: u16,
+    event_count: u16,
+) -> CoreCommand {
+    CoreCommand::Timeline(TimelineCommand::RestoreTimelineAnchor {
+        request_id,
+        key: TimelineKey {
+            account_key,
+            kind: timeline_key.kind,
+        },
+        event_id,
+        max_batches,
+        event_count,
     })
 }
 
@@ -2398,6 +2419,7 @@ mod tests {
         build_open_timeline_at_timestamp_command, build_paginate_activity_command,
         build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_pin_event_command,
+        build_restore_timeline_anchor_command,
         build_probe_local_encryption_health_command, build_query_directory_command,
         build_redact_message_command, build_redact_reaction_command, build_remove_room_tag_command,
         build_reorder_spaces_command, build_report_content_command, build_report_room_command,
@@ -2813,8 +2835,38 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
-        match build_send_text_command(
+        match build_restore_timeline_anchor_command(
             fake_request_id(10),
+            active_account_key.clone(),
+            koushi_core::TimelineKey::room(active_account_key.clone(), room_id.clone()),
+            "$anchor:example.invalid".to_owned(),
+            TIMELINE_RESTORE_ANCHOR_MAX_BATCHES,
+            TIMELINE_BACKWARDS_PAGE_EVENT_COUNT,
+        ) {
+            CoreCommand::Timeline(TimelineCommand::RestoreTimelineAnchor {
+                request_id,
+                key,
+                event_id,
+                max_batches,
+                event_count,
+            }) => {
+                assert_eq!(request_id, fake_request_id(10));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    koushi_core::TimelineKind::Room {
+                        room_id: room_id.clone()
+                    }
+                );
+                assert_eq!(event_id, "$anchor:example.invalid");
+                assert_eq!(max_batches, TIMELINE_RESTORE_ANCHOR_MAX_BATCHES);
+                assert_eq!(event_count, TIMELINE_BACKWARDS_PAGE_EVENT_COUNT);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_send_text_command(
+            fake_request_id(11),
             active_account_key.clone(),
             room_id.clone(),
             transaction_id.clone(),
@@ -2835,7 +2887,7 @@ mod tests {
                 body: route_body,
                 mentions,
             }) => {
-                assert_eq!(request_id, fake_request_id(10));
+                assert_eq!(request_id, fake_request_id(11));
                 assert_eq!(
                     mentions,
                     MentionIntent {

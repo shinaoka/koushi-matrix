@@ -265,6 +265,23 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
           });
         }
       },
+      async restoreTimelineAnchor(
+        timelineKey: TimelineKey,
+        eventId: string,
+        maxBatches: number,
+        eventCount: number
+      ) {
+        await tauriCoreEventListenerReady;
+        if (!("Room" in timelineKey.kind)) {
+          return;
+        }
+        await invoke("restore_timeline_anchor", {
+          timelineKey,
+          eventId,
+          maxBatches,
+          eventCount
+        });
+      },
       async sendReaction(roomId: string, eventId: string, reactionKey: string) {
         await invoke("send_reaction", { roomId, eventId, reactionKey });
       },

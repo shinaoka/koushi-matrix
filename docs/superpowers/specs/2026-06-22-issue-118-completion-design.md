@@ -110,7 +110,7 @@ Keep anchors per room with a bounded LRU policy. The default cap is 200 rooms, e
 
 `offset_px` is the offset of the viewport anchor relative to the anchored event's top, not an absolute scroll position. Restore first anchors by event ID, then applies `offset_px` best-effort so window size, font, and message-height changes do not make the stored value authoritative.
 
-When selecting a room, restore the anchor only if it still belongs to that room and is within the staleness window. Prefer the live timeline when the event is already loaded or quickly available from event-cache storage. The SDK's focused-event timeline path (`TimelineBuilder::with_focus(TimelineFocus::Event { target: event_id, ... })`) is a separate event-focused controller and, in the current architecture, is not yet proven to hand the anchor back to the live room actor after a bootstrap. Until that bridge exists, treat the focused bootstrap requirement as unresolved and fall back to the current live-edge/read-marker behavior when the event is unavailable or cannot be shown in the live timeline.
+When selecting a room, restore the anchor only if it still belongs to that room and is within the staleness window. Prefer the live timeline when the event is already loaded or can be paginated into the live room actor with a bounded backward restore loop. The live-room `TimelineActor` must own the bounded restore command and continue paging until the anchor enters the normal live `navigation_items`/items stream or the budget is exhausted. Do not use the focused-event timeline path for this bootstrap.
 
 ### Room Summary Without Full Members
 

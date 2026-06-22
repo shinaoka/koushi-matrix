@@ -4,7 +4,6 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  focusedTimelineKey,
   roomTimelineKey,
   threadTimelineKey,
   type CoreEventPayload,
@@ -386,16 +385,17 @@ describe("TimelineView", () => {
     });
   });
 
-  it("does not keep a focused bootstrap visible when the live room never receives the anchor", async () => {
+  it("requests a live anchor restore once and restores when the anchor enters live items", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const roomId = "!room:example.invalid";
     const anchorEventId = "$anchor:example.invalid";
-    const focusedKey = focusedTimelineKey("@alice:example.invalid", roomId, anchorEventId);
+    const restoreTimelineAnchor = vi.fn(async () => undefined);
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
         emit = nextListener;
         return () => undefined;
-      }
+      },
+      restoreTimelineAnchor
     });
 
     mockTimelineRects(
@@ -445,30 +445,13 @@ describe("TimelineView", () => {
     await waitFor(() => {
       expect(screen.getByText("Live top")).toBeTruthy();
       expect(timeline.getAttribute("data-timeline-generation")).toBe("1");
-    });
-
-    act(() => {
-      emit({
-        kind: "Timeline",
-        event: {
-          InitialItems: {
-            request_id: null,
-            key: focusedKey,
-            generation: 1,
-            items: [
-              message("$focus-before:example.invalid", "Focused bootstrap context"),
-              message(anchorEventId, "Bootstrap anchor"),
-              message("$focus-after:example.invalid", "Focused after")
-            ]
-          }
-        }
-      });
-    });
-
-    await waitFor(() => {
-      expect(screen.queryByText("Bootstrap anchor")).toBeNull();
-      expect(screen.queryByText("Focused bootstrap context")).toBeNull();
-      expect(timeline.getAttribute("data-timeline-generation")).toBe("1");
+      expect(restoreTimelineAnchor).toHaveBeenCalledTimes(1);
+      expect(restoreTimelineAnchor).toHaveBeenCalledWith(
+        KEY,
+        anchorEventId,
+        expect.any(Number),
+        expect.any(Number)
+      );
     });
 
     Object.defineProperty(timeline, "scrollTop", {
@@ -496,6 +479,7 @@ describe("TimelineView", () => {
     });
 
     await waitFor(() => {
+      expect(screen.queryByText("Bootstrap anchor")).toBeNull();
       expect(screen.queryByText("Focused bootstrap context")).toBeNull();
       expect(screen.getByText("Live anchor visible")).toBeTruthy();
       expect(timeline.getAttribute("data-timeline-generation")).toBe("2");

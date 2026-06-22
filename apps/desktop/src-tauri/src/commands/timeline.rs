@@ -38,6 +38,33 @@ pub async fn paginate_timeline_backwards(
 }
 
 #[tauri::command]
+pub async fn restore_timeline_anchor(
+    timeline_key: TimelineKey,
+    event_id: String,
+    max_batches: u16,
+    event_count: u16,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let account_key = account_key_from_snapshot(state.inner()).await;
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_restore_timeline_anchor_command(
+            request_id,
+            account_key,
+            timeline_key,
+            event_id,
+            max_batches,
+            event_count,
+        ),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn ensure_timeline_subscribed(
     timeline_key: TimelineKey,
     app: AppHandle,
