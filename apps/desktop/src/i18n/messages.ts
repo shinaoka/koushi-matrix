@@ -646,6 +646,9 @@ export type MessageId =
   | "timeline.reactionSummary"
   | "timeline.reactionPicker"
   | "timeline.reactionOption"
+  | "timeline.reactionTooltip"
+  | "timeline.reactionSenderOverflow"
+  | "timeline.reactionSenderUnknown"
   | "timeline.readBy"
   | "timeline.readReceiptOverflow"
   | "timeline.readMarker"
@@ -1548,6 +1551,9 @@ const en: Catalog = {
   "timeline.reactionSummary": "Reaction {key}, count {count}",
   "timeline.reactionPicker": "Choose reaction",
   "timeline.reactionOption": "React with {emoji}",
+  "timeline.reactionTooltip": "{names} reacted with {key}",
+  "timeline.reactionSenderOverflow": "{count} more",
+  "timeline.reactionSenderUnknown": "{count} people",
   "timeline.readBy": "Read by {count}",
   "timeline.readReceiptOverflow": "{count} more",
   "timeline.readMarker": "Read up to here",
@@ -2340,6 +2346,9 @@ const ja: Catalog = {
   "timeline.reactionSummary": "リアクション {key}、{count} 件",
   "timeline.reactionPicker": "リアクションを選択",
   "timeline.reactionOption": "{emoji}でリアクション",
+  "timeline.reactionTooltip": "{names} が {key} でリアクションしました",
+  "timeline.reactionSenderOverflow": "他 {count} 人",
+  "timeline.reactionSenderUnknown": "{count} 人",
   "timeline.readBy": "{count} 人が既読",
   "timeline.readReceiptOverflow": "他 {count} 人",
   "timeline.readMarker": "ここまで既読",

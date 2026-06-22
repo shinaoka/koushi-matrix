@@ -78,6 +78,7 @@ import type {
   MediaTransferProgress,
   PaginationState,
   TimelineEvent,
+  TimelineDiff,
   TimelineAnchorRestoreStatus,
   TimelineItem,
   TimelineKey,
@@ -357,6 +358,42 @@ function isScrolledToBottom(container: HTMLElement): boolean {
 
 function scrollContainerToBottom(container: HTMLElement): void {
   container.scrollTop = container.scrollHeight;
+}
+
+function timelineDiffsContainOwnOutgoingItem(
+  diffs: readonly TimelineDiff[],
+  currentUserId: string | undefined
+): boolean {
+  if (!currentUserId) {
+    return false;
+  }
+  return diffs.some((diff) => timelineDiffItems(diff).some((item) => timelineItemIsOwnOutgoing(item, currentUserId)));
+}
+
+function timelineDiffItems(diff: TimelineDiff): TimelineItem[] {
+  if (typeof diff === "string") {
+    return [];
+  }
+  if ("PushFront" in diff) {
+    return [diff.PushFront.item];
+  }
+  if ("PushBack" in diff) {
+    return [diff.PushBack.item];
+  }
+  if ("Insert" in diff) {
+    return [diff.Insert.item];
+  }
+  if ("Set" in diff) {
+    return [diff.Set.item];
+  }
+  if ("Reset" in diff) {
+    return diff.Reset.items;
+  }
+  return [];
+}
+
+function timelineItemIsOwnOutgoing(item: TimelineItem, currentUserId: string): boolean {
+  return item.sender === currentUserId && item.send_state != null;
 }
 
 function cssEscape(value: string): string {
@@ -1600,6 +1637,13 @@ export const TimelineView = memo(function TimelineView({
         return;
       }
 
+      if (
+        "ItemsUpdated" in event &&
+        timelineDiffsContainOwnOutgoingItem(event.ItemsUpdated.diffs, currentUserId)
+      ) {
+        stickToBottomAfterMeasurementRef.current = true;
+      }
+
       setStore((current) => {
         const next = applyTimelineEvent(current, event);
         relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
@@ -1611,7 +1655,7 @@ export const TimelineView = memo(function TimelineView({
     });
     void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
     return unsubscribe;
-  }, [emitDiagnosticLog, timelineKeyHash, transport]);
+  }, [currentUserId, emitDiagnosticLog, timelineKeyHash, transport]);
 
   useEffect(() => {
     setNavigationSnapshot(null);
@@ -3094,6 +3138,7 @@ export function TimelineItemRow({
   const receiptLabel = t("timeline.readBy", { count: receiptTotalCount });
   const receiptAriaLabel =
     receiptDetails.length > 0 ? `${receiptLabel}: ${receiptDetails.join("; ")}` : receiptLabel;
+  const reactionSenderLabelByUserId = reactionSenderLabelsByUserId(mentionProfileUsers);
   const spoilerState = { revealed: revealedSpoilers, reveal: revealSpoiler };
   const displayBody = localizedTimelineItemBody(item);
   const messageBodyClassName = [
@@ -3345,7 +3390,6 @@ export function TimelineItemRow({
                 <span className="receipt-overflow">+{receiptOverflowCount}</span>
               ) : null}
             </span>
-            <span>{receiptLabel}</span>
             <span className="receipt-tooltip" role="tooltip">
               {receiptDetails.map((detail, index) => (
                 <span key={`${detail}:${index}`} dir="auto">
@@ -3362,6 +3406,12 @@ export function TimelineItemRow({
                 key: reaction.key,
                 count: reaction.count
               });
+              const reactionTooltip = formatReactionTooltip(
+                reaction.key,
+                reaction.count,
+                reaction.sender_preview,
+                reactionSenderLabelByUserId
+              );
               const pillKey = `${reaction.key}:${reaction.my_reaction_event_id ?? index}`;
               if (!eventId) {
                 return (
@@ -3375,6 +3425,11 @@ export function TimelineItemRow({
                       {reaction.key}
                     </span>
                     <span className="reaction-pill-count">{reaction.count}</span>
+                    {reactionTooltip ? (
+                      <span className="reaction-tooltip" role="tooltip" dir="auto">
+                        {reactionTooltip}
+                      </span>
+                    ) : null}
                   </span>
                 );
               }
@@ -3405,6 +3460,11 @@ export function TimelineItemRow({
                     {reaction.key}
                   </span>
                   <span className="reaction-pill-count">{reaction.count}</span>
+                  {reactionTooltip ? (
+                    <span className="reaction-tooltip" role="tooltip" dir="auto">
+                      {reactionTooltip}
+                    </span>
+                  ) : null}
                 </button>
               );
             })}
@@ -3958,6 +4018,39 @@ function receiptAvatarSource(receipt: LiveReadReceipt): string | null {
   return receipt.avatar?.thumbnail.kind === "ready"
     ? mediaSourceUrl(receipt.avatar.thumbnail.source_url)
     : null;
+}
+
+function reactionSenderLabelsByUserId(
+  profileUsers: Record<string, UserProfile>
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(profileUsers).map(([userId, profile]) => [
+      userId,
+      profile.display_label?.trim() || profile.display_name?.trim() || profile.original_display_label.trim() || userId
+    ])
+  );
+}
+
+function formatReactionTooltip(
+  reactionKey: string,
+  totalCount: number,
+  senderPreview: readonly string[],
+  senderLabelsByUserId: Record<string, string>
+): string | null {
+  if (totalCount <= 0) {
+    return null;
+  }
+  const previewLabels = senderPreview.map((userId) => senderLabelsByUserId[userId] ?? userId);
+  const overflowCount = Math.max(0, totalCount - previewLabels.length);
+  const labels =
+    overflowCount > 0
+      ? [...previewLabels, t("timeline.reactionSenderOverflow", { count: overflowCount })]
+      : previewLabels;
+  const names =
+    labels.length > 0
+      ? new Intl.ListFormat(undefined, { style: "long", type: "conjunction" }).format(labels)
+      : t("timeline.reactionSenderUnknown", { count: totalCount });
+  return t("timeline.reactionTooltip", { names, key: reactionKey });
 }
 
 function syntheticDateDividerTimestampMs(

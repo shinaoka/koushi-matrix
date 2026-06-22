@@ -11,6 +11,7 @@ import {
   KeyRound,
   Keyboard,
   Link,
+  LogOut,
   RefreshCcw,
   RotateCcw,
   Search,
@@ -104,6 +105,7 @@ export function UserSettingsPanel({
   onSubmitIdentityResetOAuth,
   onProbeLocalEncryption,
   onResetLocalData,
+  onLogout,
   onOpenRecovery,
   onSwitchAccount,
   onQueryDevices,
@@ -159,6 +161,7 @@ export function UserSettingsPanel({
   onSubmitIdentityResetOAuth: (flowId: number) => void;
   onProbeLocalEncryption: () => void;
   onResetLocalData: () => void;
+  onLogout: () => void;
   onOpenRecovery: () => void;
   onSwitchAccount: (session: SavedSessionInfo) => void;
   onQueryDevices: () => void;
@@ -387,6 +390,17 @@ export function UserSettingsPanel({
           <DetailRow label={t("settings.userId")} value={currentSession?.user_id ?? t("settings.notRestored")} />
           <DetailRow label={t("settings.device")} value={currentSession?.device_id ?? t("settings.notRestored")} />
           <DetailRow label={t("settings.localStoreLabel")} value={t("settings.localStore")} />
+        </div>
+        <div className="profile-settings-actions">
+          <button
+            className="profile-settings-action"
+            type="button"
+            disabled={!currentSession}
+            onClick={onLogout}
+          >
+            <LogOut size={14} />
+            <span>{t("settings.signOut")}</span>
+          </button>
         </div>
       </section>
 

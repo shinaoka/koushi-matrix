@@ -376,6 +376,8 @@ export function Sidebar({
   const activeSpaceName = activeSpace
     ? spaceDisplayName(activeSpace.space_id, activeSpace.display_name, spaceOverrides)
     : snapshot.sidebar.account_home.display_name;
+  const accountHomeActive =
+    activeView === "timeline" && snapshot.sidebar.account_home.is_active && !activeSpace;
   const rooms = sortRoomsByRecency(
     uniqueRooms([...sections.favourites, ...sections.rooms, ...sections.lowPriority]),
     recentRoomIds
@@ -461,30 +463,34 @@ export function Sidebar({
           label={t("workspace.invites")}
           onClick={onOpenInvites}
         />
-        <RoomSection
-          activeRoomId={activeRoomId}
-          collapsed={Boolean(collapsedSections.rooms)}
-          id="rooms"
-          kind="room"
-          label={t("workspace.rooms")}
-          rooms={rooms}
-          showWhenEmpty={true}
-          onOpenContextMenu={onOpenContextMenu}
-          onSelectRoom={selectRoom}
-          onToggleCollapsed={() => toggleSection("rooms")}
-        />
-        <RoomSection
-          activeRoomId={activeRoomId}
-          collapsed={Boolean(collapsedSections.people)}
-          id="people"
-          kind="dm"
-          label={t("workspace.people")}
-          rooms={dms}
-          showWhenEmpty={true}
-          onOpenContextMenu={onOpenContextMenu}
-          onSelectRoom={selectRoom}
-          onToggleCollapsed={() => toggleSection("people")}
-        />
+        {!accountHomeActive ? (
+          <>
+            <RoomSection
+              activeRoomId={activeRoomId}
+              collapsed={Boolean(collapsedSections.rooms)}
+              id="rooms"
+              kind="room"
+              label={t("workspace.rooms")}
+              rooms={rooms}
+              showWhenEmpty={true}
+              onOpenContextMenu={onOpenContextMenu}
+              onSelectRoom={selectRoom}
+              onToggleCollapsed={() => toggleSection("rooms")}
+            />
+            <RoomSection
+              activeRoomId={activeRoomId}
+              collapsed={Boolean(collapsedSections.people)}
+              id="people"
+              kind="dm"
+              label={t("workspace.people")}
+              rooms={dms}
+              showWhenEmpty={true}
+              onOpenContextMenu={onOpenContextMenu}
+              onSelectRoom={selectRoom}
+              onToggleCollapsed={() => toggleSection("people")}
+            />
+          </>
+        ) : null}
       </div>
     </aside>
   );

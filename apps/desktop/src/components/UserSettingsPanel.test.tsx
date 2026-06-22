@@ -123,6 +123,7 @@ describe("UserSettingsPanel", () => {
     onChooseRoomKeyImportSource: async () => null,
     onOpenKeyboardSettings: () => undefined,
     onProbeLocalEncryption: () => undefined,
+    onLogout: () => undefined,
     onResetLocalData: () => undefined,
     onResetIdentity: () => undefined,
     onSetAvatar: () => undefined,
@@ -234,6 +235,35 @@ describe("UserSettingsPanel", () => {
     expect(markup).toContain("Cross-signed");
     expect(markup).not.toContain("redacted-target-user");
     expect(markup).not.toContain("TARGETDEVICE");
+  });
+
+  test("dispatches logout from the session settings section", () => {
+    const onLogout = vi.fn();
+
+    render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={e2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+        onLogout={onLogout}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    expect(onLogout).toHaveBeenCalledTimes(1);
   });
 
   test("exposes prominent pause and resume actions for the search crawler", () => {

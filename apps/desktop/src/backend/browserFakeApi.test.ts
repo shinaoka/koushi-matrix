@@ -18,6 +18,17 @@ function receipt(
 }
 
 describe("BrowserFakeApi settings preview", () => {
+  test("logout clears the active session and session-owned views", async () => {
+    const api = createBrowserFakeApi();
+
+    const snapshot = await api.logout();
+
+    expect(snapshot.state.domain.session.kind).toBe("signedOut");
+    expect(snapshot.state.ui.navigation.active_room_id).toBeNull();
+    expect(snapshot.state.ui.timeline.room_id).toBeNull();
+    expect(snapshot.timeline).toEqual([]);
+  });
+
   test("applies the Rust-shaped settings patch to the fixture snapshot", async () => {
     const api = createBrowserFakeApi();
 

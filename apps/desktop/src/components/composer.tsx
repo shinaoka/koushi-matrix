@@ -84,6 +84,7 @@ export const Composer = memo(function Composer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const emojiButtonRef = useRef<HTMLButtonElement>(null);
+  const imeCompositionActiveRef = useRef(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const [scheduleValue, setScheduleValue] = useState(() => defaultScheduleDateTimeValue());
@@ -231,6 +232,9 @@ export const Composer = memo(function Composer({
   }
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (composerImeShouldHandleKeyEvent(event, imeCompositionActiveRef.current)) {
+      return;
+    }
     if (!shouldResolveComposerKeyEvent(event)) {
       return;
     }
@@ -387,6 +391,14 @@ export const Composer = memo(function Composer({
         value={localValue}
         placeholder={t("composer.placeholder", { roomName })}
         onKeyDown={onComposerKeyDown}
+        onCompositionStart={() => {
+          imeCompositionActiveRef.current = true;
+        }}
+        onCompositionEnd={() => {
+          window.setTimeout(() => {
+            imeCompositionActiveRef.current = false;
+          }, 0);
+        }}
         onPaste={(event) => {
           const files = Array.from(event.clipboardData.files);
           if (files.length > 0) {
@@ -522,8 +534,12 @@ function ThreadComposer({
   onSend: () => void | Promise<void>;
 }) {
   const canSend = canEdit && !isSending && draft.trim().length > 0;
+  const imeCompositionActiveRef = useRef(false);
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (composerImeShouldHandleKeyEvent(event, imeCompositionActiveRef.current)) {
+      return;
+    }
     if (!shouldResolveComposerKeyEvent(event)) {
       return;
     }
@@ -572,6 +588,14 @@ function ThreadComposer({
         value={draft}
         onChange={(event) => onDraftChange(event.target.value)}
         onKeyDown={onComposerKeyDown}
+        onCompositionStart={() => {
+          imeCompositionActiveRef.current = true;
+        }}
+        onCompositionEnd={() => {
+          window.setTimeout(() => {
+            imeCompositionActiveRef.current = false;
+          }, 0);
+        }}
       />
       <div className="thread-composer-footer">
         <button
@@ -585,6 +609,18 @@ function ThreadComposer({
         </button>
       </div>
     </section>
+  );
+}
+
+function composerImeShouldHandleKeyEvent(
+  event: KeyboardEvent<HTMLTextAreaElement>,
+  compositionActive: boolean
+): boolean {
+  return (
+    event.key === "Enter" &&
+    (compositionActive ||
+      event.nativeEvent.isComposing ||
+      event.keyCode === 229)
   );
 }
 

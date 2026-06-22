@@ -2998,6 +2998,7 @@ button:disabled {
 }
 
 .reaction-pill {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -3014,6 +3015,36 @@ button:disabled {
   white-space: nowrap;
 }
 
+.reaction-tooltip {
+  position: absolute;
+  z-index: var(--receipt-tooltip-z-index);
+  inset-inline-start: 0;
+  inset-block-end: calc(100% + var(--receipt-tooltip-offset-block));
+  min-inline-size: var(--receipt-tooltip-min-inline-size);
+  max-inline-size: min(
+    var(--receipt-tooltip-max-inline-size),
+    var(--receipt-tooltip-max-viewport-inline-size)
+  );
+  padding-block: var(--receipt-tooltip-padding-block);
+  padding-inline: var(--receipt-tooltip-padding-inline);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 12px 28px rgb(15 27 45 / 18%);
+  font-size: var(--receipt-tooltip-font-size);
+  font-weight: 600;
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(var(--receipt-tooltip-translate-block));
+  transition:
+    opacity var(--motion-tooltip-duration) ease,
+    transform var(--motion-tooltip-duration) ease;
+  visibility: hidden;
+  white-space: normal;
+}
+
 .reaction-pill[data-reacted-by-me="true"] {
   border-color: var(--brand);
   background: var(--brand-weak);
@@ -3022,6 +3053,14 @@ button:disabled {
 
 .reaction-pill:hover {
   background: var(--surface-hover);
+}
+
+.reaction-pill:hover .reaction-tooltip,
+.reaction-pill:focus .reaction-tooltip,
+.reaction-pill:focus-visible .reaction-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
 }
 
 .reaction-pill:focus-visible {

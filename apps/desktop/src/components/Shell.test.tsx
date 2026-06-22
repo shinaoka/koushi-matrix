@@ -3,7 +3,8 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { EntityAvatar } from "./Shell";
+import { createBrowserFakeApi } from "../backend/browserFakeApi";
+import { EntityAvatar, Sidebar } from "./Shell";
 
 afterEach(() => {
   cleanup();
@@ -90,5 +91,32 @@ describe("EntityAvatar", () => {
     expect(document.querySelector<HTMLImageElement>(".room-avatar img")?.getAttribute("src")).toBe(
       "asset://avatar.bin"
     );
+  });
+});
+
+describe("Sidebar", () => {
+  it("does not render room list sections on account Home", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.selectSpace(null);
+
+    render(
+      <Sidebar
+        activeRoomId={snapshot.state.ui.navigation.active_room_id}
+        activeView="timeline"
+        snapshot={snapshot}
+        onCreateRoom={() => undefined}
+        onNewDm={() => undefined}
+        onOpenContextMenu={() => undefined}
+        onOpenExplore={() => undefined}
+        onOpenHome={() => undefined}
+        onOpenInvites={() => undefined}
+        onOpenSpaceInfo={() => undefined}
+        onOpenThreads={() => undefined}
+        onSelectRoom={() => undefined}
+      />
+    );
+
+    expect(document.querySelector('[data-room-section="rooms"]')).toBeNull();
+    expect(document.querySelector('[data-room-section="people"]')).toBeNull();
   });
 });

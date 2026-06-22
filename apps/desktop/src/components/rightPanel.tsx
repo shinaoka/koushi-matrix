@@ -72,6 +72,7 @@ export function ContextualRightPanel({
   onOpenRecovery,
   onProbeLocalEncryption,
   onResetLocalData,
+  onLogout = () => undefined,
   onInviteUser = () => undefined,
   onModerateMember = () => undefined,
   onSetLocalUserAlias = () => undefined,
@@ -151,6 +152,7 @@ export function ContextualRightPanel({
   onOpenRecovery: () => void;
   onProbeLocalEncryption: () => void;
   onResetLocalData: () => void;
+  onLogout?: () => void;
   onInviteUser?: (roomId: string, title: string) => void;
   onModerateMember?: (
     roomId: string,
@@ -289,6 +291,7 @@ export function ContextualRightPanel({
           onOpenKeyboardSettings={onOpenKeyboardSettings}
           onProbeLocalEncryption={onProbeLocalEncryption}
           onResetLocalData={onResetLocalData}
+          onLogout={onLogout}
           onResetIdentity={onResetIdentity}
           onSetAvatar={onSetAvatar}
           onSetDisplayName={onSetDisplayName}

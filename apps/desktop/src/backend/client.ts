@@ -70,6 +70,10 @@ class TauriDesktopApi implements DesktopApi {
     });
   }
 
+  async logout(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("logout");
+  }
+
   async submitRecovery(secret: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("submit_recovery", { secret });
   }

@@ -1665,6 +1665,17 @@ export function App() {
     }
   }
 
+  async function logout() {
+    setIsBusy(true);
+    try {
+      setSnapshot(await api.logout());
+      setRightPanelMode("thread");
+      await refreshSavedSessions();
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function submitLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const password = loginPasswordRef.current?.value ?? "";
@@ -3129,6 +3140,9 @@ export function App() {
           }}
           onResetLocalData={() => {
             void resetLocalData();
+          }}
+          onLogout={() => {
+            void logout();
           }}
           onInviteUser={openInviteUserDialog}
           onModerateMember={(roomId, targetUserId, action, reason) => {
