@@ -381,43 +381,50 @@ git commit -m "perf: avoid full member loads in room-list projection"
 ## Task 5: Member-List Virtualization And Visible Avatars
 
 **Files:**
+- Modify: `apps/desktop/src/App.tsx`
+- Modify: `apps/desktop/src/App.test.tsx`
 - Modify: `apps/desktop/src/components/RoomInfoPanel.tsx`
 - Modify: `apps/desktop/src/components/RoomInfoPanel.test.tsx`
+- Modify: `apps/desktop/src/components/rightPanel.tsx`
 - Modify: `apps/desktop/src/styles.css`
 
-- [ ] **Step 1: Write component tests**
+- [x] **Step 1: Write component tests**
 
-Add tests proving a 3000-member room renders only a bounded visible row count and requests avatars only for rendered rows.
+Added tests proving a 3000-member room renders only a bounded visible row count, reveals late rows after scrolling, exposes a keyboard-focusable member scroll region, and requests avatars only for rendered/overscanned rows. Added an App-level guard proving Room Info member-avatar requests respect the global avatar-thumbnail download gate.
 
-- [ ] **Step 2: Implement virtualization**
+- [x] **Step 2: Implement virtualization**
 
-Use a fixed row height and a scroll container. If no virtualization dependency exists, implement a small local windowing helper:
+Implemented a local fixed-height windowing helper with a 92px CSS/TS row-height contract, top/bottom spacers, a bounded member scroll container, local scroll reset on room/member-count changes, and `aria-posinset`/`aria-setsize` metadata for virtual rows:
 
 ```ts
-const rowHeight = 44;
-const overscan = 8;
+const rowHeight = 92;
+const overscan = 4;
 const start = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
 const visibleCount = Math.ceil(viewportHeight / rowHeight) + overscan * 2;
 const visibleMembers = members.slice(start, start + visibleCount);
 ```
 
-- [ ] **Step 3: Visible avatar requests**
+- [x] **Step 3: Visible avatar requests**
 
-Request member avatars only from `visibleMembers`, using the same retry/skip logic as timeline/sidebar avatars.
+Room Info now requests member avatars only from `visibleMembers`, skips null MXCs, de-duplicates per mounted panel, and removes failed MXCs from the set so a later visible pass can retry. `App` only passes the thumbnail transport when `AVATAR_THUMBNAIL_DOWNLOADS_ENABLED` is enabled.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run:
 
 ```bash
 cd apps/desktop && npm test -- RoomInfoPanel
+cd apps/desktop && npm test -- App.test.tsx
 cd apps/desktop && npm run typecheck
+cd apps/desktop && npm test
+cd apps/desktop && npm run lint
+git diff --check
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
-git add apps/desktop/src/components/RoomInfoPanel.tsx apps/desktop/src/components/RoomInfoPanel.test.tsx apps/desktop/src/styles.css
+git add apps/desktop/src/App.tsx apps/desktop/src/App.test.tsx apps/desktop/src/components/RoomInfoPanel.tsx apps/desktop/src/components/RoomInfoPanel.test.tsx apps/desktop/src/components/rightPanel.tsx apps/desktop/src/styles.css docs/superpowers/plans/2026-06-22-issue-118-completion.md docs/superpowers/specs/2026-06-22-issue-118-completion-design.md
 git commit -m "perf: virtualize room member list"
 ```
 

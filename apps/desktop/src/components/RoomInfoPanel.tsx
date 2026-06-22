@@ -29,7 +29,7 @@ import type {
   SpaceSummary
 } from "../domain/types";
 
-const ROOM_MEMBER_ROW_HEIGHT_PX = 76;
+const ROOM_MEMBER_ROW_HEIGHT_PX = 92;
 const ROOM_MEMBER_OVERSCAN_ROWS = 4;
 const ROOM_MEMBER_FALLBACK_VIEWPORT_ROWS = 8;
 const ROOM_MEMBER_FALLBACK_VIEWPORT_HEIGHT_PX =
@@ -558,6 +558,9 @@ export function RoomInfoPanel({
           <div
             ref={memberListScrollRef}
             className="room-member-scroll-container"
+            role="region"
+            aria-label={t("room.members")}
+            tabIndex={0}
             onScroll={(event) => {
               const currentTarget = event.currentTarget;
               setMemberListViewport({
@@ -573,8 +576,13 @@ export function RoomInfoPanel({
                 style={{ height: `${memberListWindow.start * ROOM_MEMBER_ROW_HEIGHT_PX}px` }}
               />
               <ul className="room-member-list">
-                {visibleMembers.map((profile) => (
-                  <li className="room-member-row" key={profile.user_id}>
+                {visibleMembers.map((profile, index) => (
+                  <li
+                    className="room-member-row"
+                    key={profile.user_id}
+                    aria-posinset={memberListWindow.start + index + 1}
+                    aria-setsize={memberProfiles.length}
+                  >
                     <span className="room-member-main">
                       <button
                         className="room-member-name-button"

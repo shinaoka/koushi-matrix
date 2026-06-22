@@ -476,15 +476,17 @@ describe("RoomInfoPanel", () => {
     );
 
     const scrollContainer = getRoomMemberScrollContainer();
+    expect(scrollContainer.getAttribute("tabindex")).toBe("0");
+    expect(scrollContainer.getAttribute("role")).toBe("region");
     setScrollMetrics(scrollContainer, {
       clientHeight: 456,
-      scrollHeight: 3000 * 76,
-      scrollTop: 3000 * 76 - 456
+      scrollHeight: 3000 * 92,
+      scrollTop: 3000 * 92 - 456
     });
 
     fireEvent.scroll(scrollContainer, {
       target: {
-        scrollTop: 3000 * 76 - 456
+        scrollTop: 3000 * 92 - 456
       }
     });
 
@@ -534,7 +536,7 @@ describe("RoomInfoPanel", () => {
     const scrollContainer = getRoomMemberScrollContainer();
     setScrollMetrics(scrollContainer, {
       clientHeight: 456,
-      scrollHeight: 3000 * 76,
+      scrollHeight: 3000 * 92,
       scrollTop: 0
     });
 
@@ -545,6 +547,8 @@ describe("RoomInfoPanel", () => {
     });
 
     const requestedMxcs = onRequestMemberAvatarThumbnail.mock.calls.flat() as string[];
+    expect(requestedMxcs.length).toBeGreaterThan(0);
+    expect(requestedMxcs.length).toBeLessThanOrEqual(12);
     expect(requestedMxcs).not.toContain("mxc://example.invalid/avatar-2999");
     expect(new Set(requestedMxcs).size).toBe(requestedMxcs.length);
   });

@@ -3137,7 +3137,11 @@ export function App() {
           onSetLocalUserAlias={(userId, alias) => {
             void setLocalUserAlias(userId, alias);
           }}
-          onRequestMemberAvatarThumbnail={tauriTimelineTransport?.downloadAvatarThumbnail}
+          onRequestMemberAvatarThumbnail={
+            AVATAR_THUMBNAIL_DOWNLOADS_ENABLED
+              ? tauriTimelineTransport?.downloadAvatarThumbnail
+              : undefined
+          }
           onSetRoomNotificationMode={(roomId, mode) => {
             void setRoomNotificationMode(roomId, mode);
           }}
