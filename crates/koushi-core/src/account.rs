@@ -27,7 +27,7 @@
 //! SDK handles dropped inside the Tokio runtime context.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     future::Future,
     hash::{DefaultHasher, Hasher},
     sync::Arc,
@@ -48,7 +48,7 @@ use koushi_state::{
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
 use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
 use matrix_sdk::ruma::{MxcUri, OwnedMxcUri};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
 
 use crate::cached_image::cached_image_kind;
 use crate::command::{
@@ -71,6 +71,10 @@ use crate::timeline::{TimelineManagerHandle, TimelineMessage};
 /// "Credential store healthy, but no stored session for that account"
 /// during restore/switch (canon: `CoreFailure::SessionNotFound`).
 const SESSION_NOT_FOUND_FAILURE: CoreFailure = CoreFailure::SessionNotFound;
+
+/// Maximum number of concurrent avatar thumbnail downloads. Bounded to avoid
+/// flooding the SDK media layer with parallel requests during large room joins.
+const AVATAR_DOWNLOAD_CONCURRENCY: usize = 6;
 const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
 const SERVER_LOGOUT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -136,6 +140,16 @@ pub enum AccountMessage {
     IncomingVerificationRequest {
         target: VerificationTarget,
         handle: koushi_sdk::MatrixVerificationRequestHandle,
+    },
+    /// Internal: a spawned avatar-fetch task completed. Never exposed to
+    /// Tauri/React; carries only the resolved state back into the actor loop.
+    /// `generation` matches `AccountActor::avatar_session_generation` at the
+    /// time the task was spawned; stale completions (wrong generation after a
+    /// session change) are silently dropped by `handle_avatar_fetched`.
+    AvatarFetched {
+        mxc_uri: String,
+        generation: u64,
+        thumbnail: AvatarThumbnailState,
     },
     Shutdown,
 }
@@ -273,6 +287,28 @@ pub struct AccountActor {
     /// it is created so rooms that were already known to the reducer at
     /// session-restore time are not missed by the auto-start logic.
     pending_crawler_notification: Option<(Vec<String>, koushi_state::SearchCrawlerSettings)>,
+    /// Actor-owned avatar thumbnail cache: mxc_uri -> last resolved state.
+    /// Mutated only from the actor loop; no shared lock needed.
+    avatar_cache: HashMap<String, AvatarThumbnailState>,
+    /// In-flight fetches: mxc_uri -> waiting request_ids (single-flight dedup).
+    /// The first `DownloadAvatarThumbnail` for a given mxc spawns a task and
+    /// records its `request_id` here; subsequent ones for the same mxc while
+    /// the task is running simply append their `request_id`. When `AvatarFetched`
+    /// arrives every waiter receives `AvatarThumbnailDownloaded`.
+    /// Entries are removed (and all waiters notified) when `AvatarFetched` arrives.
+    avatar_inflight: HashMap<String, Vec<RequestId>>,
+    /// Semaphore bounding concurrent avatar downloads. Cloned into spawned
+    /// fetch tasks; the actor holds one Arc so it can be replaced on session
+    /// clear.
+    avatar_download_semaphore: Arc<Semaphore>,
+    /// Owns all spawned avatar-fetch tasks. Aborted on session clear and
+    /// shutdown (engineering-rules: every spawned task has an owner).
+    avatar_fetch_tasks: tokio::task::JoinSet<()>,
+    /// Incremented by `abort_avatar_fetch_tasks` on every session clear /
+    /// logout / switch / shutdown so that `AvatarFetched` completions that
+    /// were already enqueued before the abort are detected and silently dropped
+    /// instead of being accepted into the new (or absent) session's state.
+    avatar_session_generation: u64,
 }
 
 impl AccountActor {
@@ -325,6 +361,11 @@ impl AccountActor {
             incoming_verification_observer: None,
             next_incoming_verification_sequence: INCOMING_VERIFICATION_FLOW_ID_BASE,
             pending_crawler_notification: None,
+            avatar_cache: HashMap::new(),
+            avatar_inflight: HashMap::new(),
+            avatar_download_semaphore: Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY)),
+            avatar_fetch_tasks: tokio::task::JoinSet::new(),
+            avatar_session_generation: 0,
         };
         crate::executor::spawn(actor.run());
         AccountActorHandle { tx }
@@ -444,6 +485,14 @@ impl AccountActor {
                     self.handle_incoming_verification_request(request_id, target, handle)
                         .await;
                 }
+                AccountMessage::AvatarFetched {
+                    mxc_uri,
+                    generation,
+                    thumbnail,
+                } => {
+                    self.handle_avatar_fetched(mxc_uri, generation, thumbnail)
+                        .await;
+                }
             }
             self.flush_pending_crawler_notification();
         }
@@ -458,6 +507,7 @@ impl AccountActor {
         self.stop_sync_actor().await;
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
+        self.abort_avatar_fetch_tasks();
         self.device_session_ordinals.clear();
         self.pending_uia_operations.clear();
         // Drop the session handle inside the runtime context
@@ -881,6 +931,7 @@ impl AccountActor {
         self.clear_room_actor_session().await;
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
+        self.abort_avatar_fetch_tasks();
         self.device_session_ordinals.clear();
         self.pending_uia_operations.clear();
     }
@@ -1592,33 +1643,191 @@ impl AccountActor {
         }
     }
 
-    async fn handle_download_avatar_thumbnail(&self, request_id: RequestId, mxc_uri: String) {
-        let thumbnail = if let Some(session) = &self.session {
-            download_avatar_thumbnail(session, &mxc_uri, &self.data_dir)
+    /// Non-blocking, cache-first avatar thumbnail handler (Stage R1).
+    ///
+    /// 1. Cache hit (`Ready`): emit immediately; no SDK call.
+    /// 2. Already in-flight: return; the completing task will emit.
+    /// 3. Otherwise: insert into `avatar_inflight`, spawn a bounded fetch task
+    ///    that posts `AvatarFetched` back into this actor's inbox.
+    async fn handle_download_avatar_thumbnail(
+        &mut self,
+        request_id: RequestId,
+        mxc_uri: String,
+    ) {
+        // 1. Cache hit — serve immediately without any I/O.
+        if let Some(cached) = self.avatar_cache.get(&mxc_uri) {
+            if matches!(cached, AvatarThumbnailState::Ready { .. }) {
+                let thumbnail = cached.clone();
+                self.send_actions(vec![AppAction::AvatarThumbnailUpdated {
+                    mxc_uri: mxc_uri.clone(),
+                    thumbnail: thumbnail.clone(),
+                }])
+                .await;
+                self.emit(CoreEvent::Account(
+                    AccountEvent::AvatarThumbnailDownloaded {
+                        request_id,
+                        mxc_uri,
+                        thumbnail,
+                    },
+                ));
+                return;
+            }
+        }
+
+        // 2. Single-flight dedup — a fetch is already running; record this
+        //    request_id so the completing task will emit a terminal event for
+        //    every waiter, then return without spawning a second task.
+        if let Some(waiters) = self.avatar_inflight.get_mut(&mxc_uri) {
+            waiters.push(request_id);
+            return;
+        }
+
+        // 3. No session — emit failure synchronously rather than spawning.
+        let Some(session) = self.session.clone() else {
+            let thumbnail = AvatarThumbnailState::Failed {
+                request_id: request_id.sequence,
+                kind: AvatarThumbnailFailureKind::Sdk,
+            };
+            self.send_actions(vec![AppAction::AvatarThumbnailUpdated {
+                mxc_uri: mxc_uri.clone(),
+                thumbnail: thumbnail.clone(),
+            }])
+            .await;
+            self.emit(CoreEvent::Account(
+                AccountEvent::AvatarThumbnailDownloaded {
+                    request_id,
+                    mxc_uri,
+                    thumbnail,
+                },
+            ));
+            return;
+        };
+
+        // 4. Spawn a bounded fetch task; return immediately.
+        // Record the originating request_id as the first waiter.
+        self.avatar_inflight.insert(mxc_uri.clone(), vec![request_id]);
+        let generation = self.avatar_session_generation;
+        let data_dir = self.data_dir.clone();
+        let semaphore = self.avatar_download_semaphore.clone();
+        let tx = self.self_tx.clone();
+        let mxc_uri_clone = mxc_uri.clone();
+
+        self.avatar_fetch_tasks.spawn(async move {
+            // Acquire a permit before hitting the SDK so at most
+            // AVATAR_DOWNLOAD_CONCURRENCY fetches run concurrently.
+            let _permit = semaphore.acquire().await;
+            let thumbnail = download_avatar_thumbnail(&session, &mxc_uri_clone, &data_dir)
                 .await
                 .unwrap_or_else(|kind| AvatarThumbnailState::Failed {
                     request_id: request_id.sequence,
                     kind,
+                });
+            // Best-effort: if the actor is already shut down, the send fails
+            // silently — that is correct because the session is gone anyway.
+            let _ = tx
+                .send(AccountMessage::AvatarFetched {
+                    mxc_uri: mxc_uri_clone,
+                    generation,
+                    thumbnail,
                 })
-        } else {
-            AvatarThumbnailState::Failed {
-                request_id: request_id.sequence,
-                kind: AvatarThumbnailFailureKind::Sdk,
-            }
-        };
+                .await;
+        });
+    }
 
+    /// Called when a spawned avatar-fetch task completes.  Updates the cache,
+    /// removes the in-flight entry, and emits the same outputs as the old
+    /// inline path (only the timing changed).
+    ///
+    /// Fix 1: stale-generation check — if `generation` does not match the
+    /// current `avatar_session_generation` the completion belongs to a previous
+    /// session; it is silently dropped.
+    ///
+    /// Fix 2: every waiter in the `avatar_inflight` Vec receives a terminal
+    /// `AvatarThumbnailDownloaded` event; only one `AvatarThumbnailUpdated`
+    /// action is reduced (one cache write).
+    ///
+    /// Fix 3: completed/aborted JoinSet entries are reaped non-blockingly at
+    /// the start of each call so the JoinSet does not accumulate finished tasks.
+    async fn handle_avatar_fetched(
+        &mut self,
+        mxc_uri: String,
+        generation: u64,
+        thumbnail: AvatarThumbnailState,
+    ) {
+        // Fix 3: drain completed tasks non-blockingly so the JoinSet stays
+        // bounded.  Only finished entries are removed; no async wait.
+        self.reap_avatar_fetch_tasks();
+
+        // Fix 1: drop stale completions from a prior session.
+        if generation != self.avatar_session_generation {
+            return;
+        }
+
+        // Remove and collect all waiting request_ids for this mxc.
+        let waiters = self.avatar_inflight.remove(&mxc_uri).unwrap_or_default();
+
+        // Cache the result so subsequent requests for the same URI are served
+        // from memory.  Only `Ready` entries are treated as cache hits; failed
+        // entries are cached too so repeated requests during a session don't
+        // retry immediately, but a future session clear resets them.
+        self.avatar_cache.insert(mxc_uri.clone(), thumbnail.clone());
+
+        // Emit one state-delta for the reducer (one cache write, regardless of
+        // how many callers were waiting).
         self.send_actions(vec![AppAction::AvatarThumbnailUpdated {
             mxc_uri: mxc_uri.clone(),
             thumbnail: thumbnail.clone(),
         }])
         .await;
-        self.emit(CoreEvent::Account(
-            AccountEvent::AvatarThumbnailDownloaded {
-                request_id,
-                mxc_uri,
-                thumbnail,
-            },
-        ));
+
+        // Fix 2: deliver a terminal event to every waiter. For a Failed
+        // thumbnail, rebuild the payload with each waiter's own request_id so
+        // the inner AvatarThumbnailState::Failed.request_id matches the outer
+        // event request_id (the old inline path produced a per-request payload).
+        for request_id in waiters {
+            let per_waiter = match &thumbnail {
+                AvatarThumbnailState::Failed { kind, .. } => AvatarThumbnailState::Failed {
+                    request_id: request_id.sequence,
+                    kind: kind.clone(),
+                },
+                other => other.clone(),
+            };
+            self.emit(CoreEvent::Account(
+                AccountEvent::AvatarThumbnailDownloaded {
+                    request_id,
+                    mxc_uri: mxc_uri.clone(),
+                    thumbnail: per_waiter,
+                },
+            ));
+        }
+    }
+
+    /// Non-blocking reap of completed/aborted avatar-fetch JoinSet entries.
+    /// Must not `.await`; called synchronously inside the actor message loop.
+    fn reap_avatar_fetch_tasks(&mut self) {
+        while self.avatar_fetch_tasks.try_join_next().is_some() {}
+    }
+
+    /// Abort all in-flight avatar fetch tasks and clear the per-session cache.
+    /// Called on session clear (logout / account switch) and on shutdown.
+    ///
+    /// Fix 1: increment `avatar_session_generation` so that any `AvatarFetched`
+    /// messages that were already queued before the abort are recognised as
+    /// stale by `handle_avatar_fetched` and silently dropped.
+    fn abort_avatar_fetch_tasks(&mut self) {
+        // Replace (drop) the JoinSet rather than only abort_all(): dropping a
+        // JoinSet aborts all its tasks AND discards their entries, so cancelled
+        // tasks do not linger across repeated request -> session-clear cycles.
+        self.avatar_fetch_tasks = tokio::task::JoinSet::new();
+        self.avatar_inflight.clear();
+        self.avatar_cache.clear();
+        // Replace the semaphore so any task that manages to run after abort
+        // cannot accidentally re-use a poisoned permit count.
+        self.avatar_download_semaphore =
+            Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY));
+        // Advance the generation counter so stale completions from tasks that
+        // were spawned before this abort are silently rejected.
+        self.avatar_session_generation = self.avatar_session_generation.wrapping_add(1);
     }
 
     async fn handle_ignore_user(&mut self, request_id: RequestId, user_id: String, ignored: bool) {
@@ -4868,6 +5077,11 @@ mod tests {
             incoming_verification_observer: None,
             next_incoming_verification_sequence: INCOMING_VERIFICATION_FLOW_ID_BASE,
             pending_crawler_notification: None,
+            avatar_cache: HashMap::new(),
+            avatar_inflight: HashMap::new(),
+            avatar_download_semaphore: Arc::new(Semaphore::new(AVATAR_DOWNLOAD_CONCURRENCY)),
+            avatar_fetch_tasks: tokio::task::JoinSet::new(),
+            avatar_session_generation: 0,
         };
         let request_id = test_request_id();
 
