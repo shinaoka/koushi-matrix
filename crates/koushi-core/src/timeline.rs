@@ -105,6 +105,7 @@ use crate::ids::{RequestId, TimelineBatchId, TimelineGeneration, TimelineKey, Ti
 use crate::link_preview::LinkPreviewContext;
 use crate::messages_backpressure::MessagesBackpressure;
 use crate::search::SearchIndexMessage;
+use crate::startup_trace::{self, StartupPhase};
 
 /// Bounded diff queue capacity per subscribed timeline (overview.md, Async rule 10).
 pub const TIMELINE_DIFF_QUEUE_CAPACITY: usize = 128;
@@ -859,10 +860,12 @@ impl TimelineManagerActor {
         };
 
         trace("build_begin");
+        let build_started = std::time::Instant::now();
         let timeline_result = matrix_sdk_ui::timeline::TimelineBuilder::new(&room)
             .with_focus(focus)
             .build()
             .await;
+        startup_trace::trace_phase(StartupPhase::TimelineBuild, build_started.elapsed());
         trace("build_done");
 
         let timeline = match timeline_result {
@@ -1472,7 +1475,13 @@ impl TimelineActor {
         messages_backpressure: MessagesBackpressure,
     ) -> TimelineActorHandle {
         // Subscribe to the SDK timeline to get initial items + diff stream.
+        let subscribe_started = std::time::Instant::now();
         let (initial_sdk_items, diff_stream) = timeline.subscribe().await;
+        startup_trace::trace_phase_items(
+            StartupPhase::TimelineSubscribe,
+            subscribe_started.elapsed(),
+            initial_sdk_items.len(),
+        );
         let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
         let room_id = key.room_id().to_owned();
 
@@ -1875,14 +1884,23 @@ impl TimelineActor {
             state: PaginationState::Paginating,
         }));
 
+        let gate_started = std::time::Instant::now();
         let result = {
             let _permit = self.messages_backpressure.acquire_timeline().await;
-            match direction {
+            let gate_wait = gate_started.elapsed();
+            let paginate_started = std::time::Instant::now();
+            let outcome = match direction {
                 PaginationDirection::Backward => {
                     self.timeline.paginate_backwards(event_count).await
                 }
                 PaginationDirection::Forward => self.timeline.paginate_forwards(event_count).await,
-            }
+            };
+            startup_trace::trace_paginate(
+                paginate_started.elapsed(),
+                gate_wait,
+                matches!(outcome, Ok(true)),
+            );
+            outcome
         };
 
         let next_state = match result {
@@ -8073,6 +8091,30 @@ mod tests {
         assert!(
             debug.contains("txn-vis"),
             "txn_id should be visible: {debug}"
+        );
+    }
+
+    #[test]
+    fn timeline_subscribe_and_paginate_emit_startup_trace() {
+        let source = include_str!("timeline.rs");
+        // build lives in the manager's subscribe handler; subscribe lives in
+        // TimelineActor::spawn. Assert presence without forcing their location.
+        assert!(
+            source.contains("StartupPhase::TimelineBuild"),
+            "the SDK TimelineBuilder::build phase must be timed"
+        );
+        assert!(
+            source.contains("StartupPhase::TimelineSubscribe"),
+            "the timeline.subscribe() phase must be timed with an item bucket"
+        );
+        let paginate_src = source
+            .split("async fn handle_paginate")
+            .nth(1)
+            .and_then(|s| s.split("async fn handle_send_text").next())
+            .expect("handle_paginate should exist");
+        assert!(
+            paginate_src.contains("trace_paginate"),
+            "pagination must emit a startup_trace paginate token"
         );
     }
 
