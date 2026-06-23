@@ -66,6 +66,11 @@ pub(crate) enum HistoryCrawlPageResult {
         checkpoint: HistoryCrawlCheckpoint,
         kind: SearchCrawlerFailureKind,
     },
+    /// The gate cancelled this page so a user-visible pagination could run.
+    /// The checkpoint is unchanged and must be re-queued (no progress lost).
+    Preempted {
+        checkpoint: HistoryCrawlCheckpoint,
+    },
 }
 
 pub(crate) fn spawn_history_crawl_page(
@@ -119,9 +124,18 @@ async fn run_history_crawl_page(
     options.from = checkpoint.from_token.clone();
 
     let messages = {
-        let _permit = messages_backpressure.acquire_crawler().await;
+        let permit = messages_backpressure.acquire_crawler().await;
         let page_started = startup_trace::now_if_enabled();
-        let page_result = room.messages(options).await;
+        let page_result = tokio::select! {
+            biased;
+            // A waiting timeline pagination cancels the crawler: yield the gate
+            // immediately and re-queue this checkpoint (no progress lost).
+            _ = permit.cancelled() => {
+                startup_trace::trace_crawler_preempted();
+                return HistoryCrawlPageResult::Preempted { checkpoint };
+            }
+            result = room.messages(options) => result,
+        };
         startup_trace::trace_phase(StartupPhase::CrawlerPage, page_started);
         match page_result {
             Ok(messages) => messages,
@@ -595,11 +609,13 @@ mod tests {
             })
             .expect("bounded page runner should exist");
 
+        // The page fetch is inside a tokio::select! branch; the macro awaits
+        // the future implicitly so the literal `.await` does not appear here.
         assert!(
             page_runner.contains(concat!(
-                "room", ".", "messages", "(", "options", ")", ".", "await"
+                "result", " = ", "room", ".", "messages", "(", "options", ")"
             )),
-            "page runner must fetch exactly one /messages page"
+            "page runner must fetch exactly one /messages page (inside tokio::select!)"
         );
         assert!(
             !page_runner.contains("loop {"),
@@ -621,11 +637,12 @@ mod tests {
         let acquire_offset = page_runner
             .find("acquire_crawler")
             .expect("crawler page runner must acquire crawler /messages backpressure");
+        // The page fetch is inside a tokio::select! branch; match the select form.
         let messages_offset = page_runner
             .find(concat!(
-                "room", ".", "messages", "(", "options", ")", ".", "await"
+                "result", " = ", "room", ".", "messages", "(", "options", ")"
             ))
-            .expect("page runner must fetch one /messages page");
+            .expect("page runner must fetch one /messages page (inside tokio::select!)");
 
         assert!(
             acquire_offset < messages_offset,
@@ -832,6 +849,24 @@ mod tests {
         assert!(
             production.contains("StartupPhase::CrawlerPage"),
             "crawler page fetch must be timed so background /messages work is visible in startup traces"
+        );
+    }
+
+    #[test]
+    fn crawler_page_yields_to_timeline_via_cancellation() {
+        let source = include_str!("search_crawler.rs");
+        let production = source.split("\nmod tests").next().unwrap_or(source);
+        assert!(
+            production.contains("permit.cancelled()"),
+            "crawler page must race room.messages() against the gate's cancellation signal"
+        );
+        assert!(
+            production.contains("HistoryCrawlPageResult::Preempted"),
+            "a cancelled crawler page must return Preempted so the checkpoint is re-queued"
+        );
+        assert!(
+            production.contains("trace_crawler_preempted"),
+            "preemption must be observable via startup_trace"
         );
     }
 }

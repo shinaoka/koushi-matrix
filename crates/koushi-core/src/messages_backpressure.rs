@@ -36,16 +36,12 @@ pub(crate) struct MessagesRequestPermit {
     inner: Arc<MessagesBackpressureInner>,
     /// `Some` for crawler permits — resolves when a timeline acquirer requests
     /// preemption. `None` for timeline permits (never cancelled).
-    // Used by Task 2 (search_crawler) — suppress dead_code until wired.
-    #[allow(dead_code)]
     cancel: Option<Arc<Notify>>,
 }
 
 impl MessagesRequestPermit {
     /// Resolves when a timeline acquirer has asked this crawler permit to yield.
     /// For a timeline permit this never resolves.
-    // Used by Task 2 (search_crawler) — suppress dead_code until wired.
-    #[allow(dead_code)]
     pub(crate) async fn cancelled(&self) {
         match &self.cancel {
             Some(cancel) => cancel.notified().await,

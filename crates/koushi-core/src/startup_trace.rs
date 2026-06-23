@@ -94,6 +94,14 @@ pub(crate) fn trace_origin(origin: &'static str) {
     }
 }
 
+/// Emitted when a background crawler page yields the /messages gate to a
+/// user-visible pagination (preemption). Private-data-free.
+pub(crate) fn trace_crawler_preempted() {
+    if enabled() {
+        eprintln!("koushi.startup phase=crawler_preempted");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

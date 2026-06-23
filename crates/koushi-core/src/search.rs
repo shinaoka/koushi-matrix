@@ -890,6 +890,19 @@ impl SearchActor {
                     }])
                     .await;
             }
+            HistoryCrawlPageResult::Preempted { checkpoint } => {
+                if checkpoint.settings_generation != self.crawl_settings_generation {
+                    return;
+                }
+                if !checkpoint.manual && !self.available_crawl_rooms.contains(&checkpoint.room_id) {
+                    return;
+                }
+                // No progress was made; retry this checkpoint next. The crawler's
+                // next acquire blocks behind the waiting timeline (waiting_timeline),
+                // so this does not livelock.
+                self.queued_crawl_rooms.insert(checkpoint.room_id.clone());
+                self.crawl_queue.push_front(checkpoint);
+            }
         }
     }
 
@@ -1416,6 +1429,25 @@ mod tests {
         assert!(
             handle_impl.contains(".try_send(SearchActorMessage::RoomsAvailable"),
             "nonblocking crawler notification delivery must use try_send"
+        );
+    }
+
+    #[test]
+    fn preempted_crawl_page_is_requeued() {
+        let source = include_str!("search.rs");
+        let production = source.split("\nmod tests").next().unwrap_or(source);
+        let handler = production
+            .split("fn handle_history_crawl_page_result")
+            .nth(1)
+            .and_then(|s| s.split("\n    fn ").next())
+            .expect("handle_history_crawl_page_result should exist");
+        assert!(
+            handler.contains("HistoryCrawlPageResult::Preempted"),
+            "the result handler must handle Preempted"
+        );
+        assert!(
+            handler.contains("push_front"),
+            "a preempted checkpoint must be re-queued at the front (no history lost)"
         );
     }
 }
