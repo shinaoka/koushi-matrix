@@ -57,6 +57,7 @@ const checks = [
   "scenario scheduled_send",
   "scenario send_queue",
   "scenario restore_cleanup",
+  "scenario cache_restore",
   "verify installed Conduit binary",
   "verify installed Tuwunel binary",
   "verify local Synapse Docker runtime when --server=synapse",
