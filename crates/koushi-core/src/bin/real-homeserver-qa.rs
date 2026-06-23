@@ -2149,6 +2149,84 @@ async fn wait_for_session_restored_with_recovery(
     }
 }
 
+/// Wait for a `Ready` session snapshot. If the session first enters
+/// `NeedsRecovery` (first-login path on an account with secret storage),
+/// submit the recovery key once and keep waiting. On the restore path the
+/// session normally reaches Ready directly without recovery.
+#[cfg(any(debug_assertions, test))]
+async fn wait_for_ready_handling_recovery(
+    conn: &mut CoreConnection,
+    creds: &RealCredentials,
+    transcript: &mut Vec<String>,
+    label: &str,
+) -> Result<(), String> {
+    let mut recovery_submitted = false;
+    loop {
+        // Settle from the current snapshot first.
+        match conn.snapshot().session {
+            SessionState::Ready(_) => return Ok(()),
+            SessionState::NeedsRecovery { .. } if !recovery_submitted => {
+                recovery_submitted = true;
+                submit_startup_lat_recovery(conn, creds, transcript, label).await?;
+                continue;
+            }
+            _ => {}
+        }
+
+        let event = tokio::time::timeout(SYNC_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for Ready snapshot"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::StateChanged(snapshot) => match snapshot.session {
+                SessionState::Ready(_) => return Ok(()),
+                SessionState::NeedsRecovery { .. } if !recovery_submitted => {
+                    recovery_submitted = true;
+                    submit_startup_lat_recovery(conn, creds, transcript, label).await?;
+                }
+                _ => {}
+            },
+            CoreEvent::Account(AccountEvent::RecoveryRequired { .. }) if !recovery_submitted => {
+                recovery_submitted = true;
+                submit_startup_lat_recovery(conn, creds, transcript, label).await?;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(any(debug_assertions, test))]
+async fn submit_startup_lat_recovery(
+    conn: &mut CoreConnection,
+    creds: &RealCredentials,
+    transcript: &mut Vec<String>,
+    label: &str,
+) -> Result<(), String> {
+    let line = "startup_lat recovery=required".to_owned();
+    transcript.push(line.clone());
+    println!("{line}");
+    let submit_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(AccountCommand::SubmitRecovery {
+        request_id: submit_id,
+        request: RecoveryRequest {
+            secret: creds.recovery_key.clone(),
+        },
+    }))
+    .await
+    .map_err(|e| format!("{label} recovery submit failed: {e}"))?;
+    match wait_for_recovery_outcome(conn, submit_id, label).await? {
+        RecoveryOutcome::Completed => {
+            let l = "startup_lat recovery=completed".to_owned();
+            transcript.push(l.clone());
+            println!("{l}");
+            Ok(())
+        }
+        // Coarse, no Debug (consistent with the codex finding-2 fix).
+        RecoveryOutcome::Failed(_) => Err(format!("{label}: recovery failed")),
+    }
+}
+
 #[cfg(any(debug_assertions, test))]
 async fn wait_for_logged_out(
     conn: &mut CoreConnection,
@@ -2510,7 +2588,7 @@ async fn run_startup_latency_scenario(
 
     wait_for_sync_started(&mut conn, sync_id, "startup_latency sync start", SYNC_TIMEOUT).await?;
     wait_for_sync_running(&mut conn, "startup_latency sync running", SYNC_TIMEOUT).await?;
-    wait_for_ready_snapshot(&mut conn, "startup_latency Ready").await?;
+    wait_for_ready_handling_recovery(&mut conn, creds, transcript, "startup_latency Ready").await?;
 
     let sync_ms = sync_started.elapsed().as_millis();
     let line = format!("startup_lat phase=sync_to_ready ms={sync_ms}");
