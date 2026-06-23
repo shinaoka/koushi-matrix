@@ -455,3 +455,80 @@ test("reply action is absent for rows with null body", async ({ page }) => {
     article.getByRole("button", { name: t("timeline.replyToMessage") })
   ).toHaveCount(0);
 });
+
+// ---------------------------------------------------------------------------
+// 9. Read receipts bottom-right alignment
+// ---------------------------------------------------------------------------
+
+test("read receipt row is right-aligned within the message column", async ({ page }) => {
+  // display:flex (block-level) on .message-receipts lets margin-inline-start:auto
+  // push the row to the right edge of .message-main.  display:inline-flex was
+  // inline-level so the margin had no pushing effect.
+  await gotoReadyShell(page);
+  const eventId = "$receipt-align:example.invalid";
+  await seedTimelineItems(page, [makeEventItem(eventId)]);
+
+  // Seed a single reader so .message-receipts is rendered.
+  await page.evaluate(
+    ({ roomId, evId }) => {
+      const snap = window.__harness.currentSnapshot();
+      window.__harness.setSnapshot({
+        ...snap,
+        state: {
+          ...snap.state,
+          domain: {
+            ...snap.state.domain,
+            live_signals: {
+              ...snap.state.domain.live_signals,
+              rooms: {
+                [roomId]: {
+                  receipts_by_event: {
+                    [evId]: {
+                      readers: [
+                        {
+                          user_id: "@reader-align:example.invalid",
+                          display_name: "Align Tester",
+                          original_display_label: "Align Tester",
+                          avatar: null,
+                          timestamp_ms: null
+                        }
+                      ],
+                      total_count: 1,
+                      overflow_count: 0
+                    }
+                  },
+                  fully_read_event_id: null,
+                  typing_user_ids: []
+                }
+              }
+            }
+          }
+        }
+      });
+      window.__harness.pushStateChanged();
+    },
+    { roomId: HARNESS_ROOM_ID, evId: eventId }
+  );
+
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  const receipts = article.locator(".message-receipts");
+  await expect(receipts).toBeVisible();
+
+  // The receipt row right edge must align with the message-main column right
+  // edge (i.e. margin-inline-start:auto right-aligns the block-flex row).
+  // We allow 2 px tolerance for sub-pixel rounding.
+  const receiptBox = await receipts.boundingBox();
+  const messageMains = article.locator(".message-main");
+  const mainBox = await messageMains.boundingBox();
+
+  expect(receiptBox).not.toBeNull();
+  expect(mainBox).not.toBeNull();
+
+  const receiptRight = (receiptBox!.x + receiptBox!.width);
+  const mainRight = (mainBox!.x + mainBox!.width);
+  expect(Math.abs(receiptRight - mainRight)).toBeLessThanOrEqual(2);
+
+  // Also confirm the receipt row does NOT start at the left edge of message-main
+  // (it should be pushed right, not left-aligned).
+  expect(receiptBox!.x).toBeGreaterThan(mainBox!.x);
+});

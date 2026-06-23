@@ -1970,7 +1970,9 @@ mod tests {
             .get("!room:example.invalid")
             .and_then(|room| room.receipts_by_event.get("$event:example.invalid"))
             .expect("receipt projection");
-        assert_eq!(summary.total_count, 4);
+        // The session user (@alice) is excluded from the readers list — own
+        // receipts must never appear in the displayed readers or affect counts.
+        assert_eq!(summary.total_count, 3);
         assert_eq!(summary.overflow_count, 0);
         assert_eq!(
             summary
@@ -1987,12 +1989,6 @@ mod tests {
                 ))
                 .collect::<Vec<_>>(),
             vec![
-                (
-                    "@alice:example.invalid",
-                    Some("Alice"),
-                    Some(5_000),
-                    Some("mxc://example.invalid/alice"),
-                ),
                 ("@dana:example.invalid", Some("Dana"), Some(4_000), None),
                 (
                     "@bob:example.invalid",
