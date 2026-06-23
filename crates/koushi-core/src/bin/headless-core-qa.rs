@@ -136,6 +136,11 @@ const CACHE_RESTORE_PAGINATE_BATCH: u16 = 20;
 /// 6 batches reaches only ~6 chunks (~tens of events) → BudgetExhausted on main.
 const CACHE_RESTORE_PROD_MAX_BATCHES: u16 = 6;
 const CACHE_RESTORE_PROD_EVENT_COUNT: u16 = 100;
+/// Stage 2 speed gate: maximum backward-paginate cycles allowed per room during
+/// an offline anchor restore.  With a bulk cache load (Stage 2), the runtime
+/// should reach the anchor in ≤ 3 cycles.  On current main (~12 cycles/room)
+/// this gate is RED — that is the intended signal before Stage 2 lands.
+const CACHE_RESTORE_MAX_CYCLES: u16 = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QaScenario {
@@ -2707,6 +2712,8 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
     let aggregate_start = std::time::Instant::now();
     let mut all_succeeded = true;
     let mut total_cycles: u32 = 0;
+    // Per-room cycle counts for the Stage 2 speed gate.
+    let mut room_cycle_counts: Vec<u16> = Vec::new();
 
     for (room_idx, (room_id, anchor)) in room_ids.iter().zip(deep_anchors.iter()).enumerate() {
         let key = TimelineKey::room(account_key.clone(), room_id.clone());
@@ -2744,8 +2751,9 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
             })?;
 
         // Consume events until AnchorRestoreFinished. Count Paginating transitions
-        // as internal backward-paginate cycles (diagnostic only).
-        let mut cycle_count: u32 = 0;
+        // as internal backward-paginate cycles (PRIMARY diagnostic; also gated by
+        // CACHE_RESTORE_MAX_CYCLES as Stage 2 speed regression gate).
+        let mut cycle_count: u16 = 0;
         let status = loop {
             let event = tokio::time::timeout(Duration::from_secs(120), conn2.recv_event())
                 .await
@@ -2788,7 +2796,8 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
         };
 
         let room_ms = room_start.elapsed().as_millis();
-        total_cycles += cycle_count;
+        total_cycles += cycle_count as u32;
+        room_cycle_counts.push(cycle_count);
         let status_label = match &status {
             TimelineAnchorRestoreStatus::Found => "found",
             TimelineAnchorRestoreStatus::EndReached => "end_reached",
@@ -2849,6 +2858,19 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
     let aggregate_ms = aggregate_start.elapsed().as_millis();
     eprintln!("cache_restore total_cycles={total_cycles} total_ms={aggregate_ms}");
 
+    // SECONDARY GATE (Stage 2 speed regression gate):
+    // Each room must reach the anchor in ≤ CACHE_RESTORE_MAX_CYCLES backward-paginate
+    // cycles.  On current main (~12 cycles/room) this will FAIL — that is the intended
+    // RED before Stage 2 bulk cache load lands.  The PRIMARY correctness gate above
+    // (Found / EndReached+anchor) is checked independently so we can distinguish a
+    // correct-but-slow restore from a genuinely broken one.
+    let slow_rooms: Vec<usize> = room_cycle_counts
+        .iter()
+        .enumerate()
+        .filter(|&(_, c)| *c > CACHE_RESTORE_MAX_CYCLES)
+        .map(|(i, _)| i)
+        .collect();
+
     cleanup_logged_in_runtime(conn2, runtime2, account_key, "cache_restore cleanup").await?;
 
     if !all_succeeded {
@@ -2857,6 +2879,15 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
              (symptom B) — raise budget / bulk cache load to fix (EXPECTED RED on current main)"
                 .to_owned(),
         );
+    }
+
+    if !slow_rooms.is_empty() {
+        let worst = room_cycle_counts.iter().copied().max().unwrap_or(0);
+        return Err(format!(
+            "cache_restore: deep anchor reached but via {worst} backward-paginate cycles \
+             (> {CACHE_RESTORE_MAX_CYCLES}) — O(depth) restore, Stage 2 bulk cache load not \
+             yet applied (EXPECTED RED until Stage 2)"
+        ));
     }
 
     println!("cache_restore_offline=ok");
