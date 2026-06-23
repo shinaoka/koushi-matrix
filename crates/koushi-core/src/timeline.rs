@@ -2173,8 +2173,12 @@ impl TimelineActor {
                 // messages. Those are buffered into `restore_emit_buffer` while
                 // `restore_anchor.is_some()`, so we still get a single coalesced
                 // `ItemsUpdated` flush at the terminal.
-                restore.max_batches_remaining =
-                    restore.max_batches_remaining.saturating_sub(1).max(0);
+                // P2: deduct the actual number of cache chunks consumed from the
+                // budget (each chunk ≈ one paginate batch). Clamp minimum to 1
+                // so partial loads always advance the budget counter.
+                restore.max_batches_remaining = restore
+                    .max_batches_remaining
+                    .saturating_sub(outcome.chunks_loaded.max(1) as u16);
 
                 if self.timeline_contains_event_id(&restore.event_id) {
                     self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
@@ -2222,7 +2226,12 @@ impl TimelineActor {
                         }
                         restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
                         restore.settle_baseline_seq = self.diff_batch_seq;
-                        restore.settle_min_seq = self.diff_batch_seq.wrapping_add(1);
+                        // P1-gap: outcome.chunks_loaded cache DiffBatches are still
+                        // pending in the async relay when the fallback paginate_once
+                        // returns. Include them in the settle fence (+1 for paginate_once).
+                        restore.settle_min_seq = self
+                            .diff_batch_seq
+                            .wrapping_add(outcome.chunks_loaded as u64 + 1);
                         restore.settle_terminal = SettleTerminal::EndReached;
                         self.schedule_restore_anchor_continue(restore).await;
                         return;
@@ -2237,7 +2246,11 @@ impl TimelineActor {
                         }
                         restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
                         restore.settle_baseline_seq = self.diff_batch_seq;
-                        restore.settle_min_seq = self.diff_batch_seq.wrapping_add(1);
+                        // P1-gap: same as end_reached case — pending cache DiffBatches
+                        // must be included in the settle fence.
+                        restore.settle_min_seq = self
+                            .diff_batch_seq
+                            .wrapping_add(outcome.chunks_loaded as u64 + 1);
                         restore.settle_terminal = SettleTerminal::BudgetExhausted;
                         self.schedule_restore_anchor_continue(restore).await;
                         return;
