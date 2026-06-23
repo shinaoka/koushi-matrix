@@ -43,29 +43,43 @@ pub(crate) fn enabled() -> bool {
     std::env::var_os("KOUSHI_STARTUP_TRACE").is_some()
 }
 
-pub(crate) fn trace_phase(phase: StartupPhase, elapsed: Duration) {
-    if enabled() {
-        eprintln!("koushi.startup phase={} ms={}", phase.as_token(), elapsed.as_millis());
+/// Capture a start instant only when tracing is enabled (true no-op otherwise).
+pub(crate) fn now_if_enabled() -> Option<std::time::Instant> {
+    enabled().then(std::time::Instant::now)
+}
+
+pub(crate) fn trace_phase(phase: StartupPhase, started: Option<std::time::Instant>) {
+    if let Some(started) = started {
+        eprintln!("koushi.startup phase={} ms={}", phase.as_token(), started.elapsed().as_millis());
     }
 }
 
-pub(crate) fn trace_phase_items(phase: StartupPhase, elapsed: Duration, items: usize) {
-    if enabled() {
+pub(crate) fn trace_phase_items(
+    phase: StartupPhase,
+    started: Option<std::time::Instant>,
+    items: usize,
+) {
+    if let Some(started) = started {
         eprintln!(
             "koushi.startup phase={} ms={} items={}",
             phase.as_token(),
-            elapsed.as_millis(),
+            started.elapsed().as_millis(),
             count_bucket(items)
         );
     }
 }
 
-pub(crate) fn trace_paginate(elapsed: Duration, gate_wait: Duration, reached_start: bool) {
-    if enabled() {
+pub(crate) fn trace_paginate(
+    started: Option<std::time::Instant>,
+    gate_wait: Option<Duration>,
+    reached_start: bool,
+) {
+    if let Some(started) = started {
+        let gate_ms = gate_wait.map(|d| d.as_millis()).unwrap_or(0);
         eprintln!(
             "koushi.startup phase=paginate ms={} gate_ms={} reached_start={}",
-            elapsed.as_millis(),
-            gate_wait.as_millis(),
+            started.elapsed().as_millis(),
+            gate_ms,
             reached_start
         );
     }

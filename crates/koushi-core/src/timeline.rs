@@ -860,12 +860,12 @@ impl TimelineManagerActor {
         };
 
         trace("build_begin");
-        let build_started = std::time::Instant::now();
+        let build_started = startup_trace::now_if_enabled();
         let timeline_result = matrix_sdk_ui::timeline::TimelineBuilder::new(&room)
             .with_focus(focus)
             .build()
             .await;
-        startup_trace::trace_phase(StartupPhase::TimelineBuild, build_started.elapsed());
+        startup_trace::trace_phase(StartupPhase::TimelineBuild, build_started);
         trace("build_done");
 
         let timeline = match timeline_result {
@@ -1475,11 +1475,11 @@ impl TimelineActor {
         messages_backpressure: MessagesBackpressure,
     ) -> TimelineActorHandle {
         // Subscribe to the SDK timeline to get initial items + diff stream.
-        let subscribe_started = std::time::Instant::now();
+        let subscribe_started = startup_trace::now_if_enabled();
         let (initial_sdk_items, diff_stream) = timeline.subscribe().await;
         startup_trace::trace_phase_items(
             StartupPhase::TimelineSubscribe,
-            subscribe_started.elapsed(),
+            subscribe_started,
             initial_sdk_items.len(),
         );
         let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
@@ -1601,7 +1601,7 @@ impl TimelineActor {
             if let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&room_id_str) {
                 if let Some(observer_room) = session.client().get_room(&room_id) {
                     auxiliary_tasks.push(executor::spawn(async move {
-                        if let Ok((cache, _drop_guards)) = observer_room.event_cache().await {
+                        if let Ok((cache, _event_cache_drop_guards)) = observer_room.event_cache().await {
                             if let Ok((_initial, mut updates)) = cache.subscribe().await {
                                 use matrix_sdk::event_cache::{
                                     EventsOrigin, RoomEventCacheUpdate,
@@ -1921,22 +1921,18 @@ impl TimelineActor {
             state: PaginationState::Paginating,
         }));
 
-        let gate_started = std::time::Instant::now();
+        let gate_started = startup_trace::now_if_enabled();
         let result = {
             let _permit = self.messages_backpressure.acquire_timeline().await;
-            let gate_wait = gate_started.elapsed();
-            let paginate_started = std::time::Instant::now();
+            let gate_wait = gate_started.map(|t| t.elapsed());
+            let paginate_started = startup_trace::now_if_enabled();
             let outcome = match direction {
                 PaginationDirection::Backward => {
                     self.timeline.paginate_backwards(event_count).await
                 }
                 PaginationDirection::Forward => self.timeline.paginate_forwards(event_count).await,
             };
-            startup_trace::trace_paginate(
-                paginate_started.elapsed(),
-                gate_wait,
-                matches!(outcome, Ok(true)),
-            );
+            startup_trace::trace_paginate(paginate_started, gate_wait, matches!(outcome, Ok(true)));
             outcome
         };
 

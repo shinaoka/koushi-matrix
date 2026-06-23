@@ -120,9 +120,9 @@ async fn run_history_crawl_page(
 
     let messages = {
         let _permit = messages_backpressure.acquire_crawler().await;
-        let page_started = std::time::Instant::now();
+        let page_started = startup_trace::now_if_enabled();
         let page_result = room.messages(options).await;
-        startup_trace::trace_phase(StartupPhase::CrawlerPage, page_started.elapsed());
+        startup_trace::trace_phase(StartupPhase::CrawlerPage, page_started);
         match page_result {
             Ok(messages) => messages,
             Err(_) => {
