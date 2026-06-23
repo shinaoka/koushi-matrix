@@ -125,13 +125,17 @@ const ENV_STRESS_REPLAY_EXISTING: &str = "KOUSHI_QA_STRESS_REPLAY_EXISTING";
 const QA_WRONG_RECOVERY_SECRET: &str = "koushi-desktop-headless-qa-wrong-recovery-secret";
 const ENV_CACHE_RESTORE_ROOMS: &str = "KOUSHI_QA_CACHE_RESTORE_ROOMS";
 const ENV_CACHE_RESTORE_DEPTH: &str = "KOUSHI_QA_CACHE_RESTORE_DEPTH";
-const DEFAULT_CACHE_RESTORE_ROOMS: usize = 2;
-const DEFAULT_CACHE_RESTORE_DEPTH: usize = 100;
-/// Batch size used for backward pagination during the offline restore measure.
+const DEFAULT_CACHE_RESTORE_ROOMS: usize = 3;
+const DEFAULT_CACHE_RESTORE_DEPTH: usize = 200;
+/// Batch size used for backward pagination during the populate (EndReached) pass.
 const CACHE_RESTORE_PAGINATE_BATCH: u16 = 20;
-/// Maximum acceptable internal backward-paginate cycles for offline anchor restore.
-/// If any room exceeds this, the run is RED: O(depth) restore, not direct cache-context.
-const CACHE_RESTORE_MAX_CYCLES: u32 = 3;
+/// Production-faithful restore parameters, matching the app's live-room constants.
+/// Source: apps/desktop/src/components/TimelineView.tsx:406-407
+/// (LIVE_ROOM_ANCHOR_RESTORE_MAX_BATCHES=6, EVENT_COUNT=100).
+/// With depth=200 and each SDK paginate_backwards returning ~one stored chunk,
+/// 6 batches reaches only ~6 chunks (~tens of events) → BudgetExhausted on main.
+const CACHE_RESTORE_PROD_MAX_BATCHES: u16 = 6;
+const CACHE_RESTORE_PROD_EVENT_COUNT: u16 = 100;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QaScenario {
@@ -2678,8 +2682,9 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
 
     // -----------------------------------------------------------------------
     // Connect 2: restart over the same data dir, BLOCK the network, then drive
-    // RestoreTimelineAnchor per room. Count PaginationStateChanged::Paginating
-    // events as internal backward-paginate cycles. Gate on CACHE_RESTORE_MAX_CYCLES.
+    // RestoreTimelineAnchor per room using production-faithful params.
+    // PRIMARY GATE: status == Found, OR (EndReached AND anchor present in items).
+    // Cycle count + ms are diagnostics only.
     // -----------------------------------------------------------------------
     let runtime2 = CoreRuntime::start_with_data_dir(data_dir);
     let mut conn2 = runtime2.attach();
@@ -2700,8 +2705,7 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
     proxy.disable();
 
     let aggregate_start = std::time::Instant::now();
-    let mut all_found = true;
-    let mut max_cycles_exceeded = false;
+    let mut all_succeeded = true;
     let mut total_cycles: u32 = 0;
 
     for (room_idx, (room_id, anchor)) in room_ids.iter().zip(deep_anchors.iter()).enumerate() {
@@ -2714,8 +2718,11 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
             }))
             .await
             .map_err(|e| format!("cache_restore: offline subscribe failed: {e}"))?;
-        wait_for_initial_items(&mut conn2, &key, sub_id, "cache_restore offline subscribe")
-            .await?;
+        let initial_offline =
+            wait_for_initial_items(&mut conn2, &key, sub_id, "cache_restore offline subscribe")
+                .await?;
+        // Track items during restore so we can check anchor presence on EndReached.
+        let mut offline_items = initial_offline;
 
         let room_start = std::time::Instant::now();
         let restore_req = conn2.next_request_id();
@@ -2724,14 +2731,20 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
                 request_id: restore_req,
                 key: key.clone(),
                 event_id: anchor.clone(),
-                max_batches: 500,
-                event_count: CACHE_RESTORE_PAGINATE_BATCH,
+                // Production-faithful params: source TimelineView.tsx:406-407
+                // (LIVE_ROOM_ANCHOR_RESTORE_MAX_BATCHES=6, EVENT_COUNT=100).
+                // With depth=200, each paginate_backwards returns ~one stored chunk,
+                // so 6 batches reaches only ~tens of events → BudgetExhausted on main.
+                max_batches: CACHE_RESTORE_PROD_MAX_BATCHES,
+                event_count: CACHE_RESTORE_PROD_EVENT_COUNT,
             }))
             .await
-            .map_err(|e| format!("cache_restore: offline RestoreTimelineAnchor submit failed: {e}"))?;
+            .map_err(|e| {
+                format!("cache_restore: offline RestoreTimelineAnchor submit failed: {e}")
+            })?;
 
-        // Count Paginating transitions (= internal backward-paginate cycles) until
-        // AnchorRestoreFinished.
+        // Consume events until AnchorRestoreFinished. Count Paginating transitions
+        // as internal backward-paginate cycles (diagnostic only).
         let mut cycle_count: u32 = 0;
         let status = loop {
             let event = tokio::time::timeout(Duration::from_secs(120), conn2.recv_event())
@@ -2754,6 +2767,15 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
                 }) if ev_key == &key && direction == PaginationDirection::Backward => {
                     cycle_count += 1;
                 }
+                CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                    key: ref ev_key,
+                    ref diffs,
+                    ..
+                }) if ev_key == &key => {
+                    for diff in diffs {
+                        apply_timeline_diff(&mut offline_items, diff);
+                    }
+                }
                 CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
                     request_id: ev_req,
                     key: ref ev_key,
@@ -2774,27 +2796,44 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
             TimelineAnchorRestoreStatus::Superseded => "superseded",
             TimelineAnchorRestoreStatus::Failed { .. } => "failed",
         };
+        // Private-data-free diagnostics: cycles + ms only, no ids or bodies.
         eprintln!(
             "cache_restore room={room_idx} cycles={cycle_count} ms={room_ms} status={status_label}"
         );
 
-        match &status {
-            TimelineAnchorRestoreStatus::Found | TimelineAnchorRestoreStatus::EndReached => {}
+        // PRIMARY CORRECTNESS GATE:
+        // Found → anchor reached within budget (GREEN post-fix).
+        // EndReached → paginated to start of room; succeed only if anchor is in items.
+        // BudgetExhausted/Failed/Superseded → deep anchor not restored (RED on main).
+        let room_succeeded = match &status {
+            TimelineAnchorRestoreStatus::Found => true,
+            TimelineAnchorRestoreStatus::EndReached => {
+                let anchor_present =
+                    find_timeline_item_with_body(&offline_items, &format!("cache_restore fixture r{room_idx} m0"))
+                        .is_some();
+                if !anchor_present {
+                    eprintln!(
+                        "cache_restore room={room_idx}: EndReached but anchor absent from items"
+                    );
+                }
+                anchor_present
+            }
             TimelineAnchorRestoreStatus::BudgetExhausted => {
-                // Budget exhausted with network blocked = a gap required the network.
-                all_found = false;
                 eprintln!(
-                    "cache_restore room={room_idx}: BudgetExhausted offline — cache gap required network"
+                    "cache_restore room={room_idx}: BudgetExhausted — deep anchor not restored \
+                     within production budget (EXPECTED RED on current main)"
                 );
+                false
             }
             TimelineAnchorRestoreStatus::Failed { .. } | TimelineAnchorRestoreStatus::Superseded => {
-                all_found = false;
-                eprintln!("cache_restore room={room_idx}: restore status={status_label} offline");
+                eprintln!(
+                    "cache_restore room={room_idx}: restore status={status_label} offline"
+                );
+                false
             }
-        }
-
-        if cycle_count > CACHE_RESTORE_MAX_CYCLES {
-            max_cycles_exceeded = true;
+        };
+        if !room_succeeded {
+            all_succeeded = false;
         }
 
         let unsub_id = conn2.next_request_id();
@@ -2808,24 +2847,16 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
     }
 
     let aggregate_ms = aggregate_start.elapsed().as_millis();
-    eprintln!(
-        "cache_restore total_cycles={total_cycles} total_ms={aggregate_ms}"
-    );
+    eprintln!("cache_restore total_cycles={total_cycles} total_ms={aggregate_ms}");
 
     cleanup_logged_in_runtime(conn2, runtime2, account_key, "cache_restore cleanup").await?;
 
-    if !all_found {
+    if !all_succeeded {
         return Err(
-            "cache_restore: one or more rooms required network while offline (cache gap)".to_owned(),
+            "cache_restore: deep anchor not restored within the app's production restore budget \
+             (symptom B) — raise budget / bulk cache load to fix (EXPECTED RED on current main)"
+                .to_owned(),
         );
-    }
-
-    if max_cycles_exceeded {
-        return Err(format!(
-            "cache_restore: deep anchor reached from cache but via >{CACHE_RESTORE_MAX_CYCLES} \
-             backward-paginate cycles per room — O(depth) restore, not a direct cache-context \
-             restore (EXPECTED RED on current main; total_cycles={total_cycles})"
-        ));
     }
 
     println!("cache_restore_offline=ok");
