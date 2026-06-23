@@ -23,6 +23,7 @@ pub(crate) mod scheduled_send;
 pub mod search;
 pub(crate) mod search_crawler;
 pub mod settings;
+pub(crate) mod startup_trace;
 pub mod state_delta;
 pub mod store;
 pub mod sync;
