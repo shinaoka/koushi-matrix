@@ -2489,6 +2489,13 @@ async fn run_startup_latency_scenario(
     // Record account key so the catch-all wrapper can log out on failure.
     cleanup.account_key = Some(account_key.clone());
 
+    // Restore phase is complete here (session restored / logged in); measure
+    // before sync so this token does not include the sync-to-ready span.
+    let restore_ms = restore_started.elapsed().as_millis();
+    let line = format!("startup_lat phase=restore ms={restore_ms}");
+    transcript.push(line.clone());
+    println!("{line}");
+
     // ------------------------------------------------------------------
     // Phase 2: sync start → running, then ready. Measure from sync start.
     // ------------------------------------------------------------------
@@ -2507,12 +2514,6 @@ async fn run_startup_latency_scenario(
 
     let sync_ms = sync_started.elapsed().as_millis();
     let line = format!("startup_lat phase=sync_to_ready ms={sync_ms}");
-    transcript.push(line.clone());
-    println!("{line}");
-
-    // Emit restore phase duration only after sync Ready (both phases are then settled).
-    let restore_ms = restore_started.elapsed().as_millis();
-    let line = format!("startup_lat phase=restore ms={restore_ms}");
     transcript.push(line.clone());
     println!("{line}");
 
