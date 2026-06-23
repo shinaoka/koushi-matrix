@@ -781,6 +781,7 @@ describe("TimelineView", () => {
       expect(receipts?.textContent).toContain("SA");
       expect(receipts?.textContent).not.toContain("Read by 2");
       expect(receipts?.getAttribute("aria-label")).toContain("Read by 2");
+      expect(receipts?.getAttribute("title")).toBe("Ken Inayoshi\nSatoshi Terasaki");
     });
   });
 
