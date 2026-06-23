@@ -2231,10 +2231,7 @@ impl TimelineActor {
             };
         let reply = Reply {
             event_id: reply_event_id,
-            enforce_thread: match &self.key.kind {
-                TimelineKind::Thread { .. } => EnforceThread::Threaded(ReplyWithinThread::Yes),
-                _ => EnforceThread::MaybeThreaded,
-            },
+            enforce_thread: reply_enforce_thread_for_key(&self.key),
             add_mentions: AddMentions::Yes,
         };
 
@@ -4544,6 +4541,13 @@ fn timeline_item_should_be_hidden_for_key(
 ) -> bool {
     timeline_item_should_be_hidden(has_renderable_content, is_redacted)
         || (matches!(key.kind, TimelineKind::Room { .. }) && thread_root.is_some())
+}
+
+fn reply_enforce_thread_for_key(key: &TimelineKey) -> EnforceThread {
+    match key.kind {
+        TimelineKind::Thread { .. } => EnforceThread::Threaded(ReplyWithinThread::No),
+        TimelineKind::Room { .. } | TimelineKind::Focused { .. } => EnforceThread::MaybeThreaded,
+    }
 }
 
 fn thread_root_from_original_json(original_json: &serde_json::Value) -> Option<String> {
@@ -7481,6 +7485,14 @@ mod tests {
         assert!(
             !helper_source.contains("TimelineKind::Focused"),
             "restore anchor must not bootstrap through the focused timeline path"
+        );
+    }
+
+    #[test]
+    fn thread_composer_sends_regular_thread_messages_for_element_compatibility() {
+        assert_eq!(
+            reply_enforce_thread_for_key(&thread_key()),
+            EnforceThread::Threaded(ReplyWithinThread::No)
         );
     }
 
