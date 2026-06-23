@@ -115,6 +115,13 @@ const REPLY_QUOTE_PREVIEW_MAX_CHARS: usize = 160;
 /// capped by the small UI-side value (6). The walk continues until `Found`,
 /// `EndReached`, a paginate failure, or this bound — whichever comes first.
 const RESTORE_ANCHOR_MAX_CHUNKS: u16 = 5000;
+/// Bounded settle ticks after `paginate_once` returns `end_reached=true`.
+/// The final pagination's events arrive as an async `DiffBatch` actor message;
+/// `finish_anchor_restore(EndReached)` must not flush the buffer before that
+/// batch lands. Each settle tick lets the actor process one pending DiffBatch
+/// (which buffers into `restore_emit_buffer` and updates `navigation_items`),
+/// then re-checks for `Found` before concluding `EndReached`.
+const RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS: u8 = 5;
 
 /// Messages routed to the `TimelineManagerActor`.
 pub enum TimelineMessage {
@@ -1462,6 +1469,12 @@ struct RestoreTimelineAnchorState {
     awaiting_diff_batch: bool,
     continuation_scheduled: bool,
     continuation_serial: Option<u64>,
+    /// Set to `Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS)` when
+    /// `paginate_once` returns `end_reached=true` but the anchor is not yet
+    /// present in `navigation_items`. Each settle tick lets a pending async
+    /// `DiffBatch` buffer before the walk concludes — preventing the coalesced
+    /// flush from missing the last-loaded events. `None` during normal walk.
+    end_reached_settle: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2033,6 +2046,7 @@ impl TimelineActor {
             awaiting_diff_batch: false,
             continuation_scheduled: false,
             continuation_serial: None,
+            end_reached_settle: None,
         };
 
         self.schedule_restore_anchor_continue(restore).await;
@@ -2053,6 +2067,29 @@ impl TimelineActor {
         restore.awaiting_diff_batch = false;
         restore.continuation_scheduled = false;
         restore.continuation_serial = None;
+
+        // Settle path: entered after `paginate_once` returned `end_reached=true`
+        // but the anchor was not yet present (it may be in a pending async DiffBatch).
+        // Do NOT paginate again; just re-check each tick until the batch lands or
+        // the settle budget runs out.
+        if restore.end_reached_settle.is_some() {
+            if self.timeline_contains_event_id(&restore.event_id) {
+                self.finish_anchor_restore(restore.request_id, TimelineAnchorRestoreStatus::Found);
+                return;
+            }
+            let remaining = restore.end_reached_settle.unwrap_or(0);
+            if remaining == 0 {
+                self.finish_anchor_restore(
+                    restore.request_id,
+                    TimelineAnchorRestoreStatus::EndReached,
+                );
+                return;
+            }
+            restore.end_reached_settle = Some(remaining - 1);
+            self.schedule_restore_anchor_continue(restore).await;
+            return;
+        }
+
         if self.timeline_contains_event_id(&restore.event_id) {
             self.finish_anchor_restore(
                 restore.request_id,
@@ -2094,7 +2131,15 @@ impl TimelineActor {
             }
         };
         if end_reached {
-            self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::EndReached);
+            // The final pagination's events may still be in-flight as an async
+            // DiffBatch actor message. Start settling instead of finishing
+            // immediately so the pending batch can buffer before the flush.
+            if self.timeline_contains_event_id(&restore.event_id) {
+                self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
+                return;
+            }
+            restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
+            self.schedule_restore_anchor_continue(restore).await;
             return;
         }
         if restore.max_batches_remaining == 0 {
@@ -2114,6 +2159,13 @@ impl TimelineActor {
             return;
         };
         if restore.in_flight || !restore.awaiting_diff_batch {
+            self.restore_anchor = Some(restore);
+            return;
+        }
+        // While settling after EndReached, the settle ticks own the conclusion.
+        // Do not drive normal awaiting_diff_batch continuation here — put the
+        // restore back so the scheduled settle continuation picks it up.
+        if restore.end_reached_settle.is_some() {
             self.restore_anchor = Some(restore);
             return;
         }
