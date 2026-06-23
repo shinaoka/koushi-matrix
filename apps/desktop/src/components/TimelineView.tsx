@@ -3947,6 +3947,7 @@ export function MessageSourceDialog({
           onClick={copyEventId}
         >
           <Copy size={15} aria-hidden="true" />
+          <span>{t("timeline.copyEventId")}</span>
         </button>
       </div>
       <div className="message-source-section-header">
@@ -3958,6 +3959,7 @@ export function MessageSourceDialog({
           onClick={copySource}
         >
           <Copy size={15} aria-hidden="true" />
+          <span>{t("timeline.copyOriginalEventSource")}</span>
         </button>
       </div>
       <pre className="message-source-json">

@@ -2168,13 +2168,13 @@ button:disabled {
 }
 
 .message-source-dialog {
-  position: sticky;
-  inset-block-end: 12px;
-  z-index: 35;
+  position: fixed;
+  inset-block: auto 24px;
+  inset-inline: auto 24px;
+  z-index: 120;
   display: grid;
   gap: 14px;
   width: min(920px, calc(100% - 32px));
-  margin: 12px 16px 0 auto;
   max-block-size: min(72vh, 760px);
   padding: 16px;
   border: 1px solid var(--border);
@@ -2236,13 +2236,17 @@ button:disabled {
 }
 
 .message-source-copy {
-  display: inline-grid;
+  display: inline-flex;
   flex: 0 0 auto;
-  place-items: center;
-  width: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  inline-size: auto;
   height: 28px;
+  padding-inline: 8px;
   border-radius: 6px;
   color: var(--text-muted);
+  font-weight: 700;
 }
 
 .message-source-copy:hover {

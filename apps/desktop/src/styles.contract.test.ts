@@ -297,6 +297,13 @@ describe("styles.css token system", () => {
     ]);
   });
 
+  test("message source dialog stays above other overlays and exposes labeled copy buttons", () => {
+    const dialogBlock = selectorBlock(".message-source-dialog");
+    expect(dialogBlock).toContain("position: fixed");
+    expect(dialogBlock).toContain("z-index: 120");
+    expect(selectorBlock(".message-source-copy")).toContain("inline-size: auto");
+  });
+
   test("app grid exposes separate resize handles for the room list and right panel", () => {
     expect(selectorBlock(".app-grid")).toContain("--right-panel-width");
     expect(css).toContain(".app-grid-resizer");

@@ -7,10 +7,11 @@ import {
   roomTimelineKey,
   threadTimelineKey,
   type CoreEventPayload,
-  type TimelineItem
+  type TimelineItem,
+  type TimelineMessageSource
 } from "../domain/coreEvents";
 import { setActiveLocaleProfile } from "../i18n/messages";
-import { TimelineView, type TimelineTransport } from "./TimelineView";
+import { MessageSourceDialog, TimelineView, type TimelineTransport } from "./TimelineView";
 
 afterEach(() => {
   cleanup();
@@ -1826,5 +1827,32 @@ describe("TimelineView", () => {
     fireEvent.click(button);
 
     expect(requestRoomKey).toHaveBeenCalledWith("!room:example.invalid", "$encrypted");
+  });
+
+  it("shows visible copy controls in the message source dialog", () => {
+    const source: TimelineMessageSource = {
+      event_id: "$source:example.invalid",
+      sender: "@alice:example.invalid",
+      timestamp_ms: 1_800_000_000_000,
+      body: "source body",
+      in_reply_to_event_id: null,
+      thread_root: null,
+      is_redacted: false,
+      is_edited: false,
+      has_media: false,
+      original_json: {
+        type: "m.room.message",
+        content: { body: "source body", msgtype: "m.text" }
+      }
+    };
+
+    render(<MessageSourceDialog source={source} onClose={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: "Copy event ID" }).textContent).toContain(
+      "Copy event ID"
+    );
+    expect(
+      screen.getByRole("button", { name: "Copy original event source" }).textContent
+    ).toContain("Copy original event source");
   });
 });
