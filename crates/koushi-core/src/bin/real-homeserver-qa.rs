@@ -2479,9 +2479,9 @@ async fn run_startup_latency_scenario(
             }
             CoreEvent::OperationFailed {
                 request_id: ev_id,
-                failure,
+                failure: _,
             } if ev_id == restore_id => {
-                return Err(format!("startup_latency restore failed: {failure:?}"));
+                return Err("startup_latency restore failed".to_owned());
             }
             _ => continue,
         }
@@ -2680,9 +2680,9 @@ async fn wait_for_pagination_terminal(
             },
             CoreEvent::OperationFailed {
                 request_id: ev_id,
-                failure,
+                failure: _,
             } if ev_id == request_id => {
-                return Err(format!("{label}: paginate operation failed: {failure:?}"));
+                return Err(format!("{label}: paginate operation failed"));
             }
             _ => {}
         }

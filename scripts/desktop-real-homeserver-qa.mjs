@@ -300,8 +300,8 @@ async function runStartupLatency() {
   if (run2Output.includes("startup_lat restore=not_found")) {
     throw new Error(
       "startup_latency run 2 shows restore=not_found instead of restore=session. " +
-        "The persistent profile did not carry the session from run 1. " +
-        `Profile dir: ${profileDir}`
+        "The persistent profile did not carry the session from run 1 " +
+        "(see docs/qa/startup-latency-observability.md)."
     );
   }
 

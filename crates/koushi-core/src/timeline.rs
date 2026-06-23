@@ -1474,6 +1474,46 @@ impl TimelineActor {
         link_preview_policy: LinkPreviewContext,
         messages_backpressure: MessagesBackpressure,
     ) -> TimelineActorHandle {
+        let mut auxiliary_tasks: Vec<executor::JoinHandle<()>> = Vec::new();
+
+        // Env-gated origin observer. Subscribe the event cache BEFORE the
+        // timeline load so the initial load's provenance (store=cache vs
+        // network) is observed via the updates stream. Zero cost when
+        // KOUSHI_STARTUP_TRACE is unset.
+        if startup_trace::enabled() {
+            if let Ok(parsed_room_id) = matrix_sdk::ruma::RoomId::parse(key.room_id()) {
+                if let Some(observer_room) = session.client().get_room(&parsed_room_id) {
+                    if let Ok((cache, drop_guards)) = observer_room.event_cache().await {
+                        if let Ok((initial, mut updates)) = cache.subscribe().await {
+                            if !initial.is_empty() {
+                                // Cache already had events at restore — warm initial state.
+                                startup_trace::trace_origin("cache");
+                            }
+                            auxiliary_tasks.push(executor::spawn(async move {
+                                let _event_cache_drop_guards = drop_guards;
+                                use matrix_sdk::event_cache::{EventsOrigin, RoomEventCacheUpdate};
+                                loop {
+                                    match updates.recv().await {
+                                        Ok(RoomEventCacheUpdate::UpdateTimelineEvents(diffs)) => {
+                                            let origin = match diffs.origin {
+                                                EventsOrigin::Cache => "cache",
+                                                EventsOrigin::Pagination => "network",
+                                                EventsOrigin::Sync => "sync",
+                                            };
+                                            startup_trace::trace_origin(origin);
+                                        }
+                                        Ok(_) => {}
+                                        // Broadcast lagged or channel closed — stop the observer.
+                                        Err(_) => break,
+                                    }
+                                }
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+
         // Subscribe to the SDK timeline to get initial items + diff stream.
         let subscribe_started = startup_trace::now_if_enabled();
         let (initial_sdk_items, diff_stream) = timeline.subscribe().await;
@@ -1538,8 +1578,6 @@ impl TimelineActor {
             let _ = action_tx.try_send(vec![action]);
         }
 
-        let mut auxiliary_tasks = Vec::new();
-
         // Spawn the diff relay task: converts SDK VectorDiff stream into actor messages.
         let relay_tx = actor_tx.clone();
         let relay_timeline = timeline.clone();
@@ -1592,43 +1630,6 @@ impl TimelineActor {
                     },
                 });
                 let _ = action_tx.try_send(actions);
-            }
-        }
-
-        // Env-gated origin observer: reports cache/network/sync event provenance
-        // via startup_trace. Zero cost in production (env var unset).
-        if startup_trace::enabled() {
-            if let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&room_id_str) {
-                if let Some(observer_room) = session.client().get_room(&room_id) {
-                    auxiliary_tasks.push(executor::spawn(async move {
-                        if let Ok((cache, _event_cache_drop_guards)) = observer_room.event_cache().await {
-                            if let Ok((_initial, mut updates)) = cache.subscribe().await {
-                                use matrix_sdk::event_cache::{
-                                    EventsOrigin, RoomEventCacheUpdate,
-                                };
-                                loop {
-                                    match updates.recv().await {
-                                        Ok(update) => {
-                                            if let RoomEventCacheUpdate::UpdateTimelineEvents(
-                                                diffs,
-                                            ) = update
-                                            {
-                                                let origin = match diffs.origin {
-                                                    EventsOrigin::Cache => "cache",
-                                                    EventsOrigin::Pagination => "network",
-                                                    EventsOrigin::Sync => "sync",
-                                                };
-                                                startup_trace::trace_origin(origin);
-                                            }
-                                        }
-                                        // Broadcast lagged or channel closed — stop the observer.
-                                        Err(_) => break,
-                                    }
-                                }
-                            }
-                        }
-                    }));
-                }
             }
         }
 
