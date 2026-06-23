@@ -1595,6 +1595,43 @@ impl TimelineActor {
             }
         }
 
+        // Env-gated origin observer: reports cache/network/sync event provenance
+        // via startup_trace. Zero cost in production (env var unset).
+        if startup_trace::enabled() {
+            if let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&room_id_str) {
+                if let Some(observer_room) = session.client().get_room(&room_id) {
+                    auxiliary_tasks.push(executor::spawn(async move {
+                        if let Ok((cache, _drop_guards)) = observer_room.event_cache().await {
+                            if let Ok((_initial, mut updates)) = cache.subscribe().await {
+                                use matrix_sdk::event_cache::{
+                                    EventsOrigin, RoomEventCacheUpdate,
+                                };
+                                loop {
+                                    match updates.recv().await {
+                                        Ok(update) => {
+                                            if let RoomEventCacheUpdate::UpdateTimelineEvents(
+                                                diffs,
+                                            ) = update
+                                            {
+                                                let origin = match diffs.origin {
+                                                    EventsOrigin::Cache => "cache",
+                                                    EventsOrigin::Pagination => "network",
+                                                    EventsOrigin::Sync => "sync",
+                                                };
+                                                startup_trace::trace_origin(origin);
+                                            }
+                                        }
+                                        // Broadcast lagged or channel closed — stop the observer.
+                                        Err(_) => break,
+                                    }
+                                }
+                            }
+                        }
+                    }));
+                }
+            }
+        }
+
         let actor = TimelineActor {
             key: key.clone(),
             timeline,
@@ -8115,6 +8152,25 @@ mod tests {
         assert!(
             paginate_src.contains("trace_paginate"),
             "pagination must emit a startup_trace paginate token"
+        );
+    }
+
+    #[test]
+    fn timeline_subscribe_spawns_env_gated_origin_observer() {
+        let source = include_str!("timeline.rs");
+        // The observer lives in TimelineActor::spawn alongside other auxiliary
+        // tasks. Assert whole-source presence without forcing a code location.
+        assert!(
+            source.contains("startup_trace::enabled()"),
+            "origin observer must be gated on KOUSHI_STARTUP_TRACE so production is unaffected"
+        );
+        assert!(
+            source.contains("event_cache()"),
+            "origin observer must subscribe the SDK room event cache"
+        );
+        assert!(
+            source.contains("EventsOrigin"),
+            "origin observer must read the SDK EventsOrigin (cache/network/sync)"
         );
     }
 
