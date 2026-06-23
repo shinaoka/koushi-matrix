@@ -49,7 +49,7 @@ fn app_state_carries_default_non_secret_settings() {
             code_block_wrap: true,
             hide_redacted: true,
             url_previews_enabled: true,
-            encrypted_url_previews_enabled: false,
+            encrypted_url_previews_enabled: true,
         }
     );
     assert_eq!(
@@ -162,7 +162,7 @@ fn settings_values_deserialize_legacy_display_without_hide_redacted_as_default_o
             code_block_wrap: false,
             hide_redacted: true,
             url_previews_enabled: true,
-            encrypted_url_previews_enabled: false,
+            encrypted_url_previews_enabled: true,
         }
     );
 }
@@ -175,7 +175,7 @@ fn display_settings_deserialize_legacy_without_url_previews_as_defaults() {
     .expect("legacy display object should deserialize");
 
     assert!(display.url_previews_enabled);
-    assert!(!display.encrypted_url_previews_enabled);
+    assert!(display.encrypted_url_previews_enabled);
 }
 
 #[test]

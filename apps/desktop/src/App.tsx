@@ -381,6 +381,9 @@ type ReportDialogState =
 const DEFAULT_SIDEBAR_WIDTH = 318;
 const MIN_SIDEBAR_WIDTH = 260;
 const MAX_SIDEBAR_WIDTH = 440;
+const DEFAULT_RIGHT_PANEL_WIDTH = 390;
+const MIN_RIGHT_PANEL_WIDTH = 320;
+const MAX_RIGHT_PANEL_WIDTH = 680;
 const COMPACT_RAIL_WIDTH = 56;
 const MIN_TIMELINE_WIDTH_WHILE_RESIZING = 180;
 function clampSidebarWidth(width: number, viewportWidth = window.innerWidth): number {
@@ -395,6 +398,26 @@ function clampSidebarWidth(width: number, viewportWidth = window.innerWidth): nu
         )
       : MAX_SIDEBAR_WIDTH;
   return Math.min(responsiveMax, Math.max(MIN_SIDEBAR_WIDTH, Math.round(width)));
+}
+function clampRightPanelWidth(
+  width: number,
+  sidebarWidth: number,
+  viewportWidth = window.innerWidth
+): number {
+  const responsiveMax =
+    viewportWidth <= 760
+      ? MIN_RIGHT_PANEL_WIDTH
+      : Math.max(
+          MIN_RIGHT_PANEL_WIDTH,
+          Math.min(
+            MAX_RIGHT_PANEL_WIDTH,
+            viewportWidth -
+              COMPACT_RAIL_WIDTH -
+              sidebarWidth -
+              MIN_TIMELINE_WIDTH_WHILE_RESIZING
+          )
+        );
+  return Math.min(responsiveMax, Math.max(MIN_RIGHT_PANEL_WIDTH, Math.round(width)));
 }
 type InviteUserDialogState = {
   roomId: string;
@@ -898,6 +921,7 @@ export function App() {
   const [roomInfoInitialSection, setRoomInfoInitialSection] =
     useState<"members" | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
+  const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_RIGHT_PANEL_WIDTH);
   const [qaSendStatus, setQaSendStatus] = useState<QaSendSmokeStatus>("idle");
   const [timelineDiagnostics, setTimelineDiagnostics] =
     useState<QaTimelineDiagnostics>(INITIAL_TIMELINE_DIAGNOSTICS);
@@ -1127,6 +1151,9 @@ export function App() {
         return true;
       case "openUserSettings":
         void setRightPanelModeClosingFocusedContext("userSettings");
+        return true;
+      case "logout":
+        void logout();
         return true;
       case "searchInRoom":
         setSearchScope("currentRoom");
@@ -2864,7 +2891,8 @@ export function App() {
   const effectiveRightPanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
   const rightPanelOpen = effectiveRightPanelMode !== "closed";
   const appGridStyle = {
-    "--sidebar-width": `${sidebarWidth}px`
+    "--sidebar-width": `${sidebarWidth}px`,
+    "--right-panel-width": `${rightPanelWidth}px`
   } as CSSProperties;
 
   function beginSidebarResize(event: PointerEvent<HTMLButtonElement>) {
@@ -2874,6 +2902,26 @@ export function App() {
 
     function onPointerMove(moveEvent: globalThis.PointerEvent) {
       setSidebarWidth(clampSidebarWidth(startWidth + moveEvent.clientX - startX));
+    }
+
+    function onPointerUp() {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    }
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp, { once: true });
+  }
+
+  function beginRightPanelResize(event: PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = rightPanelWidth;
+
+    function onPointerMove(moveEvent: globalThis.PointerEvent) {
+      setRightPanelWidth(
+        clampRightPanelWidth(startWidth - (moveEvent.clientX - startX), sidebarWidth)
+      );
     }
 
     function onPointerUp() {
@@ -2957,6 +3005,14 @@ export function App() {
           aria-label={t("workspace.resizeRoomList")}
           onPointerDown={beginSidebarResize}
         />
+        {rightPanelOpen ? (
+          <button
+            className="app-grid-right-resizer"
+            type="button"
+            aria-label={t("workspace.resizeRightPanel")}
+            onPointerDown={beginRightPanelResize}
+          />
+        ) : null}
         {primaryView === "activity" ? (
           <ActivityPane
             activity={snapshot.state.domain.activity}

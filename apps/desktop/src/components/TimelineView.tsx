@@ -1383,6 +1383,7 @@ export const TimelineView = memo(function TimelineView({
   const readSignalEventRef = useRef<string | null>(null);
   const lastViewportObservationRef = useRef<string | null>(null);
   const downloadedEventIdsRef = useRef<Set<string>>(new Set());
+  const requestedImagePreviewEventIdsRef = useRef<Set<string>>(new Set());
   const relevantAvatarMxcsRef = useRef<Set<string>>(new Set());
   const requestedAvatarMxcsRef = useRef<Set<string>>(new Set());
   const avatarRetryCountsRef = useRef<Map<string, number>>(new Map());
@@ -1663,6 +1664,7 @@ export const TimelineView = memo(function TimelineView({
     lastViewportObservationRef.current = null;
     readSignalEventRef.current = null;
     downloadedEventIdsRef.current = new Set();
+    requestedImagePreviewEventIdsRef.current = new Set();
     relevantAvatarMxcsRef.current = new Set();
     requestedAvatarMxcsRef.current = new Set();
     avatarRetryCountsRef.current = new Map();
@@ -1821,6 +1823,25 @@ export const TimelineView = memo(function TimelineView({
     sideEffectItems,
     transport
   ]);
+  useEffect(() => {
+    for (const item of sideEffectItems) {
+      if (!item.media || item.media.kind !== "Image" || !("Event" in item.id)) {
+        continue;
+      }
+      const eventId = item.id.Event.event_id;
+      const downloadState = mediaDownloads[eventId];
+      if (downloadState?.kind === "ready" || downloadState?.kind === "pending") {
+        continue;
+      }
+      if (requestedImagePreviewEventIdsRef.current.has(eventId)) {
+        continue;
+      }
+      requestedImagePreviewEventIdsRef.current.add(eventId);
+      void transport.downloadMedia(roomId, eventId).catch(() => {
+        requestedImagePreviewEventIdsRef.current.delete(eventId);
+      });
+    }
+  }, [mediaDownloads, roomId, sideEffectItems, transport]);
   const notSentTransactionIds = items.flatMap((item) => {
     if (item.send_state?.kind !== "notSent" || !("Transaction" in item.id)) {
       return [];
@@ -4277,6 +4298,7 @@ function TimelineMediaAttachment({
   const Icon = media.kind === "Image" ? ImageIcon : FileText;
 
   if (downloadState?.kind === "ready" && media.kind === "Image") {
+    const sourceUrl = mediaSourceUrl(downloadState.source_url);
     return (
       <div
         className="message-media message-media-ready"
@@ -4284,37 +4306,22 @@ function TimelineMediaAttachment({
         data-media-encrypted={media.source.encrypted || undefined}
         data-download-state="ready"
       >
-        <img
-          className="message-media-image"
-          src={mediaSourceUrl(downloadState.source_url)}
-          alt={media.filename}
-          width={downloadState.width ?? undefined}
-          height={downloadState.height ?? undefined}
-          loading="lazy"
-        />
-        <div className="message-media-main message-media-overlay">
-          <div className="message-media-title" dir="auto">
-            {media.filename}
-          </div>
-          <div className="message-media-meta">
-            {metadata.length > 0 ? <span>{metadata.join(" · ")}</span> : null}
-            {media.source.encrypted ? (
-              <span className="message-media-badge">{t("timeline.encryptedMedia")}</span>
-            ) : null}
-          </div>
-        </div>
-        {canDownload ? (
-          <a
-            className="message-media-download"
-            href={mediaSourceUrl(downloadState.source_url)}
-            target="_blank"
-            rel="noreferrer"
-            aria-label={t("timeline.mediaOpenFile")}
-            download={media.filename}
-          >
-            <Download size={15} />
-          </a>
-        ) : null}
+        <a
+          className="message-media-preview-link"
+          href={sourceUrl}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={t("timeline.mediaOpenFile")}
+        >
+          <img
+            className="message-media-image"
+            src={sourceUrl}
+            alt={media.filename}
+            width={downloadState.width ?? undefined}
+            height={downloadState.height ?? undefined}
+            loading="lazy"
+          />
+        </a>
       </div>
     );
   }
