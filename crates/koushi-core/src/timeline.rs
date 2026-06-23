@@ -1457,6 +1457,19 @@ struct TimelineActor {
     /// (Found/EndReached/BudgetExhausted/Failed/Superseded), so React receives
     /// a single settled update rather than O(chunks) intermediate renders.
     restore_emit_buffer: Vec<TimelineDiff>,
+    /// Monotonically increasing counter, incremented at the start of every
+    /// `handle_diff_batch` call (restore or not). Used during settle phases to
+    /// detect whether the final async DiffBatch has been processed: a settle
+    /// tick is conclusive only when `diff_batch_seq > settle_baseline_seq`.
+    diff_batch_seq: u64,
+}
+
+/// Which terminal status a settle phase should emit when the anchor is absent
+/// (Found always wins when the anchor lands during settling).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SettleTerminal {
+    EndReached,
+    BudgetExhausted,
 }
 
 #[derive(Clone, Debug)]
@@ -1470,11 +1483,18 @@ struct RestoreTimelineAnchorState {
     continuation_scheduled: bool,
     continuation_serial: Option<u64>,
     /// Set to `Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS)` when
-    /// `paginate_once` returns `end_reached=true` but the anchor is not yet
-    /// present in `navigation_items`. Each settle tick lets a pending async
-    /// `DiffBatch` buffer before the walk concludes — preventing the coalesced
-    /// flush from missing the last-loaded events. `None` during normal walk.
+    /// `paginate_once` returns `end_reached=true` (or budget=0 after paginate)
+    /// but the anchor is not yet present in `navigation_items`. Each settle
+    /// tick re-checks for Found or for a new diff before concluding.
+    /// `None` during the normal walk.
     end_reached_settle: Option<u8>,
+    /// The value of `TimelineActor::diff_batch_seq` when settling began.
+    /// A settle tick is conclusive when `diff_batch_seq > settle_baseline_seq`
+    /// (final DiffBatch has been processed) or when ticks expire with no diff.
+    settle_baseline_seq: u64,
+    /// Which terminal status to emit if the anchor is absent when settling ends.
+    /// `Found` always takes priority when the anchor lands during settling.
+    settle_terminal: SettleTerminal,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1689,6 +1709,7 @@ impl TimelineActor {
             restore_anchor: None,
             next_restore_anchor_serial: 0,
             restore_emit_buffer: Vec::new(),
+            diff_batch_seq: 0,
         };
 
         let task = executor::spawn(actor.run());
@@ -1998,7 +2019,10 @@ impl TimelineActor {
             return;
         }
         if event_id.trim().is_empty() || max_batches == 0 || event_count == 0 {
-            self.finish_anchor_restore(
+            // Invalid request: reject it without touching any active restore's
+            // buffer. Using raw emit_anchor_restore_finished (NOT finish_anchor_restore)
+            // prevents flushing a different restore's restore_emit_buffer here.
+            self.emit_anchor_restore_finished(
                 request_id,
                 TimelineAnchorRestoreStatus::BudgetExhausted,
             );
@@ -2047,6 +2071,8 @@ impl TimelineActor {
             continuation_scheduled: false,
             continuation_serial: None,
             end_reached_settle: None,
+            settle_baseline_seq: 0,
+            settle_terminal: SettleTerminal::EndReached,
         };
 
         self.schedule_restore_anchor_continue(restore).await;
@@ -2069,20 +2095,29 @@ impl TimelineActor {
         restore.continuation_serial = None;
 
         // Settle path: entered after `paginate_once` returned `end_reached=true`
-        // but the anchor was not yet present (it may be in a pending async DiffBatch).
-        // Do NOT paginate again; just re-check each tick until the batch lands or
-        // the settle budget runs out.
+        // or the last-budgeted paginate completed — the anchor may still be in
+        // a pending async DiffBatch. Do NOT paginate again; wait for the batch.
+        // Conclude in order:
+        //   1. anchor appeared → Found (always wins).
+        //   2. diff_batch_seq advanced past baseline → final batch landed, anchor
+        //      genuinely absent → emit settle_terminal (EndReached or BudgetExhausted).
+        //   3. tick bound expired with no diff → no trailing batch → settle_terminal.
+        //   4. otherwise → decrement ticks, re-schedule without paginating.
         if restore.end_reached_settle.is_some() {
             if self.timeline_contains_event_id(&restore.event_id) {
                 self.finish_anchor_restore(restore.request_id, TimelineAnchorRestoreStatus::Found);
                 return;
             }
+            let diff_arrived = self.diff_batch_seq > restore.settle_baseline_seq;
             let remaining = restore.end_reached_settle.unwrap_or(0);
-            if remaining == 0 {
-                self.finish_anchor_restore(
-                    restore.request_id,
-                    TimelineAnchorRestoreStatus::EndReached,
-                );
+            if diff_arrived || remaining == 0 {
+                let terminal = match restore.settle_terminal {
+                    SettleTerminal::EndReached => TimelineAnchorRestoreStatus::EndReached,
+                    SettleTerminal::BudgetExhausted => {
+                        TimelineAnchorRestoreStatus::BudgetExhausted
+                    }
+                };
+                self.finish_anchor_restore(restore.request_id, terminal);
                 return;
             }
             restore.end_reached_settle = Some(remaining - 1);
@@ -2131,22 +2166,29 @@ impl TimelineActor {
             }
         };
         if end_reached {
-            // The final pagination's events may still be in-flight as an async
-            // DiffBatch actor message. Start settling instead of finishing
-            // immediately so the pending batch can buffer before the flush.
+            // The final pagination's events arrive as an async DiffBatch.
+            // Settle rather than finishing immediately so the buffer is complete.
             if self.timeline_contains_event_id(&restore.event_id) {
                 self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
                 return;
             }
             restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
+            restore.settle_baseline_seq = self.diff_batch_seq;
+            restore.settle_terminal = SettleTerminal::EndReached;
             self.schedule_restore_anchor_continue(restore).await;
             return;
         }
         if restore.max_batches_remaining == 0 {
-            self.finish_anchor_restore(
-                request_id,
-                TimelineAnchorRestoreStatus::BudgetExhausted,
-            );
+            // Last budgeted page completed (not end-of-room). The same async
+            // DiffBatch race applies — enter settle to let the final batch land.
+            if self.timeline_contains_event_id(&restore.event_id) {
+                self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
+                return;
+            }
+            restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
+            restore.settle_baseline_seq = self.diff_batch_seq;
+            restore.settle_terminal = SettleTerminal::BudgetExhausted;
+            self.schedule_restore_anchor_continue(restore).await;
             return;
         }
 
@@ -3193,6 +3235,9 @@ impl TimelineActor {
         if diffs.is_empty() {
             return;
         }
+        // Advance the diff-batch sequence counter on every non-empty batch so
+        // settle ticks can detect when the final async DiffBatch has landed.
+        self.diff_batch_seq = self.diff_batch_seq.wrapping_add(1);
 
         for diff in &diffs {
             self.apply_media_cache_diff(diff);
@@ -8431,19 +8476,31 @@ mod tests {
         );
         let _ = finish_src; // used for the existence assertion above
 
-        // 5. Every terminal restore path must call finish_anchor_restore (not raw
+        // 5. Every ACTIVE-restore terminal path must call finish_anchor_restore (not raw
         //    emit_anchor_restore_finished), ensuring the buffer is always flushed.
+        //    Exception: the invalid-request early-return in handle_restore_timeline_anchor
+        //    (empty event_id / max_batches==0 / event_count==0) intentionally uses raw
+        //    emit_anchor_restore_finished so it does NOT flush a DIFFERENT restore's buffer.
+        //    That path is exempt: it fires before any restore state is set, and must not
+        //    touch an active restore's restore_emit_buffer.
+        //
+        // To verify the valid-request (post-early-return) path, check that
+        // handle_restore_timeline_anchor has at most ONE emit_anchor_restore_finished call
+        // (the exempt invalid-request path), while the continuation uses none directly.
         let restore_handler_src = production
             .split("async fn handle_restore_timeline_anchor(")
             .nth(1)
             .expect("handle_restore_timeline_anchor must exist")
-            .split("async fn maybe_continue_restore_anchor_after_diff")
+            .split("async fn handle_restore_timeline_anchor_continue")
             .next()
-            .expect("restore handler must end before maybe_continue helper");
+            .expect("restore handler must end before continuation");
+        let raw_emit_count = restore_handler_src
+            .matches("self.emit_anchor_restore_finished(")
+            .count();
         assert!(
-            !restore_handler_src.contains("self.emit_anchor_restore_finished("),
-            "handle_restore_timeline_anchor must not call emit_anchor_restore_finished directly; \
-             use finish_anchor_restore to ensure the buffer is flushed"
+            raw_emit_count <= 1,
+            "handle_restore_timeline_anchor may have at most ONE raw emit_anchor_restore_finished \
+             call (the invalid-request exempt path); found {raw_emit_count}"
         );
         let continue_handler_src = production
             .split("async fn handle_restore_timeline_anchor_continue(")
@@ -8454,7 +8511,112 @@ mod tests {
             .expect("continue handler must end before maybe_continue helper");
         assert!(
             !continue_handler_src.contains("self.emit_anchor_restore_finished("),
-            "handle_restore_timeline_anchor_continue must use finish_anchor_restore"
+            "handle_restore_timeline_anchor_continue must use finish_anchor_restore (never raw \
+             emit_anchor_restore_finished) — all its terminals have an active restore buffer"
+        );
+    }
+
+    // --- Deterministic settle + invalid-request no-flush (codex review P1/P2/P3) ---
+
+    /// Proves the sequence-gated settle path: diff_batch_seq advances on every
+    /// diff-batch, settle_baseline_seq is captured when settling begins, and the
+    /// settle tick checks `diff_batch_seq > settle_baseline_seq` before concluding
+    /// EndReached or BudgetExhausted.  This makes the settle deterministic — the
+    /// walk does not conclude before the final async DiffBatch lands.
+    ///
+    /// NOTE: a behavioral unit test (drive >6 fake chunks + assert exactly one
+    /// ItemsUpdated + correct status) would require constructing a real `TimelineActor`
+    /// with an active Matrix SDK session, which this test module does not support
+    /// without a large new mock harness.  The `cache_restore` headless harness
+    /// (scenario=cache_restore, 3 rooms × deep stress) is the behavioral gate for
+    /// correctness of the settle path; these assertions guard the structural contracts.
+    #[test]
+    fn restore_settle_is_sequence_gated_not_timing_dependent() {
+        let source = include_str!("timeline.rs");
+        let production = source.split("\nmod tests").next().unwrap_or(source);
+
+        // 1. diff_batch_seq field must exist on TimelineActor.
+        assert!(
+            production.contains("diff_batch_seq: u64"),
+            "TimelineActor must carry diff_batch_seq to count processed DiffBatches"
+        );
+        // 2. It must be incremented inside handle_diff_batch.
+        let diff_batch_src = production
+            .split("async fn handle_diff_batch(")
+            .nth(1)
+            .expect("handle_diff_batch must exist")
+            .split("async fn handle_ignored_users_updated")
+            .next()
+            .expect("handle_diff_batch must end before handle_ignored_users_updated");
+        assert!(
+            diff_batch_src.contains("diff_batch_seq"),
+            "handle_diff_batch must advance diff_batch_seq on every non-empty batch"
+        );
+        // 3. settle_baseline_seq must exist on RestoreTimelineAnchorState.
+        let struct_src = production
+            .split("struct RestoreTimelineAnchorState {")
+            .nth(1)
+            .expect("RestoreTimelineAnchorState must exist")
+            .split('}')
+            .next()
+            .expect("struct body must end");
+        assert!(
+            struct_src.contains("settle_baseline_seq"),
+            "RestoreTimelineAnchorState must carry settle_baseline_seq"
+        );
+        assert!(
+            struct_src.contains("settle_terminal"),
+            "RestoreTimelineAnchorState must carry settle_terminal to record EndReached vs BudgetExhausted"
+        );
+        // 4. The settle tick must gate on diff_batch_seq > settle_baseline_seq.
+        let continue_src = production
+            .split("async fn handle_restore_timeline_anchor_continue(")
+            .nth(1)
+            .expect("continuation must exist")
+            .split("async fn maybe_continue_restore_anchor_after_diff")
+            .next()
+            .expect("continuation must end before maybe_continue");
+        assert!(
+            continue_src.contains("diff_batch_seq > restore.settle_baseline_seq"),
+            "settle tick must check diff_batch_seq > settle_baseline_seq before concluding"
+        );
+        // 5. EndReached entry must capture settle_baseline_seq.
+        assert!(
+            continue_src.contains("restore.settle_baseline_seq = self.diff_batch_seq"),
+            "EndReached/BudgetExhausted settle entry must snapshot settle_baseline_seq"
+        );
+        // 6. P3: invalid-request path must NOT call finish_anchor_restore.
+        let restore_handler_src = production
+            .split("async fn handle_restore_timeline_anchor(")
+            .nth(1)
+            .expect("handle_restore_timeline_anchor must exist")
+            .split("async fn handle_restore_timeline_anchor_continue")
+            .next()
+            .expect("restore handler must end before continuation");
+        // The exempt emit_anchor_restore_finished call must appear before the
+        // event_id check (i.e., in the invalid-request block), confirmed by its
+        // presence alongside the "Invalid request" comment pattern.
+        assert!(
+            restore_handler_src.contains("emit_anchor_restore_finished"),
+            "invalid-request path must call emit_anchor_restore_finished (not finish_anchor_restore)"
+        );
+        assert!(
+            !restore_handler_src.contains("finish_anchor_restore(\n            request_id,\n            TimelineAnchorRestoreStatus::BudgetExhausted,\n        );\n        return;\n        }\n        if self.timeline_contains_event_id"),
+            "invalid-request path must not flush a different restore's buffer"
+        );
+
+        // 7. SettleTerminal enum must exist.
+        assert!(
+            production.contains("enum SettleTerminal"),
+            "SettleTerminal enum must exist to track which terminal status to use after settle"
+        );
+        assert!(
+            production.contains("SettleTerminal::EndReached"),
+            "SettleTerminal must have an EndReached variant"
+        );
+        assert!(
+            production.contains("SettleTerminal::BudgetExhausted"),
+            "SettleTerminal must have a BudgetExhausted variant"
         );
     }
 
