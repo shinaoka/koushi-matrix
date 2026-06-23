@@ -18,6 +18,7 @@ use serde_json::Value;
 use crate::executor;
 use crate::messages_backpressure::MessagesBackpressure;
 use crate::search::SearchIndexMessage;
+use crate::startup_trace::{self, StartupPhase};
 
 const BATCH_SIZE_FAST: u32 = 200;
 const BATCH_SIZE_STANDARD: u32 = 100;
@@ -119,7 +120,10 @@ async fn run_history_crawl_page(
 
     let messages = {
         let _permit = messages_backpressure.acquire_crawler().await;
-        match room.messages(options).await {
+        let page_started = std::time::Instant::now();
+        let page_result = room.messages(options).await;
+        startup_trace::trace_phase(StartupPhase::CrawlerPage, page_started.elapsed());
+        match page_result {
             Ok(messages) => messages,
             Err(_) => {
                 return HistoryCrawlPageResult::Failed {
@@ -816,6 +820,18 @@ mod tests {
         assert!(
             done.load(Ordering::Relaxed),
             "task must have signalled completion after drain unblocked it"
+        );
+    }
+
+    #[test]
+    fn crawler_page_emits_startup_trace() {
+        let source = include_str!("search_crawler.rs");
+        // Search production code only; excluding the test module prevents the
+        // assertion string below from satisfying itself.
+        let production = source.split("\nmod tests").next().unwrap_or(source);
+        assert!(
+            production.contains("StartupPhase::CrawlerPage"),
+            "crawler page fetch must be timed so background /messages work is visible in startup traces"
         );
     }
 }

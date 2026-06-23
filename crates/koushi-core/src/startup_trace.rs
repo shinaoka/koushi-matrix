@@ -12,13 +12,8 @@ use std::time::Duration;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StartupPhase {
     Restore,
-    CryptoOpen,
-    SyncToReady,
-    RoomList,
     TimelineBuild,
     TimelineSubscribe,
-    Paginate,
-    PaginateGateWait,
     CrawlerPage,
 }
 
@@ -26,13 +21,8 @@ impl StartupPhase {
     pub(crate) fn as_token(self) -> &'static str {
         match self {
             StartupPhase::Restore => "restore",
-            StartupPhase::CryptoOpen => "crypto_open",
-            StartupPhase::SyncToReady => "sync_to_ready",
-            StartupPhase::RoomList => "room_list",
             StartupPhase::TimelineBuild => "timeline_build",
             StartupPhase::TimelineSubscribe => "subscribe",
-            StartupPhase::Paginate => "paginate",
-            StartupPhase::PaginateGateWait => "paginate_gate_wait",
             StartupPhase::CrawlerPage => "crawler_page",
         }
     }
@@ -108,9 +98,10 @@ mod tests {
     #[test]
     fn phase_tokens_are_stable_lowercase_identifiers() {
         for phase in [
-            StartupPhase::Restore, StartupPhase::CryptoOpen, StartupPhase::SyncToReady,
-            StartupPhase::RoomList, StartupPhase::TimelineBuild, StartupPhase::TimelineSubscribe,
-            StartupPhase::Paginate, StartupPhase::PaginateGateWait, StartupPhase::CrawlerPage,
+            StartupPhase::Restore,
+            StartupPhase::TimelineBuild,
+            StartupPhase::TimelineSubscribe,
+            StartupPhase::CrawlerPage,
         ] {
             let token = phase.as_token();
             assert!(!token.is_empty());
