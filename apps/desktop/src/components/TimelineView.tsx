@@ -3138,6 +3138,7 @@ export function TimelineItemRow({
   const receiptLabel = t("timeline.readBy", { count: receiptTotalCount });
   const receiptAriaLabel =
     receiptDetails.length > 0 ? `${receiptLabel}: ${receiptDetails.join("; ")}` : receiptLabel;
+  const receiptTitle = receiptDetails.join("\n");
   const reactionSenderLabelByUserId = reactionSenderLabelsByUserId(mentionProfileUsers);
   const spoilerState = { revealed: revealedSpoilers, reveal: revealSpoiler };
   const displayBody = localizedTimelineItemBody(item);
@@ -3372,7 +3373,12 @@ export function TimelineItemRow({
           </button>
         ) : null}
         {receiptTotalCount > 0 ? (
-          <div className="message-receipts" aria-label={receiptAriaLabel} tabIndex={0}>
+          <div
+            className="message-receipts"
+            aria-label={receiptAriaLabel}
+            tabIndex={0}
+            title={receiptTitle}
+          >
             <span className="receipt-avatars" aria-hidden="true">
               {receipts.map((receipt) => {
                 const sourceUrl = receiptAvatarSource(receipt);
