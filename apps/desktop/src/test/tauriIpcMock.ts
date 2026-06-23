@@ -171,7 +171,7 @@ function defaultSnapshotResponse() {
             code_block_wrap: true,
             hide_redacted: true,
             url_previews_enabled: true,
-            encrypted_url_previews_enabled: false
+            encrypted_url_previews_enabled: true
           },
           media: {
             image_upload_compression: "ask",

@@ -708,36 +708,38 @@ export function UserSettingsPanel({
         onSubmitIdentityResetPassword={onSubmitIdentityResetPassword}
       />
 
-      <section className="account-switcher" aria-label={t("settings.accountSwitcher")}>
-        <h3>{t("settings.accounts")}</h3>
-        <div className="account-switcher-list">
-          {savedSessions.map((session) => {
-            const isCurrent = sessionMatches(currentSession, session);
-            return (
-              <article className="account-switcher-row" key={sessionKey(session)}>
-                <div className="account-switcher-avatar" aria-hidden="true">
-                  {accountInitial(session.user_id)}
-                </div>
-                <div className="account-switcher-main">
-                  <div className="account-switcher-user" dir="auto">{session.user_id}</div>
-                  <div className="account-switcher-meta" dir="auto">
-                    {session.homeserver} / {session.device_id}
+      {savedSessions.length > 0 ? (
+        <section className="account-switcher" aria-label={t("settings.accountSwitcher")}>
+          <h3>{t("settings.accounts")}</h3>
+          <div className="account-switcher-list">
+            {savedSessions.map((session) => {
+              const isCurrent = sessionMatches(currentSession, session);
+              return (
+                <article className="account-switcher-row" key={sessionKey(session)}>
+                  <div className="account-switcher-avatar" aria-hidden="true">
+                    {accountInitial(session.user_id)}
                   </div>
-                </div>
-                <button
-                  className="account-switcher-action"
-                  type="button"
-                  disabled={isCurrent}
-                  onClick={() => onSwitchAccount(session)}
-                >
-                  <RefreshCcw size={14} />
-                  <span>{isCurrent ? t("settings.current") : t("settings.switch")}</span>
-                </button>
-              </article>
-            );
-          })}
-        </div>
-      </section>
+                  <div className="account-switcher-main">
+                    <div className="account-switcher-user" dir="auto">{session.user_id}</div>
+                    <div className="account-switcher-meta" dir="auto">
+                      {session.homeserver} / {session.device_id}
+                    </div>
+                  </div>
+                  <button
+                    className="account-switcher-action"
+                    type="button"
+                    disabled={isCurrent}
+                    onClick={() => onSwitchAccount(session)}
+                  >
+                    <RefreshCcw size={14} />
+                    <span>{isCurrent ? t("settings.current") : t("settings.switch")}</span>
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
     </section>
   );
 }

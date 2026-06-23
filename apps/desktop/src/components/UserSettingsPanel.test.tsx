@@ -266,6 +266,30 @@ describe("UserSettingsPanel", () => {
     expect(onLogout).toHaveBeenCalledTimes(1);
   });
 
+  test("hides the account switcher when there are no saved accounts", () => {
+    render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+      />
+    );
+
+    expect(screen.queryByRole("heading", { name: "Accounts" })).toBeNull();
+  });
+
   test("exposes prominent pause and resume actions for the search crawler", () => {
     const onUpdateSettings = vi.fn();
     const { rerender } = render(

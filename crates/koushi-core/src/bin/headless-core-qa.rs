@@ -557,7 +557,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         QaStage::LinkPreview => &[
             "link_preview_global=ok",
             "link_preview_room=ok",
-            "link_preview_e2ee_disabled=ok",
+            "link_preview_e2ee_default=ok",
             "link_preview_hide=ok",
         ],
     }
@@ -637,7 +637,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "restore_cleanup=ok",
         "link_preview_global=ok",
         "link_preview_room=ok",
-        "link_preview_e2ee_disabled=ok",
+        "link_preview_e2ee_default=ok",
         "link_preview_hide=ok",
     ]
 }
@@ -4166,6 +4166,7 @@ fn core_event_kind(event: &CoreEvent) -> &'static str {
         CoreEvent::NativeAttention(_) => "NativeAttention",
         CoreEvent::CjkTextPolicy(_) => "CjkTextPolicy",
         CoreEvent::ThreadsList(_) => "ThreadsList",
+        CoreEvent::IntentLifecycle { .. } => "IntentLifecycle",
         CoreEvent::OperationFailed { .. } => "OperationFailed",
     }
 }
@@ -9591,13 +9592,13 @@ async fn run_link_preview_stage(
     }
     println!("link_preview_hide=ok");
 
-    // 6. Test E2EE default-off: create a new encrypted room, send a URL message,
-    //    and verify no previews are projected for the sender's own item.
+    // 6. Test E2EE default-on: create a new encrypted room, send a URL message,
+    //    and verify previews are projected for the sender's own item.
     //
     //    The sender can decrypt their own event, so checking A's timeline asserts
     //    the Rust-owned encrypted-room policy end-to-end without depending on
     //    cross-device key sharing. The unit tests in link_preview.rs already
-    //    assert the encrypted-room default-off rule directly.
+    //    assert the encrypted-room default-on rule directly.
     let enc_room_id = create_room_for_qa(
         conn_a,
         "QA Link Preview E2EE Room",
@@ -9669,15 +9670,26 @@ async fn run_link_preview_stage(
         "A sees encrypted room URL message",
     )
     .await?;
-    if enc_item
+    let enc_previews = enc_item
         .link_previews
         .as_ref()
-        .map(|p| !p.is_empty())
-        .unwrap_or(false)
-    {
-        return Err("encrypted room projected link previews".to_owned());
+        .ok_or("missing link_previews on encrypted room URL message")?;
+    if enc_previews.len() != 1 {
+        return Err(format!(
+            "encrypted room link preview count mismatch: expected 1, got {}",
+            enc_previews.len()
+        ));
     }
-    println!("link_preview_e2ee_disabled=ok");
+    if enc_previews[0].url != URL_EXTRACTED {
+        return Err("encrypted room link preview URL mismatch".to_owned());
+    }
+    if !matches!(enc_previews[0].state, LinkPreviewState::Pending) {
+        return Err(format!(
+            "encrypted room link preview state mismatch: expected Pending, got {:?}",
+            enc_previews[0].state
+        ));
+    }
+    println!("link_preview_e2ee_default=ok");
 
     Ok(())
 }
@@ -12684,7 +12696,7 @@ mod tests {
                 "restore_cleanup=ok",
                 "link_preview_global=ok",
                 "link_preview_room=ok",
-                "link_preview_e2ee_disabled=ok",
+                "link_preview_e2ee_default=ok",
                 "link_preview_hide=ok",
             ][..]
         );
@@ -13133,7 +13145,7 @@ mod tests {
                 "restore_cleanup=ok",
                 "link_preview_global=ok",
                 "link_preview_room=ok",
-                "link_preview_e2ee_disabled=ok",
+                "link_preview_e2ee_default=ok",
                 "link_preview_hide=ok",
             ][..]
         );

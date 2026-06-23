@@ -735,6 +735,7 @@ export type MessageId =
   | "workspace.people"
   | "workspace.rooms"
   | "workspace.resizeRoomList"
+  | "workspace.resizeRightPanel"
   | "workspace.search"
   | "workspace.searchPlaceholder"
   | "workspace.searchScope"
@@ -1640,6 +1641,7 @@ const en: Catalog = {
   "workspace.people": "DMs",
   "workspace.rooms": "Rooms",
   "workspace.resizeRoomList": "Resize room list",
+  "workspace.resizeRightPanel": "Resize right panel",
   "workspace.search": "Search",
   "workspace.searchPlaceholder": "Search in {spaceName}",
   "workspace.searchScope": "Search scope",
@@ -2434,6 +2436,7 @@ const ja: Catalog = {
   "workspace.people": "DM",
   "workspace.rooms": "ルーム",
   "workspace.resizeRoomList": "ルームリストの幅を変更",
+  "workspace.resizeRightPanel": "右パネルの幅を変更",
   "workspace.search": "検索",
   "workspace.searchPlaceholder": "{spaceName}内を検索",
   "workspace.searchScope": "検索範囲",

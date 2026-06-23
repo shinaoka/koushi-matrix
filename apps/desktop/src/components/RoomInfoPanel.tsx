@@ -93,7 +93,7 @@ export function RoomInfoPanel({
   const roomName = room?.display_label ?? "";
   const isEncrypted = room?.is_encrypted ?? false;
   const globalUrlPreviewsEnabled = isEncrypted
-    ? appSettings?.values.display.encrypted_url_previews_enabled ?? false
+    ? appSettings?.values.display.encrypted_url_previews_enabled ?? true
     : appSettings?.values.display.url_previews_enabled ?? true;
   const roomOverride = linkPreviewSettings?.room_overrides[roomId];
   const roomUrlPreviewsEnabled = roomOverride ?? globalUrlPreviewsEnabled;

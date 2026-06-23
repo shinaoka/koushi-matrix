@@ -421,7 +421,7 @@
           },
           "display": {
             "code_block_wrap": true,
-            "encrypted_url_previews_enabled": false,
+            "encrypted_url_previews_enabled": true,
             "hide_redacted": true,
             "url_previews_enabled": true
           },

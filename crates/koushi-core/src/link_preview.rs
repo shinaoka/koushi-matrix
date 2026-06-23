@@ -25,7 +25,7 @@ fn href_regex() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r#"href=["'](https?://[^"']+)["']"#).expect("valid href regex"))
 }
 
-#[derive(Clone, Default, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct LinkPreviewContext {
     pub unencrypted_global_enabled: bool,
     pub encrypted_global_enabled: bool,
@@ -33,6 +33,19 @@ pub struct LinkPreviewContext {
     pub hidden_event_ids: BTreeSet<String>,
     pub cache: HashMap<String, LinkPreview>,
     pub room_overrides: BTreeMap<String, bool>,
+}
+
+impl Default for LinkPreviewContext {
+    fn default() -> Self {
+        Self {
+            unencrypted_global_enabled: true,
+            encrypted_global_enabled: true,
+            room_enabled: None,
+            hidden_event_ids: BTreeSet::new(),
+            cache: HashMap::new(),
+            room_overrides: BTreeMap::new(),
+        }
+    }
 }
 
 impl LinkPreviewContext {
@@ -348,6 +361,13 @@ mod tests {
         let body = "Visit https://example.com.,;:!?)\"'> today.";
         let urls = extract_urls(Some(body), None);
         assert_eq!(urls, vec!["https://example.com"]);
+    }
+
+    #[test]
+    fn default_context_enables_encrypted_room_previews() {
+        let context = LinkPreviewContext::default();
+        assert!(context.unencrypted_global_enabled);
+        assert!(context.encrypted_global_enabled);
     }
 
     #[test]

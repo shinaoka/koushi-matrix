@@ -255,12 +255,15 @@ describe("styles.css token system", () => {
   });
 
   test("receipt row and tooltip sizing use fixed-format tokens", () => {
-    expectBlockUses(selectorBlock(".message-receipts"), [
+    const receiptBlock = selectorBlock(".message-receipts");
+    expectBlockUses(receiptBlock, [
       "--receipt-row-gap",
       "--receipt-row-min-block-size",
       "--receipt-row-margin-block-start",
       "--receipt-row-font-size"
     ]);
+    expect(receiptBlock).toContain("inline-size: max-content");
+    expect(receiptBlock).toContain("margin-inline-start: auto");
     expectBlockUses(selectorBlock(".message-receipts:focus-visible"), [
       "--receipt-focus-outline-width",
       "--receipt-focus-outline-offset"
@@ -292,6 +295,22 @@ describe("styles.css token system", () => {
       "--receipt-tooltip-translate-block",
       "--motion-tooltip-duration"
     ]);
+  });
+
+  test("message source dialog stays above other overlays and exposes labeled copy buttons", () => {
+    const dialogBlock = selectorBlock(".message-source-dialog");
+    expect(dialogBlock).toContain("position: fixed");
+    expect(dialogBlock).toContain("z-index: 120");
+    expect(selectorBlock(".message-source-copy")).toContain("inline-size: auto");
+  });
+
+  test("app grid exposes separate resize handles for the room list and right panel", () => {
+    expect(selectorBlock(".app-grid")).toContain("--right-panel-width");
+    expect(css).toContain(".app-grid-resizer");
+    expect(css).toContain(".app-grid-right-resizer");
+    expect(appSource).toContain("beginSidebarResize");
+    expect(appSource).toContain("beginRightPanelResize");
+    expect(appSource).toContain('aria-label={t("workspace.resizeRightPanel")}');
   });
 
   test("fixed Lucide icon sizes stay centralized in ICON_SIZE", () => {

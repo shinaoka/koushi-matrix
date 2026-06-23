@@ -18,6 +18,10 @@ fn default_url_previews_enabled() -> bool {
     true
 }
 
+fn default_encrypted_url_previews_enabled() -> bool {
+    true
+}
+
 pub type RoomUrlPreviews = std::collections::BTreeMap<String, bool>;
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -288,7 +292,7 @@ pub struct DisplaySettings {
     pub hide_redacted: bool,
     #[serde(default = "default_url_previews_enabled")]
     pub url_previews_enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_encrypted_url_previews_enabled")]
     pub encrypted_url_previews_enabled: bool,
 }
 
@@ -298,7 +302,7 @@ impl Default for DisplaySettings {
             code_block_wrap: true,
             hide_redacted: true,
             url_previews_enabled: true,
-            encrypted_url_previews_enabled: false,
+            encrypted_url_previews_enabled: true,
         }
     }
 }

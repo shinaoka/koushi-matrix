@@ -46,6 +46,7 @@ pub(crate) const CORE_EVENT_NAME: &str = "koushi-desktop://event";
 /// Tauri event for serialized AppStateSnapshot payloads (latest-wins).
 const STATE_EVENT_NAME: &str = "koushi-desktop://state";
 const MENU_ID_OPEN_USER_SETTINGS: &str = "open_user_settings";
+const MENU_ID_SIGN_OUT: &str = "sign_out";
 const MENU_ID_SHOW_KEYBOARD_SETTINGS: &str = "show_keyboard_settings";
 const MENU_ID_TOGGLE_RIGHT_PANEL: &str = "toggle_right_panel";
 const MIN_RESTORABLE_WINDOW_WIDTH: u32 = 760;
@@ -89,6 +90,12 @@ pub(crate) fn desktop_menu_items() -> Vec<DesktopMenuItem> {
             accelerator: "CmdOrCtrl+,",
         },
         DesktopMenuItem {
+            id: MENU_ID_SIGN_OUT,
+            label: "Sign Out",
+            menu: "app",
+            accelerator: "",
+        },
+        DesktopMenuItem {
             id: MENU_ID_TOGGLE_RIGHT_PANEL,
             label: "Toggle Right Panel",
             menu: "view",
@@ -124,6 +131,7 @@ pub(crate) fn desktop_standard_menu_items() -> Vec<DesktopStandardMenuItem> {
 fn desktop_menu_action_id(menu_id: &str) -> Option<&'static str> {
     match menu_id {
         MENU_ID_OPEN_USER_SETTINGS => Some("openUserSettings"),
+        MENU_ID_SIGN_OUT => Some("logout"),
         MENU_ID_TOGGLE_RIGHT_PANEL => Some("toggleRightPanel"),
         MENU_ID_SHOW_KEYBOARD_SETTINGS => Some("showKeyboardSettings"),
         _ => None,
@@ -593,11 +601,13 @@ fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
     manager: &M,
 ) -> tauri::Result<tauri::menu::Menu<R>> {
     let open_user_settings = menu_item(manager, MENU_ID_OPEN_USER_SETTINGS)?;
+    let sign_out = menu_item(manager, MENU_ID_SIGN_OUT)?;
     let toggle_right_panel = menu_item(manager, MENU_ID_TOGGLE_RIGHT_PANEL)?;
     let show_keyboard_settings = menu_item(manager, MENU_ID_SHOW_KEYBOARD_SETTINGS)?;
 
     let app_menu = SubmenuBuilder::new(manager, "Koushi")
         .item(&open_user_settings)
+        .item(&sign_out)
         .separator()
         .quit()
         .build()?;
@@ -637,9 +647,12 @@ fn menu_item<R: tauri::Runtime, M: Manager<R>>(
         .into_iter()
         .find(|item| item.id == id)
         .expect("desktop menu item id should be registered");
-    MenuItemBuilder::with_id(item.id, item.label)
-        .accelerator(item.accelerator)
-        .build(manager)
+    let builder = MenuItemBuilder::with_id(item.id, item.label);
+    if item.accelerator.is_empty() {
+        builder.build(manager)
+    } else {
+        builder.accelerator(item.accelerator).build(manager)
+    }
 }
 
 /// Spawn the CoreEvent forwarding task. This task owns a dedicated connection
@@ -1527,6 +1540,20 @@ mod tests {
                 && item.accelerator == "CmdOrCtrl+,"
                 && item.menu == "app"
         }));
+        assert!(
+            items
+                .iter()
+                .any(|item| item.id == "sign_out" && item.accelerator == "" && item.menu == "app")
+        );
+        let user_settings_index = items
+            .iter()
+            .position(|item| item.id == "open_user_settings")
+            .expect("user settings menu item should exist");
+        let sign_out_index = items
+            .iter()
+            .position(|item| item.id == "sign_out")
+            .expect("sign out menu item should exist");
+        assert_eq!(sign_out_index, user_settings_index + 1);
         assert!(items.iter().any(|item| {
             item.id == "show_keyboard_settings"
                 && item.accelerator == "CmdOrCtrl+/"

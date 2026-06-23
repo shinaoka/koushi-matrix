@@ -7,10 +7,11 @@ import {
   roomTimelineKey,
   threadTimelineKey,
   type CoreEventPayload,
-  type TimelineItem
+  type TimelineItem,
+  type TimelineMessageSource
 } from "../domain/coreEvents";
 import { setActiveLocaleProfile } from "../i18n/messages";
-import { TimelineView, type TimelineTransport } from "./TimelineView";
+import { MessageSourceDialog, TimelineView, type TimelineTransport } from "./TimelineView";
 
 afterEach(() => {
   cleanup();
@@ -37,6 +38,26 @@ function message(eventId: string, body: string): TimelineItem {
     is_edited: false,
     can_edit: false,
     reactions: []
+  };
+}
+
+function imageMessage(eventId: string, encrypted = false): TimelineItem {
+  return {
+    ...message(eventId, "Image body"),
+    media: {
+      kind: "Image",
+      filename: "photo.png",
+      source: {
+        mxc_uri: "mxc://example.invalid/photo",
+        encrypted,
+        encryption_version: encrypted ? "v2" : null
+      },
+      mimetype: "image/png",
+      size: 416_768,
+      width: 2048,
+      height: 1188,
+      thumbnail: null
+    }
   };
 }
 
@@ -851,6 +872,103 @@ describe("TimelineView", () => {
     await waitFor(() => {
       expect(screen.getByText("😢")).toBeTruthy();
       expect(screen.getByText("Ken Inayoshi and Satoshi Terasaki reacted with 😢")).toBeTruthy();
+    });
+  });
+
+  it("automatically requests previews for encrypted image attachments", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const downloadMedia = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      downloadMedia,
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [imageMessage("$encrypted-image", true)]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(downloadMedia).toHaveBeenCalledWith(
+        "!room:example.invalid",
+        "$encrypted-image"
+      );
+    });
+  });
+
+  it("renders ready image previews without technical metadata and opens the original source", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        mediaDownloads={{
+          "$ready-image": {
+            kind: "ready",
+            source_url: "asset://localhost/original-photo.png",
+            width: 2048,
+            height: 1188,
+            mime_type: "image/png"
+          }
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [imageMessage("$ready-image", true)]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      const image = screen.getByRole("img", { name: "photo.png" });
+      const previewLink = image.closest("a");
+      expect(previewLink?.getAttribute("href")).toBe("asset://localhost/original-photo.png");
+      expect(previewLink?.getAttribute("target")).toBe("_blank");
+      expect(previewLink?.hasAttribute("download")).toBe(false);
+      const media = document.querySelector(".message-media");
+      expect(media?.textContent).not.toContain("image/png");
+      expect(media?.textContent).not.toContain("407 KB");
+      expect(media?.textContent).not.toContain("2048x1188");
+      expect(media?.textContent).not.toContain("Encrypted");
     });
   });
 
@@ -1709,5 +1827,32 @@ describe("TimelineView", () => {
     fireEvent.click(button);
 
     expect(requestRoomKey).toHaveBeenCalledWith("!room:example.invalid", "$encrypted");
+  });
+
+  it("shows visible copy controls in the message source dialog", () => {
+    const source: TimelineMessageSource = {
+      event_id: "$source:example.invalid",
+      sender: "@alice:example.invalid",
+      timestamp_ms: 1_800_000_000_000,
+      body: "source body",
+      in_reply_to_event_id: null,
+      thread_root: null,
+      is_redacted: false,
+      is_edited: false,
+      has_media: false,
+      original_json: {
+        type: "m.room.message",
+        content: { body: "source body", msgtype: "m.text" }
+      }
+    };
+
+    render(<MessageSourceDialog source={source} onClose={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: "Copy event ID" }).textContent).toContain(
+      "Copy event ID"
+    );
+    expect(
+      screen.getByRole("button", { name: "Copy original event source" }).textContent
+    ).toContain("Copy original event source");
   });
 });

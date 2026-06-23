@@ -2231,10 +2231,7 @@ impl TimelineActor {
             };
         let reply = Reply {
             event_id: reply_event_id,
-            enforce_thread: match &self.key.kind {
-                TimelineKind::Thread { .. } => EnforceThread::Threaded(ReplyWithinThread::Yes),
-                _ => EnforceThread::MaybeThreaded,
-            },
+            enforce_thread: reply_enforce_thread_for_key(&self.key),
             add_mentions: AddMentions::Yes,
         };
 
@@ -4536,6 +4533,32 @@ fn timeline_item_should_be_hidden(has_renderable_content: bool, is_redacted: boo
     !has_renderable_content && !is_redacted
 }
 
+fn timeline_item_should_be_hidden_for_key(
+    key: &TimelineKey,
+    has_renderable_content: bool,
+    is_redacted: bool,
+    thread_root: Option<&str>,
+) -> bool {
+    timeline_item_should_be_hidden(has_renderable_content, is_redacted)
+        || (matches!(key.kind, TimelineKind::Room { .. }) && thread_root.is_some())
+}
+
+fn reply_enforce_thread_for_key(key: &TimelineKey) -> EnforceThread {
+    match key.kind {
+        TimelineKind::Thread { .. } => EnforceThread::Threaded(ReplyWithinThread::No),
+        TimelineKind::Room { .. } | TimelineKind::Focused { .. } => EnforceThread::MaybeThreaded,
+    }
+}
+
+fn thread_root_from_original_json(original_json: &serde_json::Value) -> Option<String> {
+    let relates_to = original_json.get("content")?.get("m.relates_to")?;
+    if relates_to.get("rel_type")?.as_str()? != "m.thread" {
+        return None;
+    }
+    let event_id = relates_to.get("event_id")?.as_str()?.trim();
+    (!event_id.is_empty()).then(|| event_id.to_owned())
+}
+
 fn item_index_for_event_id(items: &[TimelineItem], event_id: &str) -> Option<usize> {
     items
         .iter()
@@ -4721,7 +4744,14 @@ fn sdk_item_to_timeline_item_with_send_states(
             let thread_root = event_item
                 .content()
                 .thread_root()
-                .map(|event_id| event_id.to_string());
+                .map(|event_id| event_id.to_string())
+                .or_else(|| {
+                    content
+                        .is_unable_to_decrypt()
+                        .then(|| original_json_for_event_item(event_item))
+                        .flatten()
+                        .and_then(|original_json| thread_root_from_original_json(&original_json))
+                });
             let thread_summary = event_item
                 .content()
                 .thread_summary()
@@ -4750,6 +4780,12 @@ fn sdk_item_to_timeline_item_with_send_states(
                 media.is_some(),
                 is_redacted,
             );
+            let is_hidden = timeline_item_should_be_hidden_for_key(
+                key,
+                has_renderable_content,
+                is_redacted,
+                thread_root.as_deref(),
+            );
 
             TimelineItem {
                 id,
@@ -4771,7 +4807,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 reactions,
                 can_react,
                 is_redacted,
-                is_hidden: timeline_item_should_be_hidden(has_renderable_content, is_redacted),
+                is_hidden,
                 can_redact,
                 is_edited,
                 can_edit,
@@ -7193,6 +7229,44 @@ mod tests {
     }
 
     #[test]
+    fn encrypted_thread_reply_relation_is_recovered_from_original_json() {
+        let original_json = serde_json::json!({
+            "content": {
+                "algorithm": "m.megolm.v1.aes-sha2",
+                "ciphertext": "ciphertext",
+                "m.relates_to": {
+                    "rel_type": "m.thread",
+                    "event_id": "$thread-root:test",
+                    "m.in_reply_to": {
+                        "event_id": "$reply-target:test"
+                    },
+                    "is_falling_back": true
+                },
+                "session_id": "session"
+            },
+            "event_id": "$thread-reply:test",
+            "type": "m.room.encrypted"
+        });
+
+        assert_eq!(
+            thread_root_from_original_json(&original_json).as_deref(),
+            Some("$thread-root:test")
+        );
+    }
+
+    #[test]
+    fn room_timeline_hides_thread_reply_placeholders_even_when_renderable() {
+        let key = room_key();
+
+        assert!(timeline_item_should_be_hidden_for_key(
+            &key,
+            true,
+            false,
+            Some("$thread-root:test")
+        ));
+    }
+
+    #[test]
     fn thread_attention_action_counts_remote_live_thread_messages_only() {
         let key = thread_key();
         let own_user_id = "@me:test";
@@ -7411,6 +7485,14 @@ mod tests {
         assert!(
             !helper_source.contains("TimelineKind::Focused"),
             "restore anchor must not bootstrap through the focused timeline path"
+        );
+    }
+
+    #[test]
+    fn thread_composer_sends_regular_thread_messages_for_element_compatibility() {
+        assert_eq!(
+            reply_enforce_thread_for_key(&thread_key()),
+            EnforceThread::Threaded(ReplyWithinThread::No)
         );
     }
 

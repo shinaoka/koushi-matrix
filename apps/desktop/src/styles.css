@@ -630,10 +630,11 @@ button:disabled {
   display: grid;
   position: relative;
   --sidebar-width: 318px;
+  --right-panel-width: 390px;
   grid-template-columns: var(--shell-rail-width) var(--sidebar-width) minmax(
       420px,
       1fr
-    ) 390px;
+    ) var(--right-panel-width);
   min-height: 0;
 }
 
@@ -669,6 +670,32 @@ button:disabled {
 
 .app-grid-resizer:hover::after,
 .app-grid-resizer:focus-visible::after {
+  background: var(--brand);
+}
+
+.app-grid-right-resizer {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: calc(var(--right-panel-width) - 4px);
+  z-index: 8;
+  width: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.app-grid-right-resizer::after {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 3px;
+  width: 2px;
+  background: transparent;
+  content: "";
+}
+
+.app-grid-right-resizer:hover::after,
+.app-grid-right-resizer:focus-visible::after {
   background: var(--brand);
 }
 
@@ -2141,13 +2168,13 @@ button:disabled {
 }
 
 .message-source-dialog {
-  position: sticky;
-  inset-block-end: 12px;
-  z-index: 35;
+  position: fixed;
+  inset-block: auto 24px;
+  inset-inline: auto 24px;
+  z-index: 120;
   display: grid;
   gap: 14px;
   width: min(920px, calc(100% - 32px));
-  margin: 12px 16px 0 auto;
   max-block-size: min(72vh, 760px);
   padding: 16px;
   border: 1px solid var(--border);
@@ -2209,13 +2236,17 @@ button:disabled {
 }
 
 .message-source-copy {
-  display: inline-grid;
+  display: inline-flex;
   flex: 0 0 auto;
-  place-items: center;
-  width: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  inline-size: auto;
   height: 28px;
+  padding-inline: 8px;
   border-radius: 6px;
   color: var(--text-muted);
+  font-weight: 700;
 }
 
 .message-source-copy:hover {
@@ -2889,8 +2920,10 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: var(--receipt-row-gap);
+  inline-size: max-content;
   min-block-size: var(--receipt-row-min-block-size);
   margin-block-start: var(--receipt-row-margin-block-start);
+  margin-inline-start: auto;
   color: var(--text-muted);
   font-size: var(--receipt-row-font-size);
   font-weight: 700;
@@ -3232,6 +3265,17 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.message-media-preview-link {
+  display: inline-flex;
+  max-width: 100%;
+  border-radius: 6px;
+}
+
+.message-media-preview-link:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
 }
 
 .message-media-image {
@@ -5568,6 +5612,10 @@ kbd {
   }
 
   .thread-pane {
+    display: none;
+  }
+
+  .app-grid-right-resizer {
     display: none;
   }
 }
