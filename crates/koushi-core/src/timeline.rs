@@ -8134,17 +8134,21 @@ mod tests {
     #[test]
     fn timeline_subscribe_and_paginate_emit_startup_trace() {
         let source = include_str!("timeline.rs");
+        // Search production code only; excluding the test module prevents the
+        // assertion strings below from satisfying themselves (include_str! pulls in
+        // this test's own body).
+        let production = source.split("\nmod tests").next().unwrap_or(source);
         // build lives in the manager's subscribe handler; subscribe lives in
         // TimelineActor::spawn. Assert presence without forcing their location.
         assert!(
-            source.contains("StartupPhase::TimelineBuild"),
+            production.contains("StartupPhase::TimelineBuild"),
             "the SDK TimelineBuilder::build phase must be timed"
         );
         assert!(
-            source.contains("StartupPhase::TimelineSubscribe"),
+            production.contains("StartupPhase::TimelineSubscribe"),
             "the timeline.subscribe() phase must be timed with an item bucket"
         );
-        let paginate_src = source
+        let paginate_src = production
             .split("async fn handle_paginate")
             .nth(1)
             .and_then(|s| s.split("async fn handle_send_text").next())
@@ -8158,18 +8162,22 @@ mod tests {
     #[test]
     fn timeline_subscribe_spawns_env_gated_origin_observer() {
         let source = include_str!("timeline.rs");
+        // Search production code only; excluding the test module prevents the
+        // assertion strings below from satisfying themselves (include_str! pulls in
+        // this test's own body).
+        let production = source.split("\nmod tests").next().unwrap_or(source);
         // The observer lives in TimelineActor::spawn alongside other auxiliary
         // tasks. Assert whole-source presence without forcing a code location.
         assert!(
-            source.contains("startup_trace::enabled()"),
+            production.contains("startup_trace::enabled()"),
             "origin observer must be gated on KOUSHI_STARTUP_TRACE so production is unaffected"
         );
         assert!(
-            source.contains("event_cache()"),
+            production.contains("event_cache()"),
             "origin observer must subscribe the SDK room event cache"
         );
         assert!(
-            source.contains("EventsOrigin"),
+            production.contains("EventsOrigin"),
             "origin observer must read the SDK EventsOrigin (cache/network/sync)"
         );
     }
