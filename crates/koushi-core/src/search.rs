@@ -833,16 +833,23 @@ impl SearchActor {
         // Startup delay: hold AUTOMATIC crawls until the delay elapses; manual
         // (explicit StartHistoryCrawl) checkpoints bypass it.
         if !self.crawl_delay_elapsed {
-            match self.crawl_queue.front() {
-                Some(front) if !front.manual => {
-                    if self.crawl_delay_timer.is_none() {
+            // During the startup delay only MANUAL checkpoints may start. If one
+            // is queued (even behind automatic work), pull it to the front so the
+            // pop below starts it; otherwise arm the delay timer and wait.
+            match self.crawl_queue.iter().position(|c| c.manual) {
+                Some(pos) => {
+                    if let Some(manual) = self.crawl_queue.remove(pos) {
+                        self.crawl_queue.push_front(manual);
+                    }
+                }
+                None => {
+                    if !self.crawl_queue.is_empty() && self.crawl_delay_timer.is_none() {
                         self.crawl_delay_timer = Some(executor::spawn(async {
                             executor::sleep(CRAWLER_STARTUP_DELAY).await;
                         }));
                     }
                     return;
                 }
-                _ => {}
             }
         }
         let Some(checkpoint) = self.crawl_queue.pop_front() else {
@@ -992,6 +999,9 @@ impl SearchActor {
             handle.abort();
         }
         self.active_crawl_checkpoint = None;
+        if let Some(timer) = self.crawl_delay_timer.take() {
+            timer.abort();
+        }
     }
 
     fn invalidate_history_crawler_cache(&mut self) {
