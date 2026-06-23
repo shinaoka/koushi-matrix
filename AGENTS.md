@@ -1586,6 +1586,30 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   room state, and a left room with visible history can otherwise become the
   active QA room.
 
+## Startup Latency Observability QA
+
+Read-only timing lane for issue #123 Phase A. Full operator details are in
+[docs/qa/startup-latency-observability.md](docs/qa/startup-latency-observability.md);
+the implementation plan is
+[docs/superpowers/plans/2026-06-23-startup-latency-observability-phase-a.md](docs/superpowers/plans/2026-06-23-startup-latency-observability-phase-a.md).
+
+- One-line command (requires maintainer GO for run 1):
+  `npm --prefix apps/desktop run qa:real-homeserver -- --scenario=startup_latency`
+- The runner performs two passes against a persistent profile dir
+  (`.local-secrets/real-account-qa/profile/startup_latency/`, git-ignored):
+  run 1 logs in and populates the event cache; run 2 does a cold restore and
+  is the measured evidence run.
+- **Run 1 performs a real login** and consumes one device slot on the
+  homeserver. This requires explicit maintainer GO before the first
+  invocation. Subsequent runs (run 2+) restore from the SQLite store without
+  a new login.
+- Set `KOUSHI_STARTUP_LAT_TEARDOWN=1` to log out and remove the QA device at
+  the end of a run. Without it the session is kept so run 2+ can restore.
+- Both runs emit `startup_lat phase=… ms=N` macro-phase tokens and, when
+  `KOUSHI_STARTUP_TRACE=1` (set by the runner), `koushi.startup phase=…` and
+  `phase=origin origin=cache|network|sync` sub-phase tokens. All tokens are
+  private-data-free; no Matrix IDs, message bodies, or raw SDK errors appear.
+
 ## Local Homeserver QA Failures
 
 - Installing Conduit or Tuwunel from source with `cargo install --git` must set
