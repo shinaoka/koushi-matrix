@@ -52,8 +52,9 @@ use koushi_core::command::{
 use koushi_core::event::{
     AccountEvent, ActivityEvent, CoreEvent, E2eeTrustEvent, LinkPreviewState, LiveSignalsEvent,
     LocalEncryptionEvent, PaginationDirection, PaginationState, RoomEvent, SearchEvent,
-    SyncBackendKind, SyncEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
-    TimelineMessageActions, TimelineSendState, TimelineUnreadPosition, TimelineViewportObservation,
+    SyncBackendKind, SyncEvent, TimelineAnchorRestoreStatus, TimelineDiff, TimelineEvent,
+    TimelineItem, TimelineItemId, TimelineMessageActions, TimelineSendState,
+    TimelineUnreadPosition, TimelineViewportObservation,
 };
 use koushi_core::failure::{CoreFailure, RoomFailureKind};
 use koushi_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
@@ -128,6 +129,9 @@ const DEFAULT_CACHE_RESTORE_ROOMS: usize = 2;
 const DEFAULT_CACHE_RESTORE_DEPTH: usize = 100;
 /// Batch size used for backward pagination during the offline restore measure.
 const CACHE_RESTORE_PAGINATE_BATCH: u16 = 20;
+/// Maximum acceptable internal backward-paginate cycles for offline anchor restore.
+/// If any room exceeds this, the run is RED: O(depth) restore, not direct cache-context.
+const CACHE_RESTORE_MAX_CYCLES: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QaScenario {
@@ -2438,40 +2442,28 @@ fn cache_restore_params() -> (usize, usize) {
     (rooms, depth)
 }
 
-/// Collect all event ids from a slice of timeline items.
-fn collect_event_ids(items: &[TimelineItem]) -> std::collections::HashSet<String> {
-    items
-        .iter()
-        .filter_map(|item| match &item.id {
-            TimelineItemId::Event { event_id } => Some(event_id.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Collect event ids from ItemsUpdated diffs.
-fn collect_event_ids_from_diff(diff: &TimelineDiff) -> Vec<String> {
+/// Apply a single `TimelineDiff` in-place to a `Vec<TimelineItem>`.
+fn apply_timeline_diff(items: &mut Vec<TimelineItem>, diff: &TimelineDiff) {
     match diff {
-        TimelineDiff::Set { item, .. }
-        | TimelineDiff::Insert { item, .. }
-        | TimelineDiff::PushBack { item }
-        | TimelineDiff::PushFront { item } => {
-            if let TimelineItemId::Event { event_id } = &item.id {
-                vec![event_id.clone()]
-            } else {
-                vec![]
+        TimelineDiff::PushFront { item } => items.insert(0, item.clone()),
+        TimelineDiff::PushBack { item } => items.push(item.clone()),
+        TimelineDiff::Insert { index, item } => {
+            let idx = (*index).min(items.len());
+            items.insert(idx, item.clone());
+        }
+        TimelineDiff::Set { index, item } => {
+            if *index < items.len() {
+                items[*index] = item.clone();
             }
         }
-        TimelineDiff::Reset { items } => items
-            .iter()
-            .filter_map(|item| match &item.id {
-                TimelineItemId::Event { event_id } => Some(event_id.clone()),
-                _ => None,
-            })
-            .collect(),
-        TimelineDiff::Remove { .. } | TimelineDiff::Truncate { .. } | TimelineDiff::Clear => {
-            vec![]
+        TimelineDiff::Remove { index } => {
+            if *index < items.len() {
+                items.remove(*index);
+            }
         }
+        TimelineDiff::Truncate { length } => items.truncate(*length),
+        TimelineDiff::Clear => items.clear(),
+        TimelineDiff::Reset { items: new_items } => *items = new_items.clone(),
     }
 }
 
@@ -2482,7 +2474,7 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
 
     // -----------------------------------------------------------------------
     // Connect 1: login, send fixture history, paginate to EndReached, record
-    // deep anchors, then shut down cleanly.
+    // deep anchors deterministically (m0 = first sent = oldest), then shut down.
     // -----------------------------------------------------------------------
     let runtime = CoreRuntime::start_with_data_dir(data_dir.clone());
     let mut conn = runtime.attach();
@@ -2518,9 +2510,12 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
         "cache_restore sync start",
     )?;
 
-    // Create rooms and send DEPTH messages each. Record room ids.
+    // Create rooms, send DEPTH messages, paginate to EndReached. Track items
+    // across the paginate to find the deterministic deep anchor (m0 = oldest).
     let mut room_ids: Vec<String> = Vec::with_capacity(num_rooms);
+    let mut deep_anchors: Vec<String> = Vec::with_capacity(num_rooms);
     for room_idx in 0..num_rooms {
+        let anchor_body = format!("cache_restore fixture r{room_idx} m0");
         let room_id = create_room_for_qa(
             &mut conn,
             &format!("QA Cache Restore Room {room_idx}"),
@@ -2539,7 +2534,10 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
         }))
         .await
         .map_err(|e| format!("cache_restore: submit subscribe failed: {e}"))?;
-        wait_for_initial_items(&mut conn, &key, sub_id, "cache_restore subscribe").await?;
+        let initial_items =
+            wait_for_initial_items(&mut conn, &key, sub_id, "cache_restore subscribe").await?;
+        // Track all items across the paginate so we can find m0 at the end.
+        let mut all_items = initial_items;
 
         // Send DEPTH messages sequentially so they land in the event cache.
         for msg_idx in 0..depth {
@@ -2554,7 +2552,6 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
             }))
             .await
             .map_err(|e| format!("cache_restore: submit send failed: {e}"))?;
-            // Wait for send to complete (local echo → SendCompleted or event item).
             wait_for_send_flow_completion(
                 &mut conn,
                 send_id,
@@ -2566,7 +2563,8 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
             .await?;
         }
 
-        // Paginate backward to EndReached so the full history is cached.
+        // Paginate backward to EndReached, accumulating diffs so all_items
+        // reflects the full history and we can find m0 deterministically.
         let pag_id = conn.next_request_id();
         conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
             request_id: pag_id,
@@ -2576,59 +2574,20 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
         }))
         .await
         .map_err(|e| format!("cache_restore: submit paginate failed: {e}"))?;
-        wait_for_paginate_end_reached(&mut conn, &key, pag_id, "cache_restore populate paginate")
-            .await?;
-
-        // Unsubscribe before moving to next room.
-        let unsub_id = conn.next_request_id();
-        conn.command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
-            request_id: unsub_id,
-            key,
-        }))
-        .await
-        .map_err(|e| format!("cache_restore: submit unsubscribe failed: {e}"))?;
-
-        room_ids.push(room_id);
-    }
-    println!("cache_restore_loaded=ok");
-
-    // Record deep anchors: subscribe each room, paginate to EndReached, take the
-    // earliest event id seen (first item of the final paginated window).
-    let mut deep_anchors: Vec<String> = Vec::with_capacity(num_rooms);
-    for room_id in &room_ids {
-        let key = TimelineKey::room(account_key.clone(), room_id.clone());
-        let sub_id = conn.next_request_id();
-        conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
-            request_id: sub_id,
-            key: key.clone(),
-        }))
-        .await
-        .map_err(|e| format!("cache_restore: anchor subscribe failed: {e}"))?;
-        let initial = wait_for_initial_items(&mut conn, &key, sub_id, "cache_restore anchor sub")
-            .await?;
-        let mut known_ids = collect_event_ids(&initial);
-
-        // Paginate to EndReached accumulating all event ids.
-        let pag_id = conn.next_request_id();
-        conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
-            request_id: pag_id,
-            key: key.clone(),
-            direction: PaginationDirection::Backward,
-            event_count: CACHE_RESTORE_PAGINATE_BATCH,
-        }))
-        .await
-        .map_err(|e| format!("cache_restore: anchor paginate submit failed: {e}"))?;
-
-        // Drain `pag_id` to silence unused-assignment; the event loop uses fresh ids.
         let _ = pag_id;
-        // Collect items as they arrive and repaginate until EndReached.
         let mut saw_paginating = false;
-        let mut earliest_event_id: Option<String> = None;
         loop {
-            let event = tokio::time::timeout(Duration::from_secs(60), conn.recv_event())
+            let event = tokio::time::timeout(Duration::from_secs(120), conn.recv_event())
                 .await
-                .map_err(|_| "cache_restore anchor: timed out waiting for pagination event".to_owned())?
-                .map_err(|lag| format!("cache_restore anchor: event stream lagged (skipped={})", lag.skipped))?;
+                .map_err(|_| {
+                    "cache_restore populate: timed out waiting for paginate event".to_owned()
+                })?
+                .map_err(|lag| {
+                    format!(
+                        "cache_restore populate: event stream lagged (skipped={})",
+                        lag.skipped
+                    )
+                })?;
             match event {
                 CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
                     key: ref ev_key,
@@ -2637,10 +2596,14 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
                     ..
                 }) if ev_key == &key && direction == PaginationDirection::Backward => {
                     match state {
-                        PaginationState::Paginating => { saw_paginating = true; }
+                        PaginationState::Paginating => {
+                            saw_paginating = true;
+                        }
                         PaginationState::Idle => {
                             if !saw_paginating {
-                                return Err("cache_restore anchor: Idle without Paginating".to_owned());
+                                return Err(
+                                    "cache_restore populate: Idle without Paginating".to_owned(),
+                                );
                             }
                             saw_paginating = false;
                             let repag_id = conn.next_request_id();
@@ -2651,36 +2614,48 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
                                 event_count: CACHE_RESTORE_PAGINATE_BATCH,
                             }))
                             .await
-                            .map_err(|e| format!("cache_restore: anchor re-paginate failed: {e}"))?;
+                            .map_err(|e| format!("cache_restore: re-paginate failed: {e}"))?;
                         }
                         PaginationState::EndReached => {
                             break;
                         }
                         PaginationState::Failed { .. } => {
-                            return Err("cache_restore anchor: paginate failed during populate".to_owned());
+                            return Err(
+                                "cache_restore populate: paginate failed".to_owned(),
+                            );
                         }
                     }
                 }
-                CoreEvent::Timeline(TimelineEvent::ItemsUpdated { key: ref ev_key, ref diffs, .. })
-                    if ev_key == &key =>
-                {
+                CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                    key: ref ev_key,
+                    ref diffs,
+                    ..
+                }) if ev_key == &key => {
                     for diff in diffs {
-                        for eid in collect_event_ids_from_diff(diff) {
-                            known_ids.insert(eid.clone());
-                            // Track the earliest-seen event id as a simple proxy for the oldest.
-                            // In a backward paginate, new items prepend — track the last inserted.
-                            earliest_event_id = Some(eid);
-                        }
+                        apply_timeline_diff(&mut all_items, diff);
                     }
                 }
                 _ => {}
             }
         }
 
-        let anchor = earliest_event_id.ok_or_else(|| {
-            "cache_restore: no event id seen in deep history — fixture may be too shallow".to_owned()
-        })?;
-        deep_anchors.push(anchor);
+        // Find the deterministic deep anchor: m0 is the first-sent (oldest) message.
+        let anchor_item = find_timeline_item_with_body(&all_items, &anchor_body)
+            .ok_or_else(|| {
+                format!(
+                    "cache_restore: m0 anchor not found after full paginate \
+                     (room_idx={room_idx}, items={})",
+                    all_items.len()
+                )
+            })?;
+        let anchor_event_id = match &anchor_item.id {
+            TimelineItemId::Event { event_id } => event_id.clone(),
+            other => {
+                return Err(format!(
+                    "cache_restore: m0 anchor item has non-Event id: {other:?}"
+                ))
+            }
+        };
 
         let unsub_id = conn.next_request_id();
         conn.command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
@@ -2688,8 +2663,12 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
             key,
         }))
         .await
-        .map_err(|e| format!("cache_restore: anchor unsubscribe failed: {e}"))?;
+        .map_err(|e| format!("cache_restore: submit unsubscribe failed: {e}"))?;
+
+        room_ids.push(room_id);
+        deep_anchors.push(anchor_event_id);
     }
+    println!("cache_restore_loaded=ok");
 
     // Clean shutdown of Connect 1.
     stop_sync_for_qa(&mut conn, "cache_restore stop sync before restart").await?;
@@ -2698,10 +2677,9 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // -----------------------------------------------------------------------
-    // Connect 2: restart over the same data dir, then BLOCK the network.
-    // For each room, subscribe and drive backward pagination toward the
-    // recorded deep anchor. Count batches. Fail if any paginate returns Failed
-    // (network blocked → a cache gap forced a /messages call).
+    // Connect 2: restart over the same data dir, BLOCK the network, then drive
+    // RestoreTimelineAnchor per room. Count PaginationStateChanged::Paginating
+    // events as internal backward-paginate cycles. Gate on CACHE_RESTORE_MAX_CYCLES.
     // -----------------------------------------------------------------------
     let runtime2 = CoreRuntime::start_with_data_dir(data_dir);
     let mut conn2 = runtime2.attach();
@@ -2718,12 +2696,13 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
         .await?;
     wait_for_ready_snapshot(&mut conn2, "cache_restore restored Ready").await?;
 
-    // Block the network NOW: any /messages call from here on will fail.
+    // Block the network NOW: any /messages network call from here on will fail.
     proxy.disable();
 
     let aggregate_start = std::time::Instant::now();
-    let mut all_cache_served = true;
-    let mut total_batches: u32 = 0;
+    let mut all_found = true;
+    let mut max_cycles_exceeded = false;
+    let mut total_cycles: u32 = 0;
 
     for (room_idx, (room_id, anchor)) in room_ids.iter().zip(deep_anchors.iter()).enumerate() {
         let key = TimelineKey::room(account_key.clone(), room_id.clone());
@@ -2735,119 +2714,88 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
             }))
             .await
             .map_err(|e| format!("cache_restore: offline subscribe failed: {e}"))?;
-        let initial =
-            wait_for_initial_items(&mut conn2, &key, sub_id, "cache_restore offline subscribe")
-                .await?;
-        let mut accumulated_ids = collect_event_ids(&initial);
+        wait_for_initial_items(&mut conn2, &key, sub_id, "cache_restore offline subscribe")
+            .await?;
+
         let room_start = std::time::Instant::now();
-        let mut batch_count: u32 = 0;
-        let mut anchor_reached = accumulated_ids.contains(anchor);
+        let restore_req = conn2.next_request_id();
+        conn2
+            .command(CoreCommand::Timeline(TimelineCommand::RestoreTimelineAnchor {
+                request_id: restore_req,
+                key: key.clone(),
+                event_id: anchor.clone(),
+                max_batches: 500,
+                event_count: CACHE_RESTORE_PAGINATE_BATCH,
+            }))
+            .await
+            .map_err(|e| format!("cache_restore: offline RestoreTimelineAnchor submit failed: {e}"))?;
 
-        if !anchor_reached {
-            // Paginate backward until anchor found, EndReached, or Failed.
-            let pag_id = conn2.next_request_id();
-            conn2
-                .command(CoreCommand::Timeline(TimelineCommand::Paginate {
-                    request_id: pag_id,
-                    key: key.clone(),
-                    direction: PaginationDirection::Backward,
-                    event_count: CACHE_RESTORE_PAGINATE_BATCH,
-                }))
+        // Count Paginating transitions (= internal backward-paginate cycles) until
+        // AnchorRestoreFinished.
+        let mut cycle_count: u32 = 0;
+        let status = loop {
+            let event = tokio::time::timeout(Duration::from_secs(120), conn2.recv_event())
                 .await
-                .map_err(|e| format!("cache_restore: offline paginate submit failed: {e}"))?;
-
-            // `pag_id` is used for the first paginate; re-paginate uses fresh ids.
-            let _ = pag_id;
-            let mut pag_saw_paginating = false;
-            'pag_loop: loop {
-                let event = tokio::time::timeout(Duration::from_secs(60), conn2.recv_event())
-                    .await
-                    .map_err(|_| {
-                        "cache_restore offline: timed out waiting for paginate event".to_owned()
-                    })?
-                    .map_err(|lag| {
-                        format!(
-                            "cache_restore offline: event stream lagged (skipped={})",
-                            lag.skipped
-                        )
-                    })?;
-                match event {
-                    CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
-                        key: ref ev_key,
-                        direction,
-                        ref state,
-                        ..
-                    }) if ev_key == &key && direction == PaginationDirection::Backward => {
-                        match state {
-                            PaginationState::Paginating => {
-                                pag_saw_paginating = true;
-                            }
-                            PaginationState::Idle => {
-                                if !pag_saw_paginating {
-                                    return Err(
-                                        "cache_restore offline: Idle without Paginating".to_owned()
-                                    );
-                                }
-                                pag_saw_paginating = false;
-                                batch_count += 1;
-                                if anchor_reached {
-                                    break 'pag_loop;
-                                }
-                                let repag_id = conn2.next_request_id();
-                                conn2
-                                    .command(CoreCommand::Timeline(TimelineCommand::Paginate {
-                                        request_id: repag_id,
-                                        key: key.clone(),
-                                        direction: PaginationDirection::Backward,
-                                        event_count: CACHE_RESTORE_PAGINATE_BATCH,
-                                    }))
-                                    .await
-                                    .map_err(|e| {
-                                        format!("cache_restore: offline re-paginate failed: {e}")
-                                    })?;
-                            }
-                            PaginationState::EndReached => {
-                                batch_count += 1;
-                                break 'pag_loop;
-                            }
-                            PaginationState::Failed { .. } => {
-                                // Network blocked — this is the repro case.
-                                all_cache_served = false;
-                                eprintln!(
-                                    "cache_restore room {} paginate failed while offline (network required for gap)",
-                                    room_idx
-                                );
-                                break 'pag_loop;
-                            }
-                        }
-                    }
-                    CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-                        key: ref ev_key,
-                        ref diffs,
-                        ..
-                    }) if ev_key == &key => {
-                        for diff in diffs {
-                            for eid in collect_event_ids_from_diff(diff) {
-                                accumulated_ids.insert(eid.clone());
-                                if &eid == anchor {
-                                    anchor_reached = true;
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
+                .map_err(|_| {
+                    "cache_restore offline: timed out waiting for AnchorRestoreFinished".to_owned()
+                })?
+                .map_err(|lag| {
+                    format!(
+                        "cache_restore offline: event stream lagged (skipped={})",
+                        lag.skipped
+                    )
+                })?;
+            match event {
+                CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                    key: ref ev_key,
+                    direction,
+                    state: PaginationState::Paginating,
+                    ..
+                }) if ev_key == &key && direction == PaginationDirection::Backward => {
+                    cycle_count += 1;
                 }
+                CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
+                    request_id: ev_req,
+                    key: ref ev_key,
+                    ref status,
+                }) if ev_req == restore_req && ev_key == &key => {
+                    break status.clone();
+                }
+                _ => {}
+            }
+        };
+
+        let room_ms = room_start.elapsed().as_millis();
+        total_cycles += cycle_count;
+        let status_label = match &status {
+            TimelineAnchorRestoreStatus::Found => "found",
+            TimelineAnchorRestoreStatus::EndReached => "end_reached",
+            TimelineAnchorRestoreStatus::BudgetExhausted => "budget_exhausted",
+            TimelineAnchorRestoreStatus::Superseded => "superseded",
+            TimelineAnchorRestoreStatus::Failed { .. } => "failed",
+        };
+        eprintln!(
+            "cache_restore room={room_idx} cycles={cycle_count} ms={room_ms} status={status_label}"
+        );
+
+        match &status {
+            TimelineAnchorRestoreStatus::Found | TimelineAnchorRestoreStatus::EndReached => {}
+            TimelineAnchorRestoreStatus::BudgetExhausted => {
+                // Budget exhausted with network blocked = a gap required the network.
+                all_found = false;
+                eprintln!(
+                    "cache_restore room={room_idx}: BudgetExhausted offline — cache gap required network"
+                );
+            }
+            TimelineAnchorRestoreStatus::Failed { .. } | TimelineAnchorRestoreStatus::Superseded => {
+                all_found = false;
+                eprintln!("cache_restore room={room_idx}: restore status={status_label} offline");
             }
         }
 
-        let room_ms = room_start.elapsed().as_millis();
-        total_batches += batch_count;
-        let anchor_status = if anchor_reached { "ok" } else { "not_reached" };
-        // Private-data-free diagnostic: batches + ms only, no ids.
-        eprintln!(
-            "cache_restore room={} batches={} ms={} anchor={}",
-            room_idx, batch_count, room_ms, anchor_status
-        );
+        if cycle_count > CACHE_RESTORE_MAX_CYCLES {
+            max_cycles_exceeded = true;
+        }
 
         let unsub_id = conn2.next_request_id();
         conn2
@@ -2861,22 +2809,28 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
 
     let aggregate_ms = aggregate_start.elapsed().as_millis();
     eprintln!(
-        "cache_restore total_batches={} total_ms={}",
-        total_batches, aggregate_ms
+        "cache_restore total_cycles={total_cycles} total_ms={aggregate_ms}"
     );
 
     cleanup_logged_in_runtime(conn2, runtime2, account_key, "cache_restore cleanup").await?;
 
-    if all_cache_served {
-        println!("cache_restore_offline=ok");
-        println!("cache_restore=ok");
-        Ok(())
-    } else {
-        Err(
-            "cache_restore: one or more rooms required network while offline (cache gap — expected on current main; this is the characterization/RED state)"
-                .to_owned(),
-        )
+    if !all_found {
+        return Err(
+            "cache_restore: one or more rooms required network while offline (cache gap)".to_owned(),
+        );
     }
+
+    if max_cycles_exceeded {
+        return Err(format!(
+            "cache_restore: deep anchor reached from cache but via >{CACHE_RESTORE_MAX_CYCLES} \
+             backward-paginate cycles per room — O(depth) restore, not a direct cache-context \
+             restore (EXPECTED RED on current main; total_cycles={total_cycles})"
+        ));
+    }
+
+    println!("cache_restore_offline=ok");
+    println!("cache_restore=ok");
+    Ok(())
 }
 
 async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
