@@ -49,6 +49,7 @@ use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
 use matrix_sdk::ruma::{MxcUri, OwnedMxcUri};
 use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
 
+use crate::startup_trace::{self, StartupPhase};
 use crate::command::{
     AccountCommand, RoomCommand, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand,
     SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SyncCommand, ThreadsListCommand,
@@ -3689,6 +3690,7 @@ impl AccountActor {
         key_id: SessionKeyId,
         outcome: RestoreOutcome,
     ) {
+        let restore_started = startup_trace::now_if_enabled();
         let session_json = match self.store.credential_backend().load_matrix_session(&key_id) {
             Ok(stored) => stored,
             Err(err) if koushi_key::is_missing_credential_error(&err) => {
@@ -3724,6 +3726,7 @@ impl AccountActor {
                 self.emit_failure(request_id, failure);
             }
             Ok(session) => {
+                startup_trace::trace_phase(StartupPhase::Restore, restore_started);
                 let info = session.info.clone();
                 let account_key = account_key_from_info(&info);
 

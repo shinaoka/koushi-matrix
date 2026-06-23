@@ -74,6 +74,12 @@ const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
 /// Search index mutation queue capacity (canon, overview.md: 512).
 pub const SEARCH_INDEX_MUTATION_QUEUE: usize = 512;
 
+/// Automatic history crawling is held off for this long after the crawler first
+/// has work, so it does not contend with user-visible pagination during the
+/// startup window. Crawler timing is Rust-owned (not a user setting). The
+/// maintainer confirmed a ~1 minute delay is fully acceptable (#123).
+const CRAWLER_STARTUP_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
+
 fn current_epoch_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -396,6 +402,10 @@ pub(crate) struct SearchActor {
     /// queued checkpoint records the current generation, and stale page results
     /// are discarded before they can update the index or reducer state.
     crawl_settings_generation: u64,
+    /// True once the startup delay has elapsed (automatic crawls may start).
+    crawl_delay_elapsed: bool,
+    /// One-shot startup-delay timer; its completion is awaited in `run`.
+    crawl_delay_timer: Option<executor::JoinHandle<()>>,
 }
 
 impl SearchActor {
@@ -424,6 +434,8 @@ impl SearchActor {
             active_crawl_checkpoint: None,
             completed_rooms: HashSet::new(),
             crawl_settings_generation: 0,
+            crawl_delay_elapsed: false,
+            crawl_delay_timer: None,
         };
 
         // Spawn the actor task.
@@ -444,6 +456,13 @@ impl SearchActor {
                     if let Ok(result) = crawl_result {
                         self.handle_history_crawl_page_result(result).await;
                     }
+                    self.start_next_history_crawl_page();
+                }
+                _ = async {
+                    self.crawl_delay_timer.as_mut().unwrap().await.ok();
+                }, if self.crawl_delay_timer.is_some() => {
+                    self.crawl_delay_timer = None;
+                    self.crawl_delay_elapsed = true;
                     self.start_next_history_crawl_page();
                 }
                 msg = self.msg_rx.recv() => {
@@ -811,6 +830,28 @@ impl SearchActor {
         if self.active_crawl_page.is_some() {
             return;
         }
+        // Startup delay: hold AUTOMATIC crawls until the delay elapses; manual
+        // (explicit StartHistoryCrawl) checkpoints bypass it.
+        if !self.crawl_delay_elapsed {
+            // During the startup delay only MANUAL checkpoints may start. If one
+            // is queued (even behind automatic work), pull it to the front so the
+            // pop below starts it; otherwise arm the delay timer and wait.
+            match self.crawl_queue.iter().position(|c| c.manual) {
+                Some(pos) => {
+                    if let Some(manual) = self.crawl_queue.remove(pos) {
+                        self.crawl_queue.push_front(manual);
+                    }
+                }
+                None => {
+                    if !self.crawl_queue.is_empty() && self.crawl_delay_timer.is_none() {
+                        self.crawl_delay_timer = Some(executor::spawn(async {
+                            executor::sleep(CRAWLER_STARTUP_DELAY).await;
+                        }));
+                    }
+                    return;
+                }
+            }
+        }
         let Some(checkpoint) = self.crawl_queue.pop_front() else {
             return;
         };
@@ -890,6 +931,19 @@ impl SearchActor {
                     }])
                     .await;
             }
+            HistoryCrawlPageResult::Preempted { checkpoint } => {
+                if checkpoint.settings_generation != self.crawl_settings_generation {
+                    return;
+                }
+                if !checkpoint.manual && !self.available_crawl_rooms.contains(&checkpoint.room_id) {
+                    return;
+                }
+                // No progress was made; retry this checkpoint next. The crawler's
+                // next acquire blocks behind the waiting timeline (waiting_timeline),
+                // so this does not livelock.
+                self.queued_crawl_rooms.insert(checkpoint.room_id.clone());
+                self.crawl_queue.push_front(checkpoint);
+            }
         }
     }
 
@@ -945,6 +999,9 @@ impl SearchActor {
             handle.abort();
         }
         self.active_crawl_checkpoint = None;
+        if let Some(timer) = self.crawl_delay_timer.take() {
+            timer.abort();
+        }
     }
 
     fn invalidate_history_crawler_cache(&mut self) {
@@ -1416,6 +1473,49 @@ mod tests {
         assert!(
             handle_impl.contains(".try_send(SearchActorMessage::RoomsAvailable"),
             "nonblocking crawler notification delivery must use try_send"
+        );
+    }
+
+    #[test]
+    fn preempted_crawl_page_is_requeued() {
+        let source = include_str!("search.rs");
+        let production = source.split("\nmod tests").next().unwrap_or(source);
+        let handler = production
+            .split("fn handle_history_crawl_page_result")
+            .nth(1)
+            .and_then(|s| s.split("\n    fn ").next())
+            .expect("handle_history_crawl_page_result should exist");
+        assert!(
+            handler.contains("HistoryCrawlPageResult::Preempted"),
+            "the result handler must handle Preempted"
+        );
+        assert!(
+            handler.contains("push_front"),
+            "a preempted checkpoint must be re-queued at the front (no history lost)"
+        );
+    }
+
+    #[test]
+    fn automatic_crawl_starts_are_delayed_at_startup() {
+        let source = include_str!("search.rs");
+        let production = source.split("\nmod tests").next().unwrap_or(source);
+        assert!(
+            production.contains("CRAWLER_STARTUP_DELAY"),
+            "there must be a crawler startup-delay constant"
+        );
+        let starter = production
+            .split("fn start_next_history_crawl_page")
+            .nth(1)
+            .and_then(|s| s.split("\n    fn ").next())
+            .or_else(|| production.split("fn start_next_history_crawl_page").nth(1))
+            .expect("start_next_history_crawl_page should exist");
+        assert!(
+            starter.contains("crawl_delay_elapsed"),
+            "automatic crawl-page starts must be gated on the startup delay"
+        );
+        assert!(
+            starter.contains("manual"),
+            "manual crawls must bypass the startup delay"
         );
     }
 }

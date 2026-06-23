@@ -23,12 +23,31 @@ struct MessagesBackpressureInner {
 #[derive(Debug, Default)]
 struct MessagesBackpressureState {
     active: bool,
+    /// True while the active permit is held by a crawler request.
+    active_is_crawler: bool,
+    /// Cancellation signal for the currently-active crawler permit, taken by a
+    /// waiting timeline acquirer to make the crawler yield mid-page.
+    active_crawler_cancel: Option<Arc<Notify>>,
     waiting_timeline: u64,
 }
 
 #[must_use]
 pub(crate) struct MessagesRequestPermit {
     inner: Arc<MessagesBackpressureInner>,
+    /// `Some` for crawler permits — resolves when a timeline acquirer requests
+    /// preemption. `None` for timeline permits (never cancelled).
+    cancel: Option<Arc<Notify>>,
+}
+
+impl MessagesRequestPermit {
+    /// Resolves when a timeline acquirer has asked this crawler permit to yield.
+    /// For a timeline permit this never resolves.
+    pub(crate) async fn cancelled(&self) {
+        match &self.cancel {
+            Some(cancel) => cancel.notified().await,
+            None => std::future::pending::<()>().await,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -68,9 +87,31 @@ impl MessagesBackpressure {
                         slot.finish(&mut state);
                     }
                     state.active = true;
+                    let cancel = match priority {
+                        MessagesRequestPriority::Crawler => {
+                            let cancel = Arc::new(Notify::new());
+                            state.active_is_crawler = true;
+                            state.active_crawler_cancel = Some(cancel.clone());
+                            Some(cancel)
+                        }
+                        MessagesRequestPriority::Timeline => {
+                            state.active_is_crawler = false;
+                            None
+                        }
+                    };
                     return MessagesRequestPermit {
                         inner: self.inner.clone(),
+                        cancel,
                     };
+                }
+                // Timeline is blocked behind an active crawler: ask it to yield.
+                if priority == MessagesRequestPriority::Timeline
+                    && state.active
+                    && state.active_is_crawler
+                {
+                    if let Some(cancel) = &state.active_crawler_cancel {
+                        cancel.notify_one();
+                    }
                 }
             }
             notified.await;
@@ -112,6 +153,8 @@ impl Drop for MessagesRequestPermit {
         {
             let mut state = lock_state(&self.inner);
             state.active = false;
+            state.active_is_crawler = false;
+            state.active_crawler_cancel = None;
         }
         self.inner.notify.notify_waiters();
     }
@@ -169,6 +212,31 @@ mod tests {
             .expect("sender alive");
         assert_eq!(second, "crawler");
         crawler.await.expect("crawler task should finish");
+    }
+
+    #[tokio::test]
+    async fn timeline_acquire_cancels_active_crawler_permit() {
+        let gate = MessagesBackpressure::default();
+        let crawler = gate.acquire_crawler().await;
+
+        // A timeline acquire while the crawler holds the permit must signal the
+        // crawler to yield: its `cancelled()` future resolves.
+        let timeline_gate = gate.clone();
+        let timeline = tokio::spawn(async move {
+            let _permit = timeline_gate.acquire_timeline().await;
+        });
+        tokio::task::yield_now().await;
+
+        tokio::time::timeout(Duration::from_secs(1), crawler.cancelled())
+            .await
+            .expect("active crawler must be cancelled when a timeline acquire is waiting");
+
+        // Releasing the crawler lets the timeline acquire proceed.
+        drop(crawler);
+        tokio::time::timeout(Duration::from_secs(1), timeline)
+            .await
+            .expect("timeline must acquire after the crawler yields")
+            .expect("timeline task should finish");
     }
 
     #[tokio::test]

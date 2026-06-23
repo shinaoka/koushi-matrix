@@ -105,6 +105,7 @@ use crate::ids::{RequestId, TimelineBatchId, TimelineGeneration, TimelineKey, Ti
 use crate::link_preview::LinkPreviewContext;
 use crate::messages_backpressure::MessagesBackpressure;
 use crate::search::SearchIndexMessage;
+use crate::startup_trace::{self, StartupPhase};
 
 /// Bounded diff queue capacity per subscribed timeline (overview.md, Async rule 10).
 pub const TIMELINE_DIFF_QUEUE_CAPACITY: usize = 128;
@@ -859,10 +860,12 @@ impl TimelineManagerActor {
         };
 
         trace("build_begin");
+        let build_started = startup_trace::now_if_enabled();
         let timeline_result = matrix_sdk_ui::timeline::TimelineBuilder::new(&room)
             .with_focus(focus)
             .build()
             .await;
+        startup_trace::trace_phase(StartupPhase::TimelineBuild, build_started);
         trace("build_done");
 
         let timeline = match timeline_result {
@@ -1471,8 +1474,54 @@ impl TimelineActor {
         link_preview_policy: LinkPreviewContext,
         messages_backpressure: MessagesBackpressure,
     ) -> TimelineActorHandle {
+        let mut auxiliary_tasks: Vec<executor::JoinHandle<()>> = Vec::new();
+
+        // Env-gated origin observer. Subscribe the event cache BEFORE the
+        // timeline load so the initial load's provenance (store=cache vs
+        // network) is observed via the updates stream. Zero cost when
+        // KOUSHI_STARTUP_TRACE is unset.
+        if startup_trace::enabled() {
+            if let Ok(parsed_room_id) = matrix_sdk::ruma::RoomId::parse(key.room_id()) {
+                if let Some(observer_room) = session.client().get_room(&parsed_room_id) {
+                    if let Ok((cache, drop_guards)) = observer_room.event_cache().await {
+                        if let Ok((initial, mut updates)) = cache.subscribe().await {
+                            if !initial.is_empty() {
+                                // Cache already had events at restore — warm initial state.
+                                startup_trace::trace_origin("cache");
+                            }
+                            auxiliary_tasks.push(executor::spawn(async move {
+                                let _event_cache_drop_guards = drop_guards;
+                                use matrix_sdk::event_cache::{EventsOrigin, RoomEventCacheUpdate};
+                                loop {
+                                    match updates.recv().await {
+                                        Ok(RoomEventCacheUpdate::UpdateTimelineEvents(diffs)) => {
+                                            let origin = match diffs.origin {
+                                                EventsOrigin::Cache => "cache",
+                                                EventsOrigin::Pagination => "network",
+                                                EventsOrigin::Sync => "sync",
+                                            };
+                                            startup_trace::trace_origin(origin);
+                                        }
+                                        Ok(_) => {}
+                                        // Broadcast lagged or channel closed — stop the observer.
+                                        Err(_) => break,
+                                    }
+                                }
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+
         // Subscribe to the SDK timeline to get initial items + diff stream.
+        let subscribe_started = startup_trace::now_if_enabled();
         let (initial_sdk_items, diff_stream) = timeline.subscribe().await;
+        startup_trace::trace_phase_items(
+            StartupPhase::TimelineSubscribe,
+            subscribe_started,
+            initial_sdk_items.len(),
+        );
         let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
         let room_id = key.room_id().to_owned();
 
@@ -1528,8 +1577,6 @@ impl TimelineActor {
         {
             let _ = action_tx.try_send(vec![action]);
         }
-
-        let mut auxiliary_tasks = Vec::new();
 
         // Spawn the diff relay task: converts SDK VectorDiff stream into actor messages.
         let relay_tx = actor_tx.clone();
@@ -1875,14 +1922,19 @@ impl TimelineActor {
             state: PaginationState::Paginating,
         }));
 
+        let gate_started = startup_trace::now_if_enabled();
         let result = {
             let _permit = self.messages_backpressure.acquire_timeline().await;
-            match direction {
+            let gate_wait = gate_started.map(|t| t.elapsed());
+            let paginate_started = startup_trace::now_if_enabled();
+            let outcome = match direction {
                 PaginationDirection::Backward => {
                     self.timeline.paginate_backwards(event_count).await
                 }
                 PaginationDirection::Forward => self.timeline.paginate_forwards(event_count).await,
-            }
+            };
+            startup_trace::trace_paginate(paginate_started, gate_wait, matches!(outcome, Ok(true)));
+            outcome
         };
 
         let next_state = match result {
@@ -8073,6 +8125,57 @@ mod tests {
         assert!(
             debug.contains("txn-vis"),
             "txn_id should be visible: {debug}"
+        );
+    }
+
+    #[test]
+    fn timeline_subscribe_and_paginate_emit_startup_trace() {
+        let source = include_str!("timeline.rs");
+        // Search production code only; excluding the test module prevents the
+        // assertion strings below from satisfying themselves (include_str! pulls in
+        // this test's own body).
+        let production = source.split("\nmod tests").next().unwrap_or(source);
+        // build lives in the manager's subscribe handler; subscribe lives in
+        // TimelineActor::spawn. Assert presence without forcing their location.
+        assert!(
+            production.contains("StartupPhase::TimelineBuild"),
+            "the SDK TimelineBuilder::build phase must be timed"
+        );
+        assert!(
+            production.contains("StartupPhase::TimelineSubscribe"),
+            "the timeline.subscribe() phase must be timed with an item bucket"
+        );
+        let paginate_src = production
+            .split("async fn handle_paginate")
+            .nth(1)
+            .and_then(|s| s.split("async fn handle_send_text").next())
+            .expect("handle_paginate should exist");
+        assert!(
+            paginate_src.contains("trace_paginate"),
+            "pagination must emit a startup_trace paginate token"
+        );
+    }
+
+    #[test]
+    fn timeline_subscribe_spawns_env_gated_origin_observer() {
+        let source = include_str!("timeline.rs");
+        // Search production code only; excluding the test module prevents the
+        // assertion strings below from satisfying themselves (include_str! pulls in
+        // this test's own body).
+        let production = source.split("\nmod tests").next().unwrap_or(source);
+        // The observer lives in TimelineActor::spawn alongside other auxiliary
+        // tasks. Assert whole-source presence without forcing a code location.
+        assert!(
+            production.contains("startup_trace::enabled()"),
+            "origin observer must be gated on KOUSHI_STARTUP_TRACE so production is unaffected"
+        );
+        assert!(
+            production.contains("event_cache()"),
+            "origin observer must subscribe the SDK room event cache"
+        );
+        assert!(
+            production.contains("EventsOrigin"),
+            "origin observer must read the SDK EventsOrigin (cache/network/sync)"
         );
     }
 
