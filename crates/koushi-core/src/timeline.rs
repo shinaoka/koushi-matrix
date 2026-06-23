@@ -1492,6 +1492,13 @@ struct RestoreTimelineAnchorState {
     /// A settle tick is conclusive when `diff_batch_seq > settle_baseline_seq`
     /// (final DiffBatch has been processed) or when ticks expire with no diff.
     settle_baseline_seq: u64,
+    /// Minimum `diff_batch_seq` value that must be reached before the settle
+    /// is considered conclusive for the `diff_arrived` fast-path.
+    /// For single `paginate_once` calls: `settle_baseline_seq + 1` (one batch).
+    /// For bulk cache loads: `settle_baseline_seq + expected_batches`.
+    /// This prevents early conclusion when only the first of N bulk-load batches
+    /// has landed, while the anchor may be in a later batch.
+    settle_min_seq: u64,
     /// Which terminal status to emit if the anchor is absent when settling ends.
     /// `Found` always takes priority when the anchor lands during settling.
     settle_terminal: SettleTerminal,
@@ -2072,6 +2079,7 @@ impl TimelineActor {
             continuation_serial: None,
             end_reached_settle: None,
             settle_baseline_seq: 0,
+            settle_min_seq: 1,
             settle_terminal: SettleTerminal::EndReached,
         };
 
@@ -2108,7 +2116,11 @@ impl TimelineActor {
                 self.finish_anchor_restore(restore.request_id, TimelineAnchorRestoreStatus::Found);
                 return;
             }
-            let diff_arrived = self.diff_batch_seq > restore.settle_baseline_seq;
+            // For single `paginate_once` calls, `settle_min_seq` is baseline+1
+            // (one batch expected). For bulk cache loads, it is
+            // baseline + expected_chunks to ensure ALL loaded batches have
+            // landed before we conclude (the anchor may be in the last batch).
+            let diff_arrived = self.diff_batch_seq >= restore.settle_min_seq;
             let remaining = restore.end_reached_settle.unwrap_or(0);
             if diff_arrived || remaining == 0 {
                 let terminal = match restore.settle_terminal {
@@ -2141,59 +2153,198 @@ impl TimelineActor {
         }
 
         restore.in_flight = true;
-        restore.max_batches_remaining = restore.max_batches_remaining.saturating_sub(1);
         let request_id = restore.request_id;
         let event_count = restore.event_count;
 
-        let result = self
-            .paginate_once(request_id, PaginationDirection::Backward, event_count)
-            .await;
+        // Stage 2: attempt a cache-only bulk backward load in a single call
+        // instead of looping one chunk at a time through `paginate_once`.
+        // `u16::MAX` covers any realistic on-disk depth; the SDK stops at the
+        // first gap or start-of-timeline chunk so no unnecessary work is done.
+        let bulk_n =
+            (restore.max_batches_remaining as u32).saturating_mul(event_count as u32).min(u16::MAX as u32) as u16;
+        let cache_result = self.timeline.live_restore_from_cache(bulk_n).await;
         restore.in_flight = false;
 
-        if self.timeline_contains_event_id(&restore.event_id) {
-            self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
-            return;
-        }
+        match cache_result {
+            Ok(outcome) => {
+                // The bulk load fired `RoomEventCacheUpdate::UpdateTimelineEvents`
+                // broadcasts for every disk chunk, which are ingested by the
+                // live Timeline's tasks loop and arrive as actor `DiffBatch`
+                // messages. Those are buffered into `restore_emit_buffer` while
+                // `restore_anchor.is_some()`, so we still get a single coalesced
+                // `ItemsUpdated` flush at the terminal.
+                restore.max_batches_remaining =
+                    restore.max_batches_remaining.saturating_sub(1).max(0);
 
-        let end_reached = match result {
-            Ok(end_reached) => end_reached,
-            Err(kind) => {
-                self.finish_anchor_restore(
-                    request_id,
-                    TimelineAnchorRestoreStatus::Failed { kind },
-                );
-                return;
-            }
-        };
-        if end_reached {
-            // The final pagination's events arrive as an async DiffBatch.
-            // Settle rather than finishing immediately so the buffer is complete.
-            if self.timeline_contains_event_id(&restore.event_id) {
-                self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
-                return;
-            }
-            restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
-            restore.settle_baseline_seq = self.diff_batch_seq;
-            restore.settle_terminal = SettleTerminal::EndReached;
-            self.schedule_restore_anchor_continue(restore).await;
-            return;
-        }
-        if restore.max_batches_remaining == 0 {
-            // Last budgeted page completed (not end-of-room). The same async
-            // DiffBatch race applies — enter settle to let the final batch land.
-            if self.timeline_contains_event_id(&restore.event_id) {
-                self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
-                return;
-            }
-            restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
-            restore.settle_baseline_seq = self.diff_batch_seq;
-            restore.settle_terminal = SettleTerminal::BudgetExhausted;
-            self.schedule_restore_anchor_continue(restore).await;
-            return;
-        }
+                if self.timeline_contains_event_id(&restore.event_id) {
+                    self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
+                    return;
+                }
 
-        restore.awaiting_diff_batch = true;
-        self.schedule_restore_anchor_continue(restore).await;
+                if outcome.hit_gap {
+                    // The cache is not contiguous up to the anchor depth.
+                    // Fall back to the per-chunk paginate_once loop, which can
+                    // resolve gaps via the network for non-contiguous caches.
+                    restore.in_flight = true;
+                    restore.max_batches_remaining =
+                        restore.max_batches_remaining.saturating_sub(1);
+
+                    let result = self
+                        .paginate_once(request_id, PaginationDirection::Backward, event_count)
+                        .await;
+                    restore.in_flight = false;
+
+                    if self.timeline_contains_event_id(&restore.event_id) {
+                        self.finish_anchor_restore(
+                            request_id,
+                            TimelineAnchorRestoreStatus::Found,
+                        );
+                        return;
+                    }
+
+                    let end_reached = match result {
+                        Ok(end_reached) => end_reached,
+                        Err(kind) => {
+                            self.finish_anchor_restore(
+                                request_id,
+                                TimelineAnchorRestoreStatus::Failed { kind },
+                            );
+                            return;
+                        }
+                    };
+                    if end_reached {
+                        if self.timeline_contains_event_id(&restore.event_id) {
+                            self.finish_anchor_restore(
+                                request_id,
+                                TimelineAnchorRestoreStatus::Found,
+                            );
+                            return;
+                        }
+                        restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
+                        restore.settle_baseline_seq = self.diff_batch_seq;
+                        restore.settle_min_seq = self.diff_batch_seq.wrapping_add(1);
+                        restore.settle_terminal = SettleTerminal::EndReached;
+                        self.schedule_restore_anchor_continue(restore).await;
+                        return;
+                    }
+                    if restore.max_batches_remaining == 0 {
+                        if self.timeline_contains_event_id(&restore.event_id) {
+                            self.finish_anchor_restore(
+                                request_id,
+                                TimelineAnchorRestoreStatus::Found,
+                            );
+                            return;
+                        }
+                        restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
+                        restore.settle_baseline_seq = self.diff_batch_seq;
+                        restore.settle_min_seq = self.diff_batch_seq.wrapping_add(1);
+                        restore.settle_terminal = SettleTerminal::BudgetExhausted;
+                        self.schedule_restore_anchor_continue(restore).await;
+                        return;
+                    }
+                    restore.awaiting_diff_batch = true;
+                    self.schedule_restore_anchor_continue(restore).await;
+                    return;
+                }
+
+                // No gap: cache-only bulk load completed (reached_start or budget).
+                // The bulk diffs are broadcast and will land as DiffBatch messages
+                // through a 3-hop async pipeline:
+                //   conclude_backwards_pagination_from_disk →
+                //   room_event_cache_updates_task → handle_remote_events_with_diffs →
+                //   Timeline observable → relay task diff_stream → DiffBatch actor msg.
+                //
+                // Each hop requires at least one Tokio scheduling slot. `chunks_loaded`
+                // is the exact number of `conclude_backwards_pagination_from_disk`
+                // broadcasts fired — one per disk chunk read. Set `settle_min_seq` to
+                // `baseline + chunks_loaded` so the `diff_arrived` fast-path only
+                // concludes when ALL chunks' DiffBatch messages have been processed by
+                // this actor. This prevents settling on the very first DiffBatch (which
+                // carries only the newest chunk, not the anchor in the oldest chunk).
+                //
+                // Scale settle_ticks proportionally to chunks so each chunk's 3-hop
+                // pipeline has enough Tokio scheduling rounds as a safety fallback.
+                // Cap at u8::MAX (covers ~1700 events / ~13 chunks at 128 events/chunk).
+                let expected_batches = outcome.chunks_loaded as u64;
+                let settle_ticks = {
+                    let estimated = (outcome.chunks_loaded as u32)
+                        .saturating_mul(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS as u32 + 2)
+                        .saturating_add(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS as u32);
+                    estimated.min(u8::MAX as u32) as u8
+                };
+                let settle_terminal = if outcome.reached_start {
+                    SettleTerminal::EndReached
+                } else {
+                    SettleTerminal::BudgetExhausted
+                };
+                restore.end_reached_settle = Some(settle_ticks);
+                restore.settle_baseline_seq = self.diff_batch_seq;
+                restore.settle_min_seq = self.diff_batch_seq.wrapping_add(expected_batches);
+                restore.settle_terminal = settle_terminal;
+                self.schedule_restore_anchor_continue(restore).await;
+            }
+
+            Err(_) => {
+                // Cache load error — fall back to the per-chunk paginate_once
+                // path for a single attempt, treating the error as transient.
+                restore.in_flight = true;
+                restore.max_batches_remaining =
+                    restore.max_batches_remaining.saturating_sub(1);
+
+                let result = self
+                    .paginate_once(request_id, PaginationDirection::Backward, event_count)
+                    .await;
+                restore.in_flight = false;
+
+                if self.timeline_contains_event_id(&restore.event_id) {
+                    self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
+                    return;
+                }
+
+                let end_reached = match result {
+                    Ok(end_reached) => end_reached,
+                    Err(kind) => {
+                        self.finish_anchor_restore(
+                            request_id,
+                            TimelineAnchorRestoreStatus::Failed { kind },
+                        );
+                        return;
+                    }
+                };
+                if end_reached {
+                    if self.timeline_contains_event_id(&restore.event_id) {
+                        self.finish_anchor_restore(
+                            request_id,
+                            TimelineAnchorRestoreStatus::Found,
+                        );
+                        return;
+                    }
+                    restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
+                    restore.settle_baseline_seq = self.diff_batch_seq;
+                    restore.settle_min_seq = self.diff_batch_seq.wrapping_add(1);
+                    restore.settle_terminal = SettleTerminal::EndReached;
+                    self.schedule_restore_anchor_continue(restore).await;
+                    return;
+                }
+                if restore.max_batches_remaining == 0 {
+                    if self.timeline_contains_event_id(&restore.event_id) {
+                        self.finish_anchor_restore(
+                            request_id,
+                            TimelineAnchorRestoreStatus::Found,
+                        );
+                        return;
+                    }
+                    restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
+                    restore.settle_baseline_seq = self.diff_batch_seq;
+                    restore.settle_min_seq = self.diff_batch_seq.wrapping_add(1);
+                    restore.settle_terminal = SettleTerminal::BudgetExhausted;
+                    self.schedule_restore_anchor_continue(restore).await;
+                    return;
+                }
+                restore.awaiting_diff_batch = true;
+                self.schedule_restore_anchor_continue(restore).await;
+            }
+        }
     }
 
     async fn maybe_continue_restore_anchor_after_diff(&mut self) {
@@ -8568,7 +8719,11 @@ mod tests {
             struct_src.contains("settle_terminal"),
             "RestoreTimelineAnchorState must carry settle_terminal to record EndReached vs BudgetExhausted"
         );
-        // 4. The settle tick must gate on diff_batch_seq > settle_baseline_seq.
+        // 4. The settle tick must gate on diff_batch_seq >= settle_min_seq.
+        // `settle_min_seq` is set to `settle_baseline_seq + 1` for single-paginate
+        // terminals and `settle_baseline_seq + expected_batches` for bulk loads,
+        // so the fast `diff_arrived` path only concludes after ALL expected
+        // DiffBatch messages have landed (not just the first one for bulk loads).
         let continue_src = production
             .split("async fn handle_restore_timeline_anchor_continue(")
             .nth(1)
@@ -8577,8 +8732,8 @@ mod tests {
             .next()
             .expect("continuation must end before maybe_continue");
         assert!(
-            continue_src.contains("diff_batch_seq > restore.settle_baseline_seq"),
-            "settle tick must check diff_batch_seq > settle_baseline_seq before concluding"
+            continue_src.contains("diff_batch_seq >= restore.settle_min_seq"),
+            "settle tick must check diff_batch_seq >= settle_min_seq before concluding"
         );
         // 5. EndReached entry must capture settle_baseline_seq.
         assert!(
