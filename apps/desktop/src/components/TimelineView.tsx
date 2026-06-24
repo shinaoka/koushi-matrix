@@ -286,6 +286,7 @@ type CapturedTimelineScrollAnchor = {
 };
 
 const TIMELINE_SCROLL_ANCHOR_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const TIMELINE_ANCHOR_SETTLE_TIMEOUT_MS = 250;
 
 function captureRoomScrollAnchor(container: HTMLElement): CapturedTimelineScrollAnchor | null {
   const containerRect = container.getBoundingClientRect();
@@ -342,6 +343,19 @@ function findRoomScrollAnchorNode(
 
 function roomScrollAnchorIsStale(anchor: TimelineScrollAnchor): boolean {
   return Date.now() - anchor.updated_at_ms > TIMELINE_SCROLL_ANCHOR_MAX_AGE_MS;
+}
+
+function settleAnchorDependency(
+  promise: Promise<unknown> | undefined,
+  timeoutMs = TIMELINE_ANCHOR_SETTLE_TIMEOUT_MS
+): Promise<unknown> {
+  if (!promise) {
+    return Promise.resolve();
+  }
+  return Promise.race([
+    promise.catch(() => undefined),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))
+  ]);
 }
 
 function roomScrollAnchorSignature(roomId: string, anchor: TimelineScrollAnchor): string {
@@ -1406,6 +1420,7 @@ export const TimelineView = memo(function TimelineView({
     listOffsetTop: 0
   });
   const [anchorRestoreCompletionVersion, setAnchorRestoreCompletionVersion] = useState(0);
+  const [, setScrollAnchorSettlementVersion] = useState(0);
   const virtualItemHeight = TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
   const [measuredHeightVersion, setMeasuredHeightVersion] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1430,6 +1445,7 @@ export const TimelineView = memo(function TimelineView({
    * re-correction, so the re-correction runs at most once per restore.
    */
   const postSettleRestoredSignatureRef = useRef<string | null>(null);
+  const anchorAsyncGenerationRef = useRef(0);
   const retainedRoomScrollAnchorRef = useRef<{
     signature: string;
     anchor: TimelineScrollAnchor;
@@ -1544,10 +1560,15 @@ export const TimelineView = memo(function TimelineView({
   ]);
 
   const runWithSuppressedScrollAnchorCapture = useCallback((action: () => void) => {
+    const asyncGeneration = anchorAsyncGenerationRef.current;
     suppressScrollAnchorCaptureRef.current = true;
     action();
     requestAnimationFrame(() => {
+      if (anchorAsyncGenerationRef.current !== asyncGeneration) {
+        return;
+      }
       suppressScrollAnchorCaptureRef.current = false;
+      setScrollAnchorSettlementVersion((current) => current + 1);
     });
   }, []);
   // --- Event subscription: local stores apply reducers; App stores keep view effects here. ---
@@ -1731,6 +1752,20 @@ export const TimelineView = memo(function TimelineView({
     void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
   }, [timelineKeyHash, transport]);
 
+  useLayoutEffect(() => {
+    anchorAsyncGenerationRef.current += 1;
+    pendingAnchorRef.current = null;
+    anchorRestorePendingRef.current = false;
+    roomScrollAnchorRestorePendingRef.current = false;
+    suppressScrollAnchorCaptureRef.current = false;
+    pendingScrollAnchorRef.current = null;
+    restoredRoomScrollAnchorSignatureRef.current = null;
+    requestedRoomScrollAnchorRestoreSignatureRef.current = null;
+    exhaustedRoomScrollAnchorRestoreSignatureRef.current = null;
+    retainedRoomScrollAnchorRef.current = null;
+    postSettleRestoredSignatureRef.current = null;
+  }, [timelineKeyHash]);
+
   useEffect(() => {
     setNavigationSnapshot(null);
     setViewportAtBottom(false);
@@ -1753,6 +1788,7 @@ export const TimelineView = memo(function TimelineView({
     requestedRoomScrollAnchorRestoreSignatureRef.current = null;
     exhaustedRoomScrollAnchorRestoreSignatureRef.current = null;
     retainedRoomScrollAnchorRef.current = null;
+    postSettleRestoredSignatureRef.current = null;
     if (scrollAnchorDispatchTimerRef.current !== null) {
       window.clearTimeout(scrollAnchorDispatchTimerRef.current);
       scrollAnchorDispatchTimerRef.current = null;
@@ -1763,6 +1799,11 @@ export const TimelineView = memo(function TimelineView({
 
   useEffect(
     () => () => {
+      anchorAsyncGenerationRef.current += 1;
+      anchorRestorePendingRef.current = false;
+      roomScrollAnchorRestorePendingRef.current = false;
+      suppressScrollAnchorCaptureRef.current = false;
+      retainedRoomScrollAnchorRef.current = null;
       if (scrollAnchorDispatchTimerRef.current !== null) {
         window.clearTimeout(scrollAnchorDispatchTimerRef.current);
         scrollAnchorDispatchTimerRef.current = null;
@@ -2272,11 +2313,15 @@ export const TimelineView = memo(function TimelineView({
           const anchorSnapshot = activeRoomAnchor;
           const signatureSnapshot = activeRoomAnchorSignature;
           const containerSnapshot = container;
+          const asyncGenerationSnapshot = anchorAsyncGenerationRef.current;
           // Record scrollTop immediately after the initial restore so the
           // delayed callback can detect a user scroll during the wait.
           const scrollTopAfterRestore = container.scrollTop;
 
           const applyPostSettleCorrection = () => {
+            if (anchorAsyncGenerationRef.current !== asyncGenerationSnapshot) {
+              return;
+            }
             // Abort if another restore started since we were scheduled.
             if (postSettleRestoredSignatureRef.current !== signatureSnapshot) {
               return;
@@ -2286,6 +2331,7 @@ export const TimelineView = memo(function TimelineView({
             // restore; the suppression guard covers programmatic adjustments.
             if (containerSnapshot.scrollTop !== scrollTopAfterRestore) {
               roomScrollAnchorRestorePendingRef.current = false;
+              setScrollAnchorSettlementVersion((current) => current + 1);
               return;
             }
             const anchorNode = containerSnapshot.querySelector<HTMLElement>(
@@ -2293,6 +2339,7 @@ export const TimelineView = memo(function TimelineView({
             );
             if (!anchorNode) {
               roomScrollAnchorRestorePendingRef.current = false;
+              setScrollAnchorSettlementVersion((current) => current + 1);
               return;
             }
             suppressScrollAnchorCaptureRef.current = true;
@@ -2305,18 +2352,25 @@ export const TimelineView = memo(function TimelineView({
               };
             }
             requestAnimationFrame(() => {
+              if (anchorAsyncGenerationRef.current !== asyncGenerationSnapshot) {
+                return;
+              }
               suppressScrollAnchorCaptureRef.current = false;
               roomScrollAnchorRestorePendingRef.current = false;
               updateViewportMetrics();
               reportViewportObservation();
+              setScrollAnchorSettlementVersion((current) => current + 1);
             });
           };
 
-          // Chain: one rAF → fonts.ready → media load / 250ms timeout.
+          // Chain: one rAF -> fonts.ready / media load, both timeout-bounded.
           requestAnimationFrame(() => {
-            // document.fonts is undefined in jsdom (vitest); fall back to an
-            // already-resolved promise so the correction still fires in tests.
-            const fontsReady: Promise<unknown> = document.fonts?.ready ?? Promise.resolve();
+            if (anchorAsyncGenerationRef.current !== asyncGenerationSnapshot) {
+              return;
+            }
+            // document.fonts can be absent or unresolved in jsdom/CI; keep the
+            // correction timeout-bounded so anchor restoration never wedges.
+            const fontsReady = settleAnchorDependency(document.fonts?.ready);
             const anchorNode = containerSnapshot.querySelector<HTMLElement>(
               `[data-event-id="${cssEscape(anchorSnapshot.event_id)}"]`
             );
@@ -2324,15 +2378,16 @@ export const TimelineView = memo(function TimelineView({
               anchorNode?.querySelector<HTMLImageElement>("img") ?? null;
             const mediaReady: Promise<unknown> =
               mediaEl !== null && !mediaEl.complete
-                ? Promise.race([
+                ? settleAnchorDependency(
                     new Promise<void>((resolve) => {
                       mediaEl.addEventListener("load", () => resolve(), { once: true });
                       mediaEl.addEventListener("error", () => resolve(), { once: true });
-                    }),
-                    new Promise<void>((resolve) => setTimeout(resolve, 250))
-                  ])
+                    })
+                  )
                 : Promise.resolve();
-            void Promise.all([fontsReady, mediaReady]).then(applyPostSettleCorrection);
+            void Promise.all([fontsReady, mediaReady]).then(() => {
+              applyPostSettleCorrection();
+            });
           });
         }
       } else if (
@@ -2435,11 +2490,15 @@ export const TimelineView = memo(function TimelineView({
   useLayoutEffect(() => {
     const retained = retainedRoomScrollAnchorRef.current;
     const container = containerRef.current;
+    const pendingDifferentRoomRestore =
+      retained !== null &&
+      roomScrollAnchorRestorePendingRef.current &&
+      restoredRoomScrollAnchorSignatureRef.current !== retained.signature;
     if (
       !retained ||
       !container ||
       suppressScrollAnchorCaptureRef.current ||
-      roomScrollAnchorRestorePendingRef.current ||
+      pendingDifferentRoomRestore ||
       anchorRestorePendingRef.current
     ) {
       return;
