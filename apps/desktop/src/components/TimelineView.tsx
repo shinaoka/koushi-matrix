@@ -55,7 +55,9 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
-  useState
+  useState,
+  type Dispatch,
+  type SetStateAction
 } from "react";
 
 import { t } from "../i18n/messages";
@@ -108,6 +110,7 @@ import {
   shouldSuppressAutoBackfill,
   type TimelineStoreState
 } from "../domain/timelineStore";
+import { useTimelineStoreContext } from "./timelineStoreContext";
 import {
   composerKeyEventFromDom,
   insertNewlineAtSelection,
@@ -1332,7 +1335,9 @@ export const TimelineView = memo(function TimelineView({
   roomScrollAnchor = null,
   enableAvatarThumbnailDownloads = AVATAR_THUMBNAIL_DOWNLOADS_ENABLED,
   onDiagnosticsChange,
-  onDiagnosticLogEntry
+  onDiagnosticLogEntry,
+  timelineStore,
+  setTimelineStore
 }: {
   timelineKey: TimelineKey;
   roomId: string;
@@ -1369,8 +1374,23 @@ export const TimelineView = memo(function TimelineView({
   enableAvatarThumbnailDownloads?: boolean;
   onDiagnosticsChange?: (diagnostics: TimelineDiagnostics) => void;
   onDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
+  /**
+   * Optional App-level timeline store. When supplied, the view renders from
+   * this store and leaves reducer application to the owner. It still listens for
+   * view-local side-effect events such as source dialogs and anchor completion.
+   */
+  timelineStore?: TimelineStoreState;
+  /**
+   * Updater for the optional App-level store. Must be supplied together with
+   * `timelineStore` by tests that explicitly own reducer application.
+   */
+  setTimelineStore?: Dispatch<SetStateAction<TimelineStoreState>>;
 }) {
-  const [store, setStore] = useState<TimelineStoreState>(createTimelineStore);
+  const timelineStoreContext = useTimelineStoreContext();
+  const [localStore, localSetStore] = useState<TimelineStoreState>(createTimelineStore);
+  const store = timelineStore ?? timelineStoreContext?.store ?? localStore;
+  const setStore = setTimelineStore ?? timelineStoreContext?.setStore ?? localSetStore;
+  const isAppLevelStore = timelineStore !== undefined || timelineStoreContext !== null;
   const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
   const [navigationSnapshot, setNavigationSnapshot] =
     useState<TimelineNavigationSnapshot | null>(null);
@@ -1530,7 +1550,7 @@ export const TimelineView = memo(function TimelineView({
       suppressScrollAnchorCaptureRef.current = false;
     });
   }, []);
-  // --- Event subscription: apply CoreEvents to the store ---
+  // --- Event subscription: local stores apply reducers; App stores keep view effects here. ---
   useEffect(() => {
     const unsubscribe = transport.listenCoreEvents((payload) => {
       if (payload.kind === "ResyncMarker") {
@@ -1547,14 +1567,17 @@ export const TimelineView = memo(function TimelineView({
         exhaustedRoomScrollAnchorRestoreSignatureRef.current = null;
         restoredRoomScrollAnchorSignatureRef.current = null;
         setNavigationSnapshot(null);
-        setStore((current) => {
-          const next = applyGlobalResync(current);
-          relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-            getItems(next, timelineKeyRef.current),
-            profileUsersRef.current
-          );
-          return next;
-        });
+        relevantAvatarMxcsRef.current = new Set();
+        if (!isAppLevelStore) {
+          setStore((current) => {
+            const next = applyGlobalResync(current);
+            relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
+              getItems(next, timelineKeyRef.current),
+              profileUsersRef.current
+            );
+            return next;
+          });
+        }
         void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
         return;
       }
@@ -1583,14 +1606,16 @@ export const TimelineView = memo(function TimelineView({
       const event = payload.event;
 
       if ("DisplayLabelsUpdated" in event || "DisplayPolicyUpdated" in event) {
-        setStore((current) => {
-          const next = applyTimelineEvent(current, event);
-          relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-            getItems(next, timelineKeyRef.current),
-            profileUsersRef.current
-          );
-          return next;
-        });
+        if (!isAppLevelStore) {
+          setStore((current) => {
+            const next = applyTimelineEvent(current, event);
+            relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
+              getItems(next, timelineKeyRef.current),
+              profileUsersRef.current
+            );
+            return next;
+          });
+        }
         return;
       }
 
@@ -1688,18 +1713,23 @@ export const TimelineView = memo(function TimelineView({
         stickToBottomAfterMeasurementRef.current = true;
       }
 
-      setStore((current) => {
-        const next = applyTimelineEvent(current, event);
-        relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-          getItems(next, timelineKeyRef.current),
-          profileUsersRef.current
-        );
-        return next;
-      });
+      if (!isAppLevelStore) {
+        setStore((current) => {
+          const next = applyTimelineEvent(current, event);
+          relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
+            getItems(next, timelineKeyRef.current),
+            profileUsersRef.current
+          );
+          return next;
+        });
+      }
     });
-    void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
     return unsubscribe;
-  }, [currentUserId, emitDiagnosticLog, timelineKeyHash, transport]);
+  }, [currentUserId, emitDiagnosticLog, isAppLevelStore, timelineKeyHash, transport]);
+
+  useEffect(() => {
+    void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
+  }, [timelineKeyHash, transport]);
 
   useEffect(() => {
     setNavigationSnapshot(null);

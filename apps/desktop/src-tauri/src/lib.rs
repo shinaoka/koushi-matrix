@@ -1606,8 +1606,8 @@ mod tests {
         use koushi_state::{
             ActivityRow, ActivityStream, ActivityTab, AppState, AttachmentKind, AttachmentResult,
             AvatarThumbnailState, DirectoryQuery, DirectoryRoomSummary, IdentityResetAuthType,
-            IdentityResetState, JapaneseCatalogProfile, LiveEventReceipts, LiveReadReceipt,
-            LiveRoomSignalUpdate, LocalEncryptionHealth, MediaTransferProgress,
+            IdentityResetState, JapaneseCatalogProfile, LocalEncryptionHealth,
+            MediaTransferProgress,
             NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
             PresenceKind, ReplyQuote, ReplyQuoteState, RoomHistoryVisibility, RoomJoinRule,
             RoomMemberRole, RoomModerationAction, RoomPermissionFacts, RoomSettingsSnapshot,
@@ -2465,29 +2465,6 @@ mod tests {
             json!("awaitingAuth")
         );
 
-        let live_signals = serialize_core_event(&CoreEvent::LiveSignals(
-            LiveSignalsEvent::RoomSignalsUpdated {
-                room_id: "!r:example.test".to_owned(),
-                update: LiveRoomSignalUpdate {
-                    receipts_by_event: vec![LiveEventReceipts {
-                        event_id: "$e1".to_owned(),
-                        receipts: vec![LiveReadReceipt {
-                            user_id: "@other:example.test".to_owned(),
-                            display_name: Some("Other".to_owned()),
-                            original_display_label: String::new(),
-                            avatar: None,
-                            timestamp_ms: Some(123),
-                        }],
-                    }],
-                    fully_read_event_id: Some("$e1".to_owned()),
-                    typing_user_ids: vec!["@other:example.test".to_owned()],
-                },
-            },
-        ))
-        .expect("serialize live signals event");
-        assert_eq!(live_signals["kind"], json!("LiveSignals"));
-        assert_eq!(live_signals["event"]["kind"], json!("roomSignalsUpdated"));
-
         let live_presence =
             serialize_core_event(&CoreEvent::LiveSignals(LiveSignalsEvent::PresenceSet {
                 request_id,
@@ -2510,8 +2487,9 @@ mod tests {
                 active_tab: ActivityTab::Unread,
                 recent: ActivityStream {
                     rows: vec![ActivityRow {
+                        kind: koushi_state::ActivityRowKind::Event,
                         room_id: "!activity-recent:example.test".to_owned(),
-                        event_id: "$activity-recent:example.test".to_owned(),
+                        event_id: Some("$activity-recent:example.test".to_owned()),
                         room_label: "Recent room".to_owned(),
                         sender_label: Some("Recent sender".to_owned()),
                         preview: Some("Recent preview".to_owned()),
@@ -2522,16 +2500,25 @@ mod tests {
                     next_batch: Some("recent-next".to_owned()),
                 },
                 unread: ActivityStream {
-                    rows: vec![ActivityRow {
-                        room_id: "!activity-unread:example.test".to_owned(),
-                        event_id: "$activity-unread:example.test".to_owned(),
-                        room_label: "Unread room".to_owned(),
-                        sender_label: Some("Unread sender".to_owned()),
-                        preview: Some("Unread preview".to_owned()),
-                        timestamp_ms: 10,
-                        unread: true,
-                        highlight: true,
-                    }],
+                    rows: vec![
+                        ActivityRow {
+                            kind: koushi_state::ActivityRowKind::Event,
+                            room_id: "!activity-unread:example.test".to_owned(),
+                            event_id: Some("$activity-unread:example.test".to_owned()),
+                            room_label: "Unread room".to_owned(),
+                            sender_label: Some("Unread sender".to_owned()),
+                            preview: Some("Unread preview".to_owned()),
+                            timestamp_ms: 10,
+                            unread: true,
+                            highlight: true,
+                        },
+                        ActivityRow::room_unread_placeholder(
+                            "!activity-placeholder:example.test".to_owned(),
+                            "Placeholder room".to_owned(),
+                            9,
+                            false,
+                        ),
+                    ],
                     next_batch: Some("unread-next".to_owned()),
                 },
             }))
@@ -2543,6 +2530,14 @@ mod tests {
         assert_eq!(
             activity_snapshot_loaded["event"]["SnapshotLoaded"]["unread"]["rows"][0]["highlight"],
             json!(true)
+        );
+        assert_eq!(
+            activity_snapshot_loaded["event"]["SnapshotLoaded"]["unread"]["rows"][1]["kind"],
+            json!("roomUnread")
+        );
+        assert_eq!(
+            activity_snapshot_loaded["event"]["SnapshotLoaded"]["unread"]["rows"][1]["event_id"],
+            serde_json::Value::Null
         );
         let activity_marked_read =
             serialize_core_event(&CoreEvent::Activity(ActivityEvent::MarkedRead {
@@ -2773,7 +2768,6 @@ mod tests {
             "localEncryptionHealthChanged": local_encryption,
             "localEncryptionEventCacheStatus": local_encryption_event_cache_failed,
             "liveSignalsPresenceSet": live_presence,
-            "liveSignalsRoomSignalsUpdated": live_signals,
             "nativeAttentionSummaryUpdated": native_attention,
             "operationFailedSessionNotFound": failed,
             "searchAttachmentsFailed": search_attachments_failed,
@@ -2884,7 +2878,6 @@ mod tests {
             "intentLifecycleCommitted",
             "intentLifecycleFailedNoOpRoomNotInState",
             "liveSignalsPresenceSet",
-            "liveSignalsRoomSignalsUpdated",
             "localEncryptionHealthChanged",
             "localEncryptionEventCacheStatus",
             "nativeAttentionSummaryUpdated",

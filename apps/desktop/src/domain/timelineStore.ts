@@ -73,8 +73,14 @@ export interface TimelineStoreState {
   keys: Map<string, TimelineKeyState>;
 }
 
+export const TIMELINE_STORE_INACTIVE_RETAIN_LIMIT = 8;
+
 function keyStr(key: TimelineKey): string {
   return JSON.stringify(key);
+}
+
+export function timelineStoreKeyId(key: TimelineKey): string {
+  return keyStr(key);
 }
 
 function emptyKeyState(): TimelineKeyState {
@@ -132,6 +138,16 @@ export function applyTimelineEvent(
   return store;
 }
 
+export function applyTimelineEventWithRetention(
+  store: TimelineStoreState,
+  event: TimelineEvent,
+  retainedKeyIds: ReadonlySet<string>,
+  inactiveLimit = TIMELINE_STORE_INACTIVE_RETAIN_LIMIT
+): TimelineStoreState {
+  const next = applyTimelineEvent(store, event);
+  return pruneTimelineStore(next, retainedKeyIds, timelineEventKeyId(event), inactiveLimit);
+}
+
 /** Called on EventStreamLag (ResyncMarker): clear all keys. */
 export function applyGlobalResync(store: TimelineStoreState): TimelineStoreState {
   const next = new Map<string, TimelineKeyState>();
@@ -147,6 +163,89 @@ export function applyGlobalResync(store: TimelineStoreState): TimelineStoreState
     });
   }
   return { keys: next };
+}
+
+export function pruneTimelineStore(
+  store: TimelineStoreState,
+  retainedKeyIds: ReadonlySet<string>,
+  touchedKeyId: string | null = null,
+  inactiveLimit = TIMELINE_STORE_INACTIVE_RETAIN_LIMIT
+): TimelineStoreState {
+  const retainLimit = Math.max(0, Math.trunc(inactiveLimit));
+  const next = new Map(store.keys);
+  let movedTouchedKey = false;
+  if (touchedKeyId !== null && next.has(touchedKeyId)) {
+    const touched = next.get(touchedKeyId)!;
+    next.delete(touchedKeyId);
+    next.set(touchedKeyId, touched);
+    movedTouchedKey = true;
+  }
+
+  let inactiveCount = 0;
+  for (const keyId of next.keys()) {
+    if (!retainedKeyIds.has(keyId)) {
+      inactiveCount += 1;
+    }
+  }
+  if (inactiveCount <= retainLimit) {
+    return movedTouchedKey ? { keys: next } : store;
+  }
+
+  let evictCount = inactiveCount - retainLimit;
+  for (const keyId of next.keys()) {
+    if (evictCount === 0) {
+      break;
+    }
+    if (retainedKeyIds.has(keyId)) {
+      continue;
+    }
+    next.delete(keyId);
+    evictCount -= 1;
+  }
+  return { keys: next };
+}
+
+function timelineEventKeyId(event: TimelineEvent): string | null {
+  if ("InitialItems" in event) {
+    return keyStr(event.InitialItems.key);
+  }
+  if ("ItemsUpdated" in event) {
+    return keyStr(event.ItemsUpdated.key);
+  }
+  if ("PaginationStateChanged" in event) {
+    return keyStr(event.PaginationStateChanged.key);
+  }
+  if ("AnchorRestoreFinished" in event) {
+    return keyStr(event.AnchorRestoreFinished.key);
+  }
+  if ("NavigationUpdated" in event) {
+    return keyStr(event.NavigationUpdated.key);
+  }
+  if ("SendCompleted" in event) {
+    return keyStr(event.SendCompleted.key);
+  }
+  if ("MessageForwarded" in event) {
+    return keyStr(event.MessageForwarded.key);
+  }
+  if ("MessageSourceLoaded" in event) {
+    return keyStr(event.MessageSourceLoaded.key);
+  }
+  if ("MediaUploadProgress" in event) {
+    return keyStr(event.MediaUploadProgress.key);
+  }
+  if ("MediaDownloadProgress" in event) {
+    return keyStr(event.MediaDownloadProgress.key);
+  }
+  if ("MediaDownloadCompleted" in event) {
+    return keyStr(event.MediaDownloadCompleted.key);
+  }
+  if ("MediaDownloadFailed" in event) {
+    return keyStr(event.MediaDownloadFailed.key);
+  }
+  if ("ResyncRequired" in event) {
+    return keyStr(event.ResyncRequired.key);
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

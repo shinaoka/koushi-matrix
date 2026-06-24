@@ -744,9 +744,22 @@ describe("BrowserFakeApi settings preview", () => {
       "$late-original",
       "$false-positive"
     ]);
+    expect(opened.state.domain.activity.recent.rows.every((row) => row.kind === "event")).toBe(
+      true
+    );
     expect(opened.state.domain.activity.unread.rows.some((row) => row.event_id === "$alpha-update")).toBe(
       true
     );
+    expect(
+      opened.state.domain.activity.unread.rows.some(
+        (row) =>
+          row.kind === "roomUnread" &&
+          row.room_id === "!dm-member-1:example.invalid" &&
+          row.event_id === null &&
+          row.preview === null &&
+          row.sender_label === null
+      )
+    ).toBe(true);
 
     const switched = await api.setActivityTab("unread");
     expect(switched.state.domain.activity.kind).toBe("open");

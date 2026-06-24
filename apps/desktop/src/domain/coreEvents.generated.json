@@ -76,6 +76,7 @@
             {
               "event_id": "$activity-recent:example.test",
               "highlight": false,
+              "kind": "event",
               "preview": "Recent preview",
               "room_id": "!activity-recent:example.test",
               "room_label": "Recent room",
@@ -95,11 +96,23 @@
             {
               "event_id": "$activity-unread:example.test",
               "highlight": true,
+              "kind": "event",
               "preview": "Unread preview",
               "room_id": "!activity-unread:example.test",
               "room_label": "Unread room",
               "sender_label": "Unread sender",
               "timestamp_ms": 10,
+              "unread": true
+            },
+            {
+              "event_id": null,
+              "highlight": false,
+              "kind": "roomUnread",
+              "preview": null,
+              "room_id": "!activity-placeholder:example.test",
+              "room_label": "Placeholder room",
+              "sender_label": null,
+              "timestamp_ms": 9,
               "unread": true
             }
           ]

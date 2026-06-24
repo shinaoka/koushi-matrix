@@ -622,16 +622,31 @@ export interface ActivityStream {
   next_batch: string | null;
 }
 
-export interface ActivityRow {
+export type ActivityRowKind = "event" | "roomUnread";
+
+interface ActivityRowBase {
   room_id: string;
-  event_id: string;
   room_label: string;
-  sender_label: string | null;
-  preview: string | null;
   timestamp_ms: number;
   unread: boolean;
   highlight: boolean;
 }
+
+export interface ActivityEventRow extends ActivityRowBase {
+  kind: "event";
+  event_id: string;
+  sender_label: string | null;
+  preview: string | null;
+}
+
+export interface ActivityRoomUnreadRow extends ActivityRowBase {
+  kind: "roomUnread";
+  event_id: null;
+  sender_label: null;
+  preview: null;
+}
+
+export type ActivityRow = ActivityEventRow | ActivityRoomUnreadRow;
 
 export type ActivityMarkReadState =
   | { kind: "idle" }

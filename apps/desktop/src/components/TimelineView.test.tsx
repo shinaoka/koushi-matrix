@@ -11,6 +11,12 @@ import {
   type TimelineMessageSource
 } from "../domain/coreEvents";
 import { setActiveLocaleProfile } from "../i18n/messages";
+import {
+  applyTimelineEvent,
+  createTimelineStore,
+  type TimelineStoreState
+} from "../domain/timelineStore";
+import { TimelineStoreContext } from "./timelineStoreContext";
 import { MessageSourceDialog, TimelineView, type TimelineTransport } from "./TimelineView";
 
 afterEach(() => {
@@ -164,6 +170,71 @@ describe("TimelineView", () => {
       expect(screen.getByText("Latest after listener")).toBeTruthy();
     });
     expect(calls).toEqual(["listen", "ensure"]);
+  });
+
+  it("renders from a prepopulated App-level store while keeping view-local event handling", async () => {
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [message("$app-store:example.invalid", "From app store")]
+      }
+    });
+    const ensureSubscribed = vi.fn().mockResolvedValue(undefined);
+    const setStore = vi.fn();
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const listenCoreEvents = vi.fn((nextListener: (payload: CoreEventPayload) => void) => {
+      emit = nextListener;
+      return () => undefined;
+    });
+    const transport = baseTransport({
+      listenCoreEvents,
+      ensureSubscribed
+    });
+
+    render(
+      <TimelineStoreContext.Provider value={{ store, setStore }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+        />
+      </TimelineStoreContext.Provider>
+    );
+
+    expect(await screen.findByText("From app store")).toBeTruthy();
+    expect(listenCoreEvents).toHaveBeenCalledTimes(1);
+    expect(ensureSubscribed).toHaveBeenCalledWith(KEY);
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          MessageSourceLoaded: {
+            request_id: { connection_id: 1, sequence: 1 },
+            key: KEY,
+            source: {
+              event_id: "$source:example.invalid",
+              sender: "@alice:example.invalid",
+              timestamp_ms: 1_800_000_000_000,
+              body: "source body",
+              in_reply_to_event_id: null,
+              thread_root: null,
+              is_redacted: false,
+              is_edited: false,
+              has_media: false,
+              original_json: {
+                type: "m.room.message",
+                content: { body: "source body", msgtype: "m.text" }
+              }
+            }
+          }
+        }
+      });
+    });
+    expect(await screen.findByText("$source:example.invalid")).toBeTruthy();
+    expect(setStore).not.toHaveBeenCalled();
   });
 
   it("emits safe timestamped timeline event diagnostics for thread timelines", async () => {

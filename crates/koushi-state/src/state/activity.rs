@@ -83,10 +83,20 @@ impl fmt::Debug for ActivityStream {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActivityRowKind {
+    #[default]
+    Event,
+    RoomUnread,
+}
+
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ActivityRow {
+    #[serde(default)]
+    pub kind: ActivityRowKind,
     pub room_id: String,
-    pub event_id: String,
+    pub event_id: Option<String>,
     pub room_label: String,
     pub sender_label: Option<String>,
     pub preview: Option<String>,
@@ -95,12 +105,57 @@ pub struct ActivityRow {
     pub highlight: bool,
 }
 
+impl ActivityRow {
+    pub fn event(
+        room_id: String,
+        event_id: String,
+        room_label: String,
+        sender_label: Option<String>,
+        preview: Option<String>,
+        timestamp_ms: u64,
+        unread: bool,
+        highlight: bool,
+    ) -> Self {
+        Self {
+            kind: ActivityRowKind::Event,
+            room_id,
+            event_id: Some(event_id),
+            room_label,
+            sender_label,
+            preview,
+            timestamp_ms,
+            unread,
+            highlight,
+        }
+    }
+
+    pub fn room_unread_placeholder(
+        room_id: String,
+        room_label: String,
+        timestamp_ms: u64,
+        highlight: bool,
+    ) -> Self {
+        Self {
+            kind: ActivityRowKind::RoomUnread,
+            room_id,
+            event_id: None,
+            room_label,
+            sender_label: None,
+            preview: None,
+            timestamp_ms,
+            unread: true,
+            highlight,
+        }
+    }
+}
+
 impl fmt::Debug for ActivityRow {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ActivityRow")
+            .field("kind", &self.kind)
             .field("room_id", &"RoomId(..)")
-            .field("event_id", &"EventId(..)")
+            .field("event_id", &self.event_id.as_ref().map(|_| "EventId(..)"))
             .field("room_label", &"RoomLabel(..)")
             .field(
                 "sender_label",

@@ -32,8 +32,20 @@ import {
 } from "./components/TimelineView";
 import {
   type CoreEventPayload,
-  type TimelineKey
+  type TimelineKey,
+  focusedTimelineKey,
+  roomTimelineKey,
+  threadTimelineKey
 } from "./domain/coreEvents";
+import {
+  applyGlobalResync,
+  applyTimelineEventWithRetention,
+  createTimelineStore,
+  pruneTimelineStore,
+  timelineStoreKeyId,
+  type TimelineStoreState
+} from "./domain/timelineStore";
+import { TimelineStoreContext } from "./components/timelineStoreContext";
 import {
   type ContextMenuActionId,
   type ContextMenuItem
@@ -867,6 +879,56 @@ function imageSrcScheme(src: string): string {
   }
 }
 
+function timelineStoreSessionKey(snapshot: DesktopSnapshot | null): string {
+  const session = snapshot?.state.domain.session;
+  if (!session || session.kind !== "ready" || !session.user_id) {
+    return "signed-out";
+  }
+  return [
+    session.homeserver ?? "",
+    session.user_id,
+    session.device_id ?? ""
+  ].join("\u0000");
+}
+
+function retainedTimelineStoreKeyIds(snapshot: DesktopSnapshot | null): Set<string> {
+  const userId =
+    snapshot?.state.domain.session.kind === "ready"
+      ? snapshot.state.domain.session.user_id ?? null
+      : null;
+  if (!snapshot || !userId) {
+    return new Set();
+  }
+
+  const retained = new Set<string>();
+  const roomId = snapshot.state.ui.timeline.room_id;
+  if (roomId) {
+    retained.add(timelineStoreKeyId(roomTimelineKey(userId, roomId)));
+  }
+
+  const focusedContext = snapshot.state.ui.focused_context;
+  if (focusedContext.kind === "opening" || focusedContext.kind === "open") {
+    retained.add(
+      timelineStoreKeyId(
+        focusedTimelineKey(userId, focusedContext.room_id, focusedContext.event_id)
+      )
+    );
+  }
+
+  const thread = snapshot.state.ui.thread;
+  if (
+    (thread.kind === "opening" || thread.kind === "open") &&
+    thread.room_id &&
+    thread.root_event_id
+  ) {
+    retained.add(
+      timelineStoreKeyId(threadTimelineKey(userId, thread.room_id, thread.root_event_id))
+    );
+  }
+
+  return retained;
+}
+
 function useUiLatencyDiagnostics(): UiLatencyDiagnostics {
   const [diagnostics, setDiagnostics] = useState<UiLatencyDiagnostics>(
     EMPTY_UI_LATENCY_DIAGNOSTICS
@@ -990,6 +1052,7 @@ export function App() {
   const [createDraftName, setCreateDraftName] = useState("");
   const [reportDialog, setReportDialog] = useState<ReportDialogState | null>(null);
   const [reportReasonDraft, setReportReasonDraft] = useState("");
+  const [timelineStore, setTimelineStore] = useState<TimelineStoreState>(createTimelineStore);
   const uiLatencyDiagnostics = useUiLatencyDiagnostics();
   const verboseDiagnosticBuild = verboseDiagnosticsEnabled();
   const searchTimer = useRef<number | null>(null);
@@ -1105,6 +1168,33 @@ export function App() {
       : snapshotComposerDraft;
   const stagedUploads = snapshot?.state.ui.timeline.staged_uploads ?? [];
   const stagedUploadIdKey = stagedUploads.map((item) => item.staged_id).join("\n");
+  const retainedTimelineKeyIds = useMemo(
+    () => retainedTimelineStoreKeyIds(snapshot),
+    [snapshot]
+  );
+  const retainedTimelineKeyIdsRef = useRef(retainedTimelineKeyIds);
+  retainedTimelineKeyIdsRef.current = retainedTimelineKeyIds;
+  const currentTimelineStoreSessionKey = timelineStoreSessionKey(snapshot);
+  const timelineStoreSessionKeyRef = useRef(currentTimelineStoreSessionKey);
+  const timelineStoreContextValue = useMemo(
+    () =>
+      appTimelineTransport
+        ? { store: timelineStore, setStore: setTimelineStore }
+        : null,
+    [appTimelineTransport, timelineStore]
+  );
+
+  useEffect(() => {
+    if (timelineStoreSessionKeyRef.current === currentTimelineStoreSessionKey) {
+      return;
+    }
+    timelineStoreSessionKeyRef.current = currentTimelineStoreSessionKey;
+    setTimelineStore(createTimelineStore());
+  }, [currentTimelineStoreSessionKey]);
+
+  useEffect(() => {
+    setTimelineStore((current) => pruneTimelineStore(current, retainedTimelineKeyIds));
+  }, [retainedTimelineKeyIds]);
 
   useEffect(() => {
     if (!snapshot) {
@@ -1607,6 +1697,46 @@ export function App() {
       unlisten?.();
     };
   }, []);
+
+  // App-level timeline store: apply CoreEvent::Timeline diffs once, then feed
+  // the resulting store into every TimelineView. This keeps Matrix timeline
+  // semantics Rust-owned and avoids per-view reducer ownership.
+  useEffect(() => {
+    if (!appTimelineTransport) {
+      return;
+    }
+
+    let disposed = false;
+    const unsubscribe = appTimelineTransport.listenCoreEvents((payload) => {
+      if (disposed) {
+        return;
+      }
+      if (payload.kind === "ResyncMarker") {
+        setTimelineStore((current) =>
+          pruneTimelineStore(
+            applyGlobalResync(current),
+            retainedTimelineKeyIdsRef.current
+          )
+        );
+        return;
+      }
+      if (payload.kind !== "Timeline") {
+        return;
+      }
+      setTimelineStore((current) =>
+        applyTimelineEventWithRetention(
+          current,
+          payload.event,
+          retainedTimelineKeyIdsRef.current
+        )
+      );
+    });
+
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [appTimelineTransport]);
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -3047,22 +3177,23 @@ export function App() {
   }
 
   return (
-    <div className="desktop" data-density={displayDensity}>
-      <TopBar
-        activeSpaceName={activeSpaceName}
-        isBusy={isBusy}
-        searchInputRef={searchInputRef}
-        searchQuery={searchQuery}
-        searchScope={searchScope}
-        sync={snapshot.state.domain.sync}
-        onOpenKeyboardSettings={() => {
-          void setRightPanelModeClosingFocusedContext("keyboardSettings");
-        }}
-        onOpenDiagnostics={() => setDiagnosticsOpen(true)}
-        onRestartSync={restartSync}
-        onSearchQueryChange={setSearchQuery}
-        onSearchScopeChange={setSearchScope}
-      />
+    <TimelineStoreContext.Provider value={timelineStoreContextValue}>
+      <div className="desktop" data-density={displayDensity}>
+        <TopBar
+          activeSpaceName={activeSpaceName}
+          isBusy={isBusy}
+          searchInputRef={searchInputRef}
+          searchQuery={searchQuery}
+          searchScope={searchScope}
+          sync={snapshot.state.domain.sync}
+          onOpenKeyboardSettings={() => {
+            void setRightPanelModeClosingFocusedContext("keyboardSettings");
+          }}
+          onOpenDiagnostics={() => setDiagnosticsOpen(true)}
+          onRestartSync={restartSync}
+          onSearchQueryChange={setSearchQuery}
+          onSearchScopeChange={setSearchScope}
+        />
       <div
         className={`app-grid ${rightPanelOpen ? "right-panel-open" : "thread-closed"}`}
         style={appGridStyle}
@@ -3138,7 +3269,9 @@ export function App() {
               void markActivityRead(target);
             }}
             onOpenRow={(row) => {
-              openActivityRow(row.room_id, row.event_id);
+              if (row.kind === "event" && row.event_id !== null) {
+                openActivityRow(row.room_id, row.event_id);
+              }
             }}
             onSetTab={(tab) => {
               void setActivityTab(tab);
@@ -3545,7 +3678,8 @@ export function App() {
           onClose={() => setDiagnosticsOpen(false)}
         />
       ) : null}
-    </div>
+      </div>
+    </TimelineStoreContext.Provider>
   );
 }
 

@@ -4488,16 +4488,16 @@ fn activity_row_from_timeline_item(room_id: &str, item: &TimelineItem) -> Option
         .body
         .clone()
         .or_else(|| item.media.as_ref().map(|media| media.filename.clone()))?;
-    Some(ActivityRow {
-        room_id: room_id.to_owned(),
-        event_id: event_id.clone(),
-        room_label: String::new(),
-        sender_label: item.sender.clone(),
-        preview: Some(preview),
-        timestamp_ms: item.timestamp_ms.unwrap_or(0),
-        unread: false,
-        highlight: false,
-    })
+    Some(ActivityRow::event(
+        room_id.to_owned(),
+        event_id.clone(),
+        String::new(),
+        item.sender.clone(),
+        Some(preview),
+        item.timestamp_ms.unwrap_or(0),
+        false,
+        false,
+    ))
 }
 
 fn media_gallery_updated_action(

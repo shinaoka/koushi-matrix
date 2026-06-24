@@ -3,6 +3,7 @@ use koushi_state::{
     ActivityTab, AppAction, AppEffect, AppState, OperationFailureKind, SessionInfo, SessionState,
     UiEvent, reduce,
 };
+use serde_json;
 
 fn session_info() -> SessionInfo {
     SessionInfo {
@@ -20,16 +21,16 @@ fn ready_state() -> AppState {
 }
 
 fn row(room_id: &str, event_id: &str, timestamp_ms: u64) -> ActivityRow {
-    ActivityRow {
-        room_id: room_id.to_owned(),
-        event_id: event_id.to_owned(),
-        room_label: format!("Room {room_id}"),
-        sender_label: Some("@sender:example.invalid".to_owned()),
-        preview: Some(format!("body for {event_id}")),
+    ActivityRow::event(
+        room_id.to_owned(),
+        event_id.to_owned(),
+        format!("Room {room_id}"),
+        Some("@sender:example.invalid".to_owned()),
+        Some(format!("body for {event_id}")),
         timestamp_ms,
-        unread: true,
-        highlight: false,
-    }
+        true,
+        false,
+    )
 }
 
 fn stream(rows: Vec<ActivityRow>, next_batch: Option<&str>) -> ActivityStream {
@@ -313,16 +314,16 @@ fn activity_snapshot_filters_excluded_rooms_before_rendering() {
 
 #[test]
 fn activity_debug_output_redacts_private_values() {
-    let private_row = ActivityRow {
-        room_id: "!private-room:example.invalid".to_owned(),
-        event_id: "$private-event:example.invalid".to_owned(),
-        room_label: "Private Room".to_owned(),
-        sender_label: Some("Private Sender".to_owned()),
-        preview: Some("private message body".to_owned()),
-        timestamp_ms: 42,
-        unread: true,
-        highlight: true,
-    };
+    let private_row = ActivityRow::event(
+        "!private-room:example.invalid".to_owned(),
+        "$private-event:example.invalid".to_owned(),
+        "Private Room".to_owned(),
+        Some("Private Sender".to_owned()),
+        Some("private message body".to_owned()),
+        42,
+        true,
+        true,
+    );
     let target = ActivityMarkReadTarget::Room {
         room_id: "!private-room:example.invalid".to_owned(),
         up_to_event_id: "$private-event:example.invalid".to_owned(),
@@ -383,4 +384,28 @@ fn activity_debug_output_redacts_private_values() {
             );
         }
     }
+}
+
+#[test]
+fn activity_row_event_source_serializes_real_event_id() {
+    let row = row("!room", "$event", 10);
+    let value = serde_json::to_value(&row).expect("serialize activity row");
+    assert_eq!(value["kind"], serde_json::json!("event"));
+    assert_eq!(value["event_id"], serde_json::json!("$event"));
+}
+
+#[test]
+fn activity_row_room_unread_source_has_no_event_id_and_redacted_debug() {
+    let row = ActivityRow::room_unread_placeholder(
+        "!private-room:example.invalid".to_owned(),
+        "Private Room".to_owned(),
+        42,
+        true,
+    );
+    let value = serde_json::to_value(&row).expect("serialize activity row");
+    assert_eq!(value["kind"], serde_json::json!("roomUnread"));
+    assert_eq!(value["event_id"], serde_json::Value::Null);
+    let debug = format!("{row:?}");
+    assert!(!debug.contains("!private-room:example.invalid"));
+    assert!(!debug.contains("Private Room"));
 }

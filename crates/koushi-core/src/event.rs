@@ -1902,16 +1902,16 @@ mod tests {
     }
 
     fn activity_row(room_id: &str, event_id: &str, timestamp_ms: u64) -> koushi_state::ActivityRow {
-        koushi_state::ActivityRow {
-            room_id: room_id.to_owned(),
-            event_id: event_id.to_owned(),
-            room_label: "Private Room".to_owned(),
-            sender_label: Some("Private Sender".to_owned()),
-            preview: Some("private message body".to_owned()),
+        koushi_state::ActivityRow::event(
+            room_id.to_owned(),
+            event_id.to_owned(),
+            "Private Room".to_owned(),
+            Some("Private Sender".to_owned()),
+            Some("private message body".to_owned()),
             timestamp_ms,
-            unread: true,
-            highlight: false,
-        }
+            true,
+            false,
+        )
     }
 
     fn activity_stream(rows: Vec<koushi_state::ActivityRow>) -> koushi_state::ActivityStream {
