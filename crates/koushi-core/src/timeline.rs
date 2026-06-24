@@ -7559,8 +7559,8 @@ mod tests {
             "a new (not yet subscribed) key must still call subscribe_to_rooms"
         );
         assert!(
-            new_key_path.contains("TimelineBuilder::new"),
-            "a new (not yet subscribed) key must still build an SDK timeline"
+            new_key_path.contains("koushi_timeline_builder("),
+            "a new (not yet subscribed) key must still build an SDK timeline through the project helper"
         );
     }
 
