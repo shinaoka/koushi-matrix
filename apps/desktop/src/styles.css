@@ -2949,11 +2949,16 @@ button:disabled {
   background: var(--line);
 }
 
+.message-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-block-size: var(--receipt-row-min-block-size);
+  margin-block-start: var(--receipt-row-margin-block-start);
+}
+
 .message-receipts {
   position: relative;
-  /* display:flex (block-level) so margin-inline-start:auto right-aligns the row
-     within the block parent (.message-main). inline-flex is inline-level and
-     auto margins have no pushing effect in a block formatting context. */
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -2961,7 +2966,6 @@ button:disabled {
   inline-size: fit-content;
   max-inline-size: 100%;
   min-block-size: var(--receipt-row-min-block-size);
-  margin-block-start: var(--receipt-row-margin-block-start);
   margin-inline-start: auto;
   color: var(--text-muted);
   font-size: var(--receipt-row-font-size);
@@ -3063,10 +3067,11 @@ button:disabled {
 }
 
 .message-reactions {
+  flex: 1 1 auto;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 8px;
+  min-inline-size: 0;
 }
 
 .reaction-pill {

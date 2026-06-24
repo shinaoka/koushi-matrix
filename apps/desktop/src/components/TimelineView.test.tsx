@@ -1025,6 +1025,89 @@ describe("TimelineView", () => {
     });
   });
 
+  it("places reactions and read receipts in one status row", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        liveSignals={{
+          presence: {},
+          rooms: {
+            "!room:example.invalid": {
+              fully_read_event_id: null,
+              typing_user_ids: [],
+              receipts_by_event: {
+                "$reacted-seen": {
+                  total_count: 1,
+                  overflow_count: 0,
+                  readers: [
+                    {
+                      user_id: "@ken:example.invalid",
+                      display_name: "Ken Inayoshi",
+                      original_display_label: "Ken Inayoshi",
+                      avatar: null,
+                      timestamp_ms: null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              {
+                ...message("$reacted-seen", "Reacted and seen"),
+                reactions: [
+                  {
+                    key: "✈️",
+                    count: 1,
+                    reacted_by_me: false,
+                    my_reaction_event_id: null,
+                    sender_preview: ["@ken:example.invalid"]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      const reactions = document.querySelector(".message-reactions");
+      const receipts = document.querySelector(".message-receipts");
+      const statusRow = document.querySelector(".message-status-row");
+
+      expect(reactions).not.toBeNull();
+      expect(receipts).not.toBeNull();
+      expect(statusRow).not.toBeNull();
+      expect(reactions?.parentElement).toBe(statusRow);
+      expect(receipts?.parentElement).toBe(statusRow);
+      expect(Array.from(statusRow?.children ?? [])).toEqual([reactions, receipts]);
+    });
+  });
+
   it("automatically requests previews for encrypted image attachments", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const downloadMedia = vi.fn(async () => undefined);

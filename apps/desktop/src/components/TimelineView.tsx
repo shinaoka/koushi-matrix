@@ -3715,108 +3715,112 @@ export function TimelineItemRow({
             <span>{threadSummaryText}</span>
           </button>
         ) : null}
-        {receiptTotalCount > 0 ? (
-          <div
-            className="message-receipts"
-            aria-label={receiptAriaLabel}
-            tabIndex={0}
-            title={receiptTitle}
-          >
-            <span className="receipt-avatars" aria-hidden="true">
-              {receipts.map((receipt) => {
-                const sourceUrl = receiptAvatarSource(receipt);
-                return (
-                  <span className="receipt-reader-avatar" key={receipt.user_id}>
-                    {sourceUrl ? (
-                      <img src={sourceUrl} alt={receiptDisplayName(receipt)} />
-                    ) : (
-                      <span dir="auto">{receiptInitials(receipt)}</span>
-                    )}
-                  </span>
-                );
-              })}
-              {receiptOverflowCount > 0 ? (
-                <span className="receipt-overflow">+{receiptOverflowCount}</span>
-              ) : null}
-            </span>
-            <span className="receipt-tooltip" role="tooltip">
-              {receiptDetails.map((detail, index) => (
-                <span key={`${detail}:${index}`} dir="auto">
-                  {detail}
-                </span>
-              ))}
-            </span>
-          </div>
-        ) : null}
-        {canShowReactions ? (
-          <div className="message-reactions">
-            {item.reactions.map((reaction, index) => {
-              const ariaLabel = t("timeline.reactionSummary", {
-                key: reaction.key,
-                count: reaction.count
-              });
-              const reactionTooltip = formatReactionTooltip(
-                reaction.key,
-                reaction.count,
-                reaction.sender_preview,
-                reactionSenderLabelByUserId
-              );
-              const pillKey = `${reaction.key}:${reaction.my_reaction_event_id ?? index}`;
-              if (!eventId) {
-                return (
-                  <span
-                    aria-label={ariaLabel}
-                    className="reaction-pill"
-                    data-reacted-by-me={reaction.reacted_by_me || undefined}
-                    key={pillKey}
-                  >
-                    <span className="reaction-pill-key" dir="auto">
-                      {reaction.key}
-                    </span>
-                    <span className="reaction-pill-count">{reaction.count}</span>
-                    {reactionTooltip ? (
-                      <span className="reaction-tooltip" role="tooltip" dir="auto">
-                        {reactionTooltip}
+        {canShowReactions || receiptTotalCount > 0 ? (
+          <div className="message-status-row">
+            {canShowReactions ? (
+              <div className="message-reactions">
+                {item.reactions.map((reaction, index) => {
+                  const ariaLabel = t("timeline.reactionSummary", {
+                    key: reaction.key,
+                    count: reaction.count
+                  });
+                  const reactionTooltip = formatReactionTooltip(
+                    reaction.key,
+                    reaction.count,
+                    reaction.sender_preview,
+                    reactionSenderLabelByUserId
+                  );
+                  const pillKey = `${reaction.key}:${reaction.my_reaction_event_id ?? index}`;
+                  if (!eventId) {
+                    return (
+                      <span
+                        aria-label={ariaLabel}
+                        className="reaction-pill"
+                        data-reacted-by-me={reaction.reacted_by_me || undefined}
+                        key={pillKey}
+                      >
+                        <span className="reaction-pill-key" dir="auto">
+                          {reaction.key}
+                        </span>
+                        <span className="reaction-pill-count">{reaction.count}</span>
+                        {reactionTooltip ? (
+                          <span className="reaction-tooltip" role="tooltip" dir="auto">
+                            {reactionTooltip}
+                          </span>
+                        ) : null}
                       </span>
-                    ) : null}
-                  </span>
-                );
-              }
-              return (
-                <button
-                  aria-label={ariaLabel}
-                  className="reaction-pill"
-                  data-reacted-by-me={reaction.reacted_by_me || undefined}
-                  key={pillKey}
-                  type="button"
-                  aria-pressed={reaction.reacted_by_me}
-                  onClick={() => {
-                    if (reaction.reacted_by_me) {
-                      if (reaction.my_reaction_event_id) {
-                        onRedactReaction(
-                          roomId,
-                          eventId,
-                          reaction.key,
-                          reaction.my_reaction_event_id
-                        );
-                      }
-                    } else {
-                      onSendReaction(roomId, eventId, reaction.key);
-                    }
-                  }}
-                >
-                  <span className="reaction-pill-key" dir="auto">
-                    {reaction.key}
-                  </span>
-                  <span className="reaction-pill-count">{reaction.count}</span>
-                  {reactionTooltip ? (
-                    <span className="reaction-tooltip" role="tooltip" dir="auto">
-                      {reactionTooltip}
-                    </span>
+                    );
+                  }
+                  return (
+                    <button
+                      aria-label={ariaLabel}
+                      className="reaction-pill"
+                      data-reacted-by-me={reaction.reacted_by_me || undefined}
+                      key={pillKey}
+                      type="button"
+                      aria-pressed={reaction.reacted_by_me}
+                      onClick={() => {
+                        if (reaction.reacted_by_me) {
+                          if (reaction.my_reaction_event_id) {
+                            onRedactReaction(
+                              roomId,
+                              eventId,
+                              reaction.key,
+                              reaction.my_reaction_event_id
+                            );
+                          }
+                        } else {
+                          onSendReaction(roomId, eventId, reaction.key);
+                        }
+                      }}
+                    >
+                      <span className="reaction-pill-key" dir="auto">
+                        {reaction.key}
+                      </span>
+                      <span className="reaction-pill-count">{reaction.count}</span>
+                      {reactionTooltip ? (
+                        <span className="reaction-tooltip" role="tooltip" dir="auto">
+                          {reactionTooltip}
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+            {receiptTotalCount > 0 ? (
+              <div
+                className="message-receipts"
+                aria-label={receiptAriaLabel}
+                tabIndex={0}
+                title={receiptTitle}
+              >
+                <span className="receipt-avatars" aria-hidden="true">
+                  {receipts.map((receipt) => {
+                    const sourceUrl = receiptAvatarSource(receipt);
+                    return (
+                      <span className="receipt-reader-avatar" key={receipt.user_id}>
+                        {sourceUrl ? (
+                          <img src={sourceUrl} alt={receiptDisplayName(receipt)} />
+                        ) : (
+                          <span dir="auto">{receiptInitials(receipt)}</span>
+                        )}
+                      </span>
+                    );
+                  })}
+                  {receiptOverflowCount > 0 ? (
+                    <span className="receipt-overflow">+{receiptOverflowCount}</span>
                   ) : null}
-                </button>
-              );
-            })}
+                </span>
+                <span className="receipt-tooltip" role="tooltip">
+                  {receiptDetails.map((detail, index) => (
+                    <span key={`${detail}:${index}`} dir="auto">
+                      {detail}
+                    </span>
+                  ))}
+                </span>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>
