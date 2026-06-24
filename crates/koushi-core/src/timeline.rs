@@ -1470,6 +1470,15 @@ struct TimelineActor {
 enum SettleTerminal {
     EndReached,
     BudgetExhausted,
+    /// The fallback `paginate_once` returned an error, but there are pending
+    /// cache DiffBatches in the async relay that must settle before we can
+    /// safely emit `Failed` (otherwise `ItemsUpdated` arrives after
+    /// `AnchorRestoreFinished`).
+    Failed { kind: TimelineFailureKind },
+    /// run_backwards_cache_only stopped because it reached the `bulk_n` cap
+    /// (not a gap, not start-of-timeline). Settle the loaded diffs, then issue
+    /// another bulk load to continue searching for the anchor.
+    ContinueBulk,
 }
 
 #[derive(Clone, Debug)]
@@ -2123,11 +2132,29 @@ impl TimelineActor {
             let diff_arrived = self.diff_batch_seq >= restore.settle_min_seq;
             let remaining = restore.end_reached_settle.unwrap_or(0);
             if diff_arrived || remaining == 0 {
+                // P2-cap: if we stopped at the bulk_n cap, re-enter the bulk
+                // load to continue searching now that the in-flight diffs have
+                // settled. Clear the settle state and re-schedule so the next
+                // continuation starts the bulk load path from a clean state.
+                if restore.settle_terminal == SettleTerminal::ContinueBulk {
+                    restore.end_reached_settle = None;
+                    restore.awaiting_diff_batch = false;
+                    self.schedule_restore_anchor_continue(restore).await;
+                    return;
+                }
                 let terminal = match restore.settle_terminal {
                     SettleTerminal::EndReached => TimelineAnchorRestoreStatus::EndReached,
                     SettleTerminal::BudgetExhausted => {
                         TimelineAnchorRestoreStatus::BudgetExhausted
                     }
+                    // P2-Failed: cache DiffBatches settled; now safe to emit Failed.
+                    SettleTerminal::Failed { kind } => {
+                        TimelineAnchorRestoreStatus::Failed { kind }
+                    }
+                    // Unreachable here: ContinueBulk handled above.
+                    SettleTerminal::ContinueBulk => unreachable!(
+                        "ContinueBulk settle terminal must be handled before this match"
+                    ),
                 };
                 self.finish_anchor_restore(restore.request_id, terminal);
                 return;
@@ -2206,13 +2233,30 @@ impl TimelineActor {
                         return;
                     }
 
+                    // total_pending = pending cache DiffBatches + 1 for paginate_once.
+                    // (lazy_reveal_batches already settled before we reached hit_gap.)
+                    let total_pending = outcome.chunks_loaded as u64 + 1;
                     let end_reached = match result {
                         Ok(end_reached) => end_reached,
                         Err(kind) => {
-                            self.finish_anchor_restore(
-                                request_id,
-                                TimelineAnchorRestoreStatus::Failed { kind },
-                            );
+                            // P2-Failed: route through settle fence so pending cache
+                            // DiffBatches land before the Failed terminal flushes.
+                            // If chunks_loaded == 0 there is nothing to settle; finish
+                            // immediately in that case to avoid an unnecessary tick.
+                            if outcome.chunks_loaded == 0 {
+                                self.finish_anchor_restore(
+                                    request_id,
+                                    TimelineAnchorRestoreStatus::Failed { kind },
+                                );
+                                return;
+                            }
+                            restore.end_reached_settle =
+                                Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
+                            restore.settle_baseline_seq = self.diff_batch_seq;
+                            restore.settle_min_seq =
+                                self.diff_batch_seq.wrapping_add(outcome.chunks_loaded as u64);
+                            restore.settle_terminal = SettleTerminal::Failed { kind };
+                            self.schedule_restore_anchor_continue(restore).await;
                             return;
                         }
                     };
@@ -2226,12 +2270,10 @@ impl TimelineActor {
                         }
                         restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
                         restore.settle_baseline_seq = self.diff_batch_seq;
-                        // P1-gap: outcome.chunks_loaded cache DiffBatches are still
-                        // pending in the async relay when the fallback paginate_once
-                        // returns. Include them in the settle fence (+1 for paginate_once).
-                        restore.settle_min_seq = self
-                            .diff_batch_seq
-                            .wrapping_add(outcome.chunks_loaded as u64 + 1);
+                        // P1-gap: include pending cache DiffBatches (chunks_loaded) plus
+                        // the paginate_once batch (+1) in the settle fence.
+                        restore.settle_min_seq =
+                            self.diff_batch_seq.wrapping_add(total_pending);
                         restore.settle_terminal = SettleTerminal::EndReached;
                         self.schedule_restore_anchor_continue(restore).await;
                         return;
@@ -2246,11 +2288,9 @@ impl TimelineActor {
                         }
                         restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
                         restore.settle_baseline_seq = self.diff_batch_seq;
-                        // P1-gap: same as end_reached case — pending cache DiffBatches
-                        // must be included in the settle fence.
-                        restore.settle_min_seq = self
-                            .diff_batch_seq
-                            .wrapping_add(outcome.chunks_loaded as u64 + 1);
+                        // P1-gap: same as end_reached — settle cache + paginate_once batch.
+                        restore.settle_min_seq =
+                            self.diff_batch_seq.wrapping_add(total_pending);
                         restore.settle_terminal = SettleTerminal::BudgetExhausted;
                         self.schedule_restore_anchor_continue(restore).await;
                         return;
@@ -2260,39 +2300,49 @@ impl TimelineActor {
                     return;
                 }
 
-                // No gap: cache-only bulk load completed (reached_start or budget).
+                // No gap: cache-only bulk load completed.
+                //
                 // The bulk diffs are broadcast and will land as DiffBatch messages
                 // through a 3-hop async pipeline:
                 //   conclude_backwards_pagination_from_disk →
                 //   room_event_cache_updates_task → handle_remote_events_with_diffs →
                 //   Timeline observable → relay task diff_stream → DiffBatch actor msg.
                 //
-                // Each hop requires at least one Tokio scheduling slot. `chunks_loaded`
-                // is the exact number of `conclude_backwards_pagination_from_disk`
-                // broadcasts fired — one per disk chunk read. Set `settle_min_seq` to
-                // `baseline + chunks_loaded` so the `diff_arrived` fast-path only
-                // concludes when ALL chunks' DiffBatch messages have been processed by
-                // this actor. This prevents settling on the very first DiffBatch (which
-                // carries only the newest chunk, not the anchor in the oldest chunk).
+                // P1: total expected DiffBatches = lazy_reveal_batches + chunks_loaded.
+                // `lazy_reveal_batches` is 1 when live_lazy_paginate_backwards changed
+                // the Skip adaptor count (in-memory hidden rows revealed), 0 otherwise.
+                // `chunks_loaded` is the exact number of disk broadcasts. Both contribute
+                // to the settle fence so we don't conclude before all batches land.
                 //
-                // Scale settle_ticks proportionally to chunks so each chunk's 3-hop
-                // pipeline has enough Tokio scheduling rounds as a safety fallback.
+                // Scale settle_ticks proportionally to total expected DiffBatches.
                 // Cap at u8::MAX (covers ~1700 events / ~13 chunks at 128 events/chunk).
-                let expected_batches = outcome.chunks_loaded as u64;
+                let total_batches =
+                    outcome.lazy_reveal_batches as u64 + outcome.chunks_loaded as u64;
                 let settle_ticks = {
-                    let estimated = (outcome.chunks_loaded as u32)
-                        .saturating_mul(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS as u32 + 2)
-                        .saturating_add(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS as u32);
+                    let estimated =
+                        ((outcome.lazy_reveal_batches + outcome.chunks_loaded) as u32)
+                            .saturating_mul(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS as u32 + 2)
+                            .saturating_add(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS as u32);
                     estimated.min(u8::MAX as u32) as u8
                 };
+                // P2-cap: if the load stopped at the u16 cap (neither hit_gap nor
+                // reached_start), settle current diffs and re-issue another bulk load
+                // while budget remains; only conclude BudgetExhausted when the Rust
+                // budget counter actually reaches zero.
                 let settle_terminal = if outcome.reached_start {
                     SettleTerminal::EndReached
+                } else if outcome.hit_gap {
+                    // hit_gap is handled in the branch above; this arm is unreachable.
+                    unreachable!("hit_gap must be handled in the hit_gap branch")
+                } else if restore.max_batches_remaining > 0 {
+                    // Cap case: more budget remains; continue bulk search after settle.
+                    SettleTerminal::ContinueBulk
                 } else {
                     SettleTerminal::BudgetExhausted
                 };
                 restore.end_reached_settle = Some(settle_ticks);
                 restore.settle_baseline_seq = self.diff_batch_seq;
-                restore.settle_min_seq = self.diff_batch_seq.wrapping_add(expected_batches);
+                restore.settle_min_seq = self.diff_batch_seq.wrapping_add(total_batches);
                 restore.settle_terminal = settle_terminal;
                 self.schedule_restore_anchor_continue(restore).await;
             }
@@ -8785,6 +8835,14 @@ mod tests {
         assert!(
             production.contains("SettleTerminal::BudgetExhausted"),
             "SettleTerminal must have a BudgetExhausted variant"
+        );
+        assert!(
+            production.contains("SettleTerminal::Failed"),
+            "SettleTerminal must have a Failed variant for deferred failed-terminal settle"
+        );
+        assert!(
+            production.contains("SettleTerminal::ContinueBulk"),
+            "SettleTerminal must have a ContinueBulk variant for u16-cap bulk re-entry"
         );
     }
 
