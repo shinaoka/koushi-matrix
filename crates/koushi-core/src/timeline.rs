@@ -2143,9 +2143,19 @@ impl TimelineActor {
         // instead of looping one chunk at a time through `paginate_once`.
         // The SDK stops as soon as the anchor event is found (load-until-anchor),
         // or when it reaches a gap or the start of the on-disk timeline.
-        let bulk_n =
-            (restore.max_batches_remaining as u32).saturating_mul(event_count as u32).min(u16::MAX as u32) as u16;
-        let cache_result = self.timeline.live_restore_from_cache(bulk_n, &restore.event_id).await;
+        //
+        // Pass the chunk budget directly as max_chunks so the SDK enforces
+        // RESTORE_ANCHOR_MAX_CHUNKS regardless of chunk size (P2b fix).
+        // The event count `n` is a secondary cap; set it large enough that only
+        // the chunk cap binds in practice.
+        let chunk_budget = restore.max_batches_remaining;
+        let bulk_n = (chunk_budget as u32)
+            .saturating_mul(event_count as u32)
+            .min(u16::MAX as u32) as u16;
+        let cache_result = self
+            .timeline
+            .live_restore_from_cache(bulk_n, &restore.event_id, chunk_budget)
+            .await;
         restore.in_flight = false;
 
         match cache_result {
