@@ -71,6 +71,7 @@ describe("ActivityPane", () => {
     expect(screen.getByText("Placeholder room")).toBeTruthy();
     expect(screen.queryByText("Preview")).toBeNull();
     expect(screen.queryByText("Sender")).toBeNull();
+    expect(listitem.querySelector("time")).toBeNull();
 
     // No open button: placeholder rows are not event-clickable.
     expect(screen.queryByRole("button", { name: /Open/ })).toBeNull();

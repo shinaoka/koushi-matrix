@@ -201,9 +201,6 @@ export function ActivityPane({
                     <div className="activity-row-open">
                       <span className="activity-row-topline">
                         <strong dir="auto">{row.room_label}</strong>
-                        <time dateTime={new Date(row.timestamp_ms).toISOString()}>
-                          {activityTimestamp(row.timestamp_ms)}
-                        </time>
                       </span>
                       <span className="activity-row-meta">
                         {row.unread ? <span>{t("activity.unreadBadge")}</span> : null}
