@@ -56,18 +56,17 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <WorkspaceRail
-        activeView="timeline"
         snapshot={snapshot}
         onCreateSpace={() => undefined}
         onOpenContextMenu={() => undefined}
-        onOpenActivity={() => undefined}
         onOpenUserSettings={() => undefined}
         onReorderSpaces={() => undefined}
         onSelectSpace={() => undefined}
       />
     );
 
-    expect(markup).toContain('aria-label="Activity"');
+    expect(markup).toContain('aria-label="Home"');
+    expect(markup).not.toContain('aria-label="Activity"');
     expect(markup).toContain('role="separator"');
     expect(markup).toContain('aria-label="Create space"');
   });
@@ -90,11 +89,9 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <WorkspaceRail
-        activeView="timeline"
         snapshot={snapshot}
         onCreateSpace={() => undefined}
         onOpenContextMenu={() => undefined}
-        onOpenActivity={() => undefined}
         onOpenUserSettings={() => undefined}
         onReorderSpaces={() => undefined}
         onSelectSpace={() => undefined}
@@ -106,7 +103,7 @@ describe("ContextualRightPanel", () => {
     expect(markup).toContain("compact-label");
     expect(markup).toContain("Ops Space");
     expect(markup).toContain('data-count="13"');
-    expect(markup).toContain('data-mention-count="2"');
+    expect(markup).not.toContain('data-mention-count="2"');
   });
 
   test("composer renders reply mode from snapshot state", async () => {

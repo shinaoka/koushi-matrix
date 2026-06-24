@@ -20,6 +20,7 @@
   --brand-hover: #1f59d0;
   --brand-weak: #e7f0fe;
   --brand-contrast: #ffffff;
+  --home-accent: #0f8f83;
   --rail: #16213e;
   --rail-item: #27324f;
   --sidebar: #f5f7fb;
@@ -831,6 +832,10 @@ button:disabled {
   background: var(--brand);
 }
 
+.workspace-home-button.is-active {
+  background: var(--home-accent);
+}
+
 .workspace-button-avatar {
   display: grid;
   place-items: center;
@@ -1073,13 +1078,6 @@ button:disabled {
   min-inline-size: var(--room-count-min-inline-size);
 }
 
-.room-mention-dot {
-  inline-size: var(--nav-dot-size);
-  block-size: var(--nav-dot-size);
-  border-radius: var(--r-pill);
-  background: var(--mention);
-}
-
 .room-count {
   min-inline-size: var(--room-count-min-inline-size);
   font-size: var(--room-count-font-size);
@@ -1112,6 +1110,25 @@ button:disabled {
   background: var(--brand);
   font-size: var(--room-avatar-font-size);
   font-weight: 800;
+}
+
+.room-avatar-shell {
+  position: relative;
+  display: grid;
+  place-items: center;
+  inline-size: var(--room-avatar-size);
+  block-size: var(--room-avatar-size);
+}
+
+.room-presence-dot {
+  position: absolute;
+  inset-inline-end: -2px;
+  inset-block-end: -2px;
+  inline-size: 10px;
+  block-size: 10px;
+  border: 2px solid var(--sidebar);
+  border-radius: var(--r-pill);
+  background: var(--success);
 }
 
 .presence-dot {

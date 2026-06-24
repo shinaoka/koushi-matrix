@@ -386,6 +386,46 @@ const MIN_RIGHT_PANEL_WIDTH = 320;
 const MAX_RIGHT_PANEL_WIDTH = 680;
 const COMPACT_RAIL_WIDTH = 56;
 const MIN_TIMELINE_WIDTH_WHILE_RESIZING = 180;
+const HOME_SELECTION_KEY = "koushi.homeSelection.v1";
+type HomeSelection =
+  | { kind: "activity" }
+  | { kind: "explore" }
+  | { kind: "invites" }
+  | { kind: "dm"; roomId: string };
+const DEFAULT_HOME_SELECTION: HomeSelection = { kind: "activity" };
+
+function readHomeSelection(): HomeSelection {
+  if (typeof window === "undefined" || !("localStorage" in window)) {
+    return DEFAULT_HOME_SELECTION;
+  }
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(HOME_SELECTION_KEY) ?? "");
+    if (!parsed || typeof parsed !== "object" || !("kind" in parsed)) {
+      return DEFAULT_HOME_SELECTION;
+    }
+    if (
+      parsed.kind === "activity" ||
+      parsed.kind === "explore" ||
+      parsed.kind === "invites"
+    ) {
+      return { kind: parsed.kind };
+    }
+    if (parsed.kind === "dm" && typeof parsed.roomId === "string") {
+      return { kind: "dm", roomId: parsed.roomId };
+    }
+  } catch {
+    return DEFAULT_HOME_SELECTION;
+  }
+  return DEFAULT_HOME_SELECTION;
+}
+
+function writeHomeSelection(selection: HomeSelection): void {
+  if (typeof window === "undefined" || !("localStorage" in window)) {
+    return;
+  }
+  window.localStorage.setItem(HOME_SELECTION_KEY, JSON.stringify(selection));
+}
+
 function clampSidebarWidth(width: number, viewportWidth = window.innerWidth): number {
   const responsiveMax =
     viewportWidth <= 760
@@ -931,6 +971,8 @@ export function App() {
   const [contextMenu, setContextMenu] = useState<ActiveContextMenu | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [primaryView, setPrimaryView] = useState<PrimaryView>("timeline");
+  const [homeSelection, setHomeSelectionState] =
+    useState<HomeSelection>(readHomeSelection);
   const [directorySearchDraft, setDirectorySearchDraft] = useState("");
   const [newDmDialogOpen, setNewDmDialogOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -956,6 +998,7 @@ export function App() {
   const qaSendTargetRequested = useRef(false);
   const qaSendTargetSelectionRequested = useRef<string | null>(null);
   const qaSendBaselineErrorCount = useRef(0);
+  const initialHomeSelectionApplied = useRef(false);
   const requestedAvatarMxcsRef = useRef<Set<string>>(new Set());
   const avatarRetryCountsRef = useRef<Map<string, number>>(new Map());
 
@@ -1986,7 +2029,42 @@ export function App() {
     options
   ) => api.resolveComposerKeyAction(surface, keyEvent, options);
 
+  function setHomeSelection(selection: HomeSelection) {
+    setHomeSelectionState(selection);
+    writeHomeSelection(selection);
+  }
+
+  const openHomeSelection = useCallback(async (selection = homeSelection) => {
+    const homeSnapshot = await api.selectSpace(null);
+    if (selection.kind === "dm") {
+      const room = homeSnapshot.state.domain.rooms.find(
+        (candidate) => candidate.room_id === selection.roomId && candidate.is_dm
+      );
+      if (room) {
+        setPrimaryView("timeline");
+        setSnapshot(await api.selectRoom(selection.roomId));
+        return;
+      }
+    }
+    if (selection.kind === "explore") {
+      setSnapshot(homeSnapshot);
+      setPrimaryView("explore");
+      return;
+    }
+    if (selection.kind === "invites") {
+      setSnapshot(homeSnapshot);
+      setPrimaryView("invites");
+      return;
+    }
+    setSnapshot(await api.openActivity());
+    setPrimaryView("activity");
+  }, [homeSelection, setSnapshot]);
+
   async function selectSpace(spaceId: string | null) {
+    if (spaceId === null) {
+      await openHomeSelection();
+      return;
+    }
     setPrimaryView("timeline");
     setSnapshot(await api.selectSpace(spaceId));
   }
@@ -1996,9 +2074,48 @@ export function App() {
   }
 
   async function selectRoom(roomId: string) {
+    const selectedRoom = snapshot?.state.domain.rooms.find((room) => room.room_id === roomId);
+    if (snapshot?.sidebar.account_home.is_active && selectedRoom?.is_dm) {
+      setHomeSelection({ kind: "dm", roomId });
+    }
     setPrimaryView("timeline");
     setSnapshot(await api.selectRoom(roomId));
   }
+
+  async function openHomeActivityView() {
+    setHomeSelection({ kind: "activity" });
+    await openHomeSelection({ kind: "activity" });
+  }
+
+  async function openHomeExploreView() {
+    setHomeSelection({ kind: "explore" });
+    await openHomeSelection({ kind: "explore" });
+  }
+
+  async function openHomeInvitesView() {
+    setHomeSelection({ kind: "invites" });
+    await openHomeSelection({ kind: "invites" });
+  }
+
+  useEffect(() => {
+    if (
+      initialHomeSelectionApplied.current ||
+      !snapshot ||
+      snapshot.state.domain.session.kind !== "ready" ||
+      !snapshot.sidebar.account_home.is_active ||
+      snapshot.state.ui.navigation.active_space_id !== null
+    ) {
+      return;
+    }
+    initialHomeSelectionApplied.current = true;
+    void openHomeSelection(homeSelection);
+  }, [
+    homeSelection,
+    openHomeSelection,
+    snapshot?.sidebar.account_home.is_active,
+    snapshot?.state.domain.session.kind,
+    snapshot?.state.ui.navigation.active_space_id
+  ]);
 
   async function openInvitesView() {
     setSnapshot(await api.getSnapshot());
@@ -2008,11 +2125,6 @@ export function App() {
   async function openExploreView() {
     setSnapshot(await api.getSnapshot());
     setPrimaryView("explore");
-  }
-
-  async function openActivityView() {
-    setSnapshot(await api.openActivity());
-    setPrimaryView("activity");
   }
 
   async function closeActivityView() {
@@ -2884,6 +2996,7 @@ export function App() {
   const activeSpace = snapshot.state.domain.spaces.find(
     (space) => space.space_id === snapshot.state.ui.navigation.active_space_id
   );
+  const homeContextActive = snapshot.sidebar.account_home.is_active && !activeSpace;
   const activeSpaceName = activeSpace
     ? spaceDisplayName(activeSpace.space_id, activeSpace.display_name, spaceLocalOverrides)
     : snapshot.sidebar.account_home.display_name;
@@ -2955,14 +3068,10 @@ export function App() {
         style={appGridStyle}
       >
         <WorkspaceRail
-          activeView={primaryView}
           snapshot={snapshot}
           spaceOverrides={spaceLocalOverrides}
           onCreateSpace={() => openCreateDialog("space")}
           onOpenContextMenu={openContextMenu}
-          onOpenActivity={() => {
-            void openActivityView();
-          }}
           onOpenUserSettings={() => {
             void setRightPanelModeClosingFocusedContext("userSettings");
           }}
@@ -2979,14 +3088,17 @@ export function App() {
           onCreateRoom={() => openCreateDialog("room")}
           onNewDm={openNewDmDialog}
           onOpenContextMenu={openContextMenu}
+          onOpenActivity={() => {
+            void openHomeActivityView();
+          }}
           onOpenExplore={() => {
-            void openExploreView();
+            void (homeContextActive ? openHomeExploreView() : openExploreView());
           }}
           onOpenHome={() => {
             void selectSpace(null);
           }}
           onOpenInvites={() => {
-            void openInvitesView();
+            void (homeContextActive ? openHomeInvitesView() : openInvitesView());
           }}
           onOpenSpaceInfo={() => {
             void setRightPanelModeClosingFocusedContext("spaceInfo");

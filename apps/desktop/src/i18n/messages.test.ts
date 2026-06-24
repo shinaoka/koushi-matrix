@@ -44,11 +44,11 @@ describe("i18n message catalog", () => {
     expect(t("auth.matrixDesktop", {}, "ja")).toBe("Koushi（光子・格子）");
   });
 
-  test("direct-message room list surfaces are labeled as DMs, not people", () => {
-    expect(t("roomList.filterPeople")).toBe("DMs");
-    expect(t("workspace.people")).toBe("DMs");
-    expect(t("roomList.filterPeople", {}, "ja")).toBe("DM");
-    expect(t("workspace.people", {}, "ja")).toBe("DM");
+  test("direct-message room list surfaces are labeled consistently", () => {
+    expect(t("roomList.filterPeople")).toBe("Direct Messages");
+    expect(t("workspace.people")).toBe("Direct Messages");
+    expect(t("roomList.filterPeople", {}, "ja")).toBe("Direct Messages");
+    expect(t("workspace.people", {}, "ja")).toBe("Direct Messages");
   });
 
   test("explains the three-state user trust model in shipped locales", () => {
@@ -207,9 +207,12 @@ const japaneseIdenticalMessageAllowlist = new Set<MessageId>([
   "auth.flowSso",
   "auth.flowToken",
   "auth.flowUnknown",
+  "roomList.filterPeople",
+  "space.directMessages",
   "settings.fontInter",
   "settings.twemojiColr",
-  "timeline.mediaUploadProgress"
+  "timeline.mediaUploadProgress",
+  "workspace.people"
 ]);
 
 function lineNumberAt(sourceFile: ts.SourceFile, node: ts.Node): number {
