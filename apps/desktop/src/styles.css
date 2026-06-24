@@ -1036,6 +1036,14 @@ button:disabled {
   background: var(--mention);
 }
 
+.room-mention-dot {
+  display: inline-block;
+  inline-size: var(--nav-dot-size);
+  block-size: var(--nav-dot-size);
+  border-radius: var(--r-pill);
+  background: var(--mention);
+}
+
 .nav-item[data-live-count] .nav-label::before {
   margin-inline-end: 2px;
   margin-inline-start: 0;

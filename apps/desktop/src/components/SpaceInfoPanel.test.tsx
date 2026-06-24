@@ -82,7 +82,7 @@ describe("SpaceInfoPanel", () => {
     expect(markup).toContain("Space preferences");
     expect(markup).toContain("Room membership");
     expect(markup).toContain("Child rooms");
-    expect(markup).toContain("Direct messages");
+    expect(markup).toContain("Direct Messages");
     expect(markup).toContain("Global DM list");
   });
 
