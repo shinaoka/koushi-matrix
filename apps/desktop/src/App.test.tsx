@@ -56,18 +56,17 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <WorkspaceRail
-        activeView="timeline"
         snapshot={snapshot}
         onCreateSpace={() => undefined}
         onOpenContextMenu={() => undefined}
-        onOpenActivity={() => undefined}
         onOpenUserSettings={() => undefined}
         onReorderSpaces={() => undefined}
         onSelectSpace={() => undefined}
       />
     );
 
-    expect(markup).toContain('aria-label="Activity"');
+    expect(markup).toContain('aria-label="Home"');
+    expect(markup).not.toContain('aria-label="Activity"');
     expect(markup).toContain('role="separator"');
     expect(markup).toContain('aria-label="Create space"');
   });
@@ -90,11 +89,9 @@ describe("ContextualRightPanel", () => {
 
     const markup = renderToStaticMarkup(
       <WorkspaceRail
-        activeView="timeline"
         snapshot={snapshot}
         onCreateSpace={() => undefined}
         onOpenContextMenu={() => undefined}
-        onOpenActivity={() => undefined}
         onOpenUserSettings={() => undefined}
         onReorderSpaces={() => undefined}
         onSelectSpace={() => undefined}
@@ -106,7 +103,7 @@ describe("ContextualRightPanel", () => {
     expect(markup).toContain("compact-label");
     expect(markup).toContain("Ops Space");
     expect(markup).toContain('data-count="13"');
-    expect(markup).toContain('data-mention-count="2"');
+    expect(markup).not.toContain('data-mention-count="2"');
   });
 
   test("composer renders reply mode from snapshot state", async () => {
@@ -1158,11 +1155,17 @@ describe("ContextualRightPanel", () => {
     const source = readFileSync(new URL("./components/panes.tsx", import.meta.url), "utf8");
     const roomPaneStart = source.indexOf("export function TimelinePane");
     const roomPane = source.slice(roomPaneStart);
+    const tabsActionsIndex = roomPane.indexOf('className="tabs-actions"');
+    const loadMoreIndex = roomPane.indexOf('className="timeline-load-more"');
+    const timelineScrollIndex = roomPane.indexOf('className="timeline-scroll"');
 
     expect(roomPane).toContain("timelineTransport.paginateBackwards");
     expect(roomPane).toContain("roomTimelineKey(currentUserId, timelineRoomId)");
     expect(roomPane).toContain('timelineBackfill === "Paginating"');
     expect(roomPane).toContain('timelineBackfill === "EndReached"');
+    expect(tabsActionsIndex).toBeGreaterThanOrEqual(0);
+    expect(loadMoreIndex).toBeGreaterThan(tabsActionsIndex);
+    expect(loadMoreIndex).toBeLessThan(timelineScrollIndex);
     expect(roomPane).not.toContain("onPaginateBackwards");
     expect(roomPane).not.toContain("is_paginating_backwards");
   });

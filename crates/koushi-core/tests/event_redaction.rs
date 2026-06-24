@@ -7,10 +7,7 @@ use support::fake_request_id;
 
 use koushi_core::event::LiveSignalsEvent;
 use koushi_core::{AccountKey, CoreEvent, E2eeTrustEvent, TimelineKey};
-use koushi_state::{
-    AvatarImage, AvatarThumbnailState, LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
-    SasEmoji, VerificationFlowState, VerificationTarget,
-};
+use koushi_state::{PresenceKind, SasEmoji, VerificationFlowState, VerificationTarget};
 
 #[test]
 fn e2ee_trust_events_are_typed_and_debug_redacts_identifiers() {
@@ -48,35 +45,20 @@ fn live_signal_events_are_typed_and_debug_redacts_identifiers() {
         AccountKey("@alice:example.test".to_owned()),
         "!room:example.test",
     );
-    let update = LiveRoomSignalUpdate {
-        receipts_by_event: vec![LiveEventReceipts {
-            event_id: "$event:example.test".to_owned(),
-            receipts: vec![LiveReadReceipt {
-                user_id: "@bob:example.test".to_owned(),
-                display_name: Some("Private Reader".to_owned()),
-                original_display_label: String::new(),
-                avatar: Some(AvatarImage {
-                    mxc_uri: "mxc://example.test/private-reader".to_owned(),
-                    thumbnail: AvatarThumbnailState::NotRequested,
-                }),
-                timestamp_ms: Some(123),
-            }],
-        }],
-        fully_read_event_id: Some("$event:example.test".to_owned()),
-        typing_user_ids: vec!["@bob:example.test".to_owned()],
-    };
 
-    let event = LiveSignalsEvent::RoomSignalsUpdated {
-        room_id: "!room:example.test".to_owned(),
-        update,
+    let event = LiveSignalsEvent::PresenceUpdated {
+        user_id: "@bob:example.test".to_owned(),
+        presence: PresenceKind::Away,
     };
     let value = serde_json::to_value(&event).expect("live signal event serializes");
-    assert_eq!(value["kind"], "roomSignalsUpdated");
-    assert_eq!(value["room_id"], "!room:example.test");
-    let debug_update = format!("{:?}", CoreEvent::LiveSignals(event));
-    assert!(debug_update.contains("RoomSignalsUpdated"));
-    assert!(!debug_update.contains("Private Reader"), "{debug_update}");
-    assert!(!debug_update.contains("private-reader"), "{debug_update}");
+    assert_eq!(value["kind"], "presenceUpdated");
+    assert_eq!(value["user_id"], "@bob:example.test");
+    let debug_presence = format!("{:?}", CoreEvent::LiveSignals(event));
+    assert!(debug_presence.contains("PresenceUpdated"));
+    assert!(
+        !debug_presence.contains("@bob:example.test"),
+        "{debug_presence}"
+    );
 
     let completion = LiveSignalsEvent::ReadReceiptSent {
         request_id,

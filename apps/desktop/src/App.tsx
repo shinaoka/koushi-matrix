@@ -32,8 +32,20 @@ import {
 } from "./components/TimelineView";
 import {
   type CoreEventPayload,
-  type TimelineKey
+  type TimelineKey,
+  focusedTimelineKey,
+  roomTimelineKey,
+  threadTimelineKey
 } from "./domain/coreEvents";
+import {
+  applyGlobalResync,
+  applyTimelineEventWithRetention,
+  createTimelineStore,
+  pruneTimelineStore,
+  timelineStoreKeyId,
+  type TimelineStoreState
+} from "./domain/timelineStore";
+import { TimelineStoreContext } from "./components/timelineStoreContext";
 import {
   type ContextMenuActionId,
   type ContextMenuItem
@@ -386,6 +398,46 @@ const MIN_RIGHT_PANEL_WIDTH = 320;
 const MAX_RIGHT_PANEL_WIDTH = 680;
 const COMPACT_RAIL_WIDTH = 56;
 const MIN_TIMELINE_WIDTH_WHILE_RESIZING = 180;
+const HOME_SELECTION_KEY = "koushi.homeSelection.v1";
+type HomeSelection =
+  | { kind: "activity" }
+  | { kind: "explore" }
+  | { kind: "invites" }
+  | { kind: "dm"; roomId: string };
+const DEFAULT_HOME_SELECTION: HomeSelection = { kind: "activity" };
+
+function readHomeSelection(): HomeSelection {
+  if (typeof window === "undefined" || !("localStorage" in window)) {
+    return DEFAULT_HOME_SELECTION;
+  }
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(HOME_SELECTION_KEY) ?? "");
+    if (!parsed || typeof parsed !== "object" || !("kind" in parsed)) {
+      return DEFAULT_HOME_SELECTION;
+    }
+    if (
+      parsed.kind === "activity" ||
+      parsed.kind === "explore" ||
+      parsed.kind === "invites"
+    ) {
+      return { kind: parsed.kind };
+    }
+    if (parsed.kind === "dm" && typeof parsed.roomId === "string") {
+      return { kind: "dm", roomId: parsed.roomId };
+    }
+  } catch {
+    return DEFAULT_HOME_SELECTION;
+  }
+  return DEFAULT_HOME_SELECTION;
+}
+
+function writeHomeSelection(selection: HomeSelection): void {
+  if (typeof window === "undefined" || !("localStorage" in window)) {
+    return;
+  }
+  window.localStorage.setItem(HOME_SELECTION_KEY, JSON.stringify(selection));
+}
+
 function clampSidebarWidth(width: number, viewportWidth = window.innerWidth): number {
   const responsiveMax =
     viewportWidth <= 760
@@ -827,6 +879,56 @@ function imageSrcScheme(src: string): string {
   }
 }
 
+function timelineStoreSessionKey(snapshot: DesktopSnapshot | null): string {
+  const session = snapshot?.state.domain.session;
+  if (!session || session.kind !== "ready" || !session.user_id) {
+    return "signed-out";
+  }
+  return [
+    session.homeserver ?? "",
+    session.user_id,
+    session.device_id ?? ""
+  ].join("\u0000");
+}
+
+function retainedTimelineStoreKeyIds(snapshot: DesktopSnapshot | null): Set<string> {
+  const userId =
+    snapshot?.state.domain.session.kind === "ready"
+      ? snapshot.state.domain.session.user_id ?? null
+      : null;
+  if (!snapshot || !userId) {
+    return new Set();
+  }
+
+  const retained = new Set<string>();
+  const roomId = snapshot.state.ui.timeline.room_id;
+  if (roomId) {
+    retained.add(timelineStoreKeyId(roomTimelineKey(userId, roomId)));
+  }
+
+  const focusedContext = snapshot.state.ui.focused_context;
+  if (focusedContext.kind === "opening" || focusedContext.kind === "open") {
+    retained.add(
+      timelineStoreKeyId(
+        focusedTimelineKey(userId, focusedContext.room_id, focusedContext.event_id)
+      )
+    );
+  }
+
+  const thread = snapshot.state.ui.thread;
+  if (
+    (thread.kind === "opening" || thread.kind === "open") &&
+    thread.room_id &&
+    thread.root_event_id
+  ) {
+    retained.add(
+      timelineStoreKeyId(threadTimelineKey(userId, thread.room_id, thread.root_event_id))
+    );
+  }
+
+  return retained;
+}
+
 function useUiLatencyDiagnostics(): UiLatencyDiagnostics {
   const [diagnostics, setDiagnostics] = useState<UiLatencyDiagnostics>(
     EMPTY_UI_LATENCY_DIAGNOSTICS
@@ -931,6 +1033,8 @@ export function App() {
   const [contextMenu, setContextMenu] = useState<ActiveContextMenu | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [primaryView, setPrimaryView] = useState<PrimaryView>("timeline");
+  const [homeSelection, setHomeSelectionState] =
+    useState<HomeSelection>(readHomeSelection);
   const [directorySearchDraft, setDirectorySearchDraft] = useState("");
   const [newDmDialogOpen, setNewDmDialogOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -948,6 +1052,7 @@ export function App() {
   const [createDraftName, setCreateDraftName] = useState("");
   const [reportDialog, setReportDialog] = useState<ReportDialogState | null>(null);
   const [reportReasonDraft, setReportReasonDraft] = useState("");
+  const [timelineStore, setTimelineStore] = useState<TimelineStoreState>(createTimelineStore);
   const uiLatencyDiagnostics = useUiLatencyDiagnostics();
   const verboseDiagnosticBuild = verboseDiagnosticsEnabled();
   const searchTimer = useRef<number | null>(null);
@@ -956,6 +1061,7 @@ export function App() {
   const qaSendTargetRequested = useRef(false);
   const qaSendTargetSelectionRequested = useRef<string | null>(null);
   const qaSendBaselineErrorCount = useRef(0);
+  const initialHomeSelectionApplied = useRef(false);
   const requestedAvatarMxcsRef = useRef<Set<string>>(new Set());
   const avatarRetryCountsRef = useRef<Map<string, number>>(new Map());
 
@@ -1062,6 +1168,33 @@ export function App() {
       : snapshotComposerDraft;
   const stagedUploads = snapshot?.state.ui.timeline.staged_uploads ?? [];
   const stagedUploadIdKey = stagedUploads.map((item) => item.staged_id).join("\n");
+  const retainedTimelineKeyIds = useMemo(
+    () => retainedTimelineStoreKeyIds(snapshot),
+    [snapshot]
+  );
+  const retainedTimelineKeyIdsRef = useRef(retainedTimelineKeyIds);
+  retainedTimelineKeyIdsRef.current = retainedTimelineKeyIds;
+  const currentTimelineStoreSessionKey = timelineStoreSessionKey(snapshot);
+  const timelineStoreSessionKeyRef = useRef(currentTimelineStoreSessionKey);
+  const timelineStoreContextValue = useMemo(
+    () =>
+      appTimelineTransport
+        ? { store: timelineStore, setStore: setTimelineStore }
+        : null,
+    [appTimelineTransport, timelineStore]
+  );
+
+  useEffect(() => {
+    if (timelineStoreSessionKeyRef.current === currentTimelineStoreSessionKey) {
+      return;
+    }
+    timelineStoreSessionKeyRef.current = currentTimelineStoreSessionKey;
+    setTimelineStore(createTimelineStore());
+  }, [currentTimelineStoreSessionKey]);
+
+  useEffect(() => {
+    setTimelineStore((current) => pruneTimelineStore(current, retainedTimelineKeyIds));
+  }, [retainedTimelineKeyIds]);
 
   useEffect(() => {
     if (!snapshot) {
@@ -1565,6 +1698,46 @@ export function App() {
     };
   }, []);
 
+  // App-level timeline store: apply CoreEvent::Timeline diffs once, then feed
+  // the resulting store into every TimelineView. This keeps Matrix timeline
+  // semantics Rust-owned and avoids per-view reducer ownership.
+  useEffect(() => {
+    if (!appTimelineTransport) {
+      return;
+    }
+
+    let disposed = false;
+    const unsubscribe = appTimelineTransport.listenCoreEvents((payload) => {
+      if (disposed) {
+        return;
+      }
+      if (payload.kind === "ResyncMarker") {
+        setTimelineStore((current) =>
+          pruneTimelineStore(
+            applyGlobalResync(current),
+            retainedTimelineKeyIdsRef.current
+          )
+        );
+        return;
+      }
+      if (payload.kind !== "Timeline") {
+        return;
+      }
+      setTimelineStore((current) =>
+        applyTimelineEventWithRetention(
+          current,
+          payload.event,
+          retainedTimelineKeyIdsRef.current
+        )
+      );
+    });
+
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [appTimelineTransport]);
+
   useEffect(() => {
     if (!isTauriRuntime()) {
       return;
@@ -1986,7 +2159,42 @@ export function App() {
     options
   ) => api.resolveComposerKeyAction(surface, keyEvent, options);
 
+  function setHomeSelection(selection: HomeSelection) {
+    setHomeSelectionState(selection);
+    writeHomeSelection(selection);
+  }
+
+  const openHomeSelection = useCallback(async (selection = homeSelection) => {
+    const homeSnapshot = await api.selectSpace(null);
+    if (selection.kind === "dm") {
+      const room = homeSnapshot.state.domain.rooms.find(
+        (candidate) => candidate.room_id === selection.roomId && candidate.is_dm
+      );
+      if (room) {
+        setPrimaryView("timeline");
+        setSnapshot(await api.selectRoom(selection.roomId));
+        return;
+      }
+    }
+    if (selection.kind === "explore") {
+      setSnapshot(homeSnapshot);
+      setPrimaryView("explore");
+      return;
+    }
+    if (selection.kind === "invites") {
+      setSnapshot(homeSnapshot);
+      setPrimaryView("invites");
+      return;
+    }
+    setSnapshot(await api.openActivity());
+    setPrimaryView("activity");
+  }, [homeSelection, setSnapshot]);
+
   async function selectSpace(spaceId: string | null) {
+    if (spaceId === null) {
+      await openHomeSelection();
+      return;
+    }
     setPrimaryView("timeline");
     setSnapshot(await api.selectSpace(spaceId));
   }
@@ -1996,9 +2204,48 @@ export function App() {
   }
 
   async function selectRoom(roomId: string) {
+    const selectedRoom = snapshot?.state.domain.rooms.find((room) => room.room_id === roomId);
+    if (snapshot?.sidebar.account_home.is_active && selectedRoom?.is_dm) {
+      setHomeSelection({ kind: "dm", roomId });
+    }
     setPrimaryView("timeline");
     setSnapshot(await api.selectRoom(roomId));
   }
+
+  async function openHomeActivityView() {
+    setHomeSelection({ kind: "activity" });
+    await openHomeSelection({ kind: "activity" });
+  }
+
+  async function openHomeExploreView() {
+    setHomeSelection({ kind: "explore" });
+    await openHomeSelection({ kind: "explore" });
+  }
+
+  async function openHomeInvitesView() {
+    setHomeSelection({ kind: "invites" });
+    await openHomeSelection({ kind: "invites" });
+  }
+
+  useEffect(() => {
+    if (
+      initialHomeSelectionApplied.current ||
+      !snapshot ||
+      snapshot.state.domain.session.kind !== "ready" ||
+      !snapshot.sidebar.account_home.is_active ||
+      snapshot.state.ui.navigation.active_space_id !== null
+    ) {
+      return;
+    }
+    initialHomeSelectionApplied.current = true;
+    void openHomeSelection(homeSelection);
+  }, [
+    homeSelection,
+    openHomeSelection,
+    snapshot?.sidebar.account_home.is_active,
+    snapshot?.state.domain.session.kind,
+    snapshot?.state.ui.navigation.active_space_id
+  ]);
 
   async function openInvitesView() {
     setSnapshot(await api.getSnapshot());
@@ -2008,11 +2255,6 @@ export function App() {
   async function openExploreView() {
     setSnapshot(await api.getSnapshot());
     setPrimaryView("explore");
-  }
-
-  async function openActivityView() {
-    setSnapshot(await api.openActivity());
-    setPrimaryView("activity");
   }
 
   async function closeActivityView() {
@@ -2884,6 +3126,7 @@ export function App() {
   const activeSpace = snapshot.state.domain.spaces.find(
     (space) => space.space_id === snapshot.state.ui.navigation.active_space_id
   );
+  const homeContextActive = snapshot.sidebar.account_home.is_active && !activeSpace;
   const activeSpaceName = activeSpace
     ? spaceDisplayName(activeSpace.space_id, activeSpace.display_name, spaceLocalOverrides)
     : snapshot.sidebar.account_home.display_name;
@@ -2934,35 +3177,32 @@ export function App() {
   }
 
   return (
-    <div className="desktop" data-density={displayDensity}>
-      <TopBar
-        activeSpaceName={activeSpaceName}
-        isBusy={isBusy}
-        searchInputRef={searchInputRef}
-        searchQuery={searchQuery}
-        searchScope={searchScope}
-        sync={snapshot.state.domain.sync}
-        onOpenKeyboardSettings={() => {
-          void setRightPanelModeClosingFocusedContext("keyboardSettings");
-        }}
-        onOpenDiagnostics={() => setDiagnosticsOpen(true)}
-        onRestartSync={restartSync}
-        onSearchQueryChange={setSearchQuery}
-        onSearchScopeChange={setSearchScope}
-      />
+    <TimelineStoreContext.Provider value={timelineStoreContextValue}>
+      <div className="desktop" data-density={displayDensity}>
+        <TopBar
+          activeSpaceName={activeSpaceName}
+          isBusy={isBusy}
+          searchInputRef={searchInputRef}
+          searchQuery={searchQuery}
+          searchScope={searchScope}
+          sync={snapshot.state.domain.sync}
+          onOpenKeyboardSettings={() => {
+            void setRightPanelModeClosingFocusedContext("keyboardSettings");
+          }}
+          onOpenDiagnostics={() => setDiagnosticsOpen(true)}
+          onRestartSync={restartSync}
+          onSearchQueryChange={setSearchQuery}
+          onSearchScopeChange={setSearchScope}
+        />
       <div
         className={`app-grid ${rightPanelOpen ? "right-panel-open" : "thread-closed"}`}
         style={appGridStyle}
       >
         <WorkspaceRail
-          activeView={primaryView}
           snapshot={snapshot}
           spaceOverrides={spaceLocalOverrides}
           onCreateSpace={() => openCreateDialog("space")}
           onOpenContextMenu={openContextMenu}
-          onOpenActivity={() => {
-            void openActivityView();
-          }}
           onOpenUserSettings={() => {
             void setRightPanelModeClosingFocusedContext("userSettings");
           }}
@@ -2979,14 +3219,17 @@ export function App() {
           onCreateRoom={() => openCreateDialog("room")}
           onNewDm={openNewDmDialog}
           onOpenContextMenu={openContextMenu}
+          onOpenActivity={() => {
+            void openHomeActivityView();
+          }}
           onOpenExplore={() => {
-            void openExploreView();
+            void (homeContextActive ? openHomeExploreView() : openExploreView());
           }}
           onOpenHome={() => {
             void selectSpace(null);
           }}
           onOpenInvites={() => {
-            void openInvitesView();
+            void (homeContextActive ? openHomeInvitesView() : openInvitesView());
           }}
           onOpenSpaceInfo={() => {
             void setRightPanelModeClosingFocusedContext("spaceInfo");
@@ -3026,7 +3269,9 @@ export function App() {
               void markActivityRead(target);
             }}
             onOpenRow={(row) => {
-              openActivityRow(row.room_id, row.event_id);
+              if (row.kind === "event" && row.event_id !== null) {
+                openActivityRow(row.room_id, row.event_id);
+              }
             }}
             onSetTab={(tab) => {
               void setActivityTab(tab);
@@ -3433,7 +3678,8 @@ export function App() {
           onClose={() => setDiagnosticsOpen(false)}
         />
       ) : null}
-    </div>
+      </div>
+    </TimelineStoreContext.Provider>
   );
 }
 

@@ -6,10 +6,10 @@ use std::fmt;
 use koushi_state::{
     ActivityStream, ActivityTab, AppState, AttachmentResult, AvatarImage, AvatarThumbnailState,
     CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, IdentityResetState,
-    JapaneseCatalogProfile, KeyBackupStatus, LiveRoomSignalUpdate, LocalEncryptionHealth,
-    MediaTransferProgress, NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind,
-    ProfileState, ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind,
-    SessionState, SyncMode, ThreadsListItem, VerificationFlowState, resolve_user_display_name,
+    JapaneseCatalogProfile, KeyBackupStatus, LocalEncryptionHealth, MediaTransferProgress,
+    NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind, ProfileState,
+    ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind, SessionState, SyncMode,
+    ThreadsListItem, VerificationFlowState, resolve_user_display_name,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -267,10 +267,6 @@ pub enum ThreadsListEvent {
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum LiveSignalsEvent {
-    RoomSignalsUpdated {
-        room_id: String,
-        update: LiveRoomSignalUpdate,
-    },
     PresenceUpdated {
         user_id: String,
         presence: PresenceKind,
@@ -299,16 +295,6 @@ pub enum LiveSignalsEvent {
 impl fmt::Debug for LiveSignalsEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::RoomSignalsUpdated { update, .. } => formatter
-                .debug_struct("RoomSignalsUpdated")
-                .field("room_id", &"RoomId(..)")
-                .field("receipt_events", &update.receipts_by_event.len())
-                .field(
-                    "fully_read_event_id",
-                    &update.fully_read_event_id.as_ref().map(|_| "EventId(..)"),
-                )
-                .field("typing_users", &update.typing_user_ids.len())
-                .finish(),
             Self::PresenceUpdated { presence, .. } => formatter
                 .debug_struct("PresenceUpdated")
                 .field("user_id", &"UserId(..)")
@@ -1916,16 +1902,16 @@ mod tests {
     }
 
     fn activity_row(room_id: &str, event_id: &str, timestamp_ms: u64) -> koushi_state::ActivityRow {
-        koushi_state::ActivityRow {
-            room_id: room_id.to_owned(),
-            event_id: event_id.to_owned(),
-            room_label: "Private Room".to_owned(),
-            sender_label: Some("Private Sender".to_owned()),
-            preview: Some("private message body".to_owned()),
+        koushi_state::ActivityRow::event(
+            room_id.to_owned(),
+            event_id.to_owned(),
+            "Private Room".to_owned(),
+            Some("Private Sender".to_owned()),
+            Some("private message body".to_owned()),
             timestamp_ms,
-            unread: true,
-            highlight: false,
-        }
+            true,
+            false,
+        )
     }
 
     fn activity_stream(rows: Vec<koushi_state::ActivityRow>) -> koushi_state::ActivityStream {

@@ -83,16 +83,16 @@ pub fn unread_room_summary(room_id: &str, unread_count: u64) -> RoomSummary {
 }
 
 pub fn activity_row(room_id: &str, event_id: &str, timestamp_ms: u64) -> ActivityRow {
-    ActivityRow {
-        room_id: room_id.to_owned(),
-        event_id: event_id.to_owned(),
-        room_label: String::new(),
-        sender_label: Some("Private sender".to_owned()),
-        preview: Some("Private preview".to_owned()),
+    ActivityRow::event(
+        room_id.to_owned(),
+        event_id.to_owned(),
+        String::new(),
+        Some("Private sender".to_owned()),
+        Some("Private preview".to_owned()),
         timestamp_ms,
-        unread: false,
-        highlight: false,
-    }
+        false,
+        false,
+    )
 }
 
 pub async fn wait_for_state<F>(

@@ -901,9 +901,6 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             request_id,
             message,
         } => basic_operation::handle_basic_operation_failed(state, request_id, message),
-        AppAction::LiveRoomSignalsUpdated { room_id, update } => {
-            live_signals::handle_live_room_signals_updated(state, room_id, update)
-        }
         AppAction::LiveRoomReceiptsUpdated {
             room_id,
             receipts_by_event,
@@ -1515,8 +1512,8 @@ mod tests {
     use super::*;
     use crate::state::{
         AvatarImage, AvatarThumbnailState, LiveEventReceiptSummary, LiveEventReceipts,
-        LiveReadReceipt, LiveRoomSignalUpdate, MediaTransferProgress, OperationFailureKind,
-        PresenceKind, RoomLiveSignals, TimelineMediaDownloadState, UserProfile,
+        LiveReadReceipt, MediaTransferProgress, OperationFailureKind, PresenceKind,
+        RoomLiveSignals, TimelineMediaDownloadState, UserProfile,
     };
 
     fn ready_state() -> AppState {
@@ -1772,26 +1769,18 @@ mod tests {
 
         let effects = reduce(
             &mut state,
-            AppAction::LiveRoomSignalsUpdated {
+            AppAction::LiveRoomReceiptsUpdated {
                 room_id: "!room:example.invalid".to_owned(),
-                update: LiveRoomSignalUpdate {
-                    receipts_by_event: vec![LiveEventReceipts {
-                        event_id: "$event:example.invalid".to_owned(),
-                        receipts: vec![LiveReadReceipt {
-                            user_id: "@bob:example.invalid".to_owned(),
-                            display_name: None,
-                            original_display_label: String::new(),
-                            avatar: None,
-                            timestamp_ms: Some(1_234),
-                        }],
+                receipts_by_event: vec![LiveEventReceipts {
+                    event_id: "$event:example.invalid".to_owned(),
+                    receipts: vec![LiveReadReceipt {
+                        user_id: "@bob:example.invalid".to_owned(),
+                        display_name: None,
+                        original_display_label: String::new(),
+                        avatar: None,
+                        timestamp_ms: Some(1_234),
                     }],
-                    fully_read_event_id: Some("$event:example.invalid".to_owned()),
-                    typing_user_ids: vec![
-                        "@carol:example.invalid".to_owned(),
-                        "@bob:example.invalid".to_owned(),
-                        "@bob:example.invalid".to_owned(),
-                    ],
-                },
+                }],
             },
         );
 
@@ -1817,12 +1806,58 @@ mod tests {
                     },
                 )]
                 .into(),
-                fully_read_event_id: Some("$event:example.invalid".to_owned()),
-                typing_user_ids: vec![
-                    "@bob:example.invalid".to_owned(),
-                    "@carol:example.invalid".to_owned(),
-                ],
+                fully_read_event_id: None,
+                typing_user_ids: Vec::new(),
             })
+        );
+
+        let effects = reduce(
+            &mut state,
+            AppAction::FullyReadMarkerUpdated {
+                room_id: "!room:example.invalid".to_owned(),
+                event_id: Some("$event:example.invalid".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            effects,
+            vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
+        );
+        assert_eq!(
+            state
+                .live_signals
+                .rooms
+                .get("!room:example.invalid")
+                .and_then(|room| room.fully_read_event_id.as_deref()),
+            Some("$event:example.invalid")
+        );
+
+        let effects = reduce(
+            &mut state,
+            AppAction::TypingUsersUpdated {
+                room_id: "!room:example.invalid".to_owned(),
+                user_ids: vec![
+                    "@carol:example.invalid".to_owned(),
+                    "@bob:example.invalid".to_owned(),
+                    "@bob:example.invalid".to_owned(),
+                ],
+            },
+        );
+
+        assert_eq!(
+            effects,
+            vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
+        );
+        assert_eq!(
+            state
+                .live_signals
+                .rooms
+                .get("!room:example.invalid")
+                .map(|room| room.typing_user_ids.clone()),
+            Some(vec![
+                "@bob:example.invalid".to_owned(),
+                "@carol:example.invalid".to_owned(),
+            ])
         );
 
         let effects = reduce(

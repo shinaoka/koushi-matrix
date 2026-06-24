@@ -34,7 +34,11 @@ import {
   getKeyState,
   getPaginationState,
   isAwaitingResync,
-  shouldSuppressAutoBackfill
+  applyTimelineEventWithRetention,
+  pruneTimelineStore,
+  shouldSuppressAutoBackfill,
+  timelineStoreKeyId,
+  type TimelineStoreState
 } from "./timelineStore";
 import { TauriIpcMock } from "../test/tauriIpcMock";
 
@@ -1103,6 +1107,74 @@ describe("DisplayPolicyUpdated", () => {
     items = getItems(store, KEY);
     expect(items[0]).toMatchObject({ is_redacted: true, is_hidden: false });
     expect(items[1]).toMatchObject({ is_redacted: false, is_hidden: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// App-level store retention keeps active timelines and bounds inactive keys
+// ---------------------------------------------------------------------------
+
+describe("timeline store — retention", () => {
+  function seedTimeline(store: TimelineStoreState, key: TimelineKey): TimelineStoreState {
+    const roomId = "Room" in key.kind ? key.kind.Room.room_id : "timeline";
+    return applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key,
+        generation: 1,
+        items: [makeMsg(`$${roomId}`, "seed")]
+      }
+    });
+  }
+
+  test("prunes oldest inactive keys while preserving retained keys", () => {
+    let store = createTimelineStore();
+    const keys = Array.from({ length: 6 }, (_value, index) =>
+      roomTimelineKey(ACCOUNT_KEY, `!room-${index}:example.invalid`)
+    );
+    for (const key of keys) {
+      store = seedTimeline(store, key);
+    }
+
+    const retainedKeyId = timelineStoreKeyId(keys[0]);
+    store = pruneTimelineStore(store, new Set([retainedKeyId]), null, 2);
+
+    const retained = [...store.keys.keys()];
+    expect(retained).toContain(retainedKeyId);
+    expect(retained.filter((keyId) => keyId !== retainedKeyId)).toEqual([
+      timelineStoreKeyId(keys[4]),
+      timelineStoreKeyId(keys[5])
+    ]);
+  });
+
+  test("treats the event key as recently used before pruning", () => {
+    let store = createTimelineStore();
+    const keyA = roomTimelineKey(ACCOUNT_KEY, "!room-a:example.invalid");
+    const keyB = roomTimelineKey(ACCOUNT_KEY, "!room-b:example.invalid");
+    const keyC = roomTimelineKey(ACCOUNT_KEY, "!room-c:example.invalid");
+    for (const key of [keyA, keyB, keyC]) {
+      store = seedTimeline(store, key);
+    }
+
+    store = applyTimelineEventWithRetention(
+      store,
+      {
+        ItemsUpdated: {
+          key: keyA,
+          generation: 1,
+          batch_id: 2,
+          diffs: [{ PushBack: { item: makeMsg("$a-live", "live") } }]
+        }
+      },
+      new Set(),
+      2
+    );
+
+    expect([...store.keys.keys()]).toEqual([
+      timelineStoreKeyId(keyC),
+      timelineStoreKeyId(keyA)
+    ]);
+    expect(getItems(store, keyA).map((item) => itemId(item))).toContain("$a-live");
   });
 });
 

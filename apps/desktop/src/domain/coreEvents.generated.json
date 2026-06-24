@@ -76,6 +76,7 @@
             {
               "event_id": "$activity-recent:example.test",
               "highlight": false,
+              "kind": "event",
               "preview": "Recent preview",
               "room_id": "!activity-recent:example.test",
               "room_label": "Recent room",
@@ -95,11 +96,23 @@
             {
               "event_id": "$activity-unread:example.test",
               "highlight": true,
+              "kind": "event",
               "preview": "Unread preview",
               "room_id": "!activity-unread:example.test",
               "room_label": "Unread room",
               "sender_label": "Unread sender",
               "timestamp_ms": 10,
+              "unread": true
+            },
+            {
+              "event_id": null,
+              "highlight": false,
+              "kind": "roomUnread",
+              "preview": null,
+              "room_id": "!activity-placeholder:example.test",
+              "room_label": "Placeholder room",
+              "sender_label": null,
+              "timestamp_ms": 9,
               "unread": true
             }
           ]
@@ -182,33 +195,6 @@
       "request_id": {
         "connection_id": 3,
         "sequence": 7
-      }
-    },
-    "kind": "LiveSignals"
-  },
-  "liveSignalsRoomSignalsUpdated": {
-    "event": {
-      "kind": "roomSignalsUpdated",
-      "room_id": "!r:example.test",
-      "update": {
-        "fully_read_event_id": "$e1",
-        "receipts_by_event": [
-          {
-            "event_id": "$e1",
-            "receipts": [
-              {
-                "avatar": null,
-                "display_name": "Other",
-                "original_display_label": "",
-                "timestamp_ms": 123,
-                "user_id": "@other:example.test"
-              }
-            ]
-          }
-        ],
-        "typing_user_ids": [
-          "@other:example.test"
-        ]
       }
     },
     "kind": "LiveSignals"

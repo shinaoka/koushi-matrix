@@ -185,57 +185,76 @@ export function ActivityPane({
           </div>
         ) : (
           <ol className="activity-list">
-            {rows.map((row) => (
-              <li
-                className={`activity-row ${row.unread ? "is-unread" : ""} ${
-                  row.highlight ? "is-highlight" : ""
-                }`}
-                data-event-id={row.event_id}
-                data-room-id={row.room_id}
-                key={`${row.room_id}:${row.event_id}`}
-              >
-                <button
-                  className="activity-row-open"
-                  type="button"
-                  aria-label={t("activity.openItem", { room: row.room_label })}
-                  onClick={() => onOpenRow(row)}
+            {rows.map((row) => {
+              const isPlaceholder = row.kind === "roomUnread";
+              return (
+                <li
+                  className={`activity-row ${row.unread ? "is-unread" : ""} ${
+                    row.highlight ? "is-highlight" : ""
+                  }`}
+                  data-event-id={row.event_id ?? undefined}
+                  data-room-id={row.room_id}
+                  data-kind={row.kind}
+                  key={`${row.room_id}:${isPlaceholder ? "roomUnread" : row.event_id}`}
                 >
-                  <span className="activity-row-topline">
-                    <strong dir="auto">{row.room_label}</strong>
-                    <time dateTime={new Date(row.timestamp_ms).toISOString()}>
-                      {activityTimestamp(row.timestamp_ms)}
-                    </time>
-                  </span>
-                  <span className="activity-row-meta">
-                    <span dir="auto">
-                      {row.sender_label ?? t("timeline.replyQuoteUnknownSender")}
-                    </span>
-                    {row.unread ? <span>{t("activity.unreadBadge")}</span> : null}
-                    {row.highlight ? <span>{t("activity.highlightBadge")}</span> : null}
-                  </span>
-                  <span className="activity-row-preview" dir="auto">
-                    {row.preview ?? t("activity.noPreview")}
-                  </span>
-                </button>
-                {activeTab === "unread" ? (
-                  <button
-                    className="activity-row-action"
-                    type="button"
-                    aria-label={t("activity.markRoomRead")}
-                    disabled={markRoomPending(row)}
-                    onClick={() =>
-                      onMarkRead({
+                  {isPlaceholder ? (
+                    <div className="activity-row-open">
+                      <span className="activity-row-topline">
+                        <strong dir="auto">{row.room_label}</strong>
+                        <time dateTime={new Date(row.timestamp_ms).toISOString()}>
+                          {activityTimestamp(row.timestamp_ms)}
+                        </time>
+                      </span>
+                      <span className="activity-row-meta">
+                        {row.unread ? <span>{t("activity.unreadBadge")}</span> : null}
+                        {row.highlight ? <span>{t("activity.highlightBadge")}</span> : null}
+                      </span>
+                    </div>
+                  ) : (
+                    <button
+                      className="activity-row-open"
+                      type="button"
+                      aria-label={t("activity.openItem", { room: row.room_label })}
+                      onClick={() => onOpenRow(row)}
+                    >
+                      <span className="activity-row-topline">
+                        <strong dir="auto">{row.room_label}</strong>
+                        <time dateTime={new Date(row.timestamp_ms).toISOString()}>
+                          {activityTimestamp(row.timestamp_ms)}
+                        </time>
+                      </span>
+                      <span className="activity-row-meta">
+                        <span dir="auto">
+                          {row.sender_label ?? t("timeline.replyQuoteUnknownSender")}
+                        </span>
+                        {row.unread ? <span>{t("activity.unreadBadge")}</span> : null}
+                        {row.highlight ? <span>{t("activity.highlightBadge")}</span> : null}
+                      </span>
+                      <span className="activity-row-preview" dir="auto">
+                        {row.preview ?? t("activity.noPreview")}
+                      </span>
+                    </button>
+                  )}
+                  {activeTab === "unread" && !isPlaceholder ? (
+                    <button
+                      className="activity-row-action"
+                      type="button"
+                      aria-label={t("activity.markRoomRead")}
+                      disabled={markRoomPending(row)}
+                      onClick={() =>
+                        onMarkRead({
                         kind: "room",
                         room_id: row.room_id,
                         up_to_event_id: row.event_id
                       })
                     }
                   >
-                    <Check size={ICON_SIZE.small} />
-                  </button>
-                ) : null}
-              </li>
-            ))}
+                      <Check size={ICON_SIZE.small} />
+                    </button>
+                  ) : null}
+                </li>
+              );
+            })}
           </ol>
         )}
       </section>
@@ -697,6 +716,8 @@ export function TimelinePane({
     void timelineTransport.openAtTimestamp(timelineRoomId, timestampMs).catch(() => undefined);
     setDateJumpDialogOpen(false);
   }
+  const canPaginateOlderMessages = Boolean(timelineRoomId && currentUserId && timelineTransport);
+  const canJumpToTimelineDate = Boolean(timelineTransport?.openAtTimestamp && timelineRoomId);
 
   return (
     <main className="main-pane" aria-label={t("timeline.conversation")}>
@@ -757,16 +778,37 @@ export function TimelinePane({
         <button className="tab is-active" type="button">
           {t("timeline.messagesTab")}
         </button>
-        {timelineTransport?.openAtTimestamp && timelineRoomId ? (
+        {canPaginateOlderMessages || canJumpToTimelineDate ? (
           <div className="tabs-actions">
-            <button
-              className="timeline-date-jump-trigger"
-              type="button"
-              onClick={() => setDateJumpDialogOpen(true)}
-            >
-              <CalendarDays size={ICON_SIZE.micro} aria-hidden="true" />
-              <span>{t("timeline.jumpToDate")}</span>
-            </button>
+            {canPaginateOlderMessages ? (
+              <div className="timeline-load-more">
+                <button
+                  className="load-more-button"
+                  type="button"
+                  disabled={timelineBackfillBusy || timelineBackfillEnded}
+                  onClick={() => {
+                    if (timelineKey && timelineTransport) {
+                      void timelineTransport.paginateBackwards(timelineKey);
+                    }
+                  }}
+                >
+                  <Clock3 size={ICON_SIZE.compact} />
+                  <span>
+                    {timelineBackfillBusy ? t("timeline.loading") : t("timeline.olderMessages")}
+                  </span>
+                </button>
+              </div>
+            ) : null}
+            {canJumpToTimelineDate ? (
+              <button
+                className="timeline-date-jump-trigger"
+                type="button"
+                onClick={() => setDateJumpDialogOpen(true)}
+              >
+                <CalendarDays size={ICON_SIZE.micro} aria-hidden="true" />
+                <span>{t("timeline.jumpToDate")}</span>
+              </button>
+            ) : null}
           </div>
         ) : null}
       </nav>
@@ -842,29 +884,6 @@ export function TimelinePane({
           />
         ) : null}
         <div className="message-list">
-          <div className="timeline-load-more">
-            <button
-              className="load-more-button"
-              type="button"
-              disabled={
-                !timelineRoomId ||
-                !currentUserId ||
-                !timelineTransport ||
-                timelineBackfillBusy ||
-                timelineBackfillEnded
-              }
-              onClick={() => {
-                if (timelineKey && timelineTransport) {
-                  void timelineTransport.paginateBackwards(timelineKey);
-                }
-              }}
-            >
-              <Clock3 size={ICON_SIZE.compact} />
-              <span>
-                {timelineBackfillBusy ? t("timeline.loading") : t("timeline.olderMessages")}
-              </span>
-            </button>
-          </div>
           {timelineTransport && timelineRoomId && currentUserId ? (
             // Production path: render from the event-driven timeline store
             // (CoreEvent diffs), never from AppState timeline fields.

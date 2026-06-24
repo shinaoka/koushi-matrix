@@ -20,6 +20,7 @@
   --brand-hover: #1f59d0;
   --brand-weak: #e7f0fe;
   --brand-contrast: #ffffff;
+  --home-accent: #0f8f83;
   --rail: #16213e;
   --rail-item: #27324f;
   --sidebar: #f5f7fb;
@@ -831,6 +832,10 @@ button:disabled {
   background: var(--brand);
 }
 
+.workspace-home-button.is-active {
+  background: var(--home-accent);
+}
+
 .workspace-button-avatar {
   display: grid;
   place-items: center;
@@ -1031,6 +1036,14 @@ button:disabled {
   background: var(--mention);
 }
 
+.room-mention-dot {
+  display: inline-block;
+  inline-size: var(--nav-dot-size);
+  block-size: var(--nav-dot-size);
+  border-radius: var(--r-pill);
+  background: var(--mention);
+}
+
 .nav-item[data-live-count] .nav-label::before {
   margin-inline-end: 2px;
   margin-inline-start: 0;
@@ -1073,13 +1086,6 @@ button:disabled {
   min-inline-size: var(--room-count-min-inline-size);
 }
 
-.room-mention-dot {
-  inline-size: var(--nav-dot-size);
-  block-size: var(--nav-dot-size);
-  border-radius: var(--r-pill);
-  background: var(--mention);
-}
-
 .room-count {
   min-inline-size: var(--room-count-min-inline-size);
   font-size: var(--room-count-font-size);
@@ -1112,6 +1118,25 @@ button:disabled {
   background: var(--brand);
   font-size: var(--room-avatar-font-size);
   font-weight: 800;
+}
+
+.room-avatar-shell {
+  position: relative;
+  display: grid;
+  place-items: center;
+  inline-size: var(--room-avatar-size);
+  block-size: var(--room-avatar-size);
+}
+
+.room-presence-dot {
+  position: absolute;
+  inset-inline-end: -2px;
+  inset-block-end: -2px;
+  inline-size: 10px;
+  block-size: 10px;
+  border: 2px solid var(--sidebar);
+  border-radius: var(--r-pill);
+  background: var(--success);
 }
 
 .presence-dot {
@@ -1943,14 +1968,22 @@ button:disabled {
 
 .message-list {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
-  padding: 8px 0 0;
+  padding: 0;
+}
+
+.timeline-view {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow-x: hidden;
 }
 
 .timeline-item-list {
   min-height: 0;
+  min-inline-size: 0;
+  max-inline-size: 100%;
 }
 
 .timeline-virtual-spacer {
@@ -1964,8 +1997,9 @@ button:disabled {
 
 .timeline-load-more {
   display: flex;
+  align-items: center;
   justify-content: center;
-  padding: 4px 20px 8px;
+  padding: 0;
 }
 
 .load-more-button {
@@ -2922,8 +2956,10 @@ button:disabled {
      auto margins have no pushing effect in a block formatting context. */
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--receipt-row-gap);
-  inline-size: max-content;
+  inline-size: fit-content;
+  max-inline-size: 100%;
   min-block-size: var(--receipt-row-min-block-size);
   margin-block-start: var(--receipt-row-margin-block-start);
   margin-inline-start: auto;

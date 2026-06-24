@@ -1841,15 +1841,26 @@ stateDiagram-v2
   unread/highlight flags, and low-priority exclusions from `AppState`; React
   must not infer Activity rows from timeline DOM, browser-local state, or IPC
   mock convenience data.
+- Unread membership is `RoomSummary`-authoritative. When a room has unread or
+  highlight state but no observed unread event row survives the fully-read
+  marker / cleared-event filter, `ActivityProjection` synthesizes a private-data-
+  minimized room-level placeholder row (`kind = RoomUnread`, `event_id = None`).
+  Observed event rows remain preferred for the same room.
+- `ActivityRow` is typed, not string-sniffed:
+  - `kind = Event` rows carry a real Matrix `event_id` and support focused
+    context open and row-level mark-read.
+  - `kind = RoomUnread` placeholders carry no `event_id`; they are not event-
+    openable and have no row-level mark-read action. GUI code must branch on
+  `kind`, not on `event_id` shape or sentinel strings.
 - Recent and Unread are separate `ActivityStream`s. Changing tabs only updates
   `active_tab`; viewing Unread does not mark rows read. Mark-read commands
   transition the Rust `mark_read` substate to pending, then clear projection
-  rows only after a matching success action. Any future SDK fully-read side
-  effect must remain behind this typed command path.
-- `ActivityRow` carries event references so the GUI can dispatch a focused
-  context open without inventing navigation semantics. QA tokens and logs must
-  not print room IDs, event IDs, sender IDs, message previews, pagination
-  tokens, or raw SDK errors.
+  rows only after a matching success action. `MarkActivityRead(All)` clears
+  event-backed rows through real event ids and room-level placeholders through
+  `RoomMarkedAsReadSucceeded` only; it never emits a synthetic event id or
+  `FullyReadMarkerUpdated` for a placeholder.
+- QA tokens and logs must not print room IDs, event IDs, sender IDs, message
+  previews, pagination tokens, or raw SDK errors.
 - Logout, lock, account switch, and session clearing close Activity and discard
   account-derived rows. Non-secret UI preferences such as the last selected tab
   may be remembered only if they are not coupled to room or event identity.

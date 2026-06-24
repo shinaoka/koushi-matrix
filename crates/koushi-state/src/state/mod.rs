@@ -85,13 +85,14 @@ pub use room_interactions::{
 // ── Re-exports: navigation ──────────────────────────────────────────────────
 pub use navigation::{
     FocusedContextState, NavigationState, RoomListEntryKind, RoomListFilter, RoomListProjection,
-    RoomListProjectionItem, RoomListSort, TimelineScrollAnchor, compute_room_list_projection,
+    RoomListProjectionItem, RoomListSort, TimelineScrollAnchor, TimelineScrollAnchorEdge,
+    compute_room_list_projection,
 };
 
 // ── Re-exports: activity ────────────────────────────────────────────────────
 pub use activity::{
-    ActivityMarkReadState, ActivityMarkReadTarget, ActivityRow, ActivityState, ActivityStream,
-    ActivityTab,
+    ActivityMarkReadState, ActivityMarkReadTarget, ActivityRow, ActivityRowKind, ActivityState,
+    ActivityStream, ActivityTab,
 };
 
 // ── Re-exports: directory ───────────────────────────────────────────────────

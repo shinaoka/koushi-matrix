@@ -2,8 +2,8 @@ use koushi_state::{
     AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState,
     NativeAttentionObservationKind, NativeAttentionProjectionInput, RoomListFilter, RoomSummary,
     RoomTags, SearchCrawlerSettings, SessionInfo, SessionState, SpaceSummary, ThreadPaneState,
-    TimelinePaneState, UiEvent, UserProfile, compose_sidebar, native_attention_state_from_rooms,
-    reduce,
+    TimelinePaneState, TimelineScrollAnchorEdge, UiEvent, UserProfile, compose_sidebar,
+    native_attention_state_from_rooms, reduce,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -235,7 +235,10 @@ fn room_list_update_projects_dm_room_avatar_from_counterpart_profile() {
     );
 
     assert_eq!(
-        state.rooms[0].avatar.as_ref().map(|avatar| avatar.mxc_uri.as_str()),
+        state.rooms[0]
+            .avatar
+            .as_ref()
+            .map(|avatar| avatar.mxc_uri.as_str()),
         Some("mxc://example.invalid/alice-avatar")
     );
     let sidebar = compose_sidebar(None, &state.spaces, &state.rooms);
@@ -294,7 +297,10 @@ fn avatar_thumbnail_update_refreshes_people_filter_room_avatar_surface() {
     );
 
     assert_eq!(
-        state.rooms[0].avatar.as_ref().map(|avatar| &avatar.thumbnail),
+        state.rooms[0]
+            .avatar
+            .as_ref()
+            .map(|avatar| &avatar.thumbnail),
         Some(&thumbnail)
     );
     assert_eq!(state.room_list.active_filter, RoomListFilter::People);
@@ -1108,7 +1114,7 @@ fn account_home_lists_all_non_dm_rooms_and_keeps_dms_global() {
     let sidebar = compose_sidebar(None, &spaces(), &rooms());
 
     assert!(sidebar.account_home.is_active);
-    assert_eq!(sidebar.account_home.unread_count, 7);
+    assert_eq!(sidebar.account_home.unread_count, 10);
     assert_eq!(
         sidebar
             .space_rooms
@@ -1263,7 +1269,7 @@ fn sidebar_projection_carries_rust_owned_highlight_counts_for_mention_affordance
     let sidebar = compose_sidebar(None, &spaces(), &rooms());
     let value = serde_json::to_value(sidebar).expect("sidebar serializes");
 
-    assert_eq!(value["account_home"]["unread_count"], json!(7));
+    assert_eq!(value["account_home"]["unread_count"], json!(10));
     assert_eq!(value["space_rail"][0]["unread_count"], json!(5));
     assert_eq!(value["account_home"]["highlight_count"], json!(1));
     assert_eq!(value["space_rail"][0]["highlight_count"], json!(1));
@@ -1507,8 +1513,43 @@ fn legacy_navigation_json_without_scroll_anchors_loads_with_empty_map() {
         serde_json::from_str(json).expect("deserialize legacy navigation");
 
     assert!(navigation.room_scroll_anchors.is_empty());
-    assert_eq!(navigation.active_space_id.as_deref(), Some("!space:test.example.com"));
-    assert_eq!(navigation.active_room_id.as_deref(), Some("!room:test.example.com"));
+    assert_eq!(
+        navigation.active_space_id.as_deref(),
+        Some("!space:test.example.com")
+    );
+    assert_eq!(
+        navigation.active_room_id.as_deref(),
+        Some("!room:test.example.com")
+    );
+}
+
+#[test]
+fn legacy_navigation_scroll_anchor_without_edge_defaults_to_top() {
+    let json = r#"{
+        "active_space_id": "!space:test.example.com",
+        "active_room_id": "!room:test.example.com",
+        "space_order": ["!space:test.example.com"],
+        "last_room_by_space_id": {"!space:test.example.com": "!room:test.example.com"},
+        "room_scroll_anchors": {
+            "!room:test.example.com": {
+                "event_id": "$anchor:event",
+                "offset_px": 24,
+                "updated_at_ms": 1820000000000
+            }
+        }
+    }"#;
+
+    let navigation: koushi_state::NavigationState =
+        serde_json::from_str(json).expect("deserialize legacy navigation scroll anchor");
+
+    let anchor = navigation
+        .room_scroll_anchors
+        .get("!room:test.example.com")
+        .expect("legacy anchor should survive");
+    assert_eq!(anchor.edge, TimelineScrollAnchorEdge::Top);
+    assert_eq!(anchor.event_id, "$anchor:event");
+    assert_eq!(anchor.offset_px, 24);
+    assert_eq!(anchor.updated_at_ms, 1_820_000_000_000);
 }
 
 #[test]
@@ -1525,6 +1566,7 @@ fn navigation_state_round_trips_scroll_anchors_through_serde() {
             "!room:test.example.com".to_owned(),
             koushi_state::TimelineScrollAnchor {
                 event_id: "$anchor:event".to_owned(),
+                edge: TimelineScrollAnchorEdge::Top,
                 offset_px: 24,
                 updated_at_ms: 1_820_000_000_000,
             },

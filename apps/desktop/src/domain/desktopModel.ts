@@ -195,12 +195,8 @@ export function composeSidebar(
     active_space_id: activeSpaceId,
     account_home: {
       display_name: "Home",
-      unread_count: rooms
-        .filter((room) => !room.is_dm)
-        .reduce((sum, room) => sum + room.unread_count, 0),
-      highlight_count: rooms
-        .filter((room) => !room.is_dm)
-        .reduce((sum, room) => sum + (room.highlight_count ?? 0), 0),
+      unread_count: rooms.reduce((sum, room) => sum + room.unread_count, 0),
+      highlight_count: rooms.reduce((sum, room) => sum + (room.highlight_count ?? 0), 0),
       is_active: activeSpaceId === null
     },
     space_rail: spaces.map((space) => ({

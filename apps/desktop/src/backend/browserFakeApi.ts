@@ -854,6 +854,15 @@ class BrowserFakeApi implements DesktopApi {
     }
 
     await this.selectRoom(roomId);
+    this.snapshot.state.ui.navigation.room_scroll_anchors = {
+      ...(this.snapshot.state.ui.navigation.room_scroll_anchors ?? {}),
+      [roomId]: {
+        event_id: eventId,
+        edge: "top",
+        offset_px: 0,
+        updated_at_ms: Date.now()
+      }
+    };
     this.snapshot.state.ui.focused_context = {
       kind: "opening",
       room_id: roomId,
@@ -3422,16 +3431,38 @@ function createActivityStreams(includeBackfill: boolean): {
   const messages = includeBackfill
     ? [...timelineMessages, ...backwardTimelineMessages]
     : timelineMessages;
+  const recentRows = activityRows(messages, unreadRoomIds);
+  const unreadEventRows = activityRows(
+    timelineMessages.filter((message) => unreadRoomIds.has(message.room_id)),
+    unreadRoomIds
+  );
+  const roomsWithUnreadEventRows = new Set(unreadEventRows.map((row) => row.room_id));
+  const unreadPlaceholderRows: ActivityRow[] = rooms
+    .filter(
+      (room) =>
+        (room.unread_count > 0 ||
+          (room.highlight_count ?? 0) > 0 ||
+          Boolean(room.marked_unread)) &&
+        !roomsWithUnreadEventRows.has(room.room_id)
+    )
+    .map((room) => ({
+      kind: "roomUnread" as const,
+      room_id: room.room_id,
+      event_id: null,
+      room_label: room.display_label,
+      sender_label: null,
+      preview: null,
+      timestamp_ms: room.last_activity_ms ?? 0,
+      unread: true,
+      highlight: (room.highlight_count ?? 0) > 0
+    }));
   return {
     recent: {
-      rows: activityRows(messages, unreadRoomIds),
+      rows: recentRows,
       next_batch: includeBackfill ? null : "browser-activity-recent-page-2"
     },
     unread: {
-      rows: activityRows(
-        timelineMessages.filter((message) => unreadRoomIds.has(message.room_id)),
-        unreadRoomIds
-      ),
+      rows: sortActivityRows([...unreadEventRows, ...unreadPlaceholderRows]),
       next_batch: null
     }
   };
@@ -3445,6 +3476,7 @@ function activityRows(
     .map((message) => {
       const room = rooms.find((candidate) => candidate.room_id === message.room_id);
       return {
+        kind: "event" as const,
         room_id: message.room_id,
         event_id: message.event_id,
         room_label: room?.display_name ?? "Unknown room",
@@ -3455,10 +3487,19 @@ function activityRows(
         highlight: message.event_id === "$alpha-update"
       };
     })
-    .sort(
-      (left, right) =>
-        right.timestamp_ms - left.timestamp_ms || left.event_id.localeCompare(right.event_id)
-    );
+    .sort(compareActivityRows);
+}
+
+function sortActivityRows(rows: ActivityRow[]): ActivityRow[] {
+  return rows.sort(compareActivityRows);
+}
+
+function compareActivityRows(left: ActivityRow, right: ActivityRow): number {
+  return (
+    right.timestamp_ms - left.timestamp_ms ||
+    left.room_id.localeCompare(right.room_id) ||
+    (left.event_id ?? "").localeCompare(right.event_id ?? "")
+  );
 }
 
 function clone<T>(value: T): T {

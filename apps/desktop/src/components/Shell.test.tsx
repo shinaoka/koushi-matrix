@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createBrowserFakeApi } from "../backend/browserFakeApi";
-import { EntityAvatar, Sidebar } from "./Shell";
+import { EntityAvatar, Sidebar, WorkspaceRail } from "./Shell";
 
 afterEach(() => {
   cleanup();
@@ -95,18 +95,19 @@ describe("EntityAvatar", () => {
 });
 
 describe("Sidebar", () => {
-  it("does not render room list sections on account Home", async () => {
+  it("renders Home as Activity, Explore, Invites, and Direct Messages only", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.selectSpace(null);
 
     render(
       <Sidebar
         activeRoomId={snapshot.state.ui.navigation.active_room_id}
-        activeView="timeline"
+        activeView="activity"
         snapshot={snapshot}
         onCreateRoom={() => undefined}
         onNewDm={() => undefined}
         onOpenContextMenu={() => undefined}
+        onOpenActivity={() => undefined}
         onOpenExplore={() => undefined}
         onOpenHome={() => undefined}
         onOpenInvites={() => undefined}
@@ -116,7 +117,118 @@ describe("Sidebar", () => {
       />
     );
 
+    expect(screen.getByRole("button", { name: "Activity" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Explore" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Invites" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Threads" })).toBeNull();
     expect(document.querySelector('[data-room-section="rooms"]')).toBeNull();
-    expect(document.querySelector('[data-room-section="people"]')).toBeNull();
+    expect(screen.getByRole("region", { name: "Direct Messages" })).toBeTruthy();
+  });
+
+  it("keeps Rooms and Direct Messages separate inside a normal space", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.selectSpace("!space-alpha:example.invalid");
+
+    render(
+      <Sidebar
+        activeRoomId={snapshot.state.ui.navigation.active_room_id}
+        activeView="timeline"
+        snapshot={snapshot}
+        onCreateRoom={() => undefined}
+        onNewDm={() => undefined}
+        onOpenContextMenu={() => undefined}
+        onOpenActivity={() => undefined}
+        onOpenExplore={() => undefined}
+        onOpenHome={() => undefined}
+        onOpenInvites={() => undefined}
+        onOpenSpaceInfo={() => undefined}
+        onOpenThreads={() => undefined}
+        onSelectRoom={() => undefined}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "Home" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Threads" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Rooms" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Direct Messages" })).toBeTruthy();
+  });
+
+  it("shows online presence only on Direct Messages rows", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.selectSpace(null);
+    const dm = snapshot.sidebar.global_dms[0];
+    const dmRoom = snapshot.state.domain.rooms.find((room) => room.room_id === dm?.room_id);
+    const dmUserId = dmRoom?.dm_user_ids[0];
+    if (!dm || !dmUserId) {
+      throw new Error("expected fake account home to include a direct message");
+    }
+
+    snapshot.state.domain.live_signals.presence[dmUserId] = "online";
+
+    render(
+      <Sidebar
+        activeRoomId={snapshot.state.ui.navigation.active_room_id}
+        activeView="timeline"
+        snapshot={snapshot}
+        onCreateRoom={() => undefined}
+        onNewDm={() => undefined}
+        onOpenContextMenu={() => undefined}
+        onOpenActivity={() => undefined}
+        onOpenExplore={() => undefined}
+        onOpenHome={() => undefined}
+        onOpenInvites={() => undefined}
+        onOpenSpaceInfo={() => undefined}
+        onOpenThreads={() => undefined}
+        onSelectRoom={() => undefined}
+      />
+    );
+
+    const dmRow = screen.getByRole("button", { name: dm.display_name });
+    expect(dmRow.querySelector(".room-presence-dot")).toBeTruthy();
+  });
+});
+
+describe("WorkspaceRail", () => {
+  it("uses Home as the only top-level system entry and does not render Activity bell", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.selectSpace(null);
+
+    render(
+      <WorkspaceRail
+        snapshot={snapshot}
+        onCreateSpace={() => undefined}
+        onOpenContextMenu={() => undefined}
+        onOpenUserSettings={() => undefined}
+        onReorderSpaces={() => undefined}
+        onSelectSpace={() => undefined}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "Home" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Activity" })).toBeNull();
+  });
+
+  it("does not render mention or online-style dots on space rail buttons", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+    const firstSpace = snapshot.sidebar.space_rail[0];
+    if (!firstSpace) {
+      throw new Error("expected fake snapshot to include a space");
+    }
+    firstSpace.highlight_count = 2;
+
+    render(
+      <WorkspaceRail
+        snapshot={snapshot}
+        onCreateSpace={() => undefined}
+        onOpenContextMenu={() => undefined}
+        onOpenUserSettings={() => undefined}
+        onReorderSpaces={() => undefined}
+        onSelectSpace={() => undefined}
+      />
+    );
+
+    const spaceButton = screen.getByRole("button", { name: firstSpace.display_name });
+    expect(spaceButton.getAttribute("data-mention-count")).toBeNull();
   });
 });

@@ -1556,6 +1556,7 @@ mod tests {
                 "!room:test.example.com".to_owned(),
                 koushi_state::TimelineScrollAnchor {
                     event_id: "$anchor:event".to_owned(),
+                    edge: koushi_state::TimelineScrollAnchorEdge::Top,
                     offset_px: -32,
                     updated_at_ms: 1_820_000_000_000,
                 },

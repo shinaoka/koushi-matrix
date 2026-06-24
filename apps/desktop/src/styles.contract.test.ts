@@ -255,6 +255,8 @@ describe("styles.css token system", () => {
   });
 
   test("receipt row and tooltip sizing use fixed-format tokens", () => {
+    const timelineViewBlock = selectorBlock(".timeline-view");
+    expect(timelineViewBlock).toContain("overflow-x: hidden");
     const receiptBlock = selectorBlock(".message-receipts");
     expectBlockUses(receiptBlock, [
       "--receipt-row-gap",
@@ -262,7 +264,8 @@ describe("styles.css token system", () => {
       "--receipt-row-margin-block-start",
       "--receipt-row-font-size"
     ]);
-    expect(receiptBlock).toContain("inline-size: max-content");
+    expect(receiptBlock).toContain("max-inline-size: 100%");
+    expect(receiptBlock).toContain("inline-size: fit-content");
     expect(receiptBlock).toContain("margin-inline-start: auto");
     expectBlockUses(selectorBlock(".message-receipts:focus-visible"), [
       "--receipt-focus-outline-width",

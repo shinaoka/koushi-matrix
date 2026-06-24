@@ -141,7 +141,7 @@ fn room_list_composition_keeps_dms_global_and_preserves_multi_parent_rooms() {
     assert_eq!(alpha_sidebar.dm_unread_count, 3);
 
     let account_home = compose_sidebar(None, &spaces, &rooms);
-    assert_eq!(account_home.account_home.unread_count, 6);
+    assert_eq!(account_home.account_home.unread_count, 9);
     assert_eq!(
         account_home
             .space_rooms

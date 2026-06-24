@@ -1539,8 +1539,9 @@ mod tests {
             active_tab: ActivityTab::Recent,
             recent: ActivityStream {
                 rows: vec![ActivityRow {
+                    kind: koushi_state::ActivityRowKind::Event,
                     room_id: "!room:example.invalid".to_owned(),
-                    event_id: "$act:example.invalid".to_owned(),
+                    event_id: Some("$act:example.invalid".to_owned()),
                     room_label: "Fixture Room".to_owned(),
                     sender_label: Some("Fixture User".to_owned()),
                     preview: Some("Activity preview".to_owned()),
@@ -1551,7 +1552,12 @@ mod tests {
                 next_batch: None,
             },
             unread: ActivityStream {
-                rows: vec![],
+                rows: vec![ActivityRow::room_unread_placeholder(
+                    "!placeholder:example.invalid".to_owned(),
+                    "Placeholder Room".to_owned(),
+                    499_000,
+                    true,
+                )],
                 next_batch: None,
             },
             mark_read: ActivityMarkReadState::Idle,

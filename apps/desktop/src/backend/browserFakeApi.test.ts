@@ -534,6 +534,13 @@ describe("BrowserFakeApi settings preview", () => {
       "$alpha-update"
     );
     expect(focused.state.ui.focused_context.kind).toBe("opening");
+    expect(
+      focused.state.ui.navigation.room_scroll_anchors?.["!room-alpha:example.invalid"]
+    ).toMatchObject({
+      event_id: "$alpha-update",
+      edge: "top",
+      offset_px: 0
+    });
 
     const selected = await api.selectRoom("!room-planning:example.invalid");
 
@@ -737,9 +744,22 @@ describe("BrowserFakeApi settings preview", () => {
       "$late-original",
       "$false-positive"
     ]);
+    expect(opened.state.domain.activity.recent.rows.every((row) => row.kind === "event")).toBe(
+      true
+    );
     expect(opened.state.domain.activity.unread.rows.some((row) => row.event_id === "$alpha-update")).toBe(
       true
     );
+    expect(
+      opened.state.domain.activity.unread.rows.some(
+        (row) =>
+          row.kind === "roomUnread" &&
+          row.room_id === "!dm-member-1:example.invalid" &&
+          row.event_id === null &&
+          row.preview === null &&
+          row.sender_label === null
+      )
+    ).toBe(true);
 
     const switched = await api.setActivityTab("unread");
     expect(switched.state.domain.activity.kind).toBe("open");

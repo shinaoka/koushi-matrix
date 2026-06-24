@@ -11,6 +11,12 @@ import {
   type TimelineMessageSource
 } from "../domain/coreEvents";
 import { setActiveLocaleProfile } from "../i18n/messages";
+import {
+  applyTimelineEvent,
+  createTimelineStore,
+  type TimelineStoreState
+} from "../domain/timelineStore";
+import { TimelineStoreContext } from "./timelineStoreContext";
 import { MessageSourceDialog, TimelineView, type TimelineTransport } from "./TimelineView";
 
 afterEach(() => {
@@ -92,14 +98,19 @@ function baseTransport(
 
 function mockTimelineRects(
   rects: Record<string, { top: number; height: number }>,
-  container: { top?: number; height?: number } = {}
+  container: { top?: number; height?: number } = {},
+  scrollContainerRef?: { current: HTMLElement | null }
 ) {
   return vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     const eventId = this.getAttribute("data-event-id");
     const testId = this.getAttribute("data-testid");
-    const top = testId === "timeline-view" ? container.top ?? 0 : rects[eventId ?? ""]?.top ?? 0;
+    const scrollTop = scrollContainerRef?.current?.scrollTop ?? 0;
+    const top =
+      testId === "timeline-view"
+        ? container.top ?? 0
+        : (rects[eventId ?? ""]?.top ?? 0) - scrollTop;
     const height =
       testId === "timeline-view"
         ? container.height ?? 600
@@ -159,6 +170,71 @@ describe("TimelineView", () => {
       expect(screen.getByText("Latest after listener")).toBeTruthy();
     });
     expect(calls).toEqual(["listen", "ensure"]);
+  });
+
+  it("renders from a prepopulated App-level store while keeping view-local event handling", async () => {
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [message("$app-store:example.invalid", "From app store")]
+      }
+    });
+    const ensureSubscribed = vi.fn().mockResolvedValue(undefined);
+    const setStore = vi.fn();
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const listenCoreEvents = vi.fn((nextListener: (payload: CoreEventPayload) => void) => {
+      emit = nextListener;
+      return () => undefined;
+    });
+    const transport = baseTransport({
+      listenCoreEvents,
+      ensureSubscribed
+    });
+
+    render(
+      <TimelineStoreContext.Provider value={{ store, setStore }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+        />
+      </TimelineStoreContext.Provider>
+    );
+
+    expect(await screen.findByText("From app store")).toBeTruthy();
+    expect(listenCoreEvents).toHaveBeenCalledTimes(1);
+    expect(ensureSubscribed).toHaveBeenCalledWith(KEY);
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          MessageSourceLoaded: {
+            request_id: { connection_id: 1, sequence: 1 },
+            key: KEY,
+            source: {
+              event_id: "$source:example.invalid",
+              sender: "@alice:example.invalid",
+              timestamp_ms: 1_800_000_000_000,
+              body: "source body",
+              in_reply_to_event_id: null,
+              thread_root: null,
+              is_redacted: false,
+              is_edited: false,
+              has_media: false,
+              original_json: {
+                type: "m.room.message",
+                content: { body: "source body", msgtype: "m.text" }
+              }
+            }
+          }
+        }
+      });
+    });
+    expect(await screen.findByText("$source:example.invalid")).toBeTruthy();
+    expect(setStore).not.toHaveBeenCalled();
   });
 
   it("emits safe timestamped timeline event diagnostics for thread timelines", async () => {
@@ -270,7 +346,7 @@ describe("TimelineView", () => {
     });
   });
 
-  it("throttles room scroll anchor captures to once per second per room", async () => {
+  it("captures the bottom-most visible event as the persisted room scroll anchor", async () => {
     vi.useFakeTimers();
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const updateScrollAnchor = vi.fn(async () => undefined);
@@ -340,14 +416,15 @@ describe("TimelineView", () => {
     expect(updateScrollAnchor).toHaveBeenCalledWith(
       "!room:example.invalid",
       expect.objectContaining({
-        event_id: "$first:example.invalid",
-        offset_px: 120,
+        event_id: "$second:example.invalid",
+        edge: "bottom",
+        offset_px: -132,
         updated_at_ms: expect.any(Number)
       })
     );
   });
 
-  it("restores a persisted room anchor when the event is already rendered", async () => {
+  it("restores a persisted bottom-edge room anchor when the event is already rendered", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
@@ -371,7 +448,8 @@ describe("TimelineView", () => {
         transport={transport}
         roomScrollAnchor={{
           event_id: "$anchor:example.invalid",
-          offset_px: 50,
+          edge: "bottom",
+          offset_px: -100,
           updated_at_ms: Date.now()
         }}
         onReply={vi.fn()}
@@ -402,7 +480,77 @@ describe("TimelineView", () => {
     });
 
     await waitFor(() => {
-      expect(timeline.scrollTop).toBe(450);
+      expect(timeline.scrollTop).toBe(48);
+    });
+  });
+
+  it("keeps the retained bottom-edge room anchor stable across later rerenders", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const rects = {
+      "$anchor:example.invalid": { top: 500, height: 48 },
+      "$after:example.invalid": { top: 560, height: 48 }
+    };
+
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+
+    const props = {
+      timelineKey: KEY,
+      roomId: "!room:example.invalid",
+      transport,
+      roomScrollAnchor: {
+        event_id: "$anchor:example.invalid",
+        edge: "bottom" as const,
+        offset_px: -100,
+        updated_at_ms: Date.now()
+      },
+      onReply: vi.fn()
+    };
+    const { rerender } = render(<TimelineView {...props} />);
+
+    const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [
+            message("$anchor:example.invalid", "Anchor"),
+            message("$after:example.invalid", "After")
+          ]
+        }
+      }
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(48);
+    });
+
+    rects["$anchor:example.invalid"].top = 530;
+    rerender(
+      <TimelineView
+        {...props}
+        liveSignals={{ presence: {}, rooms: {} }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(78);
     });
   });
 
@@ -435,7 +583,8 @@ describe("TimelineView", () => {
         transport={transport}
         roomScrollAnchor={{
           event_id: anchorEventId,
-          offset_px: 50,
+          edge: "bottom",
+          offset_px: -100,
           updated_at_ms: Date.now()
         }}
         onReply={vi.fn()}
@@ -504,7 +653,7 @@ describe("TimelineView", () => {
       expect(screen.queryByText("Focused bootstrap context")).toBeNull();
       expect(screen.getByText("Live anchor visible")).toBeTruthy();
       expect(timeline.getAttribute("data-timeline-generation")).toBe("2");
-      expect(timeline.scrollTop).toBe(1000);
+      expect(timeline.scrollTop).toBe(598);
     });
   });
 
@@ -528,6 +677,7 @@ describe("TimelineView", () => {
         transport={transport}
         roomScrollAnchor={{
           event_id: anchorEventId,
+          edge: "bottom",
           offset_px: 50,
           updated_at_ms: Date.now()
         }}

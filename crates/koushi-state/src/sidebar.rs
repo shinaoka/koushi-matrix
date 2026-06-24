@@ -69,16 +69,8 @@ pub fn compose_sidebar(
 
     let account_home = AccountHomeItem {
         display_name: "Home".to_owned(),
-        unread_count: rooms
-            .iter()
-            .filter(|room| !room.is_dm)
-            .map(|room| room.unread_count)
-            .sum(),
-        highlight_count: rooms
-            .iter()
-            .filter(|room| !room.is_dm)
-            .map(|room| room.highlight_count)
-            .sum(),
+        unread_count: rooms.iter().map(|room| room.unread_count).sum(),
+        highlight_count: rooms.iter().map(|room| room.highlight_count).sum(),
         is_active: active_space_id.is_none(),
     };
 
