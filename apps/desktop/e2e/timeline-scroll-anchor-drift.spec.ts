@@ -3,24 +3,48 @@
  * re-corrected after fonts / layout settle (symptom B "微妙にずれる",
  * issue #123 Phase C).
  *
- * Scenario:
+ * Scenario (TRUE gate — confirmed RED without the fix):
  *  1. Render a real TimelineView (via appHarness.html) taller than the
  *     viewport with 30 synthetic items.
- *  2. Scroll to a non-bottom position and note the anchor event's
- *     offsetTop from the container top.
- *  3. Inject a layout-shift spacer ABOVE the anchor row (simulating the
- *     font/media reflow that happens after a cross-session restore).  At
- *     this point a naive single restoreRoomScrollAnchor would place the
- *     row at (original offsetTop - spacerHeight) — i.e. would drift.
- *  4. Trigger the room-scroll-anchor restore path by setting
- *     room_scroll_anchors in the snapshot and simulating a room
- *     switch-and-back so the restore refs are cleared.
- *  5. Wait for the post-settle re-correction (rAF + fonts.ready) to fire.
- *  6. Assert the anchor's offsetTop from the container top is within ±2px
- *     of the ORIGINAL captured value — the re-correction compensated the
- *     spacer drift.
- *  7. Assert the naive-drift value (original - spacerHeight) is NOT the
- *     final value (proves the re-correction is needed and did fire).
+ *  2. Scroll so the anchor row is ~80px from the container top and capture
+ *     that offset as originalOffsetPx.
+ *  3. Patch document.fonts.ready to a DEFERRED promise so the post-settle
+ *     re-correction is held open during the test.
+ *  4. Trigger the room-scroll-anchor restore by pushing a snapshot update.
+ *     The App's 250ms state-event debounce fires, React state updates, and
+ *     the initial restoreRoomScrollAnchor correction runs in the layout
+ *     effect — placing the anchor at ~originalOffsetPx.  The post-settle rAF
+ *     then starts and suspends waiting on fonts.ready (which is deferred).
+ *  5. Wait 350 ms so the debounce fires, the initial restore runs, and the
+ *     post-settle rAF is now pending on fonts.ready before the layout shift is
+ *     introduced.  Confirm the anchor is already at ~originalOffsetPx.
+ *  6. WHILE fonts.ready is still pending, apply a CSS translateY transform to
+ *     the ANCHOR ELEMENT itself to simulate a visual drift of DRIFT_HEIGHT_PX
+ *     downward.  Using a CSS transform rather than layout height changes is
+ *     intentional:
+ *     - CSS transforms affect getBoundingClientRect() so the post-settle
+ *       block sees a drifted position.
+ *     - CSS transforms do NOT change layout flow, scrollTop, or trigger
+ *       scroll events, so the user-scroll abort guard in
+ *       applyPostSettleCorrection (containerSnapshot.scrollTop !==
+ *       scrollTopAfterRestore) does NOT fire.
+ *     - CSS transforms bypass the browser's native scroll anchoring (which
+ *       only responds to layout/paint-phase changes that affect scrollHeight),
+ *       so the drift is NOT silently compensated by the browser.
+ *     This makes the drift visible only to applyPostSettleCorrection — the
+ *     sole corrective path when the post-settle block is active.
+ *  7. Resolve fonts.ready → applyPostSettleCorrection fires, reads the
+ *     drifted getBoundingClientRect, and re-applies scrollTop to compensate.
+ *     The CSS transform is still applied so we assert position with it.
+ *  8. Assert the anchor's computed position (with transform still applied)
+ *     is within ±2px of originalOffsetPx after the scrollTop correction.
+ *
+ * RED-without-fix confirmation: verified by temporarily setting the
+ * post-settle block condition to `false &&` and running this spec.  Step 8
+ * fails because the anchor stays at the drifted position (~originalOffsetPx
+ * + DRIFT_HEIGHT_PX) with no correction path — the scrollTop adjustment
+ * that would compensate the transform is never applied.  With the fix active
+ * the spec is GREEN.  See the commit message for the explicit confirmation.
  *
  * Private-data-free: all event ids, user ids, and bodies are synthetic.
  */
@@ -31,12 +55,17 @@ const HARNESS_ROOM_ID = "!harness-room:example.invalid";
 const DUMMY_ROOM_ID = "!dummy-room:example.invalid";
 const HARNESS_ACCOUNT_KEY = "@harness-user:example.invalid";
 const ANCHOR_PIXEL_TOLERANCE = 2;
-// Height of the spacer injected to force the layout shift (px).
-const SPACER_HEIGHT_PX = 40;
+// Height by which the anchor is visually displaced (via CSS transform) to
+// simulate post-restore font/media reflow drift.
+const DRIFT_HEIGHT_PX = 30;
 // Number of items to seed — enough to overflow a 600px viewport.
 const ITEM_COUNT = 30;
-// The anchor is the 10th item from the top (below the top edge, non-bottom).
+// The anchor is the 10th item from the top (non-bottom, clearly visible).
 const ANCHOR_INDEX = 9;
+// The App uses a 250ms debounce before calling get_snapshot after a state
+// event.  Wait this long (plus margin) to ensure the initial restore has
+// already fired before the layout shift is introduced.
+const DEBOUNCE_SETTLE_MS = 350;
 
 function makeEventItem(index: number) {
   const eventId = `$anchor-drift-item-${String(index).padStart(2, "0")}:example.invalid`;
@@ -71,14 +100,31 @@ const TIMELINE_KEY = {
   kind: { Room: { room_id: HARNESS_ROOM_ID } }
 };
 
+/** Install a deferred document.fonts.ready; call window.__qa_resolveFontsReady() to release. */
+async function installDeferredFontsReady(page: import("@playwright/test").Page): Promise<void> {
+  await page.evaluate(() => {
+    const realFontsReady = document.fonts.ready;
+    let resolveDeferred: () => void;
+    const deferred = new Promise<FontFaceSet>((resolve) => {
+      resolveDeferred = () => void realFontsReady.then(resolve);
+    });
+    Object.defineProperty(document.fonts, "ready", {
+      get: () => deferred,
+      configurable: true
+    });
+    (window as unknown as Record<string, unknown>)["__qa_resolveFontsReady"] = () => {
+      resolveDeferred();
+    };
+  });
+}
+
 test("post-settle re-correction compensates layout-shift drift after restore", async ({
   page
 }) => {
   await page.goto("/appHarness.html");
-  // Wait for the shell to be ready (the conversation timeline landmark is mounted).
   await expect(page.getByRole("main", { name: "Conversation timeline" })).toBeVisible();
 
-  // --- 1. Seed the timeline with enough items to overflow the viewport ---
+  // --- 1. Seed the timeline ---
   await page.evaluate(
     ({ key, items }) => {
       void window.__harness.pushCoreEvent({
@@ -98,17 +144,16 @@ test("post-settle re-correction compensates layout-shift drift after restore", a
     { key: TIMELINE_KEY, items: ALL_ITEMS }
   );
 
-  // Wait for the anchor event to be present.
-  const anchorLocator = page.locator(`[data-event-id="${ANCHOR_EVENT_ID}"]`);
-  await expect(anchorLocator).toBeVisible({ timeout: 5000 });
+  await expect(page.locator(`[data-event-id="${ANCHOR_EVENT_ID}"]`)).toBeVisible({
+    timeout: 5000
+  });
 
-  // Scroll so the anchor row is near the top (not at the bottom).
+  // Scroll so the anchor row is ~80px from container top.
   await page.evaluate(
     ({ eventId }) => {
       const anchor = document.querySelector<HTMLElement>(`[data-event-id="${eventId}"]`);
       const container = anchor?.closest<HTMLElement>("[data-testid=timeline-view]");
       if (!anchor || !container) return;
-      // Scroll so the anchor row is 80px from the container top.
       const containerTop = container.getBoundingClientRect().top;
       const anchorTop = anchor.getBoundingClientRect().top;
       container.scrollTop += anchorTop - containerTop - 80;
@@ -116,11 +161,9 @@ test("post-settle re-correction compensates layout-shift drift after restore", a
     },
     { eventId: ANCHOR_EVENT_ID }
   );
+  await page.waitForTimeout(30);
 
-  // Let the scroll stabilize.
-  await page.waitForTimeout(50);
-
-  // --- 2. Capture the anchor's current offsetTop from the container top ---
+  // --- 2. Capture anchor position ---
   const capturedOffset = await page.evaluate(
     ({ eventId }) => {
       const anchor = document.querySelector<HTMLElement>(`[data-event-id="${eventId}"]`);
@@ -133,43 +176,18 @@ test("post-settle re-correction compensates layout-shift drift after restore", a
   expect(capturedOffset).not.toBeNull();
   const originalOffsetPx = Math.round(capturedOffset!);
 
-  // --- 3. Inject a spacer above the anchor to simulate a layout shift ---
-  // This spacer makes a naive single-correction land SPACER_HEIGHT_PX too low.
-  await page.evaluate(
-    ({ eventId, spacerPx }) => {
-      const anchor = document.querySelector<HTMLElement>(`[data-event-id="${eventId}"]`);
-      if (!anchor) return;
-      const spacer = document.createElement("div");
-      spacer.id = "qa-drift-test-spacer";
-      spacer.style.height = `${spacerPx}px`;
-      spacer.style.background = "transparent";
-      anchor.parentElement?.insertBefore(spacer, anchor);
-    },
-    { eventId: ANCHOR_EVENT_ID, spacerPx: SPACER_HEIGHT_PX }
-  );
+  // --- 3. Patch fonts.ready to a deferred promise ---
+  // Must be patched BEFORE the restore fires so the post-settle rAF chain
+  // suspends on the deferred promise rather than resolving immediately.
+  await installDeferredFontsReady(page);
 
-  // Confirm the spacer shifted the anchor down by SPACER_HEIGHT_PX.
-  const shiftedOffset = await page.evaluate(
-    ({ eventId }) => {
-      const anchor = document.querySelector<HTMLElement>(`[data-event-id="${eventId}"]`);
-      const container = anchor?.closest<HTMLElement>("[data-testid=timeline-view]");
-      if (!anchor || !container) return null;
-      return anchor.getBoundingClientRect().top - container.getBoundingClientRect().top;
-    },
-    { eventId: ANCHOR_EVENT_ID }
-  );
-  // After spacer injection the row has shifted down by ~SPACER_HEIGHT_PX.
-  expect(shiftedOffset).not.toBeNull();
-  expect(Math.abs(shiftedOffset! - (originalOffsetPx + SPACER_HEIGHT_PX))).toBeLessThanOrEqual(2);
-
-  // --- 4. Trigger room-scroll-anchor restore ---
-  // Set room_scroll_anchors in the snapshot so RestoreRoomScrollAnchor fires.
-  // First switch to a dummy room (clears restoredRoomScrollAnchorSignatureRef),
-  // then switch back with room_scroll_anchors set.
+  // --- 4. Trigger restore (queues the 250ms debounce) ---
+  // Push a dummy-room state first (to clear any prior anchor), then push the
+  // real anchor room in a microtask.  The debounce fires once, roughly 250ms
+  // after the last pushStateChanged() call.
   await page.evaluate(
     ({ roomId, dummyRoomId, eventId, offsetPx }) => {
       const snap = window.__harness.currentSnapshot();
-      // Switch to dummy room to reset restore refs.
       window.__harness.setSnapshot({
         ...snap,
         state: {
@@ -185,7 +203,6 @@ test("post-settle re-correction compensates layout-shift drift after restore", a
         }
       });
       window.__harness.pushStateChanged();
-      // After one microtask, switch back with the anchor set.
       Promise.resolve().then(() => {
         const s = window.__harness.currentSnapshot();
         window.__harness.setSnapshot({
@@ -205,11 +222,7 @@ test("post-settle re-correction compensates layout-shift drift after restore", a
                   }
                 }
               },
-              // Keep timeline pointing at the right room.
-              timeline: {
-                ...s.state.ui.timeline,
-                room_id: roomId
-              }
+              timeline: { ...s.state.ui.timeline, room_id: roomId }
             }
           }
         });
@@ -224,37 +237,95 @@ test("post-settle re-correction compensates layout-shift drift after restore", a
     }
   );
 
-  // --- 5. Wait for the post-settle re-correction to complete ---
-  // The re-correction fires async (rAF + fonts.ready + ~250ms media timeout).
-  // Poll until the anchor's offsetTop stabilises within ±2px of originalOffsetPx.
-  // Poll until Math.abs(offset - originalOffsetPx) <= ANCHOR_PIXEL_TOLERANCE.
-  // We encode the check as a boolean so .toBe(true) works in older Playwright.
+  // --- 5. Wait for the debounce + initial restore to complete ---
+  // The App's 250ms state-event debounce fires and calls get_snapshot.
+  // React updates, the layout effect runs restoreRoomScrollAnchor, places the
+  // anchor at ~originalOffsetPx, and schedules the post-settle rAF chain.
+  // The rAF fires and suspends on document.fonts.ready (which is deferred).
+  // DEBOUNCE_SETTLE_MS > 250ms ensures this is fully settled before we
+  // introduce the layout shift.
+  await page.waitForTimeout(DEBOUNCE_SETTLE_MS);
+
+  // Confirm the initial restore placed the anchor near originalOffsetPx.
+  const afterInitialRestore = await page.evaluate(
+    ({ eventId }) => {
+      const anchor = document.querySelector<HTMLElement>(`[data-event-id="${eventId}"]`);
+      const container = anchor?.closest<HTMLElement>("[data-testid=timeline-view]");
+      if (!anchor || !container) return null;
+      return anchor.getBoundingClientRect().top - container.getBoundingClientRect().top;
+    },
+    { eventId: ANCHOR_EVENT_ID }
+  );
+  expect(afterInitialRestore).not.toBeNull();
+  expect(Math.abs(afterInitialRestore! - originalOffsetPx)).toBeLessThanOrEqual(
+    ANCHOR_PIXEL_TOLERANCE
+  );
+
+  // --- 6. Apply CSS transform drift WHILE fonts.ready is pending ---
+  // The post-settle rAF chain is now suspended on fonts.ready.  The initial
+  // restore has already run (restoredRoomScrollAnchorSignatureRef is set), so
+  // the layout effect guard prevents another correction attempt.
+  // Apply a translateY transform to simulate post-restore font/media reflow
+  // drift.  CSS transforms:
+  //   - affect getBoundingClientRect() so applyPostSettleCorrection sees drift,
+  //   - do NOT change scrollTop so the user-scroll abort guard stays dormant,
+  //   - bypass native browser scroll anchoring (no layout-flow changes).
+  await page.evaluate(
+    ({ eventId, driftPx }) => {
+      const anchor = document.querySelector<HTMLElement>(`[data-event-id="${eventId}"]`);
+      if (!anchor) return;
+      anchor.style.transform = `translateY(${driftPx}px)`;
+    },
+    { eventId: ANCHOR_EVENT_ID, driftPx: DRIFT_HEIGHT_PX }
+  );
+
+  // Confirm the anchor's visual position has drifted beyond the ±2px tolerance.
+  const afterDrift = await page.evaluate(
+    ({ eventId }) => {
+      const anchor = document.querySelector<HTMLElement>(`[data-event-id="${eventId}"]`);
+      const container = anchor?.closest<HTMLElement>("[data-testid=timeline-view]");
+      if (!anchor || !container) return null;
+      return anchor.getBoundingClientRect().top - container.getBoundingClientRect().top;
+    },
+    { eventId: ANCHOR_EVENT_ID }
+  );
+  expect(afterDrift).not.toBeNull();
+  expect(Math.abs(afterDrift! - originalOffsetPx)).toBeGreaterThan(ANCHOR_PIXEL_TOLERANCE);
+
+  // --- 7. Resolve fonts.ready → post-settle re-correction fires ---
+  // applyPostSettleCorrection re-measures the anchor via getBoundingClientRect
+  // (which includes the CSS transform, so it sees the drifted position) and
+  // adjusts scrollTop by DRIFT_HEIGHT_PX to compensate.  After the correction,
+  // the anchor's getBoundingClientRect().top (with transform still applied)
+  // returns ~originalOffsetPx — this is what we assert in step 8.
+  await page.evaluate(() => {
+    const resolver = (window as unknown as Record<string, unknown>)["__qa_resolveFontsReady"];
+    if (typeof resolver === "function") resolver();
+  });
+
+  // --- 8. Assert the anchor (with transform still applied) lands back within
+  //        ±2px of originalOffsetPx after the scrollTop correction ---
   await expect
     .poll(
       async () => {
         const offset = await page.evaluate(
           ({ eventId }) => {
-            const anchor = document.querySelector<HTMLElement>(
-              `[data-event-id="${eventId}"]`
-            );
+            const anchor = document.querySelector<HTMLElement>(`[data-event-id="${eventId}"]`);
             const container = anchor?.closest<HTMLElement>("[data-testid=timeline-view]");
             if (!anchor || !container) return null;
-            return anchor.getBoundingClientRect().top - container.getBoundingClientRect().top;
+            return (
+              anchor.getBoundingClientRect().top - container.getBoundingClientRect().top
+            );
           },
           { eventId: ANCHOR_EVENT_ID }
         );
         if (offset === null) return false;
         return Math.abs(offset - originalOffsetPx) <= ANCHOR_PIXEL_TOLERANCE;
       },
-      { timeout: 3000, intervals: [50, 100, 200] }
+      { timeout: 3000, intervals: [30, 50, 100, 200] }
     )
     .toBe(true);
 
-  // --- 6. Confirm the final offset is NOT the naive-drift value ---
-  // A naive single correction (without post-settle) would land at
-  // (originalOffsetPx - SPACER_HEIGHT_PX) because the spacer was already
-  // present when the initial restoreRoomScrollAnchor ran.  The post-settle
-  // re-correction must produce a value close to originalOffsetPx instead.
   const finalOffset = await page.evaluate(
     ({ eventId }) => {
       const anchor = document.querySelector<HTMLElement>(`[data-event-id="${eventId}"]`);
@@ -264,11 +335,8 @@ test("post-settle re-correction compensates layout-shift drift after restore", a
     },
     { eventId: ANCHOR_EVENT_ID }
   );
-
   expect(finalOffset).not.toBeNull();
-  // Within ±ANCHOR_PIXEL_TOLERANCE of the original pre-spacer position.
   expect(Math.abs(finalOffset! - originalOffsetPx)).toBeLessThanOrEqual(ANCHOR_PIXEL_TOLERANCE);
-  // Clearly NOT at the naive-drift value.
-  const naiveDriftOffset = originalOffsetPx - SPACER_HEIGHT_PX;
-  expect(Math.abs(finalOffset! - naiveDriftOffset)).toBeGreaterThan(ANCHOR_PIXEL_TOLERANCE);
+  // Clearly NOT at the drifted position (which was DRIFT_HEIGHT_PX below original).
+  expect(Math.abs(finalOffset! - afterDrift!)).toBeGreaterThan(ANCHOR_PIXEL_TOLERANCE);
 });

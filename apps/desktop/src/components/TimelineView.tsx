@@ -2190,10 +2190,20 @@ export const TimelineView = memo(function TimelineView({
           const anchorSnapshot = activeRoomAnchor;
           const signatureSnapshot = activeRoomAnchorSignature;
           const containerSnapshot = container;
+          // Record scrollTop immediately after the initial restore so the
+          // delayed callback can detect a user scroll during the wait.
+          const scrollTopAfterRestore = container.scrollTop;
 
           const applyPostSettleCorrection = () => {
             // Abort if another restore started since we were scheduled.
             if (postSettleRestoredSignatureRef.current !== signatureSnapshot) {
+              return;
+            }
+            // Abort if the user scrolled during the rAF/fonts/media wait.
+            // A real user scroll changes scrollTop beyond the programmatic
+            // restore; the suppression guard covers programmatic adjustments.
+            if (containerSnapshot.scrollTop !== scrollTopAfterRestore) {
+              roomScrollAnchorRestorePendingRef.current = false;
               return;
             }
             const anchorNode = containerSnapshot.querySelector<HTMLElement>(
