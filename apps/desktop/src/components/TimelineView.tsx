@@ -1465,6 +1465,10 @@ export const TimelineView = memo(function TimelineView({
   const requestedAvatarMxcsRef = useRef<Set<string>>(new Set());
   const avatarRetryCountsRef = useRef<Map<string, number>>(new Map());
   const emptyThreadBackfillRequestedRef = useRef(false);
+  const lastDiagnosticsEmissionRef = useRef<{
+    callback: (diagnostics: TimelineDiagnostics) => void;
+    signature: string;
+  } | null>(null);
   const profileUsersRef = useRef(profileUsers);
   profileUsersRef.current = profileUsers;
   const timelineKeyRef = useRef(timelineKey);
@@ -1777,6 +1781,7 @@ export const TimelineView = memo(function TimelineView({
     requestedAvatarMxcsRef.current = new Set();
     avatarRetryCountsRef.current = new Map();
     emptyThreadBackfillRequestedRef.current = false;
+    lastDiagnosticsEmissionRef.current = null;
     initialLiveEdgeScrollAppliedRef.current = null;
     stickToBottomAfterMeasurementRef.current = false;
     itemHeightByDomIdRef.current = new Map();
@@ -1881,13 +1886,30 @@ export const TimelineView = memo(function TimelineView({
         downloadedEventIdsRef.current.add(item.id.Event.event_id);
       }
     }
-    onDiagnosticsChange?.({
+    const diagnostics = {
       visibleItems: visibleItems.length,
       downloadedItems: downloadedEventIdsRef.current.size,
       backfill: paginationStateDiagnosticLabel(getPaginationState(store, timelineKey, "Backward")),
       ...avatarDiagnostics,
       ...timelineRenderedAvatarDiagnostics(containerRef.current)
-    });
+    };
+    if (!onDiagnosticsChange) {
+      lastDiagnosticsEmissionRef.current = null;
+      return;
+    }
+    const diagnosticsSignature = `${timelineKeyHash}\u0000${JSON.stringify(diagnostics)}`;
+    const lastEmission = lastDiagnosticsEmissionRef.current;
+    if (
+      lastEmission?.callback === onDiagnosticsChange &&
+      lastEmission.signature === diagnosticsSignature
+    ) {
+      return;
+    }
+    lastDiagnosticsEmissionRef.current = {
+      callback: onDiagnosticsChange,
+      signature: diagnosticsSignature
+    };
+    onDiagnosticsChange(diagnostics);
   }, [
     avatarThumbnails,
     items,
