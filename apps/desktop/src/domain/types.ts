@@ -435,6 +435,7 @@ export interface NavigationState {
 
 export interface TimelineScrollAnchor {
   event_id: string;
+  edge?: "top" | "bottom";
   offset_px: number;
   updated_at_ms: number;
 }
@@ -917,12 +918,6 @@ export interface LiveEventReceiptSummary {
 export interface LiveEventReceipts {
   event_id: string;
   receipts: LiveReadReceipt[];
-}
-
-export interface LiveRoomSignalUpdate {
-  receipts_by_event: LiveEventReceipts[];
-  fully_read_event_id: string | null;
-  typing_user_ids: string[];
 }
 
 export type PresenceKind = "online" | "away" | "offline";

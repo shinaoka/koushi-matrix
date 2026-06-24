@@ -6,10 +6,10 @@ use std::fmt;
 use koushi_state::{
     ActivityStream, ActivityTab, AppState, AttachmentResult, AvatarImage, AvatarThumbnailState,
     CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, IdentityResetState,
-    JapaneseCatalogProfile, KeyBackupStatus, LiveRoomSignalUpdate, LocalEncryptionHealth,
-    MediaTransferProgress, NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind,
-    ProfileState, ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind,
-    SessionState, SyncMode, ThreadsListItem, VerificationFlowState, resolve_user_display_name,
+    JapaneseCatalogProfile, KeyBackupStatus, LocalEncryptionHealth, MediaTransferProgress,
+    NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind, ProfileState,
+    ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind, SessionState, SyncMode,
+    ThreadsListItem, VerificationFlowState, resolve_user_display_name,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -267,10 +267,6 @@ pub enum ThreadsListEvent {
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum LiveSignalsEvent {
-    RoomSignalsUpdated {
-        room_id: String,
-        update: LiveRoomSignalUpdate,
-    },
     PresenceUpdated {
         user_id: String,
         presence: PresenceKind,
@@ -299,16 +295,6 @@ pub enum LiveSignalsEvent {
 impl fmt::Debug for LiveSignalsEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::RoomSignalsUpdated { update, .. } => formatter
-                .debug_struct("RoomSignalsUpdated")
-                .field("room_id", &"RoomId(..)")
-                .field("receipt_events", &update.receipts_by_event.len())
-                .field(
-                    "fully_read_event_id",
-                    &update.fully_read_event_id.as_ref().map(|_| "EventId(..)"),
-                )
-                .field("typing_users", &update.typing_user_ids.len())
-                .finish(),
             Self::PresenceUpdated { presence, .. } => formatter
                 .debug_struct("PresenceUpdated")
                 .field("user_id", &"UserId(..)")

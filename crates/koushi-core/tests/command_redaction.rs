@@ -8,8 +8,8 @@ use koushi_core::command::{
 use koushi_core::ids::{AccountKey, TimelineKey};
 use koushi_state::{
     AuthSecret, IdentityResetAuthRequest, LoginRequest, MentionIntent, PresenceKind,
-    RecoveryRequest, RoomTagKind, TimelineScrollAnchor, VerificationCancelReason,
-    VerificationTarget,
+    RecoveryRequest, RoomTagKind, TimelineScrollAnchor, TimelineScrollAnchorEdge,
+    VerificationCancelReason, VerificationTarget,
 };
 
 mod support;
@@ -109,6 +109,7 @@ fn secret_bearing_commands_redact_debug() {
         room_id: "!room:example.test".to_owned(),
         anchor: TimelineScrollAnchor {
             event_id: "$anchor:example.test".to_owned(),
+            edge: TimelineScrollAnchorEdge::Top,
             offset_px: 32,
             updated_at_ms: 1_900_000_000_000,
         },

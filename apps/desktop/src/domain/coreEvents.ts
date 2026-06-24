@@ -614,18 +614,7 @@ export interface LiveEventReceipts {
   receipts: LiveReadReceipt[];
 }
 
-export interface LiveRoomSignalUpdate {
-  receipts_by_event: LiveEventReceipts[];
-  fully_read_event_id: string | null;
-  typing_user_ids: string[];
-}
-
 export type LiveSignalsEvent =
-  | {
-      kind: "roomSignalsUpdated";
-      room_id: string;
-      update: LiveRoomSignalUpdate;
-    }
   | {
       kind: "presenceUpdated";
       user_id: string;

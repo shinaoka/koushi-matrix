@@ -1943,14 +1943,22 @@ button:disabled {
 
 .message-list {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
-  padding: 8px 0 0;
+  padding: 0;
+}
+
+.timeline-view {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow-x: hidden;
 }
 
 .timeline-item-list {
   min-height: 0;
+  min-inline-size: 0;
+  max-inline-size: 100%;
 }
 
 .timeline-virtual-spacer {
@@ -1964,8 +1972,9 @@ button:disabled {
 
 .timeline-load-more {
   display: flex;
+  align-items: center;
   justify-content: center;
-  padding: 4px 20px 8px;
+  padding: 0;
 }
 
 .load-more-button {
@@ -2922,8 +2931,10 @@ button:disabled {
      auto margins have no pushing effect in a block formatting context. */
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--receipt-row-gap);
-  inline-size: max-content;
+  inline-size: fit-content;
+  max-inline-size: 100%;
   min-block-size: var(--receipt-row-min-block-size);
   margin-block-start: var(--receipt-row-margin-block-start);
   margin-inline-start: auto;

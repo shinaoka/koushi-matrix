@@ -2,9 +2,19 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TimelineScrollAnchorEdge {
+    #[default]
+    Top,
+    Bottom,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelineScrollAnchor {
     pub event_id: String,
+    #[serde(default)]
+    pub edge: TimelineScrollAnchorEdge,
     pub offset_px: i32,
     pub updated_at_ms: u64,
 }

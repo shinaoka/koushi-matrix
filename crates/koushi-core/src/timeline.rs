@@ -82,7 +82,7 @@ use matrix_sdk_ui::timeline::{
     EmbeddedEvent, EncryptedMessage, EventSendState as SdkEventSendState, EventTimelineItem,
     InReplyToDetails, MembershipChange, Profile, ReactionStatus, ReactionsByKeyBySender, Timeline,
     TimelineDetails, TimelineEventItemId, TimelineFocus, TimelineItem as SdkTimelineItem,
-    TimelineItemContent, TimelineItemKind,
+    TimelineItemContent, TimelineItemKind, TimelineReadReceiptTracking,
 };
 use tokio::sync::{broadcast, mpsc};
 
@@ -882,10 +882,7 @@ impl TimelineManagerActor {
 
         trace("build_begin");
         let build_started = startup_trace::now_if_enabled();
-        let timeline_result = matrix_sdk_ui::timeline::TimelineBuilder::new(&room)
-            .with_focus(focus)
-            .build()
-            .await;
+        let timeline_result = koushi_timeline_builder(&room, focus).build().await;
         startup_trace::trace_phase(StartupPhase::TimelineBuild, build_started);
         trace("build_done");
 
@@ -2105,26 +2102,21 @@ impl TimelineActor {
                 // Yield to the runtime so the relay pipeline can deliver the
                 // anchor diff before we check again. Without this pause, all
                 // 40 ticks complete before any relay task is scheduled.
-                tokio::time::sleep(
-                    std::time::Duration::from_millis(RESTORE_ANCHOR_RELAY_WAIT_TICK_MS)
-                ).await;
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    RESTORE_ANCHOR_RELAY_WAIT_TICK_MS,
+                ))
+                .await;
                 self.schedule_restore_anchor_continue(restore).await;
                 return;
             }
             // Backstop: relay genuinely stuck. EndReached is the safest
             // fallback (anchor not confirmed in items; the caller can retry).
-            self.finish_anchor_restore(
-                restore.request_id,
-                TimelineAnchorRestoreStatus::EndReached,
-            );
+            self.finish_anchor_restore(restore.request_id, TimelineAnchorRestoreStatus::EndReached);
             return;
         }
 
         if self.timeline_contains_event_id(&restore.event_id) {
-            self.finish_anchor_restore(
-                restore.request_id,
-                TimelineAnchorRestoreStatus::Found,
-            );
+            self.finish_anchor_restore(restore.request_id, TimelineAnchorRestoreStatus::Found);
             return;
         }
         if restore.max_batches_remaining == 0 {
@@ -2195,8 +2187,7 @@ impl TimelineActor {
                     // Fall back to the per-chunk paginate_once loop, which can
                     // resolve gaps via the network for non-contiguous caches.
                     restore.in_flight = true;
-                    restore.max_batches_remaining =
-                        restore.max_batches_remaining.saturating_sub(1);
+                    restore.max_batches_remaining = restore.max_batches_remaining.saturating_sub(1);
 
                     let result = self
                         .paginate_once(request_id, PaginationDirection::Backward, event_count)
@@ -2204,10 +2195,7 @@ impl TimelineActor {
                     restore.in_flight = false;
 
                     if self.timeline_contains_event_id(&restore.event_id) {
-                        self.finish_anchor_restore(
-                            request_id,
-                            TimelineAnchorRestoreStatus::Found,
-                        );
+                        self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
                         return;
                     }
 
@@ -2274,15 +2262,17 @@ impl TimelineActor {
                 }
 
                 // Budget exhausted without finding the anchor.
-                self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::BudgetExhausted);
+                self.finish_anchor_restore(
+                    request_id,
+                    TimelineAnchorRestoreStatus::BudgetExhausted,
+                );
             }
 
             Err(_) => {
                 // Cache load error — fall back to the per-chunk paginate_once
                 // path for a single attempt, treating the error as transient.
                 restore.in_flight = true;
-                restore.max_batches_remaining =
-                    restore.max_batches_remaining.saturating_sub(1);
+                restore.max_batches_remaining = restore.max_batches_remaining.saturating_sub(1);
 
                 let result = self
                     .paginate_once(request_id, PaginationDirection::Backward, event_count)
@@ -2306,24 +2296,15 @@ impl TimelineActor {
                 };
                 if end_reached {
                     if self.timeline_contains_event_id(&restore.event_id) {
-                        self.finish_anchor_restore(
-                            request_id,
-                            TimelineAnchorRestoreStatus::Found,
-                        );
+                        self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
                         return;
                     }
-                    self.finish_anchor_restore(
-                        request_id,
-                        TimelineAnchorRestoreStatus::EndReached,
-                    );
+                    self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::EndReached);
                     return;
                 }
                 if restore.max_batches_remaining == 0 {
                     if self.timeline_contains_event_id(&restore.event_id) {
-                        self.finish_anchor_restore(
-                            request_id,
-                            TimelineAnchorRestoreStatus::Found,
-                        );
+                        self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
                         return;
                     }
                     self.finish_anchor_restore(
@@ -2358,10 +2339,7 @@ impl TimelineActor {
             return;
         }
         if self.timeline_contains_event_id(&restore.event_id) {
-            self.finish_anchor_restore(
-                restore.request_id,
-                TimelineAnchorRestoreStatus::Found,
-            );
+            self.finish_anchor_restore(restore.request_id, TimelineAnchorRestoreStatus::Found);
             return;
         }
         if restore.max_batches_remaining == 0 {
@@ -2391,7 +2369,6 @@ impl TimelineActor {
             .send(TimelineActorMessage::RestoreTimelineAnchorContinue { serial })
             .await;
     }
-
 
     async fn handle_send_text(
         &mut self,
@@ -3269,7 +3246,6 @@ impl TimelineActor {
             .await
         {
             Ok(_) => {
-                self.emit_own_receipt_action(&event_id);
                 self.emit(CoreEvent::LiveSignals(LiveSignalsEvent::ReadReceiptSent {
                     request_id,
                     key: self.key.clone(),
@@ -4315,30 +4291,6 @@ impl TimelineActor {
         }
     }
 
-    fn emit_own_receipt_action(&self, event_id: &str) {
-        let Some(room_id) = timeline_room_id(&self.key) else {
-            return;
-        };
-        let Some(user_id) = self.own_user_id.as_ref() else {
-            return;
-        };
-        let _ = self
-            .action_tx
-            .try_send(vec![AppAction::LiveRoomReceiptsUpdated {
-                room_id,
-                receipts_by_event: vec![LiveEventReceipts {
-                    event_id: event_id.to_owned(),
-                    receipts: vec![LiveReadReceipt {
-                        user_id: user_id.to_string(),
-                        display_name: None,
-                        original_display_label: String::new(),
-                        avatar: None,
-                        timestamp_ms: None,
-                    }],
-                }],
-            }]);
-    }
-
     fn emit_typing_users_action(&self, user_ids: Vec<String>) {
         let Some(room_id) = timeline_room_id(&self.key) else {
             return;
@@ -4366,6 +4318,15 @@ impl TimelineActor {
                 receipts_by_event,
             }]);
     }
+}
+
+fn koushi_timeline_builder(
+    room: &matrix_sdk::Room,
+    focus: TimelineFocus,
+) -> matrix_sdk_ui::timeline::TimelineBuilder {
+    matrix_sdk_ui::timeline::TimelineBuilder::new(room)
+        .with_focus(focus)
+        .track_read_marker_and_receipts(TimelineReadReceiptTracking::AllEvents)
 }
 
 // ---------------------------------------------------------------------------
@@ -7430,6 +7391,68 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn koushi_timeline_builder_projects_sdk_read_receipts() {
+        use matrix_sdk::assert_next_with_timeout;
+        use matrix_sdk::ruma::{event_id, room_id, user_id};
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        use matrix_sdk_test::{JoinedRoomBuilder, event_factory::EventFactory};
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!receipts:example.test");
+        let room = server.sync_joined_room(&client, room_id).await;
+        let timeline = koushi_timeline_builder(
+            &room,
+            TimelineFocus::Live {
+                hide_threaded_events: false,
+            },
+        )
+        .build()
+        .await
+        .expect("timeline");
+        let (_initial_items, mut stream) = timeline.subscribe().await;
+
+        let factory = EventFactory::new().room(room_id);
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(room_id)
+                    .add_timeline_event(
+                        factory
+                            .text_msg("first")
+                            .event_id(event_id!("$first:example.test"))
+                            .sender(user_id!("@alice:example.test"))
+                            .into_raw_sync(),
+                    )
+                    .add_timeline_event(
+                        factory
+                            .text_msg("second")
+                            .event_id(event_id!("$second:example.test"))
+                            .sender(user_id!("@bob:example.test"))
+                            .into_raw_sync(),
+                    ),
+            )
+            .await;
+
+        let diffs = assert_next_with_timeout!(stream);
+        let mut receipts_by_event = Vec::new();
+        for diff in &diffs {
+            collect_live_event_receipts_from_diff(diff, &mut receipts_by_event);
+        }
+
+        let second = receipts_by_event
+            .iter()
+            .find(|entry| entry.event_id == "$second:example.test")
+            .expect("Koushi timeline builder must opt in to SDK read receipt tracking");
+        assert!(
+            second
+                .receipts
+                .iter()
+                .any(|receipt| receipt.user_id == "@bob:example.test")
+        );
+    }
+
     #[test]
     fn room_live_timeline_focus_hides_threaded_events() {
         let source = include_str!("timeline.rs");
@@ -8617,8 +8640,8 @@ mod tests {
             .unwrap_or("");
         // The wrapper is defined; search broadly for both calls in production.
         assert!(
-            production.contains("flush_restore_emit_buffer()") ||
-            production.contains("self.flush_restore_emit_buffer()"),
+            production.contains("flush_restore_emit_buffer()")
+                || production.contains("self.flush_restore_emit_buffer()"),
             "finish_anchor_restore must call flush_restore_emit_buffer"
         );
         let _ = finish_src; // used for the existence assertion above

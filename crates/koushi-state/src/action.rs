@@ -5,10 +5,10 @@ use crate::state::{
     AttachmentFilter, AttachmentResult, AttachmentScope, AttachmentSort, AuthFailureKind,
     AvatarThumbnailState, BasicOperationRequest, CrossSigningStatus, DelegatedAuthLinks,
     DeviceSessionSummary, DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState, FilesViewScope,
-    IdentityResetAuthType, JapaneseCatalogProfile, LiveEventReceipts, LiveRoomSignalUpdate,
-    LocalEncryptionHealth, LoginFlow, NativeAttentionState, NavigationState, OperationFailureKind,
-    OwnProfile, PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryKeyDeliveryState,
-    RecoveryMethod, RoomListFilter, RoomListProjection, RoomModerationAction, RoomSettingChange,
+    IdentityResetAuthType, JapaneseCatalogProfile, LiveEventReceipts, LocalEncryptionHealth,
+    LoginFlow, NativeAttentionState, NavigationState, OperationFailureKind, OwnProfile,
+    PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryKeyDeliveryState, RecoveryMethod,
+    RoomListFilter, RoomListProjection, RoomModerationAction, RoomSettingChange,
     RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji,
     ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope,
     SessionInfo, SettingsPatch, SettingsValues, SpaceSummary, StagedUploadCompressionChoice,
@@ -840,10 +840,6 @@ pub enum AppAction {
     BasicOperationFailed {
         request_id: u64,
         message: String,
-    },
-    LiveRoomSignalsUpdated {
-        room_id: String,
-        update: LiveRoomSignalUpdate,
     },
     LiveRoomReceiptsUpdated {
         room_id: String,

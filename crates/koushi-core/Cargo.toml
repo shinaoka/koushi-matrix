@@ -46,6 +46,8 @@ qa-bin = []
 # constructors). Unit tests in src/ already have cfg(test), so this is a
 # no-op for them.
 koushi-core = { path = ".", features = ["test-hooks"] }
+matrix-sdk = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk", default-features = false, features = ["automatic-room-key-forwarding", "e2e-encryption", "experimental-search", "sqlite", "testing"] }
 matrix-sdk-base = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk-base" }
+matrix-sdk-test = { path = "../../vendor/matrix-rust-sdk/testing/matrix-sdk-test" }
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "rt", "sync", "time", "macros"] }

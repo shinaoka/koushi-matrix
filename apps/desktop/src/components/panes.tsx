@@ -697,6 +697,8 @@ export function TimelinePane({
     void timelineTransport.openAtTimestamp(timelineRoomId, timestampMs).catch(() => undefined);
     setDateJumpDialogOpen(false);
   }
+  const canPaginateOlderMessages = Boolean(timelineRoomId && currentUserId && timelineTransport);
+  const canJumpToTimelineDate = Boolean(timelineTransport?.openAtTimestamp && timelineRoomId);
 
   return (
     <main className="main-pane" aria-label={t("timeline.conversation")}>
@@ -757,16 +759,37 @@ export function TimelinePane({
         <button className="tab is-active" type="button">
           {t("timeline.messagesTab")}
         </button>
-        {timelineTransport?.openAtTimestamp && timelineRoomId ? (
+        {canPaginateOlderMessages || canJumpToTimelineDate ? (
           <div className="tabs-actions">
-            <button
-              className="timeline-date-jump-trigger"
-              type="button"
-              onClick={() => setDateJumpDialogOpen(true)}
-            >
-              <CalendarDays size={ICON_SIZE.micro} aria-hidden="true" />
-              <span>{t("timeline.jumpToDate")}</span>
-            </button>
+            {canPaginateOlderMessages ? (
+              <div className="timeline-load-more">
+                <button
+                  className="load-more-button"
+                  type="button"
+                  disabled={timelineBackfillBusy || timelineBackfillEnded}
+                  onClick={() => {
+                    if (timelineKey && timelineTransport) {
+                      void timelineTransport.paginateBackwards(timelineKey);
+                    }
+                  }}
+                >
+                  <Clock3 size={ICON_SIZE.compact} />
+                  <span>
+                    {timelineBackfillBusy ? t("timeline.loading") : t("timeline.olderMessages")}
+                  </span>
+                </button>
+              </div>
+            ) : null}
+            {canJumpToTimelineDate ? (
+              <button
+                className="timeline-date-jump-trigger"
+                type="button"
+                onClick={() => setDateJumpDialogOpen(true)}
+              >
+                <CalendarDays size={ICON_SIZE.micro} aria-hidden="true" />
+                <span>{t("timeline.jumpToDate")}</span>
+              </button>
+            ) : null}
           </div>
         ) : null}
       </nav>
@@ -842,29 +865,6 @@ export function TimelinePane({
           />
         ) : null}
         <div className="message-list">
-          <div className="timeline-load-more">
-            <button
-              className="load-more-button"
-              type="button"
-              disabled={
-                !timelineRoomId ||
-                !currentUserId ||
-                !timelineTransport ||
-                timelineBackfillBusy ||
-                timelineBackfillEnded
-              }
-              onClick={() => {
-                if (timelineKey && timelineTransport) {
-                  void timelineTransport.paginateBackwards(timelineKey);
-                }
-              }}
-            >
-              <Clock3 size={ICON_SIZE.compact} />
-              <span>
-                {timelineBackfillBusy ? t("timeline.loading") : t("timeline.olderMessages")}
-              </span>
-            </button>
-          </div>
           {timelineTransport && timelineRoomId && currentUserId ? (
             // Production path: render from the event-driven timeline store
             // (CoreEvent diffs), never from AppState timeline fields.

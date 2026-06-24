@@ -5,23 +5,6 @@ use crate::{
 
 use super::{is_session_ready, session_user_id};
 
-pub(crate) fn handle_live_room_signals_updated(
-    state: &mut AppState,
-    room_id: String,
-    update: crate::state::LiveRoomSignalUpdate,
-) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
-        return Vec::new();
-    }
-
-    let own_user_id = session_user_id(state).map(str::to_owned);
-    state.live_signals.rooms.insert(
-        room_id,
-        update.into_room_signals_with_profiles(&state.profile, own_user_id.as_deref()),
-    );
-    vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
-}
-
 pub(crate) fn handle_live_room_receipts_updated(
     state: &mut AppState,
     room_id: String,
