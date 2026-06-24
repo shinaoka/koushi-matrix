@@ -115,20 +115,22 @@ const REPLY_QUOTE_PREVIEW_MAX_CHARS: usize = 160;
 /// capped by the small UI-side value (6). The walk continues until `Found`,
 /// `EndReached`, a paginate failure, or this bound — whichever comes first.
 const RESTORE_ANCHOR_MAX_CHUNKS: u16 = 5000;
-/// Maximum settle ticks for the diff-stream stabilization wait.
-/// After a terminal condition (EndReached / BudgetExhausted / ContinueBulk /
-/// Failed) is reached, the settle loop re-ticks while new DiffBatches keep
-/// arriving; it concludes when the stream goes quiet (two consecutive ticks
-/// with the same diff_batch_seq). This backstop ensures termination if the
-/// relay stalls. 20 ticks is generous enough for the 3-hop async pipeline
-/// to deliver all pending chunks under normal scheduler load.
-const RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS: u8 = 20;
-/// Minimum delay between settle ticks (milliseconds). Must be long enough for
-/// the 3-hop async relay pipeline (conclude_backwards_pagination_from_disk →
+/// Backstop tick count for the anchor-relay wait. After the SDK signals
+/// `anchor_present == true`, the anchor's diff has been broadcast through the
+/// 3-hop relay (conclude_backwards_pagination_from_disk → event-cache task →
+/// timeline observable → relay → DiffBatch actor msg) and WILL arrive in the
+/// actor's `timeline_contains` check within the next few ticks. This backstop
+/// guards against a genuinely stuck relay; under normal load the anchor lands
+/// well before the count reaches zero.
+const RESTORE_ANCHOR_RELAY_WAIT_TICKS: u8 = 40;
+/// Delay between anchor-relay-wait ticks (milliseconds). The relay pipeline
+/// is a 3-hop async path: conclude_backwards_pagination_from_disk →
 /// room_event_cache_updates_task → handle_remote_events_with_diffs →
-/// timeline observable → relay task → DiffBatch actor message) to deliver one
-/// batch end-to-end. 50 ms is well above scheduler jitter on Linux/macOS.
-const RESTORE_ANCHOR_SETTLE_TICK_DELAY_MS: u64 = 50;
+/// observable → relay task → DiffBatch actor message. Without a pause, all
+/// 40 backstop ticks can drain before any relay task gets CPU time.
+/// 50 ms is deliberately conservative (well within the 2 000 ms total
+/// budget); under normal conditions the anchor lands on tick 1.
+const RESTORE_ANCHOR_RELAY_WAIT_TICK_MS: u64 = 50;
 
 /// Messages routed to the `TimelineManagerActor`.
 pub enum TimelineMessage {
@@ -1465,27 +1467,8 @@ struct TimelineActor {
     /// a single settled update rather than O(chunks) intermediate renders.
     restore_emit_buffer: Vec<TimelineDiff>,
     /// Monotonically increasing counter, incremented at the start of every
-    /// `handle_diff_batch` call (restore or not). Used during settle phases:
-    /// each tick snapshots this value into `settle_last_seen_seq`; the settle
-    /// concludes when two consecutive ticks observe the same value (stream quiet).
+    /// `handle_diff_batch` call (restore or not).
     diff_batch_seq: u64,
-}
-
-/// Which terminal status a settle phase should emit when the anchor is absent
-/// (Found always wins when the anchor lands during settling).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SettleTerminal {
-    EndReached,
-    BudgetExhausted,
-    /// The fallback `paginate_once` returned an error, but there are pending
-    /// cache DiffBatches in the async relay that must settle before we can
-    /// safely emit `Failed` (otherwise `ItemsUpdated` arrives after
-    /// `AnchorRestoreFinished`).
-    Failed { kind: TimelineFailureKind },
-    /// run_backwards_cache_only stopped because it reached the `bulk_n` cap
-    /// (not a gap, not start-of-timeline). Settle the loaded diffs, then issue
-    /// another bulk load to continue searching for the anchor.
-    ContinueBulk,
 }
 
 #[derive(Clone, Debug)]
@@ -1498,27 +1481,13 @@ struct RestoreTimelineAnchorState {
     awaiting_diff_batch: bool,
     continuation_scheduled: bool,
     continuation_serial: Option<u64>,
-    /// Set to `Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS)` when the bulk
-    /// cache load or a `paginate_once` terminal has been reached but the anchor
-    /// is not yet present in `navigation_items`. Each settle tick re-checks for
-    /// Found; if the diff-stream is quiet (unchanged since last tick), concludes
-    /// with `settle_terminal`. `None` during the normal walk.
-    end_reached_settle: Option<u8>,
-    /// `diff_batch_seq` value seen at the PREVIOUS settle tick. Settling
-    /// concludes when this equals `TimelineActor::diff_batch_seq`, meaning the
-    /// diff stream has gone quiet (no new DiffBatch since the last tick).
-    /// Initially set to the value at settle-entry; updated each re-tick.
-    settle_last_seen_seq: u64,
-    /// When `true`, the settle must wait for at least one DiffBatch to be
-    /// processed by `handle_diff_batch` before the stabilization check begins.
-    /// Set on settle-entry when `expected_batches > 0`; cleared by
-    /// `maybe_continue_restore_anchor_after_diff` when the first batch lands.
-    /// This ensures `settle_last_seen_seq` is updated from an active-stream
-    /// snapshot, not the silent pre-delivery snapshot at settle-entry.
-    settle_awaiting_first_diff: bool,
-    /// Which terminal status to emit if the anchor is absent when settling ends.
-    /// `Found` always takes priority when the anchor lands during settling.
-    settle_terminal: SettleTerminal,
+    /// Set to `Some(RESTORE_ANCHOR_RELAY_WAIT_TICKS)` after the SDK confirms
+    /// `anchor_present == true` (load-until-anchor found the anchor in a loaded
+    /// chunk; its broadcast has been fired and WILL propagate through the 3-hop
+    /// relay). While non-zero, each tick re-checks `timeline_contains(anchor)`
+    /// and re-ticks until Found or the backstop runs out. `None` during the
+    /// normal walk.
+    anchor_relay_wait: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2094,10 +2063,7 @@ impl TimelineActor {
             awaiting_diff_batch: false,
             continuation_scheduled: false,
             continuation_serial: None,
-            end_reached_settle: None,
-            settle_last_seen_seq: 0,
-            settle_awaiting_first_diff: false,
-            settle_terminal: SettleTerminal::EndReached,
+            anchor_relay_wait: None,
         };
 
         self.schedule_restore_anchor_continue(restore).await;
@@ -2119,82 +2085,38 @@ impl TimelineActor {
         restore.continuation_scheduled = false;
         restore.continuation_serial = None;
 
-        // Settle path: entered after a terminal condition was reached (bulk
-        // cache load completed, paginate_once returned end_reached, or budget
-        // exhausted) but the anchor may still be in a pending async DiffBatch
-        // moving through the 3-hop relay. Do NOT paginate again; wait for the
-        // diff stream to go quiet.
+        // Anchor-relay wait: entered after the SDK's authoritative
+        // `anchor_present == true` signal. All cache events are in memory and
+        // their diffs are in flight through the 3-hop relay
+        // (conclude_backwards_pagination_from_disk → event-cache task →
+        // timeline observable → relay task → DiffBatch actor msg). Re-tick
+        // until `timeline_contains` confirms, or the backstop expires.
         //
-        // Stabilization logic (deterministic, replaces the brittle fixed-count fence):
-        //   1. anchor appeared (timeline_contains) → Found wins immediately.
-        //   2. diff_batch_seq advanced since the PREVIOUS tick → the stream is
-        //      still active; record the new seq, re-tick without concluding.
-        //   3. diff_batch_seq unchanged since the previous tick (stream quiet) →
-        //      all in-flight DiffBatches have been applied; conclude terminal.
-        //   4. Backstop: tick counter reached 0 → conclude regardless (prevents
-        //      infinite wait if the relay is stalled).
-        //
-        // This avoids the race where a fixed expected-batch count can under-count
-        // when lazy-reveal / disk-broadcast pipelining produces an extra batch,
-        // causing EndReached/BudgetExhausted before the anchor's diff applies.
-        if restore.end_reached_settle.is_some() {
+        // A bounded sleep between ticks is necessary: without it all 40
+        // backstop ticks drain before the relay task gets CPU time, because
+        // the actor processes its own messages before yielding to other tasks.
+        if let Some(remaining) = restore.anchor_relay_wait {
             if self.timeline_contains_event_id(&restore.event_id) {
                 self.finish_anchor_restore(restore.request_id, TimelineAnchorRestoreStatus::Found);
                 return;
             }
-            // If still waiting for the first DiffBatch to arrive, re-tick so
-            // `maybe_continue_restore_anchor_after_diff` can pick it up. We do
-            // NOT update last_seen here because the relay hasn't delivered yet.
-            let remaining = restore.end_reached_settle.unwrap_or(0);
-            if restore.settle_awaiting_first_diff {
-                if remaining > 0 {
-                    restore.end_reached_settle = Some(remaining - 1);
-                    // Use the delayed settle tick so the relay has time to deliver
-                    // the first DiffBatch before the next check.
-                    self.schedule_restore_anchor_settle_tick(restore).await;
-                    return;
-                }
-                // Backstop: first diff never arrived. Conclude anyway.
-                restore.settle_awaiting_first_diff = false;
-            }
-
-            let current_seq = self.diff_batch_seq;
-            let stream_advanced = current_seq > restore.settle_last_seen_seq;
-            // Conclude only when the stream has gone quiet: two consecutive ticks
-            // observe the same diff_batch_seq (no new DiffBatch between ticks).
-            //   a) Stream advanced: more batches arriving — update last_seen, re-tick.
-            //   b) Stream quiet (current == last_seen) → conclude terminal.
-            //   c) Backstop (remaining == 0) → conclude regardless.
-            //
-            // Each settle tick uses a 50 ms delay (RESTORE_ANCHOR_SETTLE_TICK_DELAY_MS)
-            // so the 3-hop relay pipeline can drain one in-flight DiffBatch before
-            // the next stabilization check fires.
-            if remaining > 0 && stream_advanced {
-                restore.settle_last_seen_seq = current_seq;
-                restore.end_reached_settle = Some(remaining - 1);
-                self.schedule_restore_anchor_settle_tick(restore).await;
-                return;
-            }
-            // Stream quiet (current_seq == settle_last_seen_seq) or backstop hit.
-            // P2-cap: if we stopped at the bulk_n cap, re-enter the bulk load
-            // now that in-flight diffs have settled.
-            if restore.settle_terminal == SettleTerminal::ContinueBulk {
-                restore.end_reached_settle = None;
-                restore.awaiting_diff_batch = false;
+            if remaining > 0 {
+                restore.anchor_relay_wait = Some(remaining - 1);
+                // Yield to the runtime so the relay pipeline can deliver the
+                // anchor diff before we check again. Without this pause, all
+                // 40 ticks complete before any relay task is scheduled.
+                tokio::time::sleep(
+                    std::time::Duration::from_millis(RESTORE_ANCHOR_RELAY_WAIT_TICK_MS)
+                ).await;
                 self.schedule_restore_anchor_continue(restore).await;
                 return;
             }
-            let terminal = match restore.settle_terminal {
-                SettleTerminal::EndReached => TimelineAnchorRestoreStatus::EndReached,
-                SettleTerminal::BudgetExhausted => TimelineAnchorRestoreStatus::BudgetExhausted,
-                // P2-Failed: cache DiffBatches settled; now safe to emit Failed.
-                SettleTerminal::Failed { kind } => TimelineAnchorRestoreStatus::Failed { kind },
-                // Unreachable here: ContinueBulk handled above.
-                SettleTerminal::ContinueBulk => unreachable!(
-                    "ContinueBulk settle terminal must be handled before this match"
-                ),
-            };
-            self.finish_anchor_restore(restore.request_id, terminal);
+            // Backstop: relay genuinely stuck. EndReached is the safest
+            // fallback (anchor not confirmed in items; the caller can retry).
+            self.finish_anchor_restore(
+                restore.request_id,
+                TimelineAnchorRestoreStatus::EndReached,
+            );
             return;
         }
 
@@ -2219,11 +2141,11 @@ impl TimelineActor {
 
         // Stage 2: attempt a cache-only bulk backward load in a single call
         // instead of looping one chunk at a time through `paginate_once`.
-        // `u16::MAX` covers any realistic on-disk depth; the SDK stops at the
-        // first gap or start-of-timeline chunk so no unnecessary work is done.
+        // The SDK stops as soon as the anchor event is found (load-until-anchor),
+        // or when it reaches a gap or the start of the on-disk timeline.
         let bulk_n =
             (restore.max_batches_remaining as u32).saturating_mul(event_count as u32).min(u16::MAX as u32) as u16;
-        let cache_result = self.timeline.live_restore_from_cache(bulk_n).await;
+        let cache_result = self.timeline.live_restore_from_cache(bulk_n, &restore.event_id).await;
         restore.in_flight = false;
 
         match cache_result {
@@ -2234,15 +2156,27 @@ impl TimelineActor {
                 // messages. Those are buffered into `restore_emit_buffer` while
                 // `restore_anchor.is_some()`, so we still get a single coalesced
                 // `ItemsUpdated` flush at the terminal.
-                // P2: deduct the actual number of cache chunks consumed from the
+                // Deduct the actual number of cache chunks consumed from the
                 // budget (each chunk ≈ one paginate batch). Clamp minimum to 1
                 // so partial loads always advance the budget counter.
                 restore.max_batches_remaining = restore
                     .max_batches_remaining
                     .saturating_sub(outcome.chunks_loaded.max(1) as u16);
 
+                // Fast path: anchor already in timeline items (shallow-anchor case
+                // where the lazy in-memory reveal made it visible immediately).
                 if self.timeline_contains_event_id(&restore.event_id) {
                     self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
+                    return;
+                }
+
+                if outcome.anchor_present {
+                    // SDK authoritative signal: anchor was found in a loaded disk
+                    // chunk; its diff broadcast is already in flight through the
+                    // 3-hop relay. Enter the relay-wait loop; do NOT conclude
+                    // EndReached/BudgetExhausted while anchor_present is true.
+                    restore.anchor_relay_wait = Some(RESTORE_ANCHOR_RELAY_WAIT_TICKS);
+                    self.schedule_restore_anchor_continue(restore).await;
                     return;
                 }
 
@@ -2270,24 +2204,10 @@ impl TimelineActor {
                     let end_reached = match result {
                         Ok(end_reached) => end_reached,
                         Err(kind) => {
-                            // P2-Failed: route through settle fence so pending cache
-                            // DiffBatches land before the Failed terminal flushes.
-                            // If chunks_loaded == 0 there is nothing to settle; finish
-                            // immediately in that case to avoid an unnecessary tick.
-                            if outcome.chunks_loaded == 0 {
-                                self.finish_anchor_restore(
-                                    request_id,
-                                    TimelineAnchorRestoreStatus::Failed { kind },
-                                );
-                                return;
-                            }
-                            restore.end_reached_settle =
-                                Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
-                            restore.settle_last_seen_seq = self.diff_batch_seq;
-                            restore.settle_awaiting_first_diff = true;
-                            restore.awaiting_diff_batch = true;
-                            restore.settle_terminal = SettleTerminal::Failed { kind };
-                            self.schedule_restore_anchor_continue(restore).await;
+                            self.finish_anchor_restore(
+                                request_id,
+                                TimelineAnchorRestoreStatus::Failed { kind },
+                            );
                             return;
                         }
                     };
@@ -2299,12 +2219,10 @@ impl TimelineActor {
                             );
                             return;
                         }
-                        restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
-                        restore.settle_last_seen_seq = self.diff_batch_seq;
-                        restore.settle_awaiting_first_diff = true;
-                        restore.awaiting_diff_batch = true;
-                        restore.settle_terminal = SettleTerminal::EndReached;
-                        self.schedule_restore_anchor_continue(restore).await;
+                        self.finish_anchor_restore(
+                            request_id,
+                            TimelineAnchorRestoreStatus::EndReached,
+                        );
                         return;
                     }
                     if restore.max_batches_remaining == 0 {
@@ -2315,12 +2233,10 @@ impl TimelineActor {
                             );
                             return;
                         }
-                        restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
-                        restore.settle_last_seen_seq = self.diff_batch_seq;
-                        restore.settle_awaiting_first_diff = true;
-                        restore.awaiting_diff_batch = true;
-                        restore.settle_terminal = SettleTerminal::BudgetExhausted;
-                        self.schedule_restore_anchor_continue(restore).await;
+                        self.finish_anchor_restore(
+                            request_id,
+                            TimelineAnchorRestoreStatus::BudgetExhausted,
+                        );
                         return;
                     }
                     restore.awaiting_diff_batch = true;
@@ -2328,41 +2244,27 @@ impl TimelineActor {
                     return;
                 }
 
-                // No gap: cache-only bulk load completed.
-                //
-                // The bulk diffs are broadcast and will land as DiffBatch messages
-                // through a 3-hop async pipeline:
-                //   conclude_backwards_pagination_from_disk →
-                //   room_event_cache_updates_task → handle_remote_events_with_diffs →
-                //   Timeline observable → relay task diff_stream → DiffBatch actor msg.
-                //
-                // Use the stabilization settle: snapshot diff_batch_seq now; each tick
-                // re-checks whether new batches arrived. Only conclude when quiet for a
-                // full tick (no change in diff_batch_seq between two consecutive ticks).
-                // lazy_reveal_batches / chunks_loaded are retained in the outcome for
-                // diagnostics but are no longer needed for the settle fence computation.
-                //
-                // P2-cap: if the load stopped at the u16 cap (neither hit_gap nor
-                // reached_start), settle current diffs and re-issue another bulk load
-                // while budget remains; only conclude BudgetExhausted when the Rust
-                // budget counter actually reaches zero.
-                let settle_terminal = if outcome.reached_start {
-                    SettleTerminal::EndReached
-                } else if outcome.hit_gap {
-                    // hit_gap is handled in the branch above; this arm is unreachable.
-                    unreachable!("hit_gap must be handled in the hit_gap branch")
-                } else if restore.max_batches_remaining > 0 {
-                    // Cap case: more budget remains; continue bulk search after settle.
-                    SettleTerminal::ContinueBulk
-                } else {
-                    SettleTerminal::BudgetExhausted
-                };
-                restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
-                restore.settle_last_seen_seq = self.diff_batch_seq;
-                restore.settle_awaiting_first_diff = true;
-                restore.awaiting_diff_batch = true;
-                restore.settle_terminal = settle_terminal;
-                self.schedule_restore_anchor_continue(restore).await;
+                // No gap, anchor not present: cache-only bulk load completed
+                // without finding the anchor.
+                if outcome.reached_start {
+                    // Loaded to the start of the on-disk cache; anchor is
+                    // genuinely absent — conclude EndReached immediately
+                    // (authoritative; no timing wait needed).
+                    self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::EndReached);
+                    return;
+                }
+
+                // Cap case: the bulk load stopped because it reached the u16
+                // per-call cap, not because it reached a gap or start. More
+                // budget remains; issue another bulk load immediately.
+                if restore.max_batches_remaining > 0 {
+                    restore.awaiting_diff_batch = true;
+                    self.schedule_restore_anchor_continue(restore).await;
+                    return;
+                }
+
+                // Budget exhausted without finding the anchor.
+                self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::BudgetExhausted);
             }
 
             Err(_) => {
@@ -2400,12 +2302,10 @@ impl TimelineActor {
                         );
                         return;
                     }
-                    restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
-                    restore.settle_last_seen_seq = self.diff_batch_seq;
-                    restore.settle_awaiting_first_diff = true;
-                    restore.awaiting_diff_batch = true;
-                    restore.settle_terminal = SettleTerminal::EndReached;
-                    self.schedule_restore_anchor_continue(restore).await;
+                    self.finish_anchor_restore(
+                        request_id,
+                        TimelineAnchorRestoreStatus::EndReached,
+                    );
                     return;
                 }
                 if restore.max_batches_remaining == 0 {
@@ -2416,12 +2316,10 @@ impl TimelineActor {
                         );
                         return;
                     }
-                    restore.end_reached_settle = Some(RESTORE_ANCHOR_END_REACHED_SETTLE_TICKS);
-                    restore.settle_last_seen_seq = self.diff_batch_seq;
-                    restore.settle_awaiting_first_diff = true;
-                    restore.awaiting_diff_batch = true;
-                    restore.settle_terminal = SettleTerminal::BudgetExhausted;
-                    self.schedule_restore_anchor_continue(restore).await;
+                    self.finish_anchor_restore(
+                        request_id,
+                        TimelineAnchorRestoreStatus::BudgetExhausted,
+                    );
                     return;
                 }
                 restore.awaiting_diff_batch = true;
@@ -2438,26 +2336,10 @@ impl TimelineActor {
             self.restore_anchor = Some(restore);
             return;
         }
-        // Settle path: after a terminal condition is reached, the diff stream
-        // may still have in-flight DiffBatches (3-hop async relay:
-        // conclude_backwards_pagination_from_disk → event cache task →
-        // timeline observable → relay → DiffBatch actor msg).
-        //
-        // DiffBatch notifications must be processed during settle regardless of
-        // `awaiting_diff_batch` (the settle ticks clear that flag via the
-        // Continue handler). Check `end_reached_settle` first so settling works
-        // even after the first Continue tick resets `awaiting_diff_batch`.
-        if restore.end_reached_settle.is_some() {
-            if restore.settle_awaiting_first_diff {
-                // First DiffBatch arrived during settle. Clear the gate so the
-                // already-queued settle tick can enter the stabilization check.
-                // Do NOT update settle_last_seen_seq here: it was snapshotted at
-                // settle entry, so the queued tick will observe
-                // diff_batch_seq > settle_last_seen_seq (stream advanced) and
-                // re-tick rather than concluding immediately.
-                restore.settle_awaiting_first_diff = false;
-            }
-            // Put restore back; the queued settle tick handles stabilization.
+        // Anchor-relay wait: the queued Continue tick handles polling
+        // `timeline_contains` each tick until Found or backstop. Put restore
+        // back so the queued tick does its check on the next iteration.
+        if restore.anchor_relay_wait.is_some() {
             self.restore_anchor = Some(restore);
             return;
         }
@@ -2500,33 +2382,6 @@ impl TimelineActor {
             .await;
     }
 
-    /// Like `schedule_restore_anchor_continue` but introduces a minimum delay
-    /// before posting the message. Used for settle ticks so the 3-hop async
-    /// relay pipeline (conclude_backwards_pagination_from_disk → event cache
-    /// task → timeline observable → relay → DiffBatch actor message) has
-    /// enough time to deliver pending DiffBatches before the next stabilization
-    /// check. This prevents the "quiet for one tick" check from concluding
-    /// prematurely when the relay is still in flight.
-    async fn schedule_restore_anchor_settle_tick(
-        &mut self,
-        mut restore: RestoreTimelineAnchorState,
-    ) {
-        self.next_restore_anchor_serial = self.next_restore_anchor_serial.wrapping_add(1);
-        let serial = self.next_restore_anchor_serial;
-        restore.continuation_scheduled = true;
-        restore.continuation_serial = Some(serial);
-        self.restore_anchor = Some(restore);
-        let tx = self.msg_tx.clone();
-        executor::spawn(async move {
-            executor::sleep(std::time::Duration::from_millis(
-                RESTORE_ANCHOR_SETTLE_TICK_DELAY_MS,
-            ))
-            .await;
-            let _ = tx
-                .send(TimelineActorMessage::RestoreTimelineAnchorContinue { serial })
-                .await;
-        });
-    }
 
     async fn handle_send_text(
         &mut self,
@@ -8798,45 +8653,25 @@ mod tests {
         );
     }
 
-    // --- Deterministic settle + invalid-request no-flush (codex review P1/P2/P3) ---
+    // --- Deterministic anchor-present terminal + invalid-request no-flush ---
 
-    /// Proves the sequence-gated settle path: diff_batch_seq advances on every
-    /// diff-batch, settle_baseline_seq is captured when settling begins, and the
-    /// settle tick checks `diff_batch_seq > settle_baseline_seq` before concluding
-    /// EndReached or BudgetExhausted.  This makes the settle deterministic — the
-    /// walk does not conclude before the final async DiffBatch lands.
+    /// Proves the authoritative anchor-present terminal: the SDK's
+    /// `anchor_present` signal determines whether to wait-for-relay (Found
+    /// guaranteed) or conclude EndReached immediately (anchor genuinely absent).
+    /// This makes the restore terminal deterministic — no timing heuristic.
     ///
-    /// NOTE: a behavioral unit test (drive >6 fake chunks + assert exactly one
-    /// ItemsUpdated + correct status) would require constructing a real `TimelineActor`
+    /// NOTE: a behavioral unit test requires constructing a real `TimelineActor`
     /// with an active Matrix SDK session, which this test module does not support
-    /// without a large new mock harness.  The `cache_restore` headless harness
+    /// without a large new mock harness. The `cache_restore` headless harness
     /// (scenario=cache_restore, 3 rooms × deep stress) is the behavioral gate for
-    /// correctness of the settle path; these assertions guard the structural contracts.
+    /// correctness of the anchor-present path; these assertions guard the
+    /// structural contracts.
     #[test]
-    fn restore_settle_is_sequence_gated_not_timing_dependent() {
+    fn restore_terminal_is_anchor_present_not_timing_dependent() {
         let source = include_str!("timeline.rs");
         let production = source.split("\nmod tests").next().unwrap_or(source);
 
-        // 1. diff_batch_seq field must exist on TimelineActor.
-        assert!(
-            production.contains("diff_batch_seq: u64"),
-            "TimelineActor must carry diff_batch_seq to count processed DiffBatches"
-        );
-        // 2. It must be incremented inside handle_diff_batch.
-        let diff_batch_src = production
-            .split("async fn handle_diff_batch(")
-            .nth(1)
-            .expect("handle_diff_batch must exist")
-            .split("async fn handle_ignored_users_updated")
-            .next()
-            .expect("handle_diff_batch must end before handle_ignored_users_updated");
-        assert!(
-            diff_batch_src.contains("diff_batch_seq"),
-            "handle_diff_batch must advance diff_batch_seq on every non-empty batch"
-        );
-        // 3. settle_last_seen_seq must exist on RestoreTimelineAnchorState
-        //    (stabilization field: settle concludes when diff_batch_seq equals
-        //    settle_last_seen_seq, meaning no new DiffBatch arrived since last tick).
+        // 1. anchor_relay_wait must exist on RestoreTimelineAnchorState.
         let struct_src = production
             .split("struct RestoreTimelineAnchorState {")
             .nth(1)
@@ -8845,15 +8680,10 @@ mod tests {
             .next()
             .expect("struct body must end");
         assert!(
-            struct_src.contains("settle_last_seen_seq"),
-            "RestoreTimelineAnchorState must carry settle_last_seen_seq for stabilization settle"
+            struct_src.contains("anchor_relay_wait"),
+            "RestoreTimelineAnchorState must carry anchor_relay_wait for the relay-wait backstop"
         );
-        assert!(
-            struct_src.contains("settle_terminal"),
-            "RestoreTimelineAnchorState must carry settle_terminal to record EndReached vs BudgetExhausted"
-        );
-        // 4. The settle tick must use diff-stream stabilization: conclude only when
-        //    diff_batch_seq is unchanged since the previous tick (stream quiet).
+        // 2. The continuation handler must enter the relay-wait path when anchor_present.
         let continue_src = production
             .split("async fn handle_restore_timeline_anchor_continue(")
             .nth(1)
@@ -8862,15 +8692,36 @@ mod tests {
             .next()
             .expect("continuation must end before maybe_continue");
         assert!(
-            continue_src.contains("settle_last_seen_seq"),
-            "settle tick must use settle_last_seen_seq stabilization (not fixed-count fence)"
+            continue_src.contains("anchor_relay_wait"),
+            "continuation handler must manage anchor_relay_wait for the relay-wait loop"
         );
-        // 5. EndReached entry must snapshot settle_last_seen_seq.
         assert!(
-            continue_src.contains("restore.settle_last_seen_seq = self.diff_batch_seq"),
-            "EndReached/BudgetExhausted settle entry must snapshot settle_last_seen_seq"
+            continue_src.contains("outcome.anchor_present"),
+            "continuation handler must branch on outcome.anchor_present (SDK authoritative signal)"
         );
-        // 6. P3: invalid-request path must NOT call finish_anchor_restore.
+        // 3. When reached_start (anchor absent), the handler must conclude EndReached immediately.
+        assert!(
+            continue_src.contains("outcome.reached_start"),
+            "continuation handler must use outcome.reached_start to conclude EndReached immediately"
+        );
+        // 4. The timing heuristics must be gone.
+        assert!(
+            !continue_src.contains("settle_last_seen_seq"),
+            "timing-heuristic settle_last_seen_seq must be removed (replaced by anchor_present)"
+        );
+        assert!(
+            !continue_src.contains("settle_awaiting_first_diff"),
+            "timing-heuristic settle_awaiting_first_diff must be removed"
+        );
+        assert!(
+            !production.contains("RESTORE_ANCHOR_SETTLE_TICK_DELAY_MS"),
+            "50ms tick delay constant must be removed"
+        );
+        assert!(
+            !production.contains("schedule_restore_anchor_settle_tick"),
+            "schedule_restore_anchor_settle_tick function must be removed"
+        );
+        // 5. P3: invalid-request path must NOT call finish_anchor_restore.
         let restore_handler_src = production
             .split("async fn handle_restore_timeline_anchor(")
             .nth(1)
@@ -8878,38 +8729,9 @@ mod tests {
             .split("async fn handle_restore_timeline_anchor_continue")
             .next()
             .expect("restore handler must end before continuation");
-        // The exempt emit_anchor_restore_finished call must appear before the
-        // event_id check (i.e., in the invalid-request block), confirmed by its
-        // presence alongside the "Invalid request" comment pattern.
         assert!(
             restore_handler_src.contains("emit_anchor_restore_finished"),
             "invalid-request path must call emit_anchor_restore_finished (not finish_anchor_restore)"
-        );
-        assert!(
-            !restore_handler_src.contains("finish_anchor_restore(\n            request_id,\n            TimelineAnchorRestoreStatus::BudgetExhausted,\n        );\n        return;\n        }\n        if self.timeline_contains_event_id"),
-            "invalid-request path must not flush a different restore's buffer"
-        );
-
-        // 7. SettleTerminal enum must exist.
-        assert!(
-            production.contains("enum SettleTerminal"),
-            "SettleTerminal enum must exist to track which terminal status to use after settle"
-        );
-        assert!(
-            production.contains("SettleTerminal::EndReached"),
-            "SettleTerminal must have an EndReached variant"
-        );
-        assert!(
-            production.contains("SettleTerminal::BudgetExhausted"),
-            "SettleTerminal must have a BudgetExhausted variant"
-        );
-        assert!(
-            production.contains("SettleTerminal::Failed"),
-            "SettleTerminal must have a Failed variant for deferred failed-terminal settle"
-        );
-        assert!(
-            production.contains("SettleTerminal::ContinueBulk"),
-            "SettleTerminal must have a ContinueBulk variant for u16-cap bulk re-entry"
         );
     }
 
