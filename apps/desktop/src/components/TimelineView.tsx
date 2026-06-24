@@ -1374,6 +1374,11 @@ export const TimelineView = memo(function TimelineView({
   const restoredRoomScrollAnchorSignatureRef = useRef<string | null>(null);
   const requestedRoomScrollAnchorRestoreSignatureRef = useRef<string | null>(null);
   const exhaustedRoomScrollAnchorRestoreSignatureRef = useRef<string | null>(null);
+  /**
+   * Tracks which room-anchor signature already received its post-settle
+   * re-correction, so the re-correction runs at most once per restore.
+   */
+  const postSettleRestoredSignatureRef = useRef<string | null>(null);
   /** Tracks whether the current key already got its first live-edge scroll. */
   const initialLiveEdgeScrollAppliedRef = useRef<string | null>(null);
   /** Keeps the live edge pinned when measured virtual heights change. */
@@ -2159,6 +2164,89 @@ export const TimelineView = memo(function TimelineView({
         }
         if (!roomAnchorRestored && !roomAnchorAlreadyRestored) {
           roomScrollAnchorRestorePendingRef.current = false;
+        }
+
+        // Post-settle re-correction: fonts/media/virtualized-row heights settle
+        // AFTER the initial restoreRoomScrollAnchor call, causing the anchor to
+        // drift a few px.  Schedule EXACTLY ONE follow-up correction after layout
+        // has stabilised: chain one rAF (lets the browser recalc) then
+        // document.fonts.ready (ensures text reflow is complete), then wait for
+        // any media element inside the anchor row to load (with a 250ms timeout
+        // fallback so we never hang on a missing resource).  Guard with
+        // postSettleRestoredSignatureRef so this fires at most once per restore,
+        // and keep capture suppressed so the in-flight adjustment is not saved as
+        // a new anchor.  Skip if the user has already scrolled (handled by the
+        // existing capture-suppression check on the onscroll path).
+        if (
+          roomAnchorRestored &&
+          container !== null &&
+          activeRoomAnchorSignature !== null &&
+          postSettleRestoredSignatureRef.current !== activeRoomAnchorSignature
+        ) {
+          // Mark immediately so a second layout-effect run (e.g. a concurrent
+          // items update) does not schedule a duplicate re-correction.
+          postSettleRestoredSignatureRef.current = activeRoomAnchorSignature;
+          // Snapshot the anchor + signature for the async callback.
+          const anchorSnapshot = activeRoomAnchor;
+          const signatureSnapshot = activeRoomAnchorSignature;
+          const containerSnapshot = container;
+          // Record scrollTop immediately after the initial restore so the
+          // delayed callback can detect a user scroll during the wait.
+          const scrollTopAfterRestore = container.scrollTop;
+
+          const applyPostSettleCorrection = () => {
+            // Abort if another restore started since we were scheduled.
+            if (postSettleRestoredSignatureRef.current !== signatureSnapshot) {
+              return;
+            }
+            // Abort if the user scrolled during the rAF/fonts/media wait.
+            // A real user scroll changes scrollTop beyond the programmatic
+            // restore; the suppression guard covers programmatic adjustments.
+            if (containerSnapshot.scrollTop !== scrollTopAfterRestore) {
+              roomScrollAnchorRestorePendingRef.current = false;
+              return;
+            }
+            const anchorNode = containerSnapshot.querySelector<HTMLElement>(
+              `[data-event-id="${cssEscape(anchorSnapshot.event_id)}"]`
+            );
+            if (!anchorNode) {
+              roomScrollAnchorRestorePendingRef.current = false;
+              return;
+            }
+            suppressScrollAnchorCaptureRef.current = true;
+            const containerTop = containerSnapshot.getBoundingClientRect().top;
+            const currentOffset = anchorNode.getBoundingClientRect().top - containerTop;
+            containerSnapshot.scrollTop += currentOffset - anchorSnapshot.offset_px;
+            requestAnimationFrame(() => {
+              suppressScrollAnchorCaptureRef.current = false;
+              roomScrollAnchorRestorePendingRef.current = false;
+              updateViewportMetrics();
+              reportViewportObservation();
+            });
+          };
+
+          // Chain: one rAF → fonts.ready → media load / 250ms timeout.
+          requestAnimationFrame(() => {
+            // document.fonts is undefined in jsdom (vitest); fall back to an
+            // already-resolved promise so the correction still fires in tests.
+            const fontsReady: Promise<unknown> = document.fonts?.ready ?? Promise.resolve();
+            const anchorNode = containerSnapshot.querySelector<HTMLElement>(
+              `[data-event-id="${cssEscape(anchorSnapshot.event_id)}"]`
+            );
+            const mediaEl =
+              anchorNode?.querySelector<HTMLImageElement>("img") ?? null;
+            const mediaReady: Promise<unknown> =
+              mediaEl !== null && !mediaEl.complete
+                ? Promise.race([
+                    new Promise<void>((resolve) => {
+                      mediaEl.addEventListener("load", () => resolve(), { once: true });
+                      mediaEl.addEventListener("error", () => resolve(), { once: true });
+                    }),
+                    new Promise<void>((resolve) => setTimeout(resolve, 250))
+                  ])
+                : Promise.resolve();
+            void Promise.all([fontsReady, mediaReady]).then(applyPostSettleCorrection);
+          });
         }
       } else if (
         transport.restoreTimelineAnchor &&

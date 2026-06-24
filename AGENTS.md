@@ -69,6 +69,34 @@ All agents implementing timeline navigation aids for issue #41 follow
 for Phase A Rust/headless work before any Phase B GUI pills, date picker, or
 scroll wiring.
 
+## Verification Discipline (verify-first, no human eyes)
+
+Correctness is guaranteed by reproducible headless verification, never by manual
+or visual GUI inspection. Build the verification (体制) BEFORE the fix and let the
+same check turn green as the proof of the fix: 体制 → 修正, strictly, never the
+reverse.
+
+- For any bug / regression / perf / behavior change, FIRST add or extend a
+  headless check that REPRODUCES the problem (RED): a `headless-core-qa`
+  scenario against local Conduit/Tuwunel, a Rust/TypeScript unit test, or a
+  Playwright spec — asserting on `CoreEvent` / `AppStateSnapshot` / tokens / DOM,
+  never on logs or fixed sleeps. The fix is "done" only when that same check
+  turns GREEN.
+- Measure performance claims; never eyeball them. Gate on a number — e.g. the
+  `cache_restore` scenario asserts a deep-history anchor is restored from cache
+  in ≤ N backward-paginate cycles while the network is blocked.
+- To prove cache-served / offline behavior, block the network in-harness (the
+  `headless-core-qa` `QaTcpProxy.disable()` pattern) and assert success with no
+  `network` origin (the #123 `EventsOrigin` observer).
+- Source-text assertions (`source.contains("…")`) are structure guards, not
+  behavioral proof. Prefer a test that drives the behavior and asserts on
+  emitted events/state.
+- Cooperate with the external auditor (codex) for independent root-cause
+  verification and diff review (see the recipe below). A subagent's "gates
+  passed" claim is not evidence — re-run the gate yourself.
+- Native / manual GUI inspection is the last and weakest layer: a confirmation
+  only, never the primary correctness gate.
+
 ## Codex Diff Review Recipe
 
 The preferred external auditor is OpenAI `codex` (the `codex` CLI). For
@@ -995,8 +1023,9 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   step is slow on a cold target dir — use
   `node ../../scripts/desktop-release-gate-check.mjs --no-compile` for the
   quick structural pass).
-- There is no hosted CI in this repo yet; these gates run locally and in
-  `release:preflight`. Wire them into CI when CI infrastructure appears.
+- Hosted CI runs via `.github/workflows/ci.yml` on every pull request; these
+  same gates also run locally and in `release:preflight`. Keep the local gates
+  green before pushing so CI confirms rather than discovers.
 
 ## Key Backup Restore Scope QA
 
@@ -1028,7 +1057,7 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   `complementary` landmark named "Context panel" is not found/visible at the
   default `/` harness state. It fails identically on a clean checkout of the
   pre-#77-83 base commit, so it is not introduced by the #77-83 dogfood work.
-  There is no hosted CI, so this a11y spec had been silently red. Track a
+  This a11y spec had been silently red (it predates CI gating). Track a
   separate fix for the default right-panel landmark; do not treat it as a
   #77-83 regression.
 - `e2e/basic-operations.spec.ts:2811` ("pin and unpin actions render the Tauri

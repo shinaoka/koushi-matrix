@@ -91,6 +91,12 @@ fn normalize_receipts(
 ) -> LiveEventReceiptSummary {
     let mut by_user = BTreeMap::new();
     for receipt in receipts {
+        // Exclude the current user's own receipts before building the readers
+        // list — own reads (including reads on other devices) must not appear
+        // in the displayed readers or affect the counts.
+        if own_user_id.is_some_and(|own| own == receipt.user_id) {
+            continue;
+        }
         let receipt = enrich_receipt(receipt, profiles, own_user_id);
         by_user
             .entry(receipt.user_id.clone())

@@ -52,8 +52,9 @@ use koushi_core::command::{
 use koushi_core::event::{
     AccountEvent, ActivityEvent, CoreEvent, E2eeTrustEvent, LinkPreviewState, LiveSignalsEvent,
     LocalEncryptionEvent, PaginationDirection, PaginationState, RoomEvent, SearchEvent,
-    SyncBackendKind, SyncEvent, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
-    TimelineMessageActions, TimelineSendState, TimelineUnreadPosition, TimelineViewportObservation,
+    SyncBackendKind, SyncEvent, TimelineAnchorRestoreStatus, TimelineDiff, TimelineEvent,
+    TimelineItem, TimelineItemId, TimelineMessageActions, TimelineSendState,
+    TimelineUnreadPosition, TimelineViewportObservation,
 };
 use koushi_core::failure::{CoreFailure, RoomFailureKind};
 use koushi_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
@@ -122,6 +123,33 @@ const ENV_STRESS_ROOMS_PER_SPACE: &str = "KOUSHI_QA_STRESS_ROOMS_PER_SPACE";
 const ENV_STRESS_MESSAGES_PER_ROOM: &str = "KOUSHI_QA_STRESS_MESSAGES_PER_ROOM";
 const ENV_STRESS_REPLAY_EXISTING: &str = "KOUSHI_QA_STRESS_REPLAY_EXISTING";
 const QA_WRONG_RECOVERY_SECRET: &str = "koushi-desktop-headless-qa-wrong-recovery-secret";
+const ENV_CACHE_RESTORE_ROOMS: &str = "KOUSHI_QA_CACHE_RESTORE_ROOMS";
+const ENV_CACHE_RESTORE_DEPTH: &str = "KOUSHI_QA_CACHE_RESTORE_DEPTH";
+const DEFAULT_CACHE_RESTORE_ROOMS: usize = 3;
+const DEFAULT_CACHE_RESTORE_DEPTH: usize = 200;
+/// Batch size used for backward pagination during the populate (EndReached) pass.
+const CACHE_RESTORE_PAGINATE_BATCH: u16 = 20;
+/// Production-faithful restore parameters, matching the app's live-room constants.
+/// Source: apps/desktop/src/components/TimelineView.tsx:406-407
+/// (LIVE_ROOM_ANCHOR_RESTORE_MAX_BATCHES=6, EVENT_COUNT=100).
+/// With depth=200 and each SDK paginate_backwards returning ~one stored chunk,
+/// 6 batches reaches only ~6 chunks (~tens of events) → BudgetExhausted on main.
+const CACHE_RESTORE_PROD_MAX_BATCHES: u16 = 6;
+const CACHE_RESTORE_PROD_EVENT_COUNT: u16 = 100;
+/// Stage 2 speed gate: maximum backward-paginate cycles allowed per room during
+/// an offline anchor restore.  With a bulk cache load (Stage 2), the runtime
+/// should reach the anchor in ≤ 3 cycles.  On current main (~12 cycles/room)
+/// this gate is RED — that is the intended signal before Stage 2 lands.
+const CACHE_RESTORE_MAX_CYCLES: u16 = 3;
+/// Number of messages in the shallow-anchor room.  Enough to exceed the SDK's
+/// initial visible window (~20 items) so that m0 (oldest) is hidden behind a
+/// lazy-reveal skip when the session restarts.  All events fit in a single
+/// stored chunk (well under 128), so chunks_loaded == 0 during the restore.
+/// The anchor (m0) lives in the live in-memory prefix that
+/// live_lazy_paginate_backwards reveals (lazy_reveal_batches == 1).
+/// The P1 lazy-reveal-fence fix gates on this: without it the settle fence
+/// misses the lazy-reveal DiffBatch and may conclude before items settle.
+const CACHE_RESTORE_SHALLOW_DEPTH: usize = 30;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QaScenario {
@@ -149,6 +177,7 @@ enum QaScenario {
     SendQueue,
     RestoreCleanup,
     LinkPreview,
+    CacheRestore,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -176,6 +205,7 @@ enum QaStage {
     SendQueue,
     RestoreCleanup,
     LinkPreview,
+    CacheRestore,
 }
 
 fn main() -> ExitCode {
@@ -290,8 +320,9 @@ impl QaScenario {
             "send_queue" => Ok(Self::SendQueue),
             "restore_cleanup" => Ok(Self::RestoreCleanup),
             "link_preview" => Ok(Self::LinkPreview),
+            "cache_restore" => Ok(Self::CacheRestore),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, native_attention, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, search_crawler, scheduled_send, restore_cleanup, link_preview; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, native_attention, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, search_crawler, scheduled_send, restore_cleanup, link_preview, cache_restore; got {other}"
             )),
         }
     }
@@ -444,6 +475,7 @@ impl QaScenario {
                     | QaStage::Composer
                     | QaStage::LinkPreview
             ),
+            Self::CacheRestore => matches!(stage, QaStage::Safety | QaStage::CacheRestore),
         }
     }
 
@@ -560,6 +592,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "link_preview_e2ee_default=ok",
             "link_preview_hide=ok",
         ],
+        QaStage::CacheRestore => &["cache_restore=ok"],
     }
 }
 
@@ -772,6 +805,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::Composer,
             QaStage::LinkPreview,
         ],
+        QaScenario::CacheRestore => vec![QaStage::Safety, QaStage::CacheRestore],
         QaScenario::All => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -839,6 +873,12 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
             tokens.push("restore_cleanup=ok");
             tokens.dedup();
             tokens
+        }
+        QaScenario::CacheRestore => {
+            stages_for_scenario(scenario)
+                .into_iter()
+                .flat_map(|stage| tokens_for_stage(stage).iter().copied())
+                .collect()
         }
         QaScenario::All => implemented_final_tokens(),
     }
@@ -2401,6 +2441,745 @@ fn scheduled_item_absent(snapshot: &AppState, scheduled_id: &str) -> bool {
         .all(|item| item.scheduled_id != scheduled_id)
 }
 
+// ---------------------------------------------------------------------------
+// Cache-restore verification harness (#123, Phase C)
+// ---------------------------------------------------------------------------
+
+/// Reads KOUSHI_QA_CACHE_RESTORE_ROOMS / _DEPTH, clamps at defaults.
+fn cache_restore_params() -> (usize, usize) {
+    let rooms = std::env::var(ENV_CACHE_RESTORE_ROOMS)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_CACHE_RESTORE_ROOMS)
+        .max(1);
+    let depth = std::env::var(ENV_CACHE_RESTORE_DEPTH)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_CACHE_RESTORE_DEPTH)
+        .max(10);
+    (rooms, depth)
+}
+
+/// Apply a single `TimelineDiff` in-place to a `Vec<TimelineItem>`.
+fn apply_timeline_diff(items: &mut Vec<TimelineItem>, diff: &TimelineDiff) {
+    match diff {
+        TimelineDiff::PushFront { item } => items.insert(0, item.clone()),
+        TimelineDiff::PushBack { item } => items.push(item.clone()),
+        TimelineDiff::Insert { index, item } => {
+            let idx = (*index).min(items.len());
+            items.insert(idx, item.clone());
+        }
+        TimelineDiff::Set { index, item } => {
+            if *index < items.len() {
+                items[*index] = item.clone();
+            }
+        }
+        TimelineDiff::Remove { index } => {
+            if *index < items.len() {
+                items.remove(*index);
+            }
+        }
+        TimelineDiff::Truncate { length } => items.truncate(*length),
+        TimelineDiff::Clear => items.clear(),
+        TimelineDiff::Reset { items: new_items } => *items = new_items.clone(),
+    }
+}
+
+async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
+    let (num_rooms, depth) = cache_restore_params();
+    let proxy = QaTcpProxy::start(&config.homeserver)?;
+    let data_dir = qa_data_dir("cache_restore");
+
+    // -----------------------------------------------------------------------
+    // Connect 1: login, send fixture history, paginate to EndReached, record
+    // deep anchors deterministically (m0 = first sent = oldest), then shut down.
+    // -----------------------------------------------------------------------
+    let runtime = CoreRuntime::start_with_data_dir(data_dir.clone());
+    let mut conn = runtime.attach();
+
+    let login_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(AccountCommand::LoginPassword {
+        request_id: login_id,
+        request: koushi_state::LoginRequest {
+            homeserver: proxy.homeserver_url(),
+            username: config.user_a.clone(),
+            password: AuthSecret::new(config.password_a.clone()),
+            device_display_name: Some("Koushi Core QA Cache Restore".to_owned()),
+        },
+    }))
+    .await
+    .map_err(|e| format!("cache_restore: submit login failed: {e}"))?;
+
+    let account_key = wait_for_logged_in(&mut conn, login_id, "cache_restore login").await?;
+    wait_for_ready_snapshot(&mut conn, "cache_restore Ready").await?;
+    let sync_start_id = conn.next_request_id();
+    conn.command(CoreCommand::Sync(SyncCommand::Start {
+        request_id: sync_start_id,
+    }))
+    .await
+    .map_err(|e| format!("cache_restore: submit Sync start failed: {e}"))?;
+    let sync_backend_a =
+        wait_for_sync_started_and_running(&mut conn, sync_start_id, "cache_restore sync start")
+            .await?;
+    println!("sync_backend_a={sync_backend_a:?}");
+    assert_expected_backend(
+        config.expect_sync_backend.as_deref(),
+        sync_backend_a,
+        "cache_restore sync start",
+    )?;
+
+    // Create rooms, send DEPTH messages, paginate to EndReached. Track items
+    // across the paginate to find the deterministic deep anchor (m0 = oldest).
+    let mut room_ids: Vec<String> = Vec::with_capacity(num_rooms);
+    let mut deep_anchors: Vec<String> = Vec::with_capacity(num_rooms);
+    for room_idx in 0..num_rooms {
+        let anchor_body = format!("cache_restore fixture r{room_idx} m0");
+        let room_id = create_room_for_qa(
+            &mut conn,
+            &format!("QA Cache Restore Room {room_idx}"),
+            false,
+            "cache_restore create room",
+        )
+        .await?;
+        sync_once_for_qa(&mut conn, "cache_restore sync after room create").await?;
+        wait_for_room_in_room_list(&mut conn, &room_id, "cache_restore room in list").await?;
+
+        let key = TimelineKey::room(account_key.clone(), room_id.clone());
+        let sub_id = conn.next_request_id();
+        conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+            request_id: sub_id,
+            key: key.clone(),
+        }))
+        .await
+        .map_err(|e| format!("cache_restore: submit subscribe failed: {e}"))?;
+        let initial_items =
+            wait_for_initial_items(&mut conn, &key, sub_id, "cache_restore subscribe").await?;
+        // Track all items across the paginate so we can find m0 at the end.
+        let mut all_items = initial_items;
+
+        // Send DEPTH messages sequentially so they land in the event cache.
+        for msg_idx in 0..depth {
+            let txn = format!("qa-cr-{room_idx}-{msg_idx}");
+            let send_id = conn.next_request_id();
+            conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+                request_id: send_id,
+                key: key.clone(),
+                transaction_id: txn.clone(),
+                body: format!("cache_restore fixture r{room_idx} m{msg_idx}"),
+                mentions: MentionIntent::default(),
+            }))
+            .await
+            .map_err(|e| format!("cache_restore: submit send failed: {e}"))?;
+            wait_for_send_flow_completion(
+                &mut conn,
+                send_id,
+                &key,
+                &txn,
+                &format!("cache_restore fixture r{room_idx} m{msg_idx}"),
+                "cache_restore send",
+            )
+            .await?;
+        }
+
+        // Paginate backward to EndReached, accumulating diffs so all_items
+        // reflects the full history and we can find m0 deterministically.
+        let pag_id = conn.next_request_id();
+        conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
+            request_id: pag_id,
+            key: key.clone(),
+            direction: PaginationDirection::Backward,
+            event_count: CACHE_RESTORE_PAGINATE_BATCH,
+        }))
+        .await
+        .map_err(|e| format!("cache_restore: submit paginate failed: {e}"))?;
+        let _ = pag_id;
+        let mut saw_paginating = false;
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(120), conn.recv_event())
+                .await
+                .map_err(|_| {
+                    "cache_restore populate: timed out waiting for paginate event".to_owned()
+                })?
+                .map_err(|lag| {
+                    format!(
+                        "cache_restore populate: event stream lagged (skipped={})",
+                        lag.skipped
+                    )
+                })?;
+            match event {
+                CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                    key: ref ev_key,
+                    direction,
+                    ref state,
+                    ..
+                }) if ev_key == &key && direction == PaginationDirection::Backward => {
+                    match state {
+                        PaginationState::Paginating => {
+                            saw_paginating = true;
+                        }
+                        PaginationState::Idle => {
+                            if !saw_paginating {
+                                return Err(
+                                    "cache_restore populate: Idle without Paginating".to_owned(),
+                                );
+                            }
+                            saw_paginating = false;
+                            let repag_id = conn.next_request_id();
+                            conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
+                                request_id: repag_id,
+                                key: key.clone(),
+                                direction: PaginationDirection::Backward,
+                                event_count: CACHE_RESTORE_PAGINATE_BATCH,
+                            }))
+                            .await
+                            .map_err(|e| format!("cache_restore: re-paginate failed: {e}"))?;
+                        }
+                        PaginationState::EndReached => {
+                            break;
+                        }
+                        PaginationState::Failed { .. } => {
+                            return Err(
+                                "cache_restore populate: paginate failed".to_owned(),
+                            );
+                        }
+                    }
+                }
+                CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                    key: ref ev_key,
+                    ref diffs,
+                    ..
+                }) if ev_key == &key => {
+                    for diff in diffs {
+                        apply_timeline_diff(&mut all_items, diff);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Find the deterministic deep anchor: m0 is the first-sent (oldest) message.
+        let anchor_item = find_timeline_item_with_body(&all_items, &anchor_body)
+            .ok_or_else(|| {
+                format!(
+                    "cache_restore: m0 anchor not found after full paginate \
+                     (room_idx={room_idx}, items={})",
+                    all_items.len()
+                )
+            })?;
+        let anchor_event_id = match &anchor_item.id {
+            TimelineItemId::Event { event_id } => event_id.clone(),
+            other => {
+                return Err(format!(
+                    "cache_restore: m0 anchor item has non-Event id: {other:?}"
+                ))
+            }
+        };
+
+        let unsub_id = conn.next_request_id();
+        conn.command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
+            request_id: unsub_id,
+            key,
+        }))
+        .await
+        .map_err(|e| format!("cache_restore: submit unsubscribe failed: {e}"))?;
+
+        room_ids.push(room_id);
+        deep_anchors.push(anchor_event_id);
+    }
+
+    // -----------------------------------------------------------------------
+    // Shallow-anchor room: CACHE_RESTORE_SHALLOW_DEPTH messages, sized so
+    // that m0 (oldest) lies beyond the SDK's initial visible window (~20
+    // items).  All events fit in one stored chunk (chunks_loaded == 0).
+    //
+    // After restart, live_restore_from_cache reveals m0 via
+    // live_lazy_paginate_backwards (lazy_reveal_batches == 1, chunks_loaded == 0).
+    // The P1 lazy-reveal-fence fix (147c9ed) gates on this path: it adds
+    // lazy_reveal_batches to the settle fence so the DiffBatch settles before
+    // the restore concludes with Found.  Without the fix the fence may miss
+    // that batch and finish early.
+    //
+    // Bug #1 fix: capture the anchor event_id directly from the SendFlowOutcome
+    // of the first send (m0).  The send-phase ItemsUpdated diffs are consumed
+    // by wait_for_send_flow_completion and are not returned, so tracking
+    // shallow_items through the send loop would never include m0.
+    // -----------------------------------------------------------------------
+    let shallow_room_id = create_room_for_qa(
+        &mut conn,
+        "QA Cache Restore Shallow",
+        false,
+        "cache_restore shallow create",
+    )
+    .await?;
+    sync_once_for_qa(&mut conn, "cache_restore sync after shallow room create").await?;
+    wait_for_room_in_room_list(
+        &mut conn,
+        &shallow_room_id,
+        "cache_restore shallow room in list",
+    )
+    .await?;
+
+    let shallow_key = TimelineKey::room(account_key.clone(), shallow_room_id.clone());
+    let shallow_sub_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+        request_id: shallow_sub_id,
+        key: shallow_key.clone(),
+    }))
+    .await
+    .map_err(|e| format!("cache_restore shallow: subscribe failed: {e}"))?;
+    let _ = wait_for_initial_items(
+        &mut conn,
+        &shallow_key,
+        shallow_sub_id,
+        "cache_restore shallow subscribe",
+    )
+    .await?;
+
+    // Send CACHE_RESTORE_SHALLOW_DEPTH messages and capture m0's event_id
+    // directly from the first SendFlowOutcome — no item tracking needed.
+    let mut shallow_anchor_id: Option<String> = None;
+    for msg_idx in 0..CACHE_RESTORE_SHALLOW_DEPTH {
+        let txn = format!("qa-cr-shallow-{msg_idx}");
+        let send_id = conn.next_request_id();
+        conn.command(CoreCommand::Timeline(TimelineCommand::SendText {
+            request_id: send_id,
+            key: shallow_key.clone(),
+            transaction_id: txn.clone(),
+            body: format!("cache_restore shallow m{msg_idx}"),
+            mentions: MentionIntent::default(),
+        }))
+        .await
+        .map_err(|e| format!("cache_restore shallow: send failed: {e}"))?;
+        let outcome = wait_for_send_flow_completion(
+            &mut conn,
+            send_id,
+            &shallow_key,
+            &txn,
+            &format!("cache_restore shallow m{msg_idx}"),
+            "cache_restore shallow send",
+        )
+        .await?;
+        // m0 is the first-sent (oldest) message; record its event_id as the anchor.
+        if msg_idx == 0 {
+            shallow_anchor_id = Some(outcome.event_id.clone());
+        }
+    }
+    let shallow_anchor_id = shallow_anchor_id
+        .ok_or_else(|| "cache_restore shallow: no messages sent".to_owned())?;
+
+    // Paginate backward to EndReached to warm the event cache so that
+    // live_restore_from_cache can serve the anchor from the stored chunk on
+    // restart (without a network call).
+    let shallow_pag_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
+        request_id: shallow_pag_id,
+        key: shallow_key.clone(),
+        direction: PaginationDirection::Backward,
+        event_count: CACHE_RESTORE_PAGINATE_BATCH,
+    }))
+    .await
+    .map_err(|e| format!("cache_restore shallow: paginate failed: {e}"))?;
+    let _ = shallow_pag_id;
+    let mut shallow_saw_paginating = false;
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(60), conn.recv_event())
+            .await
+            .map_err(|_| {
+                "cache_restore shallow: timed out waiting for paginate event".to_owned()
+            })?
+            .map_err(|lag| {
+                format!(
+                    "cache_restore shallow: event stream lagged (skipped={})",
+                    lag.skipped
+                )
+            })?;
+        match event {
+            CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                key: ref ev_key,
+                direction,
+                ref state,
+                ..
+            }) if ev_key == &shallow_key && direction == PaginationDirection::Backward => {
+                match state {
+                    PaginationState::Paginating => {
+                        shallow_saw_paginating = true;
+                    }
+                    PaginationState::Idle => {
+                        if !shallow_saw_paginating {
+                            return Err(
+                                "cache_restore shallow: Idle without Paginating".to_owned(),
+                            );
+                        }
+                        shallow_saw_paginating = false;
+                        let repag_id = conn.next_request_id();
+                        conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
+                            request_id: repag_id,
+                            key: shallow_key.clone(),
+                            direction: PaginationDirection::Backward,
+                            event_count: CACHE_RESTORE_PAGINATE_BATCH,
+                        }))
+                        .await
+                        .map_err(|e| format!("cache_restore shallow: re-paginate failed: {e}"))?;
+                    }
+                    PaginationState::EndReached => {
+                        break;
+                    }
+                    PaginationState::Failed { .. } => {
+                        return Err("cache_restore shallow: paginate failed".to_owned());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let shallow_unsub_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
+        request_id: shallow_unsub_id,
+        key: shallow_key,
+    }))
+    .await
+    .map_err(|e| format!("cache_restore shallow: unsubscribe failed: {e}"))?;
+
+    println!("cache_restore_loaded=ok");
+
+    // Clean shutdown of Connect 1.
+    stop_sync_for_qa(&mut conn, "cache_restore stop sync before restart").await?;
+    drop(conn);
+    drop(runtime);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // -----------------------------------------------------------------------
+    // Connect 2: restart over the same data dir, BLOCK the network, then drive
+    // RestoreTimelineAnchor per room using production-faithful params.
+    // PRIMARY GATE: status == Found, OR (EndReached AND anchor present in items).
+    // Cycle count + ms are diagnostics only.
+    // -----------------------------------------------------------------------
+    let runtime2 = CoreRuntime::start_with_data_dir(data_dir);
+    let mut conn2 = runtime2.attach();
+
+    let restore_id = conn2.next_request_id();
+    conn2
+        .command(CoreCommand::Account(AccountCommand::RestoreSession {
+            request_id: restore_id,
+            account_key: account_key.clone(),
+        }))
+        .await
+        .map_err(|e| format!("cache_restore: submit restore failed: {e}"))?;
+    wait_for_session_restored(&mut conn2, restore_id, &account_key, "cache_restore restore")
+        .await?;
+    wait_for_ready_snapshot(&mut conn2, "cache_restore restored Ready").await?;
+
+    // Block the network NOW: any /messages network call from here on will fail.
+    proxy.disable();
+
+    let aggregate_start = std::time::Instant::now();
+    let mut all_succeeded = true;
+    let mut total_cycles: u32 = 0;
+    // Per-room cycle counts for the Stage 2 speed gate.
+    let mut room_cycle_counts: Vec<u16> = Vec::new();
+
+    for (room_idx, (room_id, anchor)) in room_ids.iter().zip(deep_anchors.iter()).enumerate() {
+        let key = TimelineKey::room(account_key.clone(), room_id.clone());
+        let sub_id = conn2.next_request_id();
+        conn2
+            .command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+                request_id: sub_id,
+                key: key.clone(),
+            }))
+            .await
+            .map_err(|e| format!("cache_restore: offline subscribe failed: {e}"))?;
+        let initial_offline =
+            wait_for_initial_items(&mut conn2, &key, sub_id, "cache_restore offline subscribe")
+                .await?;
+        // Track items during restore so we can check anchor presence on EndReached.
+        let mut offline_items = initial_offline;
+
+        let room_start = std::time::Instant::now();
+        let restore_req = conn2.next_request_id();
+        conn2
+            .command(CoreCommand::Timeline(TimelineCommand::RestoreTimelineAnchor {
+                request_id: restore_req,
+                key: key.clone(),
+                event_id: anchor.clone(),
+                // Production-faithful params: source TimelineView.tsx:406-407
+                // (LIVE_ROOM_ANCHOR_RESTORE_MAX_BATCHES=6, EVENT_COUNT=100).
+                // With depth=200, each paginate_backwards returns ~one stored chunk,
+                // so 6 batches reaches only ~tens of events → BudgetExhausted on main.
+                max_batches: CACHE_RESTORE_PROD_MAX_BATCHES,
+                event_count: CACHE_RESTORE_PROD_EVENT_COUNT,
+            }))
+            .await
+            .map_err(|e| {
+                format!("cache_restore: offline RestoreTimelineAnchor submit failed: {e}")
+            })?;
+
+        // Consume events until AnchorRestoreFinished. Count Paginating transitions
+        // as internal backward-paginate cycles (PRIMARY diagnostic; also gated by
+        // CACHE_RESTORE_MAX_CYCLES as Stage 2 speed regression gate).
+        let mut cycle_count: u16 = 0;
+        let status = loop {
+            let event = tokio::time::timeout(Duration::from_secs(120), conn2.recv_event())
+                .await
+                .map_err(|_| {
+                    "cache_restore offline: timed out waiting for AnchorRestoreFinished".to_owned()
+                })?
+                .map_err(|lag| {
+                    format!(
+                        "cache_restore offline: event stream lagged (skipped={})",
+                        lag.skipped
+                    )
+                })?;
+            match event {
+                CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                    key: ref ev_key,
+                    direction,
+                    state: PaginationState::Paginating,
+                    ..
+                }) if ev_key == &key && direction == PaginationDirection::Backward => {
+                    cycle_count += 1;
+                }
+                CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                    key: ref ev_key,
+                    ref diffs,
+                    ..
+                }) if ev_key == &key => {
+                    for diff in diffs {
+                        apply_timeline_diff(&mut offline_items, diff);
+                    }
+                }
+                CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
+                    request_id: ev_req,
+                    key: ref ev_key,
+                    ref status,
+                }) if ev_req == restore_req && ev_key == &key => {
+                    break status.clone();
+                }
+                _ => {}
+            }
+        };
+
+        let room_ms = room_start.elapsed().as_millis();
+        total_cycles += cycle_count as u32;
+        room_cycle_counts.push(cycle_count);
+        let status_label = match &status {
+            TimelineAnchorRestoreStatus::Found => "found",
+            TimelineAnchorRestoreStatus::EndReached => "end_reached",
+            TimelineAnchorRestoreStatus::BudgetExhausted => "budget_exhausted",
+            TimelineAnchorRestoreStatus::Superseded => "superseded",
+            TimelineAnchorRestoreStatus::Failed { .. } => "failed",
+        };
+        // Private-data-free diagnostics: cycles + ms only, no ids or bodies.
+        eprintln!(
+            "cache_restore room={room_idx} cycles={cycle_count} ms={room_ms} status={status_label}"
+        );
+
+        // PRIMARY CORRECTNESS GATE:
+        // Found → anchor reached within budget (GREEN post-fix).
+        // EndReached → paginated to start of room; succeed only if anchor is in items.
+        // BudgetExhausted/Failed/Superseded → deep anchor not restored (RED on main).
+        let room_succeeded = match &status {
+            TimelineAnchorRestoreStatus::Found => true,
+            TimelineAnchorRestoreStatus::EndReached => {
+                let anchor_present =
+                    find_timeline_item_with_body(&offline_items, &format!("cache_restore fixture r{room_idx} m0"))
+                        .is_some();
+                if !anchor_present {
+                    eprintln!(
+                        "cache_restore room={room_idx}: EndReached but anchor absent from items"
+                    );
+                }
+                anchor_present
+            }
+            TimelineAnchorRestoreStatus::BudgetExhausted => {
+                eprintln!(
+                    "cache_restore room={room_idx}: BudgetExhausted — deep anchor not restored \
+                     within production budget (EXPECTED RED on current main)"
+                );
+                false
+            }
+            TimelineAnchorRestoreStatus::Failed { .. } | TimelineAnchorRestoreStatus::Superseded => {
+                eprintln!(
+                    "cache_restore room={room_idx}: restore status={status_label} offline"
+                );
+                false
+            }
+        };
+        if !room_succeeded {
+            all_succeeded = false;
+        }
+
+        let unsub_id = conn2.next_request_id();
+        conn2
+            .command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
+                request_id: unsub_id,
+                key,
+            }))
+            .await
+            .map_err(|e| format!("cache_restore: offline unsubscribe failed: {e}"))?;
+    }
+
+    let aggregate_ms = aggregate_start.elapsed().as_millis();
+    eprintln!("cache_restore total_cycles={total_cycles} total_ms={aggregate_ms}");
+
+    // -----------------------------------------------------------------------
+    // Shallow-anchor gate (P1 lazy-reveal-fence fix):
+    // The anchor is in the live in-memory prefix (< CACHE_RESTORE_SHALLOW_DEPTH
+    // events).  live_lazy_paginate_backwards must reveal it without loading any
+    // on-disk chunk (cycle_count == 0).  On code without the P1 fix this may
+    // reach EndReached or BudgetExhausted prematurely; with the fix it is Found.
+    // -----------------------------------------------------------------------
+    let shallow_key2 = TimelineKey::room(account_key.clone(), shallow_room_id.clone());
+    let shallow_sub2 = conn2.next_request_id();
+    conn2
+        .command(CoreCommand::Timeline(TimelineCommand::Subscribe {
+            request_id: shallow_sub2,
+            key: shallow_key2.clone(),
+        }))
+        .await
+        .map_err(|e| format!("cache_restore shallow: offline subscribe failed: {e}"))?;
+    let _shallow_initial2 = wait_for_initial_items(
+        &mut conn2,
+        &shallow_key2,
+        shallow_sub2,
+        "cache_restore shallow offline subscribe",
+    )
+    .await?;
+
+    let shallow_restore_req = conn2.next_request_id();
+    conn2
+        .command(CoreCommand::Timeline(TimelineCommand::RestoreTimelineAnchor {
+            request_id: shallow_restore_req,
+            key: shallow_key2.clone(),
+            event_id: shallow_anchor_id.clone(),
+            max_batches: CACHE_RESTORE_PROD_MAX_BATCHES,
+            event_count: CACHE_RESTORE_PROD_EVENT_COUNT,
+        }))
+        .await
+        .map_err(|e| {
+            format!("cache_restore shallow: offline RestoreTimelineAnchor submit failed: {e}")
+        })?;
+
+    let mut shallow_cycle_count: u16 = 0;
+    let shallow_status = loop {
+        let event = tokio::time::timeout(Duration::from_secs(60), conn2.recv_event())
+            .await
+            .map_err(|_| {
+                "cache_restore shallow: timed out waiting for AnchorRestoreFinished".to_owned()
+            })?
+            .map_err(|lag| {
+                format!(
+                    "cache_restore shallow: event stream lagged (skipped={})",
+                    lag.skipped
+                )
+            })?;
+        match event {
+            CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                key: ref ev_key,
+                direction,
+                state: PaginationState::Paginating,
+                ..
+            }) if ev_key == &shallow_key2 && direction == PaginationDirection::Backward => {
+                shallow_cycle_count += 1;
+            }
+            CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
+                request_id: ev_req,
+                key: ref ev_key,
+                ref status,
+            }) if ev_req == shallow_restore_req && ev_key == &shallow_key2 => {
+                break status.clone();
+            }
+            _ => {}
+        }
+    };
+
+    let shallow_status_label = match &shallow_status {
+        TimelineAnchorRestoreStatus::Found => "found",
+        TimelineAnchorRestoreStatus::EndReached => "end_reached",
+        TimelineAnchorRestoreStatus::BudgetExhausted => "budget_exhausted",
+        TimelineAnchorRestoreStatus::Superseded => "superseded",
+        TimelineAnchorRestoreStatus::Failed { .. } => "failed",
+    };
+    eprintln!(
+        "cache_restore shallow cycles={shallow_cycle_count} status={shallow_status_label}"
+    );
+
+    // Gate: shallow anchor must reach Found (the lazy-reveal path must settle
+    // before declaring the restore terminal).  cycle_count==0 is the expected
+    // value after the P1 fix (no disk chunk needed); a non-zero count is
+    // unexpected but not a hard gate here — correctness (Found) is the gate.
+    let shallow_succeeded = matches!(&shallow_status, TimelineAnchorRestoreStatus::Found);
+    if !shallow_succeeded {
+        eprintln!(
+            "cache_restore shallow: status={shallow_status_label} — \
+             lazy-reveal-fence (P1) fix not yet applied or not effective \
+             (EXPECTED RED before impl-stage1 P1 fix lands)"
+        );
+    }
+    if shallow_cycle_count > 0 {
+        eprintln!(
+            "cache_restore shallow: cycles={shallow_cycle_count} > 0 — \
+             disk chunks loaded for a shallow anchor; expected 0 after P1 fix"
+        );
+    }
+
+    let shallow_unsub2 = conn2.next_request_id();
+    conn2
+        .command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
+            request_id: shallow_unsub2,
+            key: shallow_key2,
+        }))
+        .await
+        .map_err(|e| format!("cache_restore shallow: offline unsubscribe failed: {e}"))?;
+
+    // SECONDARY GATE (Stage 2 speed regression gate):
+    // Each room must reach the anchor in ≤ CACHE_RESTORE_MAX_CYCLES backward-paginate
+    // cycles.  On current main (~12 cycles/room) this will FAIL — that is the intended
+    // RED before Stage 2 bulk cache load lands.  The PRIMARY correctness gate above
+    // (Found / EndReached+anchor) is checked independently so we can distinguish a
+    // correct-but-slow restore from a genuinely broken one.
+    let slow_rooms: Vec<usize> = room_cycle_counts
+        .iter()
+        .enumerate()
+        .filter(|&(_, c)| *c > CACHE_RESTORE_MAX_CYCLES)
+        .map(|(i, _)| i)
+        .collect();
+
+    cleanup_logged_in_runtime(conn2, runtime2, account_key, "cache_restore cleanup").await?;
+
+    if !all_succeeded {
+        return Err(
+            "cache_restore: deep anchor not restored within the app's production restore budget \
+             (symptom B) — raise budget / bulk cache load to fix (EXPECTED RED on current main)"
+                .to_owned(),
+        );
+    }
+
+    if !slow_rooms.is_empty() {
+        let worst = room_cycle_counts.iter().copied().max().unwrap_or(0);
+        return Err(format!(
+            "cache_restore: deep anchor reached but via {worst} backward-paginate cycles \
+             (> {CACHE_RESTORE_MAX_CYCLES}) — O(depth) restore, Stage 2 bulk cache load not \
+             yet applied (EXPECTED RED until Stage 2)"
+        ));
+    }
+
+    // Shallow-anchor gate: emits after the deep gates pass so the report
+    // clearly distinguishes deep-restore failures from P1 lazy-reveal failures.
+    if !shallow_succeeded {
+        return Err(format!(
+            "cache_restore: shallow anchor reached status={shallow_status_label} \
+             (expected Found) — lazy-reveal-fence (P1) fix not yet applied \
+             (EXPECTED RED before impl-stage1 P1 fix lands)"
+        ));
+    }
+    println!("cache_restore_shallow=ok");
+
+    println!("cache_restore_offline=ok");
+    println!("cache_restore=ok");
+    Ok(())
+}
+
 async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
     let proxy = QaTcpProxy::start(&config.homeserver)?;
     let data_dir = qa_data_dir("send_queue");
@@ -2714,6 +3493,12 @@ async fn cleanup_after_full_flow(
 async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, String> {
     if scenario == QaScenario::Safety {
         println!("safety=ok");
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
+
+    if scenario == QaScenario::CacheRestore {
+        println!("safety=ok");
+        run_cache_restore_scenario(&config).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
 
