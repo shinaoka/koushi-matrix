@@ -2227,7 +2227,9 @@ export const TimelineView = memo(function TimelineView({
 
           // Chain: one rAF → fonts.ready → media load / 250ms timeout.
           requestAnimationFrame(() => {
-            const fontsReady: Promise<unknown> = document.fonts.ready;
+            // document.fonts is undefined in jsdom (vitest); fall back to an
+            // already-resolved promise so the correction still fires in tests.
+            const fontsReady: Promise<unknown> = document.fonts?.ready ?? Promise.resolve();
             const anchorNode = containerSnapshot.querySelector<HTMLElement>(
               `[data-event-id="${cssEscape(anchorSnapshot.event_id)}"]`
             );
