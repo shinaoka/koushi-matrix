@@ -67,6 +67,7 @@
             {
               "event_id": "$act:example.invalid",
               "highlight": false,
+              "kind": "event",
               "preview": "Activity preview",
               "room_id": "!room:example.invalid",
               "room_label": "Fixture Room",
@@ -78,7 +79,19 @@
         },
         "unread": {
           "next_batch": null,
-          "rows": []
+          "rows": [
+            {
+              "event_id": null,
+              "highlight": true,
+              "kind": "roomUnread",
+              "preview": null,
+              "room_id": "!placeholder:example.invalid",
+              "room_label": "Placeholder Room",
+              "sender_label": null,
+              "timestamp_ms": 499000,
+              "unread": true
+            }
+          ]
         }
       },
       "auth": {
