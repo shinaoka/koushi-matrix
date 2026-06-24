@@ -521,6 +521,32 @@ impl ActivityProjection {
         })
     }
 
+    fn room_ids_without_remaining_unread(
+        &self,
+        state: &AppState,
+        cleared_event_ids: &[String],
+    ) -> Vec<String> {
+        let affected_room_ids = cleared_event_ids
+            .iter()
+            .filter_map(|event_id| self.rows_by_event_id.get(event_id))
+            .map(|row| row.room_id.clone())
+            .collect::<BTreeSet<_>>();
+        if affected_room_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let (_recent, unread, _excluded_room_ids) = self.snapshot(state);
+        let remaining_unread_room_ids = unread
+            .rows
+            .into_iter()
+            .map(|row| row.room_id)
+            .collect::<BTreeSet<_>>();
+        affected_room_ids
+            .into_iter()
+            .filter(|room_id| !remaining_unread_room_ids.contains(room_id))
+            .collect()
+    }
+
     fn snapshot(&self, state: &AppState) -> (ActivityStream, ActivityStream, Vec<String>) {
         let rooms_by_id: HashMap<&str, &RoomSummary> = state
             .rooms
@@ -1482,6 +1508,9 @@ impl AppActor {
                         .fully_read_marker_updates(&self.state, &target);
                     let cleared_event_ids =
                         self.activity_projection.mark_read(&self.state, &target);
+                    let cleared_room_ids = self
+                        .activity_projection
+                        .room_ids_without_remaining_unread(&self.state, &cleared_event_ids);
                     let success_effects = self
                         .reduce_app_action(AppAction::ActivityMarkReadSucceeded {
                             request_id: request_id.sequence,
@@ -1489,6 +1518,15 @@ impl AppActor {
                         })
                         .await;
                     self.handle_app_effects(request_id, success_effects).await;
+                    for room_id in cleared_room_ids {
+                        let room_effects = self
+                            .reduce_app_action(AppAction::RoomMarkedAsReadSucceeded {
+                                request_id: request_id.sequence,
+                                room_id,
+                            })
+                            .await;
+                        self.handle_app_effects(request_id, room_effects).await;
+                    }
                     for (room_id, event_id) in fully_read_updates {
                         let marker_effects = self
                             .reduce_app_action(AppAction::FullyReadMarkerUpdated {

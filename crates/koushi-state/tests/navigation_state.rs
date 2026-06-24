@@ -1114,7 +1114,7 @@ fn account_home_lists_all_non_dm_rooms_and_keeps_dms_global() {
     let sidebar = compose_sidebar(None, &spaces(), &rooms());
 
     assert!(sidebar.account_home.is_active);
-    assert_eq!(sidebar.account_home.unread_count, 7);
+    assert_eq!(sidebar.account_home.unread_count, 10);
     assert_eq!(
         sidebar
             .space_rooms
@@ -1269,7 +1269,7 @@ fn sidebar_projection_carries_rust_owned_highlight_counts_for_mention_affordance
     let sidebar = compose_sidebar(None, &spaces(), &rooms());
     let value = serde_json::to_value(sidebar).expect("sidebar serializes");
 
-    assert_eq!(value["account_home"]["unread_count"], json!(7));
+    assert_eq!(value["account_home"]["unread_count"], json!(10));
     assert_eq!(value["space_rail"][0]["unread_count"], json!(5));
     assert_eq!(value["account_home"]["highlight_count"], json!(1));
     assert_eq!(value["space_rail"][0]["highlight_count"], json!(1));

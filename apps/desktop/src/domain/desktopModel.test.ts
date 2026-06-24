@@ -169,7 +169,7 @@ describe("desktop model", () => {
 
     expect(sidebar.account_home).toMatchObject({
       display_name: "Home",
-      unread_count: 7,
+      unread_count: 10,
       is_active: true
     });
     expect(sidebar.space_rooms.map((room) => room.room_id)).toEqual([

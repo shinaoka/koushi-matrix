@@ -124,6 +124,10 @@ async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
         panic!("activity should stay open");
     };
     assert!(unread.rows.is_empty());
+    assert!(
+        snapshot.rooms.iter().all(|room| room.unread_count == 0),
+        "activity mark-all-read must clear room unread counts so sidebar badges agree"
+    );
     assert_eq!(
         snapshot
             .live_signals
