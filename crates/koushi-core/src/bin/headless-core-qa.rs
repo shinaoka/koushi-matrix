@@ -141,11 +141,15 @@ const CACHE_RESTORE_PROD_EVENT_COUNT: u16 = 100;
 /// should reach the anchor in ≤ 3 cycles.  On current main (~12 cycles/room)
 /// this gate is RED — that is the intended signal before Stage 2 lands.
 const CACHE_RESTORE_MAX_CYCLES: u16 = 3;
-/// Number of messages in the shallow-anchor room.  Small enough that all events
-/// fit in the SDK live in-memory prefix revealed by `live_lazy_paginate_backwards`
-/// without loading any on-disk chunks (chunks_loaded == 0, cycle_count == 0).
-/// The P1 lazy-reveal-fence fix must reach Found for this anchor.
-const CACHE_RESTORE_SHALLOW_DEPTH: usize = 3;
+/// Number of messages in the shallow-anchor room.  Enough to exceed the SDK's
+/// initial visible window (~20 items) so that m0 (oldest) is hidden behind a
+/// lazy-reveal skip when the session restarts.  All events fit in a single
+/// stored chunk (well under 128), so chunks_loaded == 0 during the restore.
+/// The anchor (m0) lives in the live in-memory prefix that
+/// live_lazy_paginate_backwards reveals (lazy_reveal_batches == 1).
+/// The P1 lazy-reveal-fence fix gates on this: without it the settle fence
+/// misses the lazy-reveal DiffBatch and may conclude before items settle.
+const CACHE_RESTORE_SHALLOW_DEPTH: usize = 30;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QaScenario {
@@ -2684,12 +2688,22 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
     }
 
     // -----------------------------------------------------------------------
-    // Shallow-anchor room: CACHE_RESTORE_SHALLOW_DEPTH messages only, so the
-    // anchor (m0) lives within the live in-memory prefix that
-    // live_lazy_paginate_backwards reveals without loading any on-disk chunk.
-    // The P1 lazy-reveal-fence fix must reach Found with cycle_count == 0.
+    // Shallow-anchor room: CACHE_RESTORE_SHALLOW_DEPTH messages, sized so
+    // that m0 (oldest) lies beyond the SDK's initial visible window (~20
+    // items).  All events fit in one stored chunk (chunks_loaded == 0).
+    //
+    // After restart, live_restore_from_cache reveals m0 via
+    // live_lazy_paginate_backwards (lazy_reveal_batches == 1, chunks_loaded == 0).
+    // The P1 lazy-reveal-fence fix (147c9ed) gates on this path: it adds
+    // lazy_reveal_batches to the settle fence so the DiffBatch settles before
+    // the restore concludes with Found.  Without the fix the fence may miss
+    // that batch and finish early.
+    //
+    // Bug #1 fix: capture the anchor event_id directly from the SendFlowOutcome
+    // of the first send (m0).  The send-phase ItemsUpdated diffs are consumed
+    // by wait_for_send_flow_completion and are not returned, so tracking
+    // shallow_items through the send loop would never include m0.
     // -----------------------------------------------------------------------
-    let shallow_anchor_body = "cache_restore shallow m0".to_owned();
     let shallow_room_id = create_room_for_qa(
         &mut conn,
         "QA Cache Restore Shallow",
@@ -2713,12 +2727,17 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
     }))
     .await
     .map_err(|e| format!("cache_restore shallow: subscribe failed: {e}"))?;
-    let shallow_initial =
-        wait_for_initial_items(&mut conn, &shallow_key, shallow_sub_id, "cache_restore shallow subscribe")
-            .await?;
-    let mut shallow_items = shallow_initial;
+    let _ = wait_for_initial_items(
+        &mut conn,
+        &shallow_key,
+        shallow_sub_id,
+        "cache_restore shallow subscribe",
+    )
+    .await?;
 
-    // Send CACHE_RESTORE_SHALLOW_DEPTH messages.
+    // Send CACHE_RESTORE_SHALLOW_DEPTH messages and capture m0's event_id
+    // directly from the first SendFlowOutcome — no item tracking needed.
+    let mut shallow_anchor_id: Option<String> = None;
     for msg_idx in 0..CACHE_RESTORE_SHALLOW_DEPTH {
         let txn = format!("qa-cr-shallow-{msg_idx}");
         let send_id = conn.next_request_id();
@@ -2731,7 +2750,7 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
         }))
         .await
         .map_err(|e| format!("cache_restore shallow: send failed: {e}"))?;
-        wait_for_send_flow_completion(
+        let outcome = wait_for_send_flow_completion(
             &mut conn,
             send_id,
             &shallow_key,
@@ -2740,9 +2759,17 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
             "cache_restore shallow send",
         )
         .await?;
+        // m0 is the first-sent (oldest) message; record its event_id as the anchor.
+        if msg_idx == 0 {
+            shallow_anchor_id = Some(outcome.event_id.clone());
+        }
     }
+    let shallow_anchor_id = shallow_anchor_id
+        .ok_or_else(|| "cache_restore shallow: no messages sent".to_owned())?;
 
-    // Paginate backward to EndReached to warm the event cache.
+    // Paginate backward to EndReached to warm the event cache so that
+    // live_restore_from_cache can serve the anchor from the stored chunk on
+    // restart (without a network call).
     let shallow_pag_id = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::Paginate {
         request_id: shallow_pag_id,
@@ -2802,36 +2829,9 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
                     }
                 }
             }
-            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-                key: ref ev_key,
-                ref diffs,
-                ..
-            }) if ev_key == &shallow_key => {
-                for diff in diffs {
-                    apply_timeline_diff(&mut shallow_items, diff);
-                }
-            }
             _ => {}
         }
     }
-
-    // Find m0 (oldest / first-sent) as the shallow anchor.
-    let shallow_anchor_item = find_timeline_item_with_body(&shallow_items, &shallow_anchor_body)
-        .ok_or_else(|| {
-            format!(
-                "cache_restore shallow: m0 anchor not found after full paginate \
-                 (items={})",
-                shallow_items.len()
-            )
-        })?;
-    let shallow_anchor_id = match &shallow_anchor_item.id {
-        TimelineItemId::Event { event_id } => event_id.clone(),
-        other => {
-            return Err(format!(
-                "cache_restore shallow: m0 anchor item has non-Event id: {other:?}"
-            ))
-        }
-    };
 
     let shallow_unsub_id = conn.next_request_id();
     conn.command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
