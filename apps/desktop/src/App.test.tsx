@@ -1375,6 +1375,20 @@ describe("Tauri state refresh wiring", () => {
     expect(activityRenderSource).not.toContain("selectSearchResult(row.room_id, row.event_id)");
   });
 
+  test("home rail button resets Home to Activity Recent instead of restoring the saved Home pane", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const sidebarRenderStart = source.indexOf("<Sidebar");
+    const sidebarRenderEnd = source.indexOf("</Sidebar>", sidebarRenderStart);
+    const sidebarRenderSource = source.slice(sidebarRenderStart, sidebarRenderEnd);
+    const onOpenHomeStart = sidebarRenderSource.indexOf("onOpenHome={() =>");
+    const onOpenHomeEnd = sidebarRenderSource.indexOf("onOpenInvites", onOpenHomeStart);
+    const onOpenHomeSource = sidebarRenderSource.slice(onOpenHomeStart, onOpenHomeEnd);
+
+    expect(onOpenHomeStart).toBeGreaterThanOrEqual(0);
+    expect(onOpenHomeSource).toContain("openHomeActivityView()");
+    expect(onOpenHomeSource).not.toContain("selectSpace(null)");
+  });
+
   test("recovery submit trims pasted outer whitespace without altering the secret variable", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const submitRecoveryStart = source.indexOf("async function submitRecovery");

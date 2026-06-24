@@ -3226,7 +3226,7 @@ export function App() {
             void (homeContextActive ? openHomeExploreView() : openExploreView());
           }}
           onOpenHome={() => {
-            void selectSpace(null);
+            void openHomeActivityView();
           }}
           onOpenInvites={() => {
             void (homeContextActive ? openHomeInvitesView() : openInvitesView());
