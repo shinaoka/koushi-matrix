@@ -492,7 +492,7 @@ export function Sidebar({
           onSelectRoom={onSelectRoom}
           onToggleCollapsed={() => toggleSection("people")}
         />
-        {!accountHomeActive ? (
+        {!accountHomeActive || sections.rooms.length > 0 ? (
           <RoomSection
             activeRoomId={activeRoomId}
             collapsed={Boolean(collapsedSections.rooms)}
@@ -502,7 +502,7 @@ export function Sidebar({
             presence={presence}
             roomById={roomById}
             rooms={sections.rooms}
-            showWhenEmpty={true}
+            showWhenEmpty={!accountHomeActive}
             onOpenContextMenu={onOpenContextMenu}
             onSelectRoom={onSelectRoom}
             onToggleCollapsed={() => toggleSection("rooms")}

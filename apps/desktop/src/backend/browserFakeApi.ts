@@ -26,6 +26,7 @@ import type {
   RoomListProjection,
   RoomModerationAction,
   RoomNotificationMode,
+  RoomNotificationSettings,
   InvitePreview,
   RoomPermissionFacts,
   RoomSummary,
@@ -480,6 +481,7 @@ class BrowserFakeApi implements DesktopApi {
       mode,
       operation: { kind: "idle" }
     };
+    this.refreshActivityStreams();
     return this.getSnapshot();
   }
 
@@ -2147,7 +2149,11 @@ class BrowserFakeApi implements DesktopApi {
 
     await Promise.resolve();
 
-    const streams = createActivityStreams(false, this.snapshot.state.domain.profile.users);
+    const streams = createActivityStreams(
+      false,
+      this.snapshot.state.domain.profile.users,
+      this.snapshot.state.domain.room_notification_settings
+    );
     this.snapshot.state.domain.activity = {
       kind: "open",
       active_tab: "recent",
@@ -2156,6 +2162,23 @@ class BrowserFakeApi implements DesktopApi {
       mark_read: { kind: "idle" }
     };
     return this.getSnapshot();
+  }
+
+  private refreshActivityStreams(): void {
+    const activity = this.snapshot.state.domain.activity;
+    if (activity.kind !== "open") {
+      return;
+    }
+    const streams = createActivityStreams(
+      false,
+      this.snapshot.state.domain.profile.users,
+      this.snapshot.state.domain.room_notification_settings
+    );
+    this.snapshot.state.domain.activity = {
+      ...activity,
+      recent: streams.recent,
+      unread: streams.unread
+    };
   }
 
   async closeActivity(): Promise<DesktopSnapshot> {
@@ -3462,21 +3485,36 @@ function candidateScore(eventId: string): number {
 
 function createActivityStreams(
   includeBackfill: boolean,
-  profileUsers: Record<string, UserProfile>
+  profileUsers: Record<string, UserProfile>,
+  roomNotificationSettings: Record<string, RoomNotificationSettings>
 ): {
   recent: ActivityStream;
   unread: ActivityStream;
 } {
   const spacesById = new Map(spaces.map((space) => [space.space_id, space]));
+  const mutedRoomIds = new Set(
+    Object.entries(roomNotificationSettings)
+      .filter(([, settings]) => settings.mode.kind === "mute")
+      .map(([roomId]) => roomId)
+  );
   const unreadRoomIds = new Set(
-    rooms.filter((room) => room.unread_count > 0).map((room) => room.room_id)
+    rooms
+      .filter((room) => room.unread_count > 0 && !mutedRoomIds.has(room.room_id))
+      .map((room) => room.room_id)
   );
   const messages = includeBackfill
     ? [...timelineMessages, ...backwardTimelineMessages]
     : timelineMessages;
-  const recentRows = activityRows(messages, unreadRoomIds, profileUsers, spacesById);
+  const recentRows = activityRows(
+    messages.filter((message) => !mutedRoomIds.has(message.room_id)),
+    unreadRoomIds,
+    profileUsers,
+    spacesById
+  );
   const unreadEventRows = activityRows(
-    timelineMessages.filter((message) => unreadRoomIds.has(message.room_id)),
+    timelineMessages.filter(
+      (message) => unreadRoomIds.has(message.room_id) && !mutedRoomIds.has(message.room_id)
+    ),
     unreadRoomIds,
     profileUsers,
     spacesById
@@ -3488,6 +3526,7 @@ function createActivityStreams(
         (room.unread_count > 0 ||
           (room.highlight_count ?? 0) > 0 ||
           Boolean(room.marked_unread)) &&
+        !mutedRoomIds.has(room.room_id) &&
         !roomsWithUnreadEventRows.has(room.room_id)
     )
     .map((room) => ({
