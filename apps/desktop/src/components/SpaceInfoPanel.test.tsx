@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { SpaceInfoPanel } from "./SpaceInfoPanel";
 
@@ -130,8 +130,7 @@ describe("SpaceInfoPanel", () => {
     expect(markup).not.toContain("Alice");
   });
 
-  test("starts a direct message from a loaded space member row", () => {
-    const startedUserIds: string[] = [];
+  test("does not render a dense member list in the space info panel", () => {
     render(
       <SpaceInfoPanel
         fallbackName="Synthetic Workspace"
@@ -142,59 +141,6 @@ describe("SpaceInfoPanel", () => {
           avatar: null,
           child_room_ids: []
         }}
-        onStartDirectMessage={(userId) => {
-          startedUserIds.push(userId);
-        }}
-        roomManagement={{
-          selected_room_id: "!space-work:example.invalid",
-          settings: {
-            room_id: "!space-work:example.invalid",
-            name: "Synthetic Workspace",
-            topic: null,
-            avatar_url: null,
-            join_rule: "invite",
-            history_visibility: "shared",
-            permissions: {
-              can_edit_settings: false,
-              can_edit_roles: false,
-              can_kick: false,
-              can_ban: false,
-              can_unban: false
-            },
-            members: [
-              {
-                user_id: "@member:example.invalid",
-                display_name: "Upstream Member",
-                display_label: "Local Remark",
-                original_display_label: "Upstream Member",
-                avatar_url: null,
-                power_level: 0,
-                role: "user"
-              }
-            ]
-          },
-          operation: { kind: "idle" }
-        }}
-      />
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Message Local Remark" }));
-
-    expect(startedUserIds).toEqual(["@member:example.invalid"]);
-  });
-
-  test("renders every loaded space member with a direct-message entry point", () => {
-    render(
-      <SpaceInfoPanel
-        fallbackName="Synthetic Workspace"
-        rooms={[]}
-        space={{
-          space_id: "!space-work:example.invalid",
-          display_name: "Synthetic Workspace",
-          avatar: null,
-          child_room_ids: []
-        }}
-        onStartDirectMessage={() => undefined}
         roomManagement={{
           selected_room_id: "!space-work:example.invalid",
           settings: {
@@ -220,24 +166,6 @@ describe("SpaceInfoPanel", () => {
                 avatar_url: null,
                 power_level: 0,
                 role: "user"
-              },
-              {
-                user_id: "@grace:example.invalid",
-                display_name: "Grace",
-                display_label: "Grace",
-                original_display_label: "Grace",
-                avatar_url: null,
-                power_level: 0,
-                role: "user"
-              },
-              {
-                user_id: "@linus:example.invalid",
-                display_name: "Linus",
-                display_label: "Linus",
-                original_display_label: "Linus",
-                avatar_url: null,
-                power_level: 0,
-                role: "user"
               }
             ]
           },
@@ -246,16 +174,27 @@ describe("SpaceInfoPanel", () => {
       />
     );
 
-    for (const member of ["Ada", "Grace", "Linus"]) {
-      expect(screen.getByText(member)).toBeTruthy();
-      expect(screen.getByRole("button", { name: `Message ${member}` })).toBeTruthy();
-    }
-    for (const userId of [
-      "@ada:example.invalid",
-      "@grace:example.invalid",
-      "@linus:example.invalid"
-    ]) {
-      expect(screen.getByText(userId)).toBeTruthy();
-    }
+    expect(screen.queryByRole("button", { name: "Message Ada" })).toBeNull();
+    expect(screen.queryByText("@ada:example.invalid")).toBeNull();
+  });
+
+  test("opens the standalone people panel from the members entry", () => {
+    const onOpenMembers = vi.fn();
+    render(
+      <SpaceInfoPanel
+        fallbackName="Synthetic Workspace"
+        rooms={[]}
+        space={{
+          space_id: "!space-work:example.invalid",
+          display_name: "Synthetic Workspace",
+          avatar: null,
+          child_room_ids: []
+        }}
+        onOpenMembers={onOpenMembers}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Members" }));
+    expect(onOpenMembers).toHaveBeenCalledTimes(1);
   });
 });

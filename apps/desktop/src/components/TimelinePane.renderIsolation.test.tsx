@@ -78,7 +78,6 @@ describe("TimelinePane render isolation", () => {
         searchResults: emptySearchResults,
         showSearchResults: false,
         snapshot: currentSnapshot,
-        rightPanelOpen: false,
         timelineBackfill: "unknown",
         timelineTransport,
         onCancelReply: noop,
@@ -100,10 +99,9 @@ describe("TimelinePane render isolation", () => {
         onSendText: noop,
         onSetLocalUserAlias: noop,
         onUnpinPinnedEvent: noop,
-        onToggleThread: noop,
-        onOpenRoomInfo: noop,
-        onOpenRoomMembers: noop,
-        onOpenThreadsList: noop
+        onOpenPeople: noop,
+        onOpenThreads: noop,
+        onToggleRoomInfo: noop
       });
 
     const { rerender } = render(renderPane(snapshot));
@@ -248,7 +246,9 @@ function makeSnapshot(): DesktopSnapshot {
               speed: "standard",
               include_media_captions: true,
               include_filenames: true
-            }
+            },
+            thread_list_order: { kind: "latestReply" },
+            room_list_sort: { kind: "activity" }
           },
           persistence: { kind: "idle" }
         },

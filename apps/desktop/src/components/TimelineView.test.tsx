@@ -18,6 +18,7 @@ import {
 } from "../domain/timelineStore";
 import { TimelineStoreContext } from "./timelineStoreContext";
 import { MessageSourceDialog, TimelineView, type TimelineTransport } from "./TimelineView";
+import type { LiveSignalsState } from "../domain/types";
 
 afterEach(() => {
   cleanup();
@@ -1025,6 +1026,89 @@ describe("TimelineView", () => {
     });
   });
 
+  it("places reactions and read receipts in one status row", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        liveSignals={{
+          presence: {},
+          rooms: {
+            "!room:example.invalid": {
+              fully_read_event_id: null,
+              typing_user_ids: [],
+              receipts_by_event: {
+                "$reacted-seen": {
+                  total_count: 1,
+                  overflow_count: 0,
+                  readers: [
+                    {
+                      user_id: "@ken:example.invalid",
+                      display_name: "Ken Inayoshi",
+                      original_display_label: "Ken Inayoshi",
+                      avatar: null,
+                      timestamp_ms: null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              {
+                ...message("$reacted-seen", "Reacted and seen"),
+                reactions: [
+                  {
+                    key: "✈️",
+                    count: 1,
+                    reacted_by_me: false,
+                    my_reaction_event_id: null,
+                    sender_preview: ["@ken:example.invalid"]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      const reactions = document.querySelector(".message-reactions");
+      const receipts = document.querySelector(".message-receipts");
+      const statusRow = document.querySelector(".message-status-row");
+
+      expect(reactions).not.toBeNull();
+      expect(receipts).not.toBeNull();
+      expect(statusRow).not.toBeNull();
+      expect(reactions?.parentElement).toBe(statusRow);
+      expect(receipts?.parentElement).toBe(statusRow);
+      expect(Array.from(statusRow?.children ?? [])).toEqual([reactions, receipts]);
+    });
+  });
+
   it("automatically requests previews for encrypted image attachments", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const downloadMedia = vi.fn(async () => undefined);
@@ -1780,6 +1864,7 @@ describe("TimelineView", () => {
                 can_jump_to_bottom: false,
                 first_unread_event_id: "$virtual-500:example.invalid",
                 newer_event_count: 0,
+                read_marker_display_event_id: null,
                 read_marker_event_id: null,
                 unread_event_count: 3,
                 unread_position: "belowViewport"
@@ -2004,5 +2089,417 @@ describe("TimelineView", () => {
     expect(
       screen.getByRole("button", { name: "Copy original event source" }).textContent
     ).toContain("Copy original event source");
+  });
+
+  it("renders the read marker after the Rust-derived display anchor for own messages after the marker", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const ownMessage = (eventId: string): TimelineItem => ({
+      ...message(eventId, "own"),
+      sender: "@alice:example.invalid"
+    });
+    const other = message("$other:example.invalid", "hello");
+    const own1 = ownMessage("$own1:example.invalid");
+    const own2 = ownMessage("$own2:example.invalid");
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        NavigationUpdated: {
+          key: KEY,
+          snapshot: {
+            read_marker_event_id: "$other:example.invalid",
+            read_marker_display_event_id: "$own2:example.invalid",
+            first_unread_event_id: null,
+            unread_event_count: 0,
+            unread_position: "none",
+            newer_event_count: 0,
+            can_jump_to_bottom: false
+          }
+        }
+      }
+    });
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [other, own1, own2]
+        }
+      }
+    });
+
+    const marker = await screen.findByRole("separator", { name: "Read up to here" });
+    expect(marker.previousElementSibling?.getAttribute("data-event-id")).toBe(
+      "$own2:example.invalid"
+    );
+  });
+
+  it("renders the read marker after the current user's latest own message when the marker starts on an own message", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const ownMessage = (eventId: string): TimelineItem => ({
+      ...message(eventId, "own"),
+      sender: "@alice:example.invalid"
+    });
+    const own1 = ownMessage("$own1:example.invalid");
+    const own2 = ownMessage("$own2:example.invalid");
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        NavigationUpdated: {
+          key: KEY,
+          snapshot: {
+            read_marker_event_id: "$own1:example.invalid",
+            read_marker_display_event_id: "$own2:example.invalid",
+            first_unread_event_id: null,
+            unread_event_count: 0,
+            unread_position: "none",
+            newer_event_count: 0,
+            can_jump_to_bottom: false
+          }
+        }
+      }
+    });
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [own1, own2]
+        }
+      }
+    });
+
+    const marker = await screen.findByRole("separator", { name: "Read up to here" });
+    expect(marker.previousElementSibling?.getAttribute("data-event-id")).toBe(
+      "$own2:example.invalid"
+    );
+  });
+
+  it("renders the unread marker before the first unread event", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const other = message("$other:example.invalid", "hello");
+    const unread = message("$unread:example.invalid", "new message");
+    const own1 = { ...message("$own1:example.invalid", "own"), sender: "@alice:example.invalid" };
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        NavigationUpdated: {
+          key: KEY,
+          snapshot: {
+            read_marker_event_id: "$other:example.invalid",
+            read_marker_display_event_id: null,
+            first_unread_event_id: "$unread:example.invalid",
+            unread_event_count: 1,
+            unread_position: "insideViewport",
+            newer_event_count: 0,
+            can_jump_to_bottom: false
+          }
+        }
+      }
+    });
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [other, unread, own1]
+        }
+      }
+    });
+
+    const marker = await screen.findByRole("separator", { name: "Unread messages" });
+    expect(marker.nextElementSibling?.getAttribute("data-event-id")).toBe(
+      "$unread:example.invalid"
+    );
+  });
+
+  it("renders plain-text URLs as anchors from Rust-projected link ranges", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const text = "Check https://example.com/page and https://example.com/page out";
+    const item: TimelineItem = {
+      ...message("$url:example.invalid", text),
+      link_ranges: [
+        {
+          url: "https://example.com/page",
+          start_utf16: 6,
+          end_utf16: 30
+        },
+        {
+          url: "https://example.com/page",
+          start_utf16: 35,
+          end_utf16: 59
+        }
+      ]
+    };
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [item]
+        }
+      }
+    });
+
+    const links = await screen.findAllByRole("link", { name: "https://example.com/page" });
+    expect(links).toHaveLength(2);
+    for (const link of links) {
+      expect(link.getAttribute("href")).toBe("https://example.com/page");
+      expect(link.getAttribute("target")).toBe("_blank");
+    }
+  });
+
+  it("preserves formatted HTML when adding Rust-projected link anchors", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const plainText = "fn main() {}Visit https://example.com/page";
+    const item: TimelineItem = {
+      ...message("$formatted-url:example.invalid", plainText),
+      formatted: {
+        html: "<pre><code>fn main() {}</code></pre><strong>Visit https://example.com/page</strong>",
+        plain_text: plainText,
+        code_blocks: [{ language: null, body: "fn main() {}" }]
+      },
+      link_ranges: [
+        {
+          url: "https://example.com/page",
+          start_utf16: "fn main() {}Visit ".length,
+          end_utf16: plainText.length
+        }
+      ]
+    };
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [item]
+        }
+      }
+    });
+
+    const link = await screen.findByRole("link", { name: "https://example.com/page" });
+    expect(link.getAttribute("href")).toBe("https://example.com/page");
+    expect(link.closest("strong")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Copy code" })).toBeTruthy();
+  });
+
+  it("renders link preview cards as clickable anchors", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const hideLinkPreview = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      hideLinkPreview
+    });
+    const item: TimelineItem = {
+      ...message("$preview:example.invalid", "look at this"),
+      link_previews: [
+        {
+          url: "https://example.com/article",
+          title: "An article",
+          state: "ready"
+        }
+      ]
+    };
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [item]
+        }
+      }
+    });
+
+    const card = await screen.findByRole("link", { name: /An article/ });
+    expect(card.getAttribute("href")).toBe("https://example.com/article");
+
+    const hide = screen.getByRole("button", { name: "Hide preview" });
+    fireEvent.click(hide);
+    await waitFor(() => {
+      expect(hideLinkPreview).toHaveBeenCalledWith("!room:example.invalid", "$preview:example.invalid");
+    });
+  });
+
+  it("keeps reactions and read receipts in one footer status row", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const item: TimelineItem = {
+      ...message("$reacted:example.invalid", "hello"),
+      reactions: [
+        {
+          key: "👍",
+          count: 1,
+          reacted_by_me: false,
+          my_reaction_event_id: null,
+          sender_preview: ["@bob:example.invalid"]
+        }
+      ],
+      can_react: true
+    };
+    const liveSignals: LiveSignalsState = {
+      rooms: {
+        "!room:example.invalid": {
+          receipts_by_event: {
+            "$reacted:example.invalid": {
+              readers: [
+                {
+                  user_id: "@bob:example.invalid",
+                  display_name: "Bob",
+                  original_display_label: "Bob",
+                  avatar: null,
+                  timestamp_ms: 1_800_000_000_000
+                }
+              ],
+              total_count: 1,
+              overflow_count: 0
+            }
+          },
+          fully_read_event_id: null,
+          typing_user_ids: []
+        }
+      },
+      presence: {}
+    };
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        liveSignals={liveSignals}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [item]
+        }
+      }
+    });
+
+    const statusRow = await waitFor(() => {
+      const row = document.querySelector(".message-status-row");
+      if (!row) {
+        throw new Error("message-status-row not found");
+      }
+      return row;
+    });
+    expect(statusRow.querySelector(".message-reactions")).toBeTruthy();
+    expect(statusRow.querySelector(".message-receipts")).toBeTruthy();
   });
 });

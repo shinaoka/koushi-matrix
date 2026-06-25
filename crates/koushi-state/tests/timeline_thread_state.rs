@@ -1,7 +1,8 @@
 use koushi_state::{
     AppAction, AppEffect, AppState, ComposerMode, ComposerState, NavigationState,
     PendingComposerSendKind, RoomSummary, RoomTags, SessionInfo, SessionState,
-    ThreadAttentionState, ThreadPaneState, TimelinePaneState, UiEvent, reduce,
+    ThreadAttentionState, ThreadListOrder, ThreadPaneState, ThreadsListItem, TimelinePaneState,
+    UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -1315,5 +1316,97 @@ fn send_text_failed_preserves_reply_mode_for_retry() {
         ComposerMode::Reply {
             in_reply_to_event_id: "$root:example.invalid".to_owned()
         }
+    );
+}
+
+fn thread_item(root_event_id: &str, root_ts: u64, latest_ts: Option<u64>) -> ThreadsListItem {
+    ThreadsListItem {
+        root_event_id: root_event_id.to_owned(),
+        root_sender: "@sender:example.invalid".to_owned(),
+        root_sender_label: None,
+        root_body_preview: None,
+        root_timestamp_ms: Some(root_ts),
+        latest_event_id: latest_ts.map(|_| "$latest".to_owned()),
+        latest_sender: None,
+        latest_sender_label: None,
+        latest_body_preview: None,
+        latest_timestamp_ms: latest_ts,
+        reply_count: 0,
+    }
+}
+
+#[test]
+fn threads_list_display_order_follows_setting() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        rooms: vec![room("room-a")],
+        ..AppState::default()
+    };
+    reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "room-a".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::OpenThreadsList {
+            request_id: 1,
+            room_id: "room-a".to_owned(),
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ThreadsListOpened {
+            request_id: 1,
+            room_id: "room-a".to_owned(),
+            items: vec![
+                thread_item("$root-old", 1000, Some(1500)),
+                thread_item("$root-new", 2000, Some(2500)),
+            ],
+            end_reached: true,
+        },
+    );
+
+    let ids = |state: &AppState| {
+        state
+            .threads_list
+            .items()
+            .iter()
+            .map(|item| item.root_event_id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        ids(&state),
+        vec!["$root-new".to_owned(), "$root-old".to_owned()]
+    );
+
+    reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 2,
+            patch: koushi_state::SettingsPatch {
+                thread_list_order: Some(ThreadListOrder::RootChronology),
+                ..koushi_state::SettingsPatch::default()
+            },
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadsListUpdated {
+            request_id: 1,
+            room_id: "room-a".to_owned(),
+            items: vec![
+                thread_item("$root-old", 1000, Some(1500)),
+                thread_item("$root-new", 2000, Some(2500)),
+            ],
+            is_paginating: false,
+            end_reached: true,
+        },
+    );
+    assert_eq!(
+        ids(&state),
+        vec!["$root-old".to_owned(), "$root-new".to_owned()]
     );
 }

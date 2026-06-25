@@ -3,7 +3,6 @@ import {
   type DragEvent,
   type ReactNode,
   type RefObject,
-  useEffect,
   useState
 } from "react";
 import {
@@ -45,7 +44,6 @@ import { roomListSections } from "../domain/desktopModel";
 import { type SpaceLocalOverrides, spaceDisplayName } from "../app/localPresentation";
 
 const ROOM_SECTION_COLLAPSE_KEY = "koushi.roomSectionCollapsed.v1";
-const ROOM_RECENCY_KEY = "koushi.roomRecency.v1";
 
 export function TopBar({
   activeSpaceName,
@@ -354,7 +352,6 @@ export function Sidebar({
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>(
     readCollapsedSections
   );
-  const [recentRoomIds, setRecentRoomIds] = useState<string[]>(readRecentRoomIds);
   const activeSpace = snapshot.sidebar.space_rail.find((space) => space.is_active);
   const activeSpaceName = activeSpace
     ? spaceDisplayName(activeSpace.space_id, activeSpace.display_name, spaceOverrides)
@@ -362,18 +359,7 @@ export function Sidebar({
   const accountHomeActive = snapshot.sidebar.account_home.is_active && !activeSpace;
   const roomById = new Map(snapshot.state.domain.rooms.map((room) => [room.room_id, room]));
   const presence = snapshot.state.domain.live_signals.presence;
-  const rooms = sortRoomsByRecency(
-    uniqueRooms([...sections.favourites, ...sections.rooms, ...sections.lowPriority]),
-    recentRoomIds
-  );
-  const dms = sortRoomsByRecency(sections.people, recentRoomIds);
-
-  useEffect(() => {
-    if (!activeRoomId) {
-      return;
-    }
-    setRecentRoomIds((current) => rememberRecentRoomId(current, activeRoomId));
-  }, [activeRoomId]);
+  const dms = sections.people;
 
   function toggleSection(sectionId: string) {
     setCollapsedSections((current) => {
@@ -381,11 +367,6 @@ export function Sidebar({
       writeCollapsedSections(next);
       return next;
     });
-  }
-
-  function selectRoom(roomId: string) {
-    setRecentRoomIds((current) => rememberRecentRoomId(current, roomId));
-    onSelectRoom(roomId);
   }
 
   return (
@@ -461,17 +442,16 @@ export function Sidebar({
         {!accountHomeActive ? (
           <RoomSection
             activeRoomId={activeRoomId}
-            collapsed={Boolean(collapsedSections.rooms)}
-            id="rooms"
+            collapsed={Boolean(collapsedSections.favourites)}
+            id="favourites"
             kind="room"
-            label={t("workspace.rooms")}
+            label={t("roomList.filterFavourites")}
             presence={presence}
             roomById={roomById}
-            rooms={rooms}
-            showWhenEmpty={true}
+            rooms={sections.favourites}
             onOpenContextMenu={onOpenContextMenu}
-            onSelectRoom={selectRoom}
-            onToggleCollapsed={() => toggleSection("rooms")}
+            onSelectRoom={onSelectRoom}
+            onToggleCollapsed={() => toggleSection("favourites")}
           />
         ) : null}
         <RoomSection
@@ -485,9 +465,40 @@ export function Sidebar({
           rooms={dms}
           showWhenEmpty={true}
           onOpenContextMenu={onOpenContextMenu}
-          onSelectRoom={selectRoom}
+          onSelectRoom={onSelectRoom}
           onToggleCollapsed={() => toggleSection("people")}
         />
+        {!accountHomeActive ? (
+          <RoomSection
+            activeRoomId={activeRoomId}
+            collapsed={Boolean(collapsedSections.rooms)}
+            id="rooms"
+            kind="room"
+            label={t("workspace.rooms")}
+            presence={presence}
+            roomById={roomById}
+            rooms={sections.rooms}
+            showWhenEmpty={true}
+            onOpenContextMenu={onOpenContextMenu}
+            onSelectRoom={onSelectRoom}
+            onToggleCollapsed={() => toggleSection("rooms")}
+          />
+        ) : null}
+        {!accountHomeActive ? (
+          <RoomSection
+            activeRoomId={activeRoomId}
+            collapsed={Boolean(collapsedSections["low-priority"])}
+            id="low-priority"
+            kind="room"
+            label={t("workspace.lowPriority")}
+            presence={presence}
+            roomById={roomById}
+            rooms={sections.lowPriority}
+            onOpenContextMenu={onOpenContextMenu}
+            onSelectRoom={onSelectRoom}
+            onToggleCollapsed={() => toggleSection("low-priority")}
+          />
+        ) : null}
       </div>
     </aside>
   );
@@ -633,15 +644,18 @@ function RoomButton({
   onSelectRoom: (roomId: string) => void;
 }) {
   const sourceRoom = roomById.get(room.room_id);
+  const dmUserIds = sourceRoom?.dm_user_ids ?? [];
   const dmUserId =
-    kind === "dm" && sourceRoom?.is_dm && sourceRoom.dm_user_ids.length === 1
-      ? sourceRoom.dm_user_ids[0]
+    kind === "dm" && sourceRoom?.is_dm && dmUserIds.length === 1
+      ? dmUserIds[0]
       : null;
   const isOnlineDm = dmUserId ? presence[dmUserId] === "online" : false;
+  const mentionCount = room.highlight_count ?? 0;
   return (
     <button
       className={`room-item ${room.room_id === activeRoomId ? "is-active" : ""}`}
       aria-label={room.display_name}
+      data-mention-count={mentionCount || undefined}
       data-room-kind={kind}
       data-testid="room-item"
       type="button"
@@ -678,6 +692,7 @@ function RoomButton({
       </span>
       <span className="room-name" dir="auto">{room.display_name}</span>
       <span className="room-trailing">
+        {mentionCount ? <span className="room-mention-dot" aria-hidden="true" /> : null}
         <span className="room-count">{room.unread_count || ""}</span>
       </span>
     </button>
@@ -744,49 +759,4 @@ function writeCollapsedSections(collapsedSections: Record<string, boolean>): voi
     return;
   }
   window.localStorage.setItem(ROOM_SECTION_COLLAPSE_KEY, JSON.stringify(collapsedSections));
-}
-
-function readRecentRoomIds(): string[] {
-  const value = readJsonRecord<unknown>(ROOM_RECENCY_KEY, []);
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-}
-
-function writeRecentRoomIds(roomIds: string[]): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  window.localStorage.setItem(ROOM_RECENCY_KEY, JSON.stringify(roomIds));
-}
-
-function rememberRecentRoomId(current: string[], roomId: string): string[] {
-  const next = [roomId, ...current.filter((id) => id !== roomId)].slice(0, 200);
-  writeRecentRoomIds(next);
-  return next;
-}
-
-function uniqueRooms(rooms: RoomListItem[]): RoomListItem[] {
-  const seen = new Set<string>();
-  return rooms.filter((room) => {
-    if (seen.has(room.room_id)) {
-      return false;
-    }
-    seen.add(room.room_id);
-    return true;
-  });
-}
-
-function sortRoomsByRecency(rooms: RoomListItem[], recentRoomIds: string[]): RoomListItem[] {
-  const recentIndex = new Map(recentRoomIds.map((roomId, index) => [roomId, index]));
-  return [...rooms].sort((left, right) => {
-    const leftRecent = recentIndex.get(left.room_id);
-    const rightRecent = recentIndex.get(right.room_id);
-    if (leftRecent !== undefined || rightRecent !== undefined) {
-      return (leftRecent ?? Number.MAX_SAFE_INTEGER) - (rightRecent ?? Number.MAX_SAFE_INTEGER);
-    }
-    return (
-      right.highlight_count - left.highlight_count ||
-      right.unread_count - left.unread_count ||
-      left.display_name.localeCompare(right.display_name)
-    );
-  });
 }

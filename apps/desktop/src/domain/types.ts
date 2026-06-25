@@ -98,6 +98,8 @@ export interface SettingsValues {
   media: MediaSettings;
   timeline: TimelineSettings;
   search_crawler: SearchCrawlerSettings;
+  thread_list_order: ThreadListOrder;
+  room_list_sort: RoomListSort;
 }
 
 export interface SettingsPatch {
@@ -110,7 +112,18 @@ export interface SettingsPatch {
   media?: MediaSettings;
   timeline?: TimelineSettings;
   search_crawler?: SearchCrawlerSettings;
+  thread_list_order?: ThreadListOrder;
+  room_list_sort?: RoomListSort;
 }
+
+// Rust ThreadListOrder is #[serde(tag = "kind", rename_all = "camelCase")].
+export type ThreadListOrder = { kind: "latestReply" } | { kind: "rootChronology" };
+
+// Rust RoomListSort is #[serde(tag = "kind", rename_all = "camelCase")].
+export type RoomListSort =
+  | { kind: "activity" }
+  | { kind: "recentFirst" }
+  | { kind: "normalLocale" };
 
 export interface LocaleSettings {
   language_tag: string | null;
@@ -394,9 +407,6 @@ export type RoomListFilter =
   | { kind: "favourites" }
   | { kind: "invites" };
 
-// Rust RoomListSort is #[serde(tag = "kind", rename_all = "camelCase")].
-export type RoomListSort = { kind: "activity" };
-
 export interface RoomListProjection {
   active_filter: RoomListFilter;
   sort: RoomListSort;
@@ -630,19 +640,24 @@ interface ActivityRowBase {
   timestamp_ms: number;
   unread: boolean;
   highlight: boolean;
+  context_label: string;
 }
 
 export interface ActivityEventRow extends ActivityRowBase {
   kind: "event";
   event_id: string;
+  sender_id: string | null;
   sender_label: string | null;
+  sender_avatar: AvatarImage | null;
   preview: string | null;
 }
 
 export interface ActivityRoomUnreadRow extends ActivityRowBase {
   kind: "roomUnread";
   event_id: null;
+  sender_id: null;
   sender_label: null;
+  sender_avatar: null;
   preview: null;
 }
 
@@ -1370,6 +1385,7 @@ export interface TimelineMessage {
   attachment_filename: string | null;
   reply_count: number;
   link_previews?: LinkPreview[];
+  link_ranges?: { url: string; start_utf16: number; end_utf16: number }[];
 }
 
 export interface ThreadSnapshot {

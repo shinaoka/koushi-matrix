@@ -51,14 +51,8 @@ fn non_dm_summary(room_id: &str) -> RoomSummary {
 #[test]
 fn assign_dm_space_ids_scopes_dms_to_spaces_by_counterpart_membership() {
     let mut space_members: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    space_members.insert(
-        "space-a".to_owned(),
-        BTreeSet::from(["@alice".to_owned()]),
-    );
-    space_members.insert(
-        "space-b".to_owned(),
-        BTreeSet::from(["@bob".to_owned()]),
-    );
+    space_members.insert("space-a".to_owned(), BTreeSet::from(["@alice".to_owned()]));
+    space_members.insert("space-b".to_owned(), BTreeSet::from(["@bob".to_owned()]));
 
     let mut rooms = vec![
         dm_summary("dm-alice", vec!["@alice"]),

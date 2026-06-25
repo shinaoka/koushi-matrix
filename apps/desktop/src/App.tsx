@@ -56,6 +56,7 @@ import {
 } from "./domain/shortcuts";
 import {
   effectiveRightPanelModeForSnapshot,
+  type PeoplePanelScope,
   type RightPanelContextMenuTarget,
   type RightPanelMode,
   rightPanelIntentForContextMenuAction,
@@ -1011,7 +1012,7 @@ export function App() {
   const [searchScope, setSearchScope] = useState<SearchScopeKind>("allRooms");
   const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
   const [localThreadComposerDrafts, setLocalThreadComposerDrafts] = useState<Record<string, string>>({});
-  const [stagedUploadFiles, setStagedUploadFiles] = useState<Map<string, File>>(() => new Map());
+  const stagedUploadFilesRef = useRef<Map<string, File>>(new Map());
   const [imageCompressionDialog, setImageCompressionDialog] =
     useState<ImageCompressionDialogState | null>(null);
   const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);
@@ -1020,8 +1021,8 @@ export function App() {
   const [loginPasswordFilled, setLoginPasswordFilled] = useState(false);
   const [recoverySecretFilled, setRecoverySecretFilled] = useState(false);
   const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>("closed");
-  const [roomInfoInitialSection, setRoomInfoInitialSection] =
-    useState<"members" | null>(null);
+  const [selectedProfileUserId, setSelectedProfileUserId] = useState<string | null>(null);
+  const [peoplePanelScope, setPeoplePanelScope] = useState<PeoplePanelScope | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_RIGHT_PANEL_WIDTH);
   const [qaSendStatus, setQaSendStatus] = useState<QaSendSmokeStatus>("idle");
@@ -1075,11 +1076,7 @@ export function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (rightPanelMode !== "roomInfo") {
-      setRoomInfoInitialSection(null);
-    }
-  }, [rightPanelMode]);
+
 
   function setDisplayDensity(density: DisplayDensity) {
     setDisplayDensityState(density);
@@ -1242,12 +1239,14 @@ export function App() {
 
   useEffect(() => {
     const activeIds = new Set(stagedUploads.map((item) => item.staged_id));
-    setStagedUploadFiles((files) => {
-      const next = new Map(
-        [...files.entries()].filter(([stagedId]) => activeIds.has(stagedId))
-      );
-      return next.size === files.size ? files : next;
-    });
+    const next = new Map(
+      [...stagedUploadFilesRef.current.entries()].filter(([stagedId]) =>
+        activeIds.has(stagedId)
+      )
+    );
+    if (next.size !== stagedUploadFilesRef.current.size) {
+      stagedUploadFilesRef.current = next;
+    }
   }, [stagedUploadIdKey]);
 
   useEffect(() => {
@@ -2192,7 +2191,8 @@ export function App() {
 
   async function selectSpace(spaceId: string | null) {
     if (spaceId === null) {
-      await openHomeSelection();
+      // The workspace-rail Home button always resets to Activity/Recent.
+      await openHomeActivityView();
       return;
     }
     setPrimaryView("timeline");
@@ -2233,7 +2233,8 @@ export function App() {
       !snapshot ||
       snapshot.state.domain.session.kind !== "ready" ||
       !snapshot.sidebar.account_home.is_active ||
-      snapshot.state.ui.navigation.active_space_id !== null
+      snapshot.state.ui.navigation.active_space_id !== null ||
+      snapshot.state.ui.navigation.active_room_id !== null
     ) {
       return;
     }
@@ -2243,6 +2244,7 @@ export function App() {
     homeSelection,
     openHomeSelection,
     snapshot?.sidebar.account_home.is_active,
+    snapshot?.state.ui.navigation.active_room_id,
     snapshot?.state.domain.session.kind,
     snapshot?.state.ui.navigation.active_space_id
   ]);
@@ -2455,7 +2457,7 @@ export function App() {
     }
     if (uploads.length > 0) {
       for (const item of uploads) {
-        const file = stagedUploadFiles.get(item.staged_id);
+        const file = stagedUploadFilesRef.current.get(item.staged_id);
         if (!file) {
           return;
         }
@@ -2464,7 +2466,7 @@ export function App() {
           return;
         }
       }
-      setStagedUploadFiles(new Map());
+      stagedUploadFilesRef.current = new Map();
       cancelComposerDraftPersist();
       clearLocalComposerDraft(roomId);
       setSnapshot(await api.clearUploadStaging(roomId));
@@ -2635,13 +2637,11 @@ export function App() {
       };
     });
     const items = [...existingItems, ...newItems];
-    setStagedUploadFiles((current) => {
-      const next = new Map(current);
-      newItems.forEach((item, index) => {
-        next.set(item.stagedId, files[index]);
-      });
-      return next;
+    const nextFiles = new Map(stagedUploadFilesRef.current);
+    newItems.forEach((item, index) => {
+      nextFiles.set(item.stagedId, files[index]);
     });
+    stagedUploadFilesRef.current = nextFiles;
     setSnapshot(await api.stageUploads(roomId, items));
   }
 
@@ -2661,7 +2661,7 @@ export function App() {
     if (!roomId) {
       return;
     }
-    setStagedUploadFiles(new Map());
+    stagedUploadFilesRef.current = new Map();
     setSnapshot(await api.clearUploadStaging(roomId));
   }
 
@@ -2904,6 +2904,12 @@ export function App() {
 
   async function setRightPanelModeClosingFocusedContext(nextMode: RightPanelMode) {
     await closeFocusedContextIfHiddenBy(nextMode);
+    if (nextMode !== "profile") {
+      setSelectedProfileUserId(null);
+    }
+    if (nextMode !== "people" && nextMode !== "profile") {
+      setPeoplePanelScope(null);
+    }
     setRightPanelMode(nextMode);
   }
 
@@ -2916,6 +2922,7 @@ export function App() {
       await closeThreadsListPanel();
       return;
     }
+    setSelectedProfileUserId(null);
     await setRightPanelModeClosingFocusedContext("closed");
   }
 
@@ -3226,7 +3233,7 @@ export function App() {
             void (homeContextActive ? openHomeExploreView() : openExploreView());
           }}
           onOpenHome={() => {
-            void selectSpace(null);
+            void openHomeActivityView();
           }}
           onOpenInvites={() => {
             void (homeContextActive ? openHomeInvitesView() : openInvitesView());
@@ -3313,7 +3320,6 @@ export function App() {
             searchResults={searchResults}
             showSearchResults={effectiveRightPanelMode !== "search"}
             snapshot={snapshot}
-            rightPanelOpen={rightPanelOpen}
             timelineBackfill={timelineDiagnostics.backfill}
             timelineTransport={appTimelineTransport}
             onCancelReply={() => {
@@ -3355,34 +3361,36 @@ export function App() {
               void setLocalUserAlias(userId, alias);
             }}
             onUnpinPinnedEvent={unpinPinnedEvent}
-            onToggleThread={() => {
-              if (rightPanelOpen) {
-                if (effectiveRightPanelMode === "thread") {
-                  void closeThread();
-                } else {
-                  void setRightPanelModeClosingFocusedContext("closed");
-                }
+            onOpenPeople={async () => {
+              const roomId = snapshot.state.ui.navigation.active_room_id;
+              if (roomId) {
+                roomSettingsLoadRef.current = null;
+                const next = await api.loadRoomSettings(roomId);
+                setSnapshot(next);
+                setPeoplePanelScope({ kind: "room", roomId });
               } else {
-                // Opening a specific thread is driven by a message's "view replies"
-                // action (openThread -> Rust ThreadPaneState), not by scanning the
-                // legacy snapshot.timeline placeholder. The panel toggle opens room
-                // info as the default right-panel surface.
-                setRoomInfoInitialSection(null);
-                void setRightPanelModeClosingFocusedContext("roomInfo");
+                setPeoplePanelScope(null);
               }
+              setSelectedProfileUserId(null);
+              await setRightPanelModeClosingFocusedContext("people");
             }}
-            onOpenRoomInfo={() => {
-              setRoomInfoInitialSection(null);
-              void setRightPanelModeClosingFocusedContext("roomInfo");
-            }}
-            onOpenRoomMembers={() => {
-              setRoomInfoInitialSection("members");
-              void setRightPanelModeClosingFocusedContext("roomInfo");
-            }}
-            onOpenThreadsList={() => {
+            onOpenThreads={() => {
               const roomId = snapshot.state.ui.navigation.active_room_id;
               if (roomId) {
                 void openThreadsListPanel(roomId);
+              }
+            }}
+            onToggleRoomInfo={() => {
+              if (rightPanelOpen) {
+                if (effectiveRightPanelMode === "thread") {
+                  void closeThread();
+                } else if (effectiveRightPanelMode === "roomInfo") {
+                  void setRightPanelModeClosingFocusedContext("closed");
+                } else {
+                  void setRightPanelModeClosingFocusedContext("roomInfo");
+                }
+              } else {
+                void setRightPanelModeClosingFocusedContext("roomInfo");
               }
             }}
             onTimelineDiagnosticsChange={updateTimelineDiagnostics}
@@ -3396,7 +3404,8 @@ export function App() {
           displayDensity={displayDensity}
           isRecoveryBusy={isBusy || sessionKind === "recovering"}
           mode={effectiveRightPanelMode}
-          roomInfoInitialSection={roomInfoInitialSection}
+          peoplePanelScope={peoplePanelScope}
+          selectedProfileUserId={selectedProfileUserId}
           recoverySecretFilled={recoverySecretFilled}
           recoverySecretInputRef={recoverySecretRef}
           snapshot={snapshot}
@@ -3418,12 +3427,36 @@ export function App() {
           }}
           onOpenSpaceMembers={
             activeSpace
-              ? () => {
+              ? async () => {
                   spaceSettingsLoadRef.current = null;
-                  void api.loadRoomSettings(activeSpace.space_id).then(setSnapshot);
+                  const next = await api.loadRoomSettings(activeSpace.space_id);
+                  setSnapshot(next);
+                  setPeoplePanelScope({ kind: "space", spaceId: activeSpace.space_id });
+                  setSelectedProfileUserId(null);
+                  await setRightPanelModeClosingFocusedContext("people");
                 }
               : undefined
           }
+          onOpenPeople={async () => {
+            if (activeRoom) {
+              roomSettingsLoadRef.current = null;
+              const next = await api.loadRoomSettings(activeRoom.room_id);
+              setSnapshot(next);
+              setPeoplePanelScope({ kind: "room", roomId: activeRoom.room_id });
+            } else {
+              setPeoplePanelScope(null);
+            }
+            setSelectedProfileUserId(null);
+            await setRightPanelModeClosingFocusedContext("people");
+          }}
+          onOpenProfile={(userId) => {
+            setSelectedProfileUserId(userId);
+            void setRightPanelModeClosingFocusedContext("profile");
+          }}
+          onBackToPeople={() => {
+            setSelectedProfileUserId(null);
+            void setRightPanelModeClosingFocusedContext("people");
+          }}
           onRefreshFilesView={(scope, filter, sort) => {
             void refreshFilesView(scope, filter, sort);
           }}

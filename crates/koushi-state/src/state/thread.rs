@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::errors::OperationFailureKind;
+use super::settings::ThreadListOrder;
 use super::timeline::ComposerState;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -79,6 +80,13 @@ impl ThreadsListState {
             *is_paginating = value;
         }
     }
+
+    pub fn items(&self) -> &[ThreadsListItem] {
+        match self {
+            Self::Open { items, .. } => items,
+            _ => &[],
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -94,4 +102,29 @@ pub struct ThreadsListItem {
     pub latest_body_preview: Option<String>,
     pub latest_timestamp_ms: Option<u64>,
     pub reply_count: u32,
+}
+
+/// Sort a threads-list projection according to the Rust-owned display-order
+/// setting. The SDK timeline order stays canonical; this is a UI projection.
+pub fn sort_threads_list_items(items: &mut [ThreadsListItem], order: ThreadListOrder) {
+    match order {
+        ThreadListOrder::LatestReply => {
+            items.sort_by(|left, right| {
+                let left_ts = left.latest_timestamp_ms.unwrap_or(0);
+                let right_ts = right.latest_timestamp_ms.unwrap_or(0);
+                right_ts
+                    .cmp(&left_ts)
+                    .then_with(|| left.root_event_id.cmp(&right.root_event_id))
+            });
+        }
+        ThreadListOrder::RootChronology => {
+            items.sort_by(|left, right| {
+                let left_ts = left.root_timestamp_ms.unwrap_or(0);
+                let right_ts = right.root_timestamp_ms.unwrap_or(0);
+                left_ts
+                    .cmp(&right_ts)
+                    .then_with(|| left.root_event_id.cmp(&right.root_event_id))
+            });
+        }
+    }
 }

@@ -696,3 +696,40 @@ fn room_management_logout_clears_state() {
 
     assert_eq!(state.room_management, RoomManagementState::default());
 }
+
+#[test]
+fn avatar_metadata_debug_redacts_mxc_and_user_room_associations() {
+    let member = RoomMemberSummary {
+        user_id: "@member:example.invalid".to_owned(),
+        display_name: Some("Member".to_owned()),
+        display_label: "Member".to_owned(),
+        original_display_label: "Member".to_owned(),
+        avatar_url: Some("mxc://example.invalid/member-avatar".to_owned()),
+        power_level: Some(0),
+        role: RoomMemberRole::User,
+        user_trust: None,
+    };
+    let member_debug = format!("{:?}", member);
+    assert!(
+        !member_debug.contains("mxc://example.invalid/member-avatar"),
+        "{member_debug}"
+    );
+    assert!(member_debug.contains("MxcUri(..)"), "{member_debug}");
+
+    let settings = RoomSettingsSnapshot {
+        room_id: "!room:example.invalid".to_owned(),
+        name: Some("Synthetic Room".to_owned()),
+        topic: Some("Synthetic topic".to_owned()),
+        avatar_url: Some("mxc://example.invalid/room-avatar".to_owned()),
+        join_rule: RoomJoinRule::Invite,
+        history_visibility: RoomHistoryVisibility::Shared,
+        permissions: RoomPermissionFacts::default(),
+        members: vec![member],
+    };
+    let settings_debug = format!("{:?}", settings);
+    assert!(
+        !settings_debug.contains("mxc://example.invalid/room-avatar"),
+        "{settings_debug}"
+    );
+    assert!(settings_debug.contains("MxcUri(..)"), "{settings_debug}");
+}

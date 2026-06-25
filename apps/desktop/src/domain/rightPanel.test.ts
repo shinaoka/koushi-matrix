@@ -3,9 +3,10 @@ import { describe, expect, test } from "vitest";
 import {
   effectiveRightPanelModeForSnapshot,
   rightPanelIntentForContextMenuAction,
-  rightPanelModeForSearchQuery
+  rightPanelModeForSearchQuery,
+  roomOrSpaceForPeoplePanelScope
 } from "./rightPanel";
-import type { DesktopSnapshot } from "./types";
+import type { DesktopSnapshot, RoomSummary, SpaceSummary } from "./types";
 
 describe("right panel context menu routing", () => {
   test("routes room and Space menu actions through selection plus panel mode", () => {
@@ -62,6 +63,33 @@ describe("right panel context menu routing", () => {
     expect(rightPanelModeForSearchQuery("   ")).toBeNull();
   });
 
+  test("resolves People/Profile context from an explicit room or Space scope", () => {
+    const room = roomSummary("!room-a:example.invalid", "Room A");
+    const space = spaceSummary("!space-a:example.invalid", "Space A");
+
+    expect(
+      roomOrSpaceForPeoplePanelScope(
+        { kind: "space", spaceId: space.space_id },
+        room,
+        space,
+        [room],
+        [space]
+      )
+    ).toBe(space);
+
+    expect(
+      roomOrSpaceForPeoplePanelScope(
+        { kind: "room", roomId: room.room_id },
+        room,
+        space,
+        [room],
+        [space]
+      )
+    ).toBe(room);
+
+    expect(roomOrSpaceForPeoplePanelScope(null, room, space, [room], [space])).toBe(room);
+  });
+
   test("forces recovery mode only while recovery is required", () => {
     const snapshot = snapshotForPanelMode("needsRecovery", false);
 
@@ -89,6 +117,33 @@ describe("right panel context menu routing", () => {
     );
   });
 });
+
+function roomSummary(roomId: string, label: string): RoomSummary {
+  return {
+    room_id: roomId,
+    display_name: label,
+    display_label: label,
+    original_display_label: label,
+    avatar: null,
+    is_dm: false,
+    dm_user_ids: [],
+    tags: { favourite: null, low_priority: null },
+    unread_count: 0,
+    highlight_count: 0,
+    parent_space_ids: [],
+    dm_space_ids: [],
+    is_encrypted: false
+  };
+}
+
+function spaceSummary(spaceId: string, label: string): SpaceSummary {
+  return {
+    space_id: spaceId,
+    display_name: label,
+    avatar: null,
+    child_room_ids: []
+  };
+}
 
 function snapshotForPanelMode(
   sessionKind: DesktopSnapshot["state"]["domain"]["session"]["kind"],
@@ -135,7 +190,9 @@ function snapshotForPanelMode(
               speed: "standard",
               include_media_captions: true,
               include_filenames: true
-            }
+            },
+            thread_list_order: { kind: "latestReply" },
+            room_list_sort: { kind: "activity" }
           },
           persistence: { kind: "idle" }
         },

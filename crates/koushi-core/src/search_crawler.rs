@@ -68,9 +68,7 @@ pub(crate) enum HistoryCrawlPageResult {
     },
     /// The gate cancelled this page so a user-visible pagination could run.
     /// The checkpoint is unchanged and must be re-queued (no progress lost).
-    Preempted {
-        checkpoint: HistoryCrawlCheckpoint,
-    },
+    Preempted { checkpoint: HistoryCrawlCheckpoint },
 }
 
 pub(crate) fn spawn_history_crawl_page(

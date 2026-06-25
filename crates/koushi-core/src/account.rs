@@ -49,7 +49,6 @@ use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
 use matrix_sdk::ruma::{MxcUri, OwnedMxcUri};
 use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
 
-use crate::startup_trace::{self, StartupPhase};
 use crate::command::{
     AccountCommand, RoomCommand, RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand,
     SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SyncCommand, ThreadsListCommand,
@@ -67,6 +66,7 @@ use crate::renderable_thumbnail::{
 };
 use crate::room::{RoomActorHandle, RoomMessage};
 use crate::search::SearchActorHandle;
+use crate::startup_trace::{self, StartupPhase};
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
 use crate::sync::{SyncActorHandle, SyncMessage};
 use crate::timeline::{TimelineManagerHandle, TimelineMessage};

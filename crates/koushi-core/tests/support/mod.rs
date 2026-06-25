@@ -86,6 +86,7 @@ pub fn activity_row(room_id: &str, event_id: &str, timestamp_ms: u64) -> Activit
     ActivityRow::event(
         room_id.to_owned(),
         event_id.to_owned(),
+        Some("@sender:example.invalid".to_owned()),
         String::new(),
         Some("Private sender".to_owned()),
         Some("Private preview".to_owned()),

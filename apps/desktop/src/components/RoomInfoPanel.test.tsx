@@ -1,17 +1,10 @@
 // @vitest-environment jsdom
-import { renderToStaticMarkup } from "react-dom/server";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { RoomInfoPanel } from "./RoomInfoPanel";
-
-afterEach(() => {
-  cleanup();
-  vi.restoreAllMocks();
-});
 import type {
   LinkPreviewSettingsState,
-  RoomMemberSummary,
   RoomNotificationSettings,
   RoomSummary,
   SettingsState
@@ -77,7 +70,9 @@ const baseAppSettings: SettingsState = {
       speed: "standard" as const,
       include_media_captions: true,
       include_filenames: true
-    }
+    },
+    thread_list_order: { kind: "latestReply" },
+    room_list_sort: { kind: "activity" }
   },
   persistence: { kind: "idle" }
 };
@@ -86,54 +81,14 @@ const baseLinkPreviewSettings: LinkPreviewSettingsState = {
   room_overrides: {}
 };
 
-function makeMember(index: number): RoomMemberSummary {
-  return {
-    user_id: `@member-${index}:example.invalid`,
-    display_name: `Member ${index}`,
-    display_label: `Member ${index}`,
-    original_display_label: `Member ${index}`,
-    avatar_url: `mxc://example.invalid/avatar-${index}`,
-    power_level: 0,
-    role: "user"
-  };
-}
-
-function makeLargeRoomMembers(count: number): RoomMemberSummary[] {
-  return Array.from({ length: count }, (_, index) => makeMember(index));
-}
-
-function getRoomMemberScrollContainer(): HTMLDivElement {
-  const element = document.querySelector(".room-member-scroll-container");
-  expect(element).toBeTruthy();
-  return element as HTMLDivElement;
-}
-
-function setScrollMetrics(
-  element: HTMLElement,
-  {
-    clientHeight,
-    scrollHeight,
-    scrollTop
-  }: { clientHeight: number; scrollHeight: number; scrollTop: number }
-) {
-  Object.defineProperty(element, "clientHeight", {
-    configurable: true,
-    value: clientHeight
-  });
-  Object.defineProperty(element, "scrollHeight", {
-    configurable: true,
-    value: scrollHeight
-  });
-  Object.defineProperty(element, "scrollTop", {
-    configurable: true,
-    value: scrollTop,
-    writable: true
-  });
-}
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe("RoomInfoPanel", () => {
-  test("renders room identity, membership context, and Element-like settings entries", () => {
-    const markup = renderToStaticMarkup(
+  test("renders room identity and simplified info entries", () => {
+    render(
       <RoomInfoPanel
         room={baseRoom}
         roomNotificationSettings={idleSettings}
@@ -148,26 +103,17 @@ describe("RoomInfoPanel", () => {
       />
     );
 
-    expect(markup).toContain("Alpha Room");
-    expect(markup).toContain("!room-alpha:example.invalid");
-    expect(markup).toContain("Room");
-    expect(markup).toContain("Unread");
-    expect(markup).toContain("8");
-    expect(markup).toContain("Synthetic Workspace");
-    expect(markup).toContain("People");
-    expect(markup).toContain("Files");
-    expect(markup).toContain("Notifications");
-    expect(markup).toContain("Room settings");
-    expect(markup).toContain("Timeline");
-    expect(markup).toContain("Subscribed");
-    expect(markup).toContain("Search index");
-    expect(markup).toContain("Exact verified results");
-    expect(markup).toContain("DM list");
-    expect(markup).toContain("Room scoped");
+    expect(screen.getByText("Alpha Room")).toBeTruthy();
+    expect(screen.getByText("!room-alpha:example.invalid")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "People" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Files" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Notifications" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Room settings" })).toBeTruthy();
+    expect(screen.getByText("Synthetic Workspace")).toBeTruthy();
   });
 
   test("labels direct messages distinctly from rooms", () => {
-    const markup = renderToStaticMarkup(
+    render(
       <RoomInfoPanel
         room={{
           ...baseRoom,
@@ -186,12 +132,12 @@ describe("RoomInfoPanel", () => {
       />
     );
 
-    expect(markup).toContain("Direct message");
-    expect(markup).toContain("No Spaces");
+    expect(screen.getByText("Direct message")).toBeTruthy();
+    expect(screen.queryAllByText("No Spaces").length).toBeGreaterThanOrEqual(1);
   });
 
   test("renders room titles from the Rust-projected display label", () => {
-    const markup = renderToStaticMarkup(
+    render(
       <RoomInfoPanel
         room={{
           ...baseRoom,
@@ -210,12 +156,27 @@ describe("RoomInfoPanel", () => {
       />
     );
 
-    expect(markup).toContain("Alice Local");
-    expect(markup).not.toContain("Alice Upstream");
+    expect(screen.getByText("Alice Local")).toBeTruthy();
+    expect(screen.queryByText("Alice Upstream")).toBeNull();
   });
 
-  test("renders room member labels from the Rust-projected display label", () => {
-    const markup = renderToStaticMarkup(
+  test("opens the People panel when the People entry is clicked", () => {
+    const onOpenPeople = vi.fn();
+    render(
+      <RoomInfoPanel
+        room={baseRoom}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        onOpenPeople={onOpenPeople}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "People" }));
+    expect(onOpenPeople).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not render a dense member list in the room info panel", () => {
+    render(
       <RoomInfoPanel
         room={baseRoom}
         roomNotificationSettings={idleSettings}
@@ -253,422 +214,12 @@ describe("RoomInfoPanel", () => {
       />
     );
 
-    expect(markup).toContain("Local Remark");
-    expect(markup).toContain("Kick Local Remark");
-  });
-
-  test("shows user trust state and help access in member rows", () => {
-    render(
-      <RoomInfoPanel
-        room={baseRoom}
-        roomNotificationSettings={idleSettings}
-        spaces={[]}
-        roomManagement={{
-          selected_room_id: "!room-alpha:example.invalid",
-          settings: {
-            room_id: "!room-alpha:example.invalid",
-            name: "Alpha Room",
-            topic: null,
-            avatar_url: null,
-            join_rule: "invite",
-            history_visibility: "shared",
-            permissions: {
-              can_edit_settings: true,
-              can_edit_roles: true,
-              can_kick: true,
-              can_ban: true,
-              can_unban: false
-            },
-            members: [
-              {
-                user_id: "@verified:example.invalid",
-                display_name: "Verified User",
-                display_label: "Verified User",
-                original_display_label: "Verified User",
-                avatar_url: null,
-                power_level: 0,
-                role: "user",
-                user_trust: { kind: "verified" }
-              },
-              {
-                user_id: "@reset:example.invalid",
-                display_name: "Reset User",
-                display_label: "Reset User",
-                original_display_label: "Reset User",
-                avatar_url: null,
-                power_level: 0,
-                role: "user",
-                user_trust: { kind: "identityReset" }
-              }
-            ]
-          },
-          operation: { kind: "idle" }
-        }}
-      />
-    );
-
-    expect(screen.getByText("Verified")).toBeTruthy();
-    expect(screen.getByText("Identity reset")).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "Explain user trust" })).toHaveLength(2);
-  });
-
-  test("renders alias edit controls with Rust-projected original member context", () => {
-    const markup = renderToStaticMarkup(
-      <RoomInfoPanel
-        room={baseRoom}
-        roomNotificationSettings={idleSettings}
-        spaces={[]}
-        onSetLocalUserAlias={() => undefined}
-        roomManagement={{
-          selected_room_id: "!room-alpha:example.invalid",
-          settings: {
-            room_id: "!room-alpha:example.invalid",
-            name: "Alpha Room",
-            topic: null,
-            avatar_url: null,
-            join_rule: "invite",
-            history_visibility: "shared",
-            permissions: {
-              can_edit_settings: true,
-              can_edit_roles: true,
-              can_kick: true,
-              can_ban: true,
-              can_unban: false
-            },
-            members: [
-              {
-                user_id: "@member:example.invalid",
-                display_name: "Upstream Member",
-                display_label: "Local Remark",
-                original_display_label: "Upstream Member",
-                avatar_url: null,
-                power_level: 0,
-                role: "user"
-              }
-            ]
-          },
-          operation: { kind: "idle" }
-        }}
-      />
-    );
-
-    expect(markup).toContain("Local Remark");
-    expect(markup).toContain("Original: Upstream Member");
-    expect(markup).toContain("Edit alias for Local Remark");
-    expect(markup).toContain("Clear alias for Local Remark");
-  });
-
-  test("starts a direct message from a room member row", () => {
-    const startedUserIds: string[] = [];
-    render(
-      <RoomInfoPanel
-        room={baseRoom}
-        roomNotificationSettings={idleSettings}
-        spaces={[]}
-        onStartDirectMessage={(userId) => {
-          startedUserIds.push(userId);
-        }}
-        roomManagement={{
-          selected_room_id: "!room-alpha:example.invalid",
-          settings: {
-            room_id: "!room-alpha:example.invalid",
-            name: "Alpha Room",
-            topic: null,
-            avatar_url: null,
-            join_rule: "invite",
-            history_visibility: "shared",
-            permissions: {
-              can_edit_settings: true,
-              can_edit_roles: true,
-              can_kick: true,
-              can_ban: true,
-              can_unban: false
-            },
-            members: [
-              {
-                user_id: "@member:example.invalid",
-                display_name: "Upstream Member",
-                display_label: "Local Remark",
-                original_display_label: "Upstream Member",
-                avatar_url: null,
-                power_level: 0,
-                role: "user"
-              }
-            ]
-          },
-          operation: { kind: "idle" }
-        }}
-      />
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Message Local Remark" }));
-
-    expect(startedUserIds).toEqual(["@member:example.invalid"]);
-  });
-
-  test("renders only a bounded member window before scrolling", () => {
-    render(
-      <RoomInfoPanel
-        room={baseRoom}
-        roomNotificationSettings={idleSettings}
-        spaces={[]}
-        onStartDirectMessage={() => undefined}
-        roomManagement={{
-          selected_room_id: "!room-alpha:example.invalid",
-          settings: {
-            room_id: "!room-alpha:example.invalid",
-            name: "Alpha Room",
-            topic: null,
-            avatar_url: null,
-            join_rule: "invite",
-            history_visibility: "shared",
-            permissions: {
-              can_edit_settings: true,
-              can_edit_roles: true,
-              can_kick: true,
-              can_ban: true,
-              can_unban: false
-            },
-            members: makeLargeRoomMembers(3000)
-          },
-          operation: { kind: "idle" }
-        }}
-      />
-    );
-
-    expect(screen.getAllByRole("button", { name: /^Message Member / }).length).toBeLessThan(3000);
-    expect(screen.queryByText("Member 2999")).toBeNull();
-  });
-
-  test("scrolling the member list reveals later members and hides early ones", async () => {
-    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-      callback(0);
-      return 0;
-    });
-
-    render(
-      <RoomInfoPanel
-        room={baseRoom}
-        roomNotificationSettings={idleSettings}
-        spaces={[]}
-        onStartDirectMessage={() => undefined}
-        roomManagement={{
-          selected_room_id: "!room-alpha:example.invalid",
-          settings: {
-            room_id: "!room-alpha:example.invalid",
-            name: "Alpha Room",
-            topic: null,
-            avatar_url: null,
-            join_rule: "invite",
-            history_visibility: "shared",
-            permissions: {
-              can_edit_settings: true,
-              can_edit_roles: true,
-              can_kick: true,
-              can_ban: true,
-              can_unban: false
-            },
-            members: makeLargeRoomMembers(3000)
-          },
-          operation: { kind: "idle" }
-        }}
-      />
-    );
-
-    const scrollContainer = getRoomMemberScrollContainer();
-    expect(scrollContainer.getAttribute("tabindex")).toBe("0");
-    expect(scrollContainer.getAttribute("role")).toBe("region");
-    setScrollMetrics(scrollContainer, {
-      clientHeight: 456,
-      scrollHeight: 3000 * 92,
-      scrollTop: 3000 * 92 - 456
-    });
-
-    fireEvent.scroll(scrollContainer, {
-      target: {
-        scrollTop: 3000 * 92 - 456
-      }
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText("Member 999")).toBeTruthy();
-    });
-    expect(screen.queryByText("Member 0")).toBeNull();
-  });
-
-  test("requests avatar thumbnails only for visible member rows", async () => {
-    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-      callback(0);
-      return 0;
-    });
-    const onRequestMemberAvatarThumbnail = vi.fn(async () => undefined);
-
-    render(
-      <RoomInfoPanel
-        room={baseRoom}
-        roomNotificationSettings={idleSettings}
-        spaces={[]}
-        onStartDirectMessage={() => undefined}
-        onRequestMemberAvatarThumbnail={onRequestMemberAvatarThumbnail}
-        roomManagement={{
-          selected_room_id: "!room-alpha:example.invalid",
-          settings: {
-            room_id: "!room-alpha:example.invalid",
-            name: "Alpha Room",
-            topic: null,
-            avatar_url: null,
-            join_rule: "invite",
-            history_visibility: "shared",
-            permissions: {
-              can_edit_settings: true,
-              can_edit_roles: true,
-              can_kick: true,
-              can_ban: true,
-              can_unban: false
-            },
-            members: makeLargeRoomMembers(3000)
-          },
-          operation: { kind: "idle" }
-        }}
-      />
-    );
-
-    const scrollContainer = getRoomMemberScrollContainer();
-    setScrollMetrics(scrollContainer, {
-      clientHeight: 456,
-      scrollHeight: 3000 * 92,
-      scrollTop: 0
-    });
-
-    fireEvent.scroll(scrollContainer);
-
-    await waitFor(() => {
-      expect(onRequestMemberAvatarThumbnail).toHaveBeenCalled();
-    });
-
-    const requestedMxcs = onRequestMemberAvatarThumbnail.mock.calls.flat() as string[];
-    expect(requestedMxcs.length).toBeGreaterThan(0);
-    expect(requestedMxcs.length).toBeLessThanOrEqual(12);
-    expect(requestedMxcs).not.toContain("mxc://example.invalid/avatar-2999");
-    expect(new Set(requestedMxcs).size).toBe(requestedMxcs.length);
-  });
-
-  test("renders every loaded room member with a direct-message entry point", () => {
-    render(
-      <RoomInfoPanel
-        room={baseRoom}
-        roomNotificationSettings={idleSettings}
-        spaces={[]}
-        onStartDirectMessage={() => undefined}
-        roomManagement={{
-          selected_room_id: "!room-alpha:example.invalid",
-          settings: {
-            room_id: "!room-alpha:example.invalid",
-            name: "Alpha Room",
-            topic: null,
-            avatar_url: null,
-            join_rule: "invite",
-            history_visibility: "shared",
-            permissions: {
-              can_edit_settings: true,
-              can_edit_roles: true,
-              can_kick: true,
-              can_ban: true,
-              can_unban: false
-            },
-            members: [
-              {
-                user_id: "@ada:example.invalid",
-                display_name: "Ada",
-                display_label: "Ada",
-                original_display_label: "Ada",
-                avatar_url: null,
-                power_level: 100,
-                role: "administrator"
-              },
-              {
-                user_id: "@grace:example.invalid",
-                display_name: "Grace",
-                display_label: "Grace",
-                original_display_label: "Grace",
-                avatar_url: null,
-                power_level: 50,
-                role: "moderator"
-              },
-              {
-                user_id: "@linus:example.invalid",
-                display_name: "Linus",
-                display_label: "Linus",
-                original_display_label: "Linus",
-                avatar_url: null,
-                power_level: 0,
-                role: "user"
-              }
-            ]
-          },
-          operation: { kind: "idle" }
-        }}
-      />
-    );
-
-    for (const member of ["Ada", "Grace", "Linus"]) {
-      expect(screen.getByText(member)).toBeTruthy();
-      expect(screen.getByRole("button", { name: `Message ${member}` })).toBeTruthy();
-    }
-    for (const userId of [
-      "@ada:example.invalid",
-      "@grace:example.invalid",
-      "@linus:example.invalid"
-    ]) {
-      expect(screen.getByText(userId)).toBeTruthy();
-    }
-  });
-
-  test("does not synthesize room member labels when the projected label is empty", () => {
-    const markup = renderToStaticMarkup(
-      <RoomInfoPanel
-        room={baseRoom}
-        roomNotificationSettings={idleSettings}
-        spaces={[]}
-        roomManagement={{
-          selected_room_id: "!room-alpha:example.invalid",
-          settings: {
-            room_id: "!room-alpha:example.invalid",
-            name: "Alpha Room",
-            topic: null,
-            avatar_url: null,
-            join_rule: "invite",
-            history_visibility: "shared",
-            permissions: {
-              can_edit_settings: true,
-              can_edit_roles: true,
-              can_kick: true,
-              can_ban: true,
-              can_unban: false
-            },
-            members: [
-              {
-                user_id: "@member:example.invalid",
-                display_name: "Upstream Member",
-                display_label: "",
-                original_display_label: "Upstream Member",
-                avatar_url: null,
-                power_level: 0,
-                role: "user"
-              }
-            ]
-          },
-          operation: { kind: "idle" }
-        }}
-      />
-    );
-
-    expect(markup).not.toContain("Upstream Member");
-    expect(markup).not.toContain("Kick @member:example.invalid");
+    expect(screen.queryByText("Local Remark")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Message/ })).toBeNull();
   });
 
   test("renders notification mode options", () => {
-    const markup = renderToStaticMarkup(
+    render(
       <RoomInfoPanel
         room={baseRoom}
         roomNotificationSettings={idleSettings}
@@ -677,13 +228,13 @@ describe("RoomInfoPanel", () => {
       />
     );
 
-    expect(markup).toContain("All messages");
-    expect(markup).toContain("Mentions only");
-    expect(markup).toContain("Mute");
+    expect(screen.getByText("All messages")).toBeTruthy();
+    expect(screen.getByText("Mentions only")).toBeTruthy();
+    expect(screen.getByText("Mute")).toBeTruthy();
   });
 
   test("selects the current notification mode", () => {
-    const markup = renderToStaticMarkup(
+    const { container } = render(
       <RoomInfoPanel
         room={baseRoom}
         roomNotificationSettings={{
@@ -695,11 +246,13 @@ describe("RoomInfoPanel", () => {
       />
     );
 
-    expect(markup).toContain('value="mentions"');
+    const select = container.querySelector("select");
+    expect(select).toBeTruthy();
+    expect(select?.value).toBe("mentions");
   });
 
   test("disables the notification select while a mode change is pending", () => {
-    const markup = renderToStaticMarkup(
+    const { container } = render(
       <RoomInfoPanel
         room={baseRoom}
         roomNotificationSettings={pendingSettings}
@@ -708,12 +261,14 @@ describe("RoomInfoPanel", () => {
       />
     );
 
-    expect(markup).toContain('disabled=""');
-    expect(markup).toContain('value="mute"');
+    const select = container.querySelector("select");
+    expect(select).toBeTruthy();
+    expect(select?.hasAttribute("disabled")).toBe(true);
+    expect(select?.value).toBe("mute");
   });
 
   test("disables the notification select when no handler is provided", () => {
-    const markup = renderToStaticMarkup(
+    const { container } = render(
       <RoomInfoPanel
         room={baseRoom}
         roomNotificationSettings={idleSettings}
@@ -721,13 +276,15 @@ describe("RoomInfoPanel", () => {
       />
     );
 
-    expect(markup).toContain('disabled=""');
+    const select = container.querySelector("select");
+    expect(select).toBeTruthy();
+    expect(select?.hasAttribute("disabled")).toBe(true);
   });
 });
 
 describe("RoomInfoPanel URL previews", () => {
   test("renders the URL-preview section when settings and handler are supplied", () => {
-    const { getByRole } = render(
+    render(
       <RoomInfoPanel
         room={baseRoom}
         roomNotificationSettings={idleSettings}
@@ -739,12 +296,12 @@ describe("RoomInfoPanel URL previews", () => {
     );
 
     expect(
-      getByRole("switch", { name: "Enable link previews for this room" })
-    ).toBeDefined();
+      screen.getByRole("switch", { name: "Enable link previews for this room" })
+    ).toBeTruthy();
   });
 
   test("checks the toggle for an unencrypted room that falls back to the global setting", () => {
-    const { getByRole } = render(
+    render(
       <RoomInfoPanel
         room={baseRoom}
         roomNotificationSettings={idleSettings}
@@ -755,7 +312,7 @@ describe("RoomInfoPanel URL previews", () => {
       />
     );
 
-    const toggle = getByRole("switch", {
+    const toggle = screen.getByRole("switch", {
       name: "Enable link previews for this room"
     });
     expect(toggle.getAttribute("aria-checked")).toBe("true");
@@ -763,7 +320,7 @@ describe("RoomInfoPanel URL previews", () => {
   });
 
   test("unchecks but keeps the toggle enabled for encrypted rooms by default", () => {
-    const { getByRole, getByText } = render(
+    render(
       <RoomInfoPanel
         room={{ ...baseRoom, is_encrypted: true }}
         roomNotificationSettings={idleSettings}
@@ -774,18 +331,20 @@ describe("RoomInfoPanel URL previews", () => {
       />
     );
 
-    const toggle = getByRole("switch", {
+    const toggle = screen.getByRole("switch", {
       name: "Enable link previews for this room"
     });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
     expect(toggle.hasAttribute("disabled")).toBe(false);
     expect(
-      getByText("Encrypted-room previews can reveal URLs to the homeserver and destination site.")
-    ).toBeDefined();
+      screen.getByText(
+        "Encrypted-room previews can reveal URLs to the homeserver and destination site."
+      )
+    ).toBeTruthy();
   });
 
   test("checks the toggle for encrypted rooms when the encrypted global default is on", () => {
-    const { getByRole } = render(
+    render(
       <RoomInfoPanel
         room={{ ...baseRoom, is_encrypted: true }}
         roomNotificationSettings={idleSettings}
@@ -805,7 +364,7 @@ describe("RoomInfoPanel URL previews", () => {
       />
     );
 
-    const toggle = getByRole("switch", {
+    const toggle = screen.getByRole("switch", {
       name: "Enable link previews for this room"
     });
     expect(toggle.getAttribute("aria-checked")).toBe("true");
@@ -813,7 +372,7 @@ describe("RoomInfoPanel URL previews", () => {
 
   test("dispatches a per-room override when the toggle is clicked", () => {
     const onSetRoomUrlPreviewOverride = vi.fn();
-    const { getByRole } = render(
+    render(
       <RoomInfoPanel
         room={baseRoom}
         roomNotificationSettings={idleSettings}
@@ -824,7 +383,7 @@ describe("RoomInfoPanel URL previews", () => {
       />
     );
 
-    const toggle = getByRole("switch", {
+    const toggle = screen.getByRole("switch", {
       name: "Enable link previews for this room"
     });
     fireEvent.click(toggle);

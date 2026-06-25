@@ -1,8 +1,9 @@
 use koushi_state::{
     AppAction, AppEffect, AppState, AppearanceSettings, ComposerSendShortcut, DisplaySettings,
     EmojiPreference, FontPreference, ImageUploadCompressionMode, KeyboardSettings, LocaleSettings,
-    MediaSettings, NotificationSettings, SettingsPatch, SettingsPersistenceState, SettingsValues,
-    TextDirectionPreference, ThemePreference, TimelineSettings, UiEvent, reduce,
+    MediaSettings, NotificationSettings, RoomListSort, RoomSummary, SettingsPatch,
+    SettingsPersistenceState, SettingsValues, TextDirectionPreference, ThemePreference,
+    ThreadListOrder, TimelineSettings, UiEvent, reduce,
 };
 
 fn dark_theme_patch() -> SettingsPatch {
@@ -106,6 +107,8 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
         timeline: TimelineSettings {
             auto_load_older_messages: true,
         },
+        thread_list_order: ThreadListOrder::LatestReply,
+        room_list_sort: RoomListSort::Activity,
         search_crawler: koushi_state::SearchCrawlerSettings::default(),
     };
 
@@ -119,7 +122,10 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
     assert_eq!(state.settings.values, values);
     assert_eq!(
         effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::SettingsChanged)]
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+        ]
     );
 }
 
@@ -482,6 +488,39 @@ fn settings_update_is_optimistic_and_emits_a_persist_effect() {
 }
 
 #[test]
+fn thread_list_ordering_setting_defaults_to_latest_reply() {
+    let values = SettingsValues::default();
+    assert_eq!(values.thread_list_order, ThreadListOrder::LatestReply);
+}
+
+#[test]
+fn room_list_sort_setting_defaults_to_activity_and_supports_recent_and_locale() {
+    let values = SettingsValues::default();
+    assert_eq!(values.room_list_sort, RoomListSort::Activity);
+
+    let mut state = AppState::default();
+    reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 90,
+            patch: SettingsPatch {
+                room_list_sort: Some(RoomListSort::RecentFirst),
+                thread_list_order: Some(ThreadListOrder::RootChronology),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+    assert_eq!(
+        state.settings.values.room_list_sort,
+        RoomListSort::RecentFirst
+    );
+    assert_eq!(
+        state.settings.values.thread_list_order,
+        ThreadListOrder::RootChronology
+    );
+}
+
+#[test]
 fn settings_persist_settle_requires_matching_request_id() {
     let mut state = AppState::default();
 
@@ -542,5 +581,246 @@ fn settings_load_and_persist_failures_are_private_data_free() {
             .errors
             .iter()
             .any(|error| error.code == "settings_persist_failed")
+    );
+}
+
+fn test_room(room_id: &str, display_name: &str, last_activity_ms: u64) -> RoomSummary {
+    RoomSummary {
+        room_id: room_id.to_owned(),
+        display_name: display_name.to_owned(),
+        display_label: display_name.to_owned(),
+        original_display_label: display_name.to_owned(),
+        avatar: None,
+        is_dm: false,
+        dm_user_ids: Vec::new(),
+        tags: koushi_state::RoomTags::default(),
+        unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
+        marked_unread: false,
+        last_activity_ms,
+        parent_space_ids: Vec::new(),
+        dm_space_ids: Vec::new(),
+        is_encrypted: false,
+        joined_members: 0,
+    }
+}
+
+#[test]
+fn settings_loaded_recomputes_room_list_projection_and_sorts_open_threads() {
+    let mut state = AppState::default();
+    state.rooms = vec![
+        test_room("!alpha:example.invalid", "Alpha", 100),
+        test_room("!beta:example.invalid", "Beta", 200),
+    ];
+    state.threads_list = koushi_state::ThreadsListState::Open {
+        room_id: "!alpha:example.invalid".to_owned(),
+        request_id: 1,
+        items: vec![
+            koushi_state::ThreadsListItem {
+                root_event_id: "$latest:example.invalid".to_owned(),
+                root_sender: "@bob:example.invalid".to_owned(),
+                root_sender_label: None,
+                root_body_preview: None,
+                root_timestamp_ms: Some(200),
+                latest_event_id: Some("$latest:example.invalid".to_owned()),
+                latest_sender: Some("@bob:example.invalid".to_owned()),
+                latest_sender_label: None,
+                latest_body_preview: None,
+                latest_timestamp_ms: Some(200),
+                reply_count: 0,
+            },
+            koushi_state::ThreadsListItem {
+                root_event_id: "$older:example.invalid".to_owned(),
+                root_sender: "@bob:example.invalid".to_owned(),
+                root_sender_label: None,
+                root_body_preview: None,
+                root_timestamp_ms: Some(100),
+                latest_event_id: Some("$older:example.invalid".to_owned()),
+                latest_sender: Some("@bob:example.invalid".to_owned()),
+                latest_sender_label: None,
+                latest_body_preview: None,
+                latest_timestamp_ms: Some(100),
+                reply_count: 0,
+            },
+        ],
+        is_paginating: false,
+        end_reached: true,
+    };
+
+    let values = SettingsValues {
+        room_list_sort: RoomListSort::NormalLocale,
+        thread_list_order: ThreadListOrder::RootChronology,
+        ..SettingsValues::default()
+    };
+    let effects = reduce(
+        &mut state,
+        AppAction::SettingsLoaded {
+            values: values.clone(),
+        },
+    );
+
+    assert_eq!(state.settings.values, values);
+    assert!(
+        effects.contains(&AppEffect::EmitUiEvent(UiEvent::RoomListChanged)),
+        "expected RoomListChanged after settings load"
+    );
+    assert!(
+        effects.contains(&AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged)),
+        "expected ThreadsListChanged after settings load"
+    );
+    assert_eq!(
+        state
+            .room_list
+            .items
+            .iter()
+            .map(|item| item.room_id.clone())
+            .collect::<Vec<_>>(),
+        vec!["!alpha:example.invalid", "!beta:example.invalid"]
+    );
+    assert_eq!(
+        state
+            .threads_list
+            .items()
+            .iter()
+            .map(|item| item.root_event_id.clone())
+            .collect::<Vec<_>>(),
+        vec!["$older:example.invalid", "$latest:example.invalid"]
+    );
+}
+
+#[test]
+fn settings_update_recomputes_room_list_projection_and_resorts_open_threads() {
+    let mut state = AppState::default();
+    state.rooms = vec![
+        test_room("!alpha:example.invalid", "Alpha", 100),
+        test_room("!beta:example.invalid", "Beta", 200),
+    ];
+    state.threads_list = koushi_state::ThreadsListState::Open {
+        room_id: "!alpha:example.invalid".to_owned(),
+        request_id: 1,
+        items: vec![
+            koushi_state::ThreadsListItem {
+                root_event_id: "$latest:example.invalid".to_owned(),
+                root_sender: "@bob:example.invalid".to_owned(),
+                root_sender_label: None,
+                root_body_preview: None,
+                root_timestamp_ms: Some(200),
+                latest_event_id: Some("$latest:example.invalid".to_owned()),
+                latest_sender: Some("@bob:example.invalid".to_owned()),
+                latest_sender_label: None,
+                latest_body_preview: None,
+                latest_timestamp_ms: Some(200),
+                reply_count: 0,
+            },
+            koushi_state::ThreadsListItem {
+                root_event_id: "$older:example.invalid".to_owned(),
+                root_sender: "@bob:example.invalid".to_owned(),
+                root_sender_label: None,
+                root_body_preview: None,
+                root_timestamp_ms: Some(100),
+                latest_event_id: Some("$older:example.invalid".to_owned()),
+                latest_sender: Some("@bob:example.invalid".to_owned()),
+                latest_sender_label: None,
+                latest_body_preview: None,
+                latest_timestamp_ms: Some(100),
+                reply_count: 0,
+            },
+        ],
+        is_paginating: false,
+        end_reached: true,
+    };
+
+    reduce(
+        &mut state,
+        AppAction::SettingsLoaded {
+            values: SettingsValues::default(),
+        },
+    );
+    assert_eq!(
+        state
+            .room_list
+            .items
+            .iter()
+            .map(|item| item.room_id.clone())
+            .collect::<Vec<_>>(),
+        vec!["!beta:example.invalid", "!alpha:example.invalid"]
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 42,
+            patch: SettingsPatch {
+                room_list_sort: Some(RoomListSort::NormalLocale),
+                thread_list_order: Some(ThreadListOrder::RootChronology),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+
+    assert!(
+        effects.contains(&AppEffect::EmitUiEvent(UiEvent::RoomListChanged)),
+        "expected RoomListChanged after sort settings update"
+    );
+    assert!(
+        effects.contains(&AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged)),
+        "expected ThreadsListChanged after thread order settings update"
+    );
+    assert_eq!(
+        state
+            .room_list
+            .items
+            .iter()
+            .map(|item| item.room_id.clone())
+            .collect::<Vec<_>>(),
+        vec!["!alpha:example.invalid", "!beta:example.invalid"]
+    );
+    assert_eq!(
+        state
+            .threads_list
+            .items()
+            .iter()
+            .map(|item| item.root_event_id.clone())
+            .collect::<Vec<_>>(),
+        vec!["$older:example.invalid", "$latest:example.invalid"]
+    );
+}
+
+#[test]
+fn settings_update_without_sort_changes_does_not_emit_room_or_threads_list_events() {
+    let mut state = AppState::default();
+    state.rooms = vec![
+        test_room("!alpha:example.invalid", "Alpha", 100),
+        test_room("!beta:example.invalid", "Beta", 200),
+    ];
+
+    reduce(
+        &mut state,
+        AppAction::SettingsLoaded {
+            values: SettingsValues::default(),
+        },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 43,
+            patch: SettingsPatch {
+                appearance: Some(AppearanceSettings {
+                    theme: ThemePreference::Dark,
+                }),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+
+    assert!(
+        !effects.contains(&AppEffect::EmitUiEvent(UiEvent::RoomListChanged)),
+        "expected no RoomListChanged when sort is unchanged"
+    );
+    assert!(
+        !effects.contains(&AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged)),
+        "expected no ThreadsListChanged when order is unchanged"
     );
 }

@@ -50,7 +50,11 @@ pub(crate) fn now_if_enabled() -> Option<std::time::Instant> {
 
 pub(crate) fn trace_phase(phase: StartupPhase, started: Option<std::time::Instant>) {
     if let Some(started) = started {
-        eprintln!("koushi.startup phase={} ms={}", phase.as_token(), started.elapsed().as_millis());
+        eprintln!(
+            "koushi.startup phase={} ms={}",
+            phase.as_token(),
+            started.elapsed().as_millis()
+        );
     }
 }
 
@@ -127,8 +131,10 @@ mod tests {
         ] {
             let token = phase.as_token();
             assert!(!token.is_empty());
-            assert!(token.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
-                "phase token must be a private-data-free lowercase identifier");
+            assert!(
+                token.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "phase token must be a private-data-free lowercase identifier"
+            );
         }
     }
 }

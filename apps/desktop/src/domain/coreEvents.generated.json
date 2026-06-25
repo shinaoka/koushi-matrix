@@ -74,12 +74,15 @@
           "next_batch": "recent-next",
           "rows": [
             {
+              "context_label": "",
               "event_id": "$activity-recent:example.test",
               "highlight": false,
               "kind": "event",
               "preview": "Recent preview",
               "room_id": "!activity-recent:example.test",
               "room_label": "Recent room",
+              "sender_avatar": null,
+              "sender_id": null,
               "sender_label": "Recent sender",
               "timestamp_ms": 20,
               "unread": false
@@ -94,23 +97,29 @@
           "next_batch": "unread-next",
           "rows": [
             {
+              "context_label": "",
               "event_id": "$activity-unread:example.test",
               "highlight": true,
               "kind": "event",
               "preview": "Unread preview",
               "room_id": "!activity-unread:example.test",
               "room_label": "Unread room",
+              "sender_avatar": null,
+              "sender_id": null,
               "sender_label": "Unread sender",
               "timestamp_ms": 10,
               "unread": true
             },
             {
+              "context_label": "",
               "event_id": null,
               "highlight": false,
               "kind": "roomUnread",
               "preview": null,
               "room_id": "!activity-placeholder:example.test",
               "room_label": "Placeholder room",
+              "sender_avatar": null,
+              "sender_id": null,
               "sender_label": null,
               "timestamp_ms": 9,
               "unread": true
@@ -154,7 +163,7 @@
         "emojis": [
           {
             "description": "Dog",
-            "symbol": "\ud83d\udc36"
+            "symbol": "🐶"
           }
         ],
         "kind": "sasPresented",
@@ -199,20 +208,20 @@
     },
     "kind": "LiveSignals"
   },
-  "localEncryptionHealthChanged": {
-    "event": {
-      "health": "healthy",
-      "kind": "healthChanged"
-    },
-    "kind": "LocalEncryption"
-  },
   "localEncryptionEventCacheStatus": {
     "event": {
       "encrypted_store": true,
       "kind": "eventCacheStatus",
-      "subscribe_status": "subscribe_failed",
       "reason_class": "subscribe_failed",
+      "subscribe_status": "subscribe_failed",
       "subscribed": false
+    },
+    "kind": "LocalEncryption"
+  },
+  "localEncryptionHealthChanged": {
+    "event": {
+      "health": "healthy",
+      "kind": "healthChanged"
     },
     "kind": "LocalEncryption"
   },
@@ -606,6 +615,26 @@
     },
     "kind": "ThreadsList"
   },
+  "timelineAnchorRestoreFinished": {
+    "event": {
+      "AnchorRestoreFinished": {
+        "key": {
+          "account_key": "@u:example.test",
+          "kind": {
+            "Room": {
+              "room_id": "!r:example.test"
+            }
+          }
+        },
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "status": "BudgetExhausted"
+      }
+    },
+    "kind": "Timeline"
+  },
   "timelineDisplayLabelsUpdated": {
     "event": {
       "DisplayLabelsUpdated": {
@@ -667,7 +696,7 @@
             "reactions": [
               {
                 "count": 2,
-                "key": "\ud83d\udc4d",
+                "key": "👍",
                 "my_reaction_event_id": "$reaction:test",
                 "reacted_by_me": true,
                 "sender_preview": [
@@ -747,7 +776,7 @@
                 "reactions": [
                   {
                     "count": 2,
-                    "key": "\ud83d\udc4d",
+                    "key": "👍",
                     "my_reaction_event_id": "$reaction:test",
                     "reacted_by_me": true,
                     "sender_preview": [
@@ -1109,30 +1138,11 @@
           "can_jump_to_bottom": true,
           "first_unread_event_id": "$unread:example.test",
           "newer_event_count": 3,
+          "read_marker_display_event_id": "$read:example.test",
           "read_marker_event_id": "$read:example.test",
           "unread_event_count": 2,
           "unread_position": "belowViewport"
         }
-      }
-    },
-    "kind": "Timeline"
-  },
-  "timelineAnchorRestoreFinished": {
-    "event": {
-      "AnchorRestoreFinished": {
-        "key": {
-          "account_key": "@u:example.test",
-          "kind": {
-            "Room": {
-              "room_id": "!r:example.test"
-            }
-          }
-        },
-        "request_id": {
-          "connection_id": 3,
-          "sequence": 7
-        },
-        "status": "BudgetExhausted"
       }
     },
     "kind": "Timeline"

@@ -1,9 +1,9 @@
 use koushi_state::{
     AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState,
-    NativeAttentionObservationKind, NativeAttentionProjectionInput, RoomListFilter, RoomSummary,
-    RoomTags, SearchCrawlerSettings, SessionInfo, SessionState, SpaceSummary, ThreadPaneState,
-    TimelinePaneState, TimelineScrollAnchorEdge, UiEvent, UserProfile, compose_sidebar,
-    native_attention_state_from_rooms, reduce,
+    NativeAttentionObservationKind, NativeAttentionProjectionInput, RoomListFilter, RoomListSort,
+    RoomSummary, RoomTags, SearchCrawlerSettings, SessionInfo, SessionState, SpaceSummary,
+    ThreadPaneState, TimelinePaneState, TimelineScrollAnchorEdge, UiEvent, UserProfile,
+    compose_sidebar, native_attention_state_from_rooms, reduce,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -1578,4 +1578,141 @@ fn navigation_state_round_trips_scroll_anchors_through_serde() {
         serde_json::from_str(&encoded).expect("deserialize navigation");
 
     assert_eq!(decoded, navigation);
+}
+
+#[test]
+fn room_list_sort_supports_recent_and_locale_modes() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        rooms: vec![
+            RoomSummary {
+                room_id: "room-b".to_owned(),
+                display_name: "Beta".to_owned(),
+                display_label: "Beta".to_owned(),
+                original_display_label: "Beta".to_owned(),
+                avatar: None,
+                is_dm: false,
+                dm_user_ids: Vec::new(),
+                tags: RoomTags::default(),
+                unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 2000,
+                parent_space_ids: Vec::new(),
+                dm_space_ids: Vec::new(),
+                is_encrypted: false,
+                joined_members: 0,
+            },
+            RoomSummary {
+                room_id: "room-a".to_owned(),
+                display_name: "Alpha".to_owned(),
+                display_label: "Alpha".to_owned(),
+                original_display_label: "Alpha".to_owned(),
+                avatar: None,
+                is_dm: false,
+                dm_user_ids: Vec::new(),
+                tags: RoomTags::default(),
+                unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 1000,
+                parent_space_ids: Vec::new(),
+                dm_space_ids: Vec::new(),
+                is_encrypted: false,
+                joined_members: 0,
+            },
+        ],
+        ..AppState::default()
+    };
+
+    reduce(
+        &mut state,
+        AppAction::RoomListFilterSelected {
+            filter: RoomListFilter::Unread,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomListFilterSelected {
+            filter: RoomListFilter::Rooms,
+        },
+    );
+    assert_eq!(state.room_list.sort, RoomListSort::Activity);
+    assert_eq!(
+        state
+            .room_list
+            .items
+            .iter()
+            .map(|i| i.room_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["room-b", "room-a"]
+    );
+
+    reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 1,
+            patch: koushi_state::SettingsPatch {
+                room_list_sort: Some(RoomListSort::NormalLocale),
+                ..koushi_state::SettingsPatch::default()
+            },
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomListFilterSelected {
+            filter: RoomListFilter::Unread,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomListFilterSelected {
+            filter: RoomListFilter::Rooms,
+        },
+    );
+    assert_eq!(state.room_list.sort, RoomListSort::NormalLocale);
+    assert_eq!(
+        state
+            .room_list
+            .items
+            .iter()
+            .map(|i| i.room_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["room-a", "room-b"]
+    );
+
+    reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 2,
+            patch: koushi_state::SettingsPatch {
+                room_list_sort: Some(RoomListSort::RecentFirst),
+                ..koushi_state::SettingsPatch::default()
+            },
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomListFilterSelected {
+            filter: RoomListFilter::Unread,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomListFilterSelected {
+            filter: RoomListFilter::Rooms,
+        },
+    );
+    assert_eq!(state.room_list.sort, RoomListSort::RecentFirst);
+    assert_eq!(
+        state
+            .room_list
+            .items
+            .iter()
+            .map(|i| i.room_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["room-b", "room-a"]
+    );
 }

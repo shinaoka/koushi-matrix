@@ -14,7 +14,7 @@ pub mod event;
 pub mod executor;
 pub mod failure;
 pub mod ids;
-pub(crate) mod link_preview;
+pub mod link_preview;
 pub(crate) mod messages_backpressure;
 pub mod renderable_thumbnail;
 pub mod room;

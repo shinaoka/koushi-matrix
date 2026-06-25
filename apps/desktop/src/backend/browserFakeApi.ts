@@ -51,7 +51,8 @@ import type {
   AttachmentFilter,
   AttachmentScope,
   AttachmentSort,
-  FilesViewScope
+  FilesViewScope,
+  UserProfile
 } from "../domain/types";
 
 export interface DesktopApi {
@@ -409,6 +410,14 @@ class BrowserFakeApi implements DesktopApi {
       this.snapshot.state.domain.settings.values.typography
     );
     this.snapshot.state.domain.settings.persistence = { kind: "idle" };
+    this.snapshot.state.ui.room_list = computeBrowserRoomListProjection(
+      this.snapshot.state.ui.room_list.active_filter,
+      this.snapshot.state.domain.settings.values.room_list_sort,
+      this.snapshot.state.ui.navigation.active_space_id,
+      this.snapshot.state.domain.spaces,
+      this.snapshot.state.domain.rooms,
+      this.snapshot.state.domain.invites
+    );
     return this.getSnapshot();
   }
 
@@ -480,7 +489,7 @@ class BrowserFakeApi implements DesktopApi {
   private refreshRoomListProjection(filter = this.snapshot.state.ui.room_list.active_filter): void {
     this.snapshot.state.ui.room_list = computeBrowserRoomListProjection(
       filter,
-      this.snapshot.state.ui.room_list.sort,
+      this.snapshot.state.domain.settings.values.room_list_sort,
       this.snapshot.state.ui.navigation.active_space_id,
       this.snapshot.state.domain.spaces,
       this.snapshot.state.domain.rooms,
@@ -2118,7 +2127,7 @@ class BrowserFakeApi implements DesktopApi {
 
     await Promise.resolve();
 
-    const streams = createActivityStreams(false);
+    const streams = createActivityStreams(false, this.snapshot.state.domain.profile.users);
     this.snapshot.state.domain.activity = {
       kind: "open",
       active_tab: "recent",
@@ -2163,7 +2172,13 @@ class BrowserFakeApi implements DesktopApi {
     const existingEventIds = new Set(
       this.snapshot.state.domain.activity.recent.rows.map((row) => row.event_id)
     );
-    const olderRows = activityRows(backwardTimelineMessages, new Set())
+    const spacesById = new Map(spaces.map((space) => [space.space_id, space]));
+    const olderRows = activityRows(
+      backwardTimelineMessages,
+      new Set(),
+      this.snapshot.state.domain.profile.users,
+      spacesById
+    )
       .filter((row) => !existingEventIds.has(row.event_id))
       .map((row) => ({ ...row, unread: false, highlight: false }));
     this.snapshot.state.domain.activity.recent = {
@@ -2962,7 +2977,9 @@ function defaultSettingsState(): DesktopSnapshot["state"]["domain"]["settings"] 
         speed: "standard" as const,
         include_media_captions: true,
         include_filenames: true
-      }
+      },
+      thread_list_order: { kind: "latestReply" },
+      room_list_sort: { kind: "activity" }
     },
     persistence: { kind: "idle" }
   };
@@ -3264,7 +3281,9 @@ function applySettingsPatch(
     display: patch.display ?? values.display,
     media: patch.media ?? values.media,
     timeline: patch.timeline ?? values.timeline,
-    search_crawler: patch.search_crawler ?? values.search_crawler
+    search_crawler: patch.search_crawler ?? values.search_crawler,
+    thread_list_order: patch.thread_list_order ?? values.thread_list_order,
+    room_list_sort: patch.room_list_sort ?? values.room_list_sort
   };
 }
 
@@ -3421,20 +3440,26 @@ function candidateScore(eventId: string): number {
   }
 }
 
-function createActivityStreams(includeBackfill: boolean): {
+function createActivityStreams(
+  includeBackfill: boolean,
+  profileUsers: Record<string, UserProfile>
+): {
   recent: ActivityStream;
   unread: ActivityStream;
 } {
+  const spacesById = new Map(spaces.map((space) => [space.space_id, space]));
   const unreadRoomIds = new Set(
     rooms.filter((room) => room.unread_count > 0).map((room) => room.room_id)
   );
   const messages = includeBackfill
     ? [...timelineMessages, ...backwardTimelineMessages]
     : timelineMessages;
-  const recentRows = activityRows(messages, unreadRoomIds);
+  const recentRows = activityRows(messages, unreadRoomIds, profileUsers, spacesById);
   const unreadEventRows = activityRows(
     timelineMessages.filter((message) => unreadRoomIds.has(message.room_id)),
-    unreadRoomIds
+    unreadRoomIds,
+    profileUsers,
+    spacesById
   );
   const roomsWithUnreadEventRows = new Set(unreadEventRows.map((row) => row.room_id));
   const unreadPlaceholderRows: ActivityRow[] = rooms
@@ -3449,12 +3474,15 @@ function createActivityStreams(includeBackfill: boolean): {
       kind: "roomUnread" as const,
       room_id: room.room_id,
       event_id: null,
+      sender_id: null,
       room_label: room.display_label,
       sender_label: null,
+      sender_avatar: null,
       preview: null,
       timestamp_ms: room.last_activity_ms ?? 0,
       unread: true,
-      highlight: (room.highlight_count ?? 0) > 0
+      highlight: (room.highlight_count ?? 0) > 0,
+      context_label: activityRowContextLabel(room, spacesById)
     }));
   return {
     recent: {
@@ -3470,24 +3498,48 @@ function createActivityStreams(includeBackfill: boolean): {
 
 function activityRows(
   messages: TimelineMessage[],
-  unreadRoomIds: Set<string>
+  unreadRoomIds: Set<string>,
+  profileUsers: Record<string, UserProfile>,
+  spacesById: Map<string, SpaceSummary>
 ): ActivityRow[] {
   return messages
     .map((message) => {
       const room = rooms.find((candidate) => candidate.room_id === message.room_id);
+      const sender = profileUsers[message.sender];
       return {
         kind: "event" as const,
         room_id: message.room_id,
         event_id: message.event_id,
-        room_label: room?.display_name ?? "Unknown room",
-        sender_label: message.sender,
+        sender_id: message.sender,
+        room_label: room?.display_label ?? room?.display_name ?? "Unknown room",
+        sender_label: sender?.display_label ?? message.sender,
+        sender_avatar: sender?.avatar ?? null,
         preview: message.body,
         timestamp_ms: message.timestamp_ms,
         unread: unreadRoomIds.has(message.room_id),
-        highlight: message.event_id === "$alpha-update"
+        highlight: message.event_id === "$alpha-update",
+        context_label: activityRowContextLabel(room ?? null, spacesById)
       };
     })
     .sort(compareActivityRows);
+}
+
+function activityRowContextLabel(
+  room: RoomSummary | null,
+  spacesById: Map<string, SpaceSummary>
+): string {
+  if (!room) {
+    return "Room";
+  }
+  if (room.is_dm) {
+    return "DM";
+  }
+  const spaceId = room.parent_space_ids[0];
+  const space = spaceId ? spacesById.get(spaceId) : undefined;
+  if (space) {
+    return `Room · ${space.display_name} / ${room.display_label}`;
+  }
+  return "Room";
 }
 
 function sortActivityRows(rows: ActivityRow[]): ActivityRow[] {

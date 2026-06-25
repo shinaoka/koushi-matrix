@@ -176,9 +176,10 @@ fn event_cache_persists_across_drop_and_restore() {
                     .await
                     .expect("room event cache should subscribe");
 
-                if events.iter().any(|event| {
-                    message_event_body(event).as_deref() == Some(expected_body)
-                }) {
+                if events
+                    .iter()
+                    .any(|event| message_event_body(event).as_deref() == Some(expected_body))
+                {
                     break (events, subscriber);
                 }
 

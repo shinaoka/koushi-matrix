@@ -66,7 +66,7 @@ pub use state::{
     SettingsPatch, SettingsPersistenceState, SettingsState, SettingsValues, SoftLogoutReauthState,
     SpaceSummary, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind, SyncMode,
     SyncModeFailureKind, SyncState, TextDirectionPreference, TextRange, ThemePreference,
-    ThreadAttentionState, ThreadPaneState, ThreadsListItem, ThreadsListState,
+    ThreadAttentionState, ThreadListOrder, ThreadPaneState, ThreadsListItem, ThreadsListState,
     TimelineMediaDownloadState, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
     TimelineMediaGallerySource, TimelineMediaGalleryThumbnail, TimelineMediaKind,
     TimelinePaneState, TimelineScrollAnchor, TimelineScrollAnchorEdge, TimelineSettings,
@@ -76,6 +76,7 @@ pub use state::{
     native_attention_state_from_rooms, refresh_profile_user_display_projection,
     refresh_room_settings_member_display_projection, refresh_room_summary_display_projection,
     resolve_user_display_name, room_attention_kind, room_attention_summary,
+    sort_threads_list_items,
 };
 // Composer-draft persistence limits consumed by koushi-core's store and the
 // state-crate integration tests; root-re-exported so `state` can stay crate-internal.

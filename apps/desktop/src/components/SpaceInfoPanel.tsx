@@ -4,12 +4,11 @@ import {
   FileText,
   Home,
   MailPlus,
-  MessageCircle,
   Settings,
   SlidersHorizontal,
   Users
 } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 import { t } from "../i18n/messages";
 import type { RoomManagementState, RoomSummary, SpaceSummary } from "../domain/types";
@@ -24,8 +23,7 @@ export function SpaceInfoPanel({
   onInvitePeople,
   onOpenFiles,
   onOpenMembers,
-  onSetLocalPresentation,
-  onStartDirectMessage
+  onSetLocalPresentation
 }: {
   fallbackName: string;
   localIcon?: string;
@@ -37,9 +35,7 @@ export function SpaceInfoPanel({
   onOpenFiles?: () => void;
   onOpenMembers?: () => void;
   onSetLocalPresentation?: (override: { name?: string; icon?: string } | null) => void;
-  onStartDirectMessage?: (userId: string) => void;
 }) {
-  const membersSectionRef = useRef<HTMLElement>(null);
   const [localNameDraft, setLocalNameDraft] = useState(localName);
   const [localIconDraft, setLocalIconDraft] = useState(localIcon);
   const childRooms = space
@@ -53,10 +49,6 @@ export function SpaceInfoPanel({
     space && roomManagement?.selected_room_id === space.space_id
       ? roomManagement.settings
       : null;
-  const loadingMembers =
-    Boolean(space) &&
-    roomManagement?.operation.kind === "pending" &&
-    roomManagement.operation.room_id === space?.space_id;
   const memberCount = loadedSpaceSettings?.members.length ?? 0;
 
   useEffect(() => {
@@ -66,9 +58,6 @@ export function SpaceInfoPanel({
 
   function openMembers() {
     onOpenMembers?.();
-    window.requestAnimationFrame(() => {
-      membersSectionRef.current?.scrollIntoView({ block: "start" });
-    });
   }
 
   return (
@@ -144,35 +133,6 @@ export function SpaceInfoPanel({
         </div>
       </section>
 
-      <section
-        ref={membersSectionRef}
-        className="settings-section"
-        id="space-members"
-        aria-label={t("room.members")}
-      >
-        <h3>{t("room.members")}</h3>
-        <div className="settings-detail-list">
-          {loadingMembers ? (
-            <DetailRow label={t("room.members")} value={t("settings.saving")} />
-          ) : loadedSpaceSettings ? (
-            loadedSpaceSettings.members.length > 0 ? (
-              loadedSpaceSettings.members.map((member) => (
-                <SpaceMemberRow
-                  key={member.user_id}
-                  displayLabel={member.display_label}
-                  userId={member.user_id}
-                  onStartDirectMessage={onStartDirectMessage}
-                />
-              ))
-            ) : (
-              <DetailRow label={t("room.members")} value={t("room.noMembers")} />
-            )
-          ) : (
-            <DetailRow label={t("room.members")} value={t("room.noMembers")} />
-          )}
-        </div>
-      </section>
-
       <section className="settings-section" aria-label={t("space.spacePreferences")}>
         <h3>{t("space.spacePreferences")}</h3>
         <div className="settings-detail-list">
@@ -202,33 +162,6 @@ function DetailRow({ label, value }: { label: string; value: string }) {
     <div className="settings-detail-row">
       <span>{label}</span>
       <small>{value}</small>
-    </div>
-  );
-}
-
-function SpaceMemberRow({
-  displayLabel,
-  userId,
-  onStartDirectMessage
-}: {
-  displayLabel: string;
-  userId: string;
-  onStartDirectMessage?: (userId: string) => void;
-}) {
-  return (
-    <div className="settings-detail-row">
-      <span dir="auto">{displayLabel}</span>
-      <small dir="auto">{userId}</small>
-      <button
-        className="profile-settings-action room-member-action"
-        type="button"
-        aria-label={t("room.messageMember", { name: displayLabel })}
-        disabled={!onStartDirectMessage}
-        onClick={() => onStartDirectMessage?.(userId)}
-      >
-        <MessageCircle size={14} />
-        {t("workspace.newDm")}
-      </button>
     </div>
   );
 }

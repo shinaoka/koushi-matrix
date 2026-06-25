@@ -43,7 +43,9 @@ describe("UserSettingsPanel", () => {
         speed: "standard" as const,
         include_media_captions: true,
         include_filenames: true
-      }
+      },
+      thread_list_order: { kind: "latestReply" },
+      room_list_sort: { kind: "activity" }
     },
     persistence: { kind: "idle" }
   } as const;

@@ -197,6 +197,9 @@ Rules:
    thumbnail paths, encrypted media keys/hashes, or raw SDK errors. React must
    render avatar images only from Rust/platform-owned ready source URLs and must
    fall back to generated initials for MXC, loading, or failed thumbnail states.
+   Avatar MXC URIs, thumbnail state, and user-room avatar associations are
+   account-scoped sensitive metadata. Debug, logs, tests, QA tokens, fixtures,
+   and issue evidence must redact real values.
    Personal local user aliases are private account-data-backed profile state:
    they must not be sent as Matrix profile updates, room events, message content,
    notification text, QA tokens, logs, issue evidence, or normal `Debug` output.

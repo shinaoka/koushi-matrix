@@ -1034,6 +1034,7 @@ pub struct TimelineViewportObservation {
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelineNavigationSnapshot {
     pub read_marker_event_id: Option<String>,
+    pub read_marker_display_event_id: Option<String>,
     pub first_unread_event_id: Option<String>,
     pub unread_event_count: u64,
     pub unread_position: TimelineUnreadPosition,
@@ -1048,6 +1049,13 @@ impl fmt::Debug for TimelineNavigationSnapshot {
             .field(
                 "read_marker_event_id",
                 &self.read_marker_event_id.as_ref().map(|_| "EventId(..)"),
+            )
+            .field(
+                "read_marker_display_event_id",
+                &self
+                    .read_marker_display_event_id
+                    .as_ref()
+                    .map(|_| "EventId(..)"),
             )
             .field(
                 "first_unread_event_id",
@@ -1352,6 +1360,29 @@ impl fmt::Debug for TimelineSpoilerSpan {
     }
 }
 
+/// Rust-owned plain-text link range. The URL itself is the authoritative,
+/// Unicode-aware extraction from the message body; React renders anchors at
+/// these UTF-16 offsets without re-parsing the text.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelineLinkRange {
+    pub url: String,
+    /// Start offset in JavaScript string units for the rendered body text.
+    pub start_utf16: usize,
+    /// End offset in JavaScript string units for the rendered body text.
+    pub end_utf16: usize,
+}
+
+impl fmt::Debug for TimelineLinkRange {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TimelineLinkRange")
+            .field("url", &"Url(..)")
+            .field("start_utf16", &self.start_utf16)
+            .field("end_utf16", &self.end_utf16)
+            .finish()
+    }
+}
+
 /// Timeline item DTO. Phase 5 concretizes content kinds from the SDK
 /// projection; the identity contract is stable from Phase 1.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -1383,6 +1414,8 @@ pub struct TimelineItem {
     pub media: Option<TimelineMedia>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_previews: Option<Vec<LinkPreview>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub link_ranges: Vec<TimelineLinkRange>,
     #[serde(default)]
     pub reactions: Vec<ReactionGroup>,
     #[serde(default)]
@@ -1465,6 +1498,7 @@ impl fmt::Debug for TimelineItem {
                     .as_ref()
                     .map(|previews| format!("{} preview(s)", previews.len())),
             )
+            .field("link_ranges", &self.link_ranges.len())
             .field("reactions", &self.reactions)
             .field("can_react", &self.can_react)
             .field("is_redacted", &self.is_redacted)
@@ -1905,6 +1939,7 @@ mod tests {
         koushi_state::ActivityRow::event(
             room_id.to_owned(),
             event_id.to_owned(),
+            Some("@private:sender".to_owned()),
             "Private Room".to_owned(),
             Some("Private Sender".to_owned()),
             Some("private message body".to_owned()),
@@ -1983,6 +2018,7 @@ mod tests {
             }),
             media: None,
             link_previews: None,
+            link_ranges: Vec::new(),
             reactions: vec![ReactionGroup {
                 key: "👍".to_owned(),
                 count: 2,
@@ -2060,6 +2096,7 @@ mod tests {
             thread_summary: None,
             media: None,
             link_previews: None,
+            link_ranges: Vec::new(),
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
@@ -2123,6 +2160,7 @@ mod tests {
             thread_summary: None,
             media: None,
             link_previews: None,
+            link_ranges: Vec::new(),
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
@@ -2191,6 +2229,7 @@ mod tests {
             thread_summary: None,
             media: None,
             link_previews: None,
+            link_ranges: Vec::new(),
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
@@ -2377,6 +2416,7 @@ mod tests {
             thread_summary: None,
             media: None,
             link_previews: None,
+            link_ranges: Vec::new(),
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
@@ -2449,6 +2489,7 @@ mod tests {
                 }),
             }),
             link_previews: None,
+            link_ranges: Vec::new(),
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
@@ -2662,6 +2703,7 @@ mod tests {
             thread_summary: None,
             media: None,
             link_previews: None,
+            link_ranges: Vec::new(),
             reactions: Vec::new(),
             can_react: !is_redacted,
             is_redacted,
@@ -2869,5 +2911,29 @@ mod tests {
         );
         assert_eq!(completed.get("width").and_then(|v| v.as_u64()), Some(640));
         assert_eq!(completed.get("height").and_then(|v| v.as_u64()), Some(480));
+    }
+
+    #[test]
+    fn avatar_metadata_events_redact_private_mxc_values() {
+        let mut item = timeline_item_fixture("$event:test", false);
+        item.sender_avatar = Some(koushi_state::AvatarImage {
+            mxc_uri: "mxc://example.invalid/private-avatar".to_owned(),
+            thumbnail: koushi_state::AvatarThumbnailState::Ready {
+                source_url: "koushi-thumbnail://localhost/private.bin".to_owned(),
+                width: Some(64),
+                height: Some(64),
+                mime_type: Some("image/png".to_owned()),
+            },
+        });
+        let debug = format!("{:?}", item);
+        assert!(
+            !debug.contains("mxc://example.invalid/private-avatar"),
+            "{debug}"
+        );
+        assert!(
+            !debug.contains("koushi-thumbnail://localhost/private.bin"),
+            "{debug}"
+        );
+        assert!(debug.contains("AvatarImage"), "{debug}");
     }
 }

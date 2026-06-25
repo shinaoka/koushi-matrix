@@ -43,7 +43,9 @@ describe("KeyboardSettingsPanel", () => {
               speed: "standard" as const,
               include_media_captions: true,
               include_filenames: true
-            }
+            },
+            thread_list_order: { kind: "latestReply" },
+            room_list_sort: { kind: "activity" }
           },
           persistence: { kind: "idle" }
         }}
@@ -99,7 +101,9 @@ describe("KeyboardSettingsPanel", () => {
               speed: "standard",
               include_media_captions: true,
               include_filenames: true
-            }
+            },
+            thread_list_order: { kind: "latestReply" },
+            room_list_sort: { kind: "activity" }
           },
           persistence: { kind: "saving", request_id: 7 }
         } as const}

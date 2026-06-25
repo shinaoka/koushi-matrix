@@ -1651,6 +1651,7 @@ mod tests {
             thread_summary: None,
             media: None,
             link_previews: None,
+            link_ranges: Vec::new(),
             reactions: vec![ReactionGroup {
                 key: "👍".to_owned(),
                 count: 2,
@@ -1716,6 +1717,7 @@ mod tests {
                 }),
             }),
             link_previews: None,
+            link_ranges: Vec::new(),
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
@@ -1752,6 +1754,7 @@ mod tests {
             thread_summary: None,
             media: None,
             link_previews: None,
+            link_ranges: Vec::new(),
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
@@ -1790,6 +1793,7 @@ mod tests {
             thread_summary: None,
             media: None,
             link_previews: None,
+            link_ranges: Vec::new(),
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
@@ -1847,6 +1851,7 @@ mod tests {
                 }),
                 state: LinkPreviewState::Ready,
             }]),
+            link_ranges: Vec::new(),
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
@@ -2190,6 +2195,7 @@ mod tests {
                 key: key.clone(),
                 snapshot: TimelineNavigationSnapshot {
                     read_marker_event_id: Some("$read:example.test".to_owned()),
+                    read_marker_display_event_id: Some("$read:example.test".to_owned()),
                     first_unread_event_id: Some("$unread:example.test".to_owned()),
                     unread_event_count: 2,
                     unread_position: TimelineUnreadPosition::BelowViewport,
@@ -2496,6 +2502,7 @@ mod tests {
                         timestamp_ms: 20,
                         unread: false,
                         highlight: false,
+                        ..Default::default()
                     }],
                     next_batch: Some("recent-next".to_owned()),
                 },
@@ -2511,6 +2518,7 @@ mod tests {
                             timestamp_ms: 10,
                             unread: true,
                             highlight: true,
+                            ..Default::default()
                         },
                         ActivityRow::room_unread_placeholder(
                             "!activity-placeholder:example.test".to_owned(),
