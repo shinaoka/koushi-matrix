@@ -24,6 +24,25 @@ describe("TauriDesktopApi", () => {
     });
   });
 
+  test("passes OIDC login flow commands to Rust", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.startOidcLogin("https://example.test");
+    await api.completeOidcLogin(
+      "https://example.test",
+      "koushi-desktop://auth/callback?code=synthetic"
+    );
+
+    expect(invoke).toHaveBeenCalledWith("start_oidc_login", {
+      homeserver: "https://example.test"
+    });
+    expect(invoke).toHaveBeenCalledWith("complete_oidc_login", {
+      homeserver: "https://example.test",
+      callbackUrl: "koushi-desktop://auth/callback?code=synthetic"
+    });
+  });
+
   test("passes settings patches to the Rust update_settings command", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 

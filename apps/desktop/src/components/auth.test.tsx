@@ -32,6 +32,7 @@ describe("AuthScreen", () => {
         onDiscoverLoginMethods={vi.fn()}
         onHomeserverChange={vi.fn()}
         onPasswordPresenceChange={vi.fn()}
+        onStartOidcLogin={vi.fn()}
         onSubmit={vi.fn()}
         onUsernameChange={vi.fn()}
       />,
@@ -66,6 +67,7 @@ describe("AuthScreen", () => {
         onDiscoverLoginMethods={vi.fn()}
         onHomeserverChange={vi.fn()}
         onPasswordPresenceChange={vi.fn()}
+        onStartOidcLogin={vi.fn()}
         onSubmit={vi.fn()}
         onUsernameChange={vi.fn()}
       />,
@@ -74,6 +76,54 @@ describe("AuthScreen", () => {
     expect(screen.getByRole("alert").textContent).toContain("Login failed");
     expect(screen.getByRole("alert").textContent).toContain(
       "For @alice:matrix.org, enter alice here and keep matrix.org in Homeserver.",
+    );
+  });
+
+  it("offers OIDC login when discovery reports an OIDC flow", () => {
+    const onStartOidcLogin = vi.fn();
+    render(
+      <AuthScreen
+        deviceName="Koushi test"
+        homeserver="matrix.org"
+        isBusy={false}
+        passwordFilled={false}
+        passwordInputRef={createRef<HTMLInputElement>()}
+        snapshot={snapshot({
+          session: { kind: "signedOut" },
+          auth: {
+            kind: "ready",
+            homeserver: "https://matrix.org",
+            flows: [
+              {
+                kind: "oidc",
+                delegated_oidc_compatibility: true,
+                display_name: "Continue with provider",
+              },
+            ],
+            delegated: {
+              registration_url: "https://auth.example.test/register",
+              account_management_url: null,
+            },
+          },
+        })}
+        username=""
+        onDeviceNameChange={vi.fn()}
+        onDiscoverLoginMethods={vi.fn()}
+        onHomeserverChange={vi.fn()}
+        onPasswordPresenceChange={vi.fn()}
+        onStartOidcLogin={onStartOidcLogin}
+        onSubmit={vi.fn()}
+        onUsernameChange={vi.fn()}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "Continue with provider" });
+    button.click();
+
+    expect(onStartOidcLogin).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("Password").hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("link", { name: "Create account" }).getAttribute("href")).toBe(
+      "https://auth.example.test/register",
     );
   });
 });
@@ -147,15 +197,17 @@ describe("RecoveryPanel", () => {
 
 function snapshot({
   session,
+  auth = { kind: "unknown" },
   errors = [],
 }: {
   session: Record<string, unknown>;
+  auth?: Record<string, unknown>;
   errors?: Array<{ code: string; message: string; recoverable: boolean }>;
 }): DesktopSnapshot {
   return {
     state: {
       domain: {
-        auth: { kind: "unknown" },
+        auth,
         session,
       },
       ui: {

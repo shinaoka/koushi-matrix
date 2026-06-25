@@ -114,6 +114,14 @@ Crate responsibilities:
   whether key-backup restore is complete.
 - `koushi-sdk` — low-level SDK adapter (login, restore, recovery,
   sync, room, timeline, search primitives). No app state, no QA orchestration.
+  Password and OIDC/MAS sessions both stay SDK-owned here: OAuth dynamic client
+  registration, PKCE authorization-code construction, callback completion,
+  refresh-token handling, token revocation on logout, and tagged session
+  persistence are exposed to `koushi-core` only as app-owned DTOs and
+  persistable secret blobs. Authorization URLs may be returned for the WebView
+  browser handoff, but access tokens, refresh tokens, PKCE verifiers, raw OAuth
+  errors, and provider callback details never enter reducer state or normal
+  diagnostics.
   E2EE key-backup restore wrappers consume recovery secrets internally and
   return private-data-free restore summaries whose scope is explicitly
   `JoinedRooms`; they do not expose SDK backup keys, room keys, or raw backup

@@ -43,6 +43,7 @@ import type {
   LiveEventReceiptSummary,
   LiveReadReceipt,
   MentionIntent,
+  OidcAuthorization,
   SpaceSummary,
   StagedUploadCompressionChoice,
   TimelineMessage,
@@ -58,6 +59,8 @@ import type {
 export interface DesktopApi {
   getSnapshot(): Promise<DesktopSnapshot>;
   discoverLoginMethods(homeserver: string): Promise<DesktopSnapshot>;
+  startOidcLogin(homeserver: string): Promise<OidcAuthorization>;
+  completeOidcLogin(homeserver: string, callbackUrl: string): Promise<DesktopSnapshot>;
   submitLogin(
     homeserver: string,
     username: string,
@@ -261,6 +264,22 @@ class BrowserFakeApi implements DesktopApi {
     };
 
     return this.getSnapshot();
+  }
+
+  async startOidcLogin(_homeserver: string): Promise<OidcAuthorization> {
+    return {
+      authorization_url: "https://auth.example.test/authorize",
+      state: "browser-fake-state"
+    };
+  }
+
+  async completeOidcLogin(
+    _homeserver: string,
+    _callbackUrl: string
+  ): Promise<DesktopSnapshot> {
+    this.clearSessionViews();
+    this.snapshot = createReadySnapshot(savedSessions[0]);
+    return clone(this.snapshot);
   }
 
   async submitLogin(

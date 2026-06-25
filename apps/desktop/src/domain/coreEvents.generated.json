@@ -1,4 +1,17 @@
 {
+  "accountOidcAuthorizationCreated": {
+    "event": {
+      "OidcAuthorizationCreated": {
+        "authorization_url": "https://auth.example.test/authorize",
+        "request_id": {
+          "connection_id": 3,
+          "sequence": 7
+        },
+        "state": "synthetic-state"
+      }
+    },
+    "kind": "Account"
+  },
   "accountProfileUpdated": {
     "event": {
       "ProfileUpdated": {

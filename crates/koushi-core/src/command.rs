@@ -749,7 +749,6 @@ pub enum AccountCommand {
     },
     CompleteOidcLogin {
         request_id: RequestId,
-        homeserver: String,
         callback_url: String,
     },
     LoginPassword {

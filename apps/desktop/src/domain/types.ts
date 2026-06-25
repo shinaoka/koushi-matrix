@@ -285,6 +285,11 @@ export interface DelegatedAuthLinks {
   account_management_url: string | null;
 }
 
+export interface OidcAuthorization {
+  authorization_url: string;
+  state: string;
+}
+
 export interface LoginFlow {
   kind: "password" | "sso" | "oidc" | "token" | { unknown: string };
   delegated_oidc_compatibility: boolean;

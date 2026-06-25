@@ -45,6 +45,7 @@ const MENU_EVENT_NAME: &str = "koushi-desktop://menu";
 pub(crate) const CORE_EVENT_NAME: &str = "koushi-desktop://event";
 /// Tauri event for serialized AppStateSnapshot payloads (latest-wins).
 const STATE_EVENT_NAME: &str = "koushi-desktop://state";
+const OIDC_CALLBACK_URL_PREFIX: &str = "koushi-desktop://auth/callback";
 const MENU_ID_OPEN_USER_SETTINGS: &str = "open_user_settings";
 const MENU_ID_SIGN_OUT: &str = "sign_out";
 const MENU_ID_SHOW_KEYBOARD_SETTINGS: &str = "show_keyboard_settings";
@@ -780,6 +781,61 @@ fn emit_forwarded_webview_events(
     }
 }
 
+fn is_oidc_callback_url(url: &str) -> bool {
+    match url.strip_prefix(OIDC_CALLBACK_URL_PREFIX) {
+        Some("") => true,
+        Some(rest) => rest.starts_with('?') || rest.starts_with('#'),
+        None => false,
+    }
+}
+
+fn submit_oidc_callback_url(app: tauri::AppHandle, callback_url: String) {
+    if !is_oidc_callback_url(&callback_url) {
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        let core_state = app.state::<CoreRuntimeState>();
+        let event_conn = core_state.runtime.attach();
+        let request_id = event_conn.next_request_id();
+        let _ = event_conn
+            .command(commands::build_complete_oidc_login_command(
+                request_id,
+                callback_url,
+            ))
+            .await;
+    });
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+fn install_oidc_deep_link_handler(app: &tauri::App) -> tauri::Result<()> {
+    use tauri_plugin_deep_link::DeepLinkExt;
+
+    if let Ok(Some(urls)) = app.deep_link().get_current() {
+        let app_handle = app.handle().clone();
+        for url in urls {
+            submit_oidc_callback_url(app_handle.clone(), url.to_string());
+        }
+    }
+
+    let app_handle = app.handle().clone();
+    app.deep_link().on_open_url(move |event| {
+        for url in event.urls() {
+            submit_oidc_callback_url(app_handle.clone(), url.to_string());
+        }
+    });
+
+    #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+    let _ = app.deep_link().register_all();
+
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+fn install_oidc_deep_link_handler(_app: &tauri::App) -> tauri::Result<()> {
+    Ok(())
+}
+
 /// Serialize a `CoreEvent` to a JSON value for IPC.
 ///
 /// Security: message bodies flow in `Timeline` events. These are visible
@@ -846,7 +902,19 @@ pub fn run() {
         std::env::var("KOUSHI_RESTORE_SESSION").ok().as_deref(),
     );
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {
+            // The deep-link plugin consumes configured callback URLs and emits
+            // them through `on_open_url`; keep this callback side-effect-free so
+            // it never logs authorization callback query strings.
+        }));
+    }
+
+    builder
+        .plugin(tauri_plugin_deep_link::init())
         .register_uri_scheme_protocol("koushi-thumbnail", move |_, request| {
             renderable_thumbnail_protocol_response(request)
         })
@@ -885,6 +953,7 @@ pub fn run() {
                 timeline_items_count: AtomicUsize::new(0),
             };
             app.manage(core_state);
+            install_oidc_deep_link_handler(app)?;
 
             let menu = build_desktop_menu(app)?;
             app.set_menu(menu)?;
@@ -952,6 +1021,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::session::get_snapshot,
             commands::session::discover_login_methods,
+            commands::session::start_oidc_login,
+            commands::session::complete_oidc_login,
             commands::session::submit_login,
             commands::session::list_saved_sessions,
             commands::session::switch_account,
@@ -1530,6 +1601,21 @@ mod tests {
         ));
         assert!(!window_event_should_stop_background_tasks(
             &tauri::WindowEvent::Resized(tauri::PhysicalSize::new(1280, 820))
+        ));
+    }
+
+    #[test]
+    fn oidc_callback_url_accepts_only_expected_auth_callback_shape() {
+        assert!(super::is_oidc_callback_url("koushi-desktop://auth/callback"));
+        assert!(super::is_oidc_callback_url(
+            "koushi-desktop://auth/callback?code=synthetic&state=synthetic"
+        ));
+        assert!(!super::is_oidc_callback_url("koushi-desktop://event"));
+        assert!(!super::is_oidc_callback_url(
+            "koushi-desktop://auth/callback-extra?code=synthetic"
+        ));
+        assert!(!super::is_oidc_callback_url(
+            "https://auth.example.test/callback?code=synthetic"
         ));
     }
 
@@ -2264,6 +2350,13 @@ mod tests {
                 kind: koushi_core::event::ReportKind::User,
             }))
             .expect("serialize account report completed event");
+        let account_oidc_authorization_created =
+            serialize_core_event(&CoreEvent::Account(AccountEvent::OidcAuthorizationCreated {
+                request_id,
+                authorization_url: "https://auth.example.test/authorize".to_owned(),
+                state: "synthetic-state".to_owned(),
+            }))
+            .expect("serialize OIDC authorization event");
 
         // OperationFailed: unit failures are strings
         let failed = serialize_core_event(&CoreEvent::OperationFailed {
@@ -2772,6 +2865,7 @@ mod tests {
             "cjkTextPolicyJapaneseCatalogProfileChanged": cjk_text_policy,
             "e2eeTrustIdentityResetChanged": e2ee_identity_reset,
             "accountProfileUpdated": profile_updated,
+            "accountOidcAuthorizationCreated": account_oidc_authorization_created,
             "accountReportCompleted": account_report_completed,
             "accountSavedSessionsListed": listed,
             "e2eeTrustVerificationProgress": e2ee_trust,
@@ -2877,6 +2971,7 @@ mod tests {
         // immediately, requiring a deliberate update in both places.
         let expected_keys: std::collections::BTreeSet<&str> = [
             "accountProfileUpdated",
+            "accountOidcAuthorizationCreated",
             "accountReportCompleted",
             "accountSavedSessionsListed",
             "activityMarkedRead",

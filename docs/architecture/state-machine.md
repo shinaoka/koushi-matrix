@@ -71,7 +71,7 @@ stateDiagram-v2
     SignedOut --> Restoring: AppStarted
     Restoring --> Ready: RestoreSessionSucceeded
     Restoring --> SignedOut: RestoreSessionFailed
-    SignedOut --> Authenticating: LoginSubmitted
+    SignedOut --> Authenticating: LoginSubmitted / CompleteOidcLogin
     Authenticating --> Ready: LoginSucceeded
     Authenticating --> SignedOut: LoginFailed
     Ready --> Locked: SessionLocked
@@ -95,6 +95,13 @@ stateDiagram-v2
 
 Logout and lock clear navigation, room lists, the main timeline, thread pane, and
 search state. The reducer emits UI events for any cleared visible panes.
+
+Password login and OIDC/MAS callback completion both enter `Authenticating`
+through Rust-owned account commands and settle through the same
+`LoginSucceeded` / `LoginFailed` reducer actions. OIDC authorization URLs and
+CSRF state are command/event artifacts only: they may be returned to the WebView
+so it can open the provider and correlate the callback, but they never enter
+`AppState`, normal `Debug`, QA title tokens, or persisted settings.
 
 ## Sync Mode
 
@@ -1357,6 +1364,12 @@ stateDiagram-v2
   compatibility, optional display labels, and delegated registration/account
   management links. It does not carry access tokens, refresh tokens, or OAuth
   authorization artifacts.
+- `StartOidcLogin` creates an SDK-owned authorization-code flow with PKCE and
+  emits only a redacted `OidcAuthorizationCreated` command event containing the
+  provider URL/state for the WebView handoff. `CompleteOidcLogin` consumes the
+  callback in `AccountActor`, persists the OAuth session in the credential
+  store, restores it into the encrypted per-account SDK store, and then emits
+  `LoginSucceeded`.
 - `LoginDiscoveryFailed` stores only `AuthFailureKind`; raw discovery responses,
   homeserver error bodies, and SDK errors do not enter snapshots.
 - Discovery completion actions are accepted only while the reducer is still

@@ -151,6 +151,7 @@ import {
 } from "./domain/appStore";
 import { getRecentJsErrors } from "./domain/jsErrorLog";
 import { getTimelineTransportStats } from "./domain/timelineTransportStats";
+import { openExternalHttpUrl } from "./domain/externalLinks";
 
 import {
   EMPTY_MENTION_INTENT,
@@ -1906,6 +1907,16 @@ export function App() {
     }
   }
 
+  async function startOidcLogin() {
+    setIsBusy(true);
+    try {
+      const authorization = await api.startOidcLogin(loginHomeserver);
+      await openExternalHttpUrl(authorization.authorization_url);
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function submitRecovery(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const secret = recoverySecretRef.current?.value.trim() ?? "";
@@ -3121,6 +3132,7 @@ export function App() {
         onDeviceNameChange={setLoginDeviceName}
         onHomeserverChange={setLoginHomeserver}
         onPasswordPresenceChange={setLoginPasswordFilled}
+        onStartOidcLogin={startOidcLogin}
         onSubmit={submitLogin}
         onUsernameChange={setLoginUsername}
       />

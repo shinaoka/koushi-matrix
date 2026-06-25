@@ -2438,8 +2438,7 @@ fn map_core_search_scope_to_state(scope: SearchScope) -> AppSearchScope {
 fn account_command_projected_action(command: &AccountCommand) -> Option<AppAction> {
     match command {
         AccountCommand::DiscoverLogin { homeserver, .. }
-        | AccountCommand::StartOidcLogin { homeserver, .. }
-        | AccountCommand::CompleteOidcLogin { homeserver, .. } => {
+        | AccountCommand::StartOidcLogin { homeserver, .. } => {
             Some(AppAction::LoginDiscoveryRequested {
                 homeserver: homeserver.clone(),
             })
@@ -2617,6 +2616,7 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         }),
         AccountCommand::ReportUser { .. } => None,
         AccountCommand::LoginPassword { .. }
+        | AccountCommand::CompleteOidcLogin { .. }
         | AccountCommand::RestoreSession { .. }
         | AccountCommand::RestoreLastSession { .. }
         | AccountCommand::QuerySavedSessions { .. }

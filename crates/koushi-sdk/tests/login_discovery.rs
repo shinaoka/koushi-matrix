@@ -43,6 +43,47 @@ fn oidc_login_flow_maps_to_desktop_oidc_without_tokens() {
 }
 
 #[test]
+fn oauth_authorization_response_debug_redacts_url_and_state() {
+    let authorization = koushi_sdk::OidcAuthorization {
+        authorization_url: "https://issuer.example.test/auth?code=secret".to_owned(),
+        state: "csrf-secret".to_owned(),
+    };
+
+    let debug = format!("{authorization:?}");
+
+    assert!(debug.contains("OidcAuthorization"));
+    assert!(!debug.contains("issuer.example.test"));
+    assert!(!debug.contains("csrf-secret"));
+}
+
+#[test]
+fn oauth_persistable_session_shape_is_tagged_and_secret_redacted() {
+    let json = r#"{
+        "auth_kind": "oauth",
+        "homeserver": "https://matrix.example.test",
+        "user_session": {
+            "user_id": "@alice:example.test",
+            "device_id": "DEVICEID",
+            "access_token": "access-secret",
+            "refresh_token": "refresh-secret"
+        },
+        "client_id": "koushi-test-client"
+    }"#;
+
+    let session = koushi_sdk::PersistableMatrixSession::from_json(json)
+        .expect("tagged OAuth session should parse");
+
+    assert_eq!(session.info.homeserver, "https://matrix.example.test");
+    assert_eq!(session.info.user_id, "@alice:example.test");
+    assert_eq!(session.info.device_id, "DEVICEID");
+    assert_eq!(session.auth_kind(), koushi_sdk::PersistableAuthKind::OAuth);
+
+    let debug = format!("{session:?}");
+    assert!(!debug.contains("access-secret"));
+    assert!(!debug.contains("refresh-secret"));
+}
+
+#[test]
 fn keeps_unknown_flow_type_without_failing() {
     let response = serde_json::json!({
         "flows": [

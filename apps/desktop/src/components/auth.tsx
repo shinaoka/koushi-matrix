@@ -85,6 +85,7 @@ export function AuthScreen({
   onDiscoverLoginMethods,
   onHomeserverChange,
   onPasswordPresenceChange,
+  onStartOidcLogin,
   onSubmit,
   onUsernameChange
 }: {
@@ -99,11 +100,18 @@ export function AuthScreen({
   onDiscoverLoginMethods: () => void;
   onHomeserverChange: (value: string) => void;
   onPasswordPresenceChange: (value: boolean) => void;
+  onStartOidcLogin: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onUsernameChange: (value: string) => void;
 }) {
   const primaryError = latestAuthError(snapshot.state.ui.errors);
   const auth = snapshot.state.domain.auth;
+  const oidcFlow =
+    auth.kind === "ready"
+      ? auth.flows.find((flow) => flow.kind === "oidc" || flow.kind === "sso")
+      : undefined;
+  const registrationUrl =
+    auth.kind === "ready" ? auth.delegated.registration_url : null;
   const passwordLoginAvailable =
     auth.kind !== "ready" || auth.flows.some((flow) => flow.kind === "password");
 
@@ -140,6 +148,23 @@ export function AuthScreen({
           </button>
           <div className="auth-flows">{authDiscoveryLabel(auth)}</div>
         </div>
+        {oidcFlow ? (
+          <div className="auth-oidc-actions">
+            <button
+              className="auth-secondary"
+              disabled={isBusy}
+              type="button"
+              onClick={onStartOidcLogin}
+            >
+              {authFlowLabel(oidcFlow)}
+            </button>
+            {registrationUrl ? (
+              <a className="auth-create-account" href={registrationUrl}>
+                {t("auth.createAccount")}
+              </a>
+            ) : null}
+          </div>
+        ) : null}
         <label className="auth-field">
           <span>{t("auth.username")}</span>
           <input
