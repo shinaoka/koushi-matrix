@@ -1155,7 +1155,7 @@ describe("ContextualRightPanel", () => {
     const source = readFileSync(new URL("./components/panes.tsx", import.meta.url), "utf8");
     const roomPaneStart = source.indexOf("export function TimelinePane");
     const roomPane = source.slice(roomPaneStart);
-    const tabsActionsIndex = roomPane.indexOf('className="timeline-top-controls"');
+    const headerNavigationIndex = roomPane.indexOf('className="timeline-header-navigation"');
     const loadMoreIndex = roomPane.indexOf('className="icon-button timeline-control"');
     const timelineScrollIndex = roomPane.indexOf("<TimelineView");
 
@@ -1163,9 +1163,10 @@ describe("ContextualRightPanel", () => {
     expect(roomPane).toContain("roomTimelineKey(currentUserId, timelineRoomId)");
     expect(roomPane).toContain('timelineBackfill === "Paginating"');
     expect(roomPane).toContain('timelineBackfill === "EndReached"');
-    expect(tabsActionsIndex).toBeGreaterThanOrEqual(0);
-    expect(loadMoreIndex).toBeGreaterThan(tabsActionsIndex);
+    expect(headerNavigationIndex).toBeGreaterThanOrEqual(0);
+    expect(loadMoreIndex).toBeGreaterThan(headerNavigationIndex);
     expect(loadMoreIndex).toBeLessThan(timelineScrollIndex);
+    expect(roomPane).not.toContain('className="timeline-top-controls"');
     expect(roomPane).not.toContain("onPaginateBackwards");
     expect(roomPane).not.toContain("is_paginating_backwards");
   });

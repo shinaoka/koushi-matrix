@@ -1247,6 +1247,11 @@ button:disabled {
   font: inherit;
 }
 
+.channel-actions {
+  min-width: 0;
+  justify-content: flex-end;
+}
+
 .member-pill {
   display: inline-flex;
   align-items: center;
@@ -1515,17 +1520,14 @@ button:disabled {
   backdrop-filter: blur(8px);
 }
 
-.timeline-top-controls {
-  display: flex;
+.timeline-header-navigation {
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
   gap: 4px;
-  min-block-size: var(--timeline-navigation-control-block-size);
-  padding: var(--timeline-navigation-padding-block) var(--timeline-navigation-padding-inline);
-  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
 }
 
-.timeline-top-controls .timeline-control {
+.timeline-header-navigation .timeline-control {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1537,14 +1539,14 @@ button:disabled {
   background: var(--surface);
 }
 
-.timeline-top-controls .timeline-control:hover:not(:disabled),
-.timeline-top-controls .timeline-control:focus-visible {
+.timeline-header-navigation .timeline-control:hover:not(:disabled),
+.timeline-header-navigation .timeline-control:focus-visible {
   color: var(--brand-contrast);
   border-color: var(--brand);
   background: var(--brand);
 }
 
-.timeline-top-controls .timeline-control:disabled {
+.timeline-header-navigation .timeline-control:disabled {
   opacity: 0.5;
 }
 

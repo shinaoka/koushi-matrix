@@ -754,6 +754,49 @@ export function TimelinePane({
           <span>{activeRoomName}</span>
         </div>
         <div className="channel-actions">
+          <nav className="timeline-header-navigation" aria-label={t("timeline.navigation")}>
+            {canPaginateOlderMessages ? (
+              <button
+                className="icon-button timeline-control"
+                type="button"
+                disabled={timelineBackfillBusy || timelineBackfillEnded}
+                aria-label={t("timeline.olderMessages")}
+                title={t("timeline.olderMessages")}
+                onClick={() => {
+                  if (timelineKey && timelineTransport) {
+                    void timelineTransport.paginateBackwards(timelineKey);
+                  }
+                }}
+              >
+                <ArrowUp size={ICON_SIZE.control} aria-hidden="true" />
+              </button>
+            ) : null}
+            {canJumpToTimelineDate ? (
+              <button
+                className="icon-button timeline-control"
+                type="button"
+                aria-label={t("timeline.jumpToDate")}
+                title={t("timeline.jumpToDate")}
+                onClick={() => setDateJumpDialogOpen(true)}
+              >
+                <CalendarDays size={ICON_SIZE.control} aria-hidden="true" />
+              </button>
+            ) : null}
+            <button
+              className="icon-button timeline-control"
+              type="button"
+              aria-label={t("timeline.latest")}
+              title={t("timeline.latest")}
+              onClick={() => {
+                const list = timelineListRef.current;
+                if (list) {
+                  list.scrollTop = list.scrollHeight;
+                }
+              }}
+            >
+              <ArrowDown size={ICON_SIZE.control} aria-hidden="true" />
+            </button>
+          </nav>
           <button
             className="icon-button"
             type="button"
@@ -794,49 +837,6 @@ export function TimelinePane({
           </button>
         </div>
       </header>
-      <nav className="timeline-top-controls" aria-label={t("timeline.navigation")}>
-        {canPaginateOlderMessages ? (
-          <button
-            className="icon-button timeline-control"
-            type="button"
-            disabled={timelineBackfillBusy || timelineBackfillEnded}
-            aria-label={t("timeline.olderMessages")}
-            title={t("timeline.olderMessages")}
-            onClick={() => {
-              if (timelineKey && timelineTransport) {
-                void timelineTransport.paginateBackwards(timelineKey);
-              }
-            }}
-          >
-            <ArrowUp size={ICON_SIZE.control} aria-hidden="true" />
-          </button>
-        ) : null}
-        {canJumpToTimelineDate ? (
-          <button
-            className="icon-button timeline-control"
-            type="button"
-            aria-label={t("timeline.jumpToDate")}
-            title={t("timeline.jumpToDate")}
-            onClick={() => setDateJumpDialogOpen(true)}
-          >
-            <CalendarDays size={ICON_SIZE.control} aria-hidden="true" />
-          </button>
-        ) : null}
-        <button
-          className="icon-button timeline-control"
-          type="button"
-          aria-label={t("timeline.latest")}
-          title={t("timeline.latest")}
-          onClick={() => {
-            const list = timelineListRef.current;
-            if (list) {
-              list.scrollTop = list.scrollHeight;
-            }
-          }}
-        >
-          <ArrowDown size={ICON_SIZE.control} aria-hidden="true" />
-        </button>
-      </nav>
       {timelineTransport?.openAtTimestamp && timelineRoomId && dateJumpDialogOpen ? (
         <div
           className="timeline-date-jump-overlay"
