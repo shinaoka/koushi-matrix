@@ -1404,6 +1404,18 @@ describe("desktop release scripts", () => {
     expect(capability.remote.urls).toContain("http://127.0.0.1:5173/*");
   });
 
+  test("Tauri opener capability grants both URL command and http scopes", () => {
+    const capability = JSON.parse(
+      readFileSync(
+        new URL("../../../../apps/desktop/src-tauri/capabilities/default.json", import.meta.url),
+        "utf8"
+      )
+    );
+
+    expect(capability.permissions).toContain("opener:allow-open-url");
+    expect(capability.permissions).toContain("opener:allow-default-urls");
+  });
+
   test("Tauri launch explicitly makes the main WebView window visible", () => {
     const source = readFileSync(
       new URL("../../../../apps/desktop/src-tauri/src/lib.rs", import.meta.url),

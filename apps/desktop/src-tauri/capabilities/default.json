@@ -11,6 +11,7 @@
     "core:window:allow-set-badge-count",
     "dialog:default",
     "notification:default",
+    "opener:allow-open-url",
     "opener:allow-default-urls"
   ]
 }
