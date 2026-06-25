@@ -188,6 +188,32 @@ fn discovers_login_flows_over_http() {
     assert_eq!(discovery.flows[1].kind, LoginFlowKind::Sso);
 }
 
+#[test]
+fn starts_legacy_sso_login_when_discovery_has_plain_sso_flow() {
+    let homeserver = spawn_legacy_sso_server();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build");
+
+    let (_pending, authorization) = runtime
+        .block_on(koushi_sdk::start_oidc_login(
+            &homeserver,
+            "koushi-desktop://auth/callback",
+        ))
+        .expect("legacy SSO should produce an authorization URL");
+
+    assert!(authorization.state.is_empty());
+    assert!(authorization.authorization_url.starts_with(&format!(
+        "{homeserver}/_matrix/client/v3/login/sso/redirect"
+    )));
+    assert!(
+        authorization
+            .authorization_url
+            .contains("redirectUrl=koushi-desktop%3A%2F%2Fauth%2Fcallback")
+    );
+}
+
 fn spawn_login_discovery_server(status: u16, body: &'static str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
     let addr = listener
@@ -212,6 +238,43 @@ fn spawn_login_discovery_server(status: u16, body: &'static str) -> String {
         stream
             .write_all(response.as_bytes())
             .expect("test server should write response");
+    });
+
+    format!("http://{addr}")
+}
+
+fn spawn_legacy_sso_server() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server should have an address");
+
+    thread::spawn(move || {
+        for _ in 0..8 {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("test server should accept a request");
+            let mut request = [0_u8; 2048];
+            let bytes_read = stream
+                .read(&mut request)
+                .expect("test server should read request");
+            let request = String::from_utf8_lossy(&request[..bytes_read]);
+            let (status, body) = if request.starts_with("GET /_matrix/client/v3/login HTTP/1.1") {
+                (200, r#"{"flows":[{"type":"m.login.sso"}]}"#)
+            } else if request.starts_with("GET /_matrix/client/versions HTTP/1.1") {
+                (200, r#"{"versions":["v1.1","v1.2","v1.3"]}"#)
+            } else {
+                (404, r#"{"errcode":"M_NOT_FOUND","error":"not found"}"#)
+            };
+
+            let response = format!(
+                "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("test server should write response");
+        }
     });
 
     format!("http://{addr}")

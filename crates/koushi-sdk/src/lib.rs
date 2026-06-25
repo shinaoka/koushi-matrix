@@ -24,6 +24,7 @@ use matrix_sdk::{
         },
         serde::Raw,
     },
+    utils::UrlOrQuery,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -76,24 +77,35 @@ impl fmt::Debug for OidcAuthorization {
 }
 
 #[derive(Clone)]
-pub struct PendingOidcLogin {
-    client: matrix_sdk::Client,
-    homeserver: String,
+pub enum PendingOidcLogin {
+    OAuth {
+        client: matrix_sdk::Client,
+        homeserver: String,
+    },
+    Sso {
+        client: matrix_sdk::Client,
+        homeserver: String,
+    },
 }
 
 impl PendingOidcLogin {
     pub fn homeserver(&self) -> &str {
-        &self.homeserver
+        match self {
+            Self::OAuth { homeserver, .. } | Self::Sso { homeserver, .. } => homeserver,
+        }
     }
 }
 
 impl fmt::Debug for PendingOidcLogin {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("PendingOidcLogin")
-            .field("client", &"MatrixClient(..)")
-            .field("homeserver", &"Homeserver(..)")
-            .finish()
+        let mut debug = formatter.debug_struct("PendingOidcLogin");
+        match self {
+            Self::OAuth { .. } => debug.field("kind", &"OAuth"),
+            Self::Sso { .. } => debug.field("kind", &"Sso"),
+        }
+        .field("client", &"MatrixClient(..)")
+        .field("homeserver", &"Homeserver(..)")
+        .finish()
     }
 }
 
@@ -2830,28 +2842,46 @@ pub async fn start_oidc_login(
     let redirect_uri =
         Url::parse(redirect_uri).map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
     let client = build_client(&homeserver, None).await?;
-    let authorization = client
+
+    match client
         .oauth()
         .login(
             redirect_uri.clone(),
             None,
-            Some(oidc_client_registration_data(redirect_uri)),
+            Some(oidc_client_registration_data(redirect_uri.clone())),
             None,
         )
         .build()
         .await
-        .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
-
-    Ok((
-        PendingOidcLogin {
-            client,
-            homeserver: homeserver.normalized(),
-        },
-        OidcAuthorization {
-            authorization_url: authorization.url.to_string(),
-            state: authorization.state.secret().to_owned(),
-        },
-    ))
+    {
+        Ok(authorization) => Ok((
+            PendingOidcLogin::OAuth {
+                client,
+                homeserver: homeserver.normalized(),
+            },
+            OidcAuthorization {
+                authorization_url: authorization.url.to_string(),
+                state: authorization.state.secret().to_owned(),
+            },
+        )),
+        Err(_) => {
+            let authorization_url = client
+                .matrix_auth()
+                .get_sso_login_url(redirect_uri.as_str(), None)
+                .await
+                .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+            Ok((
+                PendingOidcLogin::Sso {
+                    client,
+                    homeserver: homeserver.normalized(),
+                },
+                OidcAuthorization {
+                    authorization_url,
+                    state: String::new(),
+                },
+            ))
+        }
+    }
 }
 
 pub async fn finish_oidc_login(
@@ -2860,28 +2890,42 @@ pub async fn finish_oidc_login(
 ) -> Result<MatrixClientSession, PasswordLoginError> {
     let callback_url =
         Url::parse(callback_url).map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
-    pending
-        .client
-        .oauth()
-        .finish_login(callback_url.into())
-        .await
-        .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+    let (client, homeserver) = match pending {
+        PendingOidcLogin::OAuth { client, homeserver } => {
+            client
+                .oauth()
+                .finish_login(callback_url.into())
+                .await
+                .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+            (client, homeserver)
+        }
+        PendingOidcLogin::Sso { client, homeserver } => {
+            client
+                .matrix_auth()
+                .login_with_sso_callback(UrlOrQuery::Url(callback_url))
+                .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?
+                .initial_device_display_name("Koushi")
+                .request_refresh_token()
+                .send()
+                .await
+                .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+            (client, homeserver)
+        }
+    };
 
-    let user_id = pending
-        .client
+    let user_id = client
         .user_id()
         .ok_or(PasswordLoginError::MissingSession)?
         .to_string();
-    let device_id = pending
-        .client
+    let device_id = client
         .device_id()
         .ok_or(PasswordLoginError::MissingSession)?
         .to_string();
 
     Ok(MatrixClientSession {
-        client: pending.client,
+        client,
         info: SessionInfo {
-            homeserver: pending.homeserver,
+            homeserver,
             user_id,
             device_id,
         },
