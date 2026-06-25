@@ -5303,6 +5303,7 @@ mod tests {
             messages_backpressure,
             data_dir: data_dir_path,
             link_preview_policy: LinkPreviewContext::default(),
+            pending_oidc_login: None,
             search_actor: None,
             threads_list_actor: None,
             recovery_observer: None,
