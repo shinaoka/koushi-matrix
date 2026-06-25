@@ -836,6 +836,25 @@ describe("BrowserFakeApi settings preview", () => {
     expect(markedAll.state.domain.activity.unread.rows).toEqual([]);
   });
 
+  test("removes muted rooms from activity unread rows", async () => {
+    const api = createBrowserFakeApi();
+
+    await api.openActivity();
+    const muted = await api.setRoomNotificationMode("!room-alpha:example.invalid", {
+      kind: "mute"
+    });
+
+    expect(muted.state.domain.activity.kind).toBe("open");
+    if (muted.state.domain.activity.kind !== "open") {
+      throw new Error("activity should stay open");
+    }
+    expect(
+      muted.state.domain.activity.unread.rows.some(
+        (row) => row.room_id === "!room-alpha:example.invalid"
+      )
+    ).toBe(false);
+  });
+
   test("models local encryption health probe as Rust-owned state", async () => {
     const api = createBrowserFakeApi();
 

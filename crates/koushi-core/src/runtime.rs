@@ -16,9 +16,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use koushi_state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityRowKind,
     ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState, ComposerDraftStore,
-    MentionIntent, ProfileUpdateRequest, RoomSummary, ScheduledSendCapability, ScheduledSendHandle,
-    ScheduledSendItem, SearchScope as AppSearchScope, SessionState, SpaceSummary, ThreadPaneState,
-    UiEvent, reduce,
+    MentionIntent, ProfileUpdateRequest, RoomNotificationMode, RoomSummary,
+    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchScope as AppSearchScope,
+    SessionState, SpaceSummary, ThreadPaneState, UiEvent, reduce,
 };
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -629,7 +629,13 @@ impl ActivityProjection {
         let excluded_room_ids = state
             .rooms
             .iter()
-            .filter(|room| room.tags.low_priority.is_some())
+            .filter(|room| {
+                room.tags.low_priority.is_some()
+                    || state
+                        .room_notification_settings
+                        .get(&room.room_id)
+                        .is_some_and(|settings| settings.mode == RoomNotificationMode::Mute)
+            })
             .map(|room| room.room_id.clone())
             .collect::<Vec<_>>();
         let excluded: BTreeSet<&str> = excluded_room_ids.iter().map(String::as_str).collect();

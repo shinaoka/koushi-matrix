@@ -8,7 +8,7 @@ use koushi_core::event::{ActivityEvent, CoreEvent};
 use koushi_core::{AppCommand, CoreCommand, CoreRuntime};
 use koushi_state::{
     ActivityMarkReadState, ActivityMarkReadTarget, ActivityRowKind, ActivityState, AppAction,
-    RoomSummary, SessionState, SpaceSummary,
+    RoomNotificationMode, RoomSummary, SessionState, SpaceSummary,
 };
 use support::{activity_row, room_summary, unread_room_summary, wait_for_state};
 
@@ -478,5 +478,94 @@ async fn activity_unread_uses_room_summary_placeholder_and_mark_all_does_not_emi
         cleared,
         vec!["$with-row-event:example.test"],
         "MarkedRead must contain only real event ids, no synthetic placeholder ids"
+    );
+}
+
+#[tokio::test]
+async fn activity_unread_removes_rooms_when_notification_mode_is_mute() {
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(support::session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![
+                    unread_room_summary("!normal:example.test", 1),
+                    unread_room_summary("!muted-with-row:example.test", 1),
+                    unread_room_summary("!muted-placeholder:example.test", 1),
+                ],
+            },
+            AppAction::ActivityRowsObserved {
+                rows: vec![
+                    activity_row("!normal:example.test", "$normal:example.test", 30),
+                    activity_row(
+                        "!muted-with-row:example.test",
+                        "$muted-with-row:example.test",
+                        20,
+                    ),
+                ],
+            },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_)) && state.rooms.len() == 3
+    })
+    .await;
+
+    let open_request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::OpenActivity {
+        request_id: open_request_id,
+    }))
+    .await
+    .expect("open activity command");
+    wait_for_state(&mut conn, |state| {
+        matches!(state.activity, ActivityState::Open { .. })
+    })
+    .await;
+
+    runtime
+        .inject_actions(vec![
+            AppAction::RoomNotificationModeSet {
+                request_id: 1,
+                room_id: "!muted-with-row:example.test".to_owned(),
+                mode: RoomNotificationMode::Mute,
+            },
+            AppAction::RoomNotificationModeSet {
+                request_id: 2,
+                room_id: "!muted-placeholder:example.test".to_owned(),
+                mode: RoomNotificationMode::Mute,
+            },
+        ])
+        .await;
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        matches!(
+            &state.activity,
+            ActivityState::Open { unread, .. }
+                if unread.rows.iter().any(|row| row.room_id == "!normal:example.test")
+                    && unread
+                        .rows
+                        .iter()
+                        .all(|row| !row.room_id.starts_with("!muted-"))
+        )
+    })
+    .await;
+    let ActivityState::Open { unread, .. } = snapshot.activity else {
+        panic!("activity should stay open");
+    };
+    assert!(
+        unread.rows.iter().any(|row| {
+            row.room_id == "!normal:example.test"
+                && row.event_id.as_deref() == Some("$normal:example.test")
+        }),
+        "unmuted unread event rows must remain visible"
+    );
+    assert!(
+        unread
+            .rows
+            .iter()
+            .all(|row| !row.room_id.starts_with("!muted-")),
+        "muted event rows and muted unread placeholders must be hidden"
     );
 }

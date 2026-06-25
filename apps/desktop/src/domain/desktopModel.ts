@@ -63,7 +63,13 @@ export function roomListSections(
     return fullSections;
   }
 
-  const projectedSections = roomListSectionsFromProjection(roomList.items, rooms, invites);
+  const projectedSections = roomListSectionsFromProjection(
+    roomList.items,
+    activeSpaceId,
+    spaces,
+    rooms,
+    invites
+  );
   switch (roomList.active_filter.kind) {
     case "rooms":
       return { ...fullSections, rooms: projectedSections.rooms };
@@ -97,11 +103,16 @@ function roomListSectionsFromSidebar(
 
 function roomListSectionsFromProjection(
   items: NonNullable<RoomListProjection["items"]>,
+  activeSpaceId: string | null,
+  spaces: SpaceSummary[],
   rooms: RoomSummary[],
   invites: InvitePreview[]
 ): RoomListSections {
   const roomById = new Map(rooms.map((room) => [room.room_id, room]));
   const inviteById = new Map(invites.map((invite) => [invite.room_id, invite]));
+  const activeSpace = activeSpaceId
+    ? spaces.find((space) => space.space_id === activeSpaceId) ?? null
+    : null;
 
   const favourites: RoomListItem[] = [];
   const invitesSection: RoomListItem[] = [];
@@ -132,6 +143,9 @@ function roomListSectionsFromProjection(
     if (!room) {
       continue;
     }
+    if (!roomVisibleInSidebarScope(room, activeSpaceId, activeSpace)) {
+      continue;
+    }
 
     const listItem = roomListItem(room);
     if (room.is_dm) {
@@ -152,6 +166,23 @@ function roomListSectionsFromProjection(
     people,
     lowPriority
   };
+}
+
+function roomVisibleInSidebarScope(
+  room: RoomSummary,
+  activeSpaceId: string | null,
+  activeSpace: SpaceSummary | null
+): boolean {
+  if (activeSpaceId === null) {
+    return room.is_dm || room.parent_space_ids.length === 0;
+  }
+  if (room.is_dm) {
+    return room.dm_space_ids.includes(activeSpaceId);
+  }
+  return (
+    room.parent_space_ids.includes(activeSpaceId) ||
+    (activeSpace?.child_room_ids.includes(room.room_id) ?? false)
+  );
 }
 
 function inviteListItem(invite: InvitePreview): RoomListItem {
@@ -182,7 +213,9 @@ export function composeSidebar(
         ?.child_room_ids.map((roomId) => roomById.get(roomId))
         .filter(roomExists)
         .map(roomListItem) ?? []
-    : rooms.filter((room) => !room.is_dm).map(roomListItem);
+    : rooms
+        .filter((room) => !room.is_dm && room.parent_space_ids.length === 0)
+        .map(roomListItem);
 
   const globalDms = rooms
     .filter(
