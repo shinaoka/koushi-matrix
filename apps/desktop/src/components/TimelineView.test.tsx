@@ -562,6 +562,102 @@ describe("TimelineView", () => {
     });
   });
 
+  it("keeps the retained bottom-edge room anchor stable when read receipts shift earlier rows", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const rects = {
+      "$seen:example.invalid": { top: 440, height: 48 },
+      "$anchor:example.invalid": { top: 500, height: 48 },
+      "$after:example.invalid": { top: 560, height: 48 }
+    };
+
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+
+    const props = {
+      timelineKey: KEY,
+      roomId: "!room:example.invalid",
+      transport,
+      roomScrollAnchor: {
+        event_id: "$anchor:example.invalid",
+        edge: "bottom" as const,
+        offset_px: -100,
+        updated_at_ms: Date.now()
+      },
+      onReply: vi.fn()
+    };
+    const { rerender } = render(<TimelineView {...props} />);
+
+    const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [
+            message("$seen:example.invalid", "Seen"),
+            message("$anchor:example.invalid", "Anchor"),
+            message("$after:example.invalid", "After")
+          ]
+        }
+      }
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(48);
+    });
+
+    rects["$anchor:example.invalid"].top = 530;
+    timeline.scrollTop = 58;
+    rerender(
+      <TimelineView
+        {...props}
+        liveSignals={{
+          presence: {},
+          rooms: {
+            "!room:example.invalid": {
+              fully_read_event_id: null,
+              typing_user_ids: [],
+              receipts_by_event: {
+                "$seen:example.invalid": {
+                  total_count: 1,
+                  overflow_count: 0,
+                  readers: [
+                    {
+                      user_id: "@satoshi:example.invalid",
+                      display_name: "Satoshi Terasaki",
+                      original_display_label: "Satoshi Terasaki",
+                      avatar: null,
+                      timestamp_ms: null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(78);
+    });
+  });
+
   it("requests a live anchor restore once and restores when the anchor enters live items", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const roomId = "!room:example.invalid";

@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createBrowserFakeApi } from "../backend/browserFakeApi";
-import { EntityAvatar, Sidebar, WorkspaceRail } from "./Shell";
+import { EntityAvatar, Sidebar, TopBar, WorkspaceRail } from "./Shell";
 
 afterEach(() => {
   cleanup();
@@ -268,5 +268,64 @@ describe("WorkspaceRail", () => {
 
     const spaceButton = screen.getByRole("button", { name: firstSpace.display_name });
     expect(spaceButton.getAttribute("data-mention-count")).toBeNull();
+  });
+});
+
+describe("TopBar window dragging", () => {
+  it("starts window dragging from the titlebar background", () => {
+    const onStartWindowDrag = vi.fn();
+
+    render(
+      <TopBar
+        activeSpaceName="Matrix"
+        isBusy={false}
+        searchInputRef={{ current: null }}
+        searchQuery=""
+        searchScope="allRooms"
+        sync="running"
+        onOpenKeyboardSettings={() => undefined}
+        onRestartSync={() => undefined}
+        onSearchQueryChange={() => undefined}
+        onSearchScopeChange={() => undefined}
+        onStartWindowDrag={onStartWindowDrag}
+      />
+    );
+
+    const titlebar = document.querySelector<HTMLElement>(".titlebar");
+    expect(titlebar).not.toBeNull();
+    fireEvent.mouseDown(titlebar!, { button: 0, buttons: 1 });
+    fireEvent.mouseDown(titlebar!, { button: 1, buttons: 2 });
+
+    expect(onStartWindowDrag).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start window dragging from titlebar controls", () => {
+    const onStartWindowDrag = vi.fn();
+
+    render(
+      <TopBar
+        activeSpaceName="Matrix"
+        isBusy={false}
+        searchInputRef={{ current: null }}
+        searchQuery=""
+        searchScope="allRooms"
+        sync="running"
+        onOpenKeyboardSettings={() => undefined}
+        onRestartSync={() => undefined}
+        onSearchQueryChange={() => undefined}
+        onSearchScopeChange={() => undefined}
+        onStartWindowDrag={onStartWindowDrag}
+      />
+    );
+
+    const button = document.querySelector<HTMLButtonElement>(".history .icon-button");
+    const search = document.querySelector<HTMLElement>(".top-search");
+    expect(button).not.toBeNull();
+    expect(search).not.toBeNull();
+
+    fireEvent.mouseDown(button!, { button: 0, buttons: 1 });
+    fireEvent.mouseDown(search!, { button: 0, buttons: 1 });
+
+    expect(onStartWindowDrag).not.toHaveBeenCalled();
   });
 });

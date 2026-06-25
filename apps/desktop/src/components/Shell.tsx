@@ -1,6 +1,7 @@
 import {
   type CSSProperties,
   type DragEvent,
+  type MouseEvent,
   type ReactNode,
   type RefObject,
   useState
@@ -23,6 +24,7 @@ import {
 import { t } from "../i18n/messages";
 import type {
   DesktopSnapshot,
+  DisplayPlatform,
   RoomListItem,
   RoomSummary,
   SearchScopeKind
@@ -45,9 +47,17 @@ import { type SpaceLocalOverrides, spaceDisplayName } from "../app/localPresenta
 
 const ROOM_SECTION_COLLAPSE_KEY = "koushi.roomSectionCollapsed.v1";
 
+function shouldStartTitlebarDrag(event: MouseEvent<HTMLElement>): boolean {
+  if (event.buttons !== 1 || !(event.target instanceof Element)) {
+    return false;
+  }
+  return !event.target.closest("button, input, select, textarea, a, label");
+}
+
 export function TopBar({
   activeSpaceName,
   isBusy,
+  platform = "linux",
   searchInputRef,
   searchQuery,
   searchScope,
@@ -56,10 +66,12 @@ export function TopBar({
   onOpenDiagnostics = () => undefined,
   onRestartSync,
   onSearchQueryChange,
-  onSearchScopeChange
+  onSearchScopeChange,
+  onStartWindowDrag = () => undefined
 }: {
   activeSpaceName: string;
   isBusy: boolean;
+  platform?: DisplayPlatform;
   searchInputRef: RefObject<HTMLInputElement | null>;
   searchQuery: string;
   searchScope: SearchScopeKind;
@@ -69,10 +81,22 @@ export function TopBar({
   onRestartSync: () => void;
   onSearchQueryChange: (value: string) => void;
   onSearchScopeChange: (value: SearchScopeKind) => void;
+  onStartWindowDrag?: () => void;
 }) {
   const syncStatus = syncStatePresentation(sync);
   return (
-    <header className="titlebar">
+    <header
+      className="titlebar"
+      data-platform={platform}
+      data-tauri-drag-region=""
+      onMouseDown={(event) => {
+        if (!shouldStartTitlebarDrag(event)) {
+          return;
+        }
+        event.preventDefault();
+        onStartWindowDrag();
+      }}
+    >
       <div className="history">
         <button className="icon-button" type="button" aria-label={t("action.back")}>
           ‹

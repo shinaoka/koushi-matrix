@@ -61,6 +61,7 @@
   --workspace-badge-padding-inline: 5px;
   --workspace-badge-border-width: 2px;
   --workspace-mention-dot-size: 9px;
+  --macos-traffic-light-inline-space: 96px;
   --nav-badge-size: 18px;
   --nav-badge-padding-inline: 5px;
   --nav-badge-font-size: 11px;
@@ -503,6 +504,7 @@ button:disabled {
 }
 
 .titlebar {
+  position: relative;
   display: grid;
   grid-template-columns: 128px minmax(220px, 1fr) 88px 84px;
   align-items: center;
@@ -510,6 +512,10 @@ button:disabled {
   padding: 0 14px;
   color: var(--brand-contrast);
   background: var(--rail);
+}
+
+.titlebar[data-platform="macos"] {
+  padding-inline-start: var(--macos-traffic-light-inline-space);
 }
 
 .history,
@@ -2042,6 +2048,7 @@ button:disabled {
 .timeline-view {
   min-inline-size: 0;
   max-inline-size: 100%;
+  overflow-anchor: none;
   overflow-x: hidden;
 }
 

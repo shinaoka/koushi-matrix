@@ -1416,6 +1416,17 @@ describe("desktop release scripts", () => {
     expect(capability.permissions).toContain("opener:allow-default-urls");
   });
 
+  test("Tauri window capability grants custom titlebar dragging", () => {
+    const capability = JSON.parse(
+      readFileSync(
+        new URL("../../../../apps/desktop/src-tauri/capabilities/default.json", import.meta.url),
+        "utf8"
+      )
+    );
+
+    expect(capability.permissions).toContain("core:window:allow-start-dragging");
+  });
+
   test("Tauri launch explicitly makes the main WebView window visible", () => {
     const source = readFileSync(
       new URL("../../../../apps/desktop/src-tauri/src/lib.rs", import.meta.url),

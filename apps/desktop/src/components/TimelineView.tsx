@@ -2772,10 +2772,6 @@ export const TimelineView = memo(function TimelineView({
       retainedRoomScrollAnchorRef.current = null;
       return;
     }
-    if (Math.abs(container.scrollTop - retained.scrollTop) > 1) {
-      retainedRoomScrollAnchorRef.current = null;
-      return;
-    }
     const anchorNode = findRoomScrollAnchorNode(container, activeRoomAnchor);
     if (!anchorNode) {
       retainedRoomScrollAnchorRef.current = null;

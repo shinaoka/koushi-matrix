@@ -1524,6 +1524,18 @@ describe("Tauri state refresh wiring", () => {
 });
 
 describe("TopBar sync state rendering", () => {
+  test("uses native macOS titlebar overlay instead of a separate titlebar row", () => {
+    const config = JSON.parse(
+      readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8")
+    );
+    const mainWindow = config.app.windows[0];
+
+    expect(mainWindow.decorations ?? true).toBe(true);
+    expect(mainWindow.titleBarStyle).toBe("Overlay");
+    expect(mainWindow.hiddenTitle).toBe(true);
+    expect(mainWindow.trafficLightPosition).toEqual({ x: 18, y: 16 });
+  });
+
   test("does not draw duplicate macOS traffic light controls", async () => {
     vi.stubGlobal("window", { location: { search: "" } });
     const { TopBar } = await import("./App");
@@ -1546,6 +1558,29 @@ describe("TopBar sync state rendering", () => {
     expect(markup).not.toContain("dot red");
     expect(markup).not.toContain("dot yellow");
     expect(markup).not.toContain("dot green");
+  });
+
+  test("marks the overlay titlebar top edge as a Tauri window drag region", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { TopBar } = await import("./App");
+    const markup = renderToStaticMarkup(
+      <TopBar
+        activeSpaceName="Matrix"
+        isBusy={false}
+        searchInputRef={{ current: null }}
+        searchQuery=""
+        searchScope="allRooms"
+        sync="running"
+        onOpenKeyboardSettings={() => undefined}
+        onRestartSync={() => undefined}
+        onSearchQueryChange={() => undefined}
+        onSearchScopeChange={() => undefined}
+      />
+    );
+
+    expect(markup).toContain('class="titlebar"');
+    expect(markup).toContain('data-tauri-drag-region=""');
+    expect(markup).not.toContain("titlebar-drag-strip");
   });
 
   test("renders reconnecting and failed states with a restart control", async () => {
