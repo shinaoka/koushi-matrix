@@ -2304,3 +2304,25 @@ stateDiagram-v2
   search index keys, local unlock secrets, raw homeserver credentials, raw
   Matrix session JSON, message bodies, attachment filenames, room IDs, event
   IDs, user IDs, or raw SDK errors.
+
+### UI readability #130
+
+- Home is the account-level activity surface. The Home rail button opens
+  Home and resets the main content to `Activity / Recent`; normal in-app Home
+  navigation may preserve the current Home subsection.
+- Activity `Recent` and `Unread` are message-centric inbox views. Event-backed
+  rows foreground the sender avatar/display label and timestamp, then show
+  context (`DM` or `Room · Space / Room`) and preview. Room-unread placeholder
+  rows stay typed and eventless.
+- People and Profile are right-panel states separate from Room info. Room info
+  may link to People but must not render the dense member-card list.
+- Thread-list display ordering is a Rust-owned setting. The SDK timeline/order
+  is canonical; the UI receives a projected display order.
+- Room/DM list sorting is a Rust-owned room-list projection setting with at
+  least recent-first and locale-normal modes.
+- Plain-text URL linkification and link-preview URL extraction use one
+  Rust-owned Unicode-aware policy. React renders only the projected URL ranges
+  and preview DTOs.
+- Avatar MXC URIs, thumbnail state, and user-room avatar associations are
+  account-scoped sensitive metadata. Debug, logs, tests, QA tokens, fixtures,
+  and issue evidence must redact real values.

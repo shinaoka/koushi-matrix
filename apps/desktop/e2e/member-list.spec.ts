@@ -1,19 +1,16 @@
 /**
  * Headless spec: member-list entry points (#81).
  *
- * Proves that every entry point that leads to the member list actually
- * opens the correct panel and, where a load_room_settings command is
- * needed, dispatches it — for both room and space contexts.
+ * Proves that People/Profile entry points preserve their Room/Space context,
+ * request the Rust-owned member snapshot, and dispatch typed member commands.
  *
  * Entry points under test:
- *  1. Room: room-header member-count pill → Room info panel opens.
- *  2. Room: Room info "People" entry → scrolls to / shows the members section.
- *  3. Room: Room info members section — shows Rust-owned member after load_room_settings.
- *  4. Space: workspace space-info-settings button → Space info panel opens.
- *  5. Space: Space info "Members" entry → calls load_room_settings and shows members.
+ *  1. Room: room-header People action → People panel opens.
+ *  2. Room: Room info "People" entry → People panel opens.
+ *  3. Space: Space info "Members" entry → Space-scoped People panel opens.
  */
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { t } from "../src/i18n/messages";
 
 const HARNESS_ROOM_ID = "!harness-room:example.invalid";
@@ -24,14 +21,14 @@ const HARNESS_MEMBERS = [
   { label: "Harness Linus", userId: "@harness-linus:example.invalid" }
 ] as const;
 
-async function gotoReadyShell(page: import("@playwright/test").Page): Promise<void> {
+async function gotoReadyShell(page: Page): Promise<void> {
   await page.goto("/appHarness.html");
   await expect(page.getByRole("main", { name: t("timeline.conversation") })).toBeVisible();
 }
 
 /** Count how many times a command has been invoked in the harness. */
 async function invocationCount(
-  page: import("@playwright/test").Page,
+  page: Page,
   command: string
 ): Promise<number> {
   return page.evaluate(
@@ -41,7 +38,7 @@ async function invocationCount(
 }
 
 /** Make the active space the harness space so space-info controls are visible. */
-async function activateSpace(page: import("@playwright/test").Page): Promise<void> {
+async function activateSpace(page: Page): Promise<void> {
   await page.evaluate(() => {
     const snap = (window as unknown as { __harness: { currentSnapshot(): unknown; setSnapshot(s: unknown): void } }).__harness.currentSnapshot() as Record<string, unknown>;
     const state = snap.state as Record<string, unknown>;
@@ -68,38 +65,91 @@ async function activateSpace(page: import("@playwright/test").Page): Promise<voi
   });
 }
 
+function contextPanel(page: Page) {
+  return page.getByRole("complementary", { name: t("panel.context") });
+}
+
+async function clearInvocations(page: Page): Promise<void> {
+  await page.evaluate(() =>
+    (window as unknown as { __harness: { clearInvocations(): void } }).__harness.clearInvocations()
+  );
+}
+
+async function firstInvocationArgs<T>(page: Page, command: string): Promise<T> {
+  return page.evaluate(
+    (cmd) =>
+      (window as unknown as {
+        __harness: { invocationsOf(c: string): { args: unknown }[] };
+      }).__harness.invocationsOf(cmd)[0]?.args as T,
+    command
+  );
+}
+
+async function expectPeoplePanelMembers(page: Page): Promise<void> {
+  const panel = contextPanel(page);
+  await expect(panel.getByRole("heading", { name: t("panel.people") })).toBeVisible();
+  await expect(
+    panel.getByText(t("people.memberCount", { count: String(HARNESS_MEMBERS.length) }), {
+      exact: true
+    })
+  ).toBeVisible();
+
+  const memberList = panel.getByRole("list", { name: t("room.members") });
+  await expect(memberList).toBeVisible();
+  for (const member of HARNESS_MEMBERS) {
+    await expect(memberList).toContainText(member.label);
+    await expect(
+      memberList.getByRole("button", {
+        name: t("people.openProfile", { name: member.label })
+      })
+    ).toBeVisible();
+    await expect(
+      memberList.getByRole("button", {
+        name: t("room.messageMember", { name: member.label })
+      })
+    ).toBeVisible();
+  }
+}
+
+async function openRoomPeopleFromHeader(page: Page): Promise<void> {
+  await page
+    .locator(".channel-actions")
+    .getByRole("button", { name: t("panel.people") })
+    .click();
+  await expectPeoplePanelMembers(page);
+}
+
+async function openSpacePeopleFromSpaceInfo(page: Page): Promise<void> {
+  await activateSpace(page);
+  await page.getByRole("button", { name: t("workspace.spaceInfoSettings") }).click();
+  const panel = contextPanel(page);
+  await expect(panel.getByText(t("panel.spaceInfo"), { exact: true })).toBeVisible();
+  await panel.getByRole("button", { name: t("room.members"), exact: true }).click();
+  await expectPeoplePanelMembers(page);
+}
+
 // ─────────────────────────────────────────────────────────────
 //  ROOM entry points
 // ─────────────────────────────────────────────────────────────
 
-test("room header member pill opens Room info panel", async ({ page }) => {
+test("room header People action opens People panel and loads active room members", async ({
+  page
+}) => {
   await gotoReadyShell(page);
+  await clearInvocations(page);
 
-  const pill = page
-    .locator(".channel-actions")
-    .getByRole("button", { name: t("room.members") });
-  await expect(pill).toBeVisible();
+  await openRoomPeopleFromHeader(page);
 
-  await pill.click();
-
-  await expect(page.getByText(t("panel.roomInfo"), { exact: true })).toBeVisible();
-});
-
-test("room header member pill shows the Rust-owned joined_members count", async ({ page }) => {
-  await gotoReadyShell(page);
-
-  // The harness seeds joined_members: 8 on the room
-  const pill = page
-    .locator(".channel-actions")
-    .getByRole("button", { name: t("room.members") });
-  await expect(pill).toContainText("8");
+  await expect
+    .poll(() => invocationCount(page, "load_room_settings"))
+    .toBeGreaterThanOrEqual(1);
+  const args = await firstInvocationArgs<{ roomId: string }>(page, "load_room_settings");
+  expect(args.roomId).toBe(HARNESS_ROOM_ID);
 });
 
 test("Room info panel dispatches load_room_settings for the active room", async ({ page }) => {
   await gotoReadyShell(page);
-  await page.evaluate(() =>
-    (window as unknown as { __harness: { clearInvocations(): void } }).__harness.clearInvocations()
-  );
+  await clearInvocations(page);
 
   await page.getByRole("button", { name: t("room.roomInfo") }).click();
   await expect(page.getByText(t("panel.roomInfo"), { exact: true })).toBeVisible();
@@ -108,77 +158,61 @@ test("Room info panel dispatches load_room_settings for the active room", async 
   await expect
     .poll(() => invocationCount(page, "load_room_settings"))
     .toBeGreaterThanOrEqual(1);
-
-  const args = await page.evaluate(
-    () =>
-      (window as unknown as {
-        __harness: { invocationsOf(c: string): { args: unknown }[] };
-      }).__harness.invocationsOf("load_room_settings")[0]?.args
-  );
-  expect((args as { roomId: string }).roomId).toBe(HARNESS_ROOM_ID);
+  const args = await firstInvocationArgs<{ roomId: string }>(page, "load_room_settings");
+  expect(args.roomId).toBe(HARNESS_ROOM_ID);
 });
 
-test("Room info members section shows the Rust-owned member after settings load", async ({
+test("Room info People entry opens the standalone People panel", async ({
   page
 }) => {
   await gotoReadyShell(page);
+  await clearInvocations(page);
 
   await page.getByRole("button", { name: t("room.roomInfo") }).click();
-  await expect(page.getByText(t("panel.roomInfo"), { exact: true })).toBeVisible();
+  const panel = contextPanel(page);
+  await expect(panel.getByText(t("panel.roomInfo"), { exact: true })).toBeVisible();
+  await panel.getByRole("button", { name: t("room.people"), exact: true }).click();
 
-  // The harness mock returns several members so the UI cannot pass by showing
-  // only the first row or a summarized count.
-  const membersSection = page.getByRole("region", { name: t("room.members") });
-  await expect(membersSection).toBeVisible();
-  for (const member of HARNESS_MEMBERS) {
-    await expect(membersSection).toContainText(member.label);
-    await expect(membersSection).toContainText(member.userId);
-    await expect(
-      membersSection.getByRole("button", {
-        name: t("room.messageMember", { name: member.label })
-      })
-    ).toBeVisible();
-  }
+  await expectPeoplePanelMembers(page);
+  await expect
+    .poll(() => invocationCount(page, "load_room_settings"))
+    .toBeGreaterThanOrEqual(1);
+  const args = await firstInvocationArgs<{ roomId: string }>(page, "load_room_settings");
+  expect(args.roomId).toBe(HARNESS_ROOM_ID);
 });
 
-test("Room info member rows can start DMs for any listed member", async ({ page }) => {
+test("People list rows start DMs through typed commands", async ({ page }) => {
   await gotoReadyShell(page);
 
-  await page.getByRole("button", { name: t("room.roomInfo") }).click();
-  await expect(page.getByText(t("panel.roomInfo"), { exact: true })).toBeVisible();
-  await page.evaluate(() =>
-    (window as unknown as { __harness: { clearInvocations(): void } }).__harness.clearInvocations()
-  );
+  await openRoomPeopleFromHeader(page);
+  await clearInvocations(page);
 
-  const membersSection = page.getByRole("region", { name: t("room.members") });
-  await membersSection
+  const memberList = contextPanel(page).getByRole("list", { name: t("room.members") });
+  await memberList
     .getByRole("button", {
       name: t("room.messageMember", { name: HARNESS_MEMBERS[1].label })
     })
     .click();
 
   await expect.poll(() => invocationCount(page, "start_direct_message")).toBe(1);
-  const args = await page.evaluate(
-    () =>
-      (window as unknown as {
-        __harness: { invocationsOf(c: string): { args: unknown }[] };
-      }).__harness.invocationsOf("start_direct_message")[0]?.args
-  );
-  expect((args as { userId: string }).userId).toBe(HARNESS_MEMBERS[1].userId);
+  const args = await firstInvocationArgs<{ userId: string }>(page, "start_direct_message");
+  expect(args.userId).toBe(HARNESS_MEMBERS[1].userId);
 });
 
-test("Room info 'People' entry scrolls to the members section", async ({ page }) => {
+test("People rows open Profile while preserving Rust member identity", async ({ page }) => {
   await gotoReadyShell(page);
 
-  await page.getByRole("button", { name: t("room.roomInfo") }).click();
-  await expect(page.getByText(t("panel.roomInfo"), { exact: true })).toBeVisible();
+  await openRoomPeopleFromHeader(page);
+  const panel = contextPanel(page);
+  await panel
+    .getByRole("button", {
+      name: t("people.openProfile", { name: HARNESS_MEMBERS[0].label })
+    })
+    .click();
 
-  const peopleButton = page.getByRole("button", { name: t("room.people"), exact: true });
-  await expect(peopleButton).toBeEnabled();
-  await peopleButton.click();
-
-  // After clicking People, the members heading should be in view
-  await expect(page.getByRole("heading", { name: t("room.members") })).toBeVisible();
+  await expect(panel.getByRole("heading", { name: t("panel.profile") })).toBeVisible();
+  await expect(panel).toContainText(HARNESS_MEMBERS[0].label);
+  await expect(panel).toContainText(HARNESS_MEMBERS[0].userId);
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -198,22 +232,17 @@ test("space info-settings button opens the Space info panel", async ({ page }) =
   await expect(page.getByText(t("panel.spaceInfo"), { exact: true })).toBeVisible();
 });
 
-test("Space info 'Members' entry dispatches load_room_settings for the space", async ({
+test("Space info 'Members' entry opens Space-scoped People panel", async ({
   page
 }) => {
   await gotoReadyShell(page);
   await activateSpace(page);
-  await page.evaluate(() =>
-    (window as unknown as { __harness: { clearInvocations(): void } }).__harness.clearInvocations()
-  );
+  await clearInvocations(page);
 
-  // Open space info
   await page.getByRole("button", { name: t("workspace.spaceInfoSettings") }).click();
-  const spaceInfoPanel = page.getByRole("complementary", { name: t("panel.context") });
-  await expect(page.getByText(t("panel.spaceInfo"), { exact: true })).toBeVisible();
+  const spaceInfoPanel = contextPanel(page);
+  await expect(spaceInfoPanel.getByText(t("panel.spaceInfo"), { exact: true })).toBeVisible();
 
-  // Click the Members entry in the SettingsEntryList — scope to the panel to avoid
-  // matching the room-header member pill with the same label
   const membersEntry = spaceInfoPanel.getByRole("button", {
     name: t("room.members"),
     exact: true
@@ -225,97 +254,41 @@ test("Space info 'Members' entry dispatches load_room_settings for the space", a
   await expect
     .poll(() => invocationCount(page, "load_room_settings"))
     .toBeGreaterThanOrEqual(1);
-
-  const args = await page.evaluate(
-    () =>
-      (window as unknown as {
-        __harness: { invocationsOf(c: string): { args: unknown }[] };
-      }).__harness.invocationsOf("load_room_settings")[0]?.args
-  );
-  expect((args as { roomId: string }).roomId).toBe(HARNESS_SPACE_ID);
+  const args = await firstInvocationArgs<{ roomId: string }>(page, "load_room_settings");
+  expect(args.roomId).toBe(HARNESS_SPACE_ID);
+  await expectPeoplePanelMembers(page);
 });
 
-test("Space info members section shows the Rust-owned member after settings load", async ({
-  page
-}) => {
+test("Space-scoped People panel rows can start DMs for any listed member", async ({ page }) => {
   await gotoReadyShell(page);
-  await activateSpace(page);
 
-  // Open space info
-  await page.getByRole("button", { name: t("workspace.spaceInfoSettings") }).click();
-  const spaceInfoPanel = page.getByRole("complementary", { name: t("panel.context") });
-  await expect(page.getByText(t("panel.spaceInfo"), { exact: true })).toBeVisible();
+  await openSpacePeopleFromSpaceInfo(page);
+  await clearInvocations(page);
 
-  // Trigger members load — scope to panel to avoid the room-header member pill
-  const membersEntry = spaceInfoPanel.getByRole("button", {
-    name: t("room.members"),
-    exact: true
-  });
-  await membersEntry.click();
-
-  // The harness mock returns several members so the UI cannot pass by showing
-  // only the first row or a summarized count.
-  const membersSection = page.getByRole("region", { name: t("room.members") });
-  await expect(membersSection).toBeVisible();
-  for (const member of HARNESS_MEMBERS) {
-    await expect(membersSection).toContainText(member.label);
-    await expect(membersSection).toContainText(member.userId);
-    await expect(
-      membersSection.getByRole("button", {
-        name: t("room.messageMember", { name: member.label })
-      })
-    ).toBeVisible();
-  }
-});
-
-test("Space info member rows can start DMs for any listed member", async ({ page }) => {
-  await gotoReadyShell(page);
-  await activateSpace(page);
-
-  await page.getByRole("button", { name: t("workspace.spaceInfoSettings") }).click();
-  const spaceInfoPanel = page.getByRole("complementary", { name: t("panel.context") });
-  await expect(page.getByText(t("panel.spaceInfo"), { exact: true })).toBeVisible();
-  await spaceInfoPanel.getByRole("button", { name: t("room.members"), exact: true }).click();
-  await page.evaluate(() =>
-    (window as unknown as { __harness: { clearInvocations(): void } }).__harness.clearInvocations()
-  );
-
-  const membersSection = page.getByRole("region", { name: t("room.members") });
-  await membersSection
+  const memberList = contextPanel(page).getByRole("list", { name: t("room.members") });
+  await memberList
     .getByRole("button", {
       name: t("room.messageMember", { name: HARNESS_MEMBERS[2].label })
     })
     .click();
 
   await expect.poll(() => invocationCount(page, "start_direct_message")).toBe(1);
-  const args = await page.evaluate(
-    () =>
-      (window as unknown as {
-        __harness: { invocationsOf(c: string): { args: unknown }[] };
-      }).__harness.invocationsOf("start_direct_message")[0]?.args
-  );
-  expect((args as { userId: string }).userId).toBe(HARNESS_MEMBERS[2].userId);
+  const args = await firstInvocationArgs<{ userId: string }>(page, "start_direct_message");
+  expect(args.userId).toBe(HARNESS_MEMBERS[2].userId);
 });
 
-test("Space info members count tile reflects loaded member count", async ({ page }) => {
+test("Space People Profile preserves the Space member context", async ({ page }) => {
   await gotoReadyShell(page);
-  await activateSpace(page);
 
-  // Open space info — before load, member tile shows "-"
-  await page.getByRole("button", { name: t("workspace.spaceInfoSettings") }).click();
-  const spaceInfoPanel = page.getByRole("complementary", { name: t("panel.context") });
-  await expect(page.getByText(t("panel.spaceInfo"), { exact: true })).toBeVisible();
-
-  // Trigger load through Members entry — scope to panel to avoid the room-header member pill
-  await spaceInfoPanel.getByRole("button", { name: t("room.members"), exact: true }).click();
-
-  // After load, harness returns three members so tile should show "3".
-  await expect
-    .poll(async () => {
-      // The tile containing the member count label
-      const summaryGrid = page.locator(".settings-summary-grid");
-      const membersValue = summaryGrid.locator("text=3");
-      return membersValue.count();
+  await openSpacePeopleFromSpaceInfo(page);
+  const panel = contextPanel(page);
+  await panel
+    .getByRole("button", {
+      name: t("people.openProfile", { name: HARNESS_MEMBERS[2].label })
     })
-    .toBeGreaterThanOrEqual(1);
+    .click();
+
+  await expect(panel.getByRole("heading", { name: t("panel.profile") })).toBeVisible();
+  await expect(panel).toContainText(HARNESS_MEMBERS[2].label);
+  await expect(panel).toContainText(HARNESS_MEMBERS[2].userId);
 });

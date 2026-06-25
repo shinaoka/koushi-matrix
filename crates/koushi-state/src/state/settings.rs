@@ -22,6 +22,14 @@ fn default_encrypted_url_previews_enabled() -> bool {
     true
 }
 
+fn default_thread_list_order() -> ThreadListOrder {
+    ThreadListOrder::LatestReply
+}
+
+fn default_room_list_sort() -> RoomListSort {
+    RoomListSort::Activity
+}
+
 pub type RoomUrlPreviews = std::collections::BTreeMap<String, bool>;
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -76,6 +84,10 @@ pub struct SettingsValues {
     pub media: MediaSettings,
     #[serde(default)]
     pub timeline: TimelineSettings,
+    #[serde(default = "default_thread_list_order")]
+    pub thread_list_order: ThreadListOrder,
+    #[serde(default = "default_room_list_sort")]
+    pub room_list_sort: RoomListSort,
     #[serde(default)]
     pub search_crawler: SearchCrawlerSettings,
 }
@@ -106,6 +118,12 @@ impl SettingsValues {
         if let Some(timeline) = patch.timeline {
             self.timeline = timeline;
         }
+        if let Some(thread_list_order) = patch.thread_list_order {
+            self.thread_list_order = thread_list_order;
+        }
+        if let Some(room_list_sort) = patch.room_list_sort {
+            self.room_list_sort = room_list_sort;
+        }
         if let Some(search_crawler) = patch.search_crawler {
             self.search_crawler = search_crawler;
         }
@@ -123,6 +141,8 @@ impl Default for SettingsValues {
             display: DisplaySettings::default(),
             media: MediaSettings::default(),
             timeline: TimelineSettings::default(),
+            thread_list_order: ThreadListOrder::default(),
+            room_list_sort: RoomListSort::default(),
             search_crawler: SearchCrawlerSettings::default(),
         }
     }
@@ -366,6 +386,33 @@ impl Default for TimelineSettings {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ThreadListOrder {
+    LatestReply,
+    RootChronology,
+}
+
+impl Default for ThreadListOrder {
+    fn default() -> Self {
+        Self::LatestReply
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RoomListSort {
+    Activity,
+    RecentFirst,
+    NormalLocale,
+}
+
+impl Default for RoomListSort {
+    fn default() -> Self {
+        Self::Activity
+    }
+}
+
 // SearchCrawlerSettings and SearchCrawlerSpeed live in state/search_crawler.rs
 // and are re-exported from mod.rs.
 
@@ -386,5 +433,7 @@ pub struct SettingsPatch {
     pub display: Option<DisplaySettings>,
     pub media: Option<MediaSettings>,
     pub timeline: Option<TimelineSettings>,
+    pub thread_list_order: Option<ThreadListOrder>,
+    pub room_list_sort: Option<RoomListSort>,
     pub search_crawler: Option<SearchCrawlerSettings>,
 }

@@ -101,6 +101,15 @@ async function attachFile(
     .setInputFiles(file);
 }
 
+async function clickComposerSend(page: Page): Promise<void> {
+  const sendButton = page.locator(".composer-footer").getByRole("button", {
+    name: "Send",
+    exact: true
+  });
+  await expect(sendButton).toBeEnabled();
+  await sendButton.click();
+}
+
 function makeThreadItem(index: number, rootEventId = "$seed-event:example.invalid") {
   return {
     id: { Event: { event_id: `$thread-page-${String(index).padStart(2, "0")}:example.invalid` } },
@@ -569,7 +578,6 @@ test("space rail separates system buttons, reorders Spaces, and leaves a Space h
 
   const rail = page.getByRole("navigation", { name: "Workspaces" });
   await expect(rail.locator('[role="separator"]')).toBeVisible();
-  await expect(rail.getByRole("button", { name: "Activity", exact: true })).toBeVisible();
   await expect(rail.getByRole("button", { name: "Home", exact: true })).toBeVisible();
 
   const firstSpace = rail.getByRole("button", { name: "Harness Space", exact: true });
@@ -837,11 +845,11 @@ test("invites view accepts a seeded invite and New DM renders the returned direc
       page.evaluate(() => window.__harness.invocationsOf("start_direct_message")[0]?.args)
     )
     .toEqual({ userId: "@target:example.invalid" });
-  await page
-    .getByRole("tablist", { name: t("workspace.filters") })
-    .getByRole("tab", { name: t("roomList.filterPeople"), exact: true })
-    .click();
-  await expect(page.getByRole("button", { name: "@target:example.invalid" })).toBeVisible();
+  await expect(
+    page
+      .locator('[data-room-section="people"]')
+      .getByRole("button", { name: "@target:example.invalid" })
+  ).toBeVisible();
 });
 
 test("timeline reply action invokes set_composer_reply_target", async ({ page }) => {
@@ -1005,30 +1013,39 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
   await page.evaluate(() => {
     const recentRows = [
       {
+        kind: "event",
         room_id: "!room-beta:example.invalid",
         event_id: "$activity-beta-newest:example.invalid",
         room_label: "Project Beta",
+        context_label: "Room · Project Beta",
         sender_label: "Beta Sender",
+        sender_avatar: null,
         preview: "Newest recent update",
         timestamp_ms: 1_800_000_010_000,
         unread: false,
         highlight: false
       },
       {
+        kind: "event",
         room_id: "!room-alpha:example.invalid",
         event_id: "$activity-alpha-middle:example.invalid",
         room_label: "Project Alpha",
+        context_label: "Room · Project Alpha",
         sender_label: "Alpha Sender",
+        sender_avatar: null,
         preview: "Middle recent update",
         timestamp_ms: 1_800_000_009_000,
         unread: true,
         highlight: true
       },
       {
+        kind: "event",
         room_id: "!room-gamma:example.invalid",
         event_id: "$activity-gamma-oldest:example.invalid",
         room_label: "Project Gamma",
+        context_label: "Room · Project Gamma",
         sender_label: null,
+        sender_avatar: null,
         preview: "Oldest recent update",
         timestamp_ms: 1_800_000_008_000,
         unread: false,
@@ -1037,20 +1054,26 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
     ];
     const unreadRows = [
       {
+        kind: "event",
         room_id: "!room-alpha:example.invalid",
         event_id: "$activity-alpha-unread:example.invalid",
         room_label: "Project Alpha",
+        context_label: "Room · Project Alpha",
         sender_label: "Alpha Sender",
+        sender_avatar: null,
         preview: "Stale unread update",
         timestamp_ms: 1_800_000_001_000,
         unread: true,
         highlight: true
       },
       {
+        kind: "event",
         room_id: "!room-beta:example.invalid",
         event_id: "$activity-beta-unread:example.invalid",
         room_label: "Project Beta",
+        context_label: "Room · Project Beta",
         sender_label: "Beta Sender",
+        sender_avatar: null,
         preview: "Fresh unread update",
         timestamp_ms: 1_800_000_011_000,
         unread: true,
@@ -1142,7 +1165,10 @@ test("Activity renders Rust-owned streams and waits for mark-read snapshots", as
     window.__harness.clearInvocations();
   });
 
-  await page.getByRole("button", { name: "Activity" }).click();
+  await page
+    .getByRole("complementary", { name: t("workspace.rooms") })
+    .getByRole("button", { name: t("workspace.home") })
+    .click();
 
   await expect.poll(() => invocationCount(page, "open_activity")).toBeGreaterThanOrEqual(1);
   await expect(page.getByRole("main", { name: "Activity" })).toBeVisible();
@@ -1318,6 +1344,9 @@ test("room management panel updates settings, roles, and members from Rust state
     window.__harness.setCommandResponse("update_room_member_role", () =>
       window.__harness.currentSnapshot()
     );
+    window.__harness.setCommandResponse("load_room_settings", () =>
+      window.__harness.currentSnapshot()
+    );
     window.__harness.pushStateChanged();
     window.__harness.clearInvocations();
   }, HARNESS_ROOM_ID);
@@ -1413,16 +1442,24 @@ test("room management panel updates settings, roles, and members from Rust state
   await expect(currentAvatarRow.getByText("mxc://example.invalid/managed-avatar")).toBeVisible();
   await expect(currentAvatarRow.getByText("No avatar")).toHaveCount(0);
 
-  const targetMemberRow = page.locator(".room-member-row").filter({
+  await page
+    .getByLabel("Context panel")
+    .getByRole("button", { name: t("room.people"), exact: true })
+    .click();
+  await expect(page.getByRole("heading", { name: t("panel.people") })).toBeVisible();
+
+  const targetMemberRow = page.locator(".people-list-row").filter({
     hasText: "Target Member"
   });
-  const targetMemberRoleLabel = targetMemberRow.locator(".room-member-main small").filter({
-    hasText: /^(User|Moderator)$/
-  });
-  await expect(targetMemberRoleLabel).toHaveText("User");
+  await expect(targetMemberRow.getByText(t("room.roleUser"), { exact: true })).toBeVisible();
   await targetMemberRow
-    .getByRole("combobox", { name: "Member role for Target Member" })
-    .selectOption("50");
+    .getByRole("button", { name: t("people.openProfile", { name: "Target Member" }) })
+    .click();
+  const targetMemberRoleSelect = page.getByRole("combobox", {
+    name: "Member role for Target Member"
+  });
+  await expect(targetMemberRoleSelect).toHaveValue("0");
+  await targetMemberRoleSelect.selectOption("50");
 
   await expect.poll(() => invocationCount(page, "update_room_member_role")).toBeGreaterThanOrEqual(1);
   await expect
@@ -1434,7 +1471,7 @@ test("room management panel updates settings, roles, and members from Rust state
       targetUserId: "@target-member:example.invalid",
       powerLevel: 50
     });
-  await expect(targetMemberRoleLabel).toHaveText("User");
+  await expect(targetMemberRoleSelect).toHaveValue("0");
 
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
@@ -1464,9 +1501,9 @@ test("room management panel updates settings, roles, and members from Rust state
     window.__harness.pushStateChanged();
   });
 
-  await expect(targetMemberRoleLabel).toHaveText("Moderator");
+  await expect(targetMemberRoleSelect).toHaveValue("50");
 
-  await targetMemberRow.getByRole("button", { name: "Kick Target Member" }).click();
+  await page.getByRole("button", { name: "Kick Target Member" }).click();
 
   await expect.poll(() => invocationCount(page, "moderate_room_member")).toBeGreaterThanOrEqual(1);
   await expect
@@ -1479,7 +1516,7 @@ test("room management panel updates settings, roles, and members from Rust state
       action: "kick",
       reason: null
     });
-  await expect(targetMemberRow).toBeVisible();
+  await expect(page.getByRole("button", { name: "Kick Target Member" })).toBeVisible();
 
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
@@ -1505,7 +1542,11 @@ test("room management panel updates settings, roles, and members from Rust state
     window.__harness.pushStateChanged();
   });
 
-  await expect(targetMemberRow).toHaveCount(0);
+  await page
+    .getByRole("region", { name: t("panel.profile") })
+    .getByRole("button", { name: t("action.back") })
+    .click();
+  await expect(page.locator(".people-list-row").filter({ hasText: "Target Member" })).toHaveCount(0);
 });
 
 test("local aliases dispatch typed account command and render Rust-projected labels", async ({
@@ -1597,19 +1638,27 @@ test("local aliases dispatch typed account command and render Rust-projected lab
         ]
       }
     });
+    window.__harness.setCommandResponse("load_room_settings", () =>
+      window.__harness.currentSnapshot()
+    );
     window.__harness.pushStateChanged();
     window.__harness.clearInvocations();
   }, HARNESS_ROOM_ID);
 
-  await page.getByRole("button", { name: "Room info" }).click();
-  const targetMemberRow = page.locator(".room-member-row").filter({
+  await page.locator(".channel-actions").getByRole("button", { name: t("panel.people") }).click();
+  await expect(page.getByRole("heading", { name: t("panel.people") })).toBeVisible();
+  const targetMemberRow = page.locator(".people-list-row").filter({
     hasText: "Target Member"
   });
   await expect(targetMemberRow).toBeVisible();
-  await targetMemberRow.getByRole("button", { name: "Set alias for Target Member" }).click();
-  const aliasInput = page.getByRole("textbox", { name: "Alias" });
+  await targetMemberRow
+    .getByRole("button", { name: t("people.openProfile", { name: "Target Member" }) })
+    .click();
+  const profilePanel = page.getByLabel("Context panel");
+  await profilePanel.getByRole("button", { name: t("people.setAlias") }).click();
+  const aliasInput = profilePanel.getByRole("textbox", { name: "Alias" });
   await aliasInput.fill("Desk Alias");
-  await page.getByRole("button", { name: "Save alias" }).click();
+  await profilePanel.getByRole("button", { name: "Save alias" }).click();
 
   await expect.poll(() => invocationCount(page, "set_local_user_alias")).toBe(1);
   await expect
@@ -1620,15 +1669,8 @@ test("local aliases dispatch typed account command and render Rust-projected lab
       userId: "@target-member:example.invalid",
       alias: "Desk Alias"
     });
-  const aliasedMemberRow = page.locator(".room-member-row").filter({
-    hasText: "Desk Alias"
-  });
-  await expect(aliasedMemberRow).toBeVisible();
-  await expect(aliasedMemberRow.getByText("Original: Target Member")).toBeVisible();
-  await page
-    .getByRole("tablist", { name: t("workspace.filters") })
-    .getByRole("tab", { name: t("roomList.filterPeople"), exact: true })
-    .click();
+  await expect(profilePanel.getByRole("heading", { name: "Desk Alias" })).toBeVisible();
+  await expect(profilePanel.getByText("Original: Target Member")).toBeVisible();
   await expect(page.locator('[data-room-section="people"]').getByText("Desk Alias")).toBeVisible();
 
   await seedTimelineItems(
@@ -1687,17 +1729,15 @@ test("local aliases dispatch typed account command and render Rust-projected lab
     } as any);
   });
   await expect(timelineAliasRow.locator(".sender")).toHaveText("Timeline Alias");
-  const timelineAliasedMemberRow = page.locator(".room-member-row").filter({
-    hasText: "Timeline Alias"
-  });
-  await expect(timelineAliasedMemberRow).toBeVisible();
+  await expect(profilePanel.getByRole("heading", { name: "Timeline Alias" })).toBeVisible();
   await expect(
     page.locator('[data-room-section="people"]').getByText("Timeline Alias")
   ).toBeVisible();
 
-  await timelineAliasedMemberRow
-    .getByRole("button", { name: "Clear alias for Timeline Alias" })
-    .click();
+  await profilePanel.getByRole("button", { name: t("people.setAlias") }).click();
+  const clearAliasInput = profilePanel.getByRole("textbox", { name: "Alias" });
+  await clearAliasInput.fill("");
+  await profilePanel.getByRole("button", { name: "Save alias" }).click();
   await expect.poll(() => invocationCount(page, "set_local_user_alias")).toBe(3);
   await expect
     .poll(async () =>
@@ -1707,7 +1747,7 @@ test("local aliases dispatch typed account command and render Rust-projected lab
       userId: "@target-member:example.invalid",
       alias: null
     });
-  await expect(page.locator(".room-member-row").filter({ hasText: "Target Member" })).toBeVisible();
+  await expect(profilePanel.getByRole("heading", { name: "Target Member" })).toBeVisible();
   await expect(
     page.locator('[data-room-section="people"]').getByText("Target Member")
   ).toBeVisible();
@@ -1967,7 +2007,7 @@ test("room sections follow Element-aligned order and render Rust-owned counts", 
         ...snapshot.sidebar,
         account_home: {
           ...snapshot.sidebar.account_home,
-          is_active: true,
+          is_active: false,
           unread_count: 1,
           highlight_count: 1
         },
@@ -2017,6 +2057,10 @@ test("room sections follow Element-aligned order and render Rust-owned counts", 
   await expect(favouriteRoom.locator(".room-mention-dot")).toBeVisible();
   await expect(favouriteRoom.locator(".room-count")).toHaveText("1");
   await expect(page.locator(".workspace-rail .workspace-button").first()).toHaveAttribute(
+    "data-count",
+    "1"
+  );
+  await expect(page.locator(".workspace-rail .workspace-button").first()).not.toHaveAttribute(
     "data-mention-count",
     "1"
   );
@@ -2200,10 +2244,7 @@ test("notification attention snapshot drives room, space, thread, and click rout
   await expect(lowPriorityRoom.locator(".room-count")).toHaveText("8");
   const attentionSpace = page.getByRole("button", { name: "Attention Space" });
   await expect(attentionSpace).toHaveAttribute("data-count", "4");
-  await expect(attentionSpace).toHaveAttribute(
-    "data-mention-count",
-    "1"
-  );
+  await expect(attentionSpace).not.toHaveAttribute("data-mention-count", "1");
   const sidebarThreadsButton = page
     .getByRole("complementary", { name: "Rooms" })
     .getByRole("button", { name: "Threads" });
@@ -2358,7 +2399,12 @@ test("markdown toolbar and slash composer input dispatch Rust-owned send bodies"
   page
 }) => {
   await gotoReadyShell(page);
-  await page.evaluate(() => window.__harness.clearInvocations());
+  await page.evaluate(() => {
+    window.__harness.setCommandResponse("open_threads_list", () =>
+      window.__harness.currentSnapshot()
+    );
+    window.__harness.clearInvocations();
+  });
 
   const composer = page.getByRole("textbox", { name: "Message composer" });
   await composer.fill("world");
@@ -3143,16 +3189,7 @@ test("main composer composing Enter never sends or accepts mention autocomplete"
     element.dispatchEvent(event);
   });
 
-  await expect
-    .poll(async () =>
-      page.evaluate(() => window.__harness.invocationsOf("resolve_composer_key_action")[0]?.args)
-    )
-    .toMatchObject({
-      surface: "main",
-      keyEvent: { key: "enter", is_composing: true },
-      autocompleteOpen: true,
-      sendEnabled: true
-    });
+  expect(await invocationCount(page, "resolve_composer_key_action")).toBe(0);
   expect(await invocationCount(page, "send_text")).toBe(0);
   await expect(page.getByRole("listbox", { name: "Mention suggestions" })).toBeVisible();
   await expect(composer).toHaveValue("@a");
@@ -3170,16 +3207,7 @@ test("thread and edit composers composing Enter never send through GUI", async (
 
   await expect(await dispatchComposingEnter(threadComposer)).toBe(false);
 
-  await expect
-    .poll(async () =>
-      page.evaluate(() => window.__harness.invocationsOf("resolve_composer_key_action")[0]?.args)
-    )
-    .toMatchObject({
-      surface: "thread",
-      keyEvent: { key: "enter", is_composing: true },
-      autocompleteOpen: false,
-      sendEnabled: true
-    });
+  expect(await invocationCount(page, "resolve_composer_key_action")).toBe(0);
   expect(await invocationCount(page, "send_thread_reply")).toBe(0);
   await expect(threadComposer).toHaveValue("スレッド変換中");
 
@@ -3195,16 +3223,7 @@ test("thread and edit composers composing Enter never send through GUI", async (
 
   await expect(await dispatchComposingEnter(editBody)).toBe(false);
 
-  await expect
-    .poll(async () =>
-      page.evaluate(() => window.__harness.invocationsOf("resolve_composer_key_action")[0]?.args)
-    )
-    .toMatchObject({
-      surface: "edit",
-      keyEvent: { key: "enter", is_composing: true },
-      autocompleteOpen: false,
-      sendEnabled: true
-    });
+  expect(await invocationCount(page, "resolve_composer_key_action")).toBe(0);
   expect(await invocationCount(page, "edit_message")).toBe(0);
   await expect(editBody).toHaveValue("編集変換中");
 });
@@ -4352,7 +4371,11 @@ test("image compression setting and dialog send selected Rust-owned variant meta
   await expect
     .poll(() => invocationCount(page, "update_staged_upload_compression"))
     .toBeGreaterThanOrEqual(1);
-  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Compressed" })).toHaveAttribute(
+    "aria-pressed",
+    "true"
+  );
+  await clickComposerSend(page);
   await expect(page.getByRole("dialog", { name: "Compress image" })).toHaveCount(0);
 
   await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
@@ -4409,6 +4432,8 @@ test("image compression setting and dialog send selected Rust-owned variant meta
       })
     )
     .toBe(true);
+  await expect.poll(() => invocationCount(page, "clear_upload_staging")).toBeGreaterThanOrEqual(1);
+  await expect(page.getByRole("dialog", { name: "Upload attachments" })).toHaveCount(0);
 
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
@@ -4440,12 +4465,17 @@ test("image compression setting and dialog send selected Rust-owned variant meta
     window.__harness.pushStateChanged();
     window.__harness.clearInvocations();
   });
+  await expect(
+    page
+      .getByRole("group", { name: t("settings.compressImages") })
+      .getByRole("button", { name: t("settings.compressImagesAlways") })
+  ).toHaveAttribute("aria-pressed", "true");
   await attachFile(page, {
     name: "auto.png",
     mimeType: "image/png",
     buffer: fixture
   });
-  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await clickComposerSend(page);
   await expect(page.getByRole("dialog", { name: "Compress image" })).toHaveCount(0);
   await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
   await expect
@@ -4455,6 +4485,8 @@ test("image compression setting and dialog send selected Rust-owned variant meta
       )
     )
     .toBe("Compressed");
+  await expect.poll(() => invocationCount(page, "clear_upload_staging")).toBeGreaterThanOrEqual(1);
+  await expect(page.getByRole("dialog", { name: "Upload attachments" })).toHaveCount(0);
 
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
@@ -4486,12 +4518,17 @@ test("image compression setting and dialog send selected Rust-owned variant meta
     window.__harness.pushStateChanged();
     window.__harness.clearInvocations();
   });
+  await expect(
+    page
+      .getByRole("group", { name: t("settings.compressImages") })
+      .getByRole("button", { name: t("settings.compressImagesAsk") })
+  ).toHaveAttribute("aria-pressed", "true");
   await attachFile(page, {
     name: "small.png",
     mimeType: "image/png",
     buffer: fixture
   });
-  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await clickComposerSend(page);
   await expect(page.getByRole("dialog", { name: "Compress image" })).toHaveCount(0);
   await expect.poll(() => invocationCount(page, "upload_media")).toBeGreaterThanOrEqual(1);
   await expect
@@ -4562,7 +4599,7 @@ test("live signals render from Rust state and dispatch read/typing commands", as
 
   const row = page.locator('[data-event-id="$seed-event:example.invalid"]');
   await expect(row.locator(".presence-dot[data-presence='online']")).toBeVisible();
-  await expect(row.getByText("Read by 1", { exact: true })).toBeVisible();
+  await expect(row.locator(".message-receipts")).toHaveAttribute("aria-label", /Read by 1/);
   await expect(page.getByText("Read up to here", { exact: true })).toBeVisible();
   await expect(page.getByText("@typing-user:example.invalid is typing", { exact: true })).toBeVisible();
   await expect.poll(() => invocationCount(page, "send_read_receipt")).toBeGreaterThanOrEqual(1);
@@ -5035,7 +5072,6 @@ test("thread panel scrollback invokes thread pagination command only", async ({
   page
 }) => {
   await gotoReadyShell(page);
-  await setTimelineAutoLoadOlderMessages(page, true);
 
   await expect(page.getByRole("button", { name: /2 replies/ })).toBeVisible();
   await page.getByRole("button", { name: /2 replies/ }).click();
@@ -5071,12 +5107,29 @@ test("thread panel scrollback invokes thread pagination command only", async ({
       .locator('aside[aria-label="Context panel"]')
       .getByText("Thread overflow message 47", { exact: true })
   ).toBeVisible();
-
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      })
+  );
+  await page.evaluate(({ key }) => {
+    window.__harness.pushCoreEvent({
+      kind: "Timeline",
+      event: {
+        PaginationStateChanged: {
+          request_id: null,
+          key,
+          direction: "Backward",
+          state: "Idle"
+        }
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+  }, { key: threadKey });
   await page.evaluate(() => window.__harness.clearInvocations());
-  await threadTimeline.evaluate((node) => {
-    node.scrollTop = 40;
-    node.dispatchEvent(new Event("scroll", { bubbles: true }));
-  });
+  await threadTimeline.hover();
+  await page.mouse.wheel(0, -5000);
 
   await expect
     .poll(() => invocationCount(page, "paginate_thread_timeline_backwards"))
@@ -5371,7 +5424,15 @@ test("Japanese locale renders shell labels and CJK text without clipping", async
   await expect(page.getByRole("button", { name: "ルームを作成", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "ユーザー設定", exact: true })).toBeVisible();
   await expect(
-    page.locator(".channel-actions").getByRole("button", { name: "スレッド", exact: true })
+    page.locator(".channel-actions").getByRole("button", { name: "メンバー", exact: true })
+  ).toBeVisible();
+  await expect(
+    page
+      .locator(".channel-actions")
+      .getByRole("button", { name: "メディアギャラリーを開く", exact: true })
+  ).toBeVisible();
+  await expect(
+    page.locator(".channel-actions").getByRole("button", { name: "ルーム情報", exact: true })
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "送信", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Create room", exact: true })).toHaveCount(0);
@@ -5815,7 +5876,7 @@ test("timeline auto-load setting dispatches a Rust-owned update_settings patch",
   await expect(page.getByRole("heading", { name: t("settings.timeline") })).toBeVisible();
 
   const autoLoad = page.getByRole("switch", { name: t("settings.autoLoadOlderMessages") });
-  await expect(autoLoad).toHaveAttribute("aria-checked", "false");
+  await expect(autoLoad).toHaveAttribute("aria-checked", "true");
   await autoLoad.click();
 
   await expect.poll(() => invocationCount(page, "update_settings")).toBeGreaterThanOrEqual(1);
@@ -5826,11 +5887,11 @@ test("timeline auto-load setting dispatches a Rust-owned update_settings patch",
     .toEqual({
       patch: {
         timeline: {
-          auto_load_older_messages: true
+          auto_load_older_messages: false
         }
       }
     });
-  await expect(autoLoad).toHaveAttribute("aria-checked", "true");
+  await expect(autoLoad).toHaveAttribute("aria-checked", "false");
 });
 
 test("rich formatted timeline rows render Rust-owned DTOs and code-wrap setting", async ({
@@ -5900,7 +5961,7 @@ test("rich formatted timeline rows render Rust-owned DTOs and code-wrap setting"
           code_block_wrap: false,
           hide_redacted: true,
           url_previews_enabled: true,
-          encrypted_url_previews_enabled: false
+          encrypted_url_previews_enabled: true
         }
       }
     });
@@ -6003,7 +6064,7 @@ test("hide deleted messages setting hides only Rust-marked redacted timeline row
           code_block_wrap: true,
           hide_redacted: true,
           url_previews_enabled: true,
-          encrypted_url_previews_enabled: false
+          encrypted_url_previews_enabled: true
         }
       }
     });
@@ -6049,7 +6110,7 @@ test("profile settings dispatch Rust-owned commands and avatars render from prof
       thumbnail: {
         kind: "ready",
         source_url:
-          "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+          "data:image/gif;base64,R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==",
         width: 1,
         height: 1,
         mime_type: "image/gif"
@@ -6585,7 +6646,7 @@ test("device session manager renames and signs out from Rust-owned snapshot", as
     });
 });
 
-test("room list filter and mark unread dispatch Rust-owned commands", async ({ page }) => {
+test("room context menu mark unread dispatches Rust-owned commands", async ({ page }) => {
   await gotoReadyShell(page);
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
@@ -6661,14 +6722,6 @@ test("room list filter and mark unread dispatch Rust-owned commands", async ({ p
 
   const alphaRow = page.getByTestId("room-item").filter({ hasText: "Room Alpha" }).first();
   await expect(alphaRow).toBeVisible();
-
-  await page.getByRole("tab", { name: t("roomList.filterUnread") }).click();
-  await expect.poll(() => invocationCount(page, "select_room_list_filter")).toBe(1);
-  await expect
-    .poll(async () =>
-      page.evaluate(() => window.__harness.invocationsOf("select_room_list_filter")[0]?.args)
-    )
-    .toEqual({ filter: { kind: "unread" } });
 
   await alphaRow.click({ button: "right" });
   await page.getByRole("menuitem", { name: t("room.markAsUnread") }).click();
@@ -7030,25 +7083,30 @@ test("room member panel ignores, unignores, and reports a user", async ({ page }
     { roomId: HARNESS_ROOM_ID, targetUserId }
   );
 
-  await page.getByRole("button", { name: "Room info" }).click();
-  const targetMemberRow = page.locator(".room-member-row").filter({ hasText: "Target Member" });
+  await page.locator(".channel-actions").getByRole("button", { name: t("panel.people") }).click();
+  await expect(page.getByRole("heading", { name: t("panel.people") })).toBeVisible();
+  const targetMemberRow = page.locator(".people-list-row").filter({ hasText: "Target Member" });
   await expect(targetMemberRow).toBeVisible();
+  await targetMemberRow
+    .getByRole("button", { name: t("people.openProfile", { name: "Target Member" }) })
+    .click();
+  const profilePanel = page.getByLabel("Context panel");
 
-  await targetMemberRow.getByRole("button", { name: "Ignore" }).click();
+  await profilePanel.getByRole("button", { name: "Ignore" }).click();
   await expect.poll(() => invocationCount(page, "ignore_user")).toBeGreaterThanOrEqual(1);
   await expect
     .poll(async () => page.evaluate(() => window.__harness.invocationsOf("ignore_user")[0]?.args))
     .toEqual({ userId: targetUserId });
-  await expect(targetMemberRow.getByRole("button", { name: "Unignore" })).toBeVisible();
+  await expect(profilePanel.getByRole("button", { name: "Unignore" })).toBeVisible();
 
-  await targetMemberRow.getByRole("button", { name: "Unignore" }).click();
+  await profilePanel.getByRole("button", { name: "Unignore" }).click();
   await expect.poll(() => invocationCount(page, "unignore_user")).toBeGreaterThanOrEqual(1);
   await expect
     .poll(async () => page.evaluate(() => window.__harness.invocationsOf("unignore_user")[0]?.args))
     .toEqual({ userId: targetUserId });
-  await expect(targetMemberRow.getByRole("button", { name: "Ignore" })).toBeVisible();
+  await expect(profilePanel.getByRole("button", { name: "Ignore" })).toBeVisible();
 
-  await targetMemberRow.getByRole("button", { name: "Report user" }).click();
+  await profilePanel.getByRole("button", { name: "Report user" }).click();
   const reasonInput = page.getByRole("textbox", { name: "Reason" });
   await expect(reasonInput).toBeVisible();
   await reasonInput.fill("Harassment");
@@ -7128,37 +7186,84 @@ test("room info Files entry opens the file browser with room scope", async ({ pa
   await expect(page.getByText("quarterly_report.pdf")).toBeVisible();
 });
 
-test("room header member pill opens room info and shows the Rust-owned member count", async ({
+test("room header People button opens People panel and shows the Rust-owned member count", async ({
   page
 }) => {
   await gotoReadyShell(page);
 
-  const pill = page.locator(".channel-actions").getByRole("button", { name: t("room.members") });
-  await expect(pill).toContainText("8");
-  await pill.click();
+  const peopleButton = page
+    .locator(".channel-actions")
+    .getByRole("button", { name: t("panel.people") });
+  await expect(peopleButton).toBeVisible();
+  await peopleButton.click();
 
-  await expect(page.getByText(t("panel.roomInfo"), { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: t("panel.people") })).toBeVisible();
+  await expect(page.getByText(t("people.memberCount", { count: "3" }))).toBeVisible();
 });
 
-test("room info People entry scrolls to the members section", async ({ page }) => {
+test("room info People entry opens the standalone People panel", async ({ page }) => {
   await gotoReadyShell(page);
   await page.getByRole("button", { name: t("room.roomInfo") }).click();
 
-  const peopleButton = page.getByRole("button", { name: t("room.people"), exact: true });
+  const peopleButton = page
+    .getByLabel("Context panel")
+    .getByRole("button", { name: t("room.people"), exact: true });
   await expect(peopleButton).toBeEnabled();
   await peopleButton.click();
 
-  await expect(page.getByRole("heading", { name: t("room.members") })).toBeVisible();
+  await expect(page.getByRole("heading", { name: t("panel.people") })).toBeVisible();
 });
 
 test("timeline header Threads button opens the threads list and row opens a thread", async ({
   page
 }) => {
   await gotoReadyShell(page);
-  await page.evaluate(() => window.__harness.clearInvocations());
+  await page.evaluate((roomId) => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          thread_attention: {
+            kind: "tracking",
+            room_id: roomId,
+            notification_count: 1,
+            highlight_count: 0,
+            live_event_marker_count: 0
+          }
+        }
+      }
+    });
+    window.__harness.setCommandResponse("open_threads_list", ({ roomId: incomingRoomId }) => {
+      const current = window.__harness.currentSnapshot();
+      const next = {
+        ...current,
+        state: {
+          ...current.state,
+          ui: {
+            ...current.state.ui,
+            threads_list: {
+              kind: "open",
+              room_id: String(incomingRoomId),
+              request_id: 1,
+              items: [],
+              is_paginating: false,
+              end_reached: true
+            }
+          }
+        }
+      };
+      window.__harness.setSnapshot(next);
+      return next;
+    });
+    window.__harness.pushStateChanged();
+    window.__harness.clearInvocations();
+  }, HARNESS_ROOM_ID);
 
   await expect(
-    page.locator(".channel-actions").getByRole("button", { name: t("room.rightPanelToggle") })
+    page.locator(".channel-actions").getByRole("button", { name: t("threads.title") })
   ).toBeVisible();
 
   await page
@@ -7231,6 +7336,15 @@ test("sidebar Home and Threads navigation buttons dispatch Rust-owned commands",
   await page.evaluate(() => window.__harness.clearInvocations());
 
   const sidebar = page.getByRole("complementary", { name: t("workspace.rooms") });
+  await sidebar.getByRole("button", { name: t("workspace.threads") }).click();
+  await expect.poll(() => invocationCount(page, "open_threads_list")).toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("open_threads_list")[0]?.args)
+    )
+    .toEqual({ roomId: HARNESS_ROOM_ID });
+
+  await page.evaluate(() => window.__harness.clearInvocations());
   await sidebar.getByRole("button", { name: t("workspace.explore") }).click();
   await expect(page.getByRole("main", { name: t("workspace.explore") })).toBeVisible();
 
@@ -7239,16 +7353,8 @@ test("sidebar Home and Threads navigation buttons dispatch Rust-owned commands",
   await expect
     .poll(async () => page.evaluate(() => window.__harness.invocationsOf("select_space")[0]?.args))
     .toEqual({ spaceId: null });
-  await expect(page.getByRole("main", { name: t("timeline.conversation") })).toBeVisible();
-
-  await page.evaluate(() => window.__harness.clearInvocations());
-  await sidebar.getByRole("button", { name: t("workspace.threads") }).click();
-  await expect.poll(() => invocationCount(page, "open_threads_list")).toBeGreaterThanOrEqual(1);
-  await expect
-    .poll(async () =>
-      page.evaluate(() => window.__harness.invocationsOf("open_threads_list")[0]?.args)
-    )
-    .toEqual({ roomId: HARNESS_ROOM_ID });
+  await expect(page.getByRole("main", { name: t("workspace.activity") })).toBeVisible();
+  await expect(sidebar.getByRole("button", { name: t("workspace.threads") })).toHaveCount(0);
 });
 
 test("URL previews global toggle invokes update_settings", async ({ page }) => {
@@ -7275,7 +7381,7 @@ test("URL previews global toggle invokes update_settings", async ({ page }) => {
           code_block_wrap: true,
           hide_redacted: true,
           url_previews_enabled: false,
-          encrypted_url_previews_enabled: false
+          encrypted_url_previews_enabled: true
         }
       }
     });

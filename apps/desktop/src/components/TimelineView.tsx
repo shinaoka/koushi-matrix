@@ -33,7 +33,6 @@ import {
   Forward,
   ImageIcon,
   KeyRound,
-  Link2,
   MessageCircle,
   MoreHorizontal,
   Pin,
@@ -126,6 +125,7 @@ import type {
   TimelineMediaDownloadState,
   UserProfile
 } from "../domain/types";
+import type { TimelineLinkRange } from "../domain/coreEvents";
 import type { TimelineForwardDestination } from "../domain/projectionTypes";
 
 export type { TimelineForwardDestination } from "../domain/projectionTypes";
@@ -603,6 +603,121 @@ function renderTimelineMessageTextWithSpoilers(
   return nodes;
 }
 
+function renderPlainTextBody(
+  text: string,
+  linkRanges: TimelineLinkRange[],
+  spoilerSpans: TimelineItem["spoiler_spans"] | undefined,
+  query: string,
+  profileUsers: Record<string, UserProfile>,
+  spoilerState: SpoilerRevealState
+): ReactNode {
+  if (linkRanges.length === 0) {
+    return renderTimelineMessageTextWithSpoilers(
+      text,
+      spoilerSpans,
+      query,
+      profileUsers,
+      spoilerState
+    );
+  }
+  const spans = normalizeSpoilerSpans(spoilerSpans, text.length);
+  const sortedLinks = [...linkRanges].sort(
+    (left, right) => left.start_utf16 - right.start_utf16
+  );
+
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  for (const [index, span] of spans.entries()) {
+    if (span.start_utf16 > cursor) {
+      nodes.push(
+        <Fragment key={`text:${cursor}`}>
+          {renderPlainTextSegment(
+            text,
+            cursor,
+            span.start_utf16,
+            sortedLinks,
+            query,
+            profileUsers
+          )}
+        </Fragment>
+      );
+    }
+
+    const spoilerText = renderPlainTextSegment(
+      text,
+      span.start_utf16,
+      span.end_utf16,
+      sortedLinks,
+      query,
+      profileUsers
+    );
+    nodes.push(
+      renderSpoiler(
+        `plain:${span.start_utf16}:${span.end_utf16}:${index}`,
+        spoilerText,
+        span.reason,
+        spoilerState
+      )
+    );
+    cursor = span.end_utf16;
+  }
+
+  if (cursor < text.length) {
+    nodes.push(
+      <Fragment key={`text:${cursor}`}>
+        {renderPlainTextSegment(text, cursor, text.length, sortedLinks, query, profileUsers)}
+      </Fragment>
+    );
+  }
+  return nodes;
+}
+
+function renderPlainTextSegment(
+  text: string,
+  segStart: number,
+  segEnd: number,
+  sortedLinks: TimelineLinkRange[],
+  query: string,
+  profileUsers: Record<string, UserProfile>
+): ReactNode {
+  const nodes: ReactNode[] = [];
+  let cursor = segStart;
+  for (const range of sortedLinks) {
+    if (range.end_utf16 <= cursor || range.start_utf16 >= segEnd) {
+      continue;
+    }
+    const linkStart = Math.max(cursor, range.start_utf16);
+    if (linkStart > cursor) {
+      nodes.push(
+        <Fragment key={`text:${cursor}`}>
+          {renderTimelineMessageText(text.slice(cursor, linkStart), query, profileUsers)}
+        </Fragment>
+      );
+    }
+    const linkEnd = Math.min(segEnd, range.end_utf16);
+    nodes.push(
+      <a
+        key={`link:${range.start_utf16}`}
+        href={range.url}
+        rel="noopener noreferrer"
+        target="_blank"
+      >
+        {renderTimelineMessageText(text.slice(linkStart, linkEnd), query, profileUsers)}
+      </a>
+    );
+    cursor = linkEnd;
+  }
+
+  if (cursor < segEnd) {
+    nodes.push(
+      <Fragment key={`text:${cursor}`}>
+        {renderTimelineMessageText(text.slice(cursor, segEnd), query, profileUsers)}
+      </Fragment>
+    );
+  }
+  return nodes;
+}
+
 function normalizeSpoilerSpans(
   spoilerSpans: TimelineItem["spoiler_spans"] | undefined,
   textLength: number
@@ -717,12 +832,16 @@ const VOID_FORMATTED_TAGS = new Set(["br"]);
 
 function renderFormattedBody(
   formatted: NonNullable<TimelineItem["formatted"]>,
+  linkRanges: TimelineLinkRange[],
   codeBlockWrap: boolean,
   onCopyText: TimelineRowActionHandlers["onCopyText"],
   searchQuery: string,
   spoilerState: SpoilerRevealState
 ): ReactNode {
-  const nodes = parseFormattedHtml(formatted.html);
+  const nodes =
+    linkRanges.length > 0 && !formatted.html.includes("<a")
+      ? linkifyFormattedNodes(parseFormattedHtml(formatted.html), linkRanges)
+      : parseFormattedHtml(formatted.html);
   const codeBlockIndexRef = { current: 0 };
   return renderFormattedNodes(
     nodes,
@@ -784,6 +903,88 @@ function parseFormattedHtml(html: string): FormattedNode[] {
     stack[stack.length - 1].children.push({ kind: "text", value: decodeHtmlEntities(token) });
   }
   return root.children;
+}
+
+function linkifyFormattedNodes(
+  nodes: FormattedNode[],
+  linkRanges: TimelineLinkRange[]
+): FormattedNode[] {
+  const sortedRanges = [...linkRanges].sort((left, right) => {
+    if (left.start_utf16 !== right.start_utf16) {
+      return left.start_utf16 - right.start_utf16;
+    }
+    return left.end_utf16 - right.end_utf16;
+  });
+  const cursor = { utf16: 0 };
+  return linkifyFormattedNodeList(nodes, sortedRanges, cursor);
+}
+
+function linkifyFormattedNodeList(
+  nodes: FormattedNode[],
+  linkRanges: TimelineLinkRange[],
+  cursor: { utf16: number }
+): FormattedNode[] {
+  return nodes.flatMap((node) => linkifyFormattedNode(node, linkRanges, cursor));
+}
+
+function linkifyFormattedNode(
+  node: FormattedNode,
+  linkRanges: TimelineLinkRange[],
+  cursor: { utf16: number }
+): FormattedNode[] {
+  if (node.kind === "text") {
+    const textStart = cursor.utf16;
+    cursor.utf16 += node.value.length;
+    return linkifyFormattedTextNode(node.value, textStart, linkRanges);
+  }
+
+  return [
+    {
+      ...node,
+      children: linkifyFormattedNodeList(node.children, linkRanges, cursor)
+    }
+  ];
+}
+
+function linkifyFormattedTextNode(
+  value: string,
+  textStartUtf16: number,
+  linkRanges: TimelineLinkRange[]
+): FormattedNode[] {
+  const textEndUtf16 = textStartUtf16 + value.length;
+  const rangesInText = linkRanges.filter(
+    (range) =>
+      range.start_utf16 >= textStartUtf16 &&
+      range.end_utf16 <= textEndUtf16 &&
+      range.start_utf16 < range.end_utf16
+  );
+  if (rangesInText.length === 0) {
+    return [{ kind: "text", value }];
+  }
+
+  const nodes: FormattedNode[] = [];
+  let cursor = 0;
+  for (const range of rangesInText) {
+    const start = range.start_utf16 - textStartUtf16;
+    const end = range.end_utf16 - textStartUtf16;
+    if (start < cursor) {
+      continue;
+    }
+    if (start > cursor) {
+      nodes.push({ kind: "text", value: value.slice(cursor, start) });
+    }
+    nodes.push({
+      kind: "element",
+      tagName: "a",
+      attrs: { href: range.url },
+      children: [{ kind: "text", value: value.slice(start, end) }]
+    });
+    cursor = end;
+  }
+  if (cursor < value.length) {
+    nodes.push({ kind: "text", value: value.slice(cursor) });
+  }
+  return nodes;
 }
 
 function parseFormattedStartTag(
@@ -1351,7 +1552,8 @@ export const TimelineView = memo(function TimelineView({
   onDiagnosticsChange,
   onDiagnosticLogEntry,
   timelineStore,
-  setTimelineStore
+  setTimelineStore,
+  listRefCallback
 }: {
   timelineKey: TimelineKey;
   roomId: string;
@@ -1399,6 +1601,11 @@ export const TimelineView = memo(function TimelineView({
    * `timelineStore` by tests that explicitly own reducer application.
    */
   setTimelineStore?: Dispatch<SetStateAction<TimelineStoreState>>;
+  /**
+   * Optional callback receiving the timeline list element so parent chrome can
+   * drive scroll actions such as "jump to latest".
+   */
+  listRefCallback?: (element: HTMLDivElement | null) => void;
 }) {
   const timelineStoreContext = useTimelineStoreContext();
   const [localStore, localSetStore] = useState<TimelineStoreState>(createTimelineStore);
@@ -2099,13 +2306,13 @@ export const TimelineView = memo(function TimelineView({
   );
   const onLoadLinkPreviews = useCallback(
     (targetRoomId: string, eventId: string) => {
-      void transport.loadLinkPreviews(targetRoomId, eventId).catch(() => undefined);
+      void transport.loadLinkPreviews?.(targetRoomId, eventId)?.catch(() => undefined);
     },
     [transport]
   );
   const onHideLinkPreview = useCallback(
     (targetRoomId: string, eventId: string) => {
-      void transport.hideLinkPreview(targetRoomId, eventId).catch(() => undefined);
+      void transport.hideLinkPreview?.(targetRoomId, eventId)?.catch(() => undefined);
     },
     [transport]
   );
@@ -2802,11 +3009,12 @@ export const TimelineView = memo(function TimelineView({
     navigationSnapshot?.can_jump_to_bottom &&
       (navigationSnapshot.newer_event_count > 0 || navigationSnapshot.unread_event_count > 0)
   );
-  const navigationMarkerEventId =
-    navigationSnapshot?.first_unread_event_id ?? roomSignals?.fully_read_event_id ?? null;
-  const navigationMarkerLabel = navigationSnapshot?.first_unread_event_id
-    ? t("timeline.unreadMarker")
-    : t("timeline.readMarker");
+  const unreadMarkerEventId = navigationSnapshot?.first_unread_event_id ?? null;
+  const readMarkerDisplayEventId =
+    navigationSnapshot?.read_marker_display_event_id ??
+    navigationSnapshot?.read_marker_event_id ??
+    roomSignals?.fully_read_event_id ??
+    null;
 
   return (
     <div
@@ -2887,7 +3095,13 @@ export const TimelineView = memo(function TimelineView({
           </div>
         </div>
       ) : null}
-      <div className="timeline-item-list" ref={listRef}>
+      <div
+        className="timeline-item-list"
+        ref={(element) => {
+          listRef.current = element;
+          listRefCallback?.(element);
+        }}
+      >
         {virtualWindow.virtualized ? (
           <div
             className="timeline-virtual-spacer"
@@ -2898,8 +3112,9 @@ export const TimelineView = memo(function TimelineView({
         {virtualWindow.items.map((item) => {
           const itemDomId = timelineItemDomId(item.id);
           const eventId = "Event" in item.id ? item.id.Event.event_id : null;
-          const isFullyReadMarker = Boolean(
-            eventId && navigationMarkerEventId === eventId
+          const isUnreadMarker = Boolean(eventId && unreadMarkerEventId === eventId);
+          const isReadMarker = Boolean(
+            eventId && readMarkerDisplayEventId === eventId && !unreadMarkerEventId
           );
           return (
             <div
@@ -2907,9 +3122,9 @@ export const TimelineView = memo(function TimelineView({
               key={itemDomId}
               data-frame-item-id={itemDomId}
             >
-              {isFullyReadMarker ? (
-                <div className="read-marker" role="separator" aria-label={navigationMarkerLabel}>
-                  <span>{navigationMarkerLabel}</span>
+              {isUnreadMarker ? (
+                <div className="read-marker" role="separator" aria-label={t("timeline.unreadMarker")}>
+                  <span>{t("timeline.unreadMarker")}</span>
                 </div>
               ) : null}
               <TimelineItemRow
@@ -2955,6 +3170,11 @@ export const TimelineView = memo(function TimelineView({
                   eventId ? roomSignals?.receipts_by_event[eventId]?.overflow_count ?? 0 : 0
                 }
               />
+              {isReadMarker ? (
+                <div className="read-marker" role="separator" aria-label={t("timeline.readMarker")}>
+                  <span>{t("timeline.readMarker")}</span>
+                </div>
+              ) : null}
             </div>
           );
         })}
@@ -3136,6 +3356,7 @@ export function TimelineItemRow({
   const actionMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const firstActionMenuItemRef = useRef<HTMLButtonElement>(null);
   const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const editImeCompositionActiveRef = useRef(false);
   const requestedLinkPreviewsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -3263,6 +3484,9 @@ export function TimelineItemRow({
 
   const onEditKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (timelineEditImeShouldHandleKeyEvent(event, editImeCompositionActiveRef.current)) {
+        return;
+      }
       if (!shouldResolveComposerKeyEvent(event)) {
         return;
       }
@@ -3376,11 +3600,14 @@ export function TimelineItemRow({
     onDownloadMedia(roomId, eventId);
   }, [eventId, onDownloadMedia, roomId]);
   const openActionMenu = useCallback(() => {
-    const triggerTop =
-      actionMenuTriggerRef.current?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY;
-    const tabsBottom =
-      document.querySelector<HTMLElement>(".tabs")?.getBoundingClientRect().bottom ?? 0;
-    setActionMenuPlacement(triggerTop - 180 < tabsBottom + 8 ? "below" : "above");
+    const control = actionMenuControlRef.current;
+    if (control) {
+      const controlRect = control.getBoundingClientRect();
+      const panelTop =
+        control.closest<HTMLElement>(".main-pane")?.getBoundingClientRect().top ?? 0;
+      const availableAbove = controlRect.top - panelTop;
+      setActionMenuPlacement(availableAbove < 180 ? "below" : "above");
+    }
     setReactionPickerOpen(false);
     setForwardMenuOpen(false);
     setActionMenuOpen((current) => !current);
@@ -3494,9 +3721,17 @@ export function TimelineItemRow({
     .filter(Boolean)
     .join(" ");
   const messageBodyContent = item.formatted
-    ? renderFormattedBody(item.formatted, codeBlockWrap, onCopyText, searchQuery, spoilerState)
-    : renderTimelineMessageTextWithSpoilers(
+    ? renderFormattedBody(
+        item.formatted,
+        item.link_ranges ?? [],
+        codeBlockWrap,
+        onCopyText,
+        searchQuery,
+        spoilerState
+      )
+    : renderPlainTextBody(
         displayBody,
+        item.link_ranges ?? [],
         item.spoiler_spans,
         searchQuery,
         mentionProfileUsers,
@@ -3534,6 +3769,14 @@ export function TimelineItemRow({
         value={editDraft}
         onChange={(event) => setEditDraft(event.target.value)}
         onKeyDown={onEditKeyDown}
+        onCompositionStart={() => {
+          editImeCompositionActiveRef.current = true;
+        }}
+        onCompositionEnd={() => {
+          window.setTimeout(() => {
+            editImeCompositionActiveRef.current = false;
+          }, 0);
+        }}
       />
       <div className="message-edit-actions">
         <button className="message-edit-button" type="submit">
@@ -3548,17 +3791,12 @@ export function TimelineItemRow({
         </button>
       </div>
     </form>
-  ) : item.formatted ? (
+  ) : (
     <div
       className={messageBodyClassName}
       dir="auto"
-      data-code-block-wrap={codeBlockWrap ? "true" : "false"}
+      data-code-block-wrap={item.formatted && codeBlockWrap ? "true" : undefined}
     >
-      {emotePrefix}
-      {messageBodyContent}
-    </div>
-  ) : (
-    <div className={messageBodyClassName} dir="auto">
       {emotePrefix}
       {messageBodyContent}
     </div>
@@ -3644,22 +3882,29 @@ export function TimelineItemRow({
           <div className="link-preview-cards">
             {item.link_previews.map((preview) => (
               <div key={preview.url} className="link-preview-card">
-                {preview.image?.thumbnail && thumbnailSourceUrl(preview.image.thumbnail) ? (
-                  <img
-                    src={thumbnailSourceUrl(preview.image.thumbnail) ?? undefined}
-                    alt={""}
-                    className="link-preview-image"
-                  />
-                ) : null}
-                <div className="link-preview-text">
-                  {preview.title ? (
-                    <div className="link-preview-title">{preview.title}</div>
+                <a
+                  className="link-preview-main"
+                  href={preview.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {preview.image?.thumbnail && thumbnailSourceUrl(preview.image.thumbnail) ? (
+                    <img
+                      src={thumbnailSourceUrl(preview.image.thumbnail) ?? undefined}
+                      alt={""}
+                      className="link-preview-image"
+                    />
                   ) : null}
-                  {preview.description ? (
-                    <div className="link-preview-description">{preview.description}</div>
-                  ) : null}
-                  <div className="link-preview-url">{preview.url}</div>
-                </div>
+                  <div className="link-preview-text">
+                    {preview.title ? (
+                      <div className="link-preview-title">{preview.title}</div>
+                    ) : null}
+                    {preview.description ? (
+                      <div className="link-preview-description">{preview.description}</div>
+                    ) : null}
+                    <div className="link-preview-url">{preview.url}</div>
+                  </div>
+                </a>
                 <button
                   type="button"
                   className="link-preview-hide"
@@ -3715,108 +3960,112 @@ export function TimelineItemRow({
             <span>{threadSummaryText}</span>
           </button>
         ) : null}
-        {receiptTotalCount > 0 ? (
-          <div
-            className="message-receipts"
-            aria-label={receiptAriaLabel}
-            tabIndex={0}
-            title={receiptTitle}
-          >
-            <span className="receipt-avatars" aria-hidden="true">
-              {receipts.map((receipt) => {
-                const sourceUrl = receiptAvatarSource(receipt);
-                return (
-                  <span className="receipt-reader-avatar" key={receipt.user_id}>
-                    {sourceUrl ? (
-                      <img src={sourceUrl} alt={receiptDisplayName(receipt)} />
-                    ) : (
-                      <span dir="auto">{receiptInitials(receipt)}</span>
-                    )}
-                  </span>
-                );
-              })}
-              {receiptOverflowCount > 0 ? (
-                <span className="receipt-overflow">+{receiptOverflowCount}</span>
-              ) : null}
-            </span>
-            <span className="receipt-tooltip" role="tooltip">
-              {receiptDetails.map((detail, index) => (
-                <span key={`${detail}:${index}`} dir="auto">
-                  {detail}
-                </span>
-              ))}
-            </span>
-          </div>
-        ) : null}
-        {canShowReactions ? (
-          <div className="message-reactions">
-            {item.reactions.map((reaction, index) => {
-              const ariaLabel = t("timeline.reactionSummary", {
-                key: reaction.key,
-                count: reaction.count
-              });
-              const reactionTooltip = formatReactionTooltip(
-                reaction.key,
-                reaction.count,
-                reaction.sender_preview,
-                reactionSenderLabelByUserId
-              );
-              const pillKey = `${reaction.key}:${reaction.my_reaction_event_id ?? index}`;
-              if (!eventId) {
-                return (
-                  <span
-                    aria-label={ariaLabel}
-                    className="reaction-pill"
-                    data-reacted-by-me={reaction.reacted_by_me || undefined}
-                    key={pillKey}
-                  >
-                    <span className="reaction-pill-key" dir="auto">
-                      {reaction.key}
-                    </span>
-                    <span className="reaction-pill-count">{reaction.count}</span>
-                    {reactionTooltip ? (
-                      <span className="reaction-tooltip" role="tooltip" dir="auto">
-                        {reactionTooltip}
+        {canShowReactions || receiptTotalCount > 0 ? (
+          <div className="message-status-row">
+            {canShowReactions ? (
+              <div className="message-reactions">
+                {item.reactions.map((reaction, index) => {
+                  const ariaLabel = t("timeline.reactionSummary", {
+                    key: reaction.key,
+                    count: reaction.count
+                  });
+                  const reactionTooltip = formatReactionTooltip(
+                    reaction.key,
+                    reaction.count,
+                    reaction.sender_preview,
+                    reactionSenderLabelByUserId
+                  );
+                  const pillKey = `${reaction.key}:${reaction.my_reaction_event_id ?? index}`;
+                  if (!eventId) {
+                    return (
+                      <span
+                        aria-label={ariaLabel}
+                        className="reaction-pill"
+                        data-reacted-by-me={reaction.reacted_by_me || undefined}
+                        key={pillKey}
+                      >
+                        <span className="reaction-pill-key" dir="auto">
+                          {reaction.key}
+                        </span>
+                        <span className="reaction-pill-count">{reaction.count}</span>
+                        {reactionTooltip ? (
+                          <span className="reaction-tooltip" role="tooltip" dir="auto">
+                            {reactionTooltip}
+                          </span>
+                        ) : null}
                       </span>
-                    ) : null}
-                  </span>
-                );
-              }
-              return (
-                <button
-                  aria-label={ariaLabel}
-                  className="reaction-pill"
-                  data-reacted-by-me={reaction.reacted_by_me || undefined}
-                  key={pillKey}
-                  type="button"
-                  aria-pressed={reaction.reacted_by_me}
-                  onClick={() => {
-                    if (reaction.reacted_by_me) {
-                      if (reaction.my_reaction_event_id) {
-                        onRedactReaction(
-                          roomId,
-                          eventId,
-                          reaction.key,
-                          reaction.my_reaction_event_id
-                        );
-                      }
-                    } else {
-                      onSendReaction(roomId, eventId, reaction.key);
-                    }
-                  }}
-                >
-                  <span className="reaction-pill-key" dir="auto">
-                    {reaction.key}
-                  </span>
-                  <span className="reaction-pill-count">{reaction.count}</span>
-                  {reactionTooltip ? (
-                    <span className="reaction-tooltip" role="tooltip" dir="auto">
-                      {reactionTooltip}
-                    </span>
+                    );
+                  }
+                  return (
+                    <button
+                      aria-label={ariaLabel}
+                      className="reaction-pill"
+                      data-reacted-by-me={reaction.reacted_by_me || undefined}
+                      key={pillKey}
+                      type="button"
+                      aria-pressed={reaction.reacted_by_me}
+                      onClick={() => {
+                        if (reaction.reacted_by_me) {
+                          if (reaction.my_reaction_event_id) {
+                            onRedactReaction(
+                              roomId,
+                              eventId,
+                              reaction.key,
+                              reaction.my_reaction_event_id
+                            );
+                          }
+                        } else {
+                          onSendReaction(roomId, eventId, reaction.key);
+                        }
+                      }}
+                    >
+                      <span className="reaction-pill-key" dir="auto">
+                        {reaction.key}
+                      </span>
+                      <span className="reaction-pill-count">{reaction.count}</span>
+                      {reactionTooltip ? (
+                        <span className="reaction-tooltip" role="tooltip" dir="auto">
+                          {reactionTooltip}
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+            {receiptTotalCount > 0 ? (
+              <div
+                className="message-receipts"
+                aria-label={receiptAriaLabel}
+                tabIndex={0}
+                title={receiptTitle}
+              >
+                <span className="receipt-avatars" aria-hidden="true">
+                  {receipts.map((receipt) => {
+                    const sourceUrl = receiptAvatarSource(receipt);
+                    return (
+                      <span className="receipt-reader-avatar" key={receipt.user_id}>
+                        {sourceUrl ? (
+                          <img src={sourceUrl} alt={receiptDisplayName(receipt)} />
+                        ) : (
+                          <span dir="auto">{receiptInitials(receipt)}</span>
+                        )}
+                      </span>
+                    );
+                  })}
+                  {receiptOverflowCount > 0 ? (
+                    <span className="receipt-overflow">+{receiptOverflowCount}</span>
                   ) : null}
-                </button>
-              );
-            })}
+                </span>
+                <span className="receipt-tooltip" role="tooltip">
+                  {receiptDetails.map((detail, index) => (
+                    <span key={`${detail}:${index}`} dir="auto">
+                      {detail}
+                    </span>
+                  ))}
+                </span>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -3960,7 +4209,7 @@ export function TimelineItemRow({
                     role="menuitem"
                     onClick={copyPermalink}
                   >
-                    <Link2 size={14} aria-hidden="true" />
+                    <span aria-hidden="true" />
                     <span>{t("timeline.copyPermalink")}</span>
                   </button>
                 ) : null}
@@ -4756,6 +5005,18 @@ function uploadProgressPercent(progress: MediaTransferProgress | null): number |
     return null;
   }
   return Math.max(0, Math.min(100, Math.round((progress.current / progress.total) * 100)));
+}
+
+function timelineEditImeShouldHandleKeyEvent(
+  event: KeyboardEvent<HTMLTextAreaElement>,
+  compositionActive: boolean
+): boolean {
+  return (
+    event.key === "Enter" &&
+    (compositionActive ||
+      event.nativeEvent.isComposing ||
+      event.keyCode === 229)
+  );
 }
 
 function formatThreadSummary(

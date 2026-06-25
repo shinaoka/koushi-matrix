@@ -1,9 +1,9 @@
 use crate::{
     effect::{AppEffect, UiEvent},
-    state::{AppError, AppState, SettingsPersistenceState},
+    state::{AppError, AppState, SettingsPersistenceState, sort_threads_list_items},
 };
 
-use super::is_session_ready;
+use super::{is_session_ready, recompute_room_list_projection};
 
 const SETTINGS_LOAD_FAILED_MESSAGE: &str = "Settings could not be loaded";
 const SETTINGS_PERSIST_FAILED_MESSAGE: &str = "Settings could not be saved";
@@ -14,7 +14,16 @@ pub(crate) fn handle_settings_loaded(
 ) -> Vec<AppEffect> {
     state.settings.values = values;
     state.settings.persistence = SettingsPersistenceState::Idle;
-    vec![AppEffect::EmitUiEvent(UiEvent::SettingsChanged)]
+    recompute_room_list_projection(state);
+    let mut effects = vec![
+        AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
+        AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+    ];
+    if let crate::state::ThreadsListState::Open { items, .. } = &mut state.threads_list {
+        sort_threads_list_items(items, state.settings.values.thread_list_order);
+        effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged));
+    }
+    effects
 }
 
 pub(crate) fn handle_settings_load_failed(
@@ -41,11 +50,13 @@ pub(crate) fn handle_settings_update_requested(
     // Capture the previous search-crawler settings so we can compute
     // invalidation/enqueue transitions after apply_patch.
     let prev_crawler = state.settings.values.search_crawler.clone();
+    let prev_room_list_sort = state.settings.values.room_list_sort;
+    let prev_thread_list_order = state.settings.values.thread_list_order;
 
     state.settings.values.apply_patch(patch);
     state.settings.persistence = SettingsPersistenceState::Saving { request_id };
 
-    let new_crawler = &state.settings.values.search_crawler;
+    let new_crawler = state.settings.values.search_crawler.clone();
     let mut effects = vec![
         AppEffect::PersistSettings {
             request_id,
@@ -53,6 +64,18 @@ pub(crate) fn handle_settings_update_requested(
         },
         AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
     ];
+
+    if state.settings.values.room_list_sort != prev_room_list_sort {
+        recompute_room_list_projection(state);
+        effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
+    }
+    if state.settings.values.thread_list_order != prev_thread_list_order {
+        if let crate::state::ThreadsListState::Open { items, .. } = &mut state.threads_list {
+            sort_threads_list_items(items, state.settings.values.thread_list_order);
+            effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged));
+        }
+    }
+
     let mut emit_search_crawler_changed = false;
 
     // Guard: if content-indexing settings changed, invalidate the

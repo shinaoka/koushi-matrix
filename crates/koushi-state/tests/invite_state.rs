@@ -267,7 +267,10 @@ fn invite_list_updated_preserves_downloaded_avatar_thumbnails() {
     );
 
     assert_eq!(
-        state.invites[0].avatar.as_ref().map(|avatar| &avatar.thumbnail),
+        state.invites[0]
+            .avatar
+            .as_ref()
+            .map(|avatar| &avatar.thumbnail),
         Some(&thumbnail)
     );
 }
@@ -315,7 +318,10 @@ fn invite_list_updated_preserves_avatar_thumbnails_from_room_snapshot_state() {
     );
 
     assert_eq!(
-        state.invites[0].avatar.as_ref().map(|avatar| &avatar.thumbnail),
+        state.invites[0]
+            .avatar
+            .as_ref()
+            .map(|avatar| &avatar.thumbnail),
         Some(&thumbnail)
     );
 }

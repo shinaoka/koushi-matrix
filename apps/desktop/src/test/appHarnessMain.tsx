@@ -26,6 +26,7 @@ import { emit } from "@tauri-apps/api/event";
 import type { CoreEventPayload, TimelineItem } from "../domain/coreEvents";
 import { roomTimelineKey } from "../domain/coreEvents";
 import type {
+  ActivityTab,
   ComposerKeyEvent,
   ComposerResolverOptions,
   ComposerResolvedAction,
@@ -43,6 +44,7 @@ import type {
 } from "../domain/types";
 import { TauriIpcMock, type IpcInvocation } from "./tauriIpcMock";
 import { computeBrowserRoomListProjection } from "../backend/roomListProjection";
+import { composeSidebar } from "../domain/desktopModel";
 import "../styles.css";
 
 const CORE_EVENT_NAME = "koushi-desktop://event";
@@ -96,6 +98,7 @@ function readySnapshot(
 ): DesktopSnapshot {
   const composerMode = overrides.composerMode ?? "Plain";
   const basicOperation = overrides.basicOperation ?? { kind: "idle" };
+  const activeSpaceId = null;
   const spaces = [
     {
       space_id: SPACE_ID,
@@ -129,12 +132,20 @@ function readySnapshot(
       unread_count: 0,
       notification_count: 0,
       highlight_count: 0,
-      parent_space_ids: [],
+      parent_space_ids: [SPACE_ID],
       dm_space_ids: [],
       is_encrypted: false,
       joined_members: 8
     }
   ];
+  const sidebar = {
+    ...composeSidebar(activeSpaceId, spaces, rooms),
+    account_home: {
+      ...composeSidebar(activeSpaceId, spaces, rooms).account_home,
+      is_active: false
+    },
+    space_rail: railItems
+  };
       return {
       state: {
         schema_version: 2,
@@ -165,14 +176,14 @@ function readySnapshot(
           cjk_text_policy: defaultCjkTextPolicyState()
         },
         ui: {
-          navigation: { active_space_id: null, active_room_id: ROOM_ID, space_order: spaces.map((space) => space.space_id), last_room_by_space_id: {} },
-          room_list: computeBrowserRoomListProjection({ kind: "rooms" }, { kind: "activity" }, null, spaces, rooms, []),
+          navigation: { active_space_id: activeSpaceId, active_room_id: ROOM_ID, space_order: spaces.map((space) => space.space_id), last_room_by_space_id: {} },
+          room_list: computeBrowserRoomListProjection({ kind: "rooms" }, { kind: "activity" }, activeSpaceId, spaces, rooms, []),
           timeline: { room_id: ROOM_ID, is_subscribed: true, is_paginating_backwards: false, composer: { pending_transaction_id: null, draft: "", mode: composerMode }, scheduled_send_capability: "unknown", scheduled_sends: [], staged_uploads: [], media_gallery: [], media_downloads: {} },
           thread: { kind: "closed" }, threads_list: { kind: "closed" }, focused_context: { kind: "closed" },
           files_view: { kind: "closed" }, errors: [], basic_operation: basicOperation
         }
       },
-      sidebar: { active_space_id: null, account_home: { display_name: "Home", unread_count: 0, highlight_count: 0, is_active: true }, space_rail: railItems, space_rooms: [{ room_id: ROOM_ID, display_name: ROOM_NAME, avatar: null, tags: { favourite: null, low_priority: null }, unread_count: 0, highlight_count: 0 }], global_dms: [], space_unread_count: 0, dm_unread_count: 0, space_highlight_count: 0, dm_highlight_count: 0 },
+      sidebar,
       timeline: [], thread: null
     };
 }
@@ -213,7 +224,9 @@ function defaultSettingsState(): DesktopSnapshot["state"]["domain"]["settings"] 
         speed: "standard",
         include_media_captions: true,
         include_filenames: true
-      }
+      },
+      thread_list_order: { kind: "latestReply" },
+      room_list_sort: { kind: "activity" }
     },
     persistence: { kind: "idle" }
   };
@@ -299,7 +312,9 @@ function applySettingsPatch(
     display: patch.display ?? values.display,
     media: patch.media ?? values.media,
     timeline: patch.timeline ?? values.timeline,
-    search_crawler: patch.search_crawler ?? values.search_crawler
+    search_crawler: patch.search_crawler ?? values.search_crawler,
+    thread_list_order: patch.thread_list_order ?? values.thread_list_order,
+    room_list_sort: patch.room_list_sort ?? values.room_list_sort
   };
 }
 
@@ -543,19 +558,36 @@ const mock = new TauriIpcMock();
 let currentSnapshot = readySnapshot();
 
 function setCurrentSnapshot(next: DesktopSnapshot): DesktopSnapshot {
+  const rooms = next.state.domain.rooms.map(normalizeHarnessRoomSummary);
+  const spaces = next.state.domain.spaces.map((space) => ({
+    ...space,
+    child_room_ids: space.child_room_ids ?? []
+  }));
+  const invites = next.state.domain.invites ?? [];
+  const roomList = next.state.ui.room_list ?? {
+    active_filter: { kind: "rooms" as const },
+    sort: { kind: "activity" as const },
+    items: []
+  };
   currentSnapshot = {
     ...next,
     state: {
       ...next.state,
+      domain: {
+        ...next.state.domain,
+        rooms,
+        spaces,
+        invites
+      },
       ui: {
         ...next.state.ui,
       room_list: computeBrowserRoomListProjection(
-        next.state.ui.room_list.active_filter,
-        next.state.ui.room_list.sort,
+        roomList.active_filter,
+        roomList.sort,
         next.state.ui.navigation.active_space_id,
-        next.state.domain.spaces,
-        next.state.domain.rooms,
-        next.state.domain.invites
+        spaces,
+        rooms,
+        invites
       )
       },
     }
@@ -563,10 +595,219 @@ function setCurrentSnapshot(next: DesktopSnapshot): DesktopSnapshot {
   return currentSnapshot;
 }
 
+function normalizeHarnessRoomSummary(
+  room: DesktopSnapshot["state"]["domain"]["rooms"][number]
+): DesktopSnapshot["state"]["domain"]["rooms"][number] {
+  const displayName = room.display_name ?? room.room_id;
+  const displayLabel = room.display_label ?? displayName;
+  return {
+    ...room,
+    display_name: displayName,
+    display_label: displayLabel,
+    original_display_label: room.original_display_label ?? displayLabel,
+    avatar: room.avatar ?? null,
+    is_dm: room.is_dm ?? false,
+    dm_user_ids: room.dm_user_ids ?? [],
+    tags: {
+      favourite: room.tags?.favourite ?? null,
+      low_priority: room.tags?.low_priority ?? null
+    },
+    unread_count: room.unread_count ?? 0,
+    notification_count: room.notification_count ?? 0,
+    highlight_count: room.highlight_count ?? 0,
+    parent_space_ids: room.parent_space_ids ?? [],
+    dm_space_ids: room.dm_space_ids ?? [],
+    is_encrypted: room.is_encrypted ?? false
+  };
+}
+
+function normalizeHarnessCommandResponse(value: unknown): unknown {
+  if (isPromiseLike(value)) {
+    return value.then(normalizeHarnessCommandResponse);
+  }
+  if (isDesktopSnapshotLike(value)) {
+    return setCurrentSnapshot(value);
+  }
+  return value;
+}
+
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "then" in value &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+function isDesktopSnapshotLike(value: unknown): value is DesktopSnapshot {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Partial<DesktopSnapshot> & {
+    state?: {
+      schema_version?: unknown;
+      domain?: {
+        rooms?: unknown;
+        spaces?: unknown;
+        invites?: unknown;
+      };
+      ui?: unknown;
+    };
+  };
+  return Boolean(
+    candidate.state?.schema_version === 2 &&
+      candidate.sidebar &&
+      candidate.state?.ui &&
+      Array.isArray(candidate.state.domain?.rooms) &&
+      Array.isArray(candidate.state.domain?.spaces) &&
+      Array.isArray(candidate.state.domain?.invites)
+  );
+}
+
 // Snapshot-returning commands the App calls. Default snapshot stays ready so
 // any unanticipated snapshot read still renders the shell.
 mock.setCommandResponse("get_snapshot", () => currentSnapshot);
 mock.setCommandResponse("list_saved_sessions", () => []);
+mock.setCommandResponse("select_space", ({ spaceId }: { spaceId: string | null }) => {
+  const nextSpaceId =
+    spaceId && currentSnapshot.state.domain.spaces.some((space) => space.space_id === spaceId)
+      ? spaceId
+      : null;
+  const activeRoomId =
+    nextSpaceId
+      ? currentSnapshot.state.domain.spaces
+          .find((space) => space.space_id === nextSpaceId)
+          ?.child_room_ids.find((roomId) =>
+            currentSnapshot.state.domain.rooms.some((room) => room.room_id === roomId)
+          ) ?? currentSnapshot.state.ui.navigation.active_room_id
+      : currentSnapshot.state.ui.navigation.active_room_id;
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
+        activity: { kind: "closed" }
+      },
+      ui: {
+        ...currentSnapshot.state.ui,
+        navigation: {
+          ...currentSnapshot.state.ui.navigation,
+          active_space_id: nextSpaceId,
+          active_room_id: activeRoomId
+        },
+        timeline: {
+          ...currentSnapshot.state.ui.timeline,
+          room_id: activeRoomId,
+          is_subscribed: Boolean(activeRoomId)
+        }
+      }
+    },
+    sidebar: composeSidebar(
+      nextSpaceId,
+      currentSnapshot.state.domain.spaces,
+      currentSnapshot.state.domain.rooms
+    )
+  });
+});
+mock.setCommandResponse("select_room", ({ roomId }: { roomId: string }) => {
+  const room = currentSnapshot.state.domain.rooms.find((candidate) => candidate.room_id === roomId);
+  if (!room) {
+    return currentSnapshot;
+  }
+  const activeSpaceId = room.is_dm
+    ? null
+    : (room.parent_space_ids[0] ?? currentSnapshot.state.ui.navigation.active_space_id);
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
+        activity: { kind: "closed" },
+        thread_attention: { kind: "closed" }
+      },
+      ui: {
+        ...currentSnapshot.state.ui,
+        navigation: {
+          ...currentSnapshot.state.ui.navigation,
+          active_space_id: activeSpaceId,
+          active_room_id: roomId
+        },
+        timeline: {
+          ...currentSnapshot.state.ui.timeline,
+          room_id: roomId,
+          is_subscribed: true,
+          composer: {
+            pending_transaction_id: null,
+            draft: "",
+            mode: "Plain"
+          }
+        },
+        thread: { kind: "closed" },
+        threads_list: { kind: "closed" },
+        focused_context: { kind: "closed" }
+      }
+    },
+    sidebar: composeSidebar(
+      activeSpaceId,
+      currentSnapshot.state.domain.spaces,
+      currentSnapshot.state.domain.rooms
+    ),
+    thread: null
+  });
+});
+mock.setCommandResponse("open_activity", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
+        activity: {
+          kind: "open",
+          active_tab: "recent",
+          recent: { rows: [], next_batch: null },
+          unread: { rows: [], next_batch: null },
+          mark_read: { kind: "idle" }
+        }
+      }
+    }
+  })
+);
+mock.setCommandResponse("close_activity", () =>
+  setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
+        activity: { kind: "closed" }
+      }
+    }
+  })
+);
+mock.setCommandResponse("set_activity_tab", ({ tab }: { tab: ActivityTab }) => {
+  if (currentSnapshot.state.domain.activity.kind !== "open") {
+    return currentSnapshot;
+  }
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
+        activity: {
+          ...currentSnapshot.state.domain.activity,
+          active_tab: tab
+        }
+      }
+    }
+  });
+});
+mock.setCommandResponse("paginate_activity", () => currentSnapshot);
+mock.setCommandResponse("mark_activity_read", () => currentSnapshot);
 mock.setCommandResponse("reorder_spaces", ({ spaceIds }: { spaceIds: string[] }) => {
   const positionBySpaceId = new Map(spaceIds.map((spaceId, index) => [spaceId, index]));
   return setCurrentSnapshot({
@@ -1843,7 +2084,10 @@ const harnessControl: AppHarnessControl = {
   invocationsOf: (command) => mock.invocationsOf(command),
   clearInvocations: () => mock.clearInvocations(),
   setCommandResponse: (command, response) =>
-    mock.setCommandResponse(command, response),
+    mock.setCommandResponse(command, (args: Record<string, any>) => {
+      const value = typeof response === "function" ? response(args) : response;
+      return normalizeHarnessCommandResponse(value);
+    }),
   setSnapshot: (snapshot) => {
     setCurrentSnapshot(snapshot);
     mock.setCommandResponse("get_snapshot", () => currentSnapshot);

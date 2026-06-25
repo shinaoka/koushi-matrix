@@ -177,6 +177,12 @@ export interface TimelineSpoilerSpan {
   reason?: string | null;
 }
 
+export interface TimelineLinkRange {
+  url: string;
+  start_utf16: number;
+  end_utf16: number;
+}
+
 export interface TimelineItem {
   id: TimelineItemId;
   sender: string | null;
@@ -194,6 +200,7 @@ export interface TimelineItem {
   thread_summary: ThreadSummaryDto | null;
   media?: TimelineMedia | null;
   link_previews?: LinkPreview[];
+  link_ranges?: TimelineLinkRange[];
   reactions: ReactionGroup[];
   can_react: boolean;
   is_redacted: boolean;
@@ -270,6 +277,7 @@ export type TimelineUnreadPosition =
 
 export interface TimelineNavigationSnapshot {
   read_marker_event_id: string | null;
+  read_marker_display_event_id: string | null;
   first_unread_event_id: string | null;
   unread_event_count: number;
   unread_position: TimelineUnreadPosition;
@@ -788,19 +796,24 @@ interface ActivityRowBase {
   timestamp_ms: number;
   unread: boolean;
   highlight: boolean;
+  context_label: string;
 }
 
 export interface ActivityEventRow extends ActivityRowBase {
   kind: "event";
   event_id: string;
+  sender_id: string | null;
   sender_label: string | null;
+  sender_avatar: AvatarImage | null;
   preview: string | null;
 }
 
 export interface ActivityRoomUnreadRow extends ActivityRowBase {
   kind: "roomUnread";
   event_id: null;
+  sender_id: null;
   sender_label: null;
+  sender_avatar: null;
   preview: null;
 }
 

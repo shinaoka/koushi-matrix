@@ -17,8 +17,8 @@ use koushi_state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityRowKind,
     ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState, ComposerDraftStore,
     MentionIntent, ProfileUpdateRequest, RoomSummary, ScheduledSendCapability, ScheduledSendHandle,
-    ScheduledSendItem, SearchScope as AppSearchScope, SessionState, ThreadPaneState, UiEvent,
-    reduce,
+    ScheduledSendItem, SearchScope as AppSearchScope, SessionState, SpaceSummary, ThreadPaneState,
+    UiEvent, reduce,
 };
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -621,6 +621,11 @@ impl ActivityProjection {
             .iter()
             .map(|room| (room.room_id.as_str(), room))
             .collect();
+        let spaces_by_id: HashMap<&str, &SpaceSummary> = state
+            .spaces
+            .iter()
+            .map(|space| (space.space_id.as_str(), space))
+            .collect();
         let excluded_room_ids = state
             .rooms
             .iter()
@@ -660,8 +665,16 @@ impl ActivityProjection {
                 && !self
                     .cleared_event_ids
                     .contains(row.event_id.as_deref().unwrap_or(""));
+            let sender_avatar = row
+                .sender_id
+                .as_ref()
+                .and_then(|user_id| state.profile.users.get(user_id))
+                .and_then(|profile| profile.avatar.clone());
+            let context_label = activity_row_context_label(room, &spaces_by_id);
             let row = ActivityRow {
                 room_label: room.display_label.clone(),
+                sender_avatar,
+                context_label,
                 unread: unread_row,
                 highlight: row.highlight || (unread_row && room.highlight_count > 0),
                 ..row.clone()
@@ -690,12 +703,17 @@ impl ActivityProjection {
             }
             let highlight = room.highlight_count > 0;
             let timestamp_ms = room.last_activity_ms;
+            let context_label = activity_row_context_label(room, &spaces_by_id);
             let placeholder = ActivityRow::room_unread_placeholder(
                 room.room_id.clone(),
                 room.display_label.clone(),
                 timestamp_ms,
                 highlight,
             );
+            let placeholder = ActivityRow {
+                context_label,
+                ..placeholder
+            };
             unread.push(placeholder);
         }
 
@@ -721,6 +739,21 @@ impl ActivityProjection {
             excluded_room_ids,
         )
     }
+}
+
+fn activity_row_context_label(
+    room: &RoomSummary,
+    spaces_by_id: &HashMap<&str, &SpaceSummary>,
+) -> String {
+    if room.is_dm {
+        return "DM".to_owned();
+    }
+    if let Some(space_id) = room.parent_space_ids.first() {
+        if let Some(space) = spaces_by_id.get(space_id.as_str()) {
+            return format!("Room · {} / {}", space.display_name, room.display_label);
+        }
+    }
+    "Room".to_owned()
 }
 
 fn sort_activity_rows(rows: &mut [ActivityRow]) {
@@ -2802,6 +2835,7 @@ mod tests {
                 }),
                 media: None,
                 link_previews: None,
+                link_ranges: Vec::new(),
                 reactions: Vec::new(),
                 can_react: false,
                 is_redacted: false,
@@ -2863,6 +2897,7 @@ mod tests {
                     thread_summary: None,
                     media: None,
                     link_previews: None,
+                    link_ranges: Vec::new(),
                     reactions: Vec::new(),
                     can_react: false,
                     is_redacted: false,

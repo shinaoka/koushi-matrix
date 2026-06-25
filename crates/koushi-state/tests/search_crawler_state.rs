@@ -327,14 +327,8 @@ fn pause_from_active_notifies_actor_without_invalidating_completed_rooms() {
 
 #[test]
 fn pause_from_active_converts_running_rooms_to_queued_and_emits_search_crawler_changed() {
-    let mut state = ready_state_with_rooms(&[
-        "room-a",
-        "room-b",
-        "room-c",
-        "room-d",
-        "room-e",
-        "room-f",
-    ]);
+    let mut state =
+        ready_state_with_rooms(&["room-a", "room-b", "room-c", "room-d", "room-e", "room-f"]);
     state.search_crawler.rooms.insert(
         "room-a".to_owned(),
         SearchCrawlerRoomState::Running {
@@ -359,14 +353,14 @@ fn pause_from_active_converts_running_rooms_to_queued_and_emits_search_crawler_c
             kind: SearchCrawlerFailureKind::Sdk,
         },
     );
-    state.search_crawler.rooms.insert(
-        "room-e".to_owned(),
-        SearchCrawlerRoomState::Idle,
-    );
-    state.search_crawler.rooms.insert(
-        "room-f".to_owned(),
-        SearchCrawlerRoomState::Queued,
-    );
+    state
+        .search_crawler
+        .rooms
+        .insert("room-e".to_owned(), SearchCrawlerRoomState::Idle);
+    state
+        .search_crawler
+        .rooms
+        .insert("room-f".to_owned(), SearchCrawlerRoomState::Queued);
 
     let effects = reduce(
         &mut state,
@@ -406,9 +400,12 @@ fn pause_from_active_converts_running_rooms_to_queued_and_emits_search_crawler_c
         Some(&SearchCrawlerRoomState::Queued)
     );
 
-    let has_crawler_changed = effects
-        .iter()
-        .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)));
+    let has_crawler_changed = effects.iter().any(|effect| {
+        matches!(
+            effect,
+            AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)
+        )
+    });
     assert!(
         has_crawler_changed,
         "pausing with running rooms must emit SearchCrawlerChanged; got {effects:?}"

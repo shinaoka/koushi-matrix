@@ -2586,7 +2586,13 @@ async fn run_startup_latency_scenario(
     .await
     .map_err(|e| format!("startup_latency sync start submit failed: {e}"))?;
 
-    wait_for_sync_started(&mut conn, sync_id, "startup_latency sync start", SYNC_TIMEOUT).await?;
+    wait_for_sync_started(
+        &mut conn,
+        sync_id,
+        "startup_latency sync start",
+        SYNC_TIMEOUT,
+    )
+    .await?;
     wait_for_sync_running(&mut conn, "startup_latency sync running", SYNC_TIMEOUT).await?;
     wait_for_ready_handling_recovery(&mut conn, creds, transcript, "startup_latency Ready").await?;
 
@@ -2646,8 +2652,13 @@ async fn run_startup_latency_scenario(
     .await
     .map_err(|e| format!("startup_latency subscribe submit failed: {e}"))?;
 
-    wait_for_initial_items(&mut conn, &timeline_key, subscribe_id, "startup_latency subscribe")
-        .await?;
+    wait_for_initial_items(
+        &mut conn,
+        &timeline_key,
+        subscribe_id,
+        "startup_latency subscribe",
+    )
+    .await?;
     let subscribe_ms = subscribe_started.elapsed().as_millis();
     let line = format!("startup_lat phase=subscribe ms={subscribe_ms}");
     transcript.push(line.clone());
@@ -2686,15 +2697,13 @@ async fn run_startup_latency_scenario(
         match page_result {
             PaginationTerminal::EndReached => {
                 reached_start = true;
-                let line =
-                    format!("startup_lat phase=paginate ms={page_ms} reached_start=true");
+                let line = format!("startup_lat phase=paginate ms={page_ms} reached_start=true");
                 transcript.push(line.clone());
                 println!("{line}");
                 break;
             }
             PaginationTerminal::Idle => {
-                let line =
-                    format!("startup_lat phase=paginate ms={page_ms} reached_start=false");
+                let line = format!("startup_lat phase=paginate ms={page_ms} reached_start=false");
                 transcript.push(line.clone());
                 println!("{line}");
             }
@@ -2735,9 +2744,7 @@ async fn wait_for_pagination_terminal(
     loop {
         let event = tokio::time::timeout(PAGINATE_TIMEOUT, conn.recv_event())
             .await
-            .map_err(|_| {
-                format!("{label}: timed out waiting for terminal PaginationStateChanged")
-            })?
+            .map_err(|_| format!("{label}: timed out waiting for terminal PaginationStateChanged"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {

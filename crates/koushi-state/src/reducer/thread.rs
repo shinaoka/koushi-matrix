@@ -2,7 +2,7 @@ use crate::{
     effect::{AppEffect, UiEvent},
     state::{
         AppError, AppState, FocusedContextState, PendingComposerSendKind, ThreadAttentionState,
-        ThreadPaneState, ThreadsListState,
+        ThreadPaneState, ThreadsListState, sort_threads_list_items,
     },
 };
 
@@ -321,7 +321,7 @@ pub(crate) fn handle_threads_list_opened(
     state: &mut AppState,
     request_id: u64,
     room_id: String,
-    items: Vec<crate::state::ThreadsListItem>,
+    mut items: Vec<crate::state::ThreadsListItem>,
     end_reached: bool,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
@@ -330,6 +330,7 @@ pub(crate) fn handle_threads_list_opened(
     if state.threads_list.request_id() != Some(request_id) {
         return Vec::new();
     }
+    sort_threads_list_items(&mut items, state.settings.values.thread_list_order);
     state.threads_list = ThreadsListState::Open {
         room_id,
         request_id,
@@ -344,7 +345,7 @@ pub(crate) fn handle_threads_list_updated(
     state: &mut AppState,
     request_id: u64,
     room_id: String,
-    items: Vec<crate::state::ThreadsListItem>,
+    mut items: Vec<crate::state::ThreadsListItem>,
     is_paginating: bool,
     end_reached: bool,
 ) -> Vec<AppEffect> {
@@ -354,6 +355,7 @@ pub(crate) fn handle_threads_list_updated(
     if state.threads_list.request_id() != Some(request_id) {
         return Vec::new();
     }
+    sort_threads_list_items(&mut items, state.settings.values.thread_list_order);
     state.threads_list = ThreadsListState::Open {
         room_id,
         request_id,
@@ -368,7 +370,7 @@ pub(crate) fn handle_threads_list_pagination_completed(
     state: &mut AppState,
     request_id: u64,
     room_id: String,
-    items: Vec<crate::state::ThreadsListItem>,
+    mut items: Vec<crate::state::ThreadsListItem>,
     end_reached: bool,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
@@ -377,6 +379,7 @@ pub(crate) fn handle_threads_list_pagination_completed(
     if state.threads_list.request_id() != Some(request_id) {
         return Vec::new();
     }
+    sort_threads_list_items(&mut items, state.settings.values.thread_list_order);
     state.threads_list = ThreadsListState::Open {
         room_id,
         request_id,

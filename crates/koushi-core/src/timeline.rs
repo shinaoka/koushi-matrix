@@ -102,7 +102,7 @@ use crate::event::{
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
 use crate::ids::{RequestId, TimelineBatchId, TimelineGeneration, TimelineKey, TimelineKind};
-use crate::link_preview::LinkPreviewContext;
+use crate::link_preview::{LinkPreviewContext, extract_link_ranges};
 use crate::messages_backpressure::MessagesBackpressure;
 use crate::search::SearchIndexMessage;
 use crate::startup_trace::{self, StartupPhase};
@@ -4491,8 +4491,9 @@ fn activity_row_from_timeline_item(room_id: &str, item: &TimelineItem) -> Option
     Some(ActivityRow::event(
         room_id.to_owned(),
         event_id.clone(),
-        String::new(),
         item.sender.clone(),
+        String::new(),
+        item.sender_label.clone(),
         Some(preview),
         item.timestamp_ms.unwrap_or(0),
         false,
@@ -4603,6 +4604,7 @@ fn derive_timeline_navigation_snapshot(
 ) -> TimelineNavigationSnapshot {
     let mut snapshot = TimelineNavigationSnapshot {
         read_marker_event_id: fully_read_event_id.map(ToOwned::to_owned),
+        read_marker_display_event_id: None,
         first_unread_event_id: None,
         unread_event_count: 0,
         unread_position: TimelineUnreadPosition::None,
@@ -4629,12 +4631,35 @@ fn derive_timeline_navigation_snapshot(
         .collect();
 
     snapshot.unread_event_count = unread_items.len() as u64;
-    let Some((first_unread_index, first_unread)) = unread_items.first() else {
+    if let Some((first_unread_index, first_unread)) = unread_items.first() {
+        snapshot.first_unread_event_id =
+            timeline_item_event_id(first_unread).map(ToOwned::to_owned);
+        snapshot.unread_position =
+            unread_position_for_index(items, *first_unread_index, observation);
         return snapshot;
-    };
-    snapshot.first_unread_event_id = timeline_item_event_id(first_unread).map(ToOwned::to_owned);
-    snapshot.unread_position = unread_position_for_index(items, *first_unread_index, observation);
+    }
+
+    // No remote unread events after the marker. Advance the display anchor to the
+    // current user's latest visible own message at or after the marker so the
+    // "Read up to here" separator is rendered after it, not before.
+    snapshot.read_marker_display_event_id = items
+        .iter()
+        .enumerate()
+        .skip(read_marker_index)
+        .filter(|(_, item)| is_own_visible_event(item, own_user_id))
+        .last()
+        .and_then(|(_, item)| timeline_item_event_id(item).map(ToOwned::to_owned));
     snapshot
+}
+
+fn is_own_visible_event(item: &TimelineItem, own_user_id: Option<&str>) -> bool {
+    if item.is_hidden || !has_user_visible_content(item) {
+        return false;
+    }
+    if !own_user_id.is_some_and(|own| item.sender.as_deref() == Some(own)) {
+        return false;
+    }
+    matches!(item.id, TimelineItemId::Event { .. })
 }
 
 fn newer_unread_event_count(
@@ -5110,6 +5135,8 @@ fn sdk_item_to_timeline_item_with_send_states(
                 is_redacted,
                 thread_root.as_deref(),
             );
+            let link_ranges =
+                link_ranges_for_message_projection(body.as_deref(), formatted.as_ref());
 
             TimelineItem {
                 id,
@@ -5128,6 +5155,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 thread_summary,
                 media,
                 link_previews: None,
+                link_ranges,
                 reactions,
                 can_react,
                 is_redacted,
@@ -5165,6 +5193,7 @@ fn sdk_item_to_timeline_item_with_send_states(
                 thread_summary: None,
                 media: None,
                 link_previews: None,
+                link_ranges: Vec::new(),
                 reactions: Vec::new(),
                 can_react: false,
                 is_redacted: false,
@@ -5229,6 +5258,17 @@ struct MessageProjection {
     spoiler_spans: Vec<TimelineSpoilerSpan>,
     media: Option<TimelineMedia>,
     formatted: Option<crate::event::TimelineFormattedBody>,
+}
+
+fn link_ranges_for_message_projection(
+    body: Option<&str>,
+    formatted: Option<&crate::event::TimelineFormattedBody>,
+) -> Vec<crate::event::TimelineLinkRange> {
+    let source = formatted
+        .map(|formatted_body| formatted_body.plain_text.as_str())
+        .or(body)
+        .unwrap_or("");
+    extract_link_ranges(source)
 }
 
 fn reply_quote_from_details(details: &InReplyToDetails) -> ReplyQuote {
@@ -6536,6 +6576,7 @@ mod tests {
             thread_summary: None,
             media: None,
             link_previews: None,
+            link_ranges: Vec::new(),
             reactions: Vec::new(),
             can_react: false,
             is_redacted: false,
@@ -7146,6 +7187,28 @@ mod tests {
     }
 
     #[test]
+    fn formatted_message_link_ranges_use_formatted_plain_text_basis() {
+        let msgtype = MessageType::Text(TextMessageEventContent::html(
+            "fallback without url",
+            r#"<strong>Visit https://example.invalid/path</strong>"#,
+        ));
+
+        let projection = message_projection_from_msgtype(&msgtype, "fallback without url");
+        let ranges = link_ranges_for_message_projection(
+            projection.body.as_deref(),
+            projection.formatted.as_ref(),
+        );
+
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].url, "https://example.invalid/path");
+        assert_eq!(ranges[0].start_utf16, "Visit ".encode_utf16().count());
+        assert_eq!(
+            ranges[0].end_utf16,
+            "Visit https://example.invalid/path".encode_utf16().count()
+        );
+    }
+
+    #[test]
     fn message_projection_keeps_allowed_formatted_blocks_and_spoilers() {
         let msgtype = MessageType::Emote(EmoteMessageEventContent::html(
             "plain fallback",
@@ -7273,6 +7336,7 @@ mod tests {
             thread_summary: None,
             media: None,
             link_previews: None,
+            link_ranges: Vec::new(),
             reactions: Vec::new(),
             can_react: true,
             is_redacted: false,
@@ -8779,5 +8843,70 @@ mod tests {
         // We document the PopBack → Truncate(0) and Append → Reset mappings here.
         let _popback_maps_to_truncate: bool = true;
         let _append_maps_to_reset: bool = true;
+    }
+
+    // --- Navigation snapshot read-marker display anchor ---
+
+    #[test]
+    fn navigation_display_anchor_advances_past_own_messages_after_marker() {
+        let other = timeline_item("$other", Some("hello"), "@bob", false);
+        let own1 = timeline_item("$own1", Some("own1"), "@alice", false);
+        let own2 = timeline_item("$own2", Some("own2"), "@alice", false);
+        let items = vec![other, own1, own2];
+        let observation = TimelineViewportObservation::default();
+
+        let snapshot = derive_timeline_navigation_snapshot(
+            &items,
+            Some("$other"),
+            &observation,
+            Some("@alice"),
+        );
+
+        assert_eq!(snapshot.read_marker_event_id, Some("$other".to_owned()));
+        assert_eq!(snapshot.first_unread_event_id, None);
+        assert_eq!(
+            snapshot.read_marker_display_event_id,
+            Some("$own2".to_owned())
+        );
+    }
+
+    #[test]
+    fn navigation_display_anchor_stays_at_marker_when_no_own_messages_after() {
+        let other = timeline_item("$other", Some("hello"), "@bob", false);
+        let remote = timeline_item("$remote", Some("remote"), "@bob", false);
+        let items = vec![other, remote];
+        let observation = TimelineViewportObservation::default();
+
+        let snapshot = derive_timeline_navigation_snapshot(
+            &items,
+            Some("$other"),
+            &observation,
+            Some("@alice"),
+        );
+
+        assert_eq!(snapshot.first_unread_event_id, Some("$remote".to_owned()));
+        assert_eq!(snapshot.read_marker_display_event_id, None);
+    }
+
+    #[test]
+    fn navigation_display_anchor_advances_from_own_marker_to_later_own_message() {
+        let own1 = timeline_item("$own1", Some("own1"), "@alice", false);
+        let own2 = timeline_item("$own2", Some("own2"), "@alice", false);
+        let items = vec![own1, own2];
+        let observation = TimelineViewportObservation::default();
+
+        let snapshot = derive_timeline_navigation_snapshot(
+            &items,
+            Some("$own1"),
+            &observation,
+            Some("@alice"),
+        );
+
+        assert_eq!(snapshot.read_marker_event_id, Some("$own1".to_owned()));
+        assert_eq!(snapshot.first_unread_event_id, None);
+        assert_eq!(
+            snapshot.read_marker_display_event_id,
+            Some("$own2".to_owned())
+        );
     }
 }

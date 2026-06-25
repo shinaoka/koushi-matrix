@@ -21,24 +21,30 @@ const eventRow: ActivityRow = {
   kind: "event",
   room_id: "!room:example.invalid",
   event_id: "$event:example.invalid",
+  sender_id: "@sender:example.invalid",
   room_label: "Event room",
   sender_label: "Sender",
+  sender_avatar: null,
   preview: "Preview",
   timestamp_ms: 1_000_000,
   unread: true,
-  highlight: false
+  highlight: false,
+  context_label: "Room"
 };
 
 const placeholderRow: ActivityRow = {
   kind: "roomUnread",
   room_id: "!placeholder:example.invalid",
   event_id: null,
+  sender_id: null,
   room_label: "Placeholder room",
   sender_label: null,
+  sender_avatar: null,
   preview: null,
   timestamp_ms: 2_000_000,
   unread: true,
-  highlight: true
+  highlight: true,
+  context_label: "Room"
 };
 
 describe("ActivityPane", () => {
@@ -71,6 +77,7 @@ describe("ActivityPane", () => {
     expect(screen.getByText("Placeholder room")).toBeTruthy();
     expect(screen.queryByText("Preview")).toBeNull();
     expect(screen.queryByText("Sender")).toBeNull();
+    expect(listitem.querySelector("time")).toBeNull();
 
     // No open button: placeholder rows are not event-clickable.
     expect(screen.queryByRole("button", { name: /Open/ })).toBeNull();

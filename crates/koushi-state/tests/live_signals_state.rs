@@ -7,9 +7,7 @@
 ///  - total_count and overflow_count are computed from the remaining readers
 ///    after own exclusion.
 ///  - other readers are unaffected.
-use koushi_state::{
-    LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate,
-};
+use koushi_state::{LiveEventReceipts, LiveReadReceipt, LiveRoomSignalUpdate};
 
 fn make_receipt(user_id: &str, ts: u64) -> LiveReadReceipt {
     LiveReadReceipt {
@@ -33,10 +31,8 @@ fn signals_for(
         fully_read_event_id: None,
         typing_user_ids: vec![],
     };
-    let room_signals = update.into_room_signals_with_profiles(
-        &koushi_state::ProfileState::default(),
-        own_user_id,
-    );
+    let room_signals =
+        update.into_room_signals_with_profiles(&koushi_state::ProfileState::default(), own_user_id);
     room_signals
         .receipts_by_event
         .get("$ev:localhost")
@@ -83,7 +79,10 @@ fn own_only_receipt_yields_empty_summary() {
 
     let summary = signals_for(receipts, Some(own));
 
-    assert!(summary.readers.is_empty(), "readers must be empty when only own read");
+    assert!(
+        summary.readers.is_empty(),
+        "readers must be empty when only own read"
+    );
     assert_eq!(summary.total_count, 0);
     assert_eq!(summary.overflow_count, 0);
 }

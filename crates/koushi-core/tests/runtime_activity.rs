@@ -8,9 +8,26 @@ use koushi_core::event::{ActivityEvent, CoreEvent};
 use koushi_core::{AppCommand, CoreCommand, CoreRuntime};
 use koushi_state::{
     ActivityMarkReadState, ActivityMarkReadTarget, ActivityRowKind, ActivityState, AppAction,
-    SessionState,
+    RoomSummary, SessionState, SpaceSummary,
 };
-use support::{activity_row, unread_room_summary, wait_for_state};
+use support::{activity_row, room_summary, unread_room_summary, wait_for_state};
+
+fn dm_room_summary(room_id: &str, dm_user_id: &str) -> RoomSummary {
+    RoomSummary {
+        is_dm: true,
+        dm_user_ids: vec![dm_user_id.to_owned()],
+        unread_count: 1,
+        ..room_summary(room_id)
+    }
+}
+
+fn room_in_space_summary(room_id: &str, space_id: &str) -> RoomSummary {
+    RoomSummary {
+        parent_space_ids: vec![space_id.to_owned()],
+        unread_count: 1,
+        ..room_summary(room_id)
+    }
+}
 
 #[tokio::test]
 async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
@@ -147,6 +164,73 @@ async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
             .get("!stale:example.test")
             .and_then(|signals| signals.fully_read_event_id.as_deref()),
         Some("$stale:example.test")
+    );
+}
+
+#[tokio::test]
+async fn activity_context_label_reflects_dm_or_space_room() {
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(support::session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![SpaceSummary {
+                    space_id: "!space:example.test".to_owned(),
+                    display_name: "QA Space".to_owned(),
+                    avatar: None,
+                    child_room_ids: vec!["!room-in-space:example.test".to_owned()],
+                }],
+                rooms: vec![
+                    dm_room_summary("!dm:example.test", "@dm:example.test"),
+                    room_in_space_summary("!room-in-space:example.test", "!space:example.test"),
+                    unread_room_summary("!room-home:example.test", 1),
+                ],
+            },
+            AppAction::ActivityRowsObserved {
+                rows: vec![
+                    activity_row("!dm:example.test", "$dm:example.test", 30),
+                    activity_row("!room-in-space:example.test", "$space:example.test", 20),
+                    activity_row("!room-home:example.test", "$home:example.test", 10),
+                ],
+            },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_)) && state.rooms.len() == 3
+    })
+    .await;
+
+    let open_request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::OpenActivity {
+        request_id: open_request_id,
+    }))
+    .await
+    .expect("open activity command");
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        matches!(state.activity, ActivityState::Open { .. })
+    })
+    .await;
+    let ActivityState::Open { recent, .. } = snapshot.activity else {
+        panic!("activity should be open");
+    };
+    let labels_by_room: std::collections::HashMap<String, String> = recent
+        .rows
+        .iter()
+        .map(|row| (row.room_id.clone(), row.context_label.clone()))
+        .collect();
+    assert_eq!(
+        labels_by_room.get("!dm:example.test"),
+        Some(&"DM".to_owned())
+    );
+    assert_eq!(
+        labels_by_room.get("!room-in-space:example.test"),
+        Some(&"Room · QA Space / QA Room".to_owned())
+    );
+    assert_eq!(
+        labels_by_room.get("!room-home:example.test"),
+        Some(&"Room".to_owned())
     );
 }
 

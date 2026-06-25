@@ -51,11 +51,7 @@ pub(crate) fn handle_timeline_scroll_anchor_updated(
         return Vec::new();
     }
 
-    let should_update = state
-        .navigation
-        .room_scroll_anchors
-        .get(&room_id)
-        != Some(&anchor);
+    let should_update = state.navigation.room_scroll_anchors.get(&room_id) != Some(&anchor);
     if !should_update {
         return Vec::new();
     }
@@ -82,7 +78,10 @@ fn normalize_navigation_state(mut navigation: NavigationState) -> NavigationStat
 }
 
 fn prune_room_scroll_anchors(
-    room_scroll_anchors: &mut std::collections::BTreeMap<String, crate::state::TimelineScrollAnchor>,
+    room_scroll_anchors: &mut std::collections::BTreeMap<
+        String,
+        crate::state::TimelineScrollAnchor,
+    >,
 ) {
     if room_scroll_anchors.len() <= MAX_ROOM_SCROLL_ANCHORS {
         return;
@@ -92,12 +91,16 @@ fn prune_room_scroll_anchors(
         .iter()
         .map(|(room_id, anchor)| (room_id.clone(), anchor.updated_at_ms))
         .collect();
-    ordered_room_ids.sort_by(|(left_room_id, left_updated_at_ms), (right_room_id, right_updated_at_ms)| {
-        left_updated_at_ms
-            .cmp(right_updated_at_ms)
-            .then_with(|| left_room_id.cmp(right_room_id))
-    });
-    let overflow = room_scroll_anchors.len().saturating_sub(MAX_ROOM_SCROLL_ANCHORS);
+    ordered_room_ids.sort_by(
+        |(left_room_id, left_updated_at_ms), (right_room_id, right_updated_at_ms)| {
+            left_updated_at_ms
+                .cmp(right_updated_at_ms)
+                .then_with(|| left_room_id.cmp(right_room_id))
+        },
+    );
+    let overflow = room_scroll_anchors
+        .len()
+        .saturating_sub(MAX_ROOM_SCROLL_ANCHORS);
 
     for (room_id, _) in ordered_room_ids.into_iter().take(overflow) {
         room_scroll_anchors.remove(&room_id);

@@ -926,3 +926,50 @@ fn profile_state_clears_with_session_views() {
             .any(|effect| matches!(effect, AppEffect::EmitUiEvent(UiEvent::ProfileChanged)))
     );
 }
+
+#[test]
+fn avatar_image_debug_redacts_mxc_uri_and_thumbnail_source_url() {
+    let image = AvatarImage {
+        mxc_uri: "mxc://localhost/private-avatar".to_owned(),
+        thumbnail: AvatarThumbnailState::Ready {
+            source_url: "koushi-thumbnail://localhost/private.bin".to_owned(),
+            width: Some(64),
+            height: Some(64),
+            mime_type: Some("image/png".to_owned()),
+        },
+    };
+    let debug = format!("{:?}", image);
+    assert!(!debug.contains("mxc://localhost/private-avatar"), "{debug}");
+    assert!(
+        !debug.contains("koushi-thumbnail://localhost/private.bin"),
+        "{debug}"
+    );
+    assert!(debug.contains("has_mxc_uri"), "{debug}");
+    assert!(debug.contains("Ready"), "{debug}");
+}
+
+#[test]
+fn avatar_thumbnail_state_debug_redacts_ready_source_url() {
+    let ready = AvatarThumbnailState::Ready {
+        source_url: "asset://private-avatar".to_owned(),
+        width: Some(128),
+        height: None,
+        mime_type: Some("image/jpeg".to_owned()),
+    };
+    let debug = format!("{:?}", ready);
+    assert!(!debug.contains("asset://private-avatar"), "{debug}");
+    assert!(debug.contains("has_source_url"), "{debug}");
+    assert!(debug.contains("width"), "{debug}");
+
+    let loading = AvatarThumbnailState::Loading { request_id: 7 };
+    let loading_debug = format!("{:?}", loading);
+    assert!(loading_debug.contains("request_id"), "{loading_debug}");
+
+    let failed = AvatarThumbnailState::Failed {
+        request_id: 9,
+        kind: koushi_state::AvatarThumbnailFailureKind::Network,
+    };
+    let failed_debug = format!("{:?}", failed);
+    assert!(failed_debug.contains("request_id"), "{failed_debug}");
+    assert!(failed_debug.contains("kind"), "{failed_debug}");
+}

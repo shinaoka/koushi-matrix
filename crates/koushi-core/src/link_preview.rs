@@ -9,7 +9,7 @@ use matrix_sdk::ruma::MxcUri;
 use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
 use regex::Regex;
 
-use crate::event::{LinkPreview, LinkPreviewImage, LinkPreviewState};
+use crate::event::{LinkPreview, LinkPreviewImage, LinkPreviewState, TimelineLinkRange};
 use crate::event::{TimelineFormattedBody, TimelineMediaSource};
 use crate::renderable_thumbnail::{RenderableThumbnailKind, store_renderable_thumbnail};
 
@@ -106,18 +106,130 @@ impl fmt::Debug for LinkPreviewContext {
     }
 }
 
+/// Punctuation that terminates a URL from within the match. This prevents CJK
+/// sentence punctuation (`、` `。` `，` etc.) from being swallowed into the URL
+/// while keeping ASCII URL path/query punctuation such as `?`, `&`, `=`, and
+/// balanced parentheses.
+fn is_url_stop_punctuation(c: char) -> bool {
+    matches!(
+        c,
+        '\u{3001}'..='\u{3003}' // 、 。 〃
+        | '\u{3008}'..='\u{3011}' // 〈 《  〉 》
+        | '\u{3014}'..='\u{301F}' // 〔 etc
+        | '\u{FF08}'..='\u{FF09}' // （ ）
+        | '\u{FF0C}' | '\u{FF0E}' | '\u{FF1A}' | '\u{FF1B}' | '\u{FF1F}' | '\u{FF01}' // 全角标点
+        | '\u{2018}'..='\u{201F}' // smart quotes
+        | '\u{2026}' // …
+    )
+}
+
+/// Characters that may be trimmed from the end of a URL match. Closing
+/// brackets are trimmed only when they are not balancing an opener already
+/// present in the URL, so `https://example.com/foo(bar)` stays balanced.
+fn is_trailing_url_punctuation(c: char) -> bool {
+    const ASCII_TRAILING: &str = ". , ; : ! ? \" ' \u{00a0}";
+    if ASCII_TRAILING.contains(c) {
+        return true;
+    }
+    if matches!(c, ')' | ']' | '}' | '>') {
+        return true;
+    }
+    // CJK / full-width punctuation blocks that commonly wrap a sentence.
+    matches!(
+        c,
+        '\u{3001}'..='\u{3003}' // 、 。 〃
+        | '\u{3008}'..='\u{3011}' // 〈 《  〉 》
+        | '\u{3014}'..='\u{301F}' // 〔 etc
+        | '\u{FF08}'..='\u{FF09}' // （ ）
+        | '\u{FF0C}' | '\u{FF0E}' | '\u{FF1A}' | '\u{FF1B}' | '\u{FF1F}' | '\u{FF01}' // 全角标点
+        | '\u{2018}'..='\u{201F}' // smart quotes
+        | '\u{2026}' // …
+    )
+}
+
+fn matching_open_bracket(c: char) -> Option<char> {
+    match c {
+        ')' => Some('('),
+        ']' => Some('['),
+        '}' => Some('{'),
+        '>' => Some('<'),
+        _ => None,
+    }
+}
+
+fn trim_trailing_url_punctuation(url: &str) -> &str {
+    let mut end = url.len();
+    while end > 0 {
+        let c = url[..end].chars().next_back().unwrap();
+        if !is_trailing_url_punctuation(c) {
+            break;
+        }
+        // Keep a closing bracket if it balances an opener in the remaining URL.
+        if let Some(open) = matching_open_bracket(c) {
+            let prefix = &url[..end - c.len_utf8()];
+            let opens = prefix.chars().filter(|&x| x == open).count();
+            let closes = prefix.chars().filter(|&x| x == c).count();
+            if opens > closes {
+                break;
+            }
+        }
+        end -= c.len_utf8();
+    }
+    &url[..end]
+}
+
+fn truncate_at_stop_punctuation(url: &str) -> &str {
+    match url
+        .char_indices()
+        .find(|(_, c)| is_url_stop_punctuation(*c))
+    {
+        Some((index, _)) => &url[..index],
+        None => url,
+    }
+}
+
+/// Extract clickable link ranges from plain text using the same Unicode-aware
+/// URL policy as link previews. Ranges are expressed in UTF-16 code units so
+/// they align with JavaScript string indices in the React renderer.
+///
+/// Each occurrence produces its own range so anchors can be rendered for every
+/// URL in the message body. Callers that only need unique preview URLs (such as
+/// link-preview fetching) should use [`extract_urls`] instead.
+pub fn extract_link_ranges(text: &str) -> Vec<TimelineLinkRange> {
+    let url_re = url_regex();
+    let mut ranges = Vec::new();
+
+    for mat in url_re.find_iter(text) {
+        let raw = mat.as_str();
+        let stopped = truncate_at_stop_punctuation(raw);
+        let trimmed = trim_trailing_url_punctuation(stopped);
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let start_utf16 = text[..mat.start()].encode_utf16().count();
+        let raw_end_utf16 = start_utf16 + raw.encode_utf16().count();
+        let trailing_utf16 = raw[trimmed.len()..].encode_utf16().count();
+        let end_utf16 = raw_end_utf16 - trailing_utf16;
+
+        ranges.push(TimelineLinkRange {
+            url: trimmed.to_owned(),
+            start_utf16,
+            end_utf16,
+        });
+    }
+
+    ranges
+}
+
 pub fn extract_urls(body: Option<&str>, formatted: Option<&TimelineFormattedBody>) -> Vec<String> {
     let mut urls = Vec::new();
     let mut seen = HashSet::new();
-    let url_re = url_regex();
 
     let mut collect = |text: &str| {
-        for mat in url_re.find_iter(text) {
-            let url = mat
-                .as_str()
-                .trim_end_matches(|c| r##".,;:!?)"'>"##.contains(c));
-            if seen.insert(url.to_owned()) {
-                urls.push(url.to_owned());
+        for range in extract_link_ranges(text) {
+            if seen.insert(range.url.clone()) {
+                urls.push(range.url);
             }
         }
     };
@@ -361,6 +473,71 @@ mod tests {
         let body = "Visit https://example.com.,;:!?)\"'> today.";
         let urls = extract_urls(Some(body), None);
         assert_eq!(urls, vec!["https://example.com"]);
+    }
+
+    #[test]
+    fn link_preview_url_policy_keeps_unicode_path_query_and_balanced_parentheses() {
+        // Unicode path and query are preserved.
+        let body = "Read https://tensor4all.org/blog/パス?q=日本語 for details.";
+        let urls = extract_urls(Some(body), None);
+        assert_eq!(urls, vec!["https://tensor4all.org/blog/パス?q=日本語"]);
+
+        // Balanced parentheses are kept.
+        let body2 = "See https://example.com/foo(bar).";
+        assert_eq!(
+            extract_urls(Some(body2), None),
+            vec!["https://example.com/foo(bar)"]
+        );
+
+        // CJK punctuation stops the URL, not trims it.
+        let body3 = "Next https://example.com/a、次の文";
+        assert_eq!(
+            extract_urls(Some(body3), None),
+            vec!["https://example.com/a"]
+        );
+    }
+
+    #[test]
+    fn extract_link_ranges_use_utf16_offsets_and_strip_trailing_punctuation() {
+        let body = "See https://example.com/path.";
+        let ranges = extract_link_ranges(body);
+        assert_eq!(ranges.len(), 1);
+        let range = &ranges[0];
+        assert_eq!(range.url, "https://example.com/path");
+        // "See " is 4 UTF-16 code units; the URL starts at offset 4.
+        assert_eq!(range.start_utf16, 4);
+        // Trailing period is stripped, so the end is the length of the URL text after it.
+        assert_eq!(
+            range.end_utf16,
+            4 + "https://example.com/path".encode_utf16().count()
+        );
+    }
+
+    #[test]
+    fn extract_link_ranges_supports_idn_and_cjk_punctuation() {
+        // IDN domain and path, followed by a full-width period.
+        let body = "https://例え.jp/テスト。";
+        let ranges = extract_link_ranges(body);
+        assert_eq!(ranges.len(), 1);
+        let range = &ranges[0];
+        assert_eq!(range.url, "https://例え.jp/テスト");
+        assert_eq!(range.start_utf16, 0);
+        assert_eq!(
+            range.end_utf16,
+            "https://例え.jp/テスト".encode_utf16().count()
+        );
+    }
+
+    #[test]
+    fn extract_link_ranges_keeps_repeated_url_occurrences_distinct() {
+        let body = "https://a.test https://a.test https://b.test";
+        let ranges = extract_link_ranges(body);
+        assert_eq!(ranges.len(), 3);
+        assert_eq!(ranges[0].url, "https://a.test");
+        assert_eq!(ranges[1].url, "https://a.test");
+        assert_eq!(ranges[2].url, "https://b.test");
+        assert!(ranges[0].end_utf16 <= ranges[1].start_utf16);
+        assert!(ranges[1].end_utf16 <= ranges[2].start_utf16);
     }
 
     #[test]

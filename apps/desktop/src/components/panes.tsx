@@ -7,6 +7,8 @@ import {
   type FormEvent
 } from "react";
 import {
+  ArrowDown,
+  ArrowUp,
   Bell,
   CalendarDays,
   Check,
@@ -14,9 +16,7 @@ import {
   Compass,
   Image as ImageIcon,
   MessageCircle,
-  MoreVertical,
-  PanelRightClose,
-  PanelRightOpen,
+  MoreHorizontal,
   Search,
   Users,
   X
@@ -199,15 +199,19 @@ export function ActivityPane({
                 >
                   {isPlaceholder ? (
                     <div className="activity-row-open">
-                      <span className="activity-row-topline">
-                        <strong dir="auto">{row.room_label}</strong>
-                        <time dateTime={new Date(row.timestamp_ms).toISOString()}>
-                          {activityTimestamp(row.timestamp_ms)}
-                        </time>
-                      </span>
-                      <span className="activity-row-meta">
-                        {row.unread ? <span>{t("activity.unreadBadge")}</span> : null}
-                        {row.highlight ? <span>{t("activity.highlightBadge")}</span> : null}
+                      <EntityAvatar
+                        avatar={null}
+                        className="activity-row-avatar is-room"
+                        fallback={initials(row.room_label)}
+                      />
+                      <span className="activity-row-body">
+                        <span className="activity-row-topline">
+                          <strong dir="auto">{row.room_label}</strong>
+                        </span>
+                        <span className="activity-row-meta">
+                          {row.unread ? <span>{t("activity.unreadBadge")}</span> : null}
+                          {row.highlight ? <span>{t("activity.highlightBadge")}</span> : null}
+                        </span>
                       </span>
                     </div>
                   ) : (
@@ -217,21 +221,30 @@ export function ActivityPane({
                       aria-label={t("activity.openItem", { room: row.room_label })}
                       onClick={() => onOpenRow(row)}
                     >
-                      <span className="activity-row-topline">
-                        <strong dir="auto">{row.room_label}</strong>
-                        <time dateTime={new Date(row.timestamp_ms).toISOString()}>
-                          {activityTimestamp(row.timestamp_ms)}
-                        </time>
-                      </span>
-                      <span className="activity-row-meta">
-                        <span dir="auto">
-                          {row.sender_label ?? t("timeline.replyQuoteUnknownSender")}
+                      <EntityAvatar
+                        avatar={row.sender_avatar}
+                        className="activity-row-avatar is-user"
+                        fallback={initials(row.sender_label ?? row.room_label)}
+                      />
+                      <span className="activity-row-body">
+                        <span className="activity-row-topline">
+                          <strong dir="auto">
+                            {row.sender_label ?? t("timeline.replyQuoteUnknownSender")}
+                          </strong>
+                          <time dateTime={new Date(row.timestamp_ms).toISOString()}>
+                            {activityTimestamp(row.timestamp_ms)}
+                          </time>
                         </span>
+                        <span className="activity-row-context" dir="auto">
+                          {row.context_label || row.room_label}
+                        </span>
+                        <span className="activity-row-preview" dir="auto">
+                          {row.preview ?? t("activity.noPreview")}
+                        </span>
+                      </span>
+                      <span className="activity-row-badges">
                         {row.unread ? <span>{t("activity.unreadBadge")}</span> : null}
                         {row.highlight ? <span>{t("activity.highlightBadge")}</span> : null}
-                      </span>
-                      <span className="activity-row-preview" dir="auto">
-                        {row.preview ?? t("activity.noPreview")}
                       </span>
                     </button>
                   )}
@@ -243,12 +256,12 @@ export function ActivityPane({
                       disabled={markRoomPending(row)}
                       onClick={() =>
                         onMarkRead({
-                        kind: "room",
-                        room_id: row.room_id,
-                        up_to_event_id: row.event_id
-                      })
-                    }
-                  >
+                          kind: "room",
+                          room_id: row.room_id,
+                          up_to_event_id: row.event_id
+                        })
+                      }
+                    >
                       <Check size={ICON_SIZE.small} />
                     </button>
                   ) : null}
@@ -560,7 +573,6 @@ export function TimelinePane({
   searchResults,
   showSearchResults,
   snapshot,
-  rightPanelOpen,
   timelineBackfill,
   timelineTransport,
   onCancelReply,
@@ -582,10 +594,9 @@ export function TimelinePane({
   onSendText,
   onSetLocalUserAlias,
   onUnpinPinnedEvent,
-  onToggleThread,
-  onOpenRoomInfo,
-  onOpenRoomMembers,
-  onOpenThreadsList,
+  onOpenPeople,
+  onOpenThreads,
+  onToggleRoomInfo,
   onTimelineDiagnosticsChange,
   onTimelineDiagnosticLogEntry
 }: {
@@ -598,7 +609,6 @@ export function TimelinePane({
   searchResults: SearchResult[];
   showSearchResults: boolean;
   snapshot: DesktopSnapshot;
-  rightPanelOpen: boolean;
   timelineBackfill: TimelineDiagnostics["backfill"];
   timelineTransport: TimelineTransport | null;
   onCancelReply: () => void;
@@ -623,10 +633,9 @@ export function TimelinePane({
   onSendText: (body: string) => void;
   onSetLocalUserAlias: (userId: string, alias: string | null) => void;
   onUnpinPinnedEvent: (roomId: string, eventId: string) => void;
-  onToggleThread: () => void;
-  onOpenRoomInfo: () => void;
-  onOpenRoomMembers: () => void;
-  onOpenThreadsList: () => void;
+  onOpenPeople: () => void;
+  onOpenThreads: () => void;
+  onToggleRoomInfo: () => void;
   onTimelineDiagnosticsChange?: (diagnostics: TimelineDiagnostics) => void;
   onTimelineDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
 }) {
@@ -637,6 +646,14 @@ export function TimelinePane({
   const activeRoom = timelineRoomId
     ? snapshot.state.domain.rooms.find((room) => room.room_id === timelineRoomId) ?? null
     : null;
+  const threadAttention = snapshot.state.domain.thread_attention;
+  const showThreadsHeader =
+    timelineRoomId &&
+    threadAttention.kind === "tracking" &&
+    threadAttention.room_id === timelineRoomId &&
+    (threadAttention.notification_count > 0 ||
+      threadAttention.highlight_count > 0 ||
+      threadAttention.live_event_marker_count > 0);
   const timelineKey = useMemo(
     () =>
       currentUserId && timelineRoomId
@@ -683,10 +700,9 @@ export function TimelinePane({
   const onSendTextStable = useStableEvent(onSendText);
   const onSetLocalUserAliasStable = useStableEvent(onSetLocalUserAlias);
   const onUnpinPinnedEventStable = useStableEvent(onUnpinPinnedEvent);
-  const onToggleThreadStable = useStableEvent(onToggleThread);
-  const onOpenRoomInfoStable = useStableEvent(onOpenRoomInfo);
-  const onOpenRoomMembersStable = useStableEvent(onOpenRoomMembers);
-  const onOpenThreadsListStable = useStableEvent(onOpenThreadsList);
+  const onOpenPeopleStable = useStableEvent(onOpenPeople);
+  const onOpenThreadsStable = useStableEvent(onOpenThreads);
+  const onToggleRoomInfoStable = useStableEvent(onToggleRoomInfo);
   const onTimelineDiagnosticsChangeStable = useStableEvent(
     (diagnostics: TimelineDiagnostics) => onTimelineDiagnosticsChange?.(diagnostics)
   );
@@ -696,6 +712,7 @@ export function TimelinePane({
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [dateJumpDialogOpen, setDateJumpDialogOpen] = useState(false);
+  const timelineListRef = useRef<HTMLDivElement | null>(null);
   const [jumpDateValue, setJumpDateValue] = useState("");
 
   function submitJumpDate(event: FormEvent<HTMLFormElement>) {
@@ -718,6 +735,12 @@ export function TimelinePane({
   }
   const canPaginateOlderMessages = Boolean(timelineRoomId && currentUserId && timelineTransport);
   const canJumpToTimelineDate = Boolean(timelineTransport?.openAtTimestamp && timelineRoomId);
+  const listRefCallback = useCallback(
+    (element: HTMLDivElement | null) => {
+      timelineListRef.current = element;
+    },
+    []
+  );
 
   return (
     <main className="main-pane" aria-label={t("timeline.conversation")}>
@@ -732,85 +755,87 @@ export function TimelinePane({
         </div>
         <div className="channel-actions">
           <button
-            className="member-pill"
+            className="icon-button"
             type="button"
-            aria-label={t("room.members")}
-            onClick={onOpenRoomMembersStable}
+            aria-label={t("panel.people")}
+            title={t("panel.people")}
+            onClick={onOpenPeopleStable}
           >
-            <Users size={ICON_SIZE.small} />
-            <span>{activeRoom?.joined_members ?? 0}</span>
+            <Users size={ICON_SIZE.panel} />
           </button>
           <button
             className="icon-button"
             type="button"
             aria-label={t("mediaGallery.open")}
+            title={t("mediaGallery.open")}
             onClick={() => setGalleryOpen((open) => !open)}
           >
             <ImageIcon size={ICON_SIZE.panel} />
           </button>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={t("room.rightPanelToggle")}
-            onClick={onToggleThreadStable}
-          >
-            {rightPanelOpen ? <PanelRightClose size={ICON_SIZE.panel} /> : <PanelRightOpen size={ICON_SIZE.panel} />}
-          </button>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={t("threads.title")}
-            onClick={onOpenThreadsListStable}
-          >
-            <MessageCircle size={ICON_SIZE.panel} />
-          </button>
+          {showThreadsHeader ? (
+            <button
+              className="icon-button"
+              type="button"
+              aria-label={t("workspace.threads")}
+              title={t("workspace.threads")}
+              onClick={onOpenThreadsStable}
+            >
+              <MessageCircle size={ICON_SIZE.panel} />
+            </button>
+          ) : null}
           <button
             className="icon-button"
             type="button"
             aria-label={t("room.roomInfo")}
-            onClick={onOpenRoomInfoStable}
+            title={t("room.roomInfo")}
+            onClick={onToggleRoomInfoStable}
           >
-            <MoreVertical size={ICON_SIZE.panel} />
+            <MoreHorizontal size={ICON_SIZE.panel} />
           </button>
         </div>
       </header>
-      <nav className="tabs room-tabs" aria-label={t("room.tabs")}>
-        <button className="tab is-active" type="button">
-          {t("timeline.messagesTab")}
-        </button>
-        {canPaginateOlderMessages || canJumpToTimelineDate ? (
-          <div className="tabs-actions">
-            {canPaginateOlderMessages ? (
-              <div className="timeline-load-more">
-                <button
-                  className="load-more-button"
-                  type="button"
-                  disabled={timelineBackfillBusy || timelineBackfillEnded}
-                  onClick={() => {
-                    if (timelineKey && timelineTransport) {
-                      void timelineTransport.paginateBackwards(timelineKey);
-                    }
-                  }}
-                >
-                  <Clock3 size={ICON_SIZE.compact} />
-                  <span>
-                    {timelineBackfillBusy ? t("timeline.loading") : t("timeline.olderMessages")}
-                  </span>
-                </button>
-              </div>
-            ) : null}
-            {canJumpToTimelineDate ? (
-              <button
-                className="timeline-date-jump-trigger"
-                type="button"
-                onClick={() => setDateJumpDialogOpen(true)}
-              >
-                <CalendarDays size={ICON_SIZE.micro} aria-hidden="true" />
-                <span>{t("timeline.jumpToDate")}</span>
-              </button>
-            ) : null}
-          </div>
+      <nav className="timeline-top-controls" aria-label={t("timeline.navigation")}>
+        {canPaginateOlderMessages ? (
+          <button
+            className="icon-button timeline-control"
+            type="button"
+            disabled={timelineBackfillBusy || timelineBackfillEnded}
+            aria-label={t("timeline.olderMessages")}
+            title={t("timeline.olderMessages")}
+            onClick={() => {
+              if (timelineKey && timelineTransport) {
+                void timelineTransport.paginateBackwards(timelineKey);
+              }
+            }}
+          >
+            <ArrowUp size={ICON_SIZE.control} aria-hidden="true" />
+          </button>
         ) : null}
+        {canJumpToTimelineDate ? (
+          <button
+            className="icon-button timeline-control"
+            type="button"
+            aria-label={t("timeline.jumpToDate")}
+            title={t("timeline.jumpToDate")}
+            onClick={() => setDateJumpDialogOpen(true)}
+          >
+            <CalendarDays size={ICON_SIZE.control} aria-hidden="true" />
+          </button>
+        ) : null}
+        <button
+          className="icon-button timeline-control"
+          type="button"
+          aria-label={t("timeline.latest")}
+          title={t("timeline.latest")}
+          onClick={() => {
+            const list = timelineListRef.current;
+            if (list) {
+              list.scrollTop = list.scrollHeight;
+            }
+          }}
+        >
+          <ArrowDown size={ICON_SIZE.control} aria-hidden="true" />
+        </button>
       </nav>
       {timelineTransport?.openAtTimestamp && timelineRoomId && dateJumpDialogOpen ? (
         <div
@@ -910,6 +935,7 @@ export function TimelinePane({
               roomScrollAnchor={snapshot.state.ui.navigation.room_scroll_anchors?.[timelineRoomId] ?? null}
               onDiagnosticsChange={onTimelineDiagnosticsChangeStable}
               onDiagnosticLogEntry={onTimelineDiagnosticLogEntryStable}
+              listRefCallback={listRefCallback}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).

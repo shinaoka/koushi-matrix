@@ -29,7 +29,11 @@ import {
   threadReplyToTimelineMessage
 } from "../app/uiShared";
 import type { DisplayDensity, SpaceLocalOverrides } from "../app/localPresentation";
-import type { RightPanelMode } from "../domain/rightPanel";
+import {
+  roomOrSpaceForPeoplePanelScope,
+  type PeoplePanelScope,
+  type RightPanelMode
+} from "../domain/rightPanel";
 import { RecoveryPanel } from "./auth";
 import {
   TimelineView,
@@ -43,6 +47,7 @@ import { RoomInfoPanel } from "./RoomInfoPanel";
 import { SpaceInfoPanel } from "./SpaceInfoPanel";
 import { ThreadsListView } from "./ThreadsListView";
 import { UserSettingsPanel } from "./UserSettingsPanel";
+import { PeoplePanel, ProfilePanel } from "./PeoplePanel";
 import { MessageArticle, SearchResults } from "./mediaLists";
 import { ThreadComposer } from "./composer";
 
@@ -53,7 +58,8 @@ export function ContextualRightPanel({
   displayDensity = "comfortable",
   isRecoveryBusy,
   mode,
-  roomInfoInitialSection = null,
+  peoplePanelScope = null,
+  selectedProfileUserId = null,
   recoverySecretFilled,
   recoverySecretInputRef,
   snapshot,
@@ -66,6 +72,9 @@ export function ContextualRightPanel({
   onOpenThread,
   onOpenFiles,
   onOpenSpaceMembers,
+  onOpenPeople: _onOpenPeople,
+  onOpenProfile,
+  onBackToPeople,
   onRefreshFilesView,
   onPaginateThreadsList,
   onOpenKeyboardSettings,
@@ -76,7 +85,6 @@ export function ContextualRightPanel({
   onInviteUser = () => undefined,
   onModerateMember = () => undefined,
   onSetLocalUserAlias = () => undefined,
-  onRequestMemberAvatarThumbnail = undefined,
   onSetRoomNotificationMode = () => undefined,
   onStartDirectMessage = () => undefined,
   onUpdateMemberRole = () => undefined,
@@ -133,7 +141,9 @@ export function ContextualRightPanel({
   displayDensity?: DisplayDensity;
   isRecoveryBusy: boolean;
   mode: RightPanelMode;
+  peoplePanelScope?: PeoplePanelScope | null;
   roomInfoInitialSection?: "members" | null;
+  selectedProfileUserId?: string | null;
   recoverySecretFilled: boolean;
   recoverySecretInputRef: RefObject<HTMLInputElement | null>;
   snapshot: DesktopSnapshot;
@@ -146,6 +156,9 @@ export function ContextualRightPanel({
   onOpenThread: (roomId: string, rootEventId: string) => void;
   onOpenFiles: (scope: FilesViewScope) => void;
   onOpenSpaceMembers?: () => void;
+  onOpenPeople?: () => void;
+  onOpenProfile?: (userId: string) => void;
+  onBackToPeople?: () => void;
   onRefreshFilesView: (scope: AttachmentScope, filter: AttachmentFilter, sort: AttachmentSort) => void;
   onPaginateThreadsList: (roomId: string) => void;
   onOpenKeyboardSettings: () => void;
@@ -326,9 +339,6 @@ export function ContextualRightPanel({
       <aside className="thread-pane" aria-label={t("panel.context")}>
         <PanelHeader title={t("panel.roomInfo")} onClose={onClosePanel} />
         <RoomInfoPanel
-          currentUserId={snapshot.state.domain.session.user_id ?? null}
-          ignoredUserIds={snapshot.state.domain.profile.ignored_user_ids}
-          initialSection={roomInfoInitialSection}
           room={activeRoom}
           roomManagement={snapshot.state.domain.room_management}
           roomNotificationSettings={
@@ -346,26 +356,77 @@ export function ContextualRightPanel({
                   )
               : undefined
           }
-          onIgnoreUser={onIgnoreUser}
-          onUnignoreUser={onUnignoreUser}
-          onReportUser={onReportUser}
-          onModerateMember={onModerateMember}
-          onRequestMemberAvatarThumbnail={onRequestMemberAvatarThumbnail}
           onOpenFiles={
             activeRoom
               ? () => onOpenFiles({ kind: "room", room_id: activeRoom.room_id })
               : undefined
           }
-          onSetLocalUserAlias={onSetLocalUserAlias}
           onSetRoomNotificationMode={onSetRoomNotificationMode}
-          onStartDirectMessage={onStartDirectMessage}
-          onUpdateMemberRole={onUpdateMemberRole}
           onReshareRoomKey={onReshareRoomKey}
           onUpdateRoomSetting={onUpdateRoomSetting}
           onSetRoomUrlPreviewOverride={(roomId, enabled) => {
             void onSetRoomUrlPreviewOverride(roomId, enabled);
           }}
+          onOpenPeople={() => {
+            void _onOpenPeople?.();
+          }}
         />
+      </aside>
+    );
+  }
+
+  if (mode === "people" || mode === "profile") {
+    const roomOrSpace = roomOrSpaceForPeoplePanelScope(
+      peoplePanelScope,
+      activeRoom,
+      activeSpace,
+      snapshot.state.domain.rooms,
+      snapshot.state.domain.spaces
+    );
+    return (
+      <aside className="thread-pane" aria-label={t("panel.context")}>
+        {mode === "profile" && selectedProfileUserId ? (
+          <ProfilePanel
+            userId={selectedProfileUserId}
+            currentUserId={snapshot.state.domain.session.user_id ?? null}
+            ignoredUserIds={snapshot.state.domain.profile.ignored_user_ids}
+            roomOrSpace={roomOrSpace}
+            roomManagement={snapshot.state.domain.room_management}
+            profileUsers={snapshot.state.domain.profile.users}
+            onBack={onBackToPeople ?? onClosePanel}
+            onClose={onClosePanel}
+            onIgnoreUser={onIgnoreUser}
+            onModerateMember={onModerateMember}
+            onReportUser={onReportUser}
+            onStartDirectMessage={onStartDirectMessage}
+            onSetLocalUserAlias={onSetLocalUserAlias}
+            onUnignoreUser={onUnignoreUser}
+            onUpdateMemberRole={onUpdateMemberRole}
+          />
+        ) : (
+          <PeoplePanel
+            currentUserId={snapshot.state.domain.session.user_id ?? null}
+            roomOrSpace={roomOrSpace}
+            roomManagement={snapshot.state.domain.room_management}
+            onOpenProfile={onOpenProfile ?? (() => undefined)}
+            onClose={onClosePanel}
+            onInvitePeople={
+              roomOrSpace
+                ? () =>
+                    onInviteUser(
+                      "room_id" in roomOrSpace ? roomOrSpace.room_id : roomOrSpace.space_id,
+                      t("dialog.invitePeopleTitle", {
+                        name:
+                          "display_label" in roomOrSpace
+                            ? roomOrSpace.display_label
+                            : roomOrSpace.display_name
+                      })
+                    )
+                : undefined
+            }
+            onStartDirectMessage={onStartDirectMessage}
+          />
+        )}
       </aside>
     );
   }
@@ -405,7 +466,6 @@ export function ContextualRightPanel({
               ? (override) => onSetSpaceLocalOverride(activeSpace.space_id, override)
               : undefined
           }
-          onStartDirectMessage={onStartDirectMessage}
         />
       </aside>
     );

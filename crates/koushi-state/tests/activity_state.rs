@@ -24,6 +24,7 @@ fn row(room_id: &str, event_id: &str, timestamp_ms: u64) -> ActivityRow {
     ActivityRow::event(
         room_id.to_owned(),
         event_id.to_owned(),
+        Some("@sender:example.invalid".to_owned()),
         format!("Room {room_id}"),
         Some("@sender:example.invalid".to_owned()),
         Some(format!("body for {event_id}")),
@@ -314,9 +315,10 @@ fn activity_snapshot_filters_excluded_rooms_before_rendering() {
 
 #[test]
 fn activity_debug_output_redacts_private_values() {
-    let private_row = ActivityRow::event(
+    let mut private_row = ActivityRow::event(
         "!private-room:example.invalid".to_owned(),
         "$private-event:example.invalid".to_owned(),
+        Some("@private:sender".to_owned()),
         "Private Room".to_owned(),
         Some("Private Sender".to_owned()),
         Some("private message body".to_owned()),
@@ -324,6 +326,7 @@ fn activity_debug_output_redacts_private_values() {
         true,
         true,
     );
+    private_row.context_label = "Room · Private Space / Private Room".to_owned();
     let target = ActivityMarkReadTarget::Room {
         room_id: "!private-room:example.invalid".to_owned(),
         up_to_event_id: "$private-event:example.invalid".to_owned(),
@@ -373,6 +376,8 @@ fn activity_debug_output_redacts_private_values() {
             "$private-event:example.invalid",
             "Private Room",
             "Private Sender",
+            "Private Space",
+            "Room · Private Space / Private Room",
             "private message body",
             "private-page-token",
             "private-recent-token",

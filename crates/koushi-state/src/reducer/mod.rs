@@ -54,7 +54,7 @@ pub(crate) fn recompute_room_list_projection(state: &mut AppState) {
         visible_invites_for_ignored_users(&state.invites, &state.profile.ignored_user_ids);
     state.room_list = compute_room_list_projection(
         state.room_list.active_filter,
-        state.room_list.sort,
+        state.settings.values.room_list_sort,
         state.navigation.active_space_id.as_deref(),
         &state.spaces,
         &state.rooms,

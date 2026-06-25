@@ -42,12 +42,7 @@ pub enum RoomListFilter {
     Invites,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum RoomListSort {
-    #[default]
-    Activity,
-}
+pub use crate::state::settings::RoomListSort;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RoomListProjection {
@@ -134,24 +129,66 @@ pub fn compute_room_list_projection(
             .collect(),
     };
 
-    if sort == RoomListSort::Activity {
-        let activity_by_id: std::collections::HashMap<&str, u64> = rooms
-            .iter()
-            .map(|room| (room.room_id.as_str(), room.last_activity_ms))
-            .collect();
-        items.sort_by(|left, right| {
-            let left_ts = activity_by_id
-                .get(left.room_id.as_str())
-                .copied()
-                .unwrap_or_default();
-            let right_ts = activity_by_id
-                .get(right.room_id.as_str())
-                .copied()
-                .unwrap_or_default();
-            right_ts
-                .cmp(&left_ts)
-                .then_with(|| left.room_id.cmp(&right.room_id))
-        });
+    match sort {
+        RoomListSort::Activity => {
+            let activity_by_id: std::collections::HashMap<&str, u64> = rooms
+                .iter()
+                .map(|room| (room.room_id.as_str(), room.last_activity_ms))
+                .collect();
+            items.sort_by(|left, right| {
+                let left_ts = activity_by_id
+                    .get(left.room_id.as_str())
+                    .copied()
+                    .unwrap_or_default();
+                let right_ts = activity_by_id
+                    .get(right.room_id.as_str())
+                    .copied()
+                    .unwrap_or_default();
+                right_ts
+                    .cmp(&left_ts)
+                    .then_with(|| left.room_id.cmp(&right.room_id))
+            });
+        }
+        RoomListSort::RecentFirst => {
+            let activity_by_id: std::collections::HashMap<&str, u64> = rooms
+                .iter()
+                .map(|room| (room.room_id.as_str(), room.last_activity_ms))
+                .collect();
+            items.sort_by(|left, right| {
+                let left_ts = activity_by_id
+                    .get(left.room_id.as_str())
+                    .copied()
+                    .unwrap_or_default();
+                let right_ts = activity_by_id
+                    .get(right.room_id.as_str())
+                    .copied()
+                    .unwrap_or_default();
+                right_ts
+                    .cmp(&left_ts)
+                    .then_with(|| left.room_id.cmp(&right.room_id))
+            });
+        }
+        RoomListSort::NormalLocale => {
+            let label_by_id: std::collections::HashMap<&str, &str> = rooms
+                .iter()
+                .map(|room| (room.room_id.as_str(), room.display_label.as_str()))
+                .collect();
+            items.sort_by(|left, right| {
+                let left_label = label_by_id
+                    .get(left.room_id.as_str())
+                    .copied()
+                    .unwrap_or(left.room_id.as_str())
+                    .to_lowercase();
+                let right_label = label_by_id
+                    .get(right.room_id.as_str())
+                    .copied()
+                    .unwrap_or(right.room_id.as_str())
+                    .to_lowercase();
+                left_label
+                    .cmp(&right_label)
+                    .then_with(|| left.room_id.cmp(&right.room_id))
+            });
+        }
     }
 
     RoomListProjection {

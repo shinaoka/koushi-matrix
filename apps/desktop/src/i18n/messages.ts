@@ -231,6 +231,16 @@ export type MessageId =
   | "panel.spaceInfo"
   | "panel.thread"
   | "panel.userSettings"
+  | "panel.people"
+  | "panel.profile"
+  | "people.memberCount"
+  | "people.memberActions"
+  | "people.openProfile"
+  | "people.searchMembers"
+  | "people.noSearchResults"
+  | "people.you"
+  | "people.sendMessage"
+  | "people.setAlias"
   | "room.members"
   | "room.ban"
   | "room.banMember"
@@ -660,6 +670,8 @@ export type MessageId =
   | "timeline.closeJumpToDate"
   | "timeline.openDateInTimeline"
   | "timeline.olderMessages"
+  | "timeline.latest"
+  | "timeline.navigation"
   | "timeline.saveEdit"
   | "timeline.cancelEdit"
   | "timeline.redactMessage"
@@ -1125,6 +1137,16 @@ const en: Catalog = {
   "panel.spaceInfo": "Space info",
   "panel.thread": "Thread",
   "panel.userSettings": "User settings",
+  "panel.people": "People",
+  "panel.profile": "Profile",
+  "people.memberCount": "{count} members",
+  "people.memberActions": "Member actions",
+  "people.openProfile": "Open profile for {name}",
+  "people.searchMembers": "Search room members",
+  "people.noSearchResults": "No members match your search.",
+  "people.you": "You",
+  "people.sendMessage": "Send message",
+  "people.setAlias": "Set alias",
   "room.avatarUrl": "Room avatar URL",
   "room.ban": "Ban",
   "room.banMember": "Ban {name}",
@@ -1566,6 +1588,8 @@ const en: Catalog = {
   "timeline.closeJumpToDate": "Close jump to date",
   "timeline.openDateInTimeline": "Open date in timeline",
   "timeline.olderMessages": "Older messages",
+  "timeline.latest": "Latest",
+  "timeline.navigation": "Timeline navigation",
   "timeline.saveEdit": "Save edit",
   "timeline.cancelEdit": "Cancel edit",
   "timeline.redactMessage": "Redact message",
@@ -1921,6 +1945,16 @@ const ja: Catalog = {
   "panel.spaceInfo": "スペース情報",
   "panel.thread": "スレッド",
   "panel.userSettings": "ユーザー設定",
+  "panel.people": "メンバー",
+  "panel.profile": "プロフィール",
+  "people.memberCount": "メンバー {count}人",
+  "people.memberActions": "メンバー操作",
+  "people.openProfile": "{name}のプロフィールを開く",
+  "people.searchMembers": "メンバーを検索",
+  "people.noSearchResults": "該当するメンバーが見つかりません。",
+  "people.you": "あなた",
+  "people.sendMessage": "メッセージを送信",
+  "people.setAlias": "エイリアスを設定",
   "room.avatarUrl": "ルームアバターURL",
   "room.ban": "BAN",
   "room.banMember": "{name}をBAN",
@@ -2362,6 +2396,8 @@ const ja: Catalog = {
   "timeline.closeJumpToDate": "日時移動を閉じる",
   "timeline.openDateInTimeline": "タイムラインで開く",
   "timeline.olderMessages": "古いメッセージ",
+  "timeline.latest": "最新",
+  "timeline.navigation": "タイムライン操作",
   "timeline.saveEdit": "編集を保存",
   "timeline.cancelEdit": "編集をキャンセル",
   "timeline.redactMessage": "メッセージを削除",

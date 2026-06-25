@@ -1336,12 +1336,11 @@ button:disabled {
 }
 
 .activity-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 34px;
-  align-items: center;
-  gap: 8px;
-  min-height: 72px;
-  padding: 8px 20px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 64px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -1351,7 +1350,7 @@ button:disabled {
 
 .activity-row.is-highlight {
   border-inline-start: 3px solid var(--mention);
-  padding-inline-start: 17px;
+  padding-inline-start: 13px;
 }
 
 .activity-row:hover,
@@ -1360,48 +1359,55 @@ button:disabled {
 }
 
 .activity-row-open {
-  display: grid;
-  gap: 4px;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 12px;
   min-width: 0;
   color: var(--text);
   text-align: start;
   background: transparent;
 }
 
-.activity-row-topline,
-.activity-row-meta {
+.activity-row-avatar {
+  flex: 0 0 auto;
+  inline-size: 40px;
+  block-size: 40px;
+  font-size: 14px;
+}
+
+.activity-row-body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.activity-row-topline {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
 }
 
-.activity-row-topline strong,
-.activity-row-meta span:first-child {
+.activity-row-topline strong {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 600;
 }
 
 .activity-row-topline time {
   flex: 0 0 auto;
+  margin-inline-start: auto;
   color: var(--text-faint);
   font-size: 12px;
 }
 
-.activity-row-meta {
-  flex-wrap: wrap;
+.activity-row-context {
+  overflow: hidden;
   color: var(--text-muted);
   font-size: 12px;
-}
-
-.activity-row-meta span:not(:first-child) {
-  min-height: 19px;
-  padding: 1px 6px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--text-muted);
-  background: var(--surface);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .activity-row-preview {
@@ -1411,6 +1417,17 @@ button:disabled {
   line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.activity-row-badges {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .activity-row-action {
@@ -1483,6 +1500,39 @@ button:disabled {
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   backdrop-filter: blur(8px);
+}
+
+.timeline-top-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-block-size: var(--timeline-navigation-control-block-size);
+  padding: var(--timeline-navigation-padding-block) var(--timeline-navigation-padding-inline);
+  border-bottom: 1px solid var(--line);
+}
+
+.timeline-top-controls .timeline-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 32px;
+  block-size: 32px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--text-muted);
+  background: var(--surface);
+}
+
+.timeline-top-controls .timeline-control:hover:not(:disabled),
+.timeline-top-controls .timeline-control:focus-visible {
+  color: var(--brand-contrast);
+  border-color: var(--brand);
+  background: var(--brand);
+}
+
+.timeline-top-controls .timeline-control:disabled {
+  opacity: 0.5;
 }
 
 .timeline-navigation-pills {
@@ -2135,7 +2185,9 @@ button:disabled {
   place-items: center;
   width: 24px;
   height: 24px;
+  border: none;
   border-radius: 6px;
+  appearance: none;
   color: var(--text-muted);
   background: transparent;
 }
@@ -2188,10 +2240,18 @@ button:disabled {
   align-items: center;
   min-height: 30px;
   padding: 5px 8px;
+  border: none;
   border-radius: 6px;
+  appearance: none;
   color: var(--text);
   text-align: start;
   white-space: nowrap;
+  background: transparent;
+}
+
+.message-action-menu-item > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .message-action-menu-item:hover,
@@ -2949,11 +3009,16 @@ button:disabled {
   background: var(--line);
 }
 
+.message-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-block-size: var(--receipt-row-min-block-size);
+  margin-block-start: var(--receipt-row-margin-block-start);
+}
+
 .message-receipts {
   position: relative;
-  /* display:flex (block-level) so margin-inline-start:auto right-aligns the row
-     within the block parent (.message-main). inline-flex is inline-level and
-     auto margins have no pushing effect in a block formatting context. */
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -2961,7 +3026,6 @@ button:disabled {
   inline-size: fit-content;
   max-inline-size: 100%;
   min-block-size: var(--receipt-row-min-block-size);
-  margin-block-start: var(--receipt-row-margin-block-start);
   margin-inline-start: auto;
   color: var(--text-muted);
   font-size: var(--receipt-row-font-size);
@@ -3063,10 +3127,11 @@ button:disabled {
 }
 
 .message-reactions {
+  flex: 1 1 auto;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 8px;
+  min-inline-size: 0;
 }
 
 .reaction-pill {
@@ -4060,6 +4125,13 @@ mark {
   padding: 14px 0 10px;
 }
 
+.thread-timeline-panel {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+  padding: 0;
+}
+
 .thread-root {
   margin: 0 18px 12px;
   padding: 0 0 14px;
@@ -4139,6 +4211,261 @@ mark {
   color: var(--text-muted);
   font-size: 13px;
   line-height: 1.4;
+}
+
+.people-panel {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 12px;
+  min-height: 0;
+  padding: 18px;
+  overflow: hidden;
+}
+
+.profile-panel {
+  grid-template-rows: auto;
+  overflow: auto;
+}
+
+.people-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.people-panel-header h2 {
+  margin: 0;
+  font-size: 19px;
+  line-height: 1.2;
+}
+
+.people-panel-count {
+  margin-inline-start: auto;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.people-panel-close {
+  margin-inline-start: auto;
+}
+
+.people-panel-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.people-panel-primary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--text);
+  background: var(--surface);
+  font-weight: 600;
+}
+
+.people-search input {
+  inline-size: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.people-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.people-list-viewport {
+  min-height: 0;
+  overflow: auto;
+}
+
+.people-list-virtual {
+  min-height: 100%;
+}
+
+.people-list-spacer {
+  pointer-events: none;
+}
+
+.people-list-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.people-list-main {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--r-md);
+  text-align: start;
+  color: var(--text);
+  background: transparent;
+}
+
+.people-list-main:hover,
+.people-list-main:focus-visible {
+  background: var(--surface-hover);
+}
+
+.people-list-avatar {
+  flex: 0 0 auto;
+  inline-size: 36px;
+  block-size: 36px;
+  font-size: 13px;
+}
+
+.people-list-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.people-list-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.people-list-you {
+  margin-inline-start: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.people-list-meta {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.people-list-action {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.people-empty {
+  color: var(--text-muted);
+  text-align: center;
+  font-size: 14px;
+}
+
+.profile-panel .people-panel-header {
+  justify-content: flex-start;
+}
+
+.people-back-button {
+  color: var(--text-muted);
+}
+
+.profile-identity {
+  display: grid;
+  place-items: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.profile-identity h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.profile-identity p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.profile-large-avatar {
+  inline-size: 80px;
+  block-size: 80px;
+  font-size: 28px;
+}
+
+.profile-actions {
+  display: flex;
+  justify-content: center;
+}
+
+.profile-primary-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--text);
+  background: var(--surface);
+  font-weight: 600;
+}
+
+.profile-room-details {
+  display: grid;
+  gap: 8px;
+}
+
+.profile-detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.profile-text-button {
+  color: var(--brand);
+  background: transparent;
+  font-weight: 600;
+}
+
+.profile-member-actions {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.profile-member-actions .profile-text-button {
+  min-inline-size: 0;
+  text-align: start;
+}
+
+.profile-alias-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.profile-alias-form input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--text);
 }
 
 .settings-summary-grid {
@@ -5870,13 +6197,19 @@ kbd {
 }
 
 .link-preview-card {
-  display: flex;
-  gap: 0.75rem;
+  display: block;
+  position: relative;
+  max-width: 32rem;
   border: 1px solid var(--line, var(--color-border, #e3e8f0));
   border-radius: 0.5rem;
+}
+
+.link-preview-main {
+  display: flex;
+  gap: 0.75rem;
   padding: 0.75rem;
-  max-width: 32rem;
-  position: relative;
+  color: inherit;
+  text-decoration: none;
 }
 
 .link-preview-image {

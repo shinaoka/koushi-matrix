@@ -5,13 +5,23 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AvatarImage {
     pub mxc_uri: String,
     pub thumbnail: AvatarThumbnailState,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+impl fmt::Debug for AvatarImage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AvatarImage")
+            .field("has_mxc_uri", &!self.mxc_uri.is_empty())
+            .field("thumbnail", &self.thumbnail)
+            .finish()
+    }
+}
+
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum AvatarThumbnailState {
     #[default]
@@ -30,6 +40,35 @@ pub enum AvatarThumbnailState {
         #[serde(rename = "failureKind")]
         kind: AvatarThumbnailFailureKind,
     },
+}
+
+impl fmt::Debug for AvatarThumbnailState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotRequested => formatter.debug_struct("NotRequested").finish(),
+            Self::Loading { request_id } => formatter
+                .debug_struct("Loading")
+                .field("request_id", request_id)
+                .finish(),
+            Self::Ready {
+                width,
+                height,
+                mime_type,
+                ..
+            } => formatter
+                .debug_struct("Ready")
+                .field("has_source_url", &true)
+                .field("width", width)
+                .field("height", height)
+                .field("mime_type", mime_type)
+                .finish(),
+            Self::Failed { request_id, kind } => formatter
+                .debug_struct("Failed")
+                .field("request_id", request_id)
+                .field("kind", kind)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

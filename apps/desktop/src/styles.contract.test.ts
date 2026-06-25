@@ -261,7 +261,6 @@ describe("styles.css token system", () => {
     expectBlockUses(receiptBlock, [
       "--receipt-row-gap",
       "--receipt-row-min-block-size",
-      "--receipt-row-margin-block-start",
       "--receipt-row-font-size"
     ]);
     expect(receiptBlock).toContain("max-inline-size: 100%");

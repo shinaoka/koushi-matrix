@@ -59,7 +59,8 @@ pub use settings::{
     LinkPreviewSettingsState, LocaleSettings, MediaSettings, NotificationSettings,
     RoomNotificationMode, RoomNotificationModeOperation, RoomNotificationSettings, RoomUrlPreviews,
     SettingsPatch, SettingsPersistenceState, SettingsState, SettingsValues,
-    TextDirectionPreference, ThemePreference, TimelineSettings, TypographySettings,
+    TextDirectionPreference, ThemePreference, ThreadListOrder, TimelineSettings,
+    TypographySettings,
 };
 
 // ── Re-exports: profile ─────────────────────────────────────────────────────
@@ -144,7 +145,10 @@ pub use timeline::{
 };
 
 // ── Re-exports: thread ──────────────────────────────────────────────────────
-pub use thread::{ThreadAttentionState, ThreadPaneState, ThreadsListItem, ThreadsListState};
+pub use thread::{
+    ThreadAttentionState, ThreadPaneState, ThreadsListItem, ThreadsListState,
+    sort_threads_list_items,
+};
 
 // ── Re-exports: search ──────────────────────────────────────────────────────
 pub use search::{

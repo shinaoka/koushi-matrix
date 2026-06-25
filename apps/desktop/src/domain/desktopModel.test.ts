@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { createBrowserFakeApi } from "../backend/browserFakeApi";
+import { computeBrowserRoomListProjection } from "../backend/roomListProjection";
 import { composeSidebar, projectRoomSummaries, roomListSections, visibleRooms } from "./desktopModel";
 import type { DesktopSnapshot, RoomSummary, RoomTags, SpaceSummary } from "./types";
 
@@ -294,6 +295,169 @@ describe("desktop model", () => {
     ]);
     expect(sections.rooms.map((room) => room.room_id)).toEqual([
       "!plain:example.invalid"
+    ]);
+  });
+
+  test("room list projection sorts by activity with id fallback", () => {
+    const rooms: RoomSummary[] = [
+      roomSummaryWithActivity("!b:example.invalid", "Beta", false, 200),
+      roomSummaryWithActivity("!a:example.invalid", "Alpha", false, 100)
+    ];
+
+    const projection = computeBrowserRoomListProjection(
+      { kind: "rooms" },
+      { kind: "activity" },
+      null,
+      [],
+      rooms,
+      []
+    );
+
+    expect(projection.items?.map((item) => item.room_id)).toEqual([
+      "!b:example.invalid",
+      "!a:example.invalid"
+    ]);
+  });
+
+  test("room list projection sorts recentFirst by activity", () => {
+    const rooms: RoomSummary[] = [
+      roomSummaryWithActivity("!b:example.invalid", "Beta", false, 100),
+      roomSummaryWithActivity("!a:example.invalid", "Alpha", false, 300),
+      roomSummaryWithActivity("!c:example.invalid", "Charlie", false, 200)
+    ];
+
+    const projection = computeBrowserRoomListProjection(
+      { kind: "rooms" },
+      { kind: "recentFirst" },
+      null,
+      [],
+      rooms,
+      []
+    );
+
+    expect(projection.items?.map((item) => item.room_id)).toEqual([
+      "!a:example.invalid",
+      "!c:example.invalid",
+      "!b:example.invalid"
+    ]);
+  });
+
+  test("room list projection sorts alphabetically in normalLocale order", () => {
+    const rooms: RoomSummary[] = [
+      roomSummary("!b:example.invalid", "Beta", false),
+      roomSummary("!a:example.invalid", "alpha", false),
+      roomSummary("!c:example.invalid", "Charlie", false)
+    ];
+
+    const projection = computeBrowserRoomListProjection(
+      { kind: "rooms" },
+      { kind: "normalLocale" },
+      null,
+      [],
+      rooms,
+      []
+    );
+
+    expect(projection.items?.map((item) => item.room_id)).toEqual([
+      "!a:example.invalid",
+      "!b:example.invalid",
+      "!c:example.invalid"
+    ]);
+  });
+
+  test("active space people projection includes only DMs tagged to that space", () => {
+    const spaces: SpaceSummary[] = [
+      {
+        space_id: "!space-a:example.invalid",
+        display_name: "Alpha",
+        avatar: null,
+        child_room_ids: []
+      }
+    ];
+    const rooms: RoomSummary[] = [
+      roomSummaryWithDmSpaces("!dm-in-space:example.invalid", "In-space DM", [
+        "!space-a:example.invalid"
+      ]),
+      roomSummaryWithDmSpaces("!dm-no-space:example.invalid", "No-space DM", [])
+    ];
+
+    const homePeople = computeBrowserRoomListProjection(
+      { kind: "people" },
+      { kind: "activity" },
+      null,
+      spaces,
+      rooms,
+      []
+    );
+    expect(homePeople.items?.map((item) => item.room_id)).toEqual([
+      "!dm-in-space:example.invalid",
+      "!dm-no-space:example.invalid"
+    ]);
+
+    const spacePeople = computeBrowserRoomListProjection(
+      { kind: "people" },
+      { kind: "activity" },
+      "!space-a:example.invalid",
+      spaces,
+      rooms,
+      []
+    );
+    expect(spacePeople.items?.map((item) => item.room_id)).toEqual([
+      "!dm-in-space:example.invalid"
+    ]);
+  });
+
+  test("room list projection keeps DMs in the people filter only", () => {
+    const rooms: RoomSummary[] = [
+      roomSummary("!room:example.invalid", "Room", false),
+      roomSummary("!dm:example.invalid", "Direct", true)
+    ];
+
+    const roomsFilter = computeBrowserRoomListProjection(
+      { kind: "rooms" },
+      { kind: "activity" },
+      null,
+      [],
+      rooms,
+      []
+    );
+    const peopleFilter = computeBrowserRoomListProjection(
+      { kind: "people" },
+      { kind: "activity" },
+      null,
+      [],
+      rooms,
+      []
+    );
+
+    expect(roomsFilter.items?.map((item) => item.room_id)).toEqual([
+      "!room:example.invalid"
+    ]);
+    expect(peopleFilter.items?.map((item) => item.room_id)).toEqual(["!dm:example.invalid"]);
+  });
+
+  test("browser fake updateSettings reprojects room-list sort", async () => {
+    const api = createBrowserFakeApi();
+    await api.selectSpace(null);
+
+    const localeSorted = await api.updateSettings({
+      room_list_sort: { kind: "normalLocale" }
+    });
+    expect(localeSorted.state.ui.room_list.sort).toEqual({ kind: "normalLocale" });
+    expect(localeSorted.state.ui.room_list.items?.map((item) => item.room_id)).toEqual([
+      "!room-search:example.invalid",
+      "!room-planning:example.invalid",
+      "!room-alpha:example.invalid"
+    ]);
+
+    const activitySorted = await api.updateSettings({
+      room_list_sort: { kind: "activity" }
+    });
+    expect(activitySorted.state.ui.room_list.sort).toEqual({ kind: "activity" });
+    expect(activitySorted.state.ui.room_list.items?.map((item) => item.room_id)).toEqual([
+      "!room-alpha:example.invalid",
+      "!room-planning:example.invalid",
+      "!room-search:example.invalid"
     ]);
   });
 
@@ -687,7 +851,8 @@ function roomSummary(
   displayName: string,
   isDm: boolean,
   tags: RoomTags = { favourite: null, low_priority: null },
-  parentSpaceIds: string[] = []
+  parentSpaceIds: string[] = [],
+  lastActivityMs?: number
 ): RoomSummary {
   return {
     room_id: roomId,
@@ -701,8 +866,18 @@ function roomSummary(
     parent_space_ids: parentSpaceIds,
     dm_space_ids: [],
     is_encrypted: false,
-    unread_count: 0
+    unread_count: 0,
+    last_activity_ms: lastActivityMs
   };
+}
+
+function roomSummaryWithActivity(
+  roomId: string,
+  displayName: string,
+  isDm: boolean,
+  lastActivityMs: number
+): RoomSummary {
+  return roomSummary(roomId, displayName, isDm, undefined, undefined, lastActivityMs);
 }
 
 function roomSummaryWithDmSpaces(

@@ -3,6 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use super::errors::OperationFailureKind;
+use super::profile::AvatarImage;
 
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -91,24 +92,31 @@ pub enum ActivityRowKind {
     RoomUnread,
 }
 
-#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ActivityRow {
     #[serde(default)]
     pub kind: ActivityRowKind,
     pub room_id: String,
     pub event_id: Option<String>,
+    #[serde(default)]
+    pub sender_id: Option<String>,
     pub room_label: String,
     pub sender_label: Option<String>,
+    #[serde(default)]
+    pub sender_avatar: Option<AvatarImage>,
     pub preview: Option<String>,
     pub timestamp_ms: u64,
     pub unread: bool,
     pub highlight: bool,
+    #[serde(default)]
+    pub context_label: String,
 }
 
 impl ActivityRow {
     pub fn event(
         room_id: String,
         event_id: String,
+        sender_id: Option<String>,
         room_label: String,
         sender_label: Option<String>,
         preview: Option<String>,
@@ -120,12 +128,15 @@ impl ActivityRow {
             kind: ActivityRowKind::Event,
             room_id,
             event_id: Some(event_id),
+            sender_id,
             room_label,
             sender_label,
+            sender_avatar: None,
             preview,
             timestamp_ms,
             unread,
             highlight,
+            context_label: String::new(),
         }
     }
 
@@ -139,12 +150,15 @@ impl ActivityRow {
             kind: ActivityRowKind::RoomUnread,
             room_id,
             event_id: None,
+            sender_id: None,
             room_label,
             sender_label: None,
+            sender_avatar: None,
             preview: None,
             timestamp_ms,
             unread: true,
             highlight,
+            context_label: String::new(),
         }
     }
 }
@@ -156,15 +170,24 @@ impl fmt::Debug for ActivityRow {
             .field("kind", &self.kind)
             .field("room_id", &"RoomId(..)")
             .field("event_id", &self.event_id.as_ref().map(|_| "EventId(..)"))
+            .field("sender_id", &self.sender_id.as_ref().map(|_| "UserId(..)"))
             .field("room_label", &"RoomLabel(..)")
             .field(
                 "sender_label",
                 &self.sender_label.as_ref().map(|_| "SenderLabel(..)"),
             )
+            .field(
+                "sender_avatar",
+                &self.sender_avatar.as_ref().map(|_| "AvatarImage(..)"),
+            )
             .field("preview", &self.preview.as_ref().map(|_| "Preview(..)"))
             .field("timestamp_ms", &self.timestamp_ms)
             .field("unread", &self.unread)
             .field("highlight", &self.highlight)
+            .field(
+                "context_label",
+                &(!self.context_label.is_empty()).then_some("ContextLabel(..)"),
+            )
             .finish()
     }
 }

@@ -65,12 +65,15 @@
           "next_batch": null,
           "rows": [
             {
+              "context_label": "",
               "event_id": "$act:example.invalid",
               "highlight": false,
               "kind": "event",
               "preview": "Activity preview",
               "room_id": "!room:example.invalid",
               "room_label": "Fixture Room",
+              "sender_avatar": null,
+              "sender_id": null,
               "sender_label": "Fixture User",
               "timestamp_ms": 500000,
               "unread": false
@@ -81,12 +84,15 @@
           "next_batch": null,
           "rows": [
             {
+              "context_label": "",
               "event_id": null,
               "highlight": true,
               "kind": "roomUnread",
               "preview": null,
               "room_id": "!placeholder:example.invalid",
               "room_label": "Placeholder Room",
+              "sender_avatar": null,
+              "sender_id": null,
               "sender_label": null,
               "timestamp_ms": 499000,
               "unread": true
@@ -461,10 +467,16 @@
             "send_typing_notifications": true,
             "sound": true
           },
+          "room_list_sort": {
+            "kind": "activity"
+          },
           "search_crawler": {
             "include_filenames": true,
             "include_media_captions": true,
             "speed": "standard"
+          },
+          "thread_list_order": {
+            "kind": "latestReply"
           },
           "timeline": {
             "auto_load_older_messages": true

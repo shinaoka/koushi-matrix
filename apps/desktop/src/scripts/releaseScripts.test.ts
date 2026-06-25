@@ -1898,4 +1898,28 @@ describe("desktop release scripts", () => {
       expect(source).not.toContain('"tee"');
     }
   });
+
+  test("app icon family is consistent and the SVG avoids an unintended white rounded frame", () => {
+    const tauriDir = new URL("../../../../apps/desktop/src-tauri/", import.meta.url);
+    const conf = JSON.parse(
+      readFileSync(new URL("tauri.conf.json", tauriDir), "utf8")
+    ) as {
+      bundle: { icon: string[] };
+    };
+
+    for (const iconPath of conf.bundle.icon) {
+      expect(existsSync(new URL(iconPath, tauriDir))).toBe(true);
+    }
+
+    const svgPath = new URL("icons/icon.svg", tauriDir);
+    expect(existsSync(svgPath)).toBe(true);
+    const svg = readFileSync(svgPath, "utf8");
+
+    // The icon must not use a plain white rounded rectangle as its outer frame.
+    const whiteFramePattern = /<rect[^>]*\sfill="(#FFFFFF|white|#fff)"[^>]*\brx="/i;
+    expect(whiteFramePattern.test(svg)).toBe(false);
+
+    // The icon set referenced by Tauri must include the source SVG.
+    expect(conf.bundle.icon).toContain("icons/icon.svg");
+  });
 });

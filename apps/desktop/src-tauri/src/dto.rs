@@ -1548,6 +1548,7 @@ mod tests {
                     timestamp_ms: 500_000,
                     unread: false,
                     highlight: false,
+                    ..Default::default()
                 }],
                 next_batch: None,
             },

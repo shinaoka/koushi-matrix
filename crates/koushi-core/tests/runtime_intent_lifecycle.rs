@@ -30,12 +30,7 @@ async fn recv_intent_lifecycle_for(
 ) -> Option<koushi_core::event::IntentOutcome> {
     for _ in 0..attempts {
         // Poll for a pending event with a short timeout.
-        match tokio::time::timeout(
-            Duration::from_millis(5),
-            conn.recv_event(),
-        )
-        .await
-        {
+        match tokio::time::timeout(Duration::from_millis(5), conn.recv_event()).await {
             Ok(Ok(CoreEvent::IntentLifecycle {
                 request_id: rid,
                 outcome,
@@ -181,8 +176,7 @@ async fn select_room_present_emits_committed() {
 
     // Wait for Ready and an auto-selected room (so room_b is NOT already active).
     wait_for_state(&mut conn, |state| {
-        matches!(state.session, SessionState::Ready(_))
-            && state.navigation.active_room_id.is_some()
+        matches!(state.session, SessionState::Ready(_)) && state.navigation.active_room_id.is_some()
     })
     .await;
 
@@ -417,7 +411,10 @@ async fn two_concurrent_select_room_for_same_room_both_receive_terminal_outcome(
     let mut outcomes: HashMap<koushi_core::ids::RequestId, IntentOutcome> = HashMap::new();
     for _ in 0..400 {
         match tokio::time::timeout(Duration::from_millis(5), conn.recv_event()).await {
-            Ok(Ok(CoreEvent::IntentLifecycle { request_id, outcome })) => {
+            Ok(Ok(CoreEvent::IntentLifecycle {
+                request_id,
+                outcome,
+            })) => {
                 outcomes.insert(request_id, outcome);
                 if outcomes.contains_key(&request_id_a) && outcomes.contains_key(&request_id_b) {
                     break;

@@ -64,14 +64,10 @@ describe("BrowserFakeApi settings preview", () => {
     ]);
 
     const people = await api.selectRoomListFilter({ kind: "people" });
-    expect(people.state.ui.room_list.items).toEqual([
-      { room_id: "!dm-member-1:example.invalid", kind: "room" },
-      { room_id: "!dm-member-2:example.invalid", kind: "room" }
-    ]);
+    expect(people.state.ui.room_list.items).toEqual([]);
 
     const unread = await api.selectRoomListFilter({ kind: "unread" });
     expect(unread.state.ui.room_list.items?.map((item) => item.room_id)).toEqual([
-      "!dm-member-1:example.invalid",
       "!room-alpha:example.invalid",
       "!room-planning:example.invalid"
     ]);
@@ -90,6 +86,17 @@ describe("BrowserFakeApi settings preview", () => {
     const invites = await api.selectRoomListFilter({ kind: "invites" });
     expect(invites.state.ui.room_list.items).toEqual([
       { room_id: "!invite-design-review:example.invalid", kind: "invite" }
+    ]);
+  });
+
+  test("people filter at account home includes all DMs", async () => {
+    const api = createBrowserFakeApi();
+    await api.selectSpace(null);
+
+    const people = await api.selectRoomListFilter({ kind: "people" });
+    expect(people.state.ui.room_list.items).toEqual([
+      { room_id: "!dm-member-1:example.invalid", kind: "room" },
+      { room_id: "!dm-member-2:example.invalid", kind: "room" }
     ]);
   });
 
@@ -744,6 +751,16 @@ describe("BrowserFakeApi settings preview", () => {
       "$late-original",
       "$false-positive"
     ]);
+    expect(opened.state.domain.activity.recent.rows.slice(0, 3).map((row) => row.context_label)).toEqual([
+      "Room · Synthetic Lab / matrix-sdk-search",
+      "Room · Synthetic Workspace / planning-room",
+      "Room · Synthetic Workspace / synthetic-room"
+    ]);
+    expect(
+      opened.state.domain.activity.recent.rows.filter((row) => row.kind === "event").every((row) =>
+        Boolean(row.context_label)
+      )
+    ).toBe(true);
     expect(opened.state.domain.activity.recent.rows.every((row) => row.kind === "event")).toBe(
       true
     );

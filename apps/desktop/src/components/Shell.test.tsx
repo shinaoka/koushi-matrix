@@ -125,6 +125,44 @@ describe("Sidebar", () => {
     expect(screen.getByRole("region", { name: "Direct Messages" })).toBeTruthy();
   });
 
+  it("renders rooms in Rust-projected sort order after settings update", async () => {
+    const api = createBrowserFakeApi();
+    let snapshot = await api.selectSpace("!space-alpha:example.invalid");
+
+    const renderSidebar = () =>
+      render(
+        <Sidebar
+          activeRoomId={snapshot.state.ui.navigation.active_room_id}
+          activeView="timeline"
+          snapshot={snapshot}
+          onCreateRoom={() => undefined}
+          onNewDm={() => undefined}
+          onOpenContextMenu={() => undefined}
+          onOpenActivity={() => undefined}
+          onOpenExplore={() => undefined}
+          onOpenHome={() => undefined}
+          onOpenInvites={() => undefined}
+          onOpenSpaceInfo={() => undefined}
+          onOpenThreads={() => undefined}
+          onSelectRoom={() => undefined}
+        />
+      );
+
+    renderSidebar();
+    const activityOrder = Array.from(
+      document.querySelectorAll('[data-room-section="rooms"] [data-testid="room-item"]')
+    ).map((button) => button.getAttribute("aria-label"));
+    expect(activityOrder).toEqual(["synthetic-room", "planning-room"]);
+
+    cleanup();
+    snapshot = await api.updateSettings({ room_list_sort: { kind: "normalLocale" } });
+    renderSidebar();
+    const localeOrder = Array.from(
+      document.querySelectorAll('[data-room-section="rooms"] [data-testid="room-item"]')
+    ).map((button) => button.getAttribute("aria-label"));
+    expect(localeOrder).toEqual(["planning-room", "synthetic-room"]);
+  });
+
   it("keeps Rooms and Direct Messages separate inside a normal space", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.selectSpace("!space-alpha:example.invalid");

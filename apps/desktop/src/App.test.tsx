@@ -1155,9 +1155,9 @@ describe("ContextualRightPanel", () => {
     const source = readFileSync(new URL("./components/panes.tsx", import.meta.url), "utf8");
     const roomPaneStart = source.indexOf("export function TimelinePane");
     const roomPane = source.slice(roomPaneStart);
-    const tabsActionsIndex = roomPane.indexOf('className="tabs-actions"');
-    const loadMoreIndex = roomPane.indexOf('className="timeline-load-more"');
-    const timelineScrollIndex = roomPane.indexOf('className="timeline-scroll"');
+    const tabsActionsIndex = roomPane.indexOf('className="timeline-top-controls"');
+    const loadMoreIndex = roomPane.indexOf('className="icon-button timeline-control"');
+    const timelineScrollIndex = roomPane.indexOf("<TimelineView");
 
     expect(roomPane).toContain("timelineTransport.paginateBackwards");
     expect(roomPane).toContain("roomTimelineKey(currentUserId, timelineRoomId)");
@@ -1283,18 +1283,30 @@ describe("Tauri state refresh wiring", () => {
     expect(styles).toContain(".app-grid.right-panel-open .thread-pane");
   });
 
-  test("room header right-panel toggle follows panel visibility, not thread state", () => {
+  test("room header has one info/overflow action that toggles room info, not thread state", () => {
     const source = readFileSync(new URL("./components/panes.tsx", import.meta.url), "utf8");
     const paneStart = source.indexOf("export function TimelinePane");
     const paneEnd = source.indexOf("function TimelineComposer", paneStart);
     const paneSource = source.slice(paneStart, paneEnd);
-    const toggleStart = paneSource.indexOf('aria-label={t("room.rightPanelToggle")}');
-    const toggleEnd = paneSource.indexOf('aria-label={t("threads.title")}', toggleStart);
-    const toggleSource = paneSource.slice(toggleStart, toggleEnd);
 
-    expect(paneSource).toContain("rightPanelOpen");
-    expect(toggleSource).toContain("rightPanelOpen ? <PanelRightClose");
-    expect(toggleSource).not.toContain("snapshot.state.ui.thread.kind");
+    expect(paneSource).toContain('aria-label={t("room.roomInfo")}');
+    expect(paneSource).toContain("onToggleRoomInfoStable");
+    expect(paneSource).not.toContain("snapshot.state.ui.thread.kind");
+    expect(paneSource).toContain("<MoreHorizontal");
+    expect((paneSource.match(/<MoreHorizontal/g) ?? []).length).toBe(1);
+  });
+
+  test("room header wires People and media actions and conditionally shows threads", () => {
+    const source = readFileSync(new URL("./components/panes.tsx", import.meta.url), "utf8");
+    const paneStart = source.indexOf("export function TimelinePane");
+    const paneEnd = source.indexOf("function TimelineComposer", paneStart);
+    const paneSource = source.slice(paneStart, paneEnd);
+
+    expect(paneSource).toContain('aria-label={t("panel.people")}');
+    expect(paneSource).toContain("onOpenPeopleStable");
+    expect(paneSource).toContain('aria-label={t("mediaGallery.open")}');
+    expect(paneSource).toContain("showThreadsHeader");
+    expect(paneSource).toContain("onOpenThreadsStable");
   });
 
   test("room creation links the new room into the active space", () => {
@@ -1373,6 +1385,32 @@ describe("Tauri state refresh wiring", () => {
     expect(openActivityRowSource).not.toContain('setRightPanelMode("search")');
     expect(activityRenderSource).toContain("openActivityRow(row.room_id, row.event_id)");
     expect(activityRenderSource).not.toContain("selectSearchResult(row.room_id, row.event_id)");
+  });
+
+  test("home rail button resets Home to Activity Recent instead of restoring the saved Home pane", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const sidebarRenderStart = source.indexOf("<Sidebar");
+    const sidebarRenderEnd = source.indexOf("</Sidebar>", sidebarRenderStart);
+    const sidebarRenderSource = source.slice(sidebarRenderStart, sidebarRenderEnd);
+    const onOpenHomeStart = sidebarRenderSource.indexOf("onOpenHome={() =>");
+    const onOpenHomeEnd = sidebarRenderSource.indexOf("onOpenInvites", onOpenHomeStart);
+    const onOpenHomeSource = sidebarRenderSource.slice(onOpenHomeStart, onOpenHomeEnd);
+
+    expect(onOpenHomeStart).toBeGreaterThanOrEqual(0);
+    expect(onOpenHomeSource).toContain("openHomeActivityView()");
+    expect(onOpenHomeSource).not.toContain("selectSpace(null)");
+  });
+
+  test("initial Home selection does not override an already selected room", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const effectStart = source.indexOf("initialHomeSelectionApplied.current ||");
+    const effectEnd = source.indexOf("initialHomeSelectionApplied.current = true", effectStart);
+    const effectGuardSource = source.slice(effectStart, effectEnd);
+
+    expect(effectStart).toBeGreaterThanOrEqual(0);
+    expect(effectGuardSource).toContain(
+      "snapshot.state.ui.navigation.active_room_id !== null"
+    );
   });
 
   test("recovery submit trims pasted outer whitespace without altering the secret variable", () => {
@@ -1926,5 +1964,38 @@ describe("Timeline item row rendering", () => {
     expect(sending).toContain('data-send-state="sending"');
     expect(sending).toContain("Sending");
     expect(sending).toContain("Cancel send");
+  });
+
+  test("room People entries load room settings before switching to people mode", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+
+    const timelinePaneStart = source.indexOf("<TimelinePane");
+    const timelinePaneEnd = source.indexOf("\n          />", timelinePaneStart);
+    expect(timelinePaneStart).toBeGreaterThanOrEqual(0);
+    expect(timelinePaneEnd).toBeGreaterThan(timelinePaneStart);
+    const timelinePaneSource = source.slice(timelinePaneStart, timelinePaneEnd);
+
+    expect(timelinePaneSource).toContain("api.loadRoomSettings(");
+    expect(timelinePaneSource).toContain('setRightPanelModeClosingFocusedContext("people")');
+    expect(timelinePaneSource.indexOf("api.loadRoomSettings(")).toBeLessThan(
+      timelinePaneSource.indexOf('setRightPanelModeClosingFocusedContext("people")')
+    );
+
+    const contextualRightPanelStart = source.indexOf("<ContextualRightPanel");
+    const contextualRightPanelEnd = source.indexOf("\n        />", contextualRightPanelStart);
+    expect(contextualRightPanelStart).toBeGreaterThanOrEqual(0);
+    expect(contextualRightPanelEnd).toBeGreaterThan(contextualRightPanelStart);
+    const contextualRightPanelSource = source.slice(
+      contextualRightPanelStart,
+      contextualRightPanelEnd
+    );
+
+    expect(contextualRightPanelSource).toContain("api.loadRoomSettings(");
+    expect(contextualRightPanelSource).toContain(
+      'setRightPanelModeClosingFocusedContext("people")'
+    );
+    expect(contextualRightPanelSource.indexOf("api.loadRoomSettings(")).toBeLessThan(
+      contextualRightPanelSource.indexOf('setRightPanelModeClosingFocusedContext("people")')
+    );
   });
 });

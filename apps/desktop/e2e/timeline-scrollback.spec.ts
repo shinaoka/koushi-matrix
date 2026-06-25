@@ -150,6 +150,7 @@ test("virtualized jump remains stable after variable-height rows are measured", 
             key,
             snapshot: {
               read_marker_event_id: "$vh099",
+              read_marker_display_event_id: "$vh099",
               first_unread_event_id: "$vh100",
               unread_event_count: 1,
               unread_position: "aboveViewport",
@@ -588,6 +589,7 @@ test("timeline navigation renders Rust-owned unread controls and sends viewport 
             key,
             snapshot: {
               read_marker_event_id: "$m24",
+              read_marker_display_event_id: "$m24",
               first_unread_event_id: "$m25",
               unread_event_count: 3,
               unread_position: "belowViewport",

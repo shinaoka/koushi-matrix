@@ -33,17 +33,27 @@ export function computeBrowserRoomListProjection(
             kind: "room" as const
           }));
 
-  if (sort.kind === "activity") {
-    const activityByRoomId = new Map(
-      rooms.map((room) => [room.room_id, room.last_activity_ms ?? 0])
-    );
-    items.sort((left, right) => {
-      const activityDelta =
-        (activityByRoomId.get(right.room_id) ?? 0) -
-        (activityByRoomId.get(left.room_id) ?? 0);
-      return activityDelta || left.room_id.localeCompare(right.room_id);
-    });
-  }
+  const activityByRoomId = new Map(
+    rooms.map((room) => [room.room_id, room.last_activity_ms ?? 0])
+  );
+  items.sort((left, right) => {
+    switch (sort.kind) {
+      case "activity":
+      case "recentFirst": {
+        const activityDelta =
+          (activityByRoomId.get(right.room_id) ?? 0) -
+          (activityByRoomId.get(left.room_id) ?? 0);
+        return activityDelta || left.room_id.localeCompare(right.room_id);
+      }
+      case "normalLocale": {
+        const leftRoom = rooms.find((room) => room.room_id === left.room_id);
+        const rightRoom = rooms.find((room) => room.room_id === right.room_id);
+        const leftLabel = (leftRoom?.display_label ?? left.room_id).toLowerCase();
+        const rightLabel = (rightRoom?.display_label ?? right.room_id).toLowerCase();
+        return leftLabel.localeCompare(rightLabel) || left.room_id.localeCompare(right.room_id);
+      }
+    }
+  });
 
   return {
     active_filter: activeFilter,
@@ -61,7 +71,7 @@ function roomVisibleInActiveSpace(
     return true;
   }
   if (room.is_dm) {
-    return true;
+    return room.dm_space_ids.includes(activeSpaceId);
   }
   return (
     room.parent_space_ids.includes(activeSpaceId) ||

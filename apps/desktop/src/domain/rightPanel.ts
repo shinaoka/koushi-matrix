@@ -1,5 +1,5 @@
 import type { ContextMenuActionId } from "./contextMenus";
-import type { DesktopSnapshot } from "./types";
+import type { DesktopSnapshot, RoomSummary, SpaceSummary } from "./types";
 
 export type RightPanelMode =
   | "closed"
@@ -12,7 +12,9 @@ export type RightPanelMode =
   | "roomInfo"
   | "spaceInfo"
   | "files"
-  | "threads";
+  | "threads"
+  | "people"
+  | "profile";
 
 export type RightPanelContextMenuTarget =
   | { kind: "message"; roomId: string; eventId: string }
@@ -26,6 +28,10 @@ export interface RightPanelIntent {
   selectSpaceId?: string;
   focusSearch?: boolean;
 }
+
+export type PeoplePanelScope =
+  | { kind: "room"; roomId: string }
+  | { kind: "space"; spaceId: string };
 
 export function rightPanelIntentForContextMenuAction(
   target: RightPanelContextMenuTarget,
@@ -72,6 +78,24 @@ export function rightPanelIntentForContextMenuAction(
 
 export function rightPanelModeForSearchQuery(query: string): RightPanelMode | null {
   return query.trim() ? "search" : null;
+}
+
+export function roomOrSpaceForPeoplePanelScope(
+  scope: PeoplePanelScope | null,
+  activeRoom: RoomSummary | null,
+  activeSpace: SpaceSummary | null,
+  rooms: RoomSummary[],
+  spaces: SpaceSummary[]
+): RoomSummary | SpaceSummary | null {
+  if (scope?.kind === "room") {
+    return rooms.find((room) => room.room_id === scope.roomId) ?? null;
+  }
+
+  if (scope?.kind === "space") {
+    return spaces.find((space) => space.space_id === scope.spaceId) ?? null;
+  }
+
+  return activeRoom ?? activeSpace;
 }
 
 export function effectiveRightPanelModeForSnapshot(
