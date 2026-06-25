@@ -61,6 +61,7 @@
   --workspace-badge-padding-inline: 5px;
   --workspace-badge-border-width: 2px;
   --workspace-mention-dot-size: 9px;
+  --macos-traffic-light-inline-space: 96px;
   --nav-badge-size: 18px;
   --nav-badge-padding-inline: 5px;
   --nav-badge-font-size: 11px;
@@ -503,6 +504,7 @@ button:disabled {
 }
 
 .titlebar {
+  position: relative;
   display: grid;
   grid-template-columns: 128px minmax(220px, 1fr) 88px 84px;
   align-items: center;
@@ -510,6 +512,10 @@ button:disabled {
   padding: 0 14px;
   color: var(--brand-contrast);
   background: var(--rail);
+}
+
+.titlebar[data-platform="macos"] {
+  padding-inline-start: var(--macos-traffic-light-inline-space);
 }
 
 .history,
@@ -1247,6 +1253,11 @@ button:disabled {
   font: inherit;
 }
 
+.channel-actions {
+  min-width: 0;
+  justify-content: flex-end;
+}
+
 .member-pill {
   display: inline-flex;
   align-items: center;
@@ -1369,10 +1380,23 @@ button:disabled {
 }
 
 .activity-row-avatar {
+  display: grid;
+  place-items: center;
   flex: 0 0 auto;
   inline-size: 40px;
   block-size: 40px;
+  overflow: hidden;
+  border-radius: 50%;
+  color: var(--brand-contrast);
+  background: var(--brand);
   font-size: 14px;
+  font-weight: 800;
+}
+
+.activity-row-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .activity-row-body {
@@ -1502,17 +1526,14 @@ button:disabled {
   backdrop-filter: blur(8px);
 }
 
-.timeline-top-controls {
-  display: flex;
+.timeline-header-navigation {
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
   gap: 4px;
-  min-block-size: var(--timeline-navigation-control-block-size);
-  padding: var(--timeline-navigation-padding-block) var(--timeline-navigation-padding-inline);
-  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
 }
 
-.timeline-top-controls .timeline-control {
+.timeline-header-navigation .timeline-control {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1524,14 +1545,14 @@ button:disabled {
   background: var(--surface);
 }
 
-.timeline-top-controls .timeline-control:hover:not(:disabled),
-.timeline-top-controls .timeline-control:focus-visible {
+.timeline-header-navigation .timeline-control:hover:not(:disabled),
+.timeline-header-navigation .timeline-control:focus-visible {
   color: var(--brand-contrast);
   border-color: var(--brand);
   background: var(--brand);
 }
 
-.timeline-top-controls .timeline-control:disabled {
+.timeline-header-navigation .timeline-control:disabled {
   opacity: 0.5;
 }
 
@@ -2027,6 +2048,7 @@ button:disabled {
 .timeline-view {
   min-inline-size: 0;
   max-inline-size: 100%;
+  overflow-anchor: none;
   overflow-x: hidden;
 }
 

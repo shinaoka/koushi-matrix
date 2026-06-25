@@ -3,6 +3,13 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { openExternalHttpUrl } from "../domain/externalLinks";
+
+vi.mock("../domain/externalLinks", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../domain/externalLinks")>()),
+  openExternalHttpUrl: vi.fn(async () => undefined)
+}));
+
 import {
   roomTimelineKey,
   threadTimelineKey,
@@ -547,6 +554,102 @@ describe("TimelineView", () => {
       <TimelineView
         {...props}
         liveSignals={{ presence: {}, rooms: {} }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(78);
+    });
+  });
+
+  it("keeps the retained bottom-edge room anchor stable when read receipts shift earlier rows", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const rects = {
+      "$seen:example.invalid": { top: 440, height: 48 },
+      "$anchor:example.invalid": { top: 500, height: 48 },
+      "$after:example.invalid": { top: 560, height: 48 }
+    };
+
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+
+    const props = {
+      timelineKey: KEY,
+      roomId: "!room:example.invalid",
+      transport,
+      roomScrollAnchor: {
+        event_id: "$anchor:example.invalid",
+        edge: "bottom" as const,
+        offset_px: -100,
+        updated_at_ms: Date.now()
+      },
+      onReply: vi.fn()
+    };
+    const { rerender } = render(<TimelineView {...props} />);
+
+    const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [
+            message("$seen:example.invalid", "Seen"),
+            message("$anchor:example.invalid", "Anchor"),
+            message("$after:example.invalid", "After")
+          ]
+        }
+      }
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(48);
+    });
+
+    rects["$anchor:example.invalid"].top = 530;
+    timeline.scrollTop = 58;
+    rerender(
+      <TimelineView
+        {...props}
+        liveSignals={{
+          presence: {},
+          rooms: {
+            "!room:example.invalid": {
+              fully_read_event_id: null,
+              typing_user_ids: [],
+              receipts_by_event: {
+                "$seen:example.invalid": {
+                  total_count: 1,
+                  overflow_count: 0,
+                  readers: [
+                    {
+                      user_id: "@satoshi:example.invalid",
+                      display_name: "Satoshi Terasaki",
+                      original_display_label: "Satoshi Terasaki",
+                      avatar: null,
+                      timestamp_ms: null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }}
       />
     );
 
@@ -2318,6 +2421,11 @@ describe("TimelineView", () => {
       expect(link.getAttribute("href")).toBe("https://example.com/page");
       expect(link.getAttribute("target")).toBe("_blank");
     }
+
+    fireEvent.click(links[0]);
+    await waitFor(() => {
+      expect(openExternalHttpUrl).toHaveBeenCalledWith("https://example.com/page");
+    });
   });
 
   it("preserves formatted HTML when adding Rust-projected link anchors", async () => {
@@ -2416,6 +2524,10 @@ describe("TimelineView", () => {
 
     const card = await screen.findByRole("link", { name: /An article/ });
     expect(card.getAttribute("href")).toBe("https://example.com/article");
+    fireEvent.click(card);
+    await waitFor(() => {
+      expect(openExternalHttpUrl).toHaveBeenCalledWith("https://example.com/article");
+    });
 
     const hide = screen.getByRole("button", { name: "Hide preview" });
     fireEvent.click(hide);

@@ -850,6 +850,7 @@ pub fn run() {
         .register_uri_scheme_protocol("koushi-thumbnail", move |_, request| {
             renderable_thumbnail_protocol_response(request)
         })
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
@@ -989,6 +990,7 @@ pub fn run() {
             commands::navigation::select_space,
             commands::navigation::reorder_spaces,
             commands::navigation::select_room,
+            commands::navigation::open_activity_event,
             commands::navigation::select_search_result,
             commands::navigation::close_focused_context,
             commands::navigation::open_timeline_at_timestamp,

@@ -1155,7 +1155,7 @@ describe("ContextualRightPanel", () => {
     const source = readFileSync(new URL("./components/panes.tsx", import.meta.url), "utf8");
     const roomPaneStart = source.indexOf("export function TimelinePane");
     const roomPane = source.slice(roomPaneStart);
-    const tabsActionsIndex = roomPane.indexOf('className="timeline-top-controls"');
+    const headerNavigationIndex = roomPane.indexOf('className="timeline-header-navigation"');
     const loadMoreIndex = roomPane.indexOf('className="icon-button timeline-control"');
     const timelineScrollIndex = roomPane.indexOf("<TimelineView");
 
@@ -1163,9 +1163,10 @@ describe("ContextualRightPanel", () => {
     expect(roomPane).toContain("roomTimelineKey(currentUserId, timelineRoomId)");
     expect(roomPane).toContain('timelineBackfill === "Paginating"');
     expect(roomPane).toContain('timelineBackfill === "EndReached"');
-    expect(tabsActionsIndex).toBeGreaterThanOrEqual(0);
-    expect(loadMoreIndex).toBeGreaterThan(tabsActionsIndex);
+    expect(headerNavigationIndex).toBeGreaterThanOrEqual(0);
+    expect(loadMoreIndex).toBeGreaterThan(headerNavigationIndex);
     expect(loadMoreIndex).toBeLessThan(timelineScrollIndex);
+    expect(roomPane).not.toContain('className="timeline-top-controls"');
     expect(roomPane).not.toContain("onPaginateBackwards");
     expect(roomPane).not.toContain("is_paginating_backwards");
   });
@@ -1370,7 +1371,7 @@ describe("Tauri state refresh wiring", () => {
     expect(selectSearchResultSource).not.toContain("cssEscape");
   });
 
-  test("activity row selection opens event context without opening the search panel", () => {
+  test("activity row selection navigates to the event without opening focused context", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const openActivityRowStart = source.indexOf("function openActivityRow");
     const openActivityRowEnd = source.indexOf("function selectSearchResult");
@@ -1380,8 +1381,10 @@ describe("Tauri state refresh wiring", () => {
     const activityRenderSource = source.slice(activityRenderStart, activityRenderEnd);
 
     expect(openActivityRowStart).toBeGreaterThanOrEqual(0);
-    expect(openActivityRowSource).toContain("api.selectSearchResult(roomId, eventId)");
-    expect(openActivityRowSource).toContain('setRightPanelMode("focusedContext")');
+    expect(openActivityRowSource).toContain(".openActivityEvent(roomId, eventId)");
+    expect(openActivityRowSource).not.toContain(".selectSearchResult(roomId, eventId)");
+    expect(openActivityRowSource).toContain('setRightPanelMode("closed")');
+    expect(openActivityRowSource).not.toContain('setRightPanelMode("focusedContext")');
     expect(openActivityRowSource).not.toContain('setRightPanelMode("search")');
     expect(activityRenderSource).toContain("openActivityRow(row.room_id, row.event_id)");
     expect(activityRenderSource).not.toContain("selectSearchResult(row.room_id, row.event_id)");
@@ -1521,6 +1524,18 @@ describe("Tauri state refresh wiring", () => {
 });
 
 describe("TopBar sync state rendering", () => {
+  test("uses native macOS titlebar overlay instead of a separate titlebar row", () => {
+    const config = JSON.parse(
+      readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8")
+    );
+    const mainWindow = config.app.windows[0];
+
+    expect(mainWindow.decorations ?? true).toBe(true);
+    expect(mainWindow.titleBarStyle).toBe("Overlay");
+    expect(mainWindow.hiddenTitle).toBe(true);
+    expect(mainWindow.trafficLightPosition).toEqual({ x: 18, y: 16 });
+  });
+
   test("does not draw duplicate macOS traffic light controls", async () => {
     vi.stubGlobal("window", { location: { search: "" } });
     const { TopBar } = await import("./App");
@@ -1543,6 +1558,29 @@ describe("TopBar sync state rendering", () => {
     expect(markup).not.toContain("dot red");
     expect(markup).not.toContain("dot yellow");
     expect(markup).not.toContain("dot green");
+  });
+
+  test("marks the overlay titlebar top edge as a Tauri window drag region", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { TopBar } = await import("./App");
+    const markup = renderToStaticMarkup(
+      <TopBar
+        activeSpaceName="Matrix"
+        isBusy={false}
+        searchInputRef={{ current: null }}
+        searchQuery=""
+        searchScope="allRooms"
+        sync="running"
+        onOpenKeyboardSettings={() => undefined}
+        onRestartSync={() => undefined}
+        onSearchQueryChange={() => undefined}
+        onSearchScopeChange={() => undefined}
+      />
+    );
+
+    expect(markup).toContain('class="titlebar"');
+    expect(markup).toContain('data-tauri-drag-region=""');
+    expect(markup).not.toContain("titlebar-drag-strip");
   });
 
   test("renders reconnecting and failed states with a restart control", async () => {

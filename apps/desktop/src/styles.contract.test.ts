@@ -4,6 +4,7 @@ import { describe, expect, test } from "vitest";
 
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const shellSource = readFileSync(new URL("./components/Shell.tsx", import.meta.url), "utf8");
 const uiSharedSource = readFileSync(new URL("./app/uiShared.ts", import.meta.url), "utf8");
 
 // Sources that render Lucide icons: App.tsx plus the per-component modules the #87
@@ -115,6 +116,22 @@ describe("styles.css token system", () => {
     expect(css).not.toContain("box-shadow: inset 3px 0 0 0 var(--brand)");
   });
 
+  test("macOS titlebar overlay reserves native traffic light space in the app top bar", () => {
+    expect(css).toContain("--macos-traffic-light-inline-space: 96px;");
+    expect(appSource).toContain("platform={snapshot.state.domain.locale_profile.platform}");
+    const block = selectorBlock('.titlebar[data-platform="macos"]');
+    expect(block).toContain("padding-inline-start: var(--macos-traffic-light-inline-space);");
+  });
+
+  test("titlebar owns window dragging without a covering overlay element", () => {
+    const titlebarBlock = selectorBlock(".titlebar");
+    expect(titlebarBlock).toContain("position: relative;");
+    expect(css).not.toContain(".titlebar-drag-strip");
+    expect(shellSource).toContain('data-tauri-drag-region=""');
+    expect(shellSource).toContain("shouldStartTitlebarDrag(event)");
+    expect(shellSource).toContain('target.closest("button, input, select, textarea, a, label")');
+  });
+
   test("locale-sensitive layout uses logical properties instead of physical left/right declarations", () => {
     expect(css).not.toMatch(
       /\b(?:left|right|margin-left|margin-right|padding-left|padding-right|border-left|border-right|inset-left|inset-right)\s*:/
@@ -138,6 +155,11 @@ describe("styles.css token system", () => {
     );
     expect(block).toContain("position: relative;");
     expect(block).toContain("z-index: 12;");
+  });
+
+  test("timeline scroll container uses app-owned scroll anchoring", () => {
+    const block = selectorBlock(".timeline-view");
+    expect(block).toContain("overflow-anchor: none;");
   });
 
   test("defines fixed-format sizing tokens for shared GUI controls", () => {
@@ -225,6 +247,10 @@ describe("styles.css token system", () => {
 
   test("avatar and receipt fixed geometry use named tokens", () => {
     expectBlockUses(selectorBlock(".room-avatar"), ["--room-avatar-size", "--room-avatar-font-size"]);
+    const activityAvatarImageBlock = selectorBlock(".activity-row-avatar img");
+    expect(activityAvatarImageBlock).toContain("width: 100%");
+    expect(activityAvatarImageBlock).toContain("height: 100%");
+    expect(activityAvatarImageBlock).toContain("object-fit: cover");
     expectBlockUses(selectorBlock(".message"), ["--message-avatar-column-inline-size"]);
     expectBlockUses(selectorBlock(".avatar"), ["--message-avatar-size", "--message-avatar-font-size"]);
     expectBlockUses(selectorBlock(".directory-result"), ["--directory-avatar-size"]);

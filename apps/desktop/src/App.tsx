@@ -2927,10 +2927,10 @@ export function App() {
   }
 
   function openActivityRow(roomId: string, eventId: string) {
-    void api.selectSearchResult(roomId, eventId).then((nextSnapshot) => {
+    void api.openActivityEvent(roomId, eventId).then((nextSnapshot) => {
       setSnapshot(nextSnapshot);
       setPrimaryView("timeline");
-      setRightPanelMode("focusedContext");
+      setRightPanelMode("closed");
     });
   }
 
@@ -3183,12 +3183,23 @@ export function App() {
     window.addEventListener("pointerup", onPointerUp, { once: true });
   }
 
+  function startWindowDrag() {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    void getCurrentWindow().startDragging().catch(() => undefined);
+  }
+
   return (
     <TimelineStoreContext.Provider value={timelineStoreContextValue}>
-      <div className="desktop" data-density={displayDensity}>
+      <div
+        className="desktop"
+        data-density={displayDensity}
+      >
         <TopBar
           activeSpaceName={activeSpaceName}
           isBusy={isBusy}
+          platform={snapshot.state.domain.locale_profile.platform}
           searchInputRef={searchInputRef}
           searchQuery={searchQuery}
           searchScope={searchScope}
@@ -3200,6 +3211,7 @@ export function App() {
           onRestartSync={restartSync}
           onSearchQueryChange={setSearchQuery}
           onSearchScopeChange={setSearchScope}
+          onStartWindowDrag={startWindowDrag}
         />
       <div
         className={`app-grid ${rightPanelOpen ? "right-panel-open" : "thread-closed"}`}

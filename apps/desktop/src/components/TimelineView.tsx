@@ -86,6 +86,7 @@ import type {
   TimelineNavigationSnapshot,
   TimelineMessageSource
 } from "../domain/coreEvents";
+import { openExternalHttpUrl, toExternalHttpUrl } from "../domain/externalLinks";
 import { mediaSourceUrl } from "../domain/mediaUrl";
 import {
   recordTimelineEventReceived,
@@ -695,15 +696,29 @@ function renderPlainTextSegment(
       );
     }
     const linkEnd = Math.min(segEnd, range.end_utf16);
+    const href = toExternalHttpUrl(range.url);
+    const linkContent = renderTimelineMessageText(
+      text.slice(linkStart, linkEnd),
+      query,
+      profileUsers
+    );
     nodes.push(
-      <a
-        key={`link:${range.start_utf16}`}
-        href={range.url}
-        rel="noopener noreferrer"
-        target="_blank"
-      >
-        {renderTimelineMessageText(text.slice(linkStart, linkEnd), query, profileUsers)}
-      </a>
+      href ? (
+        <a
+          key={`link:${range.start_utf16}`}
+          href={href}
+          rel="noopener noreferrer"
+          target="_blank"
+          onClick={(event) => {
+            event.preventDefault();
+            void openExternalHttpUrl(href);
+          }}
+        >
+          {linkContent}
+        </a>
+      ) : (
+        <Fragment key={`link:${range.start_utf16}`}>{linkContent}</Fragment>
+      )
     );
     cursor = linkEnd;
   }
@@ -1122,9 +1137,21 @@ const formattedTagRenderers: Record<string, FormattedTagRenderer> = {
     _codeBlockIndexRef: { current: number },
     _onCopyText: TimelineRowActionHandlers["onCopyText"]
   ) {
-    const href = node.attrs.href?.trim();
+    const href = toExternalHttpUrl(node.attrs.href?.trim());
+    if (!href) {
+      return <Fragment key={key}>{children}</Fragment>;
+    }
     return (
-      <a key={key} href={href || undefined} rel="noopener noreferrer" target="_blank">
+      <a
+        key={key}
+        href={href}
+        rel="noopener noreferrer"
+        target="_blank"
+        onClick={(event) => {
+          event.preventDefault();
+          void openExternalHttpUrl(href);
+        }}
+      >
         {children}
       </a>
     );
@@ -2745,10 +2772,6 @@ export const TimelineView = memo(function TimelineView({
       retainedRoomScrollAnchorRef.current = null;
       return;
     }
-    if (Math.abs(container.scrollTop - retained.scrollTop) > 1) {
-      retainedRoomScrollAnchorRef.current = null;
-      return;
-    }
     const anchorNode = findRoomScrollAnchorNode(container, activeRoomAnchor);
     if (!anchorNode) {
       retainedRoomScrollAnchorRef.current = null;
@@ -3880,41 +3903,50 @@ export function TimelineItemRow({
         )}
         {!isRedacted && eventId && item.link_previews && item.link_previews.length > 0 ? (
           <div className="link-preview-cards">
-            {item.link_previews.map((preview) => (
-              <div key={preview.url} className="link-preview-card">
-                <a
-                  className="link-preview-main"
-                  href={preview.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  {preview.image?.thumbnail && thumbnailSourceUrl(preview.image.thumbnail) ? (
-                    <img
-                      src={thumbnailSourceUrl(preview.image.thumbnail) ?? undefined}
-                      alt={""}
-                      className="link-preview-image"
-                    />
-                  ) : null}
-                  <div className="link-preview-text">
-                    {preview.title ? (
-                      <div className="link-preview-title">{preview.title}</div>
+            {item.link_previews.map((preview) => {
+              const previewUrl = toExternalHttpUrl(preview.url);
+              return (
+                <div key={preview.url} className="link-preview-card">
+                  <a
+                    className="link-preview-main"
+                    href={previewUrl || undefined}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      if (previewUrl) {
+                        void openExternalHttpUrl(previewUrl);
+                      }
+                    }}
+                  >
+                    {preview.image?.thumbnail && thumbnailSourceUrl(preview.image.thumbnail) ? (
+                      <img
+                        src={thumbnailSourceUrl(preview.image.thumbnail) ?? undefined}
+                        alt={""}
+                        className="link-preview-image"
+                      />
                     ) : null}
-                    {preview.description ? (
-                      <div className="link-preview-description">{preview.description}</div>
-                    ) : null}
-                    <div className="link-preview-url">{preview.url}</div>
-                  </div>
-                </a>
-                <button
-                  type="button"
-                  className="link-preview-hide"
-                  onClick={() => onHideLinkPreview(roomId, eventId)}
-                  aria-label={t("timeline.linkPreviewHide")}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
+                    <div className="link-preview-text">
+                      {preview.title ? (
+                        <div className="link-preview-title">{preview.title}</div>
+                      ) : null}
+                      {preview.description ? (
+                        <div className="link-preview-description">{preview.description}</div>
+                      ) : null}
+                      <div className="link-preview-url">{preview.url}</div>
+                    </div>
+                  </a>
+                  <button
+                    type="button"
+                    className="link-preview-hide"
+                    onClick={() => onHideLinkPreview(roomId, eventId)}
+                    aria-label={t("timeline.linkPreviewHide")}
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            })}
           </div>
         ) : null}
         {transactionId && sendStateKind === "notSent" ? (
