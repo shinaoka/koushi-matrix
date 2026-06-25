@@ -112,6 +112,7 @@ export interface DesktopApi {
   selectSpace(spaceId: string | null): Promise<DesktopSnapshot>;
   reorderSpaces(spaceIds: string[]): Promise<DesktopSnapshot>;
   selectRoom(roomId: string): Promise<DesktopSnapshot>;
+  openActivityEvent(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   selectSearchResult(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   openTimelineAtTimestamp(roomId: string, timestampMs: number): Promise<DesktopSnapshot>;
   closeFocusedContext(): Promise<DesktopSnapshot>;
@@ -877,6 +878,25 @@ class BrowserFakeApi implements DesktopApi {
       room_id: roomId,
       event_id: eventId
     };
+    return this.getSnapshot();
+  }
+
+  async openActivityEvent(roomId: string, eventId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews()) {
+      return this.getSnapshot();
+    }
+
+    await this.selectRoom(roomId);
+    this.snapshot.state.ui.navigation.room_scroll_anchors = {
+      ...(this.snapshot.state.ui.navigation.room_scroll_anchors ?? {}),
+      [roomId]: {
+        event_id: eventId,
+        edge: "bottom",
+        offset_px: 0,
+        updated_at_ms: Date.now()
+      }
+    };
+    this.snapshot.state.ui.focused_context = { kind: "closed" };
     return this.getSnapshot();
   }
 

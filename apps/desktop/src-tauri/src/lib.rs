@@ -990,6 +990,7 @@ pub fn run() {
             commands::navigation::select_space,
             commands::navigation::reorder_spaces,
             commands::navigation::select_room,
+            commands::navigation::open_activity_event,
             commands::navigation::select_search_result,
             commands::navigation::close_focused_context,
             commands::navigation::open_timeline_at_timestamp,

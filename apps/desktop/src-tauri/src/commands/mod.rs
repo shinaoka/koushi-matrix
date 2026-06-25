@@ -31,7 +31,8 @@ use koushi_state::{
     ImageUploadCompressionMode, LoginRequest, MentionIntent, PresenceKind, RecoveryRequest,
     RoomListFilter, RoomModerationAction, RoomNotificationMode, RoomSettingChange, RoomTagKind,
     SessionInfo, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
-    TimelineScrollAnchor, VerificationCancelReason, build_formatted_message_draft,
+    TimelineScrollAnchor, TimelineScrollAnchorEdge, VerificationCancelReason,
+    build_formatted_message_draft,
 };
 use serde::Deserialize;
 #[cfg(any(debug_assertions, test))]
@@ -5239,6 +5240,42 @@ mod tests {
         assert!(
             subscribe_offset < open_offset,
             "normal room timeline subscription should happen before focused context open"
+        );
+    }
+
+    #[test]
+    fn open_activity_event_sets_bottom_scroll_anchor_without_opening_focused_context() {
+        let source = commands_source();
+        let fn_name = "pub async fn open_activity_event";
+
+        let fn_offset = source
+            .find(fn_name)
+            .expect("open_activity_event command should exist");
+        let rest = &source[fn_offset..];
+        let end = rest
+            .find("pub async fn select_search_result")
+            .expect("select_search_result command should follow open_activity_event");
+        let command_source = &rest[..end];
+
+        assert!(
+            command_source.contains("build_select_room_command"),
+            "activity event navigation should select the destination room"
+        );
+        assert!(
+            command_source.contains("build_subscribe_timeline_command"),
+            "activity event navigation should subscribe the destination timeline"
+        );
+        assert!(
+            command_source.contains("build_update_navigation_scroll_anchor_command"),
+            "activity event navigation should save a room scroll anchor"
+        );
+        assert!(
+            command_source.contains("TimelineScrollAnchorEdge::Bottom"),
+            "activity event navigation should align the event bottom to the viewport bottom"
+        );
+        assert!(
+            !command_source.contains("OpenFocusedContext"),
+            "activity event navigation should not open the focused context panel"
         );
     }
 

@@ -1675,6 +1675,45 @@ mock.setCommandResponse(
     return setCurrentSnapshot(next);
   }
 );
+mock.setCommandResponse(
+  "open_activity_event",
+  ({ roomId, eventId }: { roomId: string; eventId: string }) => {
+    const next: DesktopSnapshot = {
+      ...currentSnapshot,
+      state: {
+        ...currentSnapshot.state,
+        ui: {
+          ...currentSnapshot.state.ui,
+          navigation: {
+            ...currentSnapshot.state.ui.navigation,
+            active_room_id: roomId,
+            room_scroll_anchors: {
+              ...(currentSnapshot.state.ui.navigation.room_scroll_anchors ?? {}),
+              [roomId]: {
+                event_id: eventId,
+                edge: "bottom",
+                offset_px: 0,
+                updated_at_ms: Date.now()
+              }
+            }
+          },
+          timeline: {
+            ...currentSnapshot.state.ui.timeline,
+            room_id: roomId,
+            is_subscribed: true
+          },
+          thread: { kind: "closed" },
+          focused_context: { kind: "closed" }
+        },
+        domain: {
+          ...currentSnapshot.state.domain,
+          thread_attention: { kind: "closed" }
+        }
+      }
+    };
+    return setCurrentSnapshot(next);
+  }
+);
 mock.setCommandResponse("close_focused_context", () => {
   const next: DesktopSnapshot = {
     ...currentSnapshot,
