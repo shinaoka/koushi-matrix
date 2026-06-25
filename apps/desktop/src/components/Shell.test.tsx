@@ -4,6 +4,8 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createBrowserFakeApi } from "../backend/browserFakeApi";
+import { computeBrowserRoomListProjection } from "../backend/roomListProjection";
+import type { RoomSummary } from "../domain/types";
 import { EntityAvatar, Sidebar, TopBar, WorkspaceRail } from "./Shell";
 
 afterEach(() => {
@@ -95,9 +97,32 @@ describe("EntityAvatar", () => {
 });
 
 describe("Sidebar", () => {
-  it("renders Home as Activity, Explore, Invites, and Direct Messages only", async () => {
+  it("renders Home as Activity, Explore, Invites, unspaced Rooms, and Direct Messages", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.selectSpace(null);
+    const unspacedRoom: RoomSummary = {
+      room_id: "!room-unspaced:example.invalid",
+      display_name: "unspaced-room",
+      display_label: "unspaced-room",
+      original_display_label: "unspaced-room",
+      avatar: null,
+      is_dm: false,
+      dm_user_ids: [],
+      tags: { favourite: null, low_priority: null },
+      unread_count: 0,
+      parent_space_ids: [],
+      dm_space_ids: [],
+      is_encrypted: false
+    };
+    snapshot.state.domain.rooms = [...snapshot.state.domain.rooms, unspacedRoom];
+    snapshot.state.ui.room_list = computeBrowserRoomListProjection(
+      snapshot.state.ui.room_list.active_filter,
+      snapshot.state.ui.room_list.sort,
+      snapshot.state.ui.navigation.active_space_id,
+      snapshot.state.domain.spaces,
+      snapshot.state.domain.rooms,
+      snapshot.state.domain.invites
+    );
 
     render(
       <Sidebar
@@ -121,7 +146,9 @@ describe("Sidebar", () => {
     expect(screen.getByRole("button", { name: "Explore" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Invites" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Threads" })).toBeNull();
-    expect(document.querySelector('[data-room-section="rooms"]')).toBeNull();
+    expect(screen.getByRole("region", { name: "Rooms" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "unspaced-room" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "synthetic-room" })).toBeNull();
     expect(screen.getByRole("region", { name: "Direct Messages" })).toBeTruthy();
   });
 

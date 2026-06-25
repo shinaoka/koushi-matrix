@@ -112,7 +112,7 @@ describe("desktop model", () => {
     );
   });
 
-  test("account home lists all non-DM rooms while DMs stay global", () => {
+  test("account home lists only non-DM rooms that are not in any space while DMs stay global", () => {
     const spaces: SpaceSummary[] = [
       {
         space_id: "!space-a:example.invalid",
@@ -174,10 +174,8 @@ describe("desktop model", () => {
       is_active: true
     });
     expect(sidebar.space_rooms.map((room) => room.room_id)).toEqual([
-      "!room-a:example.invalid",
       "!global-room:example.invalid"
     ]);
-    expect(sidebar.space_rooms[0]?.tags.favourite?.order).toBe("0.25");
     expect(sidebar.global_dms.map((room) => room.room_id)).toEqual([
       "!dm-a:example.invalid"
     ]);
@@ -438,14 +436,13 @@ describe("desktop model", () => {
 
   test("browser fake updateSettings reprojects room-list sort", async () => {
     const api = createBrowserFakeApi();
-    await api.selectSpace(null);
+    await api.selectSpace("!space-alpha:example.invalid");
 
     const localeSorted = await api.updateSettings({
       room_list_sort: { kind: "normalLocale" }
     });
     expect(localeSorted.state.ui.room_list.sort).toEqual({ kind: "normalLocale" });
     expect(localeSorted.state.ui.room_list.items?.map((item) => item.room_id)).toEqual([
-      "!room-search:example.invalid",
       "!room-planning:example.invalid",
       "!room-alpha:example.invalid"
     ]);
@@ -456,8 +453,7 @@ describe("desktop model", () => {
     expect(activitySorted.state.ui.room_list.sort).toEqual({ kind: "activity" });
     expect(activitySorted.state.ui.room_list.items?.map((item) => item.room_id)).toEqual([
       "!room-alpha:example.invalid",
-      "!room-planning:example.invalid",
-      "!room-search:example.invalid"
+      "!room-planning:example.invalid"
     ]);
   });
 
