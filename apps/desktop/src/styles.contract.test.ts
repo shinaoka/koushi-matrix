@@ -225,6 +225,10 @@ describe("styles.css token system", () => {
 
   test("avatar and receipt fixed geometry use named tokens", () => {
     expectBlockUses(selectorBlock(".room-avatar"), ["--room-avatar-size", "--room-avatar-font-size"]);
+    const activityAvatarImageBlock = selectorBlock(".activity-row-avatar img");
+    expect(activityAvatarImageBlock).toContain("width: 100%");
+    expect(activityAvatarImageBlock).toContain("height: 100%");
+    expect(activityAvatarImageBlock).toContain("object-fit: cover");
     expectBlockUses(selectorBlock(".message"), ["--message-avatar-column-inline-size"]);
     expectBlockUses(selectorBlock(".avatar"), ["--message-avatar-size", "--message-avatar-font-size"]);
     expectBlockUses(selectorBlock(".directory-result"), ["--directory-avatar-size"]);

@@ -26,6 +26,7 @@ tauri-plugin-dialog = "2.7.1"
 tauri-plugin-notification = "2.3.3"
 tauri = { version = "2", features = ["protocol-asset"] }
 tokio = { version = "1", features = ["time"] }
+tauri-plugin-opener = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

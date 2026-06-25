@@ -2927,11 +2927,14 @@ export function App() {
   }
 
   function openActivityRow(roomId: string, eventId: string) {
-    void api.selectSearchResult(roomId, eventId).then((nextSnapshot) => {
-      setSnapshot(nextSnapshot);
-      setPrimaryView("timeline");
-      setRightPanelMode("focusedContext");
-    });
+    void api
+      .selectSearchResult(roomId, eventId)
+      .then(() => api.closeFocusedContext())
+      .then((nextSnapshot) => {
+        setSnapshot(nextSnapshot);
+        setPrimaryView("timeline");
+        setRightPanelMode("closed");
+      });
   }
 
   function selectSearchResult(roomId: string, eventId: string) {

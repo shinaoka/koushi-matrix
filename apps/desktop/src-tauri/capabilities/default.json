@@ -10,6 +10,7 @@
     "core:window:allow-set-title",
     "core:window:allow-set-badge-count",
     "dialog:default",
-    "notification:default"
+    "notification:default",
+    "opener:allow-default-urls"
   ]
 }

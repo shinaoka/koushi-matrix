@@ -850,6 +850,7 @@ pub fn run() {
         .register_uri_scheme_protocol("koushi-thumbnail", move |_, request| {
             renderable_thumbnail_protocol_response(request)
         })
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(move |app| {

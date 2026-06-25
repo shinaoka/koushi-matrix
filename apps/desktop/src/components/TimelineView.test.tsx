@@ -3,6 +3,13 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { openExternalHttpUrl } from "../domain/externalLinks";
+
+vi.mock("../domain/externalLinks", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../domain/externalLinks")>()),
+  openExternalHttpUrl: vi.fn(async () => undefined)
+}));
+
 import {
   roomTimelineKey,
   threadTimelineKey,
@@ -2318,6 +2325,11 @@ describe("TimelineView", () => {
       expect(link.getAttribute("href")).toBe("https://example.com/page");
       expect(link.getAttribute("target")).toBe("_blank");
     }
+
+    fireEvent.click(links[0]);
+    await waitFor(() => {
+      expect(openExternalHttpUrl).toHaveBeenCalledWith("https://example.com/page");
+    });
   });
 
   it("preserves formatted HTML when adding Rust-projected link anchors", async () => {
@@ -2416,6 +2428,10 @@ describe("TimelineView", () => {
 
     const card = await screen.findByRole("link", { name: /An article/ });
     expect(card.getAttribute("href")).toBe("https://example.com/article");
+    fireEvent.click(card);
+    await waitFor(() => {
+      expect(openExternalHttpUrl).toHaveBeenCalledWith("https://example.com/article");
+    });
 
     const hide = screen.getByRole("button", { name: "Hide preview" });
     fireEvent.click(hide);

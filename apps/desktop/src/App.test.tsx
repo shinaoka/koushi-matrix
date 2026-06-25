@@ -1370,7 +1370,7 @@ describe("Tauri state refresh wiring", () => {
     expect(selectSearchResultSource).not.toContain("cssEscape");
   });
 
-  test("activity row selection opens event context without opening the search panel", () => {
+  test("activity row selection navigates to the event without opening focused context", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const openActivityRowStart = source.indexOf("function openActivityRow");
     const openActivityRowEnd = source.indexOf("function selectSearchResult");
@@ -1380,8 +1380,10 @@ describe("Tauri state refresh wiring", () => {
     const activityRenderSource = source.slice(activityRenderStart, activityRenderEnd);
 
     expect(openActivityRowStart).toBeGreaterThanOrEqual(0);
-    expect(openActivityRowSource).toContain("api.selectSearchResult(roomId, eventId)");
-    expect(openActivityRowSource).toContain('setRightPanelMode("focusedContext")');
+    expect(openActivityRowSource).toContain(".selectSearchResult(roomId, eventId)");
+    expect(openActivityRowSource).toContain("api.closeFocusedContext()");
+    expect(openActivityRowSource).toContain('setRightPanelMode("closed")');
+    expect(openActivityRowSource).not.toContain('setRightPanelMode("focusedContext")');
     expect(openActivityRowSource).not.toContain('setRightPanelMode("search")');
     expect(activityRenderSource).toContain("openActivityRow(row.room_id, row.event_id)");
     expect(activityRenderSource).not.toContain("selectSearchResult(row.room_id, row.event_id)");
