@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(serde::Serialize)]
+pub struct OidcAuthorizationResponse {
+    pub authorization_url: String,
+    pub state: String,
+}
+
 #[tauri::command]
 pub async fn get_snapshot(
     app: AppHandle,
@@ -22,6 +28,73 @@ pub async fn discover_login_methods(
         .map_err(|e| format!("command submit failed: {e}"))?;
     wait_for_auth_changed(&mut event_conn, LOGIN_EVENT_TIMEOUT).await?;
     current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn start_oidc_login(
+    homeserver: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<OidcAuthorizationResponse, String> {
+    let mut event_conn = state.inner().runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_start_oidc_login_command(request_id, homeserver))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_oidc_authorization(&mut event_conn, request_id, LOGIN_EVENT_TIMEOUT).await
+}
+
+#[tauri::command]
+pub async fn complete_oidc_login(
+    _homeserver: String,
+    callback_url: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.inner().runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_complete_oidc_login_command(
+            request_id,
+            callback_url,
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_logged_in_authenticated(&mut event_conn, request_id, LOGIN_EVENT_TIMEOUT).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+async fn wait_for_oidc_authorization(
+    event_conn: &mut koushi_core::CoreConnection,
+    request_id: koushi_core::RequestId,
+    timeout: std::time::Duration,
+) -> Result<OidcAuthorizationResponse, String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "OIDC login did not start".to_owned())?;
+        match event {
+            Ok(koushi_core::CoreEvent::Account(
+                koushi_core::AccountEvent::OidcAuthorizationCreated {
+                    request_id: ev_id,
+                    authorization_url,
+                    state,
+                },
+            )) if ev_id == request_id => {
+                return Ok(OidcAuthorizationResponse {
+                    authorization_url,
+                    state,
+                });
+            }
+            Ok(koushi_core::CoreEvent::OperationFailed {
+                request_id: ev_id, ..
+            }) if ev_id == request_id => return Err("OIDC login failed".to_owned()),
+            Err(_) => return Err("OIDC login event stream lagged".to_owned()),
+            _ => {}
+        }
+    }
 }
 
 #[tauri::command]

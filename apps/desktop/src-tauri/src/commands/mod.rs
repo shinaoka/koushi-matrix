@@ -655,6 +655,26 @@ pub(crate) fn build_discover_login_command(
     })
 }
 
+pub(crate) fn build_start_oidc_login_command(
+    request_id: koushi_core::RequestId,
+    homeserver: String,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::StartOidcLogin {
+        request_id,
+        homeserver,
+    })
+}
+
+pub(crate) fn build_complete_oidc_login_command(
+    request_id: koushi_core::RequestId,
+    callback_url: String,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::CompleteOidcLogin {
+        request_id,
+        callback_url,
+    })
+}
+
 pub(crate) fn build_switch_account_command(
     request_id: koushi_core::RequestId,
     user_id: String,

@@ -5,6 +5,7 @@ use koushi_core::command::{
     RoomKeyImportRequest, SearchCommand, SearchScope, SecureBackupPassphraseChangeRequest,
     SecureBackupSetupRequest, SyncCommand, TimelineCommand,
 };
+use koushi_core::event::{AccountEvent, CoreEvent};
 use koushi_core::ids::{AccountKey, TimelineKey};
 use koushi_state::{
     AuthSecret, IdentityResetAuthRequest, LoginRequest, MentionIntent, PresenceKind,
@@ -174,7 +175,6 @@ fn auth_discovery_and_oidc_commands_redact_debug_and_do_not_require_ready_sessio
         }),
         CoreCommand::Account(AccountCommand::CompleteOidcLogin {
             request_id,
-            homeserver: homeserver.clone(),
             callback_url: callback_url.clone(),
         }),
     ];
@@ -193,6 +193,24 @@ fn auth_discovery_and_oidc_commands_redact_debug_and_do_not_require_ready_sessio
             "Debug leaked callback URL: {debug}"
         );
     }
+}
+
+#[test]
+fn oidc_authorization_event_redacts_debug() {
+    let url = "https://issuer.example.test/auth?code=secret".to_owned();
+    let state = "csrf-secret".to_owned();
+    let event = CoreEvent::Account(AccountEvent::OidcAuthorizationCreated {
+        request_id: fake_request_id(),
+        authorization_url: url.clone(),
+        state: state.clone(),
+    });
+
+    let debug = format!("{event:?}");
+
+    assert!(debug.contains("OidcAuthorizationCreated"));
+    assert!(!debug.contains(&url));
+    assert!(!debug.contains(&state));
+    assert!(!debug.contains("issuer.example.test"));
 }
 
 #[test]

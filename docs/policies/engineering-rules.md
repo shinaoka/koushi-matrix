@@ -14,6 +14,8 @@ Last amended: 2026-06-18.
 Never log, print, commit, or store in fixtures:
 
 - access tokens, passwords, recovery keys or recovery codes
+- OAuth refresh tokens, PKCE verifiers, authorization callback query strings,
+  and delegated-auth client credentials
 - SDK store keys, search index keys, local unlock secrets
 - raw request/response bodies
 - real account private data; real room names or real discussion content in

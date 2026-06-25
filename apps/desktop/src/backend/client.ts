@@ -11,6 +11,7 @@ import type {
   ComposerSurface,
   DirectoryQuery,
   MentionIntent,
+  OidcAuthorization,
   PresenceKind,
   RoomListFilter,
   RoomModerationAction,
@@ -42,6 +43,17 @@ class TauriDesktopApi implements DesktopApi {
 
   async discoverLoginMethods(homeserver: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("discover_login_methods", { homeserver });
+  }
+
+  async startOidcLogin(homeserver: string): Promise<OidcAuthorization> {
+    return invoke<OidcAuthorization>("start_oidc_login", { homeserver });
+  }
+
+  async completeOidcLogin(
+    homeserver: string,
+    callbackUrl: string
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("complete_oidc_login", { homeserver, callbackUrl });
   }
 
   async submitLogin(

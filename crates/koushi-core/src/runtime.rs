@@ -2444,8 +2444,7 @@ fn map_core_search_scope_to_state(scope: SearchScope) -> AppSearchScope {
 fn account_command_projected_action(command: &AccountCommand) -> Option<AppAction> {
     match command {
         AccountCommand::DiscoverLogin { homeserver, .. }
-        | AccountCommand::StartOidcLogin { homeserver, .. }
-        | AccountCommand::CompleteOidcLogin { homeserver, .. } => {
+        | AccountCommand::StartOidcLogin { homeserver, .. } => {
             Some(AppAction::LoginDiscoveryRequested {
                 homeserver: homeserver.clone(),
             })
@@ -2623,6 +2622,7 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         }),
         AccountCommand::ReportUser { .. } => None,
         AccountCommand::LoginPassword { .. }
+        | AccountCommand::CompleteOidcLogin { .. }
         | AccountCommand::RestoreSession { .. }
         | AccountCommand::RestoreLastSession { .. }
         | AccountCommand::QuerySavedSessions { .. }
@@ -3340,7 +3340,7 @@ mod tests {
     }
 
     #[test]
-    fn oidc_completion_projects_auth_discovery_before_actor_placeholder() {
+    fn oidc_completion_has_no_runtime_projection_before_actor_completion() {
         let request_id = RequestId {
             connection_id: RuntimeConnectionId(1),
             sequence: 8,
@@ -3349,12 +3349,9 @@ mod tests {
         assert_eq!(
             account_command_projected_action(&AccountCommand::CompleteOidcLogin {
                 request_id,
-                homeserver: "https://matrix.example.org".to_owned(),
                 callback_url: "koushi-desktop://auth/callback?code=secret".to_owned(),
             }),
-            Some(AppAction::LoginDiscoveryRequested {
-                homeserver: "https://matrix.example.org".to_owned(),
-            })
+            None
         );
     }
 

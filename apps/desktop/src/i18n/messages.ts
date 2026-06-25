@@ -35,6 +35,7 @@ export type MessageId =
   | "auth.checkLoginMethods"
   | "auth.connecting"
   | "auth.continue"
+  | "auth.createAccount"
   | "auth.deviceName"
   | "auth.encryptionRecovery"
   | "app.about"
@@ -934,6 +935,7 @@ const en: Catalog = {
   "auth.checkLoginMethods": "Check login methods",
   "auth.connecting": "Connecting",
   "auth.continue": "Continue",
+  "auth.createAccount": "Create account",
   "auth.deviceName": "Device name",
   "auth.encryptionRecovery": "Encryption Recovery",
   "app.about": "About Koushi",
@@ -1751,6 +1753,7 @@ const ja: Catalog = {
   "auth.checkLoginMethods": "ログイン方法を確認",
   "auth.connecting": "接続中",
   "auth.continue": "続行",
+  "auth.createAccount": "アカウントを作成",
   "auth.deviceName": "デバイス名",
   "auth.encryptionRecovery": "暗号化リカバリ",
   "app.about": "Koushi（光子・格子）について",

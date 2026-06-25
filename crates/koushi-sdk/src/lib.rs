@@ -7,7 +7,13 @@ use koushi_state::{
     room_attention_summary,
 };
 use matrix_sdk::{
-    authentication::matrix::MatrixSession,
+    authentication::{
+        matrix::MatrixSession,
+        oauth::{
+            ClientId, ClientRegistrationData, OAuthSession, UserSession,
+            registration::{ApplicationType, ClientMetadata, Localized, OAuthGrantType},
+        },
+    },
     deserialized_responses::SyncOrStrippedState,
     encryption::{BackupDownloadStrategy, EncryptionSettings},
     room::ParentSpace,
@@ -18,6 +24,7 @@ use matrix_sdk::{
         },
         serde::Raw,
     },
+    utils::UrlOrQuery,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -51,6 +58,55 @@ pub struct MatrixLoginDiscovery {
     pub homeserver: String,
     pub flows: Vec<MatrixLoginFlow>,
     pub delegated: DelegatedAuthLinks,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct OidcAuthorization {
+    pub authorization_url: String,
+    pub state: String,
+}
+
+impl fmt::Debug for OidcAuthorization {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OidcAuthorization")
+            .field("authorization_url", &"AuthorizationUrl(..)")
+            .field("state", &"CsrfState(..)")
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+pub enum PendingOidcLogin {
+    OAuth {
+        client: matrix_sdk::Client,
+        homeserver: String,
+    },
+    Sso {
+        client: matrix_sdk::Client,
+        homeserver: String,
+    },
+}
+
+impl PendingOidcLogin {
+    pub fn homeserver(&self) -> &str {
+        match self {
+            Self::OAuth { homeserver, .. } | Self::Sso { homeserver, .. } => homeserver,
+        }
+    }
+}
+
+impl fmt::Debug for PendingOidcLogin {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct("PendingOidcLogin");
+        match self {
+            Self::OAuth { .. } => debug.field("kind", &"OAuth"),
+            Self::Sso { .. } => debug.field("kind", &"Sso"),
+        }
+        .field("client", &"MatrixClient(..)")
+        .field("homeserver", &"Homeserver(..)")
+        .finish()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1702,6 +1758,16 @@ impl MatrixClientSession {
     }
 
     pub fn persistable_session(&self) -> Result<PersistableMatrixSession, PasswordLoginError> {
+        if let Some(oauth_session) = self.client.oauth().full_session() {
+            return Ok(PersistableMatrixSession {
+                info: self.info.clone(),
+                session: PersistableSessionKind::OAuth {
+                    user_session: oauth_session.user,
+                    client_id: oauth_session.client_id,
+                },
+            });
+        }
+
         let session = self
             .client
             .matrix_auth()
@@ -1709,7 +1775,7 @@ impl MatrixClientSession {
             .ok_or(PasswordLoginError::MissingSession)?;
         Ok(PersistableMatrixSession {
             info: self.info.clone(),
-            session,
+            session: PersistableSessionKind::Matrix(session),
         })
     }
 
@@ -1753,20 +1819,74 @@ pub enum MatrixEventCacheError {
 #[derive(Clone)]
 pub struct PersistableMatrixSession {
     pub info: SessionInfo,
-    session: MatrixSession,
+    session: PersistableSessionKind,
+}
+
+#[derive(Clone)]
+enum PersistableSessionKind {
+    Matrix(MatrixSession),
+    OAuth {
+        user_session: UserSession,
+        client_id: ClientId,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PersistableAuthKind {
+    Password,
+    OAuth,
 }
 
 impl PersistableMatrixSession {
     pub fn to_json(&self) -> Result<String, PasswordLoginError> {
-        serde_json::to_string(&SerializedPersistableMatrixSession {
-            homeserver: self.info.homeserver.clone(),
-            session: self.session.clone(),
-        })
-        .map_err(|error| PasswordLoginError::Serialization(error.to_string()))
+        match &self.session {
+            PersistableSessionKind::Matrix(session) => {
+                serde_json::to_string(&SerializedTaggedMatrixSession {
+                    auth_kind: PersistableSessionJsonKind::Password,
+                    homeserver: self.info.homeserver.clone(),
+                    session: session.clone(),
+                })
+                .map_err(|error| PasswordLoginError::Serialization(error.to_string()))
+            }
+            PersistableSessionKind::OAuth {
+                user_session,
+                client_id,
+            } => serde_json::to_string(&SerializedOauthPersistableMatrixSession {
+                auth_kind: PersistableSessionJsonKind::OAuth,
+                homeserver: self.info.homeserver.clone(),
+                user_session: user_session.clone(),
+                client_id: client_id.clone(),
+            })
+            .map_err(|error| PasswordLoginError::Serialization(error.to_string())),
+        }
     }
 
     pub fn from_json(value: &str) -> Result<Self, PasswordLoginError> {
-        let serialized = serde_json::from_str::<SerializedPersistableMatrixSession>(value)
+        let value_json = serde_json::from_str::<serde_json::Value>(value)
+            .map_err(|error| PasswordLoginError::Serialization(error.to_string()))?;
+        if value_json
+            .get("auth_kind")
+            .and_then(serde_json::Value::as_str)
+            == Some("oauth")
+        {
+            let serialized =
+                serde_json::from_value::<SerializedOauthPersistableMatrixSession>(value_json)
+                    .map_err(|error| PasswordLoginError::Serialization(error.to_string()))?;
+            let info = SessionInfo {
+                homeserver: serialized.homeserver,
+                user_id: serialized.user_session.meta.user_id.to_string(),
+                device_id: serialized.user_session.meta.device_id.to_string(),
+            };
+            return Ok(Self {
+                info,
+                session: PersistableSessionKind::OAuth {
+                    user_session: serialized.user_session,
+                    client_id: serialized.client_id,
+                },
+            });
+        }
+
+        let serialized = serde_json::from_value::<SerializedPersistableMatrixSession>(value_json)
             .map_err(|error| PasswordLoginError::Serialization(error.to_string()))?;
         let session = serialized.session;
         let info = SessionInfo {
@@ -1774,12 +1894,46 @@ impl PersistableMatrixSession {
             user_id: session.meta.user_id.to_string(),
             device_id: session.meta.device_id.to_string(),
         };
-        Ok(Self { info, session })
+        Ok(Self {
+            info,
+            session: PersistableSessionKind::Matrix(session),
+        })
     }
 
-    pub fn matrix_session(&self) -> MatrixSession {
-        self.session.clone()
+    pub fn matrix_session(&self) -> Option<MatrixSession> {
+        match &self.session {
+            PersistableSessionKind::Matrix(session) => Some(session.clone()),
+            PersistableSessionKind::OAuth { .. } => None,
+        }
     }
+
+    pub fn oauth_session(&self) -> Option<OAuthSession> {
+        match &self.session {
+            PersistableSessionKind::Matrix(_) => None,
+            PersistableSessionKind::OAuth {
+                user_session,
+                client_id,
+            } => Some(OAuthSession {
+                user: user_session.clone(),
+                client_id: client_id.clone(),
+            }),
+        }
+    }
+
+    pub fn auth_kind(&self) -> PersistableAuthKind {
+        match &self.session {
+            PersistableSessionKind::Matrix(_) => PersistableAuthKind::Password,
+            PersistableSessionKind::OAuth { .. } => PersistableAuthKind::OAuth,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PersistableSessionJsonKind {
+    Password,
+    #[serde(rename = "oauth")]
+    OAuth,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1789,11 +1943,28 @@ struct SerializedPersistableMatrixSession {
     session: MatrixSession,
 }
 
+#[derive(Serialize)]
+struct SerializedTaggedMatrixSession {
+    auth_kind: PersistableSessionJsonKind,
+    homeserver: String,
+    #[serde(flatten)]
+    session: MatrixSession,
+}
+
+#[derive(Deserialize, Serialize)]
+struct SerializedOauthPersistableMatrixSession {
+    auth_kind: PersistableSessionJsonKind,
+    homeserver: String,
+    user_session: UserSession,
+    client_id: ClientId,
+}
+
 impl std::fmt::Debug for PersistableMatrixSession {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("PersistableMatrixSession")
             .field("info", &self.info)
+            .field("auth_kind", &self.auth_kind())
             .field("session", &"MatrixSession(..)")
             .finish()
     }
@@ -2663,10 +2834,130 @@ pub async fn login_with_existing_device(
     })
 }
 
+pub async fn start_oidc_login(
+    homeserver: &str,
+    redirect_uri: &str,
+) -> Result<(PendingOidcLogin, OidcAuthorization), PasswordLoginError> {
+    let homeserver = Homeserver::parse(homeserver)?;
+    let redirect_uri =
+        Url::parse(redirect_uri).map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+    let client = build_client(&homeserver, None).await?;
+
+    match client
+        .oauth()
+        .login(
+            redirect_uri.clone(),
+            None,
+            Some(oidc_client_registration_data(redirect_uri.clone())),
+            None,
+        )
+        .build()
+        .await
+    {
+        Ok(authorization) => Ok((
+            PendingOidcLogin::OAuth {
+                client,
+                homeserver: homeserver.normalized(),
+            },
+            OidcAuthorization {
+                authorization_url: authorization.url.to_string(),
+                state: authorization.state.secret().to_owned(),
+            },
+        )),
+        Err(_) => {
+            let authorization_url = client
+                .matrix_auth()
+                .get_sso_login_url(redirect_uri.as_str(), None)
+                .await
+                .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+            Ok((
+                PendingOidcLogin::Sso {
+                    client,
+                    homeserver: homeserver.normalized(),
+                },
+                OidcAuthorization {
+                    authorization_url,
+                    state: String::new(),
+                },
+            ))
+        }
+    }
+}
+
+pub async fn finish_oidc_login(
+    pending: PendingOidcLogin,
+    callback_url: &str,
+) -> Result<MatrixClientSession, PasswordLoginError> {
+    let callback_url =
+        Url::parse(callback_url).map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+    let (client, homeserver) = match pending {
+        PendingOidcLogin::OAuth { client, homeserver } => {
+            client
+                .oauth()
+                .finish_login(callback_url.into())
+                .await
+                .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+            (client, homeserver)
+        }
+        PendingOidcLogin::Sso { client, homeserver } => {
+            client
+                .matrix_auth()
+                .login_with_sso_callback(UrlOrQuery::Url(callback_url))
+                .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?
+                .initial_device_display_name("Koushi")
+                .request_refresh_token()
+                .send()
+                .await
+                .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+            (client, homeserver)
+        }
+    };
+
+    let user_id = client
+        .user_id()
+        .ok_or(PasswordLoginError::MissingSession)?
+        .to_string();
+    let device_id = client
+        .device_id()
+        .ok_or(PasswordLoginError::MissingSession)?
+        .to_string();
+
+    Ok(MatrixClientSession {
+        client,
+        info: SessionInfo {
+            homeserver,
+            user_id,
+            device_id,
+        },
+    })
+}
+
 pub async fn restore_session(
     session: &PersistableMatrixSession,
 ) -> Result<MatrixClientSession, PasswordLoginError> {
     restore_session_with_store(session, None).await
+}
+
+fn oidc_client_registration_data(redirect_uri: Url) -> ClientRegistrationData {
+    let client_uri = Localized::new(
+        Url::parse("https://github.com/shinaoka/koushi-matrix")
+            .expect("static client URI should parse"),
+        [],
+    );
+    let metadata = ClientMetadata {
+        client_name: Some(Localized::new("Koushi".to_owned(), [])),
+        policy_uri: Some(client_uri.clone()),
+        tos_uri: Some(client_uri.clone()),
+        ..ClientMetadata::new(
+            ApplicationType::Native,
+            vec![OAuthGrantType::AuthorizationCode {
+                redirect_uris: vec![redirect_uri],
+            }],
+            client_uri,
+        )
+    };
+
+    ClientRegistrationData::new(Raw::new(&metadata).expect("OIDC client metadata should serialize"))
 }
 
 pub async fn restore_session_with_store(
@@ -2676,10 +2967,19 @@ pub async fn restore_session_with_store(
     let homeserver = Homeserver::parse(&session.info.homeserver)?;
     let client = build_client(&homeserver, store_config).await?;
 
-    client
-        .restore_session(session.matrix_session())
-        .await
-        .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+    if let Some(oauth_session) = session.oauth_session() {
+        client
+            .restore_session(oauth_session)
+            .await
+            .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+    } else if let Some(matrix_session) = session.matrix_session() {
+        client
+            .restore_session(matrix_session)
+            .await
+            .map_err(|error| PasswordLoginError::Sdk(error.to_string()))?;
+    } else {
+        return Err(PasswordLoginError::MissingSession);
+    }
 
     Ok(MatrixClientSession {
         client,
@@ -2722,6 +3022,7 @@ fn desktop_client_builder_defaults(
     builder: matrix_sdk::ClientBuilder,
 ) -> matrix_sdk::ClientBuilder {
     builder
+        .handle_refresh_tokens()
         .with_encryption_settings(EncryptionSettings {
             backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
             ..Default::default()
@@ -2745,8 +3046,16 @@ pub async fn recover_e2ee(
 }
 
 pub async fn logout(session: &MatrixClientSession) -> Result<(), PasswordLoginError> {
-    session
-        .client()
+    let client = session.client();
+    if client.oauth().full_session().is_some() {
+        return client
+            .oauth()
+            .logout()
+            .await
+            .map_err(|error| PasswordLoginError::Sdk(error.to_string()));
+    }
+
+    client
         .logout()
         .await
         .map_err(|error| PasswordLoginError::Sdk(error.to_string()))

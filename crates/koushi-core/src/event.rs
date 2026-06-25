@@ -334,8 +334,13 @@ impl fmt::Debug for LiveSignalsEvent {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AccountEvent {
+    OidcAuthorizationCreated {
+        request_id: RequestId,
+        authorization_url: String,
+        state: String,
+    },
     LoggedIn {
         request_id: RequestId,
         account_key: AccountKey,
@@ -378,6 +383,94 @@ pub enum AccountEvent {
         request_id: RequestId,
         kind: ReportKind,
     },
+}
+
+impl fmt::Debug for AccountEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OidcAuthorizationCreated { request_id, .. } => formatter
+                .debug_struct("OidcAuthorizationCreated")
+                .field("request_id", request_id)
+                .field("authorization_url", &"AuthorizationUrl(..)")
+                .field("state", &"CsrfState(..)")
+                .finish(),
+            Self::LoggedIn {
+                request_id,
+                account_key,
+            } => formatter
+                .debug_struct("LoggedIn")
+                .field("request_id", request_id)
+                .field("account_key", account_key)
+                .finish(),
+            Self::SessionRestored {
+                request_id,
+                account_key,
+            } => formatter
+                .debug_struct("SessionRestored")
+                .field("request_id", request_id)
+                .field("account_key", account_key)
+                .finish(),
+            Self::SavedSessionsListed {
+                request_id,
+                sessions,
+            } => formatter
+                .debug_struct("SavedSessionsListed")
+                .field("request_id", request_id)
+                .field("session_count", &sessions.len())
+                .finish(),
+            Self::RecoveryRequired { account_key } => formatter
+                .debug_struct("RecoveryRequired")
+                .field("account_key", account_key)
+                .finish(),
+            Self::RecoveryCompleted {
+                request_id,
+                account_key,
+            } => formatter
+                .debug_struct("RecoveryCompleted")
+                .field("request_id", request_id)
+                .field("account_key", account_key)
+                .finish(),
+            Self::LoggedOut {
+                request_id,
+                account_key,
+            } => formatter
+                .debug_struct("LoggedOut")
+                .field("request_id", request_id)
+                .field("account_key", account_key)
+                .finish(),
+            Self::AccountSwitched {
+                request_id,
+                account_key,
+            } => formatter
+                .debug_struct("AccountSwitched")
+                .field("request_id", request_id)
+                .field("account_key", account_key)
+                .finish(),
+            Self::ProfileUpdated {
+                request_id,
+                account_key,
+            } => formatter
+                .debug_struct("ProfileUpdated")
+                .field("request_id", request_id)
+                .field("account_key", account_key)
+                .finish(),
+            Self::AvatarThumbnailDownloaded {
+                request_id,
+                mxc_uri: _,
+                thumbnail,
+            } => formatter
+                .debug_struct("AvatarThumbnailDownloaded")
+                .field("request_id", request_id)
+                .field("mxc_uri", &"MxcUri(..)")
+                .field("thumbnail", thumbnail)
+                .finish(),
+            Self::ReportCompleted { request_id, kind } => formatter
+                .debug_struct("ReportCompleted")
+                .field("request_id", request_id)
+                .field("kind", kind)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]

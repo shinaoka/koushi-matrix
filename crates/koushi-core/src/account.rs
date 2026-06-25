@@ -35,7 +35,7 @@ use std::{
 
 use futures_util::StreamExt;
 use koushi_key::{SessionKeyId, StoredMatrixSession};
-use koushi_sdk::{MatrixClientSession, PersistableMatrixSession};
+use koushi_sdk::{MatrixClientSession, PendingOidcLogin, PersistableMatrixSession};
 use koushi_state::{
     AccountManagementOperation, AppAction, AuthFailureKind, AvatarImage,
     AvatarThumbnailFailureKind, AvatarThumbnailState, CrossSigningStatus, DeviceSessionSummary,
@@ -80,6 +80,7 @@ const SESSION_NOT_FOUND_FAILURE: CoreFailure = CoreFailure::SessionNotFound;
 const AVATAR_DOWNLOAD_CONCURRENCY: usize = 6;
 const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
 const SERVER_LOGOUT_TIMEOUT: Duration = Duration::from_secs(10);
+const OIDC_REDIRECT_URI: &str = "koushi-desktop://auth/callback";
 
 /// Redacted message used in reducer error projections (never raw SDK text).
 const RESTORE_FAILED_MESSAGE: &str = "session restore failed";
@@ -271,6 +272,9 @@ pub struct AccountActor {
     /// supplies interactive auth. Secrets (password, UIA session) are held
     /// only inside this actor-private map, never in reducer state.
     pending_uia_operations: BTreeMap<u64, PendingUiaOperation>,
+    /// Pending OAuth authorization-code flow, keyed by originating request id.
+    /// Holds SDK client, PKCE verifier, and CSRF validation data inside Rust.
+    pending_oidc_login: Option<(RequestId, PendingOidcLogin)>,
     /// Pending SDK verification request continuation, held only inside
     /// AccountActor and never projected into AppState.
     verification_request: Option<PendingVerificationRequest>,
@@ -357,6 +361,7 @@ impl AccountActor {
             identity_reset_handle: None,
             device_session_ordinals: BTreeMap::new(),
             pending_uia_operations: BTreeMap::new(),
+            pending_oidc_login: None,
             verification_request: None,
             sas_verification: None,
             verification_request_observer: None,
@@ -1183,11 +1188,9 @@ impl AccountActor {
             }
             AccountCommand::CompleteOidcLogin {
                 request_id,
-                homeserver,
                 callback_url,
             } => {
-                self.handle_complete_oidc_login(request_id, homeserver, callback_url)
-                    .await;
+                self.handle_complete_oidc_login(request_id, callback_url).await;
             }
             AccountCommand::LoginPassword {
                 request_id,
@@ -2869,23 +2872,125 @@ impl AccountActor {
         }
     }
 
-    async fn handle_start_oidc_login(&mut self, _request_id: RequestId, homeserver: String) {
-        self.reduce(vec![AppAction::LoginDiscoveryFailed {
-            homeserver,
-            kind: AuthFailureKind::Unsupported,
-        }]);
+    async fn handle_start_oidc_login(&mut self, request_id: RequestId, homeserver: String) {
+        match koushi_sdk::start_oidc_login(&homeserver, OIDC_REDIRECT_URI).await {
+            Ok((pending, authorization)) => {
+                self.pending_oidc_login = Some((request_id, pending));
+                self.emit(CoreEvent::Account(AccountEvent::OidcAuthorizationCreated {
+                    request_id,
+                    authorization_url: authorization.authorization_url,
+                    state: authorization.state,
+                }));
+            }
+            Err(error) => {
+                let kind = classify_auth_error(&error);
+                self.reduce(vec![AppAction::LoginDiscoveryFailed { homeserver, kind }]);
+                self.emit_failure(request_id, CoreFailure::AccountOperationFailed { kind });
+            }
+        }
     }
 
     async fn handle_complete_oidc_login(
         &mut self,
-        _request_id: RequestId,
-        homeserver: String,
-        _callback_url: String,
+        request_id: RequestId,
+        callback_url: String,
     ) {
-        self.reduce(vec![AppAction::LoginDiscoveryFailed {
-            homeserver,
-            kind: AuthFailureKind::Unsupported,
-        }]);
+        let Some((start_request_id, pending)) = self.pending_oidc_login.take() else {
+            self.reduce(vec![AppAction::LoginDiscoveryFailed {
+                homeserver: String::new(),
+                kind: AuthFailureKind::Cancelled,
+            }]);
+            self.emit_failure(
+                request_id,
+                CoreFailure::AccountOperationFailed {
+                    kind: AuthFailureKind::Cancelled,
+                },
+            );
+            return;
+        };
+        let homeserver = pending.homeserver().to_owned();
+
+        let login_session = match koushi_sdk::finish_oidc_login(pending, &callback_url).await {
+            Ok(session) => session,
+            Err(error) => {
+                let kind = classify_auth_error(&error);
+                self.reduce(vec![AppAction::LoginDiscoveryFailed { homeserver, kind }]);
+                self.emit_failure(request_id, CoreFailure::AccountOperationFailed { kind });
+                return;
+            }
+        };
+
+        let info = login_session.info.clone();
+        let key_id = session_key_id_from_info(&info);
+        let account_key = account_key_from_info(&info);
+
+        let persistable = match self.persist_session(&login_session, &key_id) {
+            Ok(persistable) => persistable,
+            Err(failure) => {
+                self.abort_login(login_session, &key_id, false).await;
+                self.emit_failure(request_id, failure);
+                self.reduce(vec![AppAction::LoginFailed {
+                    message: "login failed".to_owned(),
+                }]);
+                return;
+            }
+        };
+
+        let store_backed = match self.restore_into_store(&persistable, &key_id).await {
+            Ok(session) => session,
+            Err(failure) => {
+                self.abort_login(login_session, &key_id, true).await;
+                self.emit_failure(request_id, failure);
+                self.reduce(vec![AppAction::LoginFailed {
+                    message: "login failed".to_owned(),
+                }]);
+                return;
+            }
+        };
+
+        drop(login_session);
+
+        let session_arc = Arc::new(store_backed);
+        self.device_session_ordinals.clear();
+        self.pending_uia_operations.clear();
+        self.session = Some(session_arc.clone());
+        self.session_key_id = Some(key_id);
+
+        self.spawn_sync_actor(session_arc.clone()).await;
+
+        let mut actions = vec![AppAction::LoginSucceeded(info)];
+        if let Some(profile_action) = own_profile_action_from_session(&session_arc).await {
+            actions.push(profile_action);
+        }
+        if let Some(alias_action) = local_user_aliases_action_from_session(&session_arc).await {
+            actions.push(alias_action);
+        }
+        if let Some(action) = ignored_user_ids_action_from_session(&session_arc).await {
+            if let AppAction::IgnoredUsersLoaded { ref user_ids } = action {
+                let _ = self
+                    .timeline_manager
+                    .send(TimelineMessage::IgnoredUsersUpdated {
+                        user_ids: user_ids.clone(),
+                    })
+                    .await;
+            }
+            actions.push(action);
+        }
+        self.reduce(actions);
+
+        self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
+            request_id: start_request_id,
+            account_key: account_key.clone(),
+        }));
+        if request_id != start_request_id {
+            self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
+                request_id,
+                account_key,
+            }));
+        }
+
+        self.start_recovery_observer(session_arc.clone());
+        self.start_incoming_verification_observer(session_arc);
     }
 
     async fn handle_login_password(&mut self, request_id: RequestId, request: LoginRequest) {
@@ -4646,6 +4751,28 @@ fn login_discovery_failure_kind(error: &koushi_sdk::LoginDiscoveryError) -> Auth
     }
 }
 
+fn classify_auth_error(error: &koushi_sdk::PasswordLoginError) -> AuthFailureKind {
+    match error {
+        koushi_sdk::PasswordLoginError::InvalidHomeserver(discovery_err) => {
+            login_discovery_failure_kind(discovery_err)
+        }
+        koushi_sdk::PasswordLoginError::Sdk(message) => {
+            if message.contains("401")
+                || message.contains("403")
+                || message.contains("M_FORBIDDEN")
+                || message.contains("M_UNAUTHORIZED")
+            {
+                AuthFailureKind::Forbidden
+            } else {
+                AuthFailureKind::Sdk
+            }
+        }
+        koushi_sdk::PasswordLoginError::Runtime(_)
+        | koushi_sdk::PasswordLoginError::MissingSession
+        | koushi_sdk::PasswordLoginError::Serialization(_) => AuthFailureKind::Sdk,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures_util::stream;
@@ -5176,6 +5303,7 @@ mod tests {
             messages_backpressure,
             data_dir: data_dir_path,
             link_preview_policy: LinkPreviewContext::default(),
+            pending_oidc_login: None,
             search_actor: None,
             threads_list_actor: None,
             recovery_observer: None,
