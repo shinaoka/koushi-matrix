@@ -50,6 +50,7 @@ const MENU_ID_OPEN_USER_SETTINGS: &str = "open_user_settings";
 const MENU_ID_SIGN_OUT: &str = "sign_out";
 const MENU_ID_SHOW_KEYBOARD_SETTINGS: &str = "show_keyboard_settings";
 const MENU_ID_TOGGLE_RIGHT_PANEL: &str = "toggle_right_panel";
+const MENU_ID_TOGGLE_FULLSCREEN: &str = "toggle_fullscreen";
 const MIN_RESTORABLE_WINDOW_WIDTH: u32 = 760;
 const MIN_RESTORABLE_WINDOW_HEIGHT: u32 = 620;
 #[cfg(any(debug_assertions, test))]
@@ -83,7 +84,7 @@ pub(crate) struct DesktopStandardMenuItem {
 }
 
 pub(crate) fn desktop_menu_items() -> Vec<DesktopMenuItem> {
-    vec![
+    let mut items = vec![
         DesktopMenuItem {
             id: MENU_ID_OPEN_USER_SETTINGS,
             label: "User Settings",
@@ -108,7 +109,17 @@ pub(crate) fn desktop_menu_items() -> Vec<DesktopMenuItem> {
             menu: "help",
             accelerator: "CmdOrCtrl+/",
         },
-    ]
+    ];
+
+    #[cfg(target_os = "macos")]
+    items.push(DesktopMenuItem {
+        id: MENU_ID_TOGGLE_FULLSCREEN,
+        label: "Toggle Fullscreen",
+        menu: "view",
+        accelerator: "Ctrl+Command+F",
+    });
+
+    items
 }
 
 #[cfg(test)]
@@ -135,6 +146,7 @@ fn desktop_menu_action_id(menu_id: &str) -> Option<&'static str> {
         MENU_ID_SIGN_OUT => Some("logout"),
         MENU_ID_TOGGLE_RIGHT_PANEL => Some("toggleRightPanel"),
         MENU_ID_SHOW_KEYBOARD_SETTINGS => Some("showKeyboardSettings"),
+        MENU_ID_TOGGLE_FULLSCREEN => Some("toggleFullscreen"),
         _ => None,
     }
 }
@@ -606,6 +618,9 @@ fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
     let toggle_right_panel = menu_item(manager, MENU_ID_TOGGLE_RIGHT_PANEL)?;
     let show_keyboard_settings = menu_item(manager, MENU_ID_SHOW_KEYBOARD_SETTINGS)?;
 
+    #[cfg(target_os = "macos")]
+    let toggle_fullscreen = menu_item(manager, MENU_ID_TOGGLE_FULLSCREEN)?;
+
     let app_menu = SubmenuBuilder::new(manager, "Koushi")
         .item(&open_user_settings)
         .item(&sign_out)
@@ -624,9 +639,12 @@ fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
         .paste()
         .select_all()
         .build()?;
-    let view_menu = SubmenuBuilder::new(manager, "View")
-        .item(&toggle_right_panel)
-        .build()?;
+    let view_menu = {
+        let builder = SubmenuBuilder::new(manager, "View").item(&toggle_right_panel);
+        #[cfg(target_os = "macos")]
+        let builder = builder.item(&toggle_fullscreen);
+        builder.build()?
+    };
     let help_menu = SubmenuBuilder::new(manager, "Help")
         .item(&show_keyboard_settings)
         .build()?;
@@ -638,6 +656,15 @@ fn build_desktop_menu<R: tauri::Runtime, M: Manager<R>>(
         .item(&view_menu)
         .item(&help_menu)
         .build()
+}
+
+#[cfg(target_os = "macos")]
+fn toggle_main_window_fullscreen(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if let Ok(fullscreen) = window.is_fullscreen() {
+            let _ = window.set_fullscreen(!fullscreen);
+        }
+    }
 }
 
 fn menu_item<R: tauri::Runtime, M: Manager<R>>(
@@ -960,6 +987,11 @@ pub fn run() {
             let _ = restore_main_window_state(app);
             ensure_main_window_visible(app);
             app.on_menu_event(|app, event| {
+                #[cfg(target_os = "macos")]
+                if event.id().as_ref() == MENU_ID_TOGGLE_FULLSCREEN {
+                    toggle_main_window_fullscreen(app);
+                    return;
+                }
                 if let Some(action_id) = desktop_menu_action_id(event.id().as_ref()) {
                     let _ = app.emit(MENU_EVENT_NAME, action_id);
                 }
@@ -1650,6 +1682,13 @@ mod tests {
         assert!(items.iter().any(|item| {
             item.id == "toggle_right_panel"
                 && item.accelerator == "CmdOrCtrl+."
+                && item.menu == "view"
+        }));
+
+        #[cfg(target_os = "macos")]
+        assert!(items.iter().any(|item| {
+            item.id == "toggle_fullscreen"
+                && item.accelerator == "Ctrl+Command+F"
                 && item.menu == "view"
         }));
     }
