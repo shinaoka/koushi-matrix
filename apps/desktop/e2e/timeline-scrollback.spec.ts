@@ -91,6 +91,14 @@ function makeVariableHeightItem(index: number) {
   return makeItem(`$vh${String(index).padStart(3, "0")}`, body);
 }
 
+function makeTallItem(index: number) {
+  // 10 lines makes each row taller than the 72px default estimate, so the
+  // initial scroll-to-bottom based on estimated heights lands above the real
+  // live edge before measurement settles.
+  const body = Array.from({ length: 10 }, (_, line) => `tall ${index} line ${line}`).join("\n");
+  return makeItem(`$tall${String(index).padStart(3, "0")}`, body);
+}
+
 test("initial timeline load and remount start at the live edge", async ({ page }) => {
   await page.goto("/harness.html");
   await page.waitForSelector("[data-testid=timeline-view]");
@@ -109,6 +117,447 @@ test("initial timeline load and remount start at the live edge", async ({ page }
   const remountedContainer = page.locator("[data-testid=timeline-view]");
   await expect(remountedContainer.locator("[data-item-id]")).toHaveCount(30);
   await expectTimelineScrolledToBottom(remountedContainer);
+});
+
+test("initial short load grows to the live edge on later PushBack", async ({ page }) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 1, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 5 }, (_, i) =>
+        makeItem(`$short${String(i).padStart(2, "0")}`, `short ${i}`)
+      )
+    }
+  );
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container.locator("[data-item-id]")).toHaveCount(5);
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key,
+            generation: 1,
+            batch_id: 1,
+            diffs: items.map((item) => ({ PushBack: { item } }))
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 50 }, (_, i) =>
+        makeItem(`$grow${String(i).padStart(2, "0")}`, `grow ${i}`)
+      )
+    }
+  );
+
+  await expect(container.locator("[data-item-id]")).toHaveCount(55);
+  await expectTimelineScrolledToBottom(container);
+});
+
+test("short initial load stays stable when the user scrolls up slightly", async ({ page }) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 1, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 5 }, (_, i) =>
+        makeItem(`$short${String(i).padStart(2, "0")}`, `short ${i}`)
+      )
+    }
+  );
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container.locator("[data-item-id]")).toHaveCount(5);
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key,
+            generation: 1,
+            batch_id: 1,
+            diffs: items.map((item) => ({ PushBack: { item } }))
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 50 }, (_, i) =>
+        makeItem(`$grow${String(i).padStart(2, "0")}`, `grow ${i}`)
+      )
+    }
+  );
+
+  await expect(container.locator("[data-item-id]")).toHaveCount(55);
+  await expectTimelineScrolledToBottom(container);
+
+  const maxScrollTop = await container.evaluate(
+    (node) => node.scrollHeight - node.clientHeight
+  );
+  const targetScrollTop = Math.max(0, maxScrollTop - 100);
+
+  // Simulate a small user scroll up from the live edge.
+  await container.evaluate((node, target) => {
+    node.scrollTop = target;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  }, targetScrollTop);
+
+  await page.waitForTimeout(500);
+
+  const finalScrollTop = await container.evaluate((node) => node.scrollTop);
+  // If the component snaps back to the bottom or jumps to the top quarter,
+  // this assertion fails.
+  expect(Math.abs(finalScrollTop - targetScrollTop)).toBeLessThanOrEqual(10);
+});
+
+test("short variable-height load stays stable when the user scrolls up slightly", async ({ page }) => {
+  await page.goto("/harness.html?variableHeights=true");
+  await page.waitForSelector("[data-testid=timeline-view]");
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 1, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 5 }, (_, i) =>
+        makeItem(`$short${String(i).padStart(2, "0")}`, `short ${i}`)
+      )
+    }
+  );
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container.locator("[data-item-id]")).toHaveCount(5);
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key,
+            generation: 1,
+            batch_id: 1,
+            diffs: items.map((item) => ({ PushBack: { item } }))
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 800 }, (_, i) => makeVariableHeightItem(i))
+    }
+  );
+
+  await expect(container).toHaveAttribute("data-virtualized", "true");
+  await expectTimelineScrolledToBottom(container);
+
+  // The live edge must actually be rendered, not just scrolled to an empty
+  // padding area with stale viewport metrics.
+  await expect(page.locator('[data-item-id="$vh799"]')).toBeVisible();
+
+  const maxScrollTop = await container.evaluate(
+    (node) => node.scrollHeight - node.clientHeight
+  );
+  const targetScrollTop = Math.max(0, maxScrollTop - 100);
+
+  await container.evaluate((node, target) => {
+    node.scrollTop = target;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  }, targetScrollTop);
+
+  await page.waitForTimeout(500);
+
+  const finalScrollTop = await container.evaluate((node) => node.scrollTop);
+  expect(Math.abs(finalScrollTop - targetScrollTop)).toBeLessThanOrEqual(10);
+});
+
+test("tall variable-height initial load snaps to the real live edge after measurement", async ({ page }) => {
+  await page.goto("/harness.html?variableHeights=true");
+  await page.waitForSelector("[data-testid=timeline-view]");
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 1, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 5 }, (_, i) =>
+        makeItem(`$short${String(i).padStart(2, "0")}`, `short ${i}`)
+      )
+    }
+  );
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container.locator("[data-item-id]")).toHaveCount(5);
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key,
+            generation: 1,
+            batch_id: 1,
+            diffs: items.map((item) => ({ PushBack: { item } }))
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 800 }, (_, i) => makeTallItem(i))
+    }
+  );
+
+  await expect(container).toHaveAttribute("data-virtualized", "true");
+  await expectTimelineScrolledToBottom(container);
+
+  // The real live edge must be rendered. Before the fix, the viewport landed
+  // in the middle of the list because estimated heights were too low.
+  await expect(page.locator('[data-item-id="$tall799"]')).toBeVisible();
+});
+
+test("auto-backfill after short non-virtualized growth keeps the viewport stable", async ({ page }) => {
+  await page.goto("/harness.html?autoLoadOlderMessages=true");
+  await page.waitForSelector("[data-testid=timeline-view]");
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 1, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 5 }, (_, i) =>
+        makeItem(`$short${String(i).padStart(2, "0")}`, `short ${i}`)
+      )
+    }
+  );
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container.locator("[data-item-id]")).toHaveCount(5);
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key,
+            generation: 1,
+            batch_id: 1,
+            diffs: items.map((item) => ({ PushBack: { item } }))
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 100 }, (_, i) =>
+        makeItem(`$grow${String(i).padStart(2, "0")}`, `grow ${i}`)
+      )
+    }
+  );
+
+  await expect(container.locator("[data-item-id]")).toHaveCount(105);
+  await expectTimelineScrolledToBottom(container);
+
+  const maxScrollTopBefore = await container.evaluate(
+    (node) => node.scrollHeight - node.clientHeight
+  );
+
+  // A small scroll up from the live edge in a short list should NOT trigger
+  // auto-backfill; this was causing a jarring viewport jump when older
+  // messages arrived immediately after a tiny scroll gesture.
+  const slightScrollTop = Math.max(0, maxScrollTopBefore - 50);
+  await container.evaluate((node, target) => {
+    node.scrollTop = target;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  }, slightScrollTop);
+  await page.waitForTimeout(200);
+  const backfillAfterSlightScroll = await page.evaluate(
+    () => window.__harness.invocationsOf("paginate_timeline_backwards").length
+  );
+  expect(backfillAfterSlightScroll).toBe(0);
+
+  // Scrolling near the top of the short list still triggers the intended
+  // prefetch behavior.
+  await container.evaluate((node) => {
+    node.scrollTop = 40;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("paginate_timeline_backwards").length
+      )
+    )
+    .toBeGreaterThanOrEqual(1);
+
+  // Simulate core responding with older messages.
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key,
+            generation: 1,
+            batch_id: 2,
+            diffs: items.map((item) => ({ PushFront: { item } }))
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 50 }, (_, i) =>
+        makeItem(`$older${String(i).padStart(2, "0")}`, `older ${i}`)
+      )
+    }
+  );
+
+  await expect(container.locator("[data-item-id]")).toHaveCount(155);
+});
+
+test("short timeline does not auto-backfill on a small scroll up from the live edge", async ({ page }) => {
+  await page.goto("/harness.html?autoLoadOlderMessages=true");
+  await page.waitForSelector("[data-testid=timeline-view]");
+
+  // 50 items × 48px = 2400px total height; the desired 100-item prefetch
+  // window (7200px) is larger than the whole list. A small scroll up from
+  // the live edge must not immediately request older messages, otherwise the
+  // prepend + anchor restoration causes a jarring viewport jump.
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 1, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 50 }, (_, i) =>
+        makeItem(`$short${String(i).padStart(2, "0")}`, `short ${i}`)
+      )
+    }
+  );
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container.locator("[data-item-id]")).toHaveCount(50);
+  await expectTimelineScrolledToBottom(container);
+
+  const maxScrollTop = await container.evaluate(
+    (node) => node.scrollHeight - node.clientHeight
+  );
+  const slightScrollTop = Math.max(0, maxScrollTop - 120);
+
+  await container.evaluate((node, target) => {
+    node.scrollTop = target;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  }, slightScrollTop);
+
+  await page.waitForTimeout(200);
+
+  const backfillCount = await page.evaluate(
+    () => window.__harness.invocationsOf("paginate_timeline_backwards").length
+  );
+  expect(backfillCount).toBe(0);
+
+  // Scrolling near the top of the short list still triggers backfill.
+  await container.evaluate((node) => {
+    node.scrollTop = 40;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("paginate_timeline_backwards").length
+      )
+    )
+    .toBeGreaterThanOrEqual(1);
+});
+
+test("variable-height initial load starts at the live edge", async ({ page }) => {
+  await page.goto("/harness.html?variableHeights=true");
+  await page.waitForSelector("[data-testid=timeline-view]");
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 1, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 1_000 }, (_, index) => makeVariableHeightItem(index))
+    }
+  );
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container).toHaveAttribute("data-virtualized", "true");
+  await expectTimelineScrolledToBottom(container);
 });
 
 test("virtualized jump remains stable after variable-height rows are measured", async ({

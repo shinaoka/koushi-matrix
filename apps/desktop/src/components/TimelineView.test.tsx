@@ -834,7 +834,7 @@ describe("TimelineView", () => {
     });
 
     await waitFor(() => {
-      expect(timeline.scrollTop).toBe(2000);
+      expect(timeline.scrollTop).toBe(1400);
     });
     expect(restoreTimelineAnchor).toHaveBeenCalledTimes(1);
   });
@@ -881,7 +881,7 @@ describe("TimelineView", () => {
     });
 
     await waitFor(() => {
-      expect(timeline.scrollTop).toBe(2000);
+      expect(timeline.scrollTop).toBe(1500);
     });
 
     timeline.scrollTop = 100;
@@ -903,7 +903,7 @@ describe("TimelineView", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Second generation")).toBeTruthy();
-      expect(timeline.scrollTop).toBe(2000);
+      expect(timeline.scrollTop).toBe(1500);
     });
   });
 
@@ -950,7 +950,7 @@ describe("TimelineView", () => {
     });
 
     await waitFor(() => {
-      expect(timeline.scrollTop).toBe(2400);
+      expect(timeline.scrollTop).toBe(1800);
     });
 
     timeline.scrollTop = 400;
@@ -982,7 +982,7 @@ describe("TimelineView", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Message I just sent")).toBeTruthy();
-      expect(timeline.scrollTop).toBe(2400);
+      expect(timeline.scrollTop).toBe(1800);
     });
   });
 
