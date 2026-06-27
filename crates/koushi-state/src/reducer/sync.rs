@@ -24,11 +24,17 @@ pub(crate) fn handle_sync_failed(state: &mut AppState, reason: String) -> Vec<Ap
         return Vec::new();
     }
 
+    // Auth failures are terminal: the session token is invalid and retrying
+    // will loop forever. Leave the sync in Failed state without scheduling a
+    // restart so the GUI can surface an error and prompt the user to log in.
+    let retry = reason != "sync_failed_auth";
+
     state.sync = SyncState::Failed { reason };
-    vec![
-        AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
-        AppEffect::StartSync,
-    ]
+    let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
+    if retry {
+        effects.push(AppEffect::StartSync);
+    }
+    effects
 }
 
 pub(crate) fn handle_sync_reconnecting(state: &mut AppState, reason: String) -> Vec<AppEffect> {
