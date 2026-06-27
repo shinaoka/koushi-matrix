@@ -436,7 +436,7 @@ test("auto-backfill after short non-virtualized growth keeps the viewport stable
   // Scrolling near the top of the short list still triggers the intended
   // prefetch behavior.
   await container.evaluate((node) => {
-    node.scrollTop = 100;
+    node.scrollTop = 40;
     node.dispatchEvent(new Event("scroll", { bubbles: true }));
   });
   await expect
@@ -472,6 +472,67 @@ test("auto-backfill after short non-virtualized growth keeps the viewport stable
   );
 
   await expect(container.locator("[data-item-id]")).toHaveCount(155);
+});
+
+test("short timeline does not auto-backfill on a small scroll up from the live edge", async ({ page }) => {
+  await page.goto("/harness.html?autoLoadOlderMessages=true");
+  await page.waitForSelector("[data-testid=timeline-view]");
+
+  // 50 items × 48px = 2400px total height; the desired 100-item prefetch
+  // window (7200px) is larger than the whole list. A small scroll up from
+  // the live edge must not immediately request older messages, otherwise the
+  // prepend + anchor restoration causes a jarring viewport jump.
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 1, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 50 }, (_, i) =>
+        makeItem(`$short${String(i).padStart(2, "0")}`, `short ${i}`)
+      )
+    }
+  );
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container.locator("[data-item-id]")).toHaveCount(50);
+  await expectTimelineScrolledToBottom(container);
+
+  const maxScrollTop = await container.evaluate(
+    (node) => node.scrollHeight - node.clientHeight
+  );
+  const slightScrollTop = Math.max(0, maxScrollTop - 120);
+
+  await container.evaluate((node, target) => {
+    node.scrollTop = target;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  }, slightScrollTop);
+
+  await page.waitForTimeout(200);
+
+  const backfillCount = await page.evaluate(
+    () => window.__harness.invocationsOf("paginate_timeline_backwards").length
+  );
+  expect(backfillCount).toBe(0);
+
+  // Scrolling near the top of the short list still triggers backfill.
+  await container.evaluate((node) => {
+    node.scrollTop = 40;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__harness.invocationsOf("paginate_timeline_backwards").length
+      )
+    )
+    .toBeGreaterThanOrEqual(1);
 });
 
 test("variable-height initial load starts at the live edge", async ({ page }) => {

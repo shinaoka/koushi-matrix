@@ -2919,12 +2919,14 @@ export const TimelineView = memo(function TimelineView({
       : 0;
     const maxScrollTop = container.scrollHeight - container.clientHeight;
     // Only prefetch when the viewport is actually near the top edge. If the
-    // loaded timeline is shorter than the desired prefetch window, cap the
-    // threshold so that a small scroll up from the live edge does not
-    // immediately fire a backfill request (and the prepend/anchor restoration
-    // that can follow).
+    // loaded timeline is shorter than the desired prefetch window, fall back
+    // to the near-top threshold so that a small scroll up from the live edge
+    // does not immediately fire a backfill request (and the prepend/anchor
+    // restoration that can follow).
     const backfillThreshold = autoLoadOlderMessages
-      ? Math.max(AUTO_BACKFILL_THRESHOLD_PX, Math.min(maxScrollTop - AUTO_BACKFILL_THRESHOLD_PX, desiredBackfillThreshold))
+      ? (maxScrollTop > desiredBackfillThreshold
+          ? desiredBackfillThreshold
+          : AUTO_BACKFILL_THRESHOLD_PX)
       : 0;
     if (container.scrollTop > backfillThreshold) {
       return;
