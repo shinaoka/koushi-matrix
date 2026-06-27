@@ -83,7 +83,7 @@ describe("shortcut registry", () => {
     expect(menuAccelerators()).toContainEqual({
       id: "toggleFullscreen",
       accelerator: "Ctrl+Command+F",
-      nativeMenu: "window"
+      nativeMenu: "view"
     });
   });
 
