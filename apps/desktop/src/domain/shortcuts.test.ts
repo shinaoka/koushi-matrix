@@ -50,7 +50,7 @@ describe("shortcut registry", () => {
     });
     expect(shortcutById("toggleFullscreen")).toMatchObject({
       labelMessageId: "shortcut.toggleFullscreen",
-      keys: ["Cmd", "Shift", "F"],
+      keys: ["Cmd", "Ctrl", "F"],
       platforms: ["macos"],
       parity: "same",
       implemented: true
@@ -82,7 +82,7 @@ describe("shortcut registry", () => {
     });
     expect(menuAccelerators()).toContainEqual({
       id: "toggleFullscreen",
-      accelerator: "CmdOrCtrl+Shift+F",
+      accelerator: "Ctrl+Command+F",
       nativeMenu: "window"
     });
   });
@@ -138,10 +138,10 @@ describe("shortcut registry", () => {
         altKey: false
       })
     ).toBe("toggleRightPanel");
-    // macOS: Cmd+Shift+F → toggleFullscreen
+    // macOS: Cmd+Ctrl+F → toggleFullscreen
     expect(
       shortcutIdForKeyboardEvent(
-        { key: "f", ctrlKey: false, metaKey: true, shiftKey: true, altKey: false },
+        { key: "f", ctrlKey: true, metaKey: true, shiftKey: false, altKey: false },
         "macos"
       )
     ).toBe("toggleFullscreen");
@@ -168,10 +168,10 @@ describe("shortcut registry", () => {
         "macos"
       )
     ).toBe("searchInRoom");
-    // Cmd+Shift+F → toggleFullscreen on macOS (must not resolve to searchInRoom).
+    // Cmd+Ctrl+F → toggleFullscreen on macOS (must not resolve to searchInRoom).
     expect(
       shortcutIdForKeyboardEvent(
-        { key: "f", ctrlKey: false, metaKey: true, shiftKey: true, altKey: false },
+        { key: "f", ctrlKey: true, metaKey: true, shiftKey: false, altKey: false },
         "macos"
       )
     ).toBe("toggleFullscreen");
