@@ -59,7 +59,7 @@ import {
   type SetStateAction
 } from "react";
 
-import { t } from "../i18n/messages";
+import { getActiveLocale, t } from "../i18n/messages";
 import { useRecoverableImageSource } from "./avatarImage";
 import {
   contextMenuItems,
@@ -4758,7 +4758,7 @@ function formatReactionTooltip(
       : previewLabels;
   const names =
     labels.length > 0
-      ? new Intl.ListFormat(undefined, { style: "long", type: "conjunction" }).format(labels)
+      ? new Intl.ListFormat(getActiveLocale(), { style: "long", type: "conjunction" }).format(labels)
       : t("timeline.reactionSenderUnknown", { count: totalCount });
   return t("timeline.reactionTooltip", { names, key: reactionKey });
 }
@@ -4778,7 +4778,7 @@ function syntheticDateDividerTimestampMs(
 }
 
 function formatDateDividerLabel(timestampMs: number): string {
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(getActiveLocale(), {
     weekday: "short",
     year: "numeric",
     month: "short",
@@ -4794,7 +4794,7 @@ function formatReceiptTimestamp(timestampMs: number | null): string | null {
   if (timestampMs === null) {
     return null;
   }
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(getActiveLocale(), {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(new Date(timestampMs));
@@ -4804,7 +4804,7 @@ function formatMessageTimestamp(timestampMs: number | null): string | null {
   if (timestampMs === null) {
     return null;
   }
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(getActiveLocale(), {
     timeStyle: "short"
   }).format(new Date(timestampMs));
 }
