@@ -1063,7 +1063,20 @@ function renderFormattedNode(
   spoilerState: SpoilerRevealState
 ): ReactNode {
   if (node.kind === "text") {
-    return <Fragment key={key}>{renderQueryHighlight(node.value, searchQuery)}</Fragment>;
+    const lines = node.value.split("\n");
+    if (lines.length === 1) {
+      return <Fragment key={key}>{renderQueryHighlight(node.value, searchQuery)}</Fragment>;
+    }
+    return (
+      <Fragment key={key}>
+        {lines.map((line, lineIndex) => (
+          <Fragment key={lineIndex}>
+            {lineIndex > 0 ? <br /> : null}
+            {renderQueryHighlight(line, searchQuery)}
+          </Fragment>
+        ))}
+      </Fragment>
+    );
   }
   const children = renderFormattedNodes(
     node.children,
