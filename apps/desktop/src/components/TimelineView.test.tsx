@@ -138,6 +138,49 @@ function mockTimelineRects(
   });
 }
 
+function installResizeObserverMock() {
+  const originalResizeObserver = window.ResizeObserver;
+  const observers: Array<{ trigger: () => void }> = [];
+
+  class MockResizeObserver {
+    private readonly callback: ResizeObserverCallback;
+
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback;
+      observers.push({
+        trigger: () => {
+          this.callback([] as ResizeObserverEntry[], this as unknown as ResizeObserver);
+        }
+      });
+    }
+
+    observe = vi.fn();
+    unobserve = vi.fn();
+    disconnect = vi.fn();
+  }
+
+  Object.defineProperty(window, "ResizeObserver", {
+    configurable: true,
+    writable: true,
+    value: MockResizeObserver
+  });
+
+  return {
+    triggerAll() {
+      for (const observer of observers) {
+        observer.trigger();
+      }
+    },
+    restore() {
+      Object.defineProperty(window, "ResizeObserver", {
+        configurable: true,
+        writable: true,
+        value: originalResizeObserver
+      });
+    }
+  };
+}
+
 describe("TimelineView", () => {
   it("ensures the timeline subscription after registering the CoreEvent listener", async () => {
     const calls: string[] = [];
@@ -984,6 +1027,319 @@ describe("TimelineView", () => {
       expect(screen.getByText("Message I just sent")).toBeTruthy();
       expect(timeline.scrollTop).toBe(1800);
     });
+  });
+
+  it("keeps the live edge pinned when the read marker appears below a sent message", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        currentUserId="@alice:example.invalid"
+        onReply={vi.fn()}
+      />
+    );
+
+    const timeline = await screen.findByTestId("timeline-view");
+    let scrollHeight = 2400;
+    Object.defineProperty(timeline, "scrollHeight", {
+      get: () => scrollHeight,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$older", "Older message")]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(1800);
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key: KEY,
+            generation: 1,
+            batch_id: 1,
+            diffs: [
+              {
+                PushBack: {
+                  item: {
+                    ...message("$sent:example.invalid", "Test"),
+                    sender: "@alice:example.invalid",
+                    send_state: { kind: "sending" }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Test")).toBeTruthy();
+      expect(timeline.scrollTop).toBe(1800);
+    });
+
+    scrollHeight = 2440;
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          NavigationUpdated: {
+            key: KEY,
+            snapshot: {
+              read_marker_event_id: "$sent:example.invalid",
+              read_marker_display_event_id: "$sent:example.invalid",
+              first_unread_event_id: null,
+              unread_event_count: 0,
+              unread_position: "none",
+              newer_event_count: 0,
+              can_jump_to_bottom: false
+            }
+          }
+        }
+      });
+    });
+
+    expect(await screen.findByRole("separator", { name: "Read up to here" })).toBeTruthy();
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(1840);
+    });
+  });
+
+  it("keeps the live edge pinned when rendered content grows without a React commit", async () => {
+    const resizeObserver = installResizeObserverMock();
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 0;
+    });
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    try {
+      render(
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={transport}
+          currentUserId="@alice:example.invalid"
+          onReply={vi.fn()}
+        />
+      );
+
+      const timeline = await screen.findByTestId("timeline-view");
+      let scrollHeight = 2400;
+      Object.defineProperty(timeline, "scrollHeight", {
+        get: () => scrollHeight,
+        configurable: true
+      });
+      Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+      Object.defineProperty(timeline, "scrollTop", {
+        value: 0,
+        writable: true,
+        configurable: true
+      });
+
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            InitialItems: {
+              request_id: null,
+              key: KEY,
+              generation: 1,
+              items: [message("$older", "Older message")]
+            }
+          }
+        });
+      });
+
+      await waitFor(() => {
+        expect(timeline.scrollTop).toBe(1800);
+      });
+
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            ItemsUpdated: {
+              key: KEY,
+              generation: 1,
+              batch_id: 1,
+              diffs: [
+                {
+                  PushBack: {
+                    item: {
+                      ...message("$sent:example.invalid", "Test"),
+                      sender: "@alice:example.invalid",
+                      send_state: { kind: "sending" }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Test")).toBeTruthy();
+        expect(timeline.scrollTop).toBe(1800);
+      });
+
+      scrollHeight = 2480;
+      act(() => {
+        resizeObserver.triggerAll();
+      });
+
+      await waitFor(() => {
+        expect(timeline.scrollTop).toBe(1880);
+      });
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  it("does not keep the sent-message live-edge lock after user scroll input", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        currentUserId="@alice:example.invalid"
+        onReply={vi.fn()}
+      />
+    );
+
+    const timeline = await screen.findByTestId("timeline-view");
+    let scrollHeight = 2400;
+    Object.defineProperty(timeline, "scrollHeight", {
+      get: () => scrollHeight,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$older", "Older message")]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(1800);
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key: KEY,
+            generation: 1,
+            batch_id: 1,
+            diffs: [
+              {
+                PushBack: {
+                  item: {
+                    ...message("$sent:example.invalid", "Test"),
+                    sender: "@alice:example.invalid",
+                    send_state: { kind: "sending" }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(1800);
+    });
+
+    act(() => {
+      fireEvent.wheel(timeline, { deltaY: -120 });
+      timeline.scrollTop = 1700;
+      fireEvent.scroll(timeline);
+    });
+
+    scrollHeight = 2440;
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          NavigationUpdated: {
+            key: KEY,
+            snapshot: {
+              read_marker_event_id: "$sent:example.invalid",
+              read_marker_display_event_id: "$sent:example.invalid",
+              first_unread_event_id: null,
+              unread_event_count: 0,
+              unread_position: "none",
+              newer_event_count: 0,
+              can_jump_to_bottom: false
+            }
+          }
+        }
+      });
+    });
+
+    expect(await screen.findByRole("separator", { name: "Read up to here" })).toBeTruthy();
+    expect(timeline.scrollTop).toBe(1700);
   });
 
   it("renders read receipts as a compact avatar stack without an inline text label", async () => {

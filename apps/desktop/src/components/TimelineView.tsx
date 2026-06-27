@@ -47,6 +47,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type MouseEvent,
+  type PointerEvent as ReactPointerEvent,
   memo,
   type ReactNode,
   useCallback,
@@ -412,6 +413,24 @@ function scrollContainerToBottom(container: HTMLElement): void {
   container.scrollTop = container.scrollHeight - container.clientHeight;
 }
 
+function timelineKeyShouldReleaseViewportLock(event: KeyboardEvent<HTMLDivElement>): boolean {
+  if (event.altKey || event.ctrlKey || event.metaKey) {
+    return false;
+  }
+  switch (event.key) {
+    case "ArrowDown":
+    case "ArrowUp":
+    case "End":
+    case "Home":
+    case "PageDown":
+    case "PageUp":
+    case " ":
+      return true;
+    default:
+      return false;
+  }
+}
+
 function timelineDiffsContainOwnOutgoingItem(
   diffs: readonly TimelineDiff[],
   currentUserId: string | undefined
@@ -484,6 +503,8 @@ type TimelineViewportMetrics = {
   clientHeight: number;
   listOffsetTop: number;
 };
+
+type ViewportLock = { kind: "none" } | { kind: "live-edge" };
 
 type TimelineHeightModel = {
   fallbackHeight: number;
@@ -1715,6 +1736,12 @@ export const TimelineView = memo(function TimelineView({
   const initialLiveEdgeScrollAppliedRef = useRef<string | null>(null);
   /** Keeps the live edge pinned when measured virtual heights change. */
   const stickToBottomAfterMeasurementRef = useRef(false);
+  /** Viewport intent that survives timeline re-renders until user scroll input changes it. */
+  const viewportLockRef = useRef<ViewportLock>({ kind: "none" });
+  /** Set by wheel/touch/keyboard/scrollbar intent; consumed by the next scroll event. */
+  const userScrollInputPendingRef = useRef(false);
+  /** Coalesces ResizeObserver-driven live-edge corrections. */
+  const viewportLockResizeFrameRef = useRef<number | null>(null);
   /** Pagination request currently in flight (suppresses duplicates). */
   const backfillInFlightRef = useRef(false);
   const readSignalEventRef = useRef<string | null>(null);
@@ -1844,6 +1871,37 @@ export const TimelineView = memo(function TimelineView({
       setScrollAnchorSettlementVersion((current) => current + 1);
     });
   }, []);
+
+  const lockViewportToLiveEdge = useCallback(() => {
+    viewportLockRef.current = { kind: "live-edge" };
+    retainedRoomScrollAnchorRef.current = null;
+  }, []);
+
+  const releaseViewportLock = useCallback(() => {
+    viewportLockRef.current = { kind: "none" };
+    stickToBottomAfterMeasurementRef.current = false;
+    retainedRoomScrollAnchorRef.current = null;
+    userScrollInputPendingRef.current = false;
+  }, []);
+
+  const markUserScrollInput = useCallback(() => {
+    userScrollInputPendingRef.current = true;
+  }, []);
+
+  const applyViewportLock = useCallback((): boolean => {
+    const container = containerRef.current;
+    if (!container || viewportLockRef.current.kind !== "live-edge") {
+      return false;
+    }
+    const targetScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    if (Math.abs(container.scrollTop - targetScrollTop) <= SCROLL_EDGE_TOLERANCE_PX) {
+      return false;
+    }
+    runWithSuppressedScrollAnchorCapture(() => {
+      container.scrollTop = targetScrollTop;
+    });
+    return true;
+  }, [runWithSuppressedScrollAnchorCapture]);
   // --- Event subscription: local stores apply reducers; App stores keep view effects here. ---
   useEffect(() => {
     const unsubscribe = transport.listenCoreEvents((payload) => {
@@ -1857,6 +1915,8 @@ export const TimelineView = memo(function TimelineView({
         anchorRestorePendingRef.current = false;
         roomScrollAnchorRestorePendingRef.current = false;
         retainedRoomScrollAnchorRef.current = null;
+        viewportLockRef.current = { kind: "none" };
+        userScrollInputPendingRef.current = false;
         requestedRoomScrollAnchorRestoreSignatureRef.current = null;
         exhaustedRoomScrollAnchorRestoreSignatureRef.current = null;
         restoredRoomScrollAnchorSignatureRef.current = null;
@@ -1967,6 +2027,8 @@ export const TimelineView = memo(function TimelineView({
         anchorRestorePendingRef.current = false;
         roomScrollAnchorRestorePendingRef.current = false;
         retainedRoomScrollAnchorRef.current = null;
+        viewportLockRef.current = { kind: "none" };
+        userScrollInputPendingRef.current = false;
         setNavigationSnapshot(null);
       }
 
@@ -2004,6 +2066,7 @@ export const TimelineView = memo(function TimelineView({
         "ItemsUpdated" in event &&
         timelineDiffsContainOwnOutgoingItem(event.ItemsUpdated.diffs, currentUserId)
       ) {
+        lockViewportToLiveEdge();
         stickToBottomAfterMeasurementRef.current = true;
       }
 
@@ -2019,7 +2082,14 @@ export const TimelineView = memo(function TimelineView({
       }
     });
     return unsubscribe;
-  }, [currentUserId, emitDiagnosticLog, isAppLevelStore, timelineKeyHash, transport]);
+  }, [
+    currentUserId,
+    emitDiagnosticLog,
+    isAppLevelStore,
+    lockViewportToLiveEdge,
+    timelineKeyHash,
+    transport
+  ]);
 
   useEffect(() => {
     void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
@@ -2036,6 +2106,8 @@ export const TimelineView = memo(function TimelineView({
     requestedRoomScrollAnchorRestoreSignatureRef.current = null;
     exhaustedRoomScrollAnchorRestoreSignatureRef.current = null;
     retainedRoomScrollAnchorRef.current = null;
+    viewportLockRef.current = { kind: "none" };
+    userScrollInputPendingRef.current = false;
     postSettleRestoredSignatureRef.current = null;
   }, [timelineKeyHash]);
 
@@ -2056,6 +2128,8 @@ export const TimelineView = memo(function TimelineView({
     itemHeightByDomIdRef.current = new Map();
     roomScrollAnchorRestorePendingRef.current = false;
     suppressScrollAnchorCaptureRef.current = false;
+    viewportLockRef.current = { kind: "none" };
+    userScrollInputPendingRef.current = false;
     pendingScrollAnchorRef.current = null;
     lastScrollAnchorDispatchAtRef.current = 0;
     restoredRoomScrollAnchorSignatureRef.current = null;
@@ -2066,6 +2140,10 @@ export const TimelineView = memo(function TimelineView({
     if (scrollAnchorDispatchTimerRef.current !== null) {
       window.clearTimeout(scrollAnchorDispatchTimerRef.current);
       scrollAnchorDispatchTimerRef.current = null;
+    }
+    if (viewportLockResizeFrameRef.current !== null) {
+      window.cancelAnimationFrame(viewportLockResizeFrameRef.current);
+      viewportLockResizeFrameRef.current = null;
     }
     setMeasuredHeightVersion((current) => current + 1);
     backfillInFlightRef.current = false;
@@ -2078,9 +2156,15 @@ export const TimelineView = memo(function TimelineView({
       roomScrollAnchorRestorePendingRef.current = false;
       suppressScrollAnchorCaptureRef.current = false;
       retainedRoomScrollAnchorRef.current = null;
+      viewportLockRef.current = { kind: "none" };
+      userScrollInputPendingRef.current = false;
       if (scrollAnchorDispatchTimerRef.current !== null) {
         window.clearTimeout(scrollAnchorDispatchTimerRef.current);
         scrollAnchorDispatchTimerRef.current = null;
+      }
+      if (viewportLockResizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(viewportLockResizeFrameRef.current);
+        viewportLockResizeFrameRef.current = null;
       }
     },
     []
@@ -2460,6 +2544,45 @@ export const TimelineView = memo(function TimelineView({
   ]);
 
   useEffect(() => {
+    const list = listRef.current;
+    if (!list || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      if (viewportLockRef.current.kind !== "live-edge") {
+        return;
+      }
+      if (viewportLockResizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(viewportLockResizeFrameRef.current);
+      }
+      viewportLockResizeFrameRef.current = window.requestAnimationFrame(() => {
+        viewportLockResizeFrameRef.current = null;
+        const changed = applyViewportLock();
+        if (!changed) {
+          return;
+        }
+        updateViewportMetrics();
+        reportViewportObservation();
+      });
+    });
+
+    observer.observe(list);
+    return () => {
+      observer.disconnect();
+      if (viewportLockResizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(viewportLockResizeFrameRef.current);
+        viewportLockResizeFrameRef.current = null;
+      }
+    };
+  }, [
+    applyViewportLock,
+    reportViewportObservation,
+    timelineKeyHash,
+    updateViewportMetrics
+  ]);
+
+  useEffect(() => {
     if (!latestReadableEventId || roomTimelineRoomId !== roomId) {
       return;
     }
@@ -2711,6 +2834,7 @@ export const TimelineView = memo(function TimelineView({
       !roomScrollAnchorRestorePendingRef.current
     ) {
       if (container) {
+        lockViewportToLiveEdge();
         runWithSuppressedScrollAnchorCapture(() => {
           scrollContainerToBottom(container);
         });
@@ -2788,10 +2912,19 @@ export const TimelineView = memo(function TimelineView({
     visibleItems,
     roomScrollAnchor,
     runWithSuppressedScrollAnchorCapture,
+    lockViewportToLiveEdge,
     transport
   ]);
 
   useLayoutEffect(() => {
+    if (viewportLockRef.current.kind === "live-edge") {
+      const changed = applyViewportLock();
+      if (changed) {
+        updateViewportMetrics();
+        reportViewportObservation();
+      }
+      return;
+    }
     const retained = retainedRoomScrollAnchorRef.current;
     const container = containerRef.current;
     const pendingDifferentRoomRestore =
@@ -2893,12 +3026,15 @@ export const TimelineView = memo(function TimelineView({
       return;
     }
     const container = containerRef.current;
-    stickToBottomAfterMeasurementRef.current = Boolean(
-      container && isScrolledToBottom(container)
-    );
+    const measuredAtBottom = Boolean(container && isScrolledToBottom(container));
+    stickToBottomAfterMeasurementRef.current = measuredAtBottom;
+    if (measuredAtBottom) {
+      lockViewportToLiveEdge();
+    }
     itemHeightByDomIdRef.current = nextHeights;
     setMeasuredHeightVersion((current) => current + 1);
   }, [
+    lockViewportToLiveEdge,
     virtualWindow.endIndex,
     virtualWindow.startIndex,
     virtualWindow.virtualized,
@@ -2958,6 +3094,15 @@ export const TimelineView = memo(function TimelineView({
       container !== null &&
       container.scrollTop === sig.scrollTop &&
       container.scrollHeight === sig.scrollHeight;
+    const isUserDrivenScroll = userScrollInputPendingRef.current && !isProgrammaticEcho;
+    if (isUserDrivenScroll && container) {
+      if (isScrolledToBottom(container)) {
+        lockViewportToLiveEdge();
+        userScrollInputPendingRef.current = false;
+      } else {
+        releaseViewportLock();
+      }
+    }
     if (!isProgrammaticEcho) {
       retainedRoomScrollAnchorRef.current = null;
     }
@@ -2968,11 +3113,29 @@ export const TimelineView = memo(function TimelineView({
       queueScrollAnchorCapture();
     }
   }, [
+    lockViewportToLiveEdge,
     maybeAutoBackfill,
     queueScrollAnchorCapture,
     reportViewportObservation,
+    releaseViewportLock,
     updateViewportMetrics
   ]);
+  const onTimelinePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.target === event.currentTarget) {
+        markUserScrollInput();
+      }
+    },
+    [markUserScrollInput]
+  );
+  const onTimelineKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      if (timelineKeyShouldReleaseViewportLock(event)) {
+        markUserScrollInput();
+      }
+    },
+    [markUserScrollInput]
+  );
   useEffect(() => {
     if (!("Thread" in timelineKey.kind)) {
       return;
@@ -3007,6 +3170,7 @@ export const TimelineView = memo(function TimelineView({
   ]);
   const jumpToEvent = useCallback(
     (eventId: string) => {
+      releaseViewportLock();
       const container = containerRef.current;
       const scrollMountedRowIntoView = () => {
         const row = container?.querySelector<HTMLElement>(
@@ -3055,6 +3219,7 @@ export const TimelineView = memo(function TimelineView({
       reportViewportObservation();
     },
     [
+      releaseViewportLock,
       runWithSuppressedScrollAnchorCapture,
       reportViewportObservation,
       timelineHeightModel,
@@ -3073,6 +3238,7 @@ export const TimelineView = memo(function TimelineView({
     if (activeElement instanceof HTMLElement && container.contains(activeElement)) {
       activeElement.blur();
     }
+    lockViewportToLiveEdge();
     runWithSuppressedScrollAnchorCapture(() => {
       scrollContainerToBottom(container);
     });
@@ -3085,7 +3251,12 @@ export const TimelineView = memo(function TimelineView({
       updateViewportMetrics();
       reportViewportObservation();
     });
-  }, [reportViewportObservation, runWithSuppressedScrollAnchorCapture, updateViewportMetrics]);
+  }, [
+    lockViewportToLiveEdge,
+    reportViewportObservation,
+    runWithSuppressedScrollAnchorCapture,
+    updateViewportMetrics
+  ]);
   const canRenderRoomNavigation =
     roomTimelineRoomId === roomId;
   const firstUnreadEventId = navigationSnapshot?.first_unread_event_id ?? null;
@@ -3118,7 +3289,11 @@ export const TimelineView = memo(function TimelineView({
       data-rendered-items={virtualWindow.items.length}
       ref={containerRef}
       style={{ overflowY: "auto", height: "100%" }}
+      onKeyDown={onTimelineKeyDown}
+      onPointerDown={onTimelinePointerDown}
       onScroll={onTimelineScroll}
+      onTouchMove={markUserScrollInput}
+      onWheel={markUserScrollInput}
     >
       {canRenderRoomNavigation ? (
         <div
