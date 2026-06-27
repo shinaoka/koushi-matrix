@@ -818,6 +818,10 @@ type ActivePseudoLocaleMode = PseudoLocaleMode | "none";
 let activeLocale: Locale = "en";
 let activePseudoLocale: ActivePseudoLocaleMode = "none";
 
+export function getActiveLocale(): Locale {
+  return activeLocale;
+}
+
 export function setActiveLocaleProfile(
   locale: Locale,
   pseudoLocale: ActivePseudoLocaleMode = "none"
