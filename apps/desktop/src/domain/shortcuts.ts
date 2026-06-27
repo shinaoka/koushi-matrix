@@ -243,12 +243,12 @@ const shortcuts: KeyboardShortcut[] = [
     id: "toggleFullscreen",
     category: "navigation",
     labelMessageId: "shortcut.toggleFullscreen",
-    keys: ["Cmd", "Shift", "F"],
+    keys: ["Cmd", "Ctrl", "F"],
     platforms: ["macos"],
     parity: "same",
     implemented: true,
     nativeMenu: "window",
-    accelerator: "CmdOrCtrl+Shift+F"
+    accelerator: "Ctrl+Command+F"
   },
   {
     id: "showKeyboardSettings",
@@ -500,7 +500,7 @@ export function shortcutIdForKeyboardEvent(
   if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && key === ",") {
     return "openUserSettings";
   }
-  if (primaryMod && !event.altKey && event.shiftKey && key === "f") {
+  if (event.metaKey && event.ctrlKey && !event.altKey && !event.shiftKey && key === "f") {
     return "toggleFullscreen";
   }
   if (primaryMod && !event.altKey && !event.shiftKey && key === "f") {
