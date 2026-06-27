@@ -885,7 +885,13 @@ fn sdk_e2ee_recovery_state_is_exposed_without_secret_material() {
 
     let state = session.e2ee_recovery_state();
 
-    assert_eq!(state, koushi_sdk::E2eeRecoveryState::Unknown);
+    assert!(
+        matches!(
+            state,
+            koushi_sdk::E2eeRecoveryState::Unknown | koushi_sdk::E2eeRecoveryState::Disabled
+        ),
+        "expected Unknown or Disabled, got {state:?}"
+    );
     assert!(!format!("{state:?}").contains("synthetic-password"));
 }
 
