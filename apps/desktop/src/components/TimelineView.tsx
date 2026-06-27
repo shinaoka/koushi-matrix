@@ -409,7 +409,7 @@ function isScrolledToBottom(container: HTMLElement): boolean {
 }
 
 function scrollContainerToBottom(container: HTMLElement): void {
-  container.scrollTop = container.scrollHeight;
+  container.scrollTop = container.scrollHeight - container.clientHeight;
 }
 
 function timelineDiffsContainOwnOutgoingItem(
@@ -2714,7 +2714,20 @@ export const TimelineView = memo(function TimelineView({
         runWithSuppressedScrollAnchorCapture(() => {
           scrollContainerToBottom(container);
         });
-        initialLiveEdgeScrollAppliedRef.current = initialLiveEdgeScrollKey;
+        // Only mark the live-edge scroll as applied once the content actually
+        // overflows the viewport. If the first batch is too short to scroll,
+        // leaving the ref unset lets later PushBack/PushFront growth re-enter
+        // this branch and snap to the latest message on first launch.
+        if (
+          container.scrollHeight >
+          container.clientHeight + SCROLL_EDGE_TOLERANCE_PX
+        ) {
+          initialLiveEdgeScrollAppliedRef.current = initialLiveEdgeScrollKey;
+          // The DOM scrollHeight used above may be an underestimate before
+          // variable-height rows are measured. Force a follow-up snap to the
+          // new bottom once the measurement effect has actual heights.
+          stickToBottomAfterMeasurementRef.current = true;
+        }
       }
     }
     if (stickToBottomAfterMeasurementRef.current) {
@@ -2901,8 +2914,17 @@ export const TimelineView = memo(function TimelineView({
     if (!container) {
       return;
     }
-    const backfillThreshold = autoLoadOlderMessages
+    const desiredBackfillThreshold = autoLoadOlderMessages
       ? Math.max(AUTO_BACKFILL_THRESHOLD_PX, virtualItemHeight * AUTO_BACKFILL_PREFETCH_ITEMS)
+      : 0;
+    const maxScrollTop = container.scrollHeight - container.clientHeight;
+    // Only prefetch when the viewport is actually near the top edge. If the
+    // loaded timeline is shorter than the desired prefetch window, cap the
+    // threshold so that a small scroll up from the live edge does not
+    // immediately fire a backfill request (and the prepend/anchor restoration
+    // that can follow).
+    const backfillThreshold = autoLoadOlderMessages
+      ? Math.max(AUTO_BACKFILL_THRESHOLD_PX, Math.min(maxScrollTop - AUTO_BACKFILL_THRESHOLD_PX, desiredBackfillThreshold))
       : 0;
     if (container.scrollTop > backfillThreshold) {
       return;
