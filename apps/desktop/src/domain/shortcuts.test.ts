@@ -48,6 +48,13 @@ describe("shortcut registry", () => {
       keys: ["Ctrl/Cmd", "."],
       parity: "same"
     });
+    expect(shortcutById("toggleFullscreen")).toMatchObject({
+      labelMessageId: "shortcut.toggleFullscreen",
+      keys: ["Cmd", "Shift", "F"],
+      platforms: ["macos"],
+      parity: "same",
+      implemented: true
+    });
   });
 
   test("marks call and upload shortcuts as deferred until those features exist", () => {
@@ -72,6 +79,11 @@ describe("shortcut registry", () => {
       id: "showKeyboardSettings",
       accelerator: "CmdOrCtrl+/",
       nativeMenu: "help"
+    });
+    expect(menuAccelerators()).toContainEqual({
+      id: "toggleFullscreen",
+      accelerator: "CmdOrCtrl+Shift+F",
+      nativeMenu: "window"
     });
   });
 
@@ -126,6 +138,13 @@ describe("shortcut registry", () => {
         altKey: false
       })
     ).toBe("toggleRightPanel");
+    // macOS: Cmd+Shift+F → toggleFullscreen
+    expect(
+      shortcutIdForKeyboardEvent(
+        { key: "f", ctrlKey: false, metaKey: true, shiftKey: true, altKey: false },
+        "macos"
+      )
+    ).toBe("toggleFullscreen");
   });
 
   test("does not intercept Ctrl+F or Ctrl+K on macOS (reserved for native Emacs text bindings)", () => {
@@ -149,6 +168,13 @@ describe("shortcut registry", () => {
         "macos"
       )
     ).toBe("searchInRoom");
+    // Cmd+Shift+F → toggleFullscreen on macOS (must not resolve to searchInRoom).
+    expect(
+      shortcutIdForKeyboardEvent(
+        { key: "f", ctrlKey: false, metaKey: true, shiftKey: true, altKey: false },
+        "macos"
+      )
+    ).toBe("toggleFullscreen");
     expect(
       shortcutIdForKeyboardEvent(
         { key: "k", ctrlKey: false, metaKey: true, shiftKey: false, altKey: false },
@@ -175,6 +201,7 @@ describe("shortcut registry", () => {
     );
     expect(shortcutActionFromMenuPayload("openUserSettings")).toBe("openUserSettings");
     expect(shortcutActionFromMenuPayload("toggleRightPanel")).toBe("toggleRightPanel");
+    expect(shortcutActionFromMenuPayload("toggleFullscreen")).toBe("toggleFullscreen");
     expect(shortcutActionFromMenuPayload("uploadFile")).toBeNull();
     expect(shortcutActionFromMenuPayload("unknown")).toBeNull();
   });

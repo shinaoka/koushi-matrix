@@ -630,6 +630,7 @@ export type MessageId =
   | "shortcut.showKeyboardSettings"
   | "shortcut.scrollTimelineDown"
   | "shortcut.scrollTimelineUp"
+  | "shortcut.toggleFullscreen"
   | "shortcut.toggleMicrophone"
   | "shortcut.toggleRightPanel"
   | "shortcut.toggleSpacePanel"
@@ -1549,6 +1550,7 @@ const en: Catalog = {
   "shortcut.showKeyboardSettings": "Keyboard settings",
   "shortcut.scrollTimelineDown": "Scroll timeline down",
   "shortcut.scrollTimelineUp": "Scroll timeline up",
+  "shortcut.toggleFullscreen": "Toggle fullscreen",
   "shortcut.toggleMicrophone": "Toggle microphone in call",
   "shortcut.toggleRightPanel": "Toggle right panel",
   "shortcut.toggleSpacePanel": "Toggle space panel",
@@ -2358,6 +2360,7 @@ const ja: Catalog = {
   "shortcut.showKeyboardSettings": "キーボード設定",
   "shortcut.scrollTimelineDown": "タイムラインを下へスクロール",
   "shortcut.scrollTimelineUp": "タイムラインを上へスクロール",
+  "shortcut.toggleFullscreen": "全画面を切り替え",
   "shortcut.toggleMicrophone": "通話中のマイクを切り替え",
   "shortcut.toggleRightPanel": "右パネルを切り替え",
   "shortcut.toggleSpacePanel": "スペースパネルを切り替え",
