@@ -27,8 +27,11 @@ import type {
   ResolveComposerKeyAction
 } from "../domain/types";
 import {
+  IS_MAC_PLATFORM,
+  applyMacEmacsAction,
   composerKeyEventFromDom,
   insertNewlineAtSelection,
+  macEmacsActionFromEvent,
   shouldLetNativeImeHandleComposerKeyEvent,
   shouldResolveComposerKeyEvent
 } from "../domain/composerKeyEvents";
@@ -85,6 +88,7 @@ export const Composer = memo(function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const emojiButtonRef = useRef<HTMLButtonElement>(null);
   const imeCompositionActiveRef = useRef(false);
+  const macKillRingRef = useRef<string>("");
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const [scheduleValue, setScheduleValue] = useState(() => defaultScheduleDateTimeValue());
@@ -234,6 +238,33 @@ export const Composer = memo(function Composer({
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (composerImeShouldHandleKeyEvent(event, imeCompositionActiveRef.current)) {
       return;
+    }
+    // macOS native Emacs text-editing bindings (Ctrl+F/B/P/N/K/Y).
+    // Must not fire during IME composition.
+    if (IS_MAC_PLATFORM && !event.nativeEvent.isComposing && !imeCompositionActiveRef.current) {
+      const emacsAction = macEmacsActionFromEvent(event);
+      if (emacsAction !== null) {
+        event.preventDefault();
+        const ta = event.currentTarget;
+        const effect = applyMacEmacsAction(
+          emacsAction,
+          localValue,
+          ta.selectionStart,
+          ta.selectionEnd,
+          macKillRingRef.current
+        );
+        if (effect !== null) {
+          if (effect.newKillRing !== undefined) {
+            macKillRingRef.current = effect.newKillRing;
+          }
+          if (effect.newValue !== undefined) {
+            updateLocalValue(effect.newValue);
+          }
+          const pos = effect.newSelectionPos;
+          requestAnimationFrame(() => ta.setSelectionRange(pos, pos));
+        }
+        return;
+      }
     }
     if (!shouldResolveComposerKeyEvent(event)) {
       return;
@@ -535,10 +566,38 @@ function ThreadComposer({
 }) {
   const canSend = canEdit && !isSending && draft.trim().length > 0;
   const imeCompositionActiveRef = useRef(false);
+  const macKillRingRef = useRef<string>("");
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (composerImeShouldHandleKeyEvent(event, imeCompositionActiveRef.current)) {
       return;
+    }
+    // macOS native Emacs text-editing bindings (Ctrl+F/B/P/N/K/Y).
+    // Must not fire during IME composition.
+    if (IS_MAC_PLATFORM && !event.nativeEvent.isComposing && !imeCompositionActiveRef.current) {
+      const emacsAction = macEmacsActionFromEvent(event);
+      if (emacsAction !== null) {
+        event.preventDefault();
+        const ta = event.currentTarget;
+        const effect = applyMacEmacsAction(
+          emacsAction,
+          draft,
+          ta.selectionStart,
+          ta.selectionEnd,
+          macKillRingRef.current
+        );
+        if (effect !== null) {
+          if (effect.newKillRing !== undefined) {
+            macKillRingRef.current = effect.newKillRing;
+          }
+          if (effect.newValue !== undefined) {
+            onDraftChange(effect.newValue);
+          }
+          const pos = effect.newSelectionPos;
+          requestAnimationFrame(() => ta.setSelectionRange(pos, pos));
+        }
+        return;
+      }
     }
     if (!shouldResolveComposerKeyEvent(event)) {
       return;
