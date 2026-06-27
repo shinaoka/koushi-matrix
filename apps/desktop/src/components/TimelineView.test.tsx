@@ -398,7 +398,6 @@ describe("TimelineView", () => {
   });
 
   it("captures the bottom-most visible event as the persisted room scroll anchor", async () => {
-    vi.useFakeTimers();
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const updateScrollAnchor = vi.fn(async () => undefined);
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
@@ -450,20 +449,7 @@ describe("TimelineView", () => {
       fireEvent.scroll(timeline);
     });
 
-    act(() => {
-      vi.advanceTimersByTime(500);
-      fireEvent.scroll(timeline);
-    });
-
-    act(() => {
-      vi.advanceTimersByTime(499);
-    });
     expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
-
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-    expect(updateScrollAnchor).toHaveBeenCalledTimes(2);
     expect(updateScrollAnchor).toHaveBeenCalledWith(
       "!room:example.invalid",
       expect.objectContaining({
@@ -473,6 +459,113 @@ describe("TimelineView", () => {
         updated_at_ms: expect.any(Number)
       })
     );
+
+    act(() => {
+      fireEvent.scroll(timeline);
+    });
+
+    expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
+  });
+
+  it("persists the sent message as the room anchor after a programmatic live-edge scroll", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const updateScrollAnchor = vi.fn(async () => undefined);
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 0;
+    });
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      updateScrollAnchor
+    });
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+
+    mockTimelineRects(
+      {
+        "$older:example.invalid": { top: 2100, height: 80 },
+        "$sent:example.invalid": { top: 2320, height: 60 }
+      },
+      { top: 0, height: 600 },
+      scrollContainerRef
+    );
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        currentUserId="@alice:example.invalid"
+        onReply={vi.fn()}
+      />
+    );
+
+    const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "scrollHeight", { value: 2400, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$older:example.invalid", "Older message")]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(1800);
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key: KEY,
+            generation: 1,
+            batch_id: 1,
+            diffs: [
+              {
+                PushBack: {
+                  item: {
+                    ...message("$sent:example.invalid", "Message I just sent"),
+                    sender: "@alice:example.invalid",
+                    send_state: { kind: "sending" }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Message I just sent")).toBeTruthy();
+      expect(updateScrollAnchor).toHaveBeenLastCalledWith(
+        "!room:example.invalid",
+        expect.objectContaining({
+          event_id: "$sent:example.invalid",
+          edge: "bottom",
+          offset_px: -20,
+          updated_at_ms: expect.any(Number)
+        })
+      );
+    });
   });
 
   it("restores a persisted bottom-edge room anchor when the event is already rendered", async () => {
