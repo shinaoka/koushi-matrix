@@ -1671,6 +1671,16 @@ export const TimelineView = memo(function TimelineView({
   const roomScrollAnchorRestorePendingRef = useRef(false);
   /** Suppresses capture while programmatic scroll adjustments are running. */
   const suppressScrollAnchorCaptureRef = useRef(false);
+  /** scrollHeight the last time a programmatic scrollTop assignment was
+   *  made. Together with the pair of containerHeight + scrollTop recorded
+   *  inside `runWithSuppressedScrollAnchorCapture`, this lets `onScroll`
+   *  recognise a scroll event caused by our own assignment (same scroll-
+   *  height + same scrollTop) and suppress cascading side-effects while
+   *  letting through real pointer-driven scrolls. */
+  const programmaticScrollSignatureRef = useRef<{
+    scrollHeight: number;
+    scrollTop: number;
+  } | null>(null);
   const pendingScrollAnchorRef = useRef<TimelineScrollAnchor | null>(null);
   const lastScrollAnchorDispatchAtRef = useRef(0);
   const scrollAnchorDispatchTimerRef = useRef<number | null>(null);
@@ -1803,12 +1813,21 @@ export const TimelineView = memo(function TimelineView({
   const runWithSuppressedScrollAnchorCapture = useCallback((action: () => void) => {
     const asyncGeneration = anchorAsyncGenerationRef.current;
     suppressScrollAnchorCaptureRef.current = true;
+    const container = containerRef.current;
+    const beforeScrollTop = container?.scrollTop ?? 0;
     action();
+    if (container && container.scrollTop !== beforeScrollTop) {
+      programmaticScrollSignatureRef.current = {
+        scrollHeight: container.scrollHeight,
+        scrollTop: container.scrollTop
+      };
+    }
     requestAnimationFrame(() => {
       if (anchorAsyncGenerationRef.current !== asyncGeneration) {
         return;
       }
       suppressScrollAnchorCaptureRef.current = false;
+      programmaticScrollSignatureRef.current = null;
       setScrollAnchorSettlementVersion((current) => current + 1);
     });
   }, []);
@@ -2895,13 +2914,22 @@ export const TimelineView = memo(function TimelineView({
       });
   }, [store, transport, suppressPaginationUi, autoLoadOlderMessages, virtualItemHeight]);
   const onTimelineScroll = useCallback(() => {
-    if (!suppressScrollAnchorCaptureRef.current) {
+    const container = containerRef.current;
+    const sig = programmaticScrollSignatureRef.current;
+    const isProgrammaticEcho =
+      sig !== null &&
+      container !== null &&
+      container.scrollTop === sig.scrollTop &&
+      container.scrollHeight === sig.scrollHeight;
+    if (!isProgrammaticEcho) {
       retainedRoomScrollAnchorRef.current = null;
     }
     updateViewportMetrics();
-    reportViewportObservation();
-    maybeAutoBackfill();
-    queueScrollAnchorCapture();
+    if (!isProgrammaticEcho) {
+      reportViewportObservation();
+      maybeAutoBackfill();
+      queueScrollAnchorCapture();
+    }
   }, [
     maybeAutoBackfill,
     queueScrollAnchorCapture,
@@ -3055,9 +3083,15 @@ export const TimelineView = memo(function TimelineView({
       style={{ overflowY: "auto", height: "100%" }}
       onScroll={onTimelineScroll}
     >
-      {canRenderRoomNavigation &&
-      (canJumpToFirstUnread || canJumpToBottom) ? (
-        <div className="timeline-navigation-bar">
+      {canRenderRoomNavigation ? (
+        <div
+          className="timeline-navigation-bar"
+          style={{
+            visibility:
+              canJumpToFirstUnread || canJumpToBottom ? "visible" : "hidden"
+          }}
+          aria-hidden={!(canJumpToFirstUnread || canJumpToBottom)}
+        >
           <div className="timeline-navigation-pills">
             {canJumpToFirstUnread && firstUnreadEventId ? (
               <button
