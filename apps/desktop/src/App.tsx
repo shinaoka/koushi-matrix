@@ -1301,6 +1301,13 @@ export function App() {
           rightPanelMode === "closed" ? "roomInfo" : "closed"
         );
         return true;
+      case "toggleFullscreen":
+        void (async () => {
+          const win = getCurrentWindow();
+          const fullscreen = await win.isFullscreen();
+          await win.setFullscreen(!fullscreen);
+        })();
+        return true;
       default:
         return false;
     }

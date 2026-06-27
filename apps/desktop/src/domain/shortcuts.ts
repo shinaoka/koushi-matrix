@@ -240,6 +240,17 @@ const shortcuts: KeyboardShortcut[] = [
     implemented: false
   },
   {
+    id: "toggleFullscreen",
+    category: "navigation",
+    labelMessageId: "shortcut.toggleFullscreen",
+    keys: ["Cmd", "Shift", "F"],
+    platforms: ["macos"],
+    parity: "same",
+    implemented: true,
+    nativeMenu: "window",
+    accelerator: "CmdOrCtrl+Shift+F"
+  },
+  {
     id: "showKeyboardSettings",
     category: "navigation",
     labelMessageId: "shortcut.showKeyboardSettings",
@@ -413,7 +424,8 @@ const globalKeyboardHandlerIds = [
   "openUserSettings",
   "searchInRoom",
   "filterRooms",
-  "toggleRightPanel"
+  "toggleRightPanel",
+  "toggleFullscreen"
 ];
 
 export const keyboardShortcutGroups: KeyboardShortcutGroup[] = categoryOrder.map(
@@ -487,6 +499,9 @@ export function shortcutIdForKeyboardEvent(
   }
   if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && key === ",") {
     return "openUserSettings";
+  }
+  if (primaryMod && !event.altKey && event.shiftKey && key === "f") {
+    return "toggleFullscreen";
   }
   if (primaryMod && !event.altKey && !event.shiftKey && key === "f") {
     return "searchInRoom";
