@@ -470,9 +470,17 @@ export function shortcutConflictAudit(): ShortcutConflictAudit {
   };
 }
 
-export function shortcutIdForKeyboardEvent(event: KeyboardEventLike): string | null {
+export function shortcutIdForKeyboardEvent(
+  event: KeyboardEventLike,
+  platform: ShortcutPlatformProfile = defaultShortcutLabelProfile().platform
+): string | null {
   const key = normalizedKey(event.key);
   const ctrlOrCmd = event.ctrlKey || event.metaKey;
+  // On macOS, Ctrl is reserved for native AppKit Emacs text-editing bindings
+  // (Ctrl+F = forward, Ctrl+K = kill to EOL, etc.).  App shortcuts for those
+  // keys must use Cmd (metaKey) only so that Ctrl+key reaches the text system.
+  const primaryMod =
+    platform === "macos" ? event.metaKey && !event.ctrlKey : ctrlOrCmd;
 
   if (ctrlOrCmd && !event.altKey && !event.shiftKey && key === "/") {
     return "showKeyboardSettings";
@@ -480,10 +488,10 @@ export function shortcutIdForKeyboardEvent(event: KeyboardEventLike): string | n
   if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && key === ",") {
     return "openUserSettings";
   }
-  if (ctrlOrCmd && !event.altKey && !event.shiftKey && key === "f") {
+  if (primaryMod && !event.altKey && !event.shiftKey && key === "f") {
     return "searchInRoom";
   }
-  if (ctrlOrCmd && !event.altKey && !event.shiftKey && key === "k") {
+  if (primaryMod && !event.altKey && !event.shiftKey && key === "k") {
     return "filterRooms";
   }
   if (ctrlOrCmd && !event.altKey && !event.shiftKey && key === ".") {

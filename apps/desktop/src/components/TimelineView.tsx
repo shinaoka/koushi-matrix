@@ -112,8 +112,11 @@ import {
 } from "../domain/timelineStore";
 import { useTimelineStoreContext } from "./timelineStoreContext";
 import {
+  IS_MAC_PLATFORM,
+  applyMacEmacsAction,
   composerKeyEventFromDom,
   insertNewlineAtSelection,
+  macEmacsActionFromEvent,
   shouldLetNativeImeHandleComposerKeyEvent,
   shouldResolveComposerKeyEvent
 } from "../domain/composerKeyEvents";
@@ -3380,6 +3383,7 @@ export function TimelineItemRow({
   const firstActionMenuItemRef = useRef<HTMLButtonElement>(null);
   const editTextareaRef = useRef<HTMLTextAreaElement>(null);
   const editImeCompositionActiveRef = useRef(false);
+  const editMacKillRingRef = useRef<string>("");
   const requestedLinkPreviewsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -3509,6 +3513,33 @@ export function TimelineItemRow({
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
       if (timelineEditImeShouldHandleKeyEvent(event, editImeCompositionActiveRef.current)) {
         return;
+      }
+      // macOS native Emacs text-editing bindings (Ctrl+F/B/P/N/K/Y).
+      // Must not fire during IME composition.
+      if (IS_MAC_PLATFORM && !event.nativeEvent.isComposing && !editImeCompositionActiveRef.current) {
+        const emacsAction = macEmacsActionFromEvent(event);
+        if (emacsAction !== null) {
+          event.preventDefault();
+          const ta = event.currentTarget;
+          const effect = applyMacEmacsAction(
+            emacsAction,
+            editDraft,
+            ta.selectionStart,
+            ta.selectionEnd,
+            editMacKillRingRef.current
+          );
+          if (effect !== null) {
+            if (effect.newKillRing !== undefined) {
+              editMacKillRingRef.current = effect.newKillRing;
+            }
+            if (effect.newValue !== undefined) {
+              setEditDraft(effect.newValue);
+            }
+            const pos = effect.newSelectionPos;
+            requestAnimationFrame(() => ta.setSelectionRange(pos, pos));
+          }
+          return;
+        }
       }
       if (!shouldResolveComposerKeyEvent(event)) {
         return;

@@ -94,15 +94,20 @@ describe("shortcut registry", () => {
         altKey: false
       })
     ).toBe("openUserSettings");
+    // Windows/Linux: Ctrl+F → searchInRoom
     expect(
-      shortcutIdForKeyboardEvent({
-        key: "f",
-        ctrlKey: true,
-        metaKey: false,
-        shiftKey: false,
-        altKey: false
-      })
+      shortcutIdForKeyboardEvent(
+        { key: "f", ctrlKey: true, metaKey: false, shiftKey: false, altKey: false },
+        "linux"
+      )
     ).toBe("searchInRoom");
+    // Windows/Linux: Ctrl+K → filterRooms
+    expect(
+      shortcutIdForKeyboardEvent(
+        { key: "k", ctrlKey: true, metaKey: false, shiftKey: false, altKey: false },
+        "windows"
+      )
+    ).toBe("filterRooms");
     expect(
       shortcutIdForKeyboardEvent({
         key: "k",
@@ -121,6 +126,35 @@ describe("shortcut registry", () => {
         altKey: false
       })
     ).toBe("toggleRightPanel");
+  });
+
+  test("does not intercept Ctrl+F or Ctrl+K on macOS (reserved for native Emacs text bindings)", () => {
+    // On macOS, Ctrl+F/K must pass through to the AppKit text system.
+    expect(
+      shortcutIdForKeyboardEvent(
+        { key: "f", ctrlKey: true, metaKey: false, shiftKey: false, altKey: false },
+        "macos"
+      )
+    ).toBeNull();
+    expect(
+      shortcutIdForKeyboardEvent(
+        { key: "k", ctrlKey: true, metaKey: false, shiftKey: false, altKey: false },
+        "macos"
+      )
+    ).toBeNull();
+    // Cmd+F / Cmd+K still work as app shortcuts on macOS.
+    expect(
+      shortcutIdForKeyboardEvent(
+        { key: "f", ctrlKey: false, metaKey: true, shiftKey: false, altKey: false },
+        "macos"
+      )
+    ).toBe("searchInRoom");
+    expect(
+      shortcutIdForKeyboardEvent(
+        { key: "k", ctrlKey: false, metaKey: true, shiftKey: false, altKey: false },
+        "macos"
+      )
+    ).toBe("filterRooms");
   });
 
   test("formats modifier labels through explicit platform profiles", () => {
