@@ -247,7 +247,7 @@ const shortcuts: KeyboardShortcut[] = [
     platforms: ["macos"],
     parity: "same",
     implemented: true,
-    nativeMenu: "window",
+    nativeMenu: "view",
     accelerator: "Ctrl+Command+F"
   },
   {
