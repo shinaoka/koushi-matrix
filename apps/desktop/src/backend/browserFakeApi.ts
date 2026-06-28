@@ -372,11 +372,7 @@ class BrowserFakeApi implements DesktopApi {
         : null;
     this.snapshot.state.ui.navigation.active_space_id = nextSpaceId;
     this.refreshRoomListProjection();
-    this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.ui.navigation.active_space_id,
-      this.snapshot.state.domain.spaces,
-      this.snapshot.state.domain.rooms
-    );
+    this.refreshSidebar();
 
     const targetRoomId = nextSpaceId
       ? this.preferredRoomIdInSpace(nextSpaceId)
@@ -403,11 +399,7 @@ class BrowserFakeApi implements DesktopApi {
         (positionBySpaceId.get(left.space_id) ?? Number.MAX_SAFE_INTEGER) -
         (positionBySpaceId.get(right.space_id) ?? Number.MAX_SAFE_INTEGER)
     );
-    this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.ui.navigation.active_space_id,
-      this.snapshot.state.domain.spaces,
-      this.snapshot.state.domain.rooms
-    );
+    this.refreshSidebar();
     return this.getSnapshot();
   }
 
@@ -500,6 +492,7 @@ class BrowserFakeApi implements DesktopApi {
       mode,
       operation: { kind: "idle" }
     };
+    this.refreshSidebar();
     this.refreshActivityStreams();
     return this.getSnapshot();
   }
@@ -519,16 +512,21 @@ class BrowserFakeApi implements DesktopApi {
     );
   }
 
+  private refreshSidebar(): void {
+    this.snapshot.sidebar = composeSidebar(
+      this.snapshot.state.ui.navigation.active_space_id,
+      this.snapshot.state.domain.spaces,
+      this.snapshot.state.domain.rooms,
+      this.snapshot.state.domain.room_notification_settings
+    );
+  }
+
   private refreshRoomPresentation(): void {
     this.snapshot.state.domain.rooms = projectRoomSummaries(
       this.snapshot.state.domain.rooms,
       this.snapshot.state.domain.profile
     );
-    this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.ui.navigation.active_space_id,
-      this.snapshot.state.domain.spaces,
-      this.snapshot.state.domain.rooms
-    );
+    this.refreshSidebar();
   }
 
   async queryDevices(): Promise<DesktopSnapshot> {
@@ -854,11 +852,7 @@ class BrowserFakeApi implements DesktopApi {
         this.snapshot.state.ui.navigation.active_space_id =
           selectedRoom.parent_space_ids[0] ?? null;
         this.refreshRoomListProjection();
-        this.snapshot.sidebar = composeSidebar(
-          this.snapshot.state.ui.navigation.active_space_id,
-          this.snapshot.state.domain.spaces,
-          this.snapshot.state.domain.rooms
-        );
+        this.refreshSidebar();
       }
     }
     this.snapshot.state.ui.navigation.active_room_id = roomId;
@@ -1651,11 +1645,7 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.domain.rooms = [...this.snapshot.state.domain.rooms, joinedRoom];
     this.snapshot.state.domain.directory.join = { kind: "idle" };
     this.refreshRoomListProjection();
-    this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.ui.navigation.active_space_id,
-      this.snapshot.state.domain.spaces,
-      this.snapshot.state.domain.rooms
-    );
+    this.refreshSidebar();
     return this.selectRoom(roomId);
   }
 
@@ -1736,11 +1726,7 @@ class BrowserFakeApi implements DesktopApi {
         : room
     );
     this.refreshRoomListProjection();
-    this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.ui.navigation.active_space_id,
-      this.snapshot.state.domain.spaces,
-      this.snapshot.state.domain.rooms
-    );
+    this.refreshSidebar();
     return this.getSnapshot();
   }
 
@@ -1893,11 +1879,7 @@ class BrowserFakeApi implements DesktopApi {
     };
     this.snapshot.state.domain.rooms = [...this.snapshot.state.domain.rooms, newRoom];
     this.refreshRoomListProjection();
-    this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.ui.navigation.active_space_id,
-      this.snapshot.state.domain.spaces,
-      this.snapshot.state.domain.rooms
-    );
+    this.refreshSidebar();
     await this.selectRoom(newRoomId);
     return this.getSnapshot();
   }
@@ -1947,11 +1929,7 @@ class BrowserFakeApi implements DesktopApi {
         : room
     );
     this.refreshRoomListProjection();
-    this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.ui.navigation.active_space_id,
-      this.snapshot.state.domain.spaces,
-      this.snapshot.state.domain.rooms
-    );
+    this.refreshSidebar();
     return this.getSnapshot();
   }
 
@@ -1984,11 +1962,7 @@ class BrowserFakeApi implements DesktopApi {
     );
     this.snapshot.state.domain.rooms = [...this.snapshot.state.domain.rooms, joinedRoom];
     this.refreshRoomListProjection();
-    this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.ui.navigation.active_space_id,
-      this.snapshot.state.domain.spaces,
-      this.snapshot.state.domain.rooms
-    );
+    this.refreshSidebar();
     await this.selectRoom(roomId);
     return this.getSnapshot();
   }
@@ -2033,11 +2007,7 @@ class BrowserFakeApi implements DesktopApi {
     };
     this.snapshot.state.domain.rooms = [...this.snapshot.state.domain.rooms, newRoom];
     this.refreshRoomListProjection();
-    this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.ui.navigation.active_space_id,
-      this.snapshot.state.domain.spaces,
-      this.snapshot.state.domain.rooms
-    );
+    this.refreshSidebar();
     await this.selectRoom(newRoomId);
     return this.getSnapshot();
   }
@@ -2077,11 +2047,7 @@ class BrowserFakeApi implements DesktopApi {
         : room
     );
     this.refreshRoomListProjection();
-    this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.ui.navigation.active_space_id,
-      this.snapshot.state.domain.spaces,
-      this.snapshot.state.domain.rooms
-    );
+    this.refreshSidebar();
     return this.getSnapshot();
   }
 
@@ -2102,11 +2068,7 @@ class BrowserFakeApi implements DesktopApi {
         : room
     );
     this.refreshRoomListProjection();
-    this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.ui.navigation.active_space_id,
-      this.snapshot.state.domain.spaces,
-      this.snapshot.state.domain.rooms
-    );
+    this.refreshSidebar();
     return this.getSnapshot();
   }
 
@@ -2514,11 +2476,7 @@ class BrowserFakeApi implements DesktopApi {
               )
             }
           };
-    this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.ui.navigation.active_space_id,
-      this.snapshot.state.domain.spaces,
-      this.snapshot.state.domain.rooms
-    );
+    this.refreshSidebar();
   }
 
   private ensureUserProfile(userId: string): DesktopSnapshot["state"]["domain"]["profile"]["users"][string] {
@@ -2761,11 +2719,7 @@ class BrowserFakeApi implements DesktopApi {
       this.snapshot.state.ui.thread = { kind: "closed" };
       this.snapshot.thread = null;
     }
-    this.snapshot.sidebar = composeSidebar(
-      this.snapshot.state.ui.navigation.active_space_id,
-      this.snapshot.state.domain.spaces,
-      this.snapshot.state.domain.rooms
-    );
+    this.refreshSidebar();
     this.refreshRoomListProjection();
     return this.getSnapshot();
   }
@@ -3530,23 +3484,13 @@ function createActivityStreams(
     profileUsers,
     spacesById
   );
-  const unreadEventRows = activityRows(
-    timelineMessages.filter(
-      (message) => unreadRoomIds.has(message.room_id) && !mutedRoomIds.has(message.room_id)
-    ),
-    unreadRoomIds,
-    profileUsers,
-    spacesById
-  );
-  const roomsWithUnreadEventRows = new Set(unreadEventRows.map((row) => row.room_id));
   const unreadPlaceholderRows: ActivityRow[] = rooms
     .filter(
       (room) =>
         (room.unread_count > 0 ||
           (room.highlight_count ?? 0) > 0 ||
           Boolean(room.marked_unread)) &&
-        !mutedRoomIds.has(room.room_id) &&
-        !roomsWithUnreadEventRows.has(room.room_id)
+        !mutedRoomIds.has(room.room_id)
     )
     .map((room) => ({
       kind: "roomUnread" as const,
@@ -3568,7 +3512,7 @@ function createActivityStreams(
       next_batch: includeBackfill ? null : "browser-activity-recent-page-2"
     },
     unread: {
-      rows: sortActivityRows([...unreadEventRows, ...unreadPlaceholderRows]),
+      rows: sortActivityRows(unreadPlaceholderRows),
       next_batch: null
     }
   };

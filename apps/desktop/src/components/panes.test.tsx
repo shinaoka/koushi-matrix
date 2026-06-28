@@ -57,14 +57,15 @@ describe("ActivityPane", () => {
     setActiveLocaleProfile("en", "none");
   });
 
-  it("renders placeholder rows without event preview, sender, or open action", () => {
+  it("renders room-unread rows without event details but keeps them openable", () => {
+    const onOpenRow = vi.fn();
     render(
       <ActivityPane
         activity={activityState([placeholderRow])}
         onClose={vi.fn()}
         onLoadMore={vi.fn()}
         onMarkRead={vi.fn()}
-        onOpenRow={vi.fn()}
+        onOpenRow={onOpenRow}
         onSetTab={vi.fn()}
       />
     );
@@ -79,8 +80,8 @@ describe("ActivityPane", () => {
     expect(screen.queryByText("Sender")).toBeNull();
     expect(listitem.querySelector("time")).toBeNull();
 
-    // No open button: placeholder rows are not event-clickable.
-    expect(screen.queryByRole("button", { name: /Open/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Open/ }));
+    expect(onOpenRow).toHaveBeenCalledWith(placeholderRow);
 
     // No row-level mark-read button for placeholders.
     expect(screen.queryByRole("button", { name: /Mark room read/ })).toBeNull();

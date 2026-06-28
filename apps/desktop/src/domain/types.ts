@@ -543,10 +543,20 @@ export interface RoomSummary {
   highlight_count?: number;
   marked_unread?: boolean;
   last_activity_ms?: number;
+  latest_event?: RoomLatestEventSummary | null;
   parent_space_ids: string[];
   dm_space_ids: string[];
   is_encrypted: boolean;
   joined_members?: number;
+}
+
+export interface RoomLatestEventSummary {
+  event_id: string;
+  sender_id: string | null;
+  sender_label: string | null;
+  sender_avatar: AvatarImage | null;
+  preview: string | null;
+  timestamp_ms: number;
 }
 
 export interface InvitePreview {

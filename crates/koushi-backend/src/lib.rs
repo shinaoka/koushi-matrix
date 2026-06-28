@@ -7,7 +7,8 @@ use koushi_state::{
     AppAction, AppEffect, AppState, AttachmentFilter, AttachmentResult, AttachmentScope,
     AttachmentSort, AuthFailureKind, DelegatedAuthLinks, LoginFlow, LoginRequest, RecoveryMethod,
     RecoveryRequest, RoomSummary, RoomTags, SearchResult, SearchScope, SessionInfo, SidebarModel,
-    SpaceSummary, ThreadPaneState, TrustOperationFailureKind, compose_sidebar, reduce,
+    SpaceSummary, ThreadPaneState, TrustOperationFailureKind,
+    compose_sidebar_with_room_notification_settings, reduce,
 };
 use serde::{Deserialize, Serialize};
 
@@ -141,10 +142,11 @@ impl FakeDesktopBackend {
     }
 
     pub fn snapshot(&self) -> DesktopSnapshot {
-        let sidebar = compose_sidebar(
+        let sidebar = compose_sidebar_with_room_notification_settings(
             self.state.navigation.active_space_id.as_deref(),
             &self.state.spaces,
             &self.state.rooms,
+            &self.state.room_notification_settings,
         );
         let timeline = self
             .state
@@ -833,6 +835,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             highlight_count: 1,
             marked_unread: false,
             last_activity_ms: 0,
+            latest_event: None,
             parent_space_ids: vec![DEFAULT_SPACE_ID.to_owned()],
             dm_space_ids: Vec::new(),
             is_encrypted: false,
@@ -852,6 +855,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             highlight_count: 0,
             marked_unread: false,
             last_activity_ms: 0,
+            latest_event: None,
             parent_space_ids: vec![DEFAULT_SPACE_ID.to_owned()],
             dm_space_ids: Vec::new(),
             is_encrypted: false,
@@ -871,6 +875,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             highlight_count: 0,
             marked_unread: false,
             last_activity_ms: 0,
+            latest_event: None,
             parent_space_ids: vec!["!space-beta:example.invalid".to_owned()],
             dm_space_ids: Vec::new(),
             is_encrypted: false,
@@ -890,6 +895,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             highlight_count: 0,
             marked_unread: false,
             last_activity_ms: 0,
+            latest_event: None,
             parent_space_ids: vec![
                 DEFAULT_SPACE_ID.to_owned(),
                 "!space-beta:example.invalid".to_owned(),
@@ -912,6 +918,7 @@ fn fixture_rooms() -> Vec<RoomSummary> {
             highlight_count: 0,
             marked_unread: false,
             last_activity_ms: 0,
+            latest_event: None,
             parent_space_ids: Vec::new(),
             dm_space_ids: Vec::new(),
             is_encrypted: false,

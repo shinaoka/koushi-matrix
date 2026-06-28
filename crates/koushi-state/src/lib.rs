@@ -25,7 +25,10 @@ pub use locale_profile::{
     resolve_locale_display_profile,
 };
 pub use reducer::reduce;
-pub use sidebar::{AccountHomeItem, RoomListItem, SidebarModel, SpaceRailItem, compose_sidebar};
+pub use sidebar::{
+    AccountHomeItem, RoomListItem, SidebarModel, SpaceRailItem, compose_sidebar,
+    compose_sidebar_with_room_notification_settings,
+};
 pub use state::{
     AccountManagementCapabilities, AccountManagementOperation, AccountManagementState,
     ActivityMarkReadState, ActivityMarkReadTarget, ActivityRow, ActivityRowKind, ActivityState,
@@ -52,10 +55,11 @@ pub use state::{
     PinOperationState, PinnedEvent, PresenceKind, ProfileState, ProfileUpdateRequest,
     ProfileUpdateState, QrLoginState, RecoveryKeyDeliveryState, RecoveryMethod, ReplyQuote,
     ReplyQuoteState, RoomAttentionKind, RoomAttentionSummary, RoomHistoryVisibility,
-    RoomInteractionState, RoomJoinRule, RoomKeyExportState, RoomKeyImportState, RoomListEntryKind,
-    RoomListFilter, RoomListProjection, RoomListProjectionItem, RoomListSort, RoomLiveSignals,
-    RoomManagementOperationKind, RoomManagementOperationState, RoomManagementState, RoomMemberRole,
-    RoomMemberSummary, RoomModerationAction, RoomNotificationMode, RoomNotificationModeOperation,
+    RoomInteractionState, RoomJoinRule, RoomKeyExportState, RoomKeyImportState,
+    RoomLatestEventSummary, RoomListEntryKind, RoomListFilter, RoomListProjection,
+    RoomListProjectionItem, RoomListSort, RoomLiveSignals, RoomManagementOperationKind,
+    RoomManagementOperationState, RoomManagementState, RoomMemberRole, RoomMemberSummary,
+    RoomModerationAction, RoomNotificationMode, RoomNotificationModeOperation,
     RoomNotificationSettings, RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot,
     RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, RoomUrlPreviews, SasEmoji,
     ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, ScheduledSendStore,

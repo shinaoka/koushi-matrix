@@ -18,6 +18,15 @@ footguns. Durable repository rules do not live here.
    detailed policy extension for secrets, logging, QA automation, and gates.
 6. The relevant dated implementation plan under `docs/superpowers/plans/`.
 
+## CodeGraph
+
+When this worktree has a `.codegraph/` directory, use CodeGraph before `rg`,
+`grep`, `find`, or manual file reads for codebase-orientation questions. Prefer
+`codegraph explore "<question or symbols>"` for architectural or flow questions
+and `codegraph node <symbol-or-file>` for exact symbol/file source with call
+context. If a new worktree lacks `.codegraph/`, initialize it with
+`codegraph init .` before broad code investigation.
+
 When an operational note here hardens into a durable rule, promote it to
 `REPOSITORY_RULES.md` or `docs/policies/engineering-rules.md` and keep only the
 local how-to detail here.

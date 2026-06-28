@@ -79,6 +79,7 @@ pub fn compose_room_list_update(update: DesktopRoomListUpdate) -> AppAction {
                 highlight_count: room.highlight_count,
                 marked_unread: false,
                 last_activity_ms: 0,
+                latest_event: None,
                 parent_space_ids,
                 dm_space_ids,
                 is_encrypted: false,

@@ -198,7 +198,12 @@ export function ActivityPane({
                   key={`${row.room_id}:${isPlaceholder ? "roomUnread" : row.event_id}`}
                 >
                   {isPlaceholder ? (
-                    <div className="activity-row-open">
+                    <button
+                      className="activity-row-open"
+                      type="button"
+                      aria-label={t("activity.openItem", { room: row.room_label })}
+                      onClick={() => onOpenRow(row)}
+                    >
                       <EntityAvatar
                         avatar={null}
                         className="activity-row-avatar is-room"
@@ -213,7 +218,7 @@ export function ActivityPane({
                           {row.highlight ? <span>{t("activity.highlightBadge")}</span> : null}
                         </span>
                       </span>
-                    </div>
+                    </button>
                   ) : (
                     <button
                       className="activity-row-open"

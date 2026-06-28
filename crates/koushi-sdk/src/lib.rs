@@ -2255,9 +2255,20 @@ pub struct MatrixRoomListRoom {
     pub highlight_count: u64,
     pub marked_unread: bool,
     pub last_activity_ms: u64,
+    pub latest_event: Option<MatrixRoomLatestEventSummary>,
     pub parent_space_ids: Vec<String>,
     pub is_encrypted: bool,
     pub joined_members: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatrixRoomLatestEventSummary {
+    pub event_id: String,
+    pub sender_id: Option<String>,
+    pub sender_label: Option<String>,
+    pub sender_avatar_mxc_uri: Option<String>,
+    pub preview: Option<String>,
+    pub timestamp_ms: u64,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -4593,6 +4604,7 @@ async fn matrix_room_list_snapshot_from_rooms(
             .await
             .map(|state| state.is_encrypted())
             .unwrap_or(false);
+        let latest_event = matrix_room_latest_event_summary(&room).await;
 
         snapshot.rooms.push(matrix_room_list_room_from_counts(
             room_id,
@@ -4606,6 +4618,7 @@ async fn matrix_room_list_snapshot_from_rooms(
             unread_count,
             is_marked_unread,
             room.recency_stamp().map(|stamp| stamp.into()).unwrap_or(0),
+            latest_event,
             parent_space_ids,
             is_encrypted,
             joined_members,
@@ -4807,6 +4820,7 @@ fn matrix_room_list_room_from_counts(
     unread_count: u64,
     marked_unread: bool,
     last_activity_ms: u64,
+    latest_event: Option<MatrixRoomLatestEventSummary>,
     parent_space_ids: Vec<String>,
     is_encrypted: bool,
     joined_members: u64,
@@ -4823,9 +4837,116 @@ fn matrix_room_list_room_from_counts(
         highlight_count,
         marked_unread,
         last_activity_ms,
+        latest_event,
         parent_space_ids,
         is_encrypted,
         joined_members,
+    }
+}
+
+async fn matrix_room_latest_event_summary(
+    room: &matrix_sdk::Room,
+) -> Option<MatrixRoomLatestEventSummary> {
+    let client = room.client();
+    if client.event_cache().has_subscribed() {
+        let latest_events = client.latest_events().await;
+        let _ = latest_events.listen_to_room(room.room_id()).await;
+    }
+    let latest_event = room.latest_event();
+    match latest_event {
+        matrix_sdk::latest_events::LatestEventValue::Remote(timeline_event) => {
+            let event_id = timeline_event.event_id()?.to_string();
+            let sender = timeline_event.sender();
+            let timestamp_ms = timeline_event
+                .timestamp()
+                .map(|timestamp| u64::from(timestamp.get()))
+                .unwrap_or(0);
+            let content =
+                matrix_sdk_ui::timeline::TimelineItemContent::from_event(room, timeline_event)
+                    .await;
+            let (sender_label, sender_avatar_mxc_uri) = match sender.as_ref() {
+                Some(sender) => matrix_room_member_display(room, sender).await,
+                None => (None, None),
+            };
+            Some(MatrixRoomLatestEventSummary {
+                event_id,
+                sender_id: sender.map(|sender| sender.to_string()),
+                sender_label,
+                sender_avatar_mxc_uri,
+                preview: content.as_ref().and_then(matrix_latest_event_preview),
+                timestamp_ms,
+            })
+        }
+        matrix_sdk::latest_events::LatestEventValue::LocalHasBeenSent { event_id, value } => {
+            let sender_id = room.client().user_id().map(|user_id| user_id.to_string());
+            Some(MatrixRoomLatestEventSummary {
+                event_id: event_id.to_string(),
+                sender_id: sender_id.clone(),
+                sender_label: sender_id,
+                sender_avatar_mxc_uri: None,
+                preview: matrix_local_latest_event_preview(&value.content),
+                timestamp_ms: u64::from(value.timestamp.get()),
+            })
+        }
+        matrix_sdk::latest_events::LatestEventValue::None
+        | matrix_sdk::latest_events::LatestEventValue::RemoteInvite { .. }
+        | matrix_sdk::latest_events::LatestEventValue::LocalIsSending(_)
+        | matrix_sdk::latest_events::LatestEventValue::LocalCannotBeSent(_) => None,
+    }
+}
+
+async fn matrix_room_member_display(
+    room: &matrix_sdk::Room,
+    user_id: &matrix_sdk::ruma::UserId,
+) -> (Option<String>, Option<String>) {
+    match room.get_member_no_sync(user_id).await {
+        Ok(Some(member)) => (
+            member.display_name().map(ToOwned::to_owned),
+            member.avatar_url().map(ToString::to_string),
+        ),
+        Ok(None) | Err(_) => (None, None),
+    }
+}
+
+fn matrix_latest_event_preview(
+    content: &matrix_sdk_ui::timeline::TimelineItemContent,
+) -> Option<String> {
+    match content {
+        matrix_sdk_ui::timeline::TimelineItemContent::MsgLike(msglike) => match &msglike.kind {
+            matrix_sdk_ui::timeline::MsgLikeKind::Message(message) => {
+                Some(message.body().to_owned())
+            }
+            matrix_sdk_ui::timeline::MsgLikeKind::UnableToDecrypt(_) => {
+                Some("Unable to decrypt message".to_owned())
+            }
+            matrix_sdk_ui::timeline::MsgLikeKind::Redacted => Some("Message deleted".to_owned()),
+            matrix_sdk_ui::timeline::MsgLikeKind::Sticker(_)
+            | matrix_sdk_ui::timeline::MsgLikeKind::Poll(_)
+            | matrix_sdk_ui::timeline::MsgLikeKind::Other(_)
+            | matrix_sdk_ui::timeline::MsgLikeKind::LiveLocation(_) => content.event_type_str(),
+        },
+        matrix_sdk_ui::timeline::TimelineItemContent::MembershipChange(_)
+        | matrix_sdk_ui::timeline::TimelineItemContent::ProfileChange(_)
+        | matrix_sdk_ui::timeline::TimelineItemContent::OtherState(_)
+        | matrix_sdk_ui::timeline::TimelineItemContent::FailedToParseMessageLike { .. }
+        | matrix_sdk_ui::timeline::TimelineItemContent::FailedToParseState { .. }
+        | matrix_sdk_ui::timeline::TimelineItemContent::CallInvite
+        | matrix_sdk_ui::timeline::TimelineItemContent::RtcNotification { .. } => {
+            content.event_type_str()
+        }
+    }
+}
+
+fn matrix_local_latest_event_preview(
+    content: &matrix_sdk::store::SerializableEventContent,
+) -> Option<String> {
+    let content: matrix_sdk::ruma::events::AnyMessageLikeEventContent =
+        content.deserialize().ok()?;
+    match content {
+        matrix_sdk::ruma::events::AnyMessageLikeEventContent::RoomMessage(message) => {
+            Some(message.body().to_owned())
+        }
+        _ => None,
     }
 }
 
@@ -5489,6 +5610,7 @@ mod tests {
             4,
             false,
             0,
+            None,
             vec!["!space:example.invalid".to_owned()],
             false,
             2,
@@ -5522,6 +5644,7 @@ mod tests {
             0,
             false,
             0,
+            None,
             vec![],
             false,
             0,

@@ -780,17 +780,19 @@ describe("BrowserFakeApi settings preview", () => {
     expect(opened.state.domain.activity.recent.rows.every((row) => row.kind === "event")).toBe(
       true
     );
-    expect(opened.state.domain.activity.unread.rows.some((row) => row.event_id === "$alpha-update")).toBe(
-      true
-    );
+    expect(
+      opened.state.domain.activity.unread.rows.every(
+        (row) => row.kind === "roomUnread" && row.event_id === null
+      )
+    ).toBe(true);
     expect(
       opened.state.domain.activity.unread.rows.some(
-        (row) =>
-          row.kind === "roomUnread" &&
-          row.room_id === "!dm-member-1:example.invalid" &&
-          row.event_id === null &&
-          row.preview === null &&
-          row.sender_label === null
+        (row) => row.room_id === "!room-alpha:example.invalid"
+      )
+    ).toBe(true);
+    expect(
+      opened.state.domain.activity.unread.rows.some(
+        (row) => row.room_id === "!dm-member-1:example.invalid"
       )
     ).toBe(true);
 
@@ -800,9 +802,11 @@ describe("BrowserFakeApi settings preview", () => {
       throw new Error("activity should stay open");
     }
     expect(switched.state.domain.activity.active_tab).toBe("unread");
-    expect(switched.state.domain.activity.unread.rows.some((row) => row.event_id === "$alpha-update")).toBe(
-      true
-    );
+    expect(
+      switched.state.domain.activity.unread.rows.every(
+        (row) => row.kind === "roomUnread" && row.event_id === null
+      )
+    ).toBe(true);
 
     const paged = await api.paginateActivity("recent", switched.state.domain.activity.recent.next_batch);
     expect(paged.state.domain.activity.kind).toBe("open");

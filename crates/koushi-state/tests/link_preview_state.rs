@@ -25,6 +25,7 @@ fn ready_state_with_room(room_id: &str) -> AppState {
             highlight_count: 0,
             marked_unread: false,
             last_activity_ms: 0,
+            latest_event: None,
             parent_space_ids: Vec::new(),
             dm_space_ids: Vec::new(),
             is_encrypted: false,

@@ -4488,7 +4488,7 @@ fn activity_row_from_timeline_item(room_id: &str, item: &TimelineItem) -> Option
         .body
         .clone()
         .or_else(|| item.media.as_ref().map(|media| media.filename.clone()))?;
-    Some(ActivityRow::event(
+    let mut row = ActivityRow::event(
         room_id.to_owned(),
         event_id.clone(),
         item.sender.clone(),
@@ -4498,7 +4498,9 @@ fn activity_row_from_timeline_item(room_id: &str, item: &TimelineItem) -> Option
         item.timestamp_ms.unwrap_or(0),
         false,
         false,
-    ))
+    );
+    row.sender_avatar = item.sender_avatar.clone();
+    Some(row)
 }
 
 fn media_gallery_updated_action(

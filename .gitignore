@@ -1,5 +1,6 @@
 .superpowers/
 .worktrees/
+.codegraph/
 .local-secrets/
 node_modules/
 dist/

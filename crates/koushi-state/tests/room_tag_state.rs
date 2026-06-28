@@ -34,6 +34,7 @@ fn room(room_id: &str, tags: RoomTags) -> RoomSummary {
         highlight_count: 0,
         marked_unread: false,
         last_activity_ms: 0,
+        latest_event: None,
         parent_space_ids: Vec::new(),
         dm_space_ids: Vec::new(),
         is_encrypted: false,

@@ -603,6 +603,7 @@ fn room_summary(
         highlight_count: 0,
         marked_unread,
         last_activity_ms: 0,
+        latest_event: None,
         parent_space_ids: Vec::new(),
         dm_space_ids: Vec::new(),
         is_encrypted: false,

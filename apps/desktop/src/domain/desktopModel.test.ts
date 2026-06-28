@@ -31,6 +31,52 @@ describe("desktop model", () => {
     ]);
   });
 
+  test("aggregate sidebar badges ignore muted rooms while room items keep counts", () => {
+    const spaces: SpaceSummary[] = [
+      {
+        space_id: "!space-a:example.invalid",
+        display_name: "Alpha",
+        avatar: null,
+        child_room_ids: ["!room-a:example.invalid", "!room-b:example.invalid"]
+      }
+    ];
+    const mutedRoom = {
+      ...roomSummary("!room-a:example.invalid", "Muted room", false, undefined, [
+        "!space-a:example.invalid"
+      ]),
+      unread_count: 5,
+      highlight_count: 1
+    };
+    const normalRoom = {
+      ...roomSummary("!room-b:example.invalid", "Normal room", false, undefined, [
+        "!space-a:example.invalid"
+      ]),
+      unread_count: 2
+    };
+    const dmRoom = {
+      ...roomSummaryWithDmSpaces("!dm-a:example.invalid", "DM", ["!space-a:example.invalid"]),
+      unread_count: 3
+    };
+
+    const sidebar = composeSidebar(
+      "!space-a:example.invalid",
+      spaces,
+      [mutedRoom, normalRoom, dmRoom],
+      {
+        "!room-a:example.invalid": { mode: { kind: "mute" }, operation: { kind: "idle" } }
+      }
+    );
+
+    expect(
+      sidebar.space_rooms.find((room) => room.room_id === mutedRoom.room_id)?.unread_count
+    ).toBe(5);
+    expect(sidebar.account_home.unread_count).toBe(5);
+    expect(sidebar.account_home.highlight_count).toBe(0);
+    expect(sidebar.space_rail[0]?.unread_count).toBe(2);
+    expect(sidebar.space_unread_count).toBe(2);
+    expect(sidebar.dm_unread_count).toBe(3);
+  });
+
   test("active space global_dms shows only DMs whose dm_space_ids includes that space", () => {
     const spaces: SpaceSummary[] = [
       {

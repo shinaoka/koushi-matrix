@@ -642,7 +642,7 @@ impl ActivityProjection {
 
         let mut recent = Vec::new();
         let mut unread = Vec::new();
-        let mut rooms_with_unread_event_row: BTreeSet<String> = BTreeSet::new();
+        let mut recent_event_ids = BTreeSet::new();
         for row in self.rows_by_event_id.values() {
             if excluded.contains(row.room_id.as_str()) {
                 continue;
@@ -675,7 +675,8 @@ impl ActivityProjection {
                 .sender_id
                 .as_ref()
                 .and_then(|user_id| state.profile.users.get(user_id))
-                .and_then(|profile| profile.avatar.clone());
+                .and_then(|profile| profile.avatar.clone())
+                .or_else(|| row.sender_avatar.clone());
             let context_label = activity_row_context_label(room, &spaces_by_id);
             let row = ActivityRow {
                 room_label: room.display_label.clone(),
@@ -685,9 +686,8 @@ impl ActivityProjection {
                 highlight: row.highlight || (unread_row && room.highlight_count > 0),
                 ..row.clone()
             };
-            if unread_row {
-                unread.push(row.clone());
-                rooms_with_unread_event_row.insert(row.room_id.clone());
+            if let Some(event_id) = row.event_id.clone() {
+                recent_event_ids.insert(event_id);
             }
             recent.push(row);
         }
@@ -696,7 +696,41 @@ impl ActivityProjection {
             if excluded.contains(room.room_id.as_str()) {
                 continue;
             }
-            if rooms_with_unread_event_row.contains(room.room_id.as_str()) {
+            let Some(latest_event) = &room.latest_event else {
+                continue;
+            };
+            if recent_event_ids.contains(&latest_event.event_id) {
+                continue;
+            }
+            let fully_read_event_id = state
+                .live_signals
+                .rooms
+                .get(room.room_id.as_str())
+                .and_then(|signals| signals.fully_read_event_id.as_deref());
+            let room_has_unread =
+                room.unread_count > 0 || room.highlight_count > 0 || room.marked_unread;
+            let unread_row = room_has_unread
+                && fully_read_event_id != Some(latest_event.event_id.as_str())
+                && !self.cleared_event_ids.contains(&latest_event.event_id);
+            let context_label = activity_row_context_label(room, &spaces_by_id);
+            let mut row = ActivityRow::event(
+                room.room_id.clone(),
+                latest_event.event_id.clone(),
+                latest_event.sender_id.clone(),
+                room.display_label.clone(),
+                latest_event.sender_label.clone(),
+                latest_event.preview.clone(),
+                latest_event.timestamp_ms,
+                unread_row,
+                unread_row && room.highlight_count > 0,
+            );
+            row.sender_avatar = latest_event.sender_avatar.clone();
+            row.context_label = context_label;
+            recent.push(row);
+        }
+
+        for room in state.rooms.iter() {
+            if excluded.contains(room.room_id.as_str()) {
                 continue;
             }
             let has_unread =
