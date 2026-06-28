@@ -278,6 +278,7 @@ export type TimelineUnreadPosition =
 export interface TimelineNavigationSnapshot {
   read_marker_event_id: string | null;
   read_marker_display_event_id: string | null;
+  latest_readable_event_id: string | null;
   first_unread_event_id: string | null;
   unread_event_count: number;
   unread_position: TimelineUnreadPosition;

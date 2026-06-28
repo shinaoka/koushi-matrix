@@ -4010,6 +4010,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
                 first_visible_event_id: Some(event1_id.clone()),
                 last_visible_event_id: Some(event1_id.clone()),
                 at_bottom: false,
+                scroll_anchor: None,
             },
         }))
         .await

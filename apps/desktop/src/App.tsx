@@ -368,17 +368,16 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
         roomId: string,
         firstVisibleEventId: string | null,
         lastVisibleEventId: string | null,
-        atBottom: boolean
+        atBottom: boolean,
+        scrollAnchor: TimelineScrollAnchor | null
       ) {
         await invoke("observe_timeline_viewport", {
           roomId,
           firstVisibleEventId,
           lastVisibleEventId,
-          atBottom
+          atBottom,
+          scrollAnchor
         });
-      },
-      async updateScrollAnchor(roomId: string, anchor: TimelineScrollAnchor) {
-        await invoke("update_navigation_scroll_anchor", { roomId, anchor });
       },
       async openAtTimestamp(roomId: string, timestampMs: number) {
         await invoke("open_timeline_at_timestamp", { roomId, timestampMs });

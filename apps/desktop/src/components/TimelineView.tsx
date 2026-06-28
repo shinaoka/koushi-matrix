@@ -107,6 +107,7 @@ import {
   applyTimelineEvent,
   batchContainsPrepend,
   createTimelineStore,
+  getItems,
   getTimelineDisplayItems,
   getMediaUploadProgress,
   getKeyState,
@@ -208,10 +209,9 @@ export interface TimelineTransport {
     roomId: string,
     firstVisibleEventId: string | null,
     lastVisibleEventId: string | null,
-    atBottom: boolean
+    atBottom: boolean,
+    scrollAnchor: TimelineScrollAnchor | null
   ): Promise<void>;
-  /** Persist the current room-local read/scroll anchor. */
-  updateScrollAnchor?(roomId: string, anchor: TimelineScrollAnchor): Promise<void>;
   /** Resolve a timestamp through Rust and open focused context. */
   openAtTimestamp?(roomId: string, timestampMs: number): Promise<void>;
 }
@@ -375,18 +375,6 @@ function roomScrollAnchorSignature(roomId: string, anchor: TimelineScrollAnchor)
     anchor.edge ?? "top",
     anchor.offset_px,
     anchor.updated_at_ms
-  ].join("\u0000");
-}
-
-function roomScrollAnchorStableSignature(
-  roomId: string,
-  anchor: Pick<TimelineScrollAnchor, "event_id" | "edge" | "offset_px">
-): string {
-  return [
-    roomId,
-    anchor.event_id,
-    anchor.edge ?? "top",
-    anchor.offset_px
   ].join("\u0000");
 }
 
@@ -1780,38 +1768,28 @@ export const TimelineView = memo(function TimelineView({
     );
   }, []);
 
-  const persistViewportAnchor = useCallback((options?: { allowSuppressed?: boolean }): boolean => {
-    if (!transport.updateScrollAnchor || roomTimelineRoomId !== roomId) {
-      return false;
+  const capturePersistableViewportAnchor = useCallback((
+    options?: { allowSuppressed?: boolean }
+  ): TimelineScrollAnchor | null => {
+    if (roomTimelineRoomId !== roomId) {
+      return null;
     }
     if (!viewportCanPersistAnchor(options)) {
-      return false;
+      return null;
     }
     const container = containerRef.current;
     if (!container) {
-      return false;
+      return null;
     }
     const captured = captureRoomScrollAnchor(container);
     if (!captured) {
-      return false;
+      return null;
     }
-    const stableSignature = roomScrollAnchorStableSignature(roomId, captured);
-    if (
-      currentViewportState().lastPersistedViewportAnchorSignature ===
-      stableSignature
-    ) {
-      return false;
-    }
-    dispatchViewportMachine({ type: "persisted-room-anchor", signature: stableSignature });
-    const updatedAtMs = Date.now();
-    void transport
-      .updateScrollAnchor(roomId, {
-        ...captured,
-        updated_at_ms: updatedAtMs
-      })
-      .catch(() => undefined);
-    return true;
-  }, [dispatchViewportMachine, roomId, roomTimelineRoomId, transport]);
+    return {
+      ...captured,
+      updated_at_ms: Date.now()
+    };
+  }, [roomId, roomTimelineRoomId, viewportCanPersistAnchor]);
 
   const runWithSuppressedScrollAnchorCapture = useCallback((action: () => void) => {
     const asyncGeneration = anchorAsyncGenerationRef.current;
@@ -1860,8 +1838,8 @@ export const TimelineView = memo(function TimelineView({
       });
       changed = true;
     }
-    return persistViewportAnchor({ allowSuppressed: true }) || changed;
-  }, [persistViewportAnchor, runWithSuppressedScrollAnchorCapture]);
+    return changed;
+  }, [runWithSuppressedScrollAnchorCapture, viewportIsLiveEdge]);
   // --- Event subscription: local stores apply reducers; App stores keep view effects here. ---
   useEffect(() => {
     const unsubscribe = transport.listenCoreEvents((payload) => {
@@ -2088,7 +2066,11 @@ export const TimelineView = memo(function TimelineView({
     [dispatchViewportMachine]
   );
 
-  const items = getTimelineDisplayItems(store, timelineKey, { threadRootOrder });
+  const rawItems = getItems(store, timelineKey);
+  const items = useMemo(
+    () => getTimelineDisplayItems(store, timelineKey, { threadRootOrder }),
+    [store, threadRootOrder, timelineKeyHash]
+  );
   useEffect(() => {
     relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(items, profileUsers);
   }, [items, profileUsers]);
@@ -2260,7 +2242,8 @@ export const TimelineView = memo(function TimelineView({
   const isPaginating = backwardState === "Paginating";
   const endReached = backwardState === "EndReached";
   const roomSignals = liveSignals?.rooms[roomId] ?? null;
-  const latestReadableEventId = latestEventBackedItemId(items);
+  const latestReadableEventId =
+    navigationSnapshot?.latest_readable_event_id ?? latestReadableEventBackedItemId(rawItems);
   const timelineKeyState = getKeyState(store, timelineKey);
   const timelineInitialized = Boolean(timelineKeyState && !timelineKeyState.awaitingResync);
   // Stable, render-visible timeline generation for this key. Bumps when the
@@ -2418,7 +2401,9 @@ export const TimelineView = memo(function TimelineView({
     },
     [roomId, transport]
   );
-  const reportViewportObservation = useCallback(() => {
+  const reportViewportObservation = useCallback((
+    options?: { allowSuppressedAnchor?: boolean }
+  ) => {
     if (!transport.observeViewport || roomTimelineRoomId !== roomId) {
       return;
     }
@@ -2435,11 +2420,22 @@ export const TimelineView = memo(function TimelineView({
     if (atBottom && latestReadableEventId) {
       sendReadSignalsForEvent(latestReadableEventId);
     }
+    const scrollAnchor = capturePersistableViewportAnchor({
+      allowSuppressed: options?.allowSuppressedAnchor === true
+    });
+    const scrollAnchorSignature = scrollAnchor
+      ? [
+          scrollAnchor.event_id,
+          scrollAnchor.edge ?? "top",
+          scrollAnchor.offset_px
+        ].join("\u0000")
+      : "";
     const signature = [
       roomId,
       visible.firstVisibleEventId ?? "",
       visible.lastVisibleEventId ?? "",
-      atBottom ? "bottom" : "not-bottom"
+      atBottom ? "bottom" : "not-bottom",
+      scrollAnchorSignature
     ].join("\u0000");
     if (lastViewportObservationRef.current === signature) {
       return;
@@ -2450,10 +2446,12 @@ export const TimelineView = memo(function TimelineView({
         roomId,
         visible.firstVisibleEventId,
         visible.lastVisibleEventId,
-        atBottom
+        atBottom,
+        scrollAnchor
       )
       .catch(() => undefined);
   }, [
+    capturePersistableViewportAnchor,
     latestReadableEventId,
     roomId,
     roomTimelineRoomId,
@@ -2481,7 +2479,7 @@ export const TimelineView = memo(function TimelineView({
           return;
         }
         updateViewportMetrics();
-        reportViewportObservation();
+        reportViewportObservation({ allowSuppressedAnchor: true });
       });
     });
 
@@ -2602,7 +2600,7 @@ export const TimelineView = memo(function TimelineView({
                 roomAnchorRestoredInFrame = restoreActiveRoomAnchor();
                 if (roomAnchorRestoredInFrame) {
                   updateViewportMetrics();
-                  reportViewportObservation();
+                  reportViewportObservation({ allowSuppressedAnchor: true });
                 }
               });
               if (!roomAnchorRestoredInFrame) {
@@ -2612,7 +2610,7 @@ export const TimelineView = memo(function TimelineView({
                 });
               }
               updateViewportMetrics();
-              reportViewportObservation();
+              reportViewportObservation({ allowSuppressedAnchor: true });
             });
             return;
           }
@@ -2707,7 +2705,7 @@ export const TimelineView = memo(function TimelineView({
                 status: restored ? "found" : "not-found"
               });
               updateViewportMetrics();
-              reportViewportObservation();
+              reportViewportObservation({ allowSuppressedAnchor: true });
               setScrollAnchorSettlementVersion((current) => current + 1);
             });
           };
@@ -2831,7 +2829,7 @@ export const TimelineView = memo(function TimelineView({
               restoreAnchor(container, anchor);
             });
             updateViewportMetrics();
-            reportViewportObservation();
+            reportViewportObservation({ allowSuppressedAnchor: true });
           });
         }
       }
@@ -2840,7 +2838,7 @@ export const TimelineView = memo(function TimelineView({
       dispatchViewportMachine({ type: "prepend-anchor-restore-finished" });
     }
     updateViewportMetrics();
-    reportViewportObservation();
+    reportViewportObservation({ allowSuppressedAnchor: true });
   }, [
     generation,
     anchorMaterializeCompletionVersion,
@@ -2866,7 +2864,7 @@ export const TimelineView = memo(function TimelineView({
       const changed = applyViewportIntent();
       if (changed) {
         updateViewportMetrics();
-        reportViewportObservation();
+        reportViewportObservation({ allowSuppressedAnchor: true });
       }
       return;
     }
@@ -2935,7 +2933,7 @@ export const TimelineView = memo(function TimelineView({
     });
     if (container.scrollTop !== previousScrollTop) {
       updateViewportMetrics();
-      reportViewportObservation();
+      reportViewportObservation({ allowSuppressedAnchor: true });
     }
   });
 
@@ -3061,12 +3059,10 @@ export const TimelineView = memo(function TimelineView({
     if (!isProgrammaticEcho) {
       reportViewportObservation();
       maybeAutoBackfill();
-      persistViewportAnchor();
     }
   }, [
     dispatchViewportMachine,
     maybeAutoBackfill,
-    persistViewportAnchor,
     reportViewportObservation,
     updateViewportMetrics,
     viewportProgrammaticScrollEchoMatches
@@ -3140,7 +3136,7 @@ export const TimelineView = memo(function TimelineView({
           row.scrollIntoView({ block: scrollBlock, inline: "nearest" });
         });
         updateViewportMetrics();
-        reportViewportObservation();
+        reportViewportObservation({ allowSuppressedAnchor: true });
         return;
       }
       if (container && virtualWindow.virtualized) {
@@ -3169,7 +3165,7 @@ export const TimelineView = memo(function TimelineView({
               scrollMountedRowIntoView();
             });
             updateViewportMetrics();
-            reportViewportObservation();
+            reportViewportObservation({ allowSuppressedAnchor: true });
           });
           return;
         }
@@ -3201,13 +3197,13 @@ export const TimelineView = memo(function TimelineView({
       scrollContainerToBottom(container);
     });
     updateViewportMetrics();
-    reportViewportObservation();
+    reportViewportObservation({ allowSuppressedAnchor: true });
     requestAnimationFrame(() => {
       runWithSuppressedScrollAnchorCapture(() => {
         scrollContainerToBottom(container);
       });
       updateViewportMetrics();
-      reportViewportObservation();
+      reportViewportObservation({ allowSuppressedAnchor: true });
     });
   }, [
     setViewportIntentToLiveEdge,
@@ -4562,14 +4558,27 @@ export function TimelineItemRow({
   );
 }
 
-function latestEventBackedItemId(items: TimelineItem[]): string | null {
+function latestReadableEventBackedItemId(items: TimelineItem[]): string | null {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
-    if ("Event" in item.id) {
+    if (!item.is_hidden && timelineItemHasReadableContent(item) && "Event" in item.id) {
       return item.id.Event.event_id;
     }
   }
   return null;
+}
+
+function timelineItemHasReadableContent(item: TimelineItem): boolean {
+  if (item.body?.trim()) {
+    return true;
+  }
+  if (item.media) {
+    return true;
+  }
+  if (item.formatted?.plain_text.trim()) {
+    return true;
+  }
+  return item.formatted?.code_blocks.some((block) => block.body.trim()) ?? false;
 }
 
 function emitTimelineEventDiagnosticLog(

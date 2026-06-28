@@ -46,7 +46,6 @@ export type TimelineViewportMachineState = {
   roomAnchorRestorePending: boolean;
   roomAnchorMaterializePending: boolean;
   retainedRoomAnchor: TimelineRetainedRoomAnchor | null;
-  lastPersistedViewportAnchorSignature: string | null;
   restoredRoomAnchorSignature: string | null;
   requestedRoomAnchorMaterializeSignature: string | null;
   exhaustedRoomAnchorMaterializeSignature: string | null;
@@ -84,7 +83,6 @@ export type TimelineViewportMachineEvent =
   | { type: "scroll-capture-suppression-started" }
   | { type: "scroll-capture-suppression-finished" }
   | { type: "programmatic-scroll-assigned"; scrollHeight: number; scrollTop: number }
-  | { type: "persisted-room-anchor"; signature: string }
   | { type: "stick-to-bottom-after-measurement"; value: boolean };
 
 export function createTimelineViewportMachineState(): TimelineViewportMachineState {
@@ -97,7 +95,6 @@ export function createTimelineViewportMachineState(): TimelineViewportMachineSta
     roomAnchorRestorePending: false,
     roomAnchorMaterializePending: false,
     retainedRoomAnchor: null,
-    lastPersistedViewportAnchorSignature: null,
     restoredRoomAnchorSignature: null,
     requestedRoomAnchorMaterializeSignature: null,
     exhaustedRoomAnchorMaterializeSignature: null,
@@ -250,11 +247,6 @@ export function reduceTimelineViewportMachine(
           scrollHeight: event.scrollHeight,
           scrollTop: event.scrollTop
         }
-      };
-    case "persisted-room-anchor":
-      return {
-        ...state,
-        lastPersistedViewportAnchorSignature: event.signature
       };
     case "stick-to-bottom-after-measurement":
       return {

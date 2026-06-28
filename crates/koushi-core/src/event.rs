@@ -9,7 +9,7 @@ use koushi_state::{
     JapaneseCatalogProfile, KeyBackupStatus, LocalEncryptionHealth, MediaTransferProgress,
     NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind, ProfileState,
     ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind, SessionState, SyncMode,
-    ThreadsListItem, VerificationFlowState, resolve_user_display_name,
+    ThreadsListItem, TimelineScrollAnchor, VerificationFlowState, resolve_user_display_name,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -1122,12 +1122,15 @@ pub struct TimelineViewportObservation {
     pub first_visible_event_id: Option<String>,
     pub last_visible_event_id: Option<String>,
     pub at_bottom: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_anchor: Option<TimelineScrollAnchor>,
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelineNavigationSnapshot {
     pub read_marker_event_id: Option<String>,
     pub read_marker_display_event_id: Option<String>,
+    pub latest_readable_event_id: Option<String>,
     pub first_unread_event_id: Option<String>,
     pub unread_event_count: u64,
     pub unread_position: TimelineUnreadPosition,
@@ -1147,6 +1150,13 @@ impl fmt::Debug for TimelineNavigationSnapshot {
                 "read_marker_display_event_id",
                 &self
                     .read_marker_display_event_id
+                    .as_ref()
+                    .map(|_| "EventId(..)"),
+            )
+            .field(
+                "latest_readable_event_id",
+                &self
+                    .latest_readable_event_id
                     .as_ref()
                     .map(|_| "EventId(..)"),
             )
