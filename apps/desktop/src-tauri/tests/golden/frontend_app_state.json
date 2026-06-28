@@ -382,6 +382,7 @@
           "is_encrypted": true,
           "joined_members": 4,
           "last_activity_ms": 1000000,
+          "latest_event": null,
           "marked_unread": false,
           "notification_count": 2,
           "original_display_label": "Fixture Room",
