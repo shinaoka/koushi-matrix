@@ -9,7 +9,7 @@ use koushi_core::{AppCommand, CoreCommand, CoreRuntime};
 use koushi_state::{
     ActivityMarkReadState, ActivityMarkReadTarget, ActivityRowKind, ActivityState, AppAction,
     AvatarImage, AvatarThumbnailState, RoomLatestEventSummary, RoomNotificationMode, RoomSummary,
-    SessionState, SpaceSummary,
+    SessionState, SpaceSummary, UserProfile,
 };
 use support::{activity_row, room_summary, unread_room_summary, wait_for_state};
 
@@ -334,6 +334,77 @@ async fn activity_recent_includes_room_list_latest_event_for_unopened_read_dm() 
     );
     assert_eq!(row.context_label, "DM");
     assert!(!row.unread);
+}
+
+#[tokio::test]
+async fn activity_recent_latest_event_resolves_sender_avatar_from_profile_cache() {
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    let mut dm = dm_room_summary("!dm:example.test", "@alice:example.test");
+    dm.unread_count = 0;
+    dm.notification_count = 0;
+    dm.highlight_count = 0;
+    dm.latest_event = Some(RoomLatestEventSummary {
+        event_id: "$latest-dm:example.test".to_owned(),
+        sender_id: Some("@alice:example.test".to_owned()),
+        sender_label: Some("Alice".to_owned()),
+        sender_avatar: None,
+        preview: Some("hello".to_owned()),
+        timestamp_ms: 120,
+    });
+
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(support::session_info()),
+            AppAction::UserProfilesUpdated {
+                profiles: vec![UserProfile {
+                    user_id: "@alice:example.test".to_owned(),
+                    display_name: Some("Alice".to_owned()),
+                    display_label: "Alice".to_owned(),
+                    original_display_label: "Alice".to_owned(),
+                    mention_search_terms: vec!["alice".to_owned()],
+                    avatar: Some(AvatarImage {
+                        mxc_uri: "mxc://example.test/alice-profile-avatar".to_owned(),
+                        thumbnail: AvatarThumbnailState::NotRequested,
+                    }),
+                }],
+            },
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![dm],
+            },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_)) && state.rooms.len() == 1
+    })
+    .await;
+
+    let open_request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::OpenActivity {
+        request_id: open_request_id,
+    }))
+    .await
+    .expect("open activity command");
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        matches!(state.activity, ActivityState::Open { .. })
+    })
+    .await;
+    let ActivityState::Open { recent, .. } = snapshot.activity else {
+        panic!("activity should be open");
+    };
+    let row = recent
+        .rows
+        .first()
+        .expect("latest room event should populate Recent");
+    assert_eq!(
+        row.sender_avatar
+            .as_ref()
+            .map(|avatar| avatar.mxc_uri.as_str()),
+        Some("mxc://example.test/alice-profile-avatar"),
+        "sender_avatar should resolve from profile cache when latest_event.sender_avatar is None"
+    );
 }
 
 #[tokio::test]

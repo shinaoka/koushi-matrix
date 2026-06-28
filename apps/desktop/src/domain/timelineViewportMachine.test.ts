@@ -183,6 +183,53 @@ describe("timeline viewport machine", () => {
     ).toBe(false);
   });
 
+  it("clears stickToBottomAfterMeasurement when user scrolls away from bottom while live-edge is active", () => {
+    const liveEdge = reduceTimelineViewportMachine(
+      createTimelineViewportMachineState(),
+      { type: "live-edge-requested" }
+    );
+
+    const withSticky = reduceTimelineViewportMachine(liveEdge, {
+      type: "stick-to-bottom-after-measurement",
+      value: true
+    });
+
+    expect(withSticky.stickToBottomAfterMeasurement).toBe(true);
+    expect(withSticky.intent).toEqual({ kind: "live-edge" });
+
+    const afterUserScroll = reduceTimelineViewportMachine(withSticky, {
+      type: "scroll-observed",
+      programmaticEcho: false,
+      atBottom: false,
+      userInput: true
+    });
+
+    expect(afterUserScroll.intent).toEqual({ kind: "free-scroll" });
+    expect(afterUserScroll.stickToBottomAfterMeasurement).toBe(false);
+  });
+
+  it("clears stickToBottomAfterMeasurement when non-user scroll observation from live-edge transitions to free-scroll", () => {
+    const stickyLiveEdge = reduceTimelineViewportMachine(
+      reduceTimelineViewportMachine(
+        createTimelineViewportMachineState(),
+        { type: "live-edge-requested" }
+      ),
+      { type: "stick-to-bottom-after-measurement", value: true }
+    );
+
+    // A non-user-initiated scroll that is not a programmatic echo and
+    // not at bottom → the live-edge intent triggers free-scroll.
+    const afterScroll = reduceTimelineViewportMachine(stickyLiveEdge, {
+      type: "scroll-observed",
+      programmaticEcho: false,
+      atBottom: false,
+      userInput: false
+    });
+
+    expect(afterScroll.intent).toEqual({ kind: "free-scroll" });
+    expect(afterScroll.stickToBottomAfterMeasurement).toBe(false);
+  });
+
   it("builds explicit viewport targets for all event navigation entry points", () => {
     expect(timelineViewportIsLiveEdge(createTimelineViewportMachineState())).toBe(
       false

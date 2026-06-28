@@ -4600,7 +4600,7 @@ test("live signals render from Rust state and dispatch read/typing commands", as
   const row = page.locator('[data-event-id="$seed-event:example.invalid"]');
   await expect(row.locator(".presence-dot[data-presence='online']")).toBeVisible();
   await expect(row.locator(".message-receipts")).toHaveAttribute("aria-label", /Read by 1/);
-  await expect(page.getByText("Read up to here", { exact: true })).toBeVisible();
+  await expect(page.getByText("Read up to here", { exact: true })).toHaveCount(0);
   await expect(page.getByText("@typing-user:example.invalid is typing", { exact: true })).toBeVisible();
   await expect.poll(() => invocationCount(page, "send_read_receipt")).toBeGreaterThanOrEqual(1);
   await expect.poll(() => invocationCount(page, "set_fully_read")).toBeGreaterThanOrEqual(1);

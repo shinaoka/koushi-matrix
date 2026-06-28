@@ -925,7 +925,8 @@ export function TimelinePane({
               onReply={onReplyStable}
               onOpenThread={onOpenThreadStable}
               resolveComposerKeyAction={resolveComposerKeyActionStable}
-              liveSignals={snapshot.state.domain.live_signals}
+              roomSignals={snapshot.state.domain.live_signals.rooms[timelineRoomId] ?? null}
+              presenceByUserId={snapshot.state.domain.live_signals.presence}
               profileUsers={snapshot.state.domain.profile.users}
               pinnedEventIds={pinnedEventIds}
               forwardDestinations={forwardDestinations}

@@ -23,9 +23,9 @@ import {
   createTimelineStore,
   type TimelineStoreState
 } from "../domain/timelineStore";
-import { TimelineStoreContext } from "./timelineStoreContext";
+import { createTimelineStoreController, TimelineStoreContext } from "./timelineStoreContext";
 import { MessageSourceDialog, TimelineView, type TimelineTransport } from "./TimelineView";
-import type { LiveSignalsState, TimelineScrollAnchor } from "../domain/types";
+import type { RoomLiveSignals, TimelineScrollAnchor } from "../domain/types";
 
 afterEach(() => {
   cleanup();
@@ -232,8 +232,9 @@ describe("TimelineView", () => {
         items: [message("$app-store:example.invalid", "From app store")]
       }
     });
+    const controller = createTimelineStoreController(store);
+    const setStore = vi.spyOn(controller, "setStore");
     const ensureSubscribed = vi.fn().mockResolvedValue(undefined);
-    const setStore = vi.fn();
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const listenCoreEvents = vi.fn((nextListener: (payload: CoreEventPayload) => void) => {
       emit = nextListener;
@@ -245,7 +246,7 @@ describe("TimelineView", () => {
     });
 
     render(
-      <TimelineStoreContext.Provider value={{ store, setStore }}>
+      <TimelineStoreContext.Provider value={controller}>
         <TimelineView
           timelineKey={KEY}
           roomId="!room:example.invalid"
@@ -286,6 +287,76 @@ describe("TimelineView", () => {
     });
     expect(await screen.findByText("$source:example.invalid")).toBeTruthy();
     expect(setStore).not.toHaveBeenCalled();
+  });
+
+  it("does not re-render an App-level timeline when another timeline key changes", async () => {
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [message("$active:example.invalid", "Active room message")]
+      }
+    });
+    const controller = createTimelineStoreController(store);
+    const listRefCallback = vi.fn();
+    const transport = baseTransport({
+      listenCoreEvents() {
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineStoreContext.Provider value={controller}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+          listRefCallback={listRefCallback}
+        />
+      </TimelineStoreContext.Provider>
+    );
+
+    expect(await screen.findByText("Active room message")).toBeTruthy();
+    listRefCallback.mockClear();
+
+    act(() => {
+      controller.setStore((current) =>
+        applyTimelineEvent(current, {
+          InitialItems: {
+            request_id: null,
+            key: roomTimelineKey("@alice:example.invalid", "!other-room:example.invalid"),
+            generation: 1,
+            items: [message("$other:example.invalid", "Other room message")]
+          }
+        })
+      );
+    });
+
+    expect(screen.queryByText("Other room message")).toBeNull();
+    expect(listRefCallback).not.toHaveBeenCalled();
+
+    act(() => {
+      controller.setStore((current) =>
+        applyTimelineEvent(current, {
+          ItemsUpdated: {
+            key: KEY,
+            generation: 1,
+            batch_id: 2,
+            diffs: [
+              {
+                PushBack: {
+                  item: message("$active-new:example.invalid", "Active room update")
+                }
+              }
+            ]
+          }
+        })
+      );
+    });
+
+    expect(await screen.findByText("Active room update")).toBeTruthy();
   });
 
   it("emits safe timestamped timeline event diagnostics for thread timelines", async () => {
@@ -486,6 +557,90 @@ describe("TimelineView", () => {
 
     act(() => {
       fireEvent.scroll(timeline);
+    });
+
+    expect(observeViewport).toHaveBeenCalledTimes(1);
+  });
+
+  it("coalesces scroll viewport observation work into one animation frame", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const observeViewport = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      observeViewport
+    });
+
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(
+      {
+        "$first:example.invalid": { top: 120, height: 48 },
+        "$second:example.invalid": { top: 420, height: 48 }
+      },
+      {},
+      scrollContainerRef
+    );
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              message("$first:example.invalid", "First"),
+              message("$second:example.invalid", "Second")
+            ]
+          }
+        }
+      });
+    });
+
+    expect(await screen.findByText("First")).toBeTruthy();
+    const timeline = screen.getByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "scrollHeight", { value: 1000, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+    observeViewport.mockClear();
+
+    const frameCallbacks: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    });
+
+    act(() => {
+      timeline.scrollTop = 8;
+      fireEvent.scroll(timeline);
+      timeline.scrollTop = 16;
+      fireEvent.scroll(timeline);
+      timeline.scrollTop = 24;
+      fireEvent.scroll(timeline);
+    });
+
+    expect(observeViewport).not.toHaveBeenCalled();
+    expect(frameCallbacks).toHaveLength(1);
+
+    act(() => {
+      frameCallbacks.splice(0).forEach((callback) => callback(0));
     });
 
     expect(observeViewport).toHaveBeenCalledTimes(1);
@@ -771,6 +926,80 @@ describe("TimelineView", () => {
     });
   });
 
+  it("does not overwrite the persisted room anchor while restoring it", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const observeViewport = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      observeViewport
+    });
+
+    mockTimelineRects(
+      {
+        "$anchor:example.invalid": { top: 500, height: 48 },
+        "$after:example.invalid": { top: 560, height: 48 }
+      },
+      { top: 0, height: 600 }
+    );
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        roomScrollAnchor={{
+          event_id: "$anchor:example.invalid",
+          edge: "bottom",
+          offset_px: -100,
+          updated_at_ms: Date.now()
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollHeight", { value: 1000, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              message("$anchor:example.invalid", "Anchor"),
+              message("$after:example.invalid", "After")
+            ]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(48);
+      expect(observeViewport).toHaveBeenCalled();
+    });
+
+    expect(observeViewport).toHaveBeenLastCalledWith(
+      "!room:example.invalid",
+      "$anchor:example.invalid",
+      "$after:example.invalid",
+      false,
+      null
+    );
+  });
+
   it("keeps the retained bottom-edge room anchor stable across later rerenders", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({
@@ -832,7 +1061,8 @@ describe("TimelineView", () => {
     rerender(
       <TimelineView
         {...props}
-        liveSignals={{ presence: {}, rooms: {} }}
+        roomSignals={null}
+        presenceByUserId={{}}
       />
     );
 
@@ -905,30 +1135,26 @@ describe("TimelineView", () => {
     rerender(
       <TimelineView
         {...props}
-        liveSignals={{
-          presence: {},
-          rooms: {
-            "!room:example.invalid": {
-              fully_read_event_id: null,
-              typing_user_ids: [],
-              receipts_by_event: {
-                "$seen:example.invalid": {
-                  total_count: 1,
-                  overflow_count: 0,
-                  readers: [
-                    {
-                      user_id: "@satoshi:example.invalid",
-                      display_name: "Satoshi Terasaki",
-                      original_display_label: "Satoshi Terasaki",
-                      avatar: null,
-                      timestamp_ms: null
-                    }
-                  ]
+        roomSignals={{
+          fully_read_event_id: null,
+          typing_user_ids: [],
+          receipts_by_event: {
+            "$seen:example.invalid": {
+              total_count: 1,
+              overflow_count: 0,
+              readers: [
+                {
+                  user_id: "@satoshi:example.invalid",
+                  display_name: "Satoshi Terasaki",
+                  original_display_label: "Satoshi Terasaki",
+                  avatar: null,
+                  timestamp_ms: null
                 }
-              }
+              ]
             }
           }
         }}
+        presenceByUserId={{}}
       />
     );
 
@@ -1265,7 +1491,7 @@ describe("TimelineView", () => {
     });
   });
 
-  it("keeps the live edge pinned when the read marker appears below a sent message", async () => {
+  it("keeps the live edge pinned without rendering a fully-read marker below a sent message", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
@@ -1366,8 +1592,8 @@ describe("TimelineView", () => {
       });
     });
 
-    expect(await screen.findByRole("separator", { name: "Read up to here" })).toBeTruthy();
     await waitFor(() => {
+      expect(screen.queryByRole("separator", { name: "Read up to here" })).toBeNull();
       expect(timeline.scrollTop).toBe(1840);
     });
   });
@@ -1465,6 +1691,136 @@ describe("TimelineView", () => {
       await waitFor(() => {
         expect(timeline.scrollTop).toBe(1880);
       });
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  it("does not snap back to bottom when the measurement effect fires after user scroll away from live edge", async () => {
+    const resizeObserver = installResizeObserverMock();
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 0;
+    });
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    try {
+      render(
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={transport}
+          currentUserId="@alice:example.invalid"
+          onReply={vi.fn()}
+        />
+      );
+
+      const timeline = await screen.findByTestId("timeline-view");
+      let scrollHeight = 2400;
+      Object.defineProperty(timeline, "scrollHeight", {
+        get: () => scrollHeight,
+        configurable: true
+      });
+      Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+      Object.defineProperty(timeline, "scrollTop", {
+        value: 0,
+        writable: true,
+        configurable: true
+      });
+
+      // Initial items → live-edge snaps to bottom
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            InitialItems: {
+              request_id: null,
+              key: KEY,
+              generation: 1,
+              items: [message("$older", "Older message")]
+            }
+          }
+        });
+      });
+
+      await waitFor(() => {
+        expect(timeline.scrollTop).toBe(1800);
+      });
+
+      // Own outgoing message → live-edge + stickToBottomAfterMeasurement
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            ItemsUpdated: {
+              key: KEY,
+              generation: 1,
+              batch_id: 1,
+              diffs: [
+                {
+                  PushBack: {
+                    item: {
+                      ...message("$sent:example.invalid", "Sent"),
+                      sender: "@alice:example.invalid",
+                      send_state: { kind: "sending" }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        });
+      });
+
+      await waitFor(() => {
+        expect(timeline.scrollTop).toBe(1800);
+      });
+
+      // User scrolls UP away from bottom → free-scroll
+      act(() => {
+        fireEvent.wheel(timeline, { deltaY: -120 });
+        timeline.scrollTop = 1700;
+        fireEvent.scroll(timeline);
+      });
+
+      expect(timeline.scrollTop).toBe(1700);
+
+      // Grow content (simulating another incoming message or a re-render)
+      scrollHeight = 2480;
+
+      // Trigger a measurement effect run: change visible items
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            ItemsUpdated: {
+              key: KEY,
+              generation: 1,
+              batch_id: 2,
+              diffs: [
+                {
+                  PushBack: {
+                    item: {
+                      ...message("$incoming:example.invalid", "Another message"),
+                      sender: "@bob:example.invalid"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        });
+      });
+
+      // The measurement effect must NOT snap back to bottom
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(timeline.scrollTop).toBe(1700);
     } finally {
       resizeObserver.restore();
     }
@@ -1576,8 +1932,10 @@ describe("TimelineView", () => {
       });
     });
 
-    expect(await screen.findByRole("separator", { name: "Read up to here" })).toBeTruthy();
-    expect(timeline.scrollTop).toBe(1700);
+    await waitFor(() => {
+      expect(screen.queryByRole("separator", { name: "Read up to here" })).toBeNull();
+      expect(timeline.scrollTop).toBe(1700);
+    });
   });
 
   it("renders read receipts as a compact avatar stack without an inline text label", async () => {
@@ -1594,37 +1952,33 @@ describe("TimelineView", () => {
         timelineKey={KEY}
         roomId="!room:example.invalid"
         transport={transport}
-        liveSignals={{
-          presence: {},
-          rooms: {
-            "!room:example.invalid": {
-              fully_read_event_id: null,
-              typing_user_ids: [],
-              receipts_by_event: {
-                "$seen": {
-                  total_count: 2,
-                  overflow_count: 0,
-                  readers: [
-                    {
-                      user_id: "@ken:example.invalid",
-                      display_name: "Ken Inayoshi",
-                      original_display_label: "Ken Inayoshi",
-                      avatar: null,
-                      timestamp_ms: null
-                    },
-                    {
-                      user_id: "@satoshi:example.invalid",
-                      display_name: "Satoshi Terasaki",
-                      original_display_label: "Satoshi Terasaki",
-                      avatar: null,
-                      timestamp_ms: null
-                    }
-                  ]
+        roomSignals={{
+          fully_read_event_id: null,
+          typing_user_ids: [],
+          receipts_by_event: {
+            "$seen": {
+              total_count: 2,
+              overflow_count: 0,
+              readers: [
+                {
+                  user_id: "@ken:example.invalid",
+                  display_name: "Ken Inayoshi",
+                  original_display_label: "Ken Inayoshi",
+                  avatar: null,
+                  timestamp_ms: null
+                },
+                {
+                  user_id: "@satoshi:example.invalid",
+                  display_name: "Satoshi Terasaki",
+                  original_display_label: "Satoshi Terasaki",
+                  avatar: null,
+                  timestamp_ms: null
                 }
-              }
+              ]
             }
           }
         }}
+        presenceByUserId={{}}
         onReply={vi.fn()}
       />
     );
@@ -1737,30 +2091,26 @@ describe("TimelineView", () => {
         timelineKey={KEY}
         roomId="!room:example.invalid"
         transport={transport}
-        liveSignals={{
-          presence: {},
-          rooms: {
-            "!room:example.invalid": {
-              fully_read_event_id: null,
-              typing_user_ids: [],
-              receipts_by_event: {
-                "$reacted-seen": {
-                  total_count: 1,
-                  overflow_count: 0,
-                  readers: [
-                    {
-                      user_id: "@ken:example.invalid",
-                      display_name: "Ken Inayoshi",
-                      original_display_label: "Ken Inayoshi",
-                      avatar: null,
-                      timestamp_ms: null
-                    }
-                  ]
+        roomSignals={{
+          fully_read_event_id: null,
+          typing_user_ids: [],
+          receipts_by_event: {
+            "$reacted-seen": {
+              total_count: 1,
+              overflow_count: 0,
+              readers: [
+                {
+                  user_id: "@ken:example.invalid",
+                  display_name: "Ken Inayoshi",
+                  original_display_label: "Ken Inayoshi",
+                  avatar: null,
+                  timestamp_ms: null
                 }
-              }
+              ]
             }
           }
         }}
+        presenceByUserId={{}}
         onReply={vi.fn()}
       />
     );
@@ -2789,7 +3139,7 @@ describe("TimelineView", () => {
     ).toContain("Copy original event source");
   });
 
-  it("renders the read marker after the Rust-derived display anchor for own messages after the marker", async () => {
+  it("does not render a fully-read marker for Rust-derived display anchors after own messages", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
@@ -2844,13 +3194,13 @@ describe("TimelineView", () => {
       }
     });
 
-    const marker = await screen.findByRole("separator", { name: "Read up to here" });
-    expect(marker.previousElementSibling?.getAttribute("data-event-id")).toBe(
-      "$own2:example.invalid"
-    );
+    await waitFor(() => {
+      expect(screen.getAllByText("own")).not.toHaveLength(0);
+      expect(screen.queryByRole("separator", { name: "Read up to here" })).toBeNull();
+    });
   });
 
-  it("renders the read marker after the current user's latest own message when the marker starts on an own message", async () => {
+  it("does not render a fully-read marker after the current user's latest own message", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
@@ -2904,10 +3254,10 @@ describe("TimelineView", () => {
       }
     });
 
-    const marker = await screen.findByRole("separator", { name: "Read up to here" });
-    expect(marker.previousElementSibling?.getAttribute("data-event-id")).toBe(
-      "$own2:example.invalid"
-    );
+    await waitFor(() => {
+      expect(screen.getAllByText("own")).not.toHaveLength(0);
+      expect(screen.queryByRole("separator", { name: "Read up to here" })).toBeNull();
+    });
   });
 
   it("renders the unread marker before the first unread event", async () => {
@@ -3155,29 +3505,24 @@ describe("TimelineView", () => {
       ],
       can_react: true
     };
-    const liveSignals: LiveSignalsState = {
-      rooms: {
-        "!room:example.invalid": {
-          receipts_by_event: {
-            "$reacted:example.invalid": {
-              readers: [
-                {
-                  user_id: "@bob:example.invalid",
-                  display_name: "Bob",
-                  original_display_label: "Bob",
-                  avatar: null,
-                  timestamp_ms: 1_800_000_000_000
-                }
-              ],
-              total_count: 1,
-              overflow_count: 0
+    const roomSignals: RoomLiveSignals = {
+      receipts_by_event: {
+        "$reacted:example.invalid": {
+          readers: [
+            {
+              user_id: "@bob:example.invalid",
+              display_name: "Bob",
+              original_display_label: "Bob",
+              avatar: null,
+              timestamp_ms: 1_800_000_000_000
             }
-          },
-          fully_read_event_id: null,
-          typing_user_ids: []
+          ],
+          total_count: 1,
+          overflow_count: 0
         }
       },
-      presence: {}
+      fully_read_event_id: null,
+      typing_user_ids: []
     };
 
     render(
@@ -3186,7 +3531,8 @@ describe("TimelineView", () => {
         roomId="!room:example.invalid"
         transport={transport}
         onReply={vi.fn()}
-        liveSignals={liveSignals}
+        roomSignals={roomSignals}
+        presenceByUserId={{}}
       />
     );
 

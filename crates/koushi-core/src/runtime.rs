@@ -724,7 +724,13 @@ impl ActivityProjection {
                 unread_row,
                 unread_row && room.highlight_count > 0,
             );
-            row.sender_avatar = latest_event.sender_avatar.clone();
+            let sender_avatar = latest_event
+                .sender_id
+                .as_ref()
+                .and_then(|user_id| state.profile.users.get(user_id))
+                .and_then(|profile| profile.avatar.clone())
+                .or_else(|| latest_event.sender_avatar.clone());
+            row.sender_avatar = sender_avatar;
             row.context_label = context_label;
             recent.push(row);
         }

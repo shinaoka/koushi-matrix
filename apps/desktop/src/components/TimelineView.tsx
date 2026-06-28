@@ -56,6 +56,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type Dispatch,
   type SetStateAction
 } from "react";
@@ -108,11 +109,13 @@ import {
   batchContainsPrepend,
   createTimelineStore,
   getItems,
-  getTimelineDisplayItems,
   getMediaUploadProgress,
   getKeyState,
   getPaginationState,
+  projectTimelineItemsForDisplay,
   shouldSuppressAutoBackfill,
+  timelineStoreKeyId,
+  type TimelineKeyState,
   type TimelineStoreState
 } from "../domain/timelineStore";
 import { useTimelineStoreContext } from "./timelineStoreContext";
@@ -127,9 +130,9 @@ import {
 } from "../domain/composerKeyEvents";
 import type {
   LiveReadReceipt,
-  LiveSignalsState,
   PresenceKind,
   ResolveComposerKeyAction,
+  RoomLiveSignals,
   TimelineThreadRootOrder,
   TimelineScrollAnchor,
   TimelineMediaDownloadState,
@@ -1595,6 +1598,33 @@ export interface TimelineDiagnostics {
 
 export type TimelineDiagnosticLogEntry = DiagnosticLogEntry;
 
+const EMPTY_SCOPED_TIMELINE_STORE = createTimelineStore();
+
+function subscribeNoop(_listener: () => void): () => void {
+  return () => undefined;
+}
+
+function useTimelineContextKeyState(
+  context: ReturnType<typeof useTimelineStoreContext>,
+  keyId: string
+): TimelineKeyState | undefined {
+  return useSyncExternalStore(
+    context?.subscribe ?? subscribeNoop,
+    () => context?.getKeyStateById(keyId),
+    () => context?.getKeyStateById(keyId)
+  );
+}
+
+function scopedTimelineStore(
+  keyId: string,
+  keyState: TimelineKeyState | undefined
+): TimelineStoreState {
+  if (!keyState) {
+    return EMPTY_SCOPED_TIMELINE_STORE;
+  }
+  return { keys: new Map([[keyId, keyState]]) };
+}
+
 export const TimelineView = memo(function TimelineView({
   timelineKey,
   roomId,
@@ -1602,7 +1632,8 @@ export const TimelineView = memo(function TimelineView({
   onReply,
   onOpenThread = () => undefined,
   resolveComposerKeyAction = ignoreComposerKeyAction,
-  liveSignals,
+  roomSignals,
+  presenceByUserId,
   profileUsers = {},
   pinnedEventIds = [],
   forwardDestinations = [],
@@ -1630,7 +1661,8 @@ export const TimelineView = memo(function TimelineView({
   onReply: TimelineRowActionHandlers["onReply"];
   onOpenThread?: TimelineRowActionHandlers["onOpenThread"];
   resolveComposerKeyAction?: ResolveComposerKeyAction;
-  liveSignals?: LiveSignalsState;
+  roomSignals?: RoomLiveSignals | null;
+  presenceByUserId?: Record<string, PresenceKind>;
   profileUsers?: Record<string, UserProfile>;
   pinnedEventIds?: readonly string[];
   forwardDestinations?: readonly TimelineForwardDestination[];
@@ -1679,7 +1711,16 @@ export const TimelineView = memo(function TimelineView({
 }) {
   const timelineStoreContext = useTimelineStoreContext();
   const [localStore, localSetStore] = useState<TimelineStoreState>(createTimelineStore);
-  const store = timelineStore ?? timelineStoreContext?.store ?? localStore;
+  const timelineKeyHash = timelineStoreKeyId(timelineKey);
+  const contextTimelineKeyState = useTimelineContextKeyState(
+    timelineStoreContext,
+    timelineKeyHash
+  );
+  const contextStore = useMemo(
+    () => scopedTimelineStore(timelineKeyHash, contextTimelineKeyState),
+    [contextTimelineKeyState, timelineKeyHash]
+  );
+  const store = timelineStore ?? (timelineStoreContext ? contextStore : localStore);
   const setStore = setTimelineStore ?? timelineStoreContext?.setStore ?? localSetStore;
   const isAppLevelStore = timelineStore !== undefined || timelineStoreContext !== null;
   const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
@@ -1719,6 +1760,8 @@ export const TimelineView = memo(function TimelineView({
   const initialLiveEdgeScrollAppliedRef = useRef<string | null>(null);
   /** Coalesces ResizeObserver-driven live-edge corrections. */
   const viewportIntentResizeFrameRef = useRef<number | null>(null);
+  const viewportScrollWorkFrameRef = useRef<number | null>(null);
+  const pendingViewportObservationRef = useRef(false);
   /** Pagination request currently in flight (suppresses duplicates). */
   const backfillInFlightRef = useRef(false);
   const readSignalEventRef = useRef<string | null>(null);
@@ -1737,7 +1780,6 @@ export const TimelineView = memo(function TimelineView({
   profileUsersRef.current = profileUsers;
   const timelineKeyRef = useRef(timelineKey);
   timelineKeyRef.current = timelineKey;
-  const timelineKeyHash = JSON.stringify(timelineKey);
   const roomTimelineRoomId = "Room" in timelineKey.kind ? timelineKey.kind.Room.room_id : null;
   const emitDiagnosticLog = useCallback(
     (source: string, message: string) => {
@@ -1772,6 +1814,12 @@ export const TimelineView = memo(function TimelineView({
     options?: { allowSuppressed?: boolean }
   ): TimelineScrollAnchor | null => {
     if (roomTimelineRoomId !== roomId) {
+      return null;
+    }
+    if (
+      options?.allowSuppressed === true &&
+      currentViewportState().retainedRoomAnchor !== null
+    ) {
       return null;
     }
     if (!viewportCanPersistAnchor(options)) {
@@ -1856,10 +1904,12 @@ export const TimelineView = memo(function TimelineView({
         if (!isAppLevelStore) {
           setStore((current) => {
             const next = applyGlobalResync(current);
-            relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-              getTimelineDisplayItems(next, timelineKeyRef.current, { threadRootOrder }),
-              profileUsersRef.current
-            );
+            relevantAvatarMxcsRef.current = enableAvatarThumbnailDownloads
+              ? timelineAvatarMxcsForItems(
+                  getItems(next, timelineKeyRef.current),
+                  profileUsersRef.current
+                )
+              : new Set();
             return next;
           });
         }
@@ -1894,10 +1944,12 @@ export const TimelineView = memo(function TimelineView({
         if (!isAppLevelStore) {
           setStore((current) => {
             const next = applyTimelineEvent(current, event);
-            relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-              getTimelineDisplayItems(next, timelineKeyRef.current, { threadRootOrder }),
-              profileUsersRef.current
-            );
+            relevantAvatarMxcsRef.current = enableAvatarThumbnailDownloads
+              ? timelineAvatarMxcsForItems(
+                  getItems(next, timelineKeyRef.current),
+                  profileUsersRef.current
+                )
+              : new Set();
             return next;
           });
         }
@@ -2001,10 +2053,12 @@ export const TimelineView = memo(function TimelineView({
       if (!isAppLevelStore) {
         setStore((current) => {
           const next = applyTimelineEvent(current, event);
-          relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-            getTimelineDisplayItems(next, timelineKeyRef.current, { threadRootOrder }),
-            profileUsersRef.current
-          );
+          relevantAvatarMxcsRef.current = enableAvatarThumbnailDownloads
+            ? timelineAvatarMxcsForItems(
+                getItems(next, timelineKeyRef.current),
+                profileUsersRef.current
+              )
+            : new Set();
           return next;
         });
       }
@@ -2013,10 +2067,10 @@ export const TimelineView = memo(function TimelineView({
   }, [
     currentUserId,
     dispatchViewportMachine,
+    enableAvatarThumbnailDownloads,
     emitDiagnosticLog,
     isAppLevelStore,
     setViewportIntentToLiveEdge,
-    threadRootOrder,
     timelineKeyHash,
     transport
   ]);
@@ -2050,6 +2104,11 @@ export const TimelineView = memo(function TimelineView({
       window.cancelAnimationFrame(viewportIntentResizeFrameRef.current);
       viewportIntentResizeFrameRef.current = null;
     }
+    if (viewportScrollWorkFrameRef.current !== null) {
+      window.cancelAnimationFrame(viewportScrollWorkFrameRef.current);
+      viewportScrollWorkFrameRef.current = null;
+    }
+    pendingViewportObservationRef.current = false;
     setMeasuredHeightVersion((current) => current + 1);
     backfillInFlightRef.current = false;
   }, [dispatchViewportMachine, timelineKeyHash]);
@@ -2062,18 +2121,30 @@ export const TimelineView = memo(function TimelineView({
         window.cancelAnimationFrame(viewportIntentResizeFrameRef.current);
         viewportIntentResizeFrameRef.current = null;
       }
+      if (viewportScrollWorkFrameRef.current !== null) {
+        window.cancelAnimationFrame(viewportScrollWorkFrameRef.current);
+        viewportScrollWorkFrameRef.current = null;
+      }
+      pendingViewportObservationRef.current = false;
     },
     [dispatchViewportMachine]
   );
 
   const rawItems = getItems(store, timelineKey);
+  const threadRootOrderKind = threadRootOrder.kind;
   const items = useMemo(
-    () => getTimelineDisplayItems(store, timelineKey, { threadRootOrder }),
-    [store, threadRootOrder, timelineKeyHash]
+    () =>
+      projectTimelineItemsForDisplay(rawItems, {
+        threadRootOrder: { kind: threadRootOrderKind },
+        timelineKey
+      }),
+    [rawItems, threadRootOrderKind, timelineKey]
   );
   useEffect(() => {
-    relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(items, profileUsers);
-  }, [items, profileUsers]);
+    relevantAvatarMxcsRef.current = enableAvatarThumbnailDownloads
+      ? timelineAvatarMxcsForItems(rawItems, profileUsers)
+      : new Set();
+  }, [enableAvatarThumbnailDownloads, rawItems, profileUsers]);
   const visibleItems = useMemo(() => items.filter((item) => !item.is_hidden), [items]);
   const timelineHeightModel = useMemo(
     () =>
@@ -2129,12 +2200,16 @@ export const TimelineView = memo(function TimelineView({
   }, [timelineHeightModel, visibleItems, viewportMetrics]);
   const sideEffectItems = virtualWindow.virtualized ? virtualWindow.items : visibleItems;
   useEffect(() => {
+    if (!onDiagnosticsChange) {
+      lastDiagnosticsEmissionRef.current = null;
+      return;
+    }
     const avatarDiagnostics = timelineAvatarDiagnostics(
-      visibleItems,
+      sideEffectItems,
       profileUsers,
       avatarThumbnails
     );
-    for (const item of items) {
+    for (const item of sideEffectItems) {
       if ("Event" in item.id) {
         downloadedEventIdsRef.current.add(item.id.Event.event_id);
       }
@@ -2146,10 +2221,6 @@ export const TimelineView = memo(function TimelineView({
       ...avatarDiagnostics,
       ...timelineRenderedAvatarDiagnostics(containerRef.current)
     };
-    if (!onDiagnosticsChange) {
-      lastDiagnosticsEmissionRef.current = null;
-      return;
-    }
     const diagnosticsSignature = `${timelineKeyHash}\u0000${JSON.stringify(diagnostics)}`;
     const lastEmission = lastDiagnosticsEmissionRef.current;
     if (
@@ -2165,9 +2236,9 @@ export const TimelineView = memo(function TimelineView({
     onDiagnosticsChange(diagnostics);
   }, [
     avatarThumbnails,
-    items,
     onDiagnosticsChange,
     profileUsers,
+    sideEffectItems,
     store,
     timelineKeyHash,
     visibleItems
@@ -2232,18 +2303,21 @@ export const TimelineView = memo(function TimelineView({
       });
     }
   }, [mediaDownloads, roomId, sideEffectItems, transport]);
-  const notSentTransactionIds = items.flatMap((item) => {
+  const notSentTransactionIds = useMemo(() => items.flatMap((item) => {
     if (item.send_state?.kind !== "notSent" || !("Transaction" in item.id)) {
       return [];
     }
     return [item.id.Transaction.transaction_id];
-  });
+  }), [items]);
   const backwardState = getPaginationState(store, timelineKey, "Backward");
   const isPaginating = backwardState === "Paginating";
   const endReached = backwardState === "EndReached";
-  const roomSignals = liveSignals?.rooms[roomId] ?? null;
+  const latestReadableFallbackEventId = useMemo(
+    () => latestReadableEventBackedItemId(rawItems),
+    [rawItems]
+  );
   const latestReadableEventId =
-    navigationSnapshot?.latest_readable_event_id ?? latestReadableEventBackedItemId(rawItems);
+    navigationSnapshot?.latest_readable_event_id ?? latestReadableFallbackEventId;
   const timelineKeyState = getKeyState(store, timelineKey);
   const timelineInitialized = Boolean(timelineKeyState && !timelineKeyState.awaitingResync);
   // Stable, render-visible timeline generation for this key. Bumps when the
@@ -2795,7 +2869,7 @@ export const TimelineView = memo(function TimelineView({
       }
     }
     if (currentViewportState().stickToBottomAfterMeasurement) {
-      if (container) {
+      if (container && viewportIsLiveEdge()) {
         runWithSuppressedScrollAnchorCapture(() => {
           scrollContainerToBottom(container);
         });
@@ -2809,7 +2883,9 @@ export const TimelineView = memo(function TimelineView({
       const anchor = pendingAnchorRef.current;
       let restored = false;
       if (container && anchor) {
-        restored = restoreAnchor(container, anchor);
+        runWithSuppressedScrollAnchorCapture(() => {
+          restored = restoreAnchor(container, anchor);
+        });
       }
       if (!restored && container && anchor && virtualWindow.virtualized) {
         const anchorIndex = visibleItems.findIndex(
@@ -2981,7 +3057,7 @@ export const TimelineView = memo(function TimelineView({
       type: "stick-to-bottom-after-measurement",
       value: measuredAtBottom
     });
-    if (measuredAtBottom) {
+    if (measuredAtBottom && viewportIsLiveEdge()) {
       setViewportIntentToLiveEdge();
     }
     itemHeightByDomIdRef.current = nextHeights;
@@ -3036,6 +3112,23 @@ export const TimelineView = memo(function TimelineView({
         backfillInFlightRef.current = false;
       });
   }, [store, transport, suppressPaginationUi, autoLoadOlderMessages, virtualItemHeight]);
+  const scheduleViewportScrollWork = useCallback((observeViewport: boolean) => {
+    pendingViewportObservationRef.current =
+      pendingViewportObservationRef.current || observeViewport;
+    if (viewportScrollWorkFrameRef.current !== null) {
+      return;
+    }
+    viewportScrollWorkFrameRef.current = window.requestAnimationFrame(() => {
+      viewportScrollWorkFrameRef.current = null;
+      updateViewportMetrics();
+      if (!pendingViewportObservationRef.current) {
+        return;
+      }
+      pendingViewportObservationRef.current = false;
+      reportViewportObservation();
+      maybeAutoBackfill();
+    });
+  }, [maybeAutoBackfill, reportViewportObservation, updateViewportMetrics]);
   const onTimelineScroll = useCallback(() => {
     const container = containerRef.current;
     const viewportState = currentViewportState();
@@ -3055,16 +3148,10 @@ export const TimelineView = memo(function TimelineView({
         userInput: isUserDrivenScroll
       });
     }
-    updateViewportMetrics();
-    if (!isProgrammaticEcho) {
-      reportViewportObservation();
-      maybeAutoBackfill();
-    }
+    scheduleViewportScrollWork(!isProgrammaticEcho);
   }, [
     dispatchViewportMachine,
-    maybeAutoBackfill,
-    reportViewportObservation,
-    updateViewportMetrics,
+    scheduleViewportScrollWork,
     viewportProgrammaticScrollEchoMatches
   ]);
   const onTimelinePointerDown = useCallback(
@@ -3226,11 +3313,6 @@ export const TimelineView = memo(function TimelineView({
       (navigationSnapshot.newer_event_count > 0 || navigationSnapshot.unread_event_count > 0)
   );
   const unreadMarkerEventId = navigationSnapshot?.first_unread_event_id ?? null;
-  const readMarkerDisplayEventId =
-    navigationSnapshot?.read_marker_display_event_id ??
-    navigationSnapshot?.read_marker_event_id ??
-    roomSignals?.fully_read_event_id ??
-    null;
 
   return (
     <div
@@ -3347,9 +3429,6 @@ export const TimelineView = memo(function TimelineView({
           const itemDomId = timelineItemDomId(item.id);
           const eventId = "Event" in item.id ? item.id.Event.event_id : null;
           const isUnreadMarker = Boolean(eventId && unreadMarkerEventId === eventId);
-          const isReadMarker = Boolean(
-            eventId && readMarkerDisplayEventId === eventId && !unreadMarkerEventId
-          );
           return (
             <div
               className="timeline-item-frame"
@@ -3388,7 +3467,7 @@ export const TimelineView = memo(function TimelineView({
                 forwardDestinations={effectiveForwardDestinations}
                 onRetrySend={onRetrySend}
                 onCancelSend={onCancelSend}
-                presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
+                presence={item.sender ? presenceByUserId?.[item.sender] : undefined}
                 profile={item.sender ? profileUsers[item.sender] : undefined}
                 avatarThumbnails={avatarThumbnails}
                 currentUserId={currentUserId}
@@ -3404,11 +3483,6 @@ export const TimelineView = memo(function TimelineView({
                   eventId ? roomSignals?.receipts_by_event[eventId]?.overflow_count ?? 0 : 0
                 }
               />
-              {isReadMarker ? (
-                <div className="read-marker" role="separator" aria-label={t("timeline.readMarker")}>
-                  <span>{t("timeline.readMarker")}</span>
-                </div>
-              ) : null}
             </div>
           );
         })}
