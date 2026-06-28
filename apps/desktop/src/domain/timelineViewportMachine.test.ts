@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   createTimelineViewportMachineState,
+  eventTimelineViewportTarget,
   reduceTimelineViewportMachine,
+  timelineViewportCanPersistAnchor,
+  timelineViewportHasBlockingAnchorWork,
+  timelineViewportIsLiveEdge,
+  timelineViewportProgrammaticScrollEchoMatches,
   type TimelineViewportMachineState
 } from "./timelineViewportMachine";
 import type { TimelineScrollAnchor } from "./types";
@@ -24,16 +29,20 @@ function withRetainedAnchor(): TimelineViewportMachineState {
 }
 
 describe("timeline viewport machine", () => {
-  it("keeps a retained room anchor through layout-only updates until the user scrolls", () => {
+  it("keeps a retained room anchor through programmatic work until the user scrolls", () => {
     const retained = withRetainedAnchor();
 
-    const afterLayout = reduceTimelineViewportMachine(retained, {
-      type: "layout-changed"
+    const afterProgrammaticWork = reduceTimelineViewportMachine(retained, {
+      type: "programmatic-scroll-assigned",
+      scrollHeight: 1200,
+      scrollTop: 800
     });
 
-    expect(afterLayout.retainedRoomAnchor).toEqual(retained.retainedRoomAnchor);
+    expect(afterProgrammaticWork.retainedRoomAnchor).toEqual(
+      retained.retainedRoomAnchor
+    );
 
-    const afterUserScroll = reduceTimelineViewportMachine(afterLayout, {
+    const afterUserScroll = reduceTimelineViewportMachine(afterProgrammaticWork, {
       type: "scroll-observed",
       programmaticEcho: false,
       atBottom: false,
@@ -90,7 +99,7 @@ describe("timeline viewport machine", () => {
   it("resets transient viewport state on room changes", () => {
     const active = reduceTimelineViewportMachine(
       reduceTimelineViewportMachine(withRetainedAnchor(), {
-        type: "room-anchor-restore-requested",
+        type: "room-anchor-materialize-requested",
         signature: "!room\u0000$event\u0000bottom\u000012\u00005"
       }),
       {
@@ -105,25 +114,83 @@ describe("timeline viewport machine", () => {
     expect(reset).toEqual(createTimelineViewportMachineState());
   });
 
-  it("tracks requested and exhausted live anchor restore signatures explicitly", () => {
+  it("tracks requested and exhausted live anchor materialize signatures explicitly", () => {
     const requested = reduceTimelineViewportMachine(createTimelineViewportMachineState(), {
-      type: "room-anchor-restore-requested",
+      type: "room-anchor-materialize-requested",
       signature: "!room\u0000$missing\u0000bottom\u00000\u00007"
     });
 
-    expect(requested.roomAnchorRestorePending).toBe(true);
-    expect(requested.requestedRoomAnchorRestoreSignature).toBe(
+    expect(requested.roomAnchorMaterializePending).toBe(true);
+    expect(requested.requestedRoomAnchorMaterializeSignature).toBe(
       "!room\u0000$missing\u0000bottom\u00000\u00007"
     );
 
     const exhausted = reduceTimelineViewportMachine(requested, {
-      type: "room-anchor-restore-finished",
+      type: "room-anchor-materialize-finished",
       status: "not-found"
     });
 
-    expect(exhausted.roomAnchorRestorePending).toBe(false);
-    expect(exhausted.exhaustedRoomAnchorRestoreSignature).toBe(
+    expect(exhausted.roomAnchorMaterializePending).toBe(false);
+    expect(exhausted.exhaustedRoomAnchorMaterializeSignature).toBe(
       "!room\u0000$missing\u0000bottom\u00000\u00007"
     );
+  });
+
+  it("exposes selectors for the only states that may persist a room anchor", () => {
+    let state = createTimelineViewportMachineState();
+
+    expect(timelineViewportCanPersistAnchor(state)).toBe(true);
+    expect(timelineViewportHasBlockingAnchorWork(state)).toBe(false);
+
+    state = reduceTimelineViewportMachine(state, {
+      type: "scroll-capture-suppression-started"
+    });
+
+    expect(timelineViewportCanPersistAnchor(state)).toBe(false);
+    expect(timelineViewportCanPersistAnchor(state, { allowSuppressed: true })).toBe(
+      true
+    );
+
+    state = reduceTimelineViewportMachine(state, {
+      type: "room-anchor-materialize-requested",
+      signature: "!room\u0000$event\u0000bottom\u00000\u00008"
+    });
+
+    expect(timelineViewportCanPersistAnchor(state, { allowSuppressed: true })).toBe(
+      false
+    );
+    expect(timelineViewportHasBlockingAnchorWork(state)).toBe(true);
+  });
+
+  it("keeps programmatic scroll echo detection behind the state-machine API", () => {
+    const state = reduceTimelineViewportMachine(createTimelineViewportMachineState(), {
+      type: "programmatic-scroll-assigned",
+      scrollHeight: 2048,
+      scrollTop: 512
+    });
+
+    expect(
+      timelineViewportProgrammaticScrollEchoMatches(state, {
+        scrollHeight: 2048,
+        scrollTop: 512
+      })
+    ).toBe(true);
+    expect(
+      timelineViewportProgrammaticScrollEchoMatches(state, {
+        scrollHeight: 2048,
+        scrollTop: 513
+      })
+    ).toBe(false);
+  });
+
+  it("builds explicit viewport targets for all event navigation entry points", () => {
+    expect(timelineViewportIsLiveEdge(createTimelineViewportMachineState())).toBe(
+      false
+    );
+    expect(eventTimelineViewportTarget("$event", "activity", "end")).toEqual({
+      eventId: "$event",
+      source: "activity",
+      block: "end"
+    });
   });
 });

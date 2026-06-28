@@ -672,6 +672,11 @@ UI responsibilities:
 
 - Maintain the render list and viewport model per `TimelineKey`; full timeline
   lists are not copied into `AppState`.
+- Centralize viewport intent and anchor lifecycle in the React timeline viewport
+  reducer. `TimelineView` may dispatch typed viewport events and perform DOM
+  measurement, but it must not keep parallel ad hoc refs for live-edge state,
+  anchor materialization, or programmatic-scroll echo suppression. Component
+  code should use the reducer/controller selectors for those decisions.
 - A Tauri `InitialItems` event can be emitted before React remounts the
   corresponding `TimelineView`. If the first observed event for a key is a live
   `ItemsUpdated` batch and no resync is pending, initialize that key from an
@@ -681,6 +686,11 @@ UI responsibilities:
   anchor item (first visible stable item ID plus pixel offset, or an equivalent
   bottom-aligned strategy). After applying the diff and after React commits the
   DOM update, restore that anchor in `requestAnimationFrame`/layout effect.
+- Keep the naming boundary strict: **materialize** means asking the Rust
+  timeline actor to load/backfill until an event is present in the projected
+  timeline items; **restore** means applying an already-present item to the DOM
+  scroll position. Tauri commands and core events use materialize terminology.
+  DOM-only viewport corrections may use restore terminology.
 - Do not issue the next automatic fill request until the previous diff has been
   applied and anchor restoration for that generation has completed.
 - Treat scroll position, measured heights, overscan windows, and virtual-list

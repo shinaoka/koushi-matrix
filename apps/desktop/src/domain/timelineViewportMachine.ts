@@ -13,6 +13,30 @@ export type TimelineRetainedRoomAnchor = {
   scrollTop: number;
 };
 
+export type TimelineViewportAnchorCaptureOptions = {
+  allowSuppressed?: boolean;
+};
+
+export type TimelineViewportScrollMetrics = {
+  scrollHeight: number;
+  scrollTop: number;
+};
+
+export type TimelineViewportTargetSource =
+  | "activity"
+  | "search"
+  | "timeline-navigation"
+  | "read-receipt"
+  | "manual";
+
+export type TimelineViewportTargetBlock = "center" | "end";
+
+export type TimelineViewportTarget = {
+  eventId: string;
+  source: TimelineViewportTargetSource;
+  block: TimelineViewportTargetBlock;
+};
+
 export type TimelineViewportMachineState = {
   intent: TimelineViewportIntent;
   userScrollInputPending: boolean;
@@ -20,11 +44,12 @@ export type TimelineViewportMachineState = {
   programmaticScrollSignature: TimelineProgrammaticScrollSignature | null;
   prependAnchorRestorePending: boolean;
   roomAnchorRestorePending: boolean;
+  roomAnchorMaterializePending: boolean;
   retainedRoomAnchor: TimelineRetainedRoomAnchor | null;
   lastPersistedViewportAnchorSignature: string | null;
   restoredRoomAnchorSignature: string | null;
-  requestedRoomAnchorRestoreSignature: string | null;
-  exhaustedRoomAnchorRestoreSignature: string | null;
+  requestedRoomAnchorMaterializeSignature: string | null;
+  exhaustedRoomAnchorMaterializeSignature: string | null;
   postSettleRestoredSignature: string | null;
   stickToBottomAfterMeasurement: boolean;
 };
@@ -32,7 +57,6 @@ export type TimelineViewportMachineState = {
 export type TimelineViewportMachineEvent =
   | { type: "timeline-key-changed" }
   | { type: "resync-required" }
-  | { type: "layout-changed" }
   | { type: "prepend-anchor-restore-started" }
   | { type: "prepend-anchor-restore-finished" }
   | { type: "room-anchor-restore-started" }
@@ -42,8 +66,9 @@ export type TimelineViewportMachineEvent =
       anchor: TimelineScrollAnchor;
       scrollTop: number;
     }
-  | { type: "room-anchor-restore-requested"; signature: string }
   | { type: "room-anchor-restore-finished"; status: "found" | "not-found" | "superseded" }
+  | { type: "room-anchor-materialize-requested"; signature: string }
+  | { type: "room-anchor-materialize-finished"; status: "found" | "not-found" | "superseded" }
   | { type: "post-settle-restore-scheduled"; signature: string }
   | { type: "retain-room-anchor"; retained: TimelineRetainedRoomAnchor | null }
   | { type: "clear-retained-room-anchor" }
@@ -70,14 +95,58 @@ export function createTimelineViewportMachineState(): TimelineViewportMachineSta
     programmaticScrollSignature: null,
     prependAnchorRestorePending: false,
     roomAnchorRestorePending: false,
+    roomAnchorMaterializePending: false,
     retainedRoomAnchor: null,
     lastPersistedViewportAnchorSignature: null,
     restoredRoomAnchorSignature: null,
-    requestedRoomAnchorRestoreSignature: null,
-    exhaustedRoomAnchorRestoreSignature: null,
+    requestedRoomAnchorMaterializeSignature: null,
+    exhaustedRoomAnchorMaterializeSignature: null,
     postSettleRestoredSignature: null,
     stickToBottomAfterMeasurement: false
   };
+}
+
+export function timelineViewportIsLiveEdge(state: TimelineViewportMachineState): boolean {
+  return state.intent.kind === "live-edge";
+}
+
+export function timelineViewportHasBlockingAnchorWork(
+  state: TimelineViewportMachineState
+): boolean {
+  return (
+    state.prependAnchorRestorePending ||
+    state.roomAnchorRestorePending ||
+    state.roomAnchorMaterializePending
+  );
+}
+
+export function timelineViewportCanPersistAnchor(
+  state: TimelineViewportMachineState,
+  options?: TimelineViewportAnchorCaptureOptions
+): boolean {
+  return (
+    !timelineViewportHasBlockingAnchorWork(state) &&
+    (options?.allowSuppressed === true || !state.suppressScrollAnchorCapture)
+  );
+}
+
+export function timelineViewportProgrammaticScrollEchoMatches(
+  state: TimelineViewportMachineState,
+  metrics: TimelineViewportScrollMetrics
+): boolean {
+  return (
+    state.programmaticScrollSignature !== null &&
+    state.programmaticScrollSignature.scrollHeight === metrics.scrollHeight &&
+    state.programmaticScrollSignature.scrollTop === metrics.scrollTop
+  );
+}
+
+export function eventTimelineViewportTarget(
+  eventId: string,
+  source: TimelineViewportTargetSource,
+  block: TimelineViewportTargetBlock = "center"
+): TimelineViewportTarget {
+  return { eventId, source, block };
 }
 
 export function reduceTimelineViewportMachine(
@@ -88,8 +157,6 @@ export function reduceTimelineViewportMachine(
     case "timeline-key-changed":
     case "resync-required":
       return createTimelineViewportMachineState();
-    case "layout-changed":
-      return state;
     case "prepend-anchor-restore-started":
       return { ...state, prependAnchorRestorePending: true };
     case "prepend-anchor-restore-finished":
@@ -107,24 +174,32 @@ export function reduceTimelineViewportMachine(
           scrollTop: event.scrollTop
         }
       };
-    case "room-anchor-restore-requested":
-      return {
-        ...state,
-        roomAnchorRestorePending: true,
-        requestedRoomAnchorRestoreSignature: event.signature,
-        exhaustedRoomAnchorRestoreSignature: null
-      };
     case "room-anchor-restore-finished":
       if (event.status === "superseded") {
         return state;
       }
       return {
         ...state,
-        roomAnchorRestorePending: false,
-        exhaustedRoomAnchorRestoreSignature:
+        roomAnchorRestorePending: false
+      };
+    case "room-anchor-materialize-requested":
+      return {
+        ...state,
+        roomAnchorMaterializePending: true,
+        requestedRoomAnchorMaterializeSignature: event.signature,
+        exhaustedRoomAnchorMaterializeSignature: null
+      };
+    case "room-anchor-materialize-finished":
+      if (event.status === "superseded") {
+        return state;
+      }
+      return {
+        ...state,
+        roomAnchorMaterializePending: false,
+        exhaustedRoomAnchorMaterializeSignature:
           event.status === "not-found"
-            ? state.requestedRoomAnchorRestoreSignature
-            : state.exhaustedRoomAnchorRestoreSignature
+            ? state.requestedRoomAnchorMaterializeSignature
+            : state.exhaustedRoomAnchorMaterializeSignature
       };
     case "post-settle-restore-scheduled":
       return { ...state, postSettleRestoredSignature: event.signature };

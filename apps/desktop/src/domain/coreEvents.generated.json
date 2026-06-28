@@ -628,9 +628,9 @@
     },
     "kind": "ThreadsList"
   },
-  "timelineAnchorRestoreFinished": {
+  "timelineAnchorMaterializeFinished": {
     "event": {
-      "AnchorRestoreFinished": {
+      "AnchorMaterializeFinished": {
         "key": {
           "account_key": "@u:example.test",
           "kind": {

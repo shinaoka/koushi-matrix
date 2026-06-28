@@ -38,7 +38,7 @@ pub async fn paginate_timeline_backwards(
 }
 
 #[tauri::command]
-pub async fn restore_timeline_anchor(
+pub async fn materialize_timeline_anchor(
     timeline_key: TimelineKey,
     event_id: String,
     max_batches: u16,
@@ -50,7 +50,7 @@ pub async fn restore_timeline_anchor(
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
-        build_restore_timeline_anchor_command(
+        build_materialize_timeline_anchor_command(
             request_id,
             account_key,
             timeline_key,
