@@ -871,7 +871,6 @@ function timelineProjectionTimestamp(item: TimelineItem): number | null {
 
 function threadRootLatestReplyTimestamp(item: TimelineItem): number | null {
   if (
-    item.thread_root &&
     item.thread_summary?.latest_timestamp_ms !== null &&
     item.thread_summary?.latest_timestamp_ms !== undefined
   ) {

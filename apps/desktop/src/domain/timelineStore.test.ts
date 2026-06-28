@@ -92,13 +92,25 @@ function makeThreadRootAt(
 ): TimelineItem {
   return {
     ...makeMsgAt(id, body, timestampMs),
-    thread_root: id,
+    thread_root: null,
     thread_summary: {
       reply_count: latestReplyTimestampMs === null ? 0 : 1,
       latest_sender: "@reply:example.invalid",
       latest_body_preview: latestReplyTimestampMs === null ? null : "reply",
       latest_timestamp_ms: latestReplyTimestampMs
     }
+  };
+}
+
+function makeThreadReplyAt(
+  id: string,
+  body: string,
+  timestampMs: number,
+  threadRootId: string
+): TimelineItem {
+  return {
+    ...makeMsgAt(id, body, timestampMs),
+    thread_root: threadRootId
   };
 }
 
@@ -304,6 +316,29 @@ describe("timeline store — diff application", () => {
       "$first",
       "$second",
       "$root"
+    ]);
+  });
+
+  test("getTimelineDisplayItems treats thread summaries, not reply relations, as movable roots", () => {
+    const store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          makeThreadRootAt("$root", "Root", 1_000, 5_000),
+          makeThreadReplyAt("$reply", "Reply", 2_000, "$root"),
+          makeMsgAt("$middle", "Middle", 3_000),
+          makeMsgAt("$latest", "Latest", 7_000)
+        ]
+      }
+    });
+
+    expect(getTimelineDisplayItems(store, KEY).map(itemId)).toEqual([
+      "$reply",
+      "$middle",
+      "$root",
+      "$latest"
     ]);
   });
 
