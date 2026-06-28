@@ -25,7 +25,7 @@ import {
 } from "../domain/timelineStore";
 import { TimelineStoreContext } from "./timelineStoreContext";
 import { MessageSourceDialog, TimelineView, type TimelineTransport } from "./TimelineView";
-import type { LiveSignalsState } from "../domain/types";
+import type { LiveSignalsState, TimelineScrollAnchor } from "../domain/types";
 
 afterEach(() => {
   cleanup();
@@ -99,7 +99,7 @@ function baseTransport(
     forwardMessage: async () => undefined,
     loadLinkPreviews: async () => undefined,
     hideLinkPreview: async () => undefined,
-    updateScrollAnchor: async () => undefined,
+    observeViewport: async () => undefined,
     ...overrides
   };
 }
@@ -399,7 +399,15 @@ describe("TimelineView", () => {
 
   it("captures the bottom-most visible event as the persisted room scroll anchor", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
-    const updateScrollAnchor = vi.fn(async () => undefined);
+    const observeViewport = vi.fn(
+      async (
+        _roomId: string,
+        _firstVisibleEventId: string | null,
+        _lastVisibleEventId: string | null,
+        _atBottom: boolean,
+        _scrollAnchor: TimelineScrollAnchor | null
+      ) => undefined
+    );
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
       callback(0);
       return 0;
@@ -409,7 +417,7 @@ describe("TimelineView", () => {
         emit = nextListener;
         return () => undefined;
       },
-      updateScrollAnchor
+      observeViewport
     });
 
     mockTimelineRects({
@@ -443,15 +451,31 @@ describe("TimelineView", () => {
       });
     });
 
+    expect(await screen.findByText("First")).toBeTruthy();
+    expect(await screen.findByText("Second")).toBeTruthy();
     const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollHeight", { value: 1000, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+    await waitFor(() => {
+      expect(observeViewport).toHaveBeenCalled();
+    });
+    observeViewport.mockClear();
 
     act(() => {
       fireEvent.scroll(timeline);
     });
 
-    expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
-    expect(updateScrollAnchor).toHaveBeenCalledWith(
+    expect(observeViewport).toHaveBeenCalledTimes(1);
+    expect(observeViewport).toHaveBeenCalledWith(
       "!room:example.invalid",
+      "$first:example.invalid",
+      "$second:example.invalid",
+      false,
       expect.objectContaining({
         event_id: "$second:example.invalid",
         edge: "bottom",
@@ -464,12 +488,128 @@ describe("TimelineView", () => {
       fireEvent.scroll(timeline);
     });
 
-    expect(updateScrollAnchor).toHaveBeenCalledTimes(1);
+    expect(observeViewport).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends read signals to the canonical latest event from navigation instead of display order", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const sendReadReceipt = vi.fn(async () => undefined);
+    const setFullyRead = vi.fn(async () => undefined);
+    const observeViewport = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      sendReadReceipt,
+      setFullyRead,
+      observeViewport
+    });
+
+    mockTimelineRects({
+      "$canonical-latest:example.invalid": { top: 180, height: 48 },
+      "$thread-root:example.invalid": { top: 260, height: 48 }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    const threadRoot = {
+      ...message("$thread-root:example.invalid", "Thread root"),
+      timestamp_ms: 1_800_000_000_000,
+      thread_summary: {
+        reply_count: 13,
+        latest_sender: "@ken:example.invalid",
+        latest_sender_label: "Ken",
+        latest_body_preview: "latest thread reply",
+        latest_timestamp_ms: 1_800_000_010_000
+      }
+    };
+    const canonicalLatest = {
+      ...message("$canonical-latest:example.invalid", "Canonical latest"),
+      timestamp_ms: 1_800_000_001_000
+    };
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [threadRoot, canonicalLatest]
+          }
+        }
+      });
+      emit({
+        kind: "Timeline",
+        event: {
+          NavigationUpdated: {
+            key: KEY,
+            snapshot: {
+              read_marker_event_id: "$read:example.invalid",
+              read_marker_display_event_id: "$read:example.invalid",
+              latest_readable_event_id: "$canonical-latest:example.invalid",
+              first_unread_event_id: null,
+              unread_event_count: 0,
+              unread_position: "none",
+              newer_event_count: 0,
+              can_jump_to_bottom: false
+            }
+          }
+        }
+      });
+    });
+
+    expect(await screen.findByText("Thread root")).toBeTruthy();
+    expect(await screen.findByText("Canonical latest")).toBeTruthy();
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      fireEvent.scroll(timeline);
+    });
+
+    await waitFor(() => {
+      expect(sendReadReceipt).toHaveBeenCalledWith(
+        "!room:example.invalid",
+        "$canonical-latest:example.invalid"
+      );
+    });
+    expect(setFullyRead).toHaveBeenCalledWith(
+      "!room:example.invalid",
+      "$canonical-latest:example.invalid"
+    );
+    expect(sendReadReceipt).not.toHaveBeenCalledWith(
+      "!room:example.invalid",
+      "$thread-root:example.invalid"
+    );
   });
 
   it("persists the sent message as the room anchor after a programmatic live-edge scroll", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
-    const updateScrollAnchor = vi.fn(async () => undefined);
+    const observeViewport = vi.fn(
+      async (
+        _roomId: string,
+        _firstVisibleEventId: string | null,
+        _lastVisibleEventId: string | null,
+        _atBottom: boolean,
+        _scrollAnchor: TimelineScrollAnchor | null
+      ) => undefined
+    );
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
       callback(0);
       return 0;
@@ -479,7 +619,7 @@ describe("TimelineView", () => {
         emit = nextListener;
         return () => undefined;
       },
-      updateScrollAnchor
+      observeViewport
     });
     const scrollContainerRef: { current: HTMLElement | null } = { current: null };
 
@@ -556,8 +696,11 @@ describe("TimelineView", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Message I just sent")).toBeTruthy();
-      expect(updateScrollAnchor).toHaveBeenLastCalledWith(
+      expect(observeViewport).toHaveBeenLastCalledWith(
         "!room:example.invalid",
+        "$older:example.invalid",
+        "$sent:example.invalid",
+        true,
         expect.objectContaining({
           event_id: "$sent:example.invalid",
           edge: "bottom",
@@ -1211,6 +1354,7 @@ describe("TimelineView", () => {
             snapshot: {
               read_marker_event_id: "$sent:example.invalid",
               read_marker_display_event_id: "$sent:example.invalid",
+              latest_readable_event_id: "$sent:example.invalid",
               first_unread_event_id: null,
               unread_event_count: 0,
               unread_position: "none",
@@ -1420,6 +1564,7 @@ describe("TimelineView", () => {
             snapshot: {
               read_marker_event_id: "$sent:example.invalid",
               read_marker_display_event_id: "$sent:example.invalid",
+              latest_readable_event_id: "$sent:example.invalid",
               first_unread_event_id: null,
               unread_event_count: 0,
               unread_position: "none",
@@ -2415,6 +2560,7 @@ describe("TimelineView", () => {
               snapshot: {
                 can_jump_to_bottom: false,
                 first_unread_event_id: "$virtual-500:example.invalid",
+                latest_readable_event_id: "$virtual-1199:example.invalid",
                 newer_event_count: 0,
                 read_marker_display_event_id: null,
                 read_marker_event_id: null,
@@ -2676,6 +2822,7 @@ describe("TimelineView", () => {
           snapshot: {
             read_marker_event_id: "$other:example.invalid",
             read_marker_display_event_id: "$own2:example.invalid",
+            latest_readable_event_id: "$own2:example.invalid",
             first_unread_event_id: null,
             unread_event_count: 0,
             unread_position: "none",
@@ -2735,6 +2882,7 @@ describe("TimelineView", () => {
           snapshot: {
             read_marker_event_id: "$own1:example.invalid",
             read_marker_display_event_id: "$own2:example.invalid",
+            latest_readable_event_id: "$own2:example.invalid",
             first_unread_event_id: null,
             unread_event_count: 0,
             unread_position: "none",
@@ -2791,6 +2939,7 @@ describe("TimelineView", () => {
           snapshot: {
             read_marker_event_id: "$other:example.invalid",
             read_marker_display_event_id: null,
+            latest_readable_event_id: "$own1:example.invalid",
             first_unread_event_id: "$unread:example.invalid",
             unread_event_count: 1,
             unread_position: "insideViewport",

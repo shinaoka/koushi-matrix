@@ -1131,6 +1131,7 @@ pub(crate) fn build_observe_timeline_viewport_command(
     first_visible_event_id: Option<String>,
     last_visible_event_id: Option<String>,
     at_bottom: bool,
+    scroll_anchor: Option<TimelineScrollAnchor>,
 ) -> CoreCommand {
     CoreCommand::Timeline(TimelineCommand::ObserveViewport {
         request_id,
@@ -1139,6 +1140,7 @@ pub(crate) fn build_observe_timeline_viewport_command(
             first_visible_event_id,
             last_visible_event_id,
             at_bottom,
+            scroll_anchor,
         },
     })
 }
@@ -2413,6 +2415,7 @@ mod tests {
     use koushi_state::{
         ActivityMarkReadTarget, ActivityTab, AppearanceSettings, ImageUploadCompressionMode,
         LocaleSettings, SettingsPatch, TextDirectionPreference, ThemePreference,
+        TimelineScrollAnchor, TimelineScrollAnchorEdge,
     };
     use koushi_state::{
         AppState, AuthSecret, IdentityResetAuthRequest, LoginRequest, MentionIntent, MentionTarget,
@@ -3514,6 +3517,12 @@ mod tests {
             Some("$first-visible".to_owned()),
             Some("$last-visible".to_owned()),
             false,
+            Some(TimelineScrollAnchor {
+                event_id: "$last-visible".to_owned(),
+                edge: TimelineScrollAnchorEdge::Bottom,
+                offset_px: -24,
+                updated_at_ms: 1_820_000_000_000,
+            }),
         ) {
             CoreCommand::Timeline(TimelineCommand::ObserveViewport {
                 request_id,
@@ -3537,6 +3546,13 @@ mod tests {
                     Some("$last-visible")
                 );
                 assert!(!observation.at_bottom);
+                assert_eq!(
+                    observation
+                        .scroll_anchor
+                        .as_ref()
+                        .map(|anchor| anchor.event_id.as_str()),
+                    Some("$last-visible")
+                );
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -5370,7 +5386,7 @@ mod tests {
     }
 
     #[test]
-    fn observe_timeline_viewport_command_routes_viewport_facts_only() {
+    fn observe_timeline_viewport_command_routes_viewport_facts_and_durable_anchor() {
         let account_key = AccountKey("@alice:example.org".to_owned());
         let command = build_observe_timeline_viewport_command(
             fake_request_id(41),
@@ -5379,6 +5395,12 @@ mod tests {
             Some("$first".to_owned()),
             Some("$last".to_owned()),
             false,
+            Some(TimelineScrollAnchor {
+                event_id: "$last".to_owned(),
+                edge: TimelineScrollAnchorEdge::Bottom,
+                offset_px: -16,
+                updated_at_ms: 1_820_000_000_000,
+            }),
         );
         let debug = format!("{command:?}");
         assert!(!debug.contains("!room:example.org"), "{debug}");
@@ -5405,6 +5427,13 @@ mod tests {
                 );
                 assert_eq!(observation.last_visible_event_id.as_deref(), Some("$last"));
                 assert!(!observation.at_bottom);
+                assert_eq!(
+                    observation
+                        .scroll_anchor
+                        .as_ref()
+                        .map(|anchor| (anchor.event_id.as_str(), anchor.edge, anchor.offset_px)),
+                    Some(("$last", TimelineScrollAnchorEdge::Bottom, -16))
+                );
             }
             other => panic!("unexpected command: {other:?}"),
         }

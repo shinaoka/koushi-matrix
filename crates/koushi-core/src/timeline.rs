@@ -1748,6 +1748,9 @@ impl TimelineActor {
                     .await;
             }
             TimelineActorMessage::ObserveViewport { observation } => {
+                if let Some(action) = viewport_scroll_anchor_action(&self.key, &observation) {
+                    let _ = self.action_tx.try_send(vec![action]);
+                }
                 self.viewport_observation = observation;
                 self.emit_navigation_if_changed();
             }
@@ -4565,6 +4568,22 @@ fn media_gallery_updated_action(
     })
 }
 
+fn viewport_scroll_anchor_action(
+    key: &TimelineKey,
+    observation: &TimelineViewportObservation,
+) -> Option<AppAction> {
+    let TimelineKind::Room { room_id } = &key.kind else {
+        return None;
+    };
+    observation
+        .scroll_anchor
+        .clone()
+        .map(|anchor| AppAction::TimelineScrollAnchorUpdated {
+            room_id: room_id.clone(),
+            anchor,
+        })
+}
+
 fn media_gallery_items_from_timeline_items(
     key: &TimelineKey,
     items: &[TimelineItem],
@@ -4655,6 +4674,7 @@ fn derive_timeline_navigation_snapshot(
     let mut snapshot = TimelineNavigationSnapshot {
         read_marker_event_id: fully_read_event_id.map(ToOwned::to_owned),
         read_marker_display_event_id: None,
+        latest_readable_event_id: latest_readable_event_id(items).map(ToOwned::to_owned),
         first_unread_event_id: None,
         unread_event_count: 0,
         unread_position: TimelineUnreadPosition::None,
@@ -4700,6 +4720,15 @@ fn derive_timeline_navigation_snapshot(
         .last()
         .and_then(|(_, item)| timeline_item_event_id(item).map(ToOwned::to_owned));
     snapshot
+}
+
+fn latest_readable_event_id(items: &[TimelineItem]) -> Option<&str> {
+    items.iter().rev().find_map(|item| {
+        if item.is_hidden || !has_user_visible_content(item) {
+            return None;
+        }
+        timeline_item_event_id(item)
+    })
 }
 
 fn is_own_visible_event(item: &TimelineItem, own_user_id: Option<&str>) -> bool {
@@ -6515,7 +6544,8 @@ mod tests {
 
     use koushi_state::{
         AppAction, MentionIntent, MentionTarget, SessionInfo, SessionState,
-        TimelineMediaKind as GalleryTimelineMediaKind,
+        TimelineMediaKind as GalleryTimelineMediaKind, TimelineScrollAnchor,
+        TimelineScrollAnchorEdge,
     };
     use matrix_sdk::ruma::events::room::message::{
         EmoteMessageEventContent, MessageType, NoticeMessageEventContent, TextMessageEventContent,
@@ -6548,6 +6578,50 @@ mod tests {
 
     fn room_key() -> TimelineKey {
         TimelineKey::room(AccountKey("@a:test".to_owned()), "!r:test")
+    }
+
+    #[test]
+    fn viewport_scroll_anchor_action_projects_room_observations_to_navigation_action() {
+        let anchor = TimelineScrollAnchor {
+            event_id: "$event:test".to_owned(),
+            edge: TimelineScrollAnchorEdge::Bottom,
+            offset_px: -12,
+            updated_at_ms: 1_820_000_000_000,
+        };
+        let observation = TimelineViewportObservation {
+            first_visible_event_id: Some("$first:test".to_owned()),
+            last_visible_event_id: Some("$event:test".to_owned()),
+            at_bottom: false,
+            scroll_anchor: Some(anchor.clone()),
+        };
+
+        assert_eq!(
+            viewport_scroll_anchor_action(&room_key(), &observation),
+            Some(AppAction::TimelineScrollAnchorUpdated {
+                room_id: "!r:test".to_owned(),
+                anchor,
+            })
+        );
+    }
+
+    #[test]
+    fn viewport_scroll_anchor_action_ignores_non_room_timelines() {
+        let observation = TimelineViewportObservation {
+            first_visible_event_id: Some("$first:test".to_owned()),
+            last_visible_event_id: Some("$event:test".to_owned()),
+            at_bottom: false,
+            scroll_anchor: Some(TimelineScrollAnchor {
+                event_id: "$event:test".to_owned(),
+                edge: TimelineScrollAnchorEdge::Bottom,
+                offset_px: -12,
+                updated_at_ms: 1_820_000_000_000,
+            }),
+        };
+
+        assert_eq!(
+            viewport_scroll_anchor_action(&thread_key(), &observation),
+            None
+        );
     }
 
     struct DropFlag(Arc<AtomicBool>);
@@ -6774,6 +6848,7 @@ mod tests {
                 first_visible_event_id: Some("$unread:test".to_owned()),
                 last_visible_event_id: Some("$newer:test".to_owned()),
                 at_bottom: true,
+                scroll_anchor: None,
             },
             Some("@me:test"),
         );
@@ -6807,6 +6882,7 @@ mod tests {
                 first_visible_event_id: Some("$read:test".to_owned()),
                 last_visible_event_id: Some("$visible:test".to_owned()),
                 at_bottom: false,
+                scroll_anchor: None,
             },
             Some("@me:test"),
         );
@@ -6844,6 +6920,7 @@ mod tests {
                 first_visible_event_id: Some("$visible:test".to_owned()),
                 last_visible_event_id: Some("$visible:test".to_owned()),
                 at_bottom: false,
+                scroll_anchor: None,
             },
             Some("@me:test"),
         );
@@ -6868,6 +6945,7 @@ mod tests {
                 first_visible_event_id: Some("$visible:test".to_owned()),
                 last_visible_event_id: Some("$visible:test".to_owned()),
                 at_bottom: false,
+                scroll_anchor: None,
             },
             Some("@me:test"),
         );
@@ -6907,6 +6985,7 @@ mod tests {
                 first_visible_event_id: Some("$read:test".to_owned()),
                 last_visible_event_id: Some("$remote:test".to_owned()),
                 at_bottom: true,
+                scroll_anchor: None,
             },
             Some("@me:test"),
         );
@@ -6917,6 +6996,80 @@ mod tests {
         );
         assert_eq!(snapshot.unread_event_count, 1);
         assert_eq!(snapshot.newer_event_count, 0);
+    }
+
+    #[test]
+    fn timeline_navigation_latest_readable_event_uses_canonical_order() {
+        let mut read = timeline_item("$read:test", Some("read"), "@alice:test", false);
+        read.timestamp_ms = Some(1);
+        let mut thread_root = timeline_item(
+            "$thread-root:test",
+            Some("thread root"),
+            "@alice:test",
+            false,
+        );
+        thread_root.timestamp_ms = Some(2);
+        thread_root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 13,
+            latest_sender: Some("@ken:test".to_owned()),
+            latest_sender_label: Some("Ken".to_owned()),
+            latest_body_preview: Some("latest thread reply".to_owned()),
+            latest_timestamp_ms: Some(10),
+        });
+        let mut canonical_latest = timeline_item(
+            "$canonical-latest:test",
+            Some("latest"),
+            "@alice:test",
+            false,
+        );
+        canonical_latest.timestamp_ms = Some(3);
+        let items = vec![read, thread_root, canonical_latest];
+
+        let snapshot = derive_timeline_navigation_snapshot(
+            &items,
+            Some("$read:test"),
+            &TimelineViewportObservation {
+                first_visible_event_id: Some("$thread-root:test".to_owned()),
+                last_visible_event_id: Some("$thread-root:test".to_owned()),
+                at_bottom: true,
+                scroll_anchor: None,
+            },
+            Some("@me:test"),
+        );
+
+        assert_eq!(
+            snapshot.latest_readable_event_id.as_deref(),
+            Some("$canonical-latest:test")
+        );
+    }
+
+    #[test]
+    fn timeline_navigation_latest_readable_event_skips_non_readable_tail_items() {
+        let visible = timeline_item("$visible:test", Some("visible"), "@alice:test", false);
+        let hidden = timeline_item("$hidden:test", Some("hidden"), "@alice:test", true);
+        let bodyless = timeline_item("$bodyless:test", None, "@alice:test", false);
+        let mut local_echo = timeline_item("$local:test", Some("local"), "@alice:test", false);
+        local_echo.id = TimelineItemId::Transaction {
+            transaction_id: "txn-local".to_owned(),
+        };
+        let items = vec![visible, hidden, bodyless, local_echo];
+
+        let snapshot = derive_timeline_navigation_snapshot(
+            &items,
+            Some("$visible:test"),
+            &TimelineViewportObservation {
+                first_visible_event_id: Some("$visible:test".to_owned()),
+                last_visible_event_id: Some("$visible:test".to_owned()),
+                at_bottom: true,
+                scroll_anchor: None,
+            },
+            Some("@me:test"),
+        );
+
+        assert_eq!(
+            snapshot.latest_readable_event_id.as_deref(),
+            Some("$visible:test")
+        );
     }
 
     #[test]

@@ -2323,6 +2323,7 @@ mod tests {
                 snapshot: TimelineNavigationSnapshot {
                     read_marker_event_id: Some("$read:example.test".to_owned()),
                     read_marker_display_event_id: Some("$read:example.test".to_owned()),
+                    latest_readable_event_id: Some("$latest:example.test".to_owned()),
                     first_unread_event_id: Some("$unread:example.test".to_owned()),
                     unread_event_count: 2,
                     unread_position: TimelineUnreadPosition::BelowViewport,

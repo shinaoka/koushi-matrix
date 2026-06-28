@@ -542,6 +542,7 @@ export function ContextualRightPanel({
               forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
               onSetLocalUserAlias={onSetLocalUserAlias}
               autoLoadOlderMessages={snapshot.state.domain.settings.values.timeline.auto_load_older_messages}
+              threadRootOrder={snapshot.state.domain.settings.values.timeline.thread_root_order}
               codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
               searchQuery={searchQuery}
               mediaDownloads={mediaDownloads}
@@ -612,6 +613,7 @@ export function ContextualRightPanel({
             forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
             onSetLocalUserAlias={onSetLocalUserAlias}
             autoLoadOlderMessages={snapshot.state.domain.settings.values.timeline.auto_load_older_messages}
+            threadRootOrder={snapshot.state.domain.settings.values.timeline.thread_root_order}
             codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
             searchQuery={searchQuery}
             mediaDownloads={mediaDownloads}

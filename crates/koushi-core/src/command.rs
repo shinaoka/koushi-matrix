@@ -2009,6 +2009,7 @@ impl fmt::Debug for TimelineCommand {
                 .field("first_visible_event_id", &"EventId(..)")
                 .field("last_visible_event_id", &"EventId(..)")
                 .field("at_bottom", &"ViewportFact(..)")
+                .field("scroll_anchor", &"TimelineScrollAnchor(..)")
                 .finish(),
             Self::SendText {
                 request_id,

@@ -3,7 +3,7 @@ use koushi_state::{
     EmojiPreference, FontPreference, ImageUploadCompressionMode, KeyboardSettings, LocaleSettings,
     MediaSettings, NotificationSettings, RoomListSort, RoomSummary, SettingsPatch,
     SettingsPersistenceState, SettingsValues, TextDirectionPreference, ThemePreference,
-    ThreadListOrder, TimelineSettings, UiEvent, reduce,
+    ThreadListOrder, TimelineSettings, TimelineThreadRootOrder, UiEvent, reduce,
 };
 
 fn dark_theme_patch() -> SettingsPatch {
@@ -64,6 +64,7 @@ fn app_state_carries_default_non_secret_settings() {
         state.settings.values.timeline,
         TimelineSettings {
             auto_load_older_messages: true,
+            thread_root_order: TimelineThreadRootOrder::LatestReply,
         }
     );
     assert_eq!(state.settings.persistence, SettingsPersistenceState::Idle);
@@ -106,6 +107,7 @@ fn settings_loaded_replaces_values_without_requiring_a_session() {
         },
         timeline: TimelineSettings {
             auto_load_older_messages: true,
+            thread_root_order: TimelineThreadRootOrder::LatestReply,
         },
         thread_list_order: ThreadListOrder::LatestReply,
         room_list_sort: RoomListSort::Activity,
@@ -228,6 +230,7 @@ fn settings_values_deserialize_legacy_without_timeline_as_default_true() {
         values.timeline,
         TimelineSettings {
             auto_load_older_messages: true,
+            thread_root_order: TimelineThreadRootOrder::LatestReply,
         }
     );
 }
@@ -425,6 +428,7 @@ fn timeline_auto_load_patch_is_rust_owned_and_persisted() {
     let mut state = AppState::default();
     let timeline_settings = TimelineSettings {
         auto_load_older_messages: true,
+        thread_root_order: TimelineThreadRootOrder::LatestReply,
     };
 
     let effects = reduce(
@@ -491,6 +495,35 @@ fn settings_update_is_optimistic_and_emits_a_persist_effect() {
 fn thread_list_ordering_setting_defaults_to_latest_reply() {
     let values = SettingsValues::default();
     assert_eq!(values.thread_list_order, ThreadListOrder::LatestReply);
+}
+
+#[test]
+fn timeline_thread_root_order_defaults_to_latest_reply_and_can_opt_out() {
+    let values = SettingsValues::default();
+    assert_eq!(
+        values.timeline.thread_root_order,
+        TimelineThreadRootOrder::LatestReply
+    );
+
+    let mut state = AppState::default();
+    reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 91,
+            patch: SettingsPatch {
+                timeline: Some(TimelineSettings {
+                    auto_load_older_messages: true,
+                    thread_root_order: TimelineThreadRootOrder::RootEvent,
+                }),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+
+    assert_eq!(
+        state.settings.values.timeline.thread_root_order,
+        TimelineThreadRootOrder::RootEvent
+    );
 }
 
 #[test]
