@@ -51,6 +51,7 @@ export type TimelineViewportMachineState = {
   exhaustedRoomAnchorMaterializeSignature: string | null;
   postSettleRestoredSignature: string | null;
   stickToBottomAfterMeasurement: boolean;
+  lastCoverageBackfillRequestSignature: string | null;
 };
 
 export type TimelineViewportMachineEvent =
@@ -83,7 +84,8 @@ export type TimelineViewportMachineEvent =
   | { type: "scroll-capture-suppression-started" }
   | { type: "scroll-capture-suppression-finished" }
   | { type: "programmatic-scroll-assigned"; scrollHeight: number; scrollTop: number }
-  | { type: "stick-to-bottom-after-measurement"; value: boolean };
+  | { type: "stick-to-bottom-after-measurement"; value: boolean }
+  | { type: "coverage-backfill-requested"; signature: string };
 
 export function createTimelineViewportMachineState(): TimelineViewportMachineState {
   return {
@@ -99,7 +101,8 @@ export function createTimelineViewportMachineState(): TimelineViewportMachineSta
     requestedRoomAnchorMaterializeSignature: null,
     exhaustedRoomAnchorMaterializeSignature: null,
     postSettleRestoredSignature: null,
-    stickToBottomAfterMeasurement: false
+    stickToBottomAfterMeasurement: false,
+    lastCoverageBackfillRequestSignature: null
   };
 }
 
@@ -136,6 +139,13 @@ export function timelineViewportProgrammaticScrollEchoMatches(
     state.programmaticScrollSignature.scrollHeight === metrics.scrollHeight &&
     state.programmaticScrollSignature.scrollTop === metrics.scrollTop
   );
+}
+
+export function timelineViewportCanRequestCoverageBackfill(
+  state: TimelineViewportMachineState,
+  signature: string
+): boolean {
+  return state.lastCoverageBackfillRequestSignature !== signature;
 }
 
 export function eventTimelineViewportTarget(
@@ -253,5 +263,7 @@ export function reduceTimelineViewportMachine(
         ...state,
         stickToBottomAfterMeasurement: event.value
       };
+    case "coverage-backfill-requested":
+      return { ...state, lastCoverageBackfillRequestSignature: event.signature };
   }
 }

@@ -99,6 +99,7 @@ import {
 import {
   type TimelineViewportTarget
 } from "../domain/timelineViewportMachine";
+import { decideTimelineViewportCoverage, type TimelineViewportCoverageSource } from "../domain/timelineViewportCoverage";
 import {
   timelineItemDomId,
   timelineKeyEquals
@@ -113,7 +114,6 @@ import {
   getKeyState,
   getPaginationState,
   projectTimelineItemsForDisplay,
-  shouldSuppressAutoBackfill,
   timelineStoreKeyId,
   type TimelineKeyState,
   type TimelineStoreState
@@ -387,6 +387,14 @@ function timelineContainsEventId(items: readonly TimelineItem[], eventId: string
   );
 }
 
+function timelineCoverageContentSignature(items: readonly TimelineItem[]): string {
+  const firstItem = items[0];
+  const lastItem = items.length > 0 ? items[items.length - 1] : undefined;
+  const first = firstItem ? timelineItemDomId(firstItem.id) : "";
+  const last = lastItem ? timelineItemDomId(lastItem.id) : "";
+  return [items.length, first, last].join("\u0000");
+}
+
 function visibleEventIds(container: HTMLElement): {
   firstVisibleEventId: string | null;
   lastVisibleEventId: string | null;
@@ -479,9 +487,6 @@ function cssEscape(value: string): string {
   return value.replace(/["\\]/g, "\\$&");
 }
 
-/** Distance (px) from the top edge that triggers automatic backfill. */
-const AUTO_BACKFILL_THRESHOLD_PX = 80;
-const AUTO_BACKFILL_PREFETCH_ITEMS = 100;
 const LIVE_ROOM_ANCHOR_MATERIALIZE_MAX_BATCHES = 6;
 const LIVE_ROOM_ANCHOR_MATERIALIZE_EVENT_COUNT = 100;
 const SCROLL_EDGE_TOLERANCE_PX = 2;
@@ -1755,6 +1760,7 @@ export const TimelineView = memo(function TimelineView({
   const viewportProgrammaticScrollEchoMatches =
     viewportController.programmaticScrollEchoMatches;
   const eventViewportTarget = viewportController.eventTarget;
+  const canRequestCoverageBackfill = viewportController.canRequestCoverageBackfill;
   const anchorAsyncGenerationRef = useRef(0);
   /** Tracks whether the current key already got its first live-edge scroll. */
   const initialLiveEdgeScrollAppliedRef = useRef<string | null>(null);
@@ -2592,6 +2598,72 @@ export const TimelineView = memo(function TimelineView({
     viewportAtBottom
   ]);
 
+  // --- Viewport coverage-driven backfill ---
+  const evaluateViewportCoverageAndMaybeBackfill = useCallback(
+    (source: TimelineViewportCoverageSource, options?: { forceUserBackfill?: boolean }) => {
+      const container = containerRef.current;
+      if (!container) {
+        return;
+      }
+      const relativeScrollTopPx = Math.max(
+        0,
+        container.scrollTop - (listRef.current?.offsetTop ?? 0)
+      );
+      const coverageMarginPx = Math.max(
+        virtualItemHeight * TIMELINE_VIRTUAL_OVERSCAN_ITEMS,
+        container.clientHeight * 2
+      );
+      const decision = decideTimelineViewportCoverage({
+        source,
+        relativeScrollTopPx,
+        clientHeightPx: container.clientHeight,
+        loadedContentHeightPx: timelineHeightModel.totalHeight,
+        coverageMarginPx,
+        backwardPaginationState: getPaginationState(store, timelineKeyRef.current, "Backward"),
+        autoLoadOlderMessages,
+        forceUserBackfill: options?.forceUserBackfill === true,
+        suppressPaginationUi,
+        backfillInFlight: backfillInFlightRef.current,
+        blockingAnchorWork: viewportHasBlockingAnchorWork()
+      });
+      if (decision.kind !== "request-backward") {
+        return;
+      }
+      const signature = [
+        timelineStoreKeyId(timelineKeyRef.current),
+        generation,
+        timelineCoverageContentSignature(visibleItems),
+        Math.floor(relativeScrollTopPx),
+        "backward"
+      ].join("\u0000");
+      if (!canRequestCoverageBackfill(signature)) {
+        return;
+      }
+      dispatchViewportMachine({
+        type: "coverage-backfill-requested",
+        signature
+      });
+      backfillInFlightRef.current = true;
+      void transport.paginateBackwards(timelineKeyRef.current)
+        .finally(() => {
+          backfillInFlightRef.current = false;
+        });
+    },
+    [
+      autoLoadOlderMessages,
+      canRequestCoverageBackfill,
+      dispatchViewportMachine,
+      generation,
+      store,
+      suppressPaginationUi,
+      timelineHeightModel.totalHeight,
+      transport,
+      virtualItemHeight,
+      visibleItems,
+      viewportHasBlockingAnchorWork
+    ]
+  );
+
   // --- Anchor restoration: after React commits the prepend ---
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -2616,6 +2688,10 @@ export const TimelineView = memo(function TimelineView({
       activeRoomAnchorSignature !== null &&
       viewportState.restoredRoomAnchorSignature === activeRoomAnchorSignature;
     let roomAnchorRestored = false;
+    let coverageEvaluation: {
+      source: TimelineViewportCoverageSource;
+      forceUserBackfill: boolean;
+    } | null = null;
     if (
       timelineInitialized &&
       items.length > 0 &&
@@ -2643,6 +2719,10 @@ export const TimelineView = memo(function TimelineView({
 
       const anchorIsLive = timelineContainsEventId(items, activeRoomAnchor.event_id);
       if (anchorIsLive) {
+        coverageEvaluation = {
+          source: "programmatic-restore",
+          forceUserBackfill: true
+        };
         dispatchViewportMachine({ type: "room-anchor-restore-started" });
         runWithSuppressedScrollAnchorCapture(() => {
           roomAnchorRestored = restoreActiveRoomAnchor();
@@ -2847,6 +2927,10 @@ export const TimelineView = memo(function TimelineView({
       !roomAnchorAlreadyRestored &&
       !viewportHasBlockingAnchorWork()
     ) {
+      coverageEvaluation = {
+        source: "layout-settle",
+        forceUserBackfill: false
+      };
       if (container) {
         setViewportIntentToLiveEdge();
         runWithSuppressedScrollAnchorCapture(() => {
@@ -2883,6 +2967,10 @@ export const TimelineView = memo(function TimelineView({
       });
     }
     if (currentViewportState().prependAnchorRestorePending) {
+      coverageEvaluation = {
+        source: "programmatic-restore",
+        forceUserBackfill: true
+      };
       const anchor = pendingAnchorRef.current;
       let restored = false;
       if (container && anchor) {
@@ -2913,12 +3001,17 @@ export const TimelineView = memo(function TimelineView({
         }
       }
       pendingAnchorRef.current = null;
-      // Restoration complete: the next automatic fill request is allowed again.
       dispatchViewportMachine({ type: "prepend-anchor-restore-finished" });
     }
     updateViewportMetrics();
     reportViewportObservation({ allowSuppressedAnchor: true });
+    if (coverageEvaluation) {
+      evaluateViewportCoverageAndMaybeBackfill(coverageEvaluation.source, {
+        forceUserBackfill: coverageEvaluation.forceUserBackfill
+      });
+    }
   }, [
+    evaluateViewportCoverageAndMaybeBackfill,
     generation,
     anchorMaterializeCompletionVersion,
     roomId,
@@ -3074,47 +3167,6 @@ export const TimelineView = memo(function TimelineView({
     visibleItems
   ]);
 
-  // --- Automatic backfill on scroll near the top ---
-  const maybeAutoBackfill = useCallback(() => {
-    if (suppressPaginationUi) {
-      return;
-    }
-    const container = containerRef.current;
-    if (!container) {
-      return;
-    }
-    const desiredBackfillThreshold = autoLoadOlderMessages
-      ? Math.max(AUTO_BACKFILL_THRESHOLD_PX, virtualItemHeight * AUTO_BACKFILL_PREFETCH_ITEMS)
-      : 0;
-    const maxScrollTop = container.scrollHeight - container.clientHeight;
-    // Only prefetch when the viewport is actually near the top edge. If the
-    // loaded timeline is shorter than the desired prefetch window, fall back
-    // to the near-top threshold so that a small scroll up from the live edge
-    // does not immediately fire a backfill request (and the prepend/anchor
-    // restoration that can follow).
-    const backfillThreshold = autoLoadOlderMessages
-      ? (maxScrollTop > desiredBackfillThreshold
-          ? desiredBackfillThreshold
-          : AUTO_BACKFILL_THRESHOLD_PX)
-      : 0;
-    if (container.scrollTop > backfillThreshold) {
-      return;
-    }
-    // Block while: a previous diff's anchor restoration is pending, a
-    // request is already in flight, or pagination is Paginating/EndReached.
-    if (viewportHasBlockingAnchorWork() || backfillInFlightRef.current) {
-      return;
-    }
-    if (shouldSuppressAutoBackfill(store, timelineKeyRef.current)) {
-      return;
-    }
-    backfillInFlightRef.current = true;
-    void transport
-      .paginateBackwards(timelineKeyRef.current)
-      .catch(() => {
-        backfillInFlightRef.current = false;
-      });
-  }, [store, transport, suppressPaginationUi, autoLoadOlderMessages, virtualItemHeight]);
   const scheduleViewportScrollWork = useCallback((observeViewport: boolean) => {
     pendingViewportObservationRef.current =
       pendingViewportObservationRef.current || observeViewport;
@@ -3129,9 +3181,9 @@ export const TimelineView = memo(function TimelineView({
       }
       pendingViewportObservationRef.current = false;
       reportViewportObservation();
-      maybeAutoBackfill();
+      evaluateViewportCoverageAndMaybeBackfill("user-scroll", { forceUserBackfill: true });
     });
-  }, [maybeAutoBackfill, reportViewportObservation, updateViewportMetrics]);
+  }, [evaluateViewportCoverageAndMaybeBackfill, reportViewportObservation, updateViewportMetrics]);
   const onTimelineScroll = useCallback(() => {
     const container = containerRef.current;
     const viewportState = currentViewportState();

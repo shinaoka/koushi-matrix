@@ -5,6 +5,7 @@ import {
   eventTimelineViewportTarget,
   reduceTimelineViewportMachine,
   timelineViewportCanPersistAnchor,
+  timelineViewportCanRequestCoverageBackfill,
   timelineViewportHasBlockingAnchorWork,
   timelineViewportIsLiveEdge,
   timelineViewportProgrammaticScrollEchoMatches,
@@ -239,5 +240,32 @@ describe("timeline viewport machine", () => {
       source: "activity",
       block: "end"
     });
+  });
+
+  it("deduplicates coverage-driven backfill requests by signature", () => {
+    const requested = reduceTimelineViewportMachine(createTimelineViewportMachineState(), {
+      type: "coverage-backfill-requested",
+      signature: "room:!r:generation:1:backward"
+    });
+
+    expect(
+      timelineViewportCanRequestCoverageBackfill(requested, "room:!r:generation:1:backward")
+    ).toBe(false);
+    expect(
+      timelineViewportCanRequestCoverageBackfill(requested, "room:!r:generation:2:backward")
+    ).toBe(true);
+  });
+
+  it("resets coverage backfill state on timeline key change", () => {
+    const requested = reduceTimelineViewportMachine(createTimelineViewportMachineState(), {
+      type: "coverage-backfill-requested",
+      signature: "room:!r:generation:1:backward"
+    });
+
+    const reset = reduceTimelineViewportMachine(requested, {
+      type: "timeline-key-changed"
+    });
+
+    expect(reset.lastCoverageBackfillRequestSignature).toBeNull();
   });
 });

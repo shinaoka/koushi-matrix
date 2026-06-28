@@ -5,6 +5,7 @@ import {
   eventTimelineViewportTarget,
   reduceTimelineViewportMachine,
   timelineViewportCanPersistAnchor,
+  timelineViewportCanRequestCoverageBackfill,
   timelineViewportHasBlockingAnchorWork,
   timelineViewportIsLiveEdge,
   timelineViewportProgrammaticScrollEchoMatches,
@@ -57,6 +58,12 @@ export function useTimelineViewportController() {
     []
   );
 
+  const canRequestCoverageBackfill = useCallback(
+    (signature: string) =>
+      timelineViewportCanRequestCoverageBackfill(stateRef.current, signature),
+    []
+  );
+
   return {
     current,
     dispatch,
@@ -64,6 +71,7 @@ export function useTimelineViewportController() {
     hasBlockingAnchorWork,
     canPersistAnchor,
     programmaticScrollEchoMatches,
-    eventTarget
+    eventTarget,
+    canRequestCoverageBackfill
   };
 }

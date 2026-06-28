@@ -964,18 +964,6 @@ export function isAwaitingResync(
 }
 
 // ---------------------------------------------------------------------------
-// Convenience: check if auto-backward pagination should be suppressed
-// ---------------------------------------------------------------------------
-
-export function shouldSuppressAutoBackfill(
-  store: TimelineStoreState,
-  key: TimelineKey
-): boolean {
-  const state = getPaginationState(store, key, "Backward");
-  return state === "Paginating" || state === "EndReached";
-}
-
-// ---------------------------------------------------------------------------
 // Re-export key equality for callers that build TimelineKey objects
 // ---------------------------------------------------------------------------
 

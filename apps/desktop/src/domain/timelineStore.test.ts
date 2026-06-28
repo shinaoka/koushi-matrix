@@ -42,7 +42,6 @@ import {
   isAwaitingResync,
   applyTimelineEventWithRetention,
   pruneTimelineStore,
-  shouldSuppressAutoBackfill,
   timelineStoreKeyId,
   type TimelineStoreState
 } from "./timelineStore";
@@ -972,52 +971,6 @@ describe("scroll anchoring — prepend keeps anchor stable", () => {
 // (4) EndReached stops further auto-pagination requests
 // ---------------------------------------------------------------------------
 
-describe("pagination suppression — EndReached stops auto-backfill", () => {
-  function withPaginationState(
-    state: "Idle" | "Paginating" | "EndReached" | { Failed: { kind: "Network" } }
-  ) {
-    let store = createTimelineStore();
-    store = applyTimelineEvent(store, {
-      InitialItems: {
-        request_id: null,
-        key: KEY,
-        generation: 1,
-        items: [makeMsg("$a", "a")]
-      }
-    });
-    return applyTimelineEvent(store, {
-      PaginationStateChanged: {
-        request_id: null,
-        key: KEY,
-        direction: "Backward",
-        state
-      }
-    });
-  }
-
-  test("Paginating state suppresses auto-backfill", () => {
-    const store = withPaginationState("Paginating");
-    expect(shouldSuppressAutoBackfill(store, KEY)).toBe(true);
-    expect(getPaginationState(store, KEY, "Backward")).toBe("Paginating");
-  });
-
-  test("EndReached state suppresses auto-backfill", () => {
-    const store = withPaginationState("EndReached");
-    expect(shouldSuppressAutoBackfill(store, KEY)).toBe(true);
-    expect(getPaginationState(store, KEY, "Backward")).toBe("EndReached");
-  });
-
-  test("Idle state allows auto-backfill", () => {
-    const store = withPaginationState("Idle");
-    expect(shouldSuppressAutoBackfill(store, KEY)).toBe(false);
-  });
-
-  test("Failed state does not suppress auto-backfill (user may retry)", () => {
-    const store = withPaginationState({ Failed: { kind: "Network" } });
-    expect(shouldSuppressAutoBackfill(store, KEY)).toBe(false);
-  });
-});
-
 // ---------------------------------------------------------------------------
 // (5) Send path invokes the right command shape + renders local echo
 // ---------------------------------------------------------------------------
@@ -1217,7 +1170,6 @@ describe("pagination state — per direction tracking", () => {
 
     expect(getPaginationState(store, KEY, "Backward")).toBe("EndReached");
     expect(getPaginationState(store, KEY, "Forward")).toBe("Paginating");
-    expect(shouldSuppressAutoBackfill(store, KEY)).toBe(true);
   });
 
   test("spinner from PaginationStateChanged: Paginating → Idle transition", () => {
@@ -1249,7 +1201,6 @@ describe("pagination state — per direction tracking", () => {
       }
     });
     expect(getPaginationState(store, KEY, "Backward")).toBe("Idle");
-    expect(shouldSuppressAutoBackfill(store, KEY)).toBe(false);
   });
 });
 
