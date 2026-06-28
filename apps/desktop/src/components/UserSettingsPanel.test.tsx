@@ -37,7 +37,8 @@ describe("UserSettingsPanel", () => {
         }
       },
       timeline: {
-        auto_load_older_messages: true
+        auto_load_older_messages: true,
+        thread_root_order: { kind: "latestReply" }
       },
       search_crawler: {
         speed: "standard" as const,
@@ -355,6 +356,41 @@ describe("UserSettingsPanel", () => {
     fireEvent.click(resumeButton);
     expect(onUpdateSettings).toHaveBeenCalledWith({
       search_crawler: { ...settings.values.search_crawler, speed: "standard" }
+    });
+  });
+
+  test("exposes a timeline setting for thread root latest-reply positioning", () => {
+    const onUpdateSettings = vi.fn();
+    render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+        onUpdateSettings={onUpdateSettings}
+      />
+    );
+
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Position thread roots by latest reply" })
+    );
+
+    expect(onUpdateSettings).toHaveBeenCalledWith({
+      timeline: {
+        ...settings.values.timeline,
+        thread_root_order: { kind: "rootEvent" }
+      }
     });
   });
 

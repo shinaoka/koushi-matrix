@@ -107,7 +107,7 @@ import {
   applyTimelineEvent,
   batchContainsPrepend,
   createTimelineStore,
-  getItems,
+  getTimelineDisplayItems,
   getMediaUploadProgress,
   getKeyState,
   getPaginationState,
@@ -129,6 +129,7 @@ import type {
   LiveSignalsState,
   PresenceKind,
   ResolveComposerKeyAction,
+  TimelineThreadRootOrder,
   TimelineScrollAnchor,
   TimelineMediaDownloadState,
   UserProfile
@@ -502,6 +503,7 @@ const REACTION_CHOICES = ["👍", "🎉", "❤️", "😂", "👀"] as const;
 
 const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "noop";
 const ignoreSendQueueAction = () => undefined;
+const DEFAULT_THREAD_ROOT_ORDER: TimelineThreadRootOrder = { kind: "latestReply" };
 
 type TimelineMentionToken = {
   token: string;
@@ -1622,6 +1624,7 @@ export const TimelineView = memo(function TimelineView({
   ignoredUserIds = [],
   suppressPaginationUi = false,
   autoLoadOlderMessages = false,
+  threadRootOrder = DEFAULT_THREAD_ROOT_ORDER,
   codeBlockWrap = true,
   searchQuery = "",
   mediaDownloads = {},
@@ -1656,6 +1659,7 @@ export const TimelineView = memo(function TimelineView({
   ignoredUserIds?: string[];
   suppressPaginationUi?: boolean;
   autoLoadOlderMessages?: boolean;
+  threadRootOrder?: TimelineThreadRootOrder;
   codeBlockWrap?: boolean;
   searchQuery?: string;
   mediaDownloads?: Record<string, TimelineMediaDownloadState>;
@@ -1875,7 +1879,7 @@ export const TimelineView = memo(function TimelineView({
           setStore((current) => {
             const next = applyGlobalResync(current);
             relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-              getItems(next, timelineKeyRef.current),
+              getTimelineDisplayItems(next, timelineKeyRef.current, { threadRootOrder }),
               profileUsersRef.current
             );
             return next;
@@ -1913,7 +1917,7 @@ export const TimelineView = memo(function TimelineView({
           setStore((current) => {
             const next = applyTimelineEvent(current, event);
             relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-              getItems(next, timelineKeyRef.current),
+              getTimelineDisplayItems(next, timelineKeyRef.current, { threadRootOrder }),
               profileUsersRef.current
             );
             return next;
@@ -2020,7 +2024,7 @@ export const TimelineView = memo(function TimelineView({
         setStore((current) => {
           const next = applyTimelineEvent(current, event);
           relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-            getItems(next, timelineKeyRef.current),
+            getTimelineDisplayItems(next, timelineKeyRef.current, { threadRootOrder }),
             profileUsersRef.current
           );
           return next;
@@ -2034,6 +2038,7 @@ export const TimelineView = memo(function TimelineView({
     emitDiagnosticLog,
     isAppLevelStore,
     setViewportIntentToLiveEdge,
+    threadRootOrder,
     timelineKeyHash,
     transport
   ]);
@@ -2083,7 +2088,7 @@ export const TimelineView = memo(function TimelineView({
     [dispatchViewportMachine]
   );
 
-  const items = getItems(store, timelineKey);
+  const items = getTimelineDisplayItems(store, timelineKey, { threadRootOrder });
   useEffect(() => {
     relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(items, profileUsers);
   }, [items, profileUsers]);

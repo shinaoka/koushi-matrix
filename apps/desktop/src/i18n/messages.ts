@@ -347,6 +347,8 @@ export type MessageId =
   | "settings.current"
   | "settings.autoLoadOlderMessages"
   | "settings.autoLoadOlderMessagesDescription"
+  | "settings.threadRootLatestReply"
+  | "settings.threadRootLatestReplyDescription"
   | "settings.checkLocalEncryption"
   | "settings.credentialStore"
   | "settings.credentialStoreLinux"
@@ -1259,6 +1261,8 @@ const en: Catalog = {
   "settings.current": "Current",
   "settings.autoLoadOlderMessages": "Automatically load older messages",
   "settings.autoLoadOlderMessagesDescription": "Prefetch room history when scrolling near the start of the loaded timeline",
+  "settings.threadRootLatestReply": "Position thread roots by latest reply",
+  "settings.threadRootLatestReplyDescription": "Move a thread root to the latest reply's position in the room timeline",
   "settings.checkLocalEncryption": "Check local encryption",
   "settings.credentialStore": "Credential store",
   "settings.credentialStoreLinux": "Secret Service",
@@ -2069,6 +2073,8 @@ const ja: Catalog = {
   "settings.current": "現在",
   "settings.autoLoadOlderMessages": "古いメッセージを自動で読み込む",
   "settings.autoLoadOlderMessagesDescription": "読み込み済みタイムラインの先頭付近までスクロールしたらルーム履歴を先読みします",
+  "settings.threadRootLatestReply": "スレッド元を最新返信の位置に表示",
+  "settings.threadRootLatestReplyDescription": "スレッドに返信があると、ルームのタイムライン上でスレッド元を最新返信の位置へ移動します",
   "settings.checkLocalEncryption": "ローカル暗号化を確認",
   "settings.credentialStore": "資格情報ストア",
   "settings.credentialStoreLinux": "Linux Secret Service",

@@ -941,6 +941,7 @@ export function TimelinePane({
               onDiagnosticsChange={onTimelineDiagnosticsChangeStable}
               onDiagnosticLogEntry={onTimelineDiagnosticLogEntryStable}
               listRefCallback={listRefCallback}
+              threadRootOrder={snapshot.state.domain.settings.values.timeline.thread_root_order}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).

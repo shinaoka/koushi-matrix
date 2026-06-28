@@ -29,6 +29,7 @@ import {
   applyTimelineEvent,
   batchContainsPrepend,
   createTimelineStore,
+  getTimelineDisplayItems,
   getMediaUploadProgress,
   getItems,
   getKeyState,
@@ -80,6 +81,24 @@ function makeMsgAt(id: string, body: string, timestampMs: number): TimelineItem 
   return {
     ...makeMsg(id, body),
     timestamp_ms: timestampMs
+  };
+}
+
+function makeThreadRootAt(
+  id: string,
+  body: string,
+  timestampMs: number,
+  latestReplyTimestampMs: number | null
+): TimelineItem {
+  return {
+    ...makeMsgAt(id, body, timestampMs),
+    thread_root: id,
+    thread_summary: {
+      reply_count: latestReplyTimestampMs === null ? 0 : 1,
+      latest_sender: "@reply:example.invalid",
+      latest_body_preview: latestReplyTimestampMs === null ? null : "reply",
+      latest_timestamp_ms: latestReplyTimestampMs
+    }
   };
 }
 
@@ -172,6 +191,120 @@ describe("timeline store — diff application", () => {
     });
 
     expect(getItems(store, KEY).map((item) => item.body)).toEqual(["Jun 17", "Jun 20", "Jun 13"]);
+  });
+
+  test("getItems keeps thread roots in SDK root-event order", () => {
+    const store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          makeThreadRootAt("$root", "Root", 1_000, 5_000),
+          makeMsgAt("$middle", "Middle", 3_000),
+          makeMsgAt("$latest", "Latest", 7_000)
+        ]
+      }
+    });
+
+    expect(getItems(store, KEY).map(itemId)).toEqual(["$root", "$middle", "$latest"]);
+  });
+
+  test("getTimelineDisplayItems positions thread roots by latest reply timestamp by default", () => {
+    const store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          makeThreadRootAt("$root", "Root", 1_000, 5_000),
+          makeMsgAt("$middle", "Middle", 3_000),
+          makeMsgAt("$latest", "Latest", 7_000)
+        ]
+      }
+    });
+
+    expect(getTimelineDisplayItems(store, KEY).map(itemId)).toEqual([
+      "$middle",
+      "$root",
+      "$latest"
+    ]);
+  });
+
+  test("getTimelineDisplayItems can keep thread roots in root-event chronology", () => {
+    const store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          makeThreadRootAt("$root", "Root", 1_000, 5_000),
+          makeMsgAt("$middle", "Middle", 3_000),
+          makeMsgAt("$latest", "Latest", 7_000)
+        ]
+      }
+    });
+
+    expect(
+      getTimelineDisplayItems(store, KEY, { threadRootOrder: { kind: "rootEvent" } }).map(
+        itemId
+      )
+    ).toEqual(["$root", "$middle", "$latest"]);
+  });
+
+  test("getTimelineDisplayItems repositions a thread root when its latest reply timestamp changes", () => {
+    let store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          makeThreadRootAt("$root", "Root", 1_000, 2_000),
+          makeMsgAt("$middle", "Middle", 3_000)
+        ]
+      }
+    });
+    expect(getTimelineDisplayItems(store, KEY).map(itemId)).toEqual(["$root", "$middle"]);
+
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 1,
+        batch_id: 2,
+        diffs: [
+          {
+            Set: {
+              index: 0,
+              item: makeThreadRootAt("$root", "Root", 1_000, 5_000)
+            }
+          }
+        ]
+      }
+    });
+
+    expect(getItems(store, KEY).map(itemId)).toEqual(["$root", "$middle"]);
+    expect(getTimelineDisplayItems(store, KEY).map(itemId)).toEqual(["$middle", "$root"]);
+  });
+
+  test("getTimelineDisplayItems does not reorder non-thread messages when placing thread roots", () => {
+    const store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          makeMsgAt("$first", "First", 7_000),
+          makeThreadRootAt("$root", "Root", 1_000, 5_000),
+          makeMsgAt("$second", "Second", 3_000)
+        ]
+      }
+    });
+
+    expect(getTimelineDisplayItems(store, KEY).map(itemId)).toEqual([
+      "$first",
+      "$second",
+      "$root"
+    ]);
   });
 
   test("duplicate ItemsUpdated batch ids are ignored instead of reapplying index diffs", () => {
