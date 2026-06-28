@@ -2952,6 +2952,12 @@ export function App() {
     });
   }
 
+  function openActivityRoom(roomId: string) {
+    void selectRoom(roomId).then(() => {
+      setRightPanelMode("closed");
+    });
+  }
+
   function selectSearchResult(roomId: string, eventId: string) {
     void api.selectSearchResult(roomId, eventId).then((nextSnapshot) => {
       setSnapshot(nextSnapshot);
@@ -3309,6 +3315,8 @@ export function App() {
             onOpenRow={(row) => {
               if (row.kind === "event" && row.event_id !== null) {
                 openActivityRow(row.room_id, row.event_id);
+              } else if (row.kind === "roomUnread") {
+                openActivityRoom(row.room_id);
               }
             }}
             onSetTab={(tab) => {

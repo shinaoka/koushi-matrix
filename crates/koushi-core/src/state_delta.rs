@@ -11,7 +11,7 @@ use koushi_state::{
     RoomManagementState, RoomNotificationSettings, RoomSummary, SearchCrawlerState, SearchState,
     SessionState, SettingsState, SidebarModel, SoftLogoutReauthState, SpaceSummary, SyncMode,
     SyncState, ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
-    compose_sidebar,
+    compose_sidebar_with_room_notification_settings,
 };
 use serde::{Deserialize, Serialize};
 
@@ -128,16 +128,19 @@ pub fn build_state_delta(
     if previous.navigation.active_space_id != next.navigation.active_space_id
         || previous.spaces != next.spaces
         || previous.rooms != next.rooms
+        || previous.room_notification_settings != next.room_notification_settings
     {
-        let previous_sidebar = compose_sidebar(
+        let previous_sidebar = compose_sidebar_with_room_notification_settings(
             previous.navigation.active_space_id.as_deref(),
             &previous.spaces,
             &previous.rooms,
+            &previous.room_notification_settings,
         );
-        let next_sidebar = compose_sidebar(
+        let next_sidebar = compose_sidebar_with_room_notification_settings(
             next.navigation.active_space_id.as_deref(),
             &next.spaces,
             &next.rooms,
+            &next.room_notification_settings,
         );
         if previous_sidebar != next_sidebar {
             changed.sidebar = Some(next_sidebar);

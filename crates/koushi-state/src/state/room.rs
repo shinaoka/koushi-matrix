@@ -34,6 +34,8 @@ pub struct RoomSummary {
     pub marked_unread: bool,
     #[serde(default)]
     pub last_activity_ms: u64,
+    #[serde(default)]
+    pub latest_event: Option<RoomLatestEventSummary>,
     pub parent_space_ids: Vec<String>,
     #[serde(default)]
     pub dm_space_ids: Vec<String>,
@@ -60,10 +62,48 @@ impl fmt::Debug for RoomSummary {
             .field("highlight_count", &self.highlight_count)
             .field("marked_unread", &self.marked_unread)
             .field("last_activity_ms", &self.last_activity_ms)
+            .field(
+                "latest_event",
+                &self.latest_event.as_ref().map(|_| "LatestEvent(..)"),
+            )
             .field("parent_space_ids", &self.parent_space_ids.len())
             .field("dm_space_ids", &self.dm_space_ids.len())
             .field("is_encrypted", &self.is_encrypted)
             .field("joined_members", &self.joined_members)
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomLatestEventSummary {
+    pub event_id: String,
+    #[serde(default)]
+    pub sender_id: Option<String>,
+    #[serde(default)]
+    pub sender_label: Option<String>,
+    #[serde(default)]
+    pub sender_avatar: Option<AvatarImage>,
+    #[serde(default)]
+    pub preview: Option<String>,
+    pub timestamp_ms: u64,
+}
+
+impl fmt::Debug for RoomLatestEventSummary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RoomLatestEventSummary")
+            .field("event_id", &"EventId(..)")
+            .field("sender_id", &self.sender_id.as_ref().map(|_| "UserId(..)"))
+            .field(
+                "sender_label",
+                &self.sender_label.as_ref().map(|_| "SenderLabel(..)"),
+            )
+            .field(
+                "sender_avatar",
+                &self.sender_avatar.as_ref().map(|_| "AvatarImage(..)"),
+            )
+            .field("preview", &self.preview.as_ref().map(|_| "Preview(..)"))
+            .field("timestamp_ms", &self.timestamp_ms)
             .finish()
     }
 }

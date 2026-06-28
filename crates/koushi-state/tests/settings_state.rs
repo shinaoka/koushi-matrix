@@ -599,6 +599,7 @@ fn test_room(room_id: &str, display_name: &str, last_activity_ms: u64) -> RoomSu
         highlight_count: 0,
         marked_unread: false,
         last_activity_ms,
+        latest_event: None,
         parent_space_ids: Vec::new(),
         dm_space_ids: Vec::new(),
         is_encrypted: false,

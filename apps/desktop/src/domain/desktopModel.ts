@@ -5,6 +5,7 @@ import type {
   RoomListItem,
   RoomListProjection,
   RoomListSections,
+  RoomNotificationSettings,
   RoomSummary,
   SearchScopeKind,
   SpaceSummary,
@@ -199,9 +200,15 @@ function inviteListItem(invite: InvitePreview): RoomListItem {
 export function composeSidebar(
   activeSpaceId: string | null,
   spaces: SpaceSummary[],
-  rooms: RoomSummary[]
+  rooms: RoomSummary[],
+  roomNotificationSettings: Record<string, RoomNotificationSettings> = {}
 ): DesktopSnapshot["sidebar"] {
   const roomById = new Map(rooms.map((room) => [room.room_id, room]));
+  const roomIsMuted = (roomId: string) =>
+    roomNotificationSettings[roomId]?.mode.kind === "mute";
+  const aggregateRooms = rooms.filter((room) => !roomIsMuted(room.room_id));
+  const aggregateRoomItems = (items: RoomListItem[]) =>
+    items.filter((room) => !roomIsMuted(room.room_id));
   const activeSpace = activeSpaceId
     ? spaces.find((space) => space.space_id === activeSpaceId) ?? null
     : null;
@@ -228,8 +235,11 @@ export function composeSidebar(
     active_space_id: activeSpaceId,
     account_home: {
       display_name: "Home",
-      unread_count: rooms.reduce((sum, room) => sum + room.unread_count, 0),
-      highlight_count: rooms.reduce((sum, room) => sum + (room.highlight_count ?? 0), 0),
+      unread_count: aggregateRooms.reduce((sum, room) => sum + room.unread_count, 0),
+      highlight_count: aggregateRooms.reduce(
+        (sum, room) => sum + (room.highlight_count ?? 0),
+        0
+      ),
       is_active: activeSpaceId === null
     },
     space_rail: spaces.map((space) => ({
@@ -239,19 +249,33 @@ export function composeSidebar(
       unread_count: space.child_room_ids
         .map((roomId) => rooms.find((room) => room.room_id === roomId))
         .filter(roomExists)
+        .filter((room) => !roomIsMuted(room.room_id))
         .reduce((sum, room) => sum + room.unread_count, 0),
       highlight_count: space.child_room_ids
         .map((roomId) => rooms.find((room) => room.room_id === roomId))
         .filter(roomExists)
+        .filter((room) => !roomIsMuted(room.room_id))
         .reduce((sum, room) => sum + (room.highlight_count ?? 0), 0),
       is_active: space.space_id === activeSpaceId
     })),
     space_rooms: spaceRooms,
     global_dms: globalDms,
-    space_unread_count: spaceRooms.reduce((sum, room) => sum + room.unread_count, 0),
-    dm_unread_count: globalDms.reduce((sum, room) => sum + room.unread_count, 0),
-    space_highlight_count: spaceRooms.reduce((sum, room) => sum + room.highlight_count, 0),
-    dm_highlight_count: globalDms.reduce((sum, room) => sum + room.highlight_count, 0)
+    space_unread_count: aggregateRoomItems(spaceRooms).reduce(
+      (sum, room) => sum + room.unread_count,
+      0
+    ),
+    dm_unread_count: aggregateRoomItems(globalDms).reduce(
+      (sum, room) => sum + room.unread_count,
+      0
+    ),
+    space_highlight_count: aggregateRoomItems(spaceRooms).reduce(
+      (sum, room) => sum + room.highlight_count,
+      0
+    ),
+    dm_highlight_count: aggregateRoomItems(globalDms).reduce(
+      (sum, room) => sum + room.highlight_count,
+      0
+    )
   };
 }
 

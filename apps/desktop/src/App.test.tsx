@@ -1387,6 +1387,8 @@ describe("Tauri state refresh wiring", () => {
     expect(openActivityRowSource).not.toContain('setRightPanelMode("focusedContext")');
     expect(openActivityRowSource).not.toContain('setRightPanelMode("search")');
     expect(activityRenderSource).toContain("openActivityRow(row.room_id, row.event_id)");
+    expect(activityRenderSource).toContain('row.kind === "roomUnread"');
+    expect(activityRenderSource).toContain("openActivityRoom(row.room_id)");
     expect(activityRenderSource).not.toContain("selectSearchResult(row.room_id, row.event_id)");
   });
 

@@ -68,6 +68,7 @@ pub fn room_summary(room_id: &str) -> RoomSummary {
         highlight_count: 0,
         marked_unread: false,
         last_activity_ms: 0,
+        latest_event: None,
         parent_space_ids: vec![],
         dm_space_ids: vec![],
         is_encrypted: false,

@@ -1190,7 +1190,8 @@ impl AccountActor {
                 request_id,
                 callback_url,
             } => {
-                self.handle_complete_oidc_login(request_id, callback_url).await;
+                self.handle_complete_oidc_login(request_id, callback_url)
+                    .await;
             }
             AccountCommand::LoginPassword {
                 request_id,
@@ -2890,11 +2891,7 @@ impl AccountActor {
         }
     }
 
-    async fn handle_complete_oidc_login(
-        &mut self,
-        request_id: RequestId,
-        callback_url: String,
-    ) {
+    async fn handle_complete_oidc_login(&mut self, request_id: RequestId, callback_url: String) {
         let Some((start_request_id, pending)) = self.pending_oidc_login.take() else {
             self.reduce(vec![AppAction::LoginDiscoveryFailed {
                 homeserver: String::new(),

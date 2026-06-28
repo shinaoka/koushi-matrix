@@ -8,7 +8,8 @@ use koushi_core::event::{ActivityEvent, CoreEvent};
 use koushi_core::{AppCommand, CoreCommand, CoreRuntime};
 use koushi_state::{
     ActivityMarkReadState, ActivityMarkReadTarget, ActivityRowKind, ActivityState, AppAction,
-    RoomNotificationMode, RoomSummary, SessionState, SpaceSummary,
+    AvatarImage, AvatarThumbnailState, RoomLatestEventSummary, RoomNotificationMode, RoomSummary,
+    SessionState, SpaceSummary,
 };
 use support::{activity_row, room_summary, unread_room_summary, wait_for_state};
 
@@ -94,22 +95,20 @@ async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
         unread
             .rows
             .iter()
-            .any(|row| row.event_id.as_deref() == Some("$stale:example.test")),
-        "stale unread rows must remain visible"
+            .all(|row| row.kind == ActivityRowKind::RoomUnread && row.event_id.is_none()),
+        "Activity/Unread is a room list, not a mixed event stream"
     );
-    assert!(
+    assert_eq!(
         unread
             .rows
             .iter()
-            .any(|row| row.event_id.as_deref() == Some("$marker-unread:example.test")),
-        "rows after the Rust-owned fully-read marker must remain unread"
-    );
-    assert!(
-        unread
-            .rows
-            .iter()
-            .all(|row| row.event_id.as_deref() != Some("$marker-read:example.test")),
-        "rows at or before the Rust-owned fully-read marker must be excluded"
+            .map(|row| row.room_id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "!marker:example.test",
+            "!recent:example.test",
+            "!stale:example.test"
+        ]
     );
 
     let mark_request_id = conn.next_request_id();
@@ -126,18 +125,6 @@ async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
             ActivityState::Open { unread, mark_read, .. }
                 if unread.rows.is_empty()
                     && matches!(mark_read, ActivityMarkReadState::Idle)
-                    && state
-                        .live_signals
-                        .rooms
-                        .get("!marker:example.test")
-                        .and_then(|signals| signals.fully_read_event_id.as_deref())
-                        == Some("$marker-unread:example.test")
-                    && state
-                        .live_signals
-                        .rooms
-                        .get("!stale:example.test")
-                        .and_then(|signals| signals.fully_read_event_id.as_deref())
-                        == Some("$stale:example.test")
         )
     })
     .await;
@@ -155,7 +142,8 @@ async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
             .rooms
             .get("!marker:example.test")
             .and_then(|signals| signals.fully_read_event_id.as_deref()),
-        Some("$marker-unread:example.test")
+        Some("$marker-read:example.test"),
+        "room-list unread entries must not invent a newer fully-read event"
     );
     assert_eq!(
         snapshot
@@ -163,7 +151,8 @@ async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
             .rooms
             .get("!stale:example.test")
             .and_then(|signals| signals.fully_read_event_id.as_deref()),
-        Some("$stale:example.test")
+        None,
+        "room-list unread entries without event ids cannot update fully-read markers"
     );
 }
 
@@ -235,7 +224,120 @@ async fn activity_context_label_reflects_dm_or_space_room() {
 }
 
 #[tokio::test]
-async fn activity_room_mark_read_suppresses_placeholder_only_for_cleared_room() {
+async fn activity_recent_preserves_observed_sender_avatar_without_profile_cache() {
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    let mut row = activity_row("!room:example.test", "$avatar:example.test", 10);
+    row.sender_id = Some("@alice:example.test".to_owned());
+    row.sender_avatar = Some(AvatarImage {
+        mxc_uri: "mxc://example.test/alice-avatar".to_owned(),
+        thumbnail: AvatarThumbnailState::NotRequested,
+    });
+
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(support::session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("!room:example.test")],
+            },
+            AppAction::ActivityRowsObserved { rows: vec![row] },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_)) && state.rooms.len() == 1
+    })
+    .await;
+
+    let open_request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::OpenActivity {
+        request_id: open_request_id,
+    }))
+    .await
+    .expect("open activity command");
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        matches!(state.activity, ActivityState::Open { .. })
+    })
+    .await;
+    let ActivityState::Open { recent, .. } = snapshot.activity else {
+        panic!("activity should be open");
+    };
+    let row = recent.rows.first().expect("recent row");
+    assert_eq!(
+        row.sender_avatar
+            .as_ref()
+            .map(|avatar| avatar.mxc_uri.as_str()),
+        Some("mxc://example.test/alice-avatar")
+    );
+}
+
+#[tokio::test]
+async fn activity_recent_includes_room_list_latest_event_for_unopened_read_dm() {
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    let mut dm = dm_room_summary("!dm:example.test", "@terasaki:example.test");
+    dm.unread_count = 0;
+    dm.notification_count = 0;
+    dm.highlight_count = 0;
+    dm.latest_event = Some(RoomLatestEventSummary {
+        event_id: "$latest-dm:example.test".to_owned(),
+        sender_id: Some("@terasaki:example.test".to_owned()),
+        sender_label: Some("Satoshi Terasaki".to_owned()),
+        sender_avatar: None,
+        preview: Some("already read but never opened".to_owned()),
+        timestamp_ms: 120,
+    });
+
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(support::session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![dm],
+            },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_)) && state.rooms.len() == 1
+    })
+    .await;
+
+    let open_request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::OpenActivity {
+        request_id: open_request_id,
+    }))
+    .await
+    .expect("open activity command");
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        matches!(state.activity, ActivityState::Open { .. })
+    })
+    .await;
+    let ActivityState::Open { recent, unread, .. } = snapshot.activity else {
+        panic!("activity should be open");
+    };
+    assert!(
+        unread.rows.is_empty(),
+        "read DMs should not appear in Activity/Unread"
+    );
+    let row = recent
+        .rows
+        .first()
+        .expect("latest room event should populate Recent");
+    assert_eq!(row.event_id.as_deref(), Some("$latest-dm:example.test"));
+    assert_eq!(row.sender_id.as_deref(), Some("@terasaki:example.test"));
+    assert_eq!(row.sender_label.as_deref(), Some("Satoshi Terasaki"));
+    assert_eq!(
+        row.preview.as_deref(),
+        Some("already read but never opened")
+    );
+    assert_eq!(row.context_label, "DM");
+    assert!(!row.unread);
+}
+
+#[tokio::test]
+async fn activity_room_mark_read_suppresses_unread_room_entry_only_for_cleared_room() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
@@ -303,8 +405,8 @@ async fn activity_room_mark_read_suppresses_placeholder_only_for_cleared_room() 
                     && unread.rows.iter().all(|row| row.room_id != "!room-a:example.test")
                     && unread.rows.iter().any(|row| {
                         row.room_id == "!room-b:example.test"
-                            && row.kind == ActivityRowKind::Event
-                            && row.event_id.as_deref() == Some("$event-b:example.test")
+                            && row.kind == ActivityRowKind::RoomUnread
+                            && row.event_id.is_none()
                     })
         )
     })
@@ -348,13 +450,12 @@ async fn activity_room_mark_read_suppresses_placeholder_only_for_cleared_room() 
                 && row.kind == ActivityRowKind::RoomUnread
                 && row.event_id.is_none()
         }),
-        "unrelated room placeholders must not be suppressed by another room's mark-read"
+        "unrelated unread room entries must not be suppressed by another room's mark-read"
     );
 }
 
 #[tokio::test]
-async fn activity_unread_uses_room_summary_placeholder_and_mark_all_does_not_emit_synthetic_event_id()
- {
+async fn activity_unread_uses_room_summary_rows_and_mark_all_does_not_emit_synthetic_event_id() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
@@ -417,17 +518,14 @@ async fn activity_unread_uses_room_summary_placeholder_and_mark_all_does_not_emi
     assert!(
         unread.rows.iter().any(|row| {
             row.room_id == "!with-row:example.test"
-                && row.event_id.as_deref() == Some("$with-row-event:example.test")
+                && row.kind == ActivityRowKind::RoomUnread
+                && row.event_id.is_none()
         }),
-        "observed event rows remain preferred over placeholders"
+        "Activity/Unread must remain a room list even when recent has observed events"
     );
     assert!(
-        !unread
-            .rows
-            .iter()
-            .any(|row| row.room_id == "!with-row:example.test"
-                && row.kind == ActivityRowKind::RoomUnread),
-        "rooms with observed unread rows must not also get a placeholder"
+        unread.rows.iter().all(|row| row.event_id.is_none()),
+        "Activity/Unread must not mix event rows with room rows"
     );
 
     let mark_request_id = conn.next_request_id();
@@ -476,8 +574,8 @@ async fn activity_unread_uses_room_summary_placeholder_and_mark_all_does_not_emi
     let cleared = cleared_event_ids.expect("MarkedRead event not received");
     assert_eq!(
         cleared,
-        vec!["$with-row-event:example.test"],
-        "MarkedRead must contain only real event ids, no synthetic placeholder ids"
+        Vec::<String>::new(),
+        "room-list mark-all has no event ids to report"
     );
 }
 
@@ -557,9 +655,10 @@ async fn activity_unread_removes_rooms_when_notification_mode_is_mute() {
     assert!(
         unread.rows.iter().any(|row| {
             row.room_id == "!normal:example.test"
-                && row.event_id.as_deref() == Some("$normal:example.test")
+                && row.kind == ActivityRowKind::RoomUnread
+                && row.event_id.is_none()
         }),
-        "unmuted unread event rows must remain visible"
+        "unmuted unread room rows must remain visible"
     );
     assert!(
         unread

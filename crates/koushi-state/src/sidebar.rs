@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::state::{AvatarImage, RoomSummary, RoomTags, SpaceSummary};
+use crate::state::{
+    AvatarImage, RoomNotificationMode, RoomNotificationSettings, RoomSummary, RoomTags,
+    SpaceSummary,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SidebarModel {
@@ -50,6 +53,15 @@ pub fn compose_sidebar(
     spaces: &[SpaceSummary],
     rooms: &[RoomSummary],
 ) -> SidebarModel {
+    compose_sidebar_with_room_notification_settings(active_space_id, spaces, rooms, &HashMap::new())
+}
+
+pub fn compose_sidebar_with_room_notification_settings(
+    active_space_id: Option<&str>,
+    spaces: &[SpaceSummary],
+    rooms: &[RoomSummary],
+    room_notification_settings: &HashMap<String, RoomNotificationSettings>,
+) -> SidebarModel {
     let rooms_by_id: HashMap<&str, &RoomSummary> = rooms
         .iter()
         .map(|room| (room.room_id.as_str(), room))
@@ -61,16 +73,24 @@ pub fn compose_sidebar(
             space_id: space.space_id.clone(),
             display_name: space.display_name.clone(),
             avatar: space.avatar.clone(),
-            unread_count: space_unread_count(space, &rooms_by_id),
-            highlight_count: space_highlight_count(space, &rooms_by_id),
+            unread_count: space_unread_count(space, &rooms_by_id, room_notification_settings),
+            highlight_count: space_highlight_count(space, &rooms_by_id, room_notification_settings),
             is_active: active_space_id == Some(space.space_id.as_str()),
         })
         .collect();
 
     let account_home = AccountHomeItem {
         display_name: "Home".to_owned(),
-        unread_count: rooms.iter().map(|room| room.unread_count).sum(),
-        highlight_count: rooms.iter().map(|room| room.highlight_count).sum(),
+        unread_count: rooms
+            .iter()
+            .filter(|room| !room_is_muted(&room.room_id, room_notification_settings))
+            .map(|room| room.unread_count)
+            .sum(),
+        highlight_count: rooms
+            .iter()
+            .filter(|room| !room_is_muted(&room.room_id, room_notification_settings))
+            .map(|room| room.highlight_count)
+            .sum(),
         is_active: active_space_id.is_none(),
     };
 
@@ -109,32 +129,42 @@ pub fn compose_sidebar(
     SidebarModel {
         active_space_id: active_space_id.map(str::to_owned),
         account_home,
-        space_unread_count: unread_count(&space_rooms),
-        dm_unread_count: unread_count(&global_dms),
-        space_highlight_count: highlight_count(&space_rooms),
-        dm_highlight_count: highlight_count(&global_dms),
+        space_unread_count: unread_count(&space_rooms, room_notification_settings),
+        dm_unread_count: unread_count(&global_dms, room_notification_settings),
+        space_highlight_count: highlight_count(&space_rooms, room_notification_settings),
+        dm_highlight_count: highlight_count(&global_dms, room_notification_settings),
         space_rail,
         space_rooms,
         global_dms,
     }
 }
 
-fn space_unread_count(space: &SpaceSummary, rooms_by_id: &HashMap<&str, &RoomSummary>) -> u64 {
+fn space_unread_count(
+    space: &SpaceSummary,
+    rooms_by_id: &HashMap<&str, &RoomSummary>,
+    room_notification_settings: &HashMap<String, RoomNotificationSettings>,
+) -> u64 {
     space
         .child_room_ids
         .iter()
         .filter_map(|room_id| rooms_by_id.get(room_id.as_str()).copied())
         .filter(|room| !room.is_dm)
+        .filter(|room| !room_is_muted(&room.room_id, room_notification_settings))
         .map(|room| room.unread_count)
         .sum()
 }
 
-fn space_highlight_count(space: &SpaceSummary, rooms_by_id: &HashMap<&str, &RoomSummary>) -> u64 {
+fn space_highlight_count(
+    space: &SpaceSummary,
+    rooms_by_id: &HashMap<&str, &RoomSummary>,
+    room_notification_settings: &HashMap<String, RoomNotificationSettings>,
+) -> u64 {
     space
         .child_room_ids
         .iter()
         .filter_map(|room_id| rooms_by_id.get(room_id.as_str()).copied())
         .filter(|room| !room.is_dm)
+        .filter(|room| !room_is_muted(&room.room_id, room_notification_settings))
         .map(|room| room.highlight_count)
         .sum()
 }
@@ -150,10 +180,33 @@ fn room_list_item(room: &RoomSummary) -> RoomListItem {
     }
 }
 
-fn unread_count(rooms: &[RoomListItem]) -> u64 {
-    rooms.iter().map(|room| room.unread_count).sum()
+fn unread_count(
+    rooms: &[RoomListItem],
+    room_notification_settings: &HashMap<String, RoomNotificationSettings>,
+) -> u64 {
+    rooms
+        .iter()
+        .filter(|room| !room_is_muted(&room.room_id, room_notification_settings))
+        .map(|room| room.unread_count)
+        .sum()
 }
 
-fn highlight_count(rooms: &[RoomListItem]) -> u64 {
-    rooms.iter().map(|room| room.highlight_count).sum()
+fn highlight_count(
+    rooms: &[RoomListItem],
+    room_notification_settings: &HashMap<String, RoomNotificationSettings>,
+) -> u64 {
+    rooms
+        .iter()
+        .filter(|room| !room_is_muted(&room.room_id, room_notification_settings))
+        .map(|room| room.highlight_count)
+        .sum()
+}
+
+fn room_is_muted(
+    room_id: &str,
+    room_notification_settings: &HashMap<String, RoomNotificationSettings>,
+) -> bool {
+    room_notification_settings
+        .get(room_id)
+        .is_some_and(|settings| settings.mode == RoomNotificationMode::Mute)
 }
