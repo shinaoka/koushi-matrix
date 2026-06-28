@@ -279,7 +279,7 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
           });
         }
       },
-      async restoreTimelineAnchor(
+      async materializeTimelineAnchor(
         timelineKey: TimelineKey,
         eventId: string,
         maxBatches: number,
@@ -289,7 +289,7 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
         if (!("Room" in timelineKey.kind)) {
           return;
         }
-        await invoke("restore_timeline_anchor", {
+        await invoke("materialize_timeline_anchor", {
           timelineKey,
           eventId,
           maxBatches,

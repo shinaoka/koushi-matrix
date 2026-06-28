@@ -153,7 +153,7 @@ impl CoreCommand {
                 TimelineCommand::Subscribe { request_id, .. }
                 | TimelineCommand::Unsubscribe { request_id, .. }
                 | TimelineCommand::Paginate { request_id, .. }
-                | TimelineCommand::RestoreTimelineAnchor { request_id, .. }
+                | TimelineCommand::MaterializeTimelineAnchor { request_id, .. }
                 | TimelineCommand::ObserveViewport { request_id, .. }
                 | TimelineCommand::SendText { request_id, .. }
                 | TimelineCommand::SendReply { request_id, .. }
@@ -1833,7 +1833,7 @@ pub enum TimelineCommand {
         direction: crate::event::PaginationDirection,
         event_count: u16,
     },
-    RestoreTimelineAnchor {
+    MaterializeTimelineAnchor {
         request_id: RequestId,
         key: TimelineKey,
         event_id: String,
@@ -1989,13 +1989,13 @@ impl fmt::Debug for TimelineCommand {
                 .field("direction", direction)
                 .field("event_count", event_count)
                 .finish(),
-            Self::RestoreTimelineAnchor {
+            Self::MaterializeTimelineAnchor {
                 request_id,
                 max_batches,
                 event_count,
                 ..
             } => formatter
-                .debug_struct("RestoreTimelineAnchor")
+                .debug_struct("MaterializeTimelineAnchor")
                 .field("request_id", request_id)
                 .field("key", &"TimelineKey(..)")
                 .field("event_id", &"EventId(..)")

@@ -285,7 +285,7 @@ export interface TimelineNavigationSnapshot {
   can_jump_to_bottom: boolean;
 }
 
-export type TimelineAnchorRestoreStatus =
+export type TimelineAnchorMaterializeStatus =
   | "Found"
   | "EndReached"
   | "BudgetExhausted"
@@ -324,10 +324,10 @@ export type TimelineEvent =
       };
     }
   | {
-      AnchorRestoreFinished: {
+      AnchorMaterializeFinished: {
         request_id: RequestId;
         key: TimelineKey;
-        status: TimelineAnchorRestoreStatus;
+        status: TimelineAnchorMaterializeStatus;
       };
     }
   | {

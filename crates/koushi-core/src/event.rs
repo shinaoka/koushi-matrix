@@ -875,10 +875,10 @@ pub enum TimelineEvent {
         direction: PaginationDirection,
         state: PaginationState,
     },
-    AnchorRestoreFinished {
+    AnchorMaterializeFinished {
         request_id: RequestId,
         key: TimelineKey,
-        status: TimelineAnchorRestoreStatus,
+        status: TimelineAnchorMaterializeStatus,
     },
     NavigationUpdated {
         key: TimelineKey,
@@ -983,10 +983,10 @@ impl fmt::Debug for TimelineEvent {
                 .field("direction", direction)
                 .field("state", state)
                 .finish(),
-            Self::AnchorRestoreFinished {
+            Self::AnchorMaterializeFinished {
                 request_id, status, ..
             } => formatter
-                .debug_struct("AnchorRestoreFinished")
+                .debug_struct("AnchorMaterializeFinished")
                 .field("request_id", request_id)
                 .field("key", &"TimelineKey(..)")
                 .field("status", status)
@@ -1093,7 +1093,7 @@ impl fmt::Debug for TimelineEvent {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum TimelineAnchorRestoreStatus {
+pub enum TimelineAnchorMaterializeStatus {
     Found,
     EndReached,
     BudgetExhausted,
@@ -1736,7 +1736,7 @@ pub fn project_timeline_event_display_labels(event: &mut TimelineEvent, state: &
             }
         }
         TimelineEvent::PaginationStateChanged { .. }
-        | TimelineEvent::AnchorRestoreFinished { .. }
+        | TimelineEvent::AnchorMaterializeFinished { .. }
         | TimelineEvent::SendCompleted { .. }
         | TimelineEvent::MessageSourceLoaded { .. }
         | TimelineEvent::MessageForwarded { .. }

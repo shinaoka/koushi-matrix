@@ -91,7 +91,7 @@ use crate::command::{
 };
 use crate::event::{
     CoreEvent, LinkPreviewState, LiveSignalsEvent, PaginationDirection, PaginationState,
-    ThreadSummaryDto, TimelineAnchorRestoreStatus, TimelineDiff, TimelineEvent, TimelineItem,
+    ThreadSummaryDto, TimelineAnchorMaterializeStatus, TimelineDiff, TimelineEvent, TimelineItem,
     TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
     TimelineMessageActions, TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot,
     TimelineResyncReason, TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
@@ -110,11 +110,11 @@ use crate::startup_trace::{self, StartupPhase};
 /// Bounded diff queue capacity per subscribed timeline (overview.md, Async rule 10).
 pub const TIMELINE_DIFF_QUEUE_CAPACITY: usize = 128;
 const REPLY_QUOTE_PREVIEW_MAX_CHARS: usize = 160;
-/// Rust-owned safety budget for offline deep-history anchor restore walks.
+/// Rust-owned safety budget for offline deep-history anchor materialize walks.
 /// The frontend hint (`max_batches`) is advisory; deep anchors must not be
 /// capped by the small UI-side value (6). The walk continues until `Found`,
 /// `EndReached`, a paginate failure, or this bound — whichever comes first.
-const RESTORE_ANCHOR_MAX_CHUNKS: u16 = 5000;
+const MATERIALIZE_ANCHOR_MAX_CHUNKS: u16 = 5000;
 /// Backstop tick count for the anchor-relay wait. After the SDK signals
 /// `anchor_present == true`, the anchor's diff has been broadcast through the
 /// 3-hop relay (conclude_backwards_pagination_from_disk → event-cache task →
@@ -122,7 +122,7 @@ const RESTORE_ANCHOR_MAX_CHUNKS: u16 = 5000;
 /// actor's `timeline_contains` check within the next few ticks. This backstop
 /// guards against a genuinely stuck relay; under normal load the anchor lands
 /// well before the count reaches zero.
-const RESTORE_ANCHOR_RELAY_WAIT_TICKS: u8 = 40;
+const MATERIALIZE_ANCHOR_RELAY_WAIT_TICKS: u8 = 40;
 /// Delay between anchor-relay-wait ticks (milliseconds). The relay pipeline
 /// is a 3-hop async path: conclude_backwards_pagination_from_disk →
 /// room_event_cache_updates_task → handle_remote_events_with_diffs →
@@ -130,7 +130,7 @@ const RESTORE_ANCHOR_RELAY_WAIT_TICKS: u8 = 40;
 /// 40 backstop ticks can drain before any relay task gets CPU time.
 /// 50 ms is deliberately conservative (well within the 2 000 ms total
 /// budget); under normal conditions the anchor lands on tick 1.
-const RESTORE_ANCHOR_RELAY_WAIT_TICK_MS: u64 = 50;
+const MATERIALIZE_ANCHOR_RELAY_WAIT_TICK_MS: u64 = 50;
 
 /// Messages routed to the `TimelineManagerActor`.
 pub enum TimelineMessage {
@@ -299,7 +299,7 @@ impl TimelineManagerActor {
                 )
                 .await;
             }
-            TimelineCommand::RestoreTimelineAnchor {
+            TimelineCommand::MaterializeTimelineAnchor {
                 request_id,
                 key,
                 event_id,
@@ -310,7 +310,7 @@ impl TimelineManagerActor {
                     self.route_to_actor_or_fail(
                         request_id,
                         &key,
-                        TimelineActorMessage::RestoreTimelineAnchor {
+                        TimelineActorMessage::MaterializeTimelineAnchor {
                             request_id,
                             event_id,
                             max_batches,
@@ -319,13 +319,15 @@ impl TimelineManagerActor {
                     )
                     .await;
                 } else {
-                    self.emit(CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
-                        request_id,
-                        key,
-                        status: TimelineAnchorRestoreStatus::Failed {
-                            kind: TimelineFailureKind::NotSubscribed,
+                    self.emit(CoreEvent::Timeline(
+                        TimelineEvent::AnchorMaterializeFinished {
+                            request_id,
+                            key,
+                            status: TimelineAnchorMaterializeStatus::Failed {
+                                kind: TimelineFailureKind::NotSubscribed,
+                            },
                         },
-                    }));
+                    ));
                 }
             }
             TimelineCommand::ObserveViewport {
@@ -1243,13 +1245,13 @@ enum TimelineActorMessage {
         direction: PaginationDirection,
         event_count: u16,
     },
-    RestoreTimelineAnchor {
+    MaterializeTimelineAnchor {
         request_id: RequestId,
         event_id: String,
         max_batches: u16,
         event_count: u16,
     },
-    RestoreTimelineAnchorContinue {
+    MaterializeTimelineAnchorContinue {
         serial: u64,
     },
     ObserveViewport {
@@ -1454,22 +1456,22 @@ struct TimelineActor {
     /// Application data directory for cached preview images.
     data_dir: Option<std::path::PathBuf>,
     messages_backpressure: MessagesBackpressure,
-    restore_anchor: Option<RestoreTimelineAnchorState>,
-    next_restore_anchor_serial: u64,
-    /// Buffered `TimelineDiff`s accumulated during a restore walk. While
-    /// `restore_anchor.is_some()`, each `handle_diff_batch` call appends its
+    materialize_anchor: Option<MaterializeTimelineAnchorState>,
+    next_materialize_anchor_serial: u64,
+    /// Buffered `TimelineDiff`s accumulated during a materialize walk. While
+    /// `materialize_anchor.is_some()`, each `handle_diff_batch` call appends its
     /// `core_diffs` here instead of emitting `ItemsUpdated` per chunk. The
-    /// buffer is flushed as ONE `ItemsUpdated` when the restore terminates
+    /// buffer is flushed as ONE `ItemsUpdated` when the materialize terminates
     /// (Found/EndReached/BudgetExhausted/Failed/Superseded), so React receives
     /// a single settled update rather than O(chunks) intermediate renders.
-    restore_emit_buffer: Vec<TimelineDiff>,
+    materialize_anchor_emit_buffer: Vec<TimelineDiff>,
     /// Monotonically increasing counter, incremented at the start of every
-    /// `handle_diff_batch` call (restore or not).
+    /// `handle_diff_batch` call (materialize or not).
     diff_batch_seq: u64,
 }
 
 #[derive(Clone, Debug)]
-struct RestoreTimelineAnchorState {
+struct MaterializeTimelineAnchorState {
     request_id: RequestId,
     event_id: String,
     max_batches_remaining: u16,
@@ -1478,7 +1480,7 @@ struct RestoreTimelineAnchorState {
     awaiting_diff_batch: bool,
     continuation_scheduled: bool,
     continuation_serial: Option<u64>,
-    /// Set to `Some(RESTORE_ANCHOR_RELAY_WAIT_TICKS)` after the SDK confirms
+    /// Set to `Some(MATERIALIZE_ANCHOR_RELAY_WAIT_TICKS)` after the SDK confirms
     /// `anchor_present == true` (load-until-anchor found the anchor in a loaded
     /// chunk; its broadcast has been fired and WILL propagate through the 3-hop
     /// relay). While non-zero, each tick re-checks `timeline_contains(anchor)`
@@ -1521,7 +1523,7 @@ impl TimelineActor {
                     if let Ok((cache, drop_guards)) = observer_room.event_cache().await {
                         if let Ok((initial, mut updates)) = cache.subscribe().await {
                             if !initial.is_empty() {
-                                // Cache already had events at restore — warm initial state.
+                                // Cache already had events at startup — warm initial state.
                                 startup_trace::trace_origin("cache");
                             }
                             auxiliary_tasks.push(executor::spawn(async move {
@@ -1696,9 +1698,9 @@ impl TimelineActor {
             link_preview_policy,
             data_dir,
             messages_backpressure,
-            restore_anchor: None,
-            next_restore_anchor_serial: 0,
-            restore_emit_buffer: Vec::new(),
+            materialize_anchor: None,
+            next_materialize_anchor_serial: 0,
+            materialize_anchor_emit_buffer: Vec::new(),
             diff_batch_seq: 0,
         };
 
@@ -1727,17 +1729,23 @@ impl TimelineActor {
                 self.handle_paginate(request_id, direction, event_count)
                     .await;
             }
-            TimelineActorMessage::RestoreTimelineAnchor {
+            TimelineActorMessage::MaterializeTimelineAnchor {
                 request_id,
                 event_id,
                 max_batches,
                 event_count,
             } => {
-                self.handle_restore_timeline_anchor(request_id, event_id, max_batches, event_count)
-                    .await;
+                self.handle_materialize_timeline_anchor(
+                    request_id,
+                    event_id,
+                    max_batches,
+                    event_count,
+                )
+                .await;
             }
-            TimelineActorMessage::RestoreTimelineAnchorContinue { serial } => {
-                self.handle_restore_timeline_anchor_continue(serial).await;
+            TimelineActorMessage::MaterializeTimelineAnchorContinue { serial } => {
+                self.handle_materialize_timeline_anchor_continue(serial)
+                    .await;
             }
             TimelineActorMessage::ObserveViewport { observation } => {
                 self.viewport_observation = observation;
@@ -1997,7 +2005,7 @@ impl TimelineActor {
         failure_kind.map_or(Ok(end_reached), Err)
     }
 
-    async fn handle_restore_timeline_anchor(
+    async fn handle_materialize_timeline_anchor(
         &mut self,
         request_id: RequestId,
         event_id: String,
@@ -2009,52 +2017,52 @@ impl TimelineActor {
             return;
         }
         if event_id.trim().is_empty() || max_batches == 0 || event_count == 0 {
-            // Invalid request: reject it without touching any active restore's
-            // buffer. Using raw emit_anchor_restore_finished (NOT finish_anchor_restore)
-            // prevents flushing a different restore's restore_emit_buffer here.
-            self.emit_anchor_restore_finished(
+            // Invalid request: reject it without touching any active materialize's
+            // buffer. Using raw emit_anchor_materialize_finished (NOT finish_anchor_materialize)
+            // prevents flushing a different materialize's materialize_anchor_emit_buffer here.
+            self.emit_anchor_materialize_finished(
                 request_id,
-                TimelineAnchorRestoreStatus::BudgetExhausted,
+                TimelineAnchorMaterializeStatus::BudgetExhausted,
             );
             return;
         }
         if self.timeline_contains_event_id(&event_id) {
-            self.restore_anchor = None;
-            self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
+            self.materialize_anchor = None;
+            self.finish_anchor_materialize(request_id, TimelineAnchorMaterializeStatus::Found);
             return;
         }
-        if let Some(mut existing) = self.restore_anchor.take() {
+        if let Some(mut existing) = self.materialize_anchor.take() {
             if existing.event_id == event_id {
                 existing.request_id = request_id;
                 // Apply the Rust-owned floor: never let a small frontend hint
-                // shrink the in-flight budget below RESTORE_ANCHOR_MAX_CHUNKS.
+                // shrink the in-flight budget below MATERIALIZE_ANCHOR_MAX_CHUNKS.
                 existing.max_batches_remaining = existing
                     .max_batches_remaining
                     .max(max_batches)
-                    .max(RESTORE_ANCHOR_MAX_CHUNKS);
+                    .max(MATERIALIZE_ANCHOR_MAX_CHUNKS);
                 existing.event_count = event_count;
                 if existing.in_flight
                     || existing.awaiting_diff_batch
                     || existing.continuation_scheduled
                 {
-                    self.restore_anchor = Some(existing);
+                    self.materialize_anchor = Some(existing);
                 } else {
-                    self.schedule_restore_anchor_continue(existing).await;
+                    self.schedule_materialize_anchor_continue(existing).await;
                 }
                 return;
             }
-            self.finish_anchor_restore(
+            self.finish_anchor_materialize(
                 existing.request_id,
-                TimelineAnchorRestoreStatus::Superseded,
+                TimelineAnchorMaterializeStatus::Superseded,
             );
         }
 
-        let restore = RestoreTimelineAnchorState {
+        let materialize = MaterializeTimelineAnchorState {
             request_id,
             event_id,
             // The frontend hint is advisory; the Rust-owned floor ensures a
             // deep anchor can be reached even when the UI sends max_batches=6.
-            max_batches_remaining: max_batches.max(RESTORE_ANCHOR_MAX_CHUNKS),
+            max_batches_remaining: max_batches.max(MATERIALIZE_ANCHOR_MAX_CHUNKS),
             event_count,
             in_flight: false,
             awaiting_diff_batch: false,
@@ -2063,24 +2071,24 @@ impl TimelineActor {
             anchor_relay_wait: None,
         };
 
-        self.schedule_restore_anchor_continue(restore).await;
+        self.schedule_materialize_anchor_continue(materialize).await;
     }
 
-    async fn handle_restore_timeline_anchor_continue(&mut self, serial: u64) {
-        let Some(mut restore) = self.restore_anchor.take() else {
+    async fn handle_materialize_timeline_anchor_continue(&mut self, serial: u64) {
+        let Some(mut materialize) = self.materialize_anchor.take() else {
             return;
         };
-        if restore.continuation_serial != Some(serial) {
-            self.restore_anchor = Some(restore);
+        if materialize.continuation_serial != Some(serial) {
+            self.materialize_anchor = Some(materialize);
             return;
         }
-        if restore.in_flight {
-            self.restore_anchor = Some(restore);
+        if materialize.in_flight {
+            self.materialize_anchor = Some(materialize);
             return;
         }
-        restore.awaiting_diff_batch = false;
-        restore.continuation_scheduled = false;
-        restore.continuation_serial = None;
+        materialize.awaiting_diff_batch = false;
+        materialize.continuation_scheduled = false;
+        materialize.continuation_serial = None;
 
         // Anchor-relay wait: entered after the SDK's authoritative
         // `anchor_present == true` signal. All cache events are in memory and
@@ -2092,44 +2100,53 @@ impl TimelineActor {
         // A bounded sleep between ticks is necessary: without it all 40
         // backstop ticks drain before the relay task gets CPU time, because
         // the actor processes its own messages before yielding to other tasks.
-        if let Some(remaining) = restore.anchor_relay_wait {
-            if self.timeline_contains_event_id(&restore.event_id) {
-                self.finish_anchor_restore(restore.request_id, TimelineAnchorRestoreStatus::Found);
+        if let Some(remaining) = materialize.anchor_relay_wait {
+            if self.timeline_contains_event_id(&materialize.event_id) {
+                self.finish_anchor_materialize(
+                    materialize.request_id,
+                    TimelineAnchorMaterializeStatus::Found,
+                );
                 return;
             }
             if remaining > 0 {
-                restore.anchor_relay_wait = Some(remaining - 1);
+                materialize.anchor_relay_wait = Some(remaining - 1);
                 // Yield to the runtime so the relay pipeline can deliver the
                 // anchor diff before we check again. Without this pause, all
                 // 40 ticks complete before any relay task is scheduled.
                 tokio::time::sleep(std::time::Duration::from_millis(
-                    RESTORE_ANCHOR_RELAY_WAIT_TICK_MS,
+                    MATERIALIZE_ANCHOR_RELAY_WAIT_TICK_MS,
                 ))
                 .await;
-                self.schedule_restore_anchor_continue(restore).await;
+                self.schedule_materialize_anchor_continue(materialize).await;
                 return;
             }
             // Backstop: relay genuinely stuck. EndReached is the safest
             // fallback (anchor not confirmed in items; the caller can retry).
-            self.finish_anchor_restore(restore.request_id, TimelineAnchorRestoreStatus::EndReached);
-            return;
-        }
-
-        if self.timeline_contains_event_id(&restore.event_id) {
-            self.finish_anchor_restore(restore.request_id, TimelineAnchorRestoreStatus::Found);
-            return;
-        }
-        if restore.max_batches_remaining == 0 {
-            self.finish_anchor_restore(
-                restore.request_id,
-                TimelineAnchorRestoreStatus::BudgetExhausted,
+            self.finish_anchor_materialize(
+                materialize.request_id,
+                TimelineAnchorMaterializeStatus::EndReached,
             );
             return;
         }
 
-        restore.in_flight = true;
-        let request_id = restore.request_id;
-        let event_count = restore.event_count;
+        if self.timeline_contains_event_id(&materialize.event_id) {
+            self.finish_anchor_materialize(
+                materialize.request_id,
+                TimelineAnchorMaterializeStatus::Found,
+            );
+            return;
+        }
+        if materialize.max_batches_remaining == 0 {
+            self.finish_anchor_materialize(
+                materialize.request_id,
+                TimelineAnchorMaterializeStatus::BudgetExhausted,
+            );
+            return;
+        }
+
+        materialize.in_flight = true;
+        let request_id = materialize.request_id;
+        let event_count = materialize.event_count;
 
         // Stage 2: attempt a cache-only bulk backward load in a single call
         // instead of looping one chunk at a time through `paginate_once`.
@@ -2137,38 +2154,41 @@ impl TimelineActor {
         // or when it reaches a gap or the start of the on-disk timeline.
         //
         // Pass the chunk budget directly as max_chunks so the SDK enforces
-        // RESTORE_ANCHOR_MAX_CHUNKS regardless of chunk size (P2b fix).
+        // MATERIALIZE_ANCHOR_MAX_CHUNKS regardless of chunk size (P2b fix).
         // The event count `n` is a secondary cap; set it large enough that only
         // the chunk cap binds in practice.
-        let chunk_budget = restore.max_batches_remaining;
+        let chunk_budget = materialize.max_batches_remaining;
         let bulk_n = (chunk_budget as u32)
             .saturating_mul(event_count as u32)
             .min(u16::MAX as u32) as u16;
         let cache_result = self
             .timeline
-            .live_restore_from_cache(bulk_n, &restore.event_id, chunk_budget)
+            .live_restore_from_cache(bulk_n, &materialize.event_id, chunk_budget)
             .await;
-        restore.in_flight = false;
+        materialize.in_flight = false;
 
         match cache_result {
             Ok(outcome) => {
                 // The bulk load fired `RoomEventCacheUpdate::UpdateTimelineEvents`
                 // broadcasts for every disk chunk, which are ingested by the
                 // live Timeline's tasks loop and arrive as actor `DiffBatch`
-                // messages. Those are buffered into `restore_emit_buffer` while
-                // `restore_anchor.is_some()`, so we still get a single coalesced
+                // messages. Those are buffered into `materialize_anchor_emit_buffer` while
+                // `materialize_anchor.is_some()`, so we still get a single coalesced
                 // `ItemsUpdated` flush at the terminal.
                 // Deduct the actual number of cache chunks consumed from the
                 // budget (each chunk ≈ one paginate batch). Clamp minimum to 1
                 // so partial loads always advance the budget counter.
-                restore.max_batches_remaining = restore
+                materialize.max_batches_remaining = materialize
                     .max_batches_remaining
                     .saturating_sub(outcome.chunks_loaded.max(1) as u16);
 
                 // Fast path: anchor already in timeline items (shallow-anchor case
                 // where the lazy in-memory reveal made it visible immediately).
-                if self.timeline_contains_event_id(&restore.event_id) {
-                    self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
+                if self.timeline_contains_event_id(&materialize.event_id) {
+                    self.finish_anchor_materialize(
+                        request_id,
+                        TimelineAnchorMaterializeStatus::Found,
+                    );
                     return;
                 }
 
@@ -2177,8 +2197,8 @@ impl TimelineActor {
                     // chunk; its diff broadcast is already in flight through the
                     // 3-hop relay. Enter the relay-wait loop; do NOT conclude
                     // EndReached/BudgetExhausted while anchor_present is true.
-                    restore.anchor_relay_wait = Some(RESTORE_ANCHOR_RELAY_WAIT_TICKS);
-                    self.schedule_restore_anchor_continue(restore).await;
+                    materialize.anchor_relay_wait = Some(MATERIALIZE_ANCHOR_RELAY_WAIT_TICKS);
+                    self.schedule_materialize_anchor_continue(materialize).await;
                     return;
                 }
 
@@ -2186,59 +2206,63 @@ impl TimelineActor {
                     // The cache is not contiguous up to the anchor depth.
                     // Fall back to the per-chunk paginate_once loop, which can
                     // resolve gaps via the network for non-contiguous caches.
-                    restore.in_flight = true;
-                    restore.max_batches_remaining = restore.max_batches_remaining.saturating_sub(1);
+                    materialize.in_flight = true;
+                    materialize.max_batches_remaining =
+                        materialize.max_batches_remaining.saturating_sub(1);
 
                     let result = self
                         .paginate_once(request_id, PaginationDirection::Backward, event_count)
                         .await;
-                    restore.in_flight = false;
+                    materialize.in_flight = false;
 
-                    if self.timeline_contains_event_id(&restore.event_id) {
-                        self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
+                    if self.timeline_contains_event_id(&materialize.event_id) {
+                        self.finish_anchor_materialize(
+                            request_id,
+                            TimelineAnchorMaterializeStatus::Found,
+                        );
                         return;
                     }
 
                     let end_reached = match result {
                         Ok(end_reached) => end_reached,
                         Err(kind) => {
-                            self.finish_anchor_restore(
+                            self.finish_anchor_materialize(
                                 request_id,
-                                TimelineAnchorRestoreStatus::Failed { kind },
+                                TimelineAnchorMaterializeStatus::Failed { kind },
                             );
                             return;
                         }
                     };
                     if end_reached {
-                        if self.timeline_contains_event_id(&restore.event_id) {
-                            self.finish_anchor_restore(
+                        if self.timeline_contains_event_id(&materialize.event_id) {
+                            self.finish_anchor_materialize(
                                 request_id,
-                                TimelineAnchorRestoreStatus::Found,
+                                TimelineAnchorMaterializeStatus::Found,
                             );
                             return;
                         }
-                        self.finish_anchor_restore(
+                        self.finish_anchor_materialize(
                             request_id,
-                            TimelineAnchorRestoreStatus::EndReached,
+                            TimelineAnchorMaterializeStatus::EndReached,
                         );
                         return;
                     }
-                    if restore.max_batches_remaining == 0 {
-                        if self.timeline_contains_event_id(&restore.event_id) {
-                            self.finish_anchor_restore(
+                    if materialize.max_batches_remaining == 0 {
+                        if self.timeline_contains_event_id(&materialize.event_id) {
+                            self.finish_anchor_materialize(
                                 request_id,
-                                TimelineAnchorRestoreStatus::Found,
+                                TimelineAnchorMaterializeStatus::Found,
                             );
                             return;
                         }
-                        self.finish_anchor_restore(
+                        self.finish_anchor_materialize(
                             request_id,
-                            TimelineAnchorRestoreStatus::BudgetExhausted,
+                            TimelineAnchorMaterializeStatus::BudgetExhausted,
                         );
                         return;
                     }
-                    restore.awaiting_diff_batch = true;
-                    self.schedule_restore_anchor_continue(restore).await;
+                    materialize.awaiting_diff_batch = true;
+                    self.schedule_materialize_anchor_continue(materialize).await;
                     return;
                 }
 
@@ -2248,125 +2272,147 @@ impl TimelineActor {
                     // Loaded to the start of the on-disk cache; anchor is
                     // genuinely absent — conclude EndReached immediately
                     // (authoritative; no timing wait needed).
-                    self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::EndReached);
+                    self.finish_anchor_materialize(
+                        request_id,
+                        TimelineAnchorMaterializeStatus::EndReached,
+                    );
                     return;
                 }
 
                 // Cap case: the bulk load stopped because it reached the u16
                 // per-call cap, not because it reached a gap or start. More
                 // budget remains; issue another bulk load immediately.
-                if restore.max_batches_remaining > 0 {
-                    restore.awaiting_diff_batch = true;
-                    self.schedule_restore_anchor_continue(restore).await;
+                if materialize.max_batches_remaining > 0 {
+                    materialize.awaiting_diff_batch = true;
+                    self.schedule_materialize_anchor_continue(materialize).await;
                     return;
                 }
 
                 // Budget exhausted without finding the anchor.
-                self.finish_anchor_restore(
+                self.finish_anchor_materialize(
                     request_id,
-                    TimelineAnchorRestoreStatus::BudgetExhausted,
+                    TimelineAnchorMaterializeStatus::BudgetExhausted,
                 );
             }
 
             Err(_) => {
                 // Cache load error — fall back to the per-chunk paginate_once
                 // path for a single attempt, treating the error as transient.
-                restore.in_flight = true;
-                restore.max_batches_remaining = restore.max_batches_remaining.saturating_sub(1);
+                materialize.in_flight = true;
+                materialize.max_batches_remaining =
+                    materialize.max_batches_remaining.saturating_sub(1);
 
                 let result = self
                     .paginate_once(request_id, PaginationDirection::Backward, event_count)
                     .await;
-                restore.in_flight = false;
+                materialize.in_flight = false;
 
-                if self.timeline_contains_event_id(&restore.event_id) {
-                    self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
+                if self.timeline_contains_event_id(&materialize.event_id) {
+                    self.finish_anchor_materialize(
+                        request_id,
+                        TimelineAnchorMaterializeStatus::Found,
+                    );
                     return;
                 }
 
                 let end_reached = match result {
                     Ok(end_reached) => end_reached,
                     Err(kind) => {
-                        self.finish_anchor_restore(
+                        self.finish_anchor_materialize(
                             request_id,
-                            TimelineAnchorRestoreStatus::Failed { kind },
+                            TimelineAnchorMaterializeStatus::Failed { kind },
                         );
                         return;
                     }
                 };
                 if end_reached {
-                    if self.timeline_contains_event_id(&restore.event_id) {
-                        self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
+                    if self.timeline_contains_event_id(&materialize.event_id) {
+                        self.finish_anchor_materialize(
+                            request_id,
+                            TimelineAnchorMaterializeStatus::Found,
+                        );
                         return;
                     }
-                    self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::EndReached);
-                    return;
-                }
-                if restore.max_batches_remaining == 0 {
-                    if self.timeline_contains_event_id(&restore.event_id) {
-                        self.finish_anchor_restore(request_id, TimelineAnchorRestoreStatus::Found);
-                        return;
-                    }
-                    self.finish_anchor_restore(
+                    self.finish_anchor_materialize(
                         request_id,
-                        TimelineAnchorRestoreStatus::BudgetExhausted,
+                        TimelineAnchorMaterializeStatus::EndReached,
                     );
                     return;
                 }
-                restore.awaiting_diff_batch = true;
-                self.schedule_restore_anchor_continue(restore).await;
+                if materialize.max_batches_remaining == 0 {
+                    if self.timeline_contains_event_id(&materialize.event_id) {
+                        self.finish_anchor_materialize(
+                            request_id,
+                            TimelineAnchorMaterializeStatus::Found,
+                        );
+                        return;
+                    }
+                    self.finish_anchor_materialize(
+                        request_id,
+                        TimelineAnchorMaterializeStatus::BudgetExhausted,
+                    );
+                    return;
+                }
+                materialize.awaiting_diff_batch = true;
+                self.schedule_materialize_anchor_continue(materialize).await;
             }
         }
     }
 
-    async fn maybe_continue_restore_anchor_after_diff(&mut self) {
-        let Some(mut restore) = self.restore_anchor.take() else {
+    async fn maybe_continue_materialize_anchor_after_diff(&mut self) {
+        let Some(mut materialize) = self.materialize_anchor.take() else {
             return;
         };
-        if restore.in_flight {
-            self.restore_anchor = Some(restore);
+        if materialize.in_flight {
+            self.materialize_anchor = Some(materialize);
             return;
         }
         // Anchor-relay wait: the queued Continue tick handles polling
-        // `timeline_contains` each tick until Found or backstop. Put restore
+        // `timeline_contains` each tick until Found or backstop. Put materialize
         // back so the queued tick does its check on the next iteration.
-        if restore.anchor_relay_wait.is_some() {
-            self.restore_anchor = Some(restore);
+        if materialize.anchor_relay_wait.is_some() {
+            self.materialize_anchor = Some(materialize);
             return;
         }
-        if !restore.awaiting_diff_batch {
-            self.restore_anchor = Some(restore);
+        if !materialize.awaiting_diff_batch {
+            self.materialize_anchor = Some(materialize);
             return;
         }
-        if self.timeline_contains_event_id(&restore.event_id) {
-            self.finish_anchor_restore(restore.request_id, TimelineAnchorRestoreStatus::Found);
-            return;
-        }
-        if restore.max_batches_remaining == 0 {
-            self.finish_anchor_restore(
-                restore.request_id,
-                TimelineAnchorRestoreStatus::BudgetExhausted,
+        if self.timeline_contains_event_id(&materialize.event_id) {
+            self.finish_anchor_materialize(
+                materialize.request_id,
+                TimelineAnchorMaterializeStatus::Found,
             );
             return;
         }
-        if restore.continuation_scheduled {
-            self.restore_anchor = Some(restore);
+        if materialize.max_batches_remaining == 0 {
+            self.finish_anchor_materialize(
+                materialize.request_id,
+                TimelineAnchorMaterializeStatus::BudgetExhausted,
+            );
+            return;
+        }
+        if materialize.continuation_scheduled {
+            self.materialize_anchor = Some(materialize);
             return;
         }
 
-        restore.awaiting_diff_batch = false;
-        self.schedule_restore_anchor_continue(restore).await;
+        materialize.awaiting_diff_batch = false;
+        self.schedule_materialize_anchor_continue(materialize).await;
     }
 
-    async fn schedule_restore_anchor_continue(&mut self, mut restore: RestoreTimelineAnchorState) {
-        self.next_restore_anchor_serial = self.next_restore_anchor_serial.wrapping_add(1);
-        let serial = self.next_restore_anchor_serial;
-        restore.continuation_scheduled = true;
-        restore.continuation_serial = Some(serial);
-        self.restore_anchor = Some(restore);
+    async fn schedule_materialize_anchor_continue(
+        &mut self,
+        mut materialize: MaterializeTimelineAnchorState,
+    ) {
+        self.next_materialize_anchor_serial = self.next_materialize_anchor_serial.wrapping_add(1);
+        let serial = self.next_materialize_anchor_serial;
+        materialize.continuation_scheduled = true;
+        materialize.continuation_serial = Some(serial);
+        self.materialize_anchor = Some(materialize);
         let _ = self
             .msg_tx
-            .send(TimelineActorMessage::RestoreTimelineAnchorContinue { serial })
+            .send(TimelineActorMessage::MaterializeTimelineAnchorContinue { serial })
             .await;
     }
 
@@ -3436,33 +3482,33 @@ impl TimelineActor {
         apply_timeline_diffs_to_items(&mut self.navigation_items, &core_diffs);
         self.emit_media_gallery_if_changed();
 
-        let restore_diff_is_relevant = timeline_diffs_include_prepend(&core_diffs);
+        let materialize_diff_is_relevant = timeline_diffs_include_prepend(&core_diffs);
 
-        if self.restore_anchor.is_some() {
-            // While a restore walk is in-flight, buffer this batch's diffs
+        if self.materialize_anchor.is_some() {
+            // While a materialize walk is in-flight, buffer this batch's diffs
             // instead of emitting ItemsUpdated per chunk. React receives ONE
-            // settled update when the restore terminates (RESTORE_ANCHOR_MAX_CHUNKS
+            // settled update when the materialize terminates (MATERIALIZE_ANCHOR_MAX_CHUNKS
             // / Change 2). The batch_id counter is still advanced so later
-            // non-restore emits remain monotonic.
+            // non-materialize emits remain monotonic.
             self.next_batch_id = TimelineBatchId(self.next_batch_id.0 + 1);
-            self.restore_emit_buffer.extend(core_diffs);
-            // Navigation is also suppressed until the flush at restore end.
+            self.materialize_anchor_emit_buffer.extend(core_diffs);
+            // Navigation is also suppressed until the flush at materialize end.
 
-            if restore_diff_is_relevant {
-                let restore_event_id = self
-                    .restore_anchor
+            if materialize_diff_is_relevant {
+                let materialize_event_id = self
+                    .materialize_anchor
                     .as_ref()
-                    .map(|restore| restore.event_id.clone());
-                if let Some(event_id) = restore_event_id {
+                    .map(|materialize| materialize.event_id.clone());
+                if let Some(event_id) = materialize_event_id {
                     if self.timeline_contains_event_id(&event_id) {
-                        if let Some(restore) = self.restore_anchor.take() {
-                            self.finish_anchor_restore(
-                                restore.request_id,
-                                TimelineAnchorRestoreStatus::Found,
+                        if let Some(materialize) = self.materialize_anchor.take() {
+                            self.finish_anchor_materialize(
+                                materialize.request_id,
+                                TimelineAnchorMaterializeStatus::Found,
                             );
                         }
                     } else {
-                        self.maybe_continue_restore_anchor_after_diff().await;
+                        self.maybe_continue_materialize_anchor_after_diff().await;
                     }
                 }
             }
@@ -4182,10 +4228,10 @@ impl TimelineActor {
             generation: self.generation,
             items,
         }));
-        if let Some(restore) = self.restore_anchor.take() {
-            self.finish_anchor_restore(
-                restore.request_id,
-                TimelineAnchorRestoreStatus::Failed {
+        if let Some(materialize) = self.materialize_anchor.take() {
+            self.finish_anchor_materialize(
+                materialize.request_id,
+                TimelineAnchorMaterializeStatus::Failed {
                     kind: TimelineFailureKind::QueueOverflow,
                 },
             );
@@ -4196,26 +4242,28 @@ impl TimelineActor {
         let _ = self.event_tx.send(event);
     }
 
-    fn emit_anchor_restore_finished(
+    fn emit_anchor_materialize_finished(
         &self,
         request_id: RequestId,
-        status: TimelineAnchorRestoreStatus,
+        status: TimelineAnchorMaterializeStatus,
     ) {
-        self.emit(CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
-            request_id,
-            key: self.key.clone(),
-            status,
-        }));
+        self.emit(CoreEvent::Timeline(
+            TimelineEvent::AnchorMaterializeFinished {
+                request_id,
+                key: self.key.clone(),
+                status,
+            },
+        ));
     }
 
-    /// Flush the restore-walk diff buffer as ONE `ItemsUpdated` event (Change
-    /// 2). Called at every restore terminal path (Found/EndReached/
+    /// Flush the materialize-walk diff buffer as ONE `ItemsUpdated` event (Change
+    /// 2). Called at every materialize terminal path (Found/EndReached/
     /// BudgetExhausted/Failed/Superseded). If the buffer is empty nothing is
-    /// emitted; navigation is always refreshed after a restore so React
+    /// emitted; navigation is always refreshed after a materialize so React
     /// receives a consistent settled state. Never drops buffered diffs.
-    fn flush_restore_emit_buffer(&mut self) {
-        if !self.restore_emit_buffer.is_empty() {
-            let diffs = std::mem::take(&mut self.restore_emit_buffer);
+    fn flush_materialize_anchor_emit_buffer(&mut self) {
+        if !self.materialize_anchor_emit_buffer.is_empty() {
+            let diffs = std::mem::take(&mut self.materialize_anchor_emit_buffer);
             let batch_id = self.next_batch_id;
             self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
             self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
@@ -4225,22 +4273,22 @@ impl TimelineActor {
                 diffs,
             }));
         } else {
-            self.restore_emit_buffer.clear();
+            self.materialize_anchor_emit_buffer.clear();
         }
         self.emit_navigation_if_changed();
     }
 
-    /// Terminate a restore walk: flush the buffered diffs (Change 2) then emit
-    /// `AnchorRestoreFinished`. Call this at every terminal restore path in
-    /// place of `emit_anchor_restore_finished` when the diff buffer may be
+    /// Terminate a materialize walk: flush the buffered diffs (Change 2) then emit
+    /// `AnchorMaterializeFinished`. Call this at every terminal materialize path in
+    /// place of `emit_anchor_materialize_finished` when the diff buffer may be
     /// non-empty.
-    fn finish_anchor_restore(
+    fn finish_anchor_materialize(
         &mut self,
         request_id: RequestId,
-        status: TimelineAnchorRestoreStatus,
+        status: TimelineAnchorMaterializeStatus,
     ) {
-        self.flush_restore_emit_buffer();
-        self.emit_anchor_restore_finished(request_id, status);
+        self.flush_materialize_anchor_emit_buffer();
+        self.emit_anchor_materialize_finished(request_id, status);
     }
 
     /// Reliably deliver an `AppAction` to the reducer.  Uses `send` (not
@@ -7905,38 +7953,38 @@ mod tests {
     }
 
     #[test]
-    fn restore_anchor_handler_is_room_only_and_bounded() {
+    fn materialize_anchor_handler_is_room_only_and_bounded() {
         let source = include_str!("timeline.rs");
         let helper_source = source
-            .split("async fn handle_restore_timeline_anchor(")
+            .split("async fn handle_materialize_timeline_anchor(")
             .nth(1)
-            .expect("restore anchor handler should exist")
-            .split("async fn handle_restore_timeline_anchor_continue")
+            .expect("materialize anchor handler should exist")
+            .split("async fn handle_materialize_timeline_anchor_continue")
             .next()
-            .expect("restore anchor handler should end before send text");
+            .expect("materialize anchor handler should end before send text");
         let continue_source = source
-            .split("async fn handle_restore_timeline_anchor_continue")
+            .split("async fn handle_materialize_timeline_anchor_continue")
             .nth(1)
-            .expect("restore anchor continuation should exist")
-            .split("async fn schedule_restore_anchor_continue")
+            .expect("materialize anchor continuation should exist")
+            .split("async fn schedule_materialize_anchor_continue")
             .next()
-            .expect("restore anchor continuation should end before scheduler");
+            .expect("materialize anchor continuation should end before scheduler");
 
         assert!(
             helper_source.contains("TimelineKind::Room"),
-            "restore anchor must target the live room timeline actor"
+            "materialize anchor must target the live room timeline actor"
         );
         assert!(
             continue_source.contains("PaginationDirection::Backward"),
-            "restore anchor must drive backward pagination"
+            "materialize anchor must drive backward pagination"
         );
         assert!(
             helper_source.contains("max_batches") && helper_source.contains("event_count"),
-            "restore anchor must carry a bounded pagination budget"
+            "materialize anchor must carry a bounded pagination budget"
         );
         assert!(
             !helper_source.contains("TimelineKind::Focused"),
-            "restore anchor must not bootstrap through the focused timeline path"
+            "materialize anchor must not bootstrap through the focused timeline path"
         );
     }
 
@@ -8579,38 +8627,38 @@ mod tests {
         );
     }
 
-    // --- Restore budget floor (Change 1) ---
+    // --- Materialize budget floor (Change 1) ---
 
-    /// Proves that the Rust-owned RESTORE_ANCHOR_MAX_CHUNKS constant exists and
-    /// is applied as a floor in `handle_restore_timeline_anchor`, so the restore
-    /// walk is not capped by the small frontend hint (max_batches=6). A deep
+    /// Proves that the Rust-owned MATERIALIZE_ANCHOR_MAX_CHUNKS constant exists and
+    /// is applied as a floor in `handle_materialize_timeline_anchor`, so the
+    /// materialize walk is not capped by the small frontend hint (max_batches=6). A deep
     /// anchor (hundreds of chunks) is reached by raising the budget past 6 via
-    /// the `max(max_batches, RESTORE_ANCHOR_MAX_CHUNKS)` expression, not by
+    /// the `max(max_batches, MATERIALIZE_ANCHOR_MAX_CHUNKS)` expression, not by
     /// changing the test or hardcoding a larger batch count in the call site.
     #[test]
-    fn restore_anchor_budget_floor_overrides_small_frontend_hint() {
+    fn materialize_anchor_budget_floor_overrides_small_frontend_hint() {
         let source = include_str!("timeline.rs");
         // Limit to production code so test strings cannot self-satisfy.
         let production = source.split("\nmod tests").next().unwrap_or(source);
 
         // 1. The constant must exist at 5000 (generous safety bound for deep history).
         assert!(
-            production.contains("RESTORE_ANCHOR_MAX_CHUNKS: u16 = 5000"),
-            "RESTORE_ANCHOR_MAX_CHUNKS must be defined as u16 = 5000"
+            production.contains("MATERIALIZE_ANCHOR_MAX_CHUNKS: u16 = 5000"),
+            "MATERIALIZE_ANCHOR_MAX_CHUNKS must be defined as u16 = 5000"
         );
 
         // 2. The new-state construction must apply the floor.
         let new_state_src = production
-            .split("let restore = RestoreTimelineAnchorState {")
+            .split("let materialize = MaterializeTimelineAnchorState {")
             .nth(1)
-            .expect("new RestoreTimelineAnchorState construction must exist");
+            .expect("new MaterializeTimelineAnchorState construction must exist");
         assert!(
-            new_state_src.contains("RESTORE_ANCHOR_MAX_CHUNKS"),
-            "new restore state construction must apply RESTORE_ANCHOR_MAX_CHUNKS floor"
+            new_state_src.contains("MATERIALIZE_ANCHOR_MAX_CHUNKS"),
+            "new materialize state construction must apply MATERIALIZE_ANCHOR_MAX_CHUNKS floor"
         );
         assert!(
-            new_state_src.contains(".max(RESTORE_ANCHOR_MAX_CHUNKS)"),
-            "max_batches_remaining initialization must take max with RESTORE_ANCHOR_MAX_CHUNKS"
+            new_state_src.contains(".max(MATERIALIZE_ANCHOR_MAX_CHUNKS)"),
+            "max_batches_remaining initialization must take max with MATERIALIZE_ANCHOR_MAX_CHUNKS"
         );
 
         // 3. The existing-state branch must also apply the floor (in-flight update path).
@@ -8619,39 +8667,39 @@ mod tests {
             .nth(1)
             .expect("existing-state same-event branch must exist");
         assert!(
-            existing_branch_src.contains("RESTORE_ANCHOR_MAX_CHUNKS"),
-            "in-flight budget update must also apply RESTORE_ANCHOR_MAX_CHUNKS floor"
+            existing_branch_src.contains("MATERIALIZE_ANCHOR_MAX_CHUNKS"),
+            "in-flight budget update must also apply MATERIALIZE_ANCHOR_MAX_CHUNKS floor"
         );
 
-        // 4. The RESTORE_ANCHOR_MAX_CHUNKS constant must be larger than the known
+        // 4. The MATERIALIZE_ANCHOR_MAX_CHUNKS constant must be larger than the known
         //    frontend value (6) so deep anchors are reachable offline.
         assert!(
-            RESTORE_ANCHOR_MAX_CHUNKS > 6,
-            "RESTORE_ANCHOR_MAX_CHUNKS ({RESTORE_ANCHOR_MAX_CHUNKS}) must exceed the \
+            MATERIALIZE_ANCHOR_MAX_CHUNKS > 6,
+            "MATERIALIZE_ANCHOR_MAX_CHUNKS ({MATERIALIZE_ANCHOR_MAX_CHUNKS}) must exceed the \
              frontend max_batches hint (6) to allow deep anchor walks"
         );
     }
 
-    // --- Restore diff coalescing (Change 2) ---
+    // --- Materialize diff coalescing (Change 2) ---
 
-    /// Proves that during a restore walk the diff-batch handler buffers
+    /// Proves that during a materialize walk the diff-batch handler buffers
     /// `TimelineDiff`s rather than emitting `ItemsUpdated` per chunk, and that
     /// all terminal paths flush the buffer exactly once.  React therefore
-    /// receives a single settled `ItemsUpdated` per restore — no O(chunks)
+    /// receives a single settled `ItemsUpdated` per materialize — no O(chunks)
     /// render churn — while internal state (`timeline_contains_event_id`) stays
     /// up-to-date every batch so the anchor can be found mid-walk.
     #[test]
-    fn restore_walk_coalesces_items_updated_to_single_flush() {
+    fn materialize_walk_coalesces_items_updated_to_single_flush() {
         let source = include_str!("timeline.rs");
         let production = source.split("\nmod tests").next().unwrap_or(source);
 
         // 1. The buffer field must exist on TimelineActor.
         assert!(
-            production.contains("restore_emit_buffer: Vec<TimelineDiff>"),
-            "TimelineActor must carry restore_emit_buffer to coalesce diffs"
+            production.contains("materialize_anchor_emit_buffer: Vec<TimelineDiff>"),
+            "TimelineActor must carry materialize_anchor_emit_buffer to coalesce diffs"
         );
 
-        // 2. handle_diff_batch must gate on restore_anchor.is_some() before
+        // 2. handle_diff_batch must gate on materialize_anchor.is_some() before
         //    buffering vs. emitting.
         let diff_batch_src = production
             .split("async fn handle_diff_batch(")
@@ -8661,27 +8709,29 @@ mod tests {
             .next()
             .expect("handle_diff_batch must end before handle_ignored_users_updated");
         assert!(
-            diff_batch_src.contains("restore_anchor.is_some()"),
-            "handle_diff_batch must check restore_anchor.is_some() to gate buffering"
+            diff_batch_src.contains("materialize_anchor.is_some()"),
+            "handle_diff_batch must check materialize_anchor.is_some() to gate buffering"
         );
         assert!(
-            diff_batch_src.contains("restore_emit_buffer"),
-            "handle_diff_batch must use restore_emit_buffer to accumulate diffs"
+            diff_batch_src.contains("materialize_anchor_emit_buffer"),
+            "handle_diff_batch must use materialize_anchor_emit_buffer to accumulate diffs"
         );
-        // The emit path for non-restore diffs must still exist (else emit is lost).
+        // The emit path for non-materialize diffs must still exist (else emit is lost).
         assert!(
             diff_batch_src.contains("ItemsUpdated"),
-            "handle_diff_batch must still emit ItemsUpdated on the non-restore branch"
+            "handle_diff_batch must still emit ItemsUpdated on the non-materialize branch"
         );
 
-        // 3. flush_restore_emit_buffer must emit ONE ItemsUpdated from the buffer.
+        // 3. flush_materialize_anchor_emit_buffer must emit ONE ItemsUpdated from the buffer.
         let flush_src = production
-            .split("fn flush_restore_emit_buffer(")
+            .split("fn flush_materialize_anchor_emit_buffer(")
             .nth(1)
-            .expect("flush_restore_emit_buffer helper must exist")
-            .split("fn finish_anchor_restore(")
+            .expect("flush_materialize_anchor_emit_buffer helper must exist")
+            .split("fn finish_anchor_materialize(")
             .next()
-            .expect("flush_restore_emit_buffer must end before finish_anchor_restore");
+            .expect(
+                "flush_materialize_anchor_emit_buffer must end before finish_anchor_materialize",
+            );
         assert!(
             flush_src.contains("std::mem::take"),
             "flush must drain the buffer with mem::take to avoid cloning"
@@ -8695,69 +8745,69 @@ mod tests {
             "flush must refresh navigation after emitting the coalesced batch"
         );
 
-        // 4. finish_anchor_restore must call flush then emit_anchor_restore_finished.
+        // 4. finish_anchor_materialize must call flush then emit_anchor_materialize_finished.
         let finish_src = production
-            .split("fn finish_anchor_restore(")
+            .split("fn finish_anchor_materialize(")
             .nth(1)
-            .expect("finish_anchor_restore wrapper must exist")
-            .split("fn flush_restore_emit_buffer(")
+            .expect("finish_anchor_materialize wrapper must exist")
+            .split("fn flush_materialize_anchor_emit_buffer(")
             .next()
             // May appear before the flush fn in source; accept any order.
             .unwrap_or("");
         // The wrapper is defined; search broadly for both calls in production.
         assert!(
-            production.contains("flush_restore_emit_buffer()")
-                || production.contains("self.flush_restore_emit_buffer()"),
-            "finish_anchor_restore must call flush_restore_emit_buffer"
+            production.contains("flush_materialize_anchor_emit_buffer()")
+                || production.contains("self.flush_materialize_anchor_emit_buffer()"),
+            "finish_anchor_materialize must call flush_materialize_anchor_emit_buffer"
         );
         let _ = finish_src; // used for the existence assertion above
 
-        // 5. Every ACTIVE-restore terminal path must call finish_anchor_restore (not raw
-        //    emit_anchor_restore_finished), ensuring the buffer is always flushed.
-        //    Exception: the invalid-request early-return in handle_restore_timeline_anchor
+        // 5. Every ACTIVE-materialize terminal path must call finish_anchor_materialize (not raw
+        //    emit_anchor_materialize_finished), ensuring the buffer is always flushed.
+        //    Exception: the invalid-request early-return in handle_materialize_timeline_anchor
         //    (empty event_id / max_batches==0 / event_count==0) intentionally uses raw
-        //    emit_anchor_restore_finished so it does NOT flush a DIFFERENT restore's buffer.
-        //    That path is exempt: it fires before any restore state is set, and must not
-        //    touch an active restore's restore_emit_buffer.
+        //    emit_anchor_materialize_finished so it does NOT flush a DIFFERENT materialize's buffer.
+        //    That path is exempt: it fires before any materialize state is set, and must not
+        //    touch an active materialize's materialize_anchor_emit_buffer.
         //
         // To verify the valid-request (post-early-return) path, check that
-        // handle_restore_timeline_anchor has at most ONE emit_anchor_restore_finished call
+        // handle_materialize_timeline_anchor has at most ONE emit_anchor_materialize_finished call
         // (the exempt invalid-request path), while the continuation uses none directly.
-        let restore_handler_src = production
-            .split("async fn handle_restore_timeline_anchor(")
+        let materialize_handler_src = production
+            .split("async fn handle_materialize_timeline_anchor(")
             .nth(1)
-            .expect("handle_restore_timeline_anchor must exist")
-            .split("async fn handle_restore_timeline_anchor_continue")
+            .expect("handle_materialize_timeline_anchor must exist")
+            .split("async fn handle_materialize_timeline_anchor_continue")
             .next()
-            .expect("restore handler must end before continuation");
-        let raw_emit_count = restore_handler_src
-            .matches("self.emit_anchor_restore_finished(")
+            .expect("materialize handler must end before continuation");
+        let raw_emit_count = materialize_handler_src
+            .matches("self.emit_anchor_materialize_finished(")
             .count();
         assert!(
             raw_emit_count <= 1,
-            "handle_restore_timeline_anchor may have at most ONE raw emit_anchor_restore_finished \
+            "handle_materialize_timeline_anchor may have at most ONE raw emit_anchor_materialize_finished \
              call (the invalid-request exempt path); found {raw_emit_count}"
         );
         let continue_handler_src = production
-            .split("async fn handle_restore_timeline_anchor_continue(")
+            .split("async fn handle_materialize_timeline_anchor_continue(")
             .nth(1)
-            .expect("handle_restore_timeline_anchor_continue must exist")
-            .split("async fn maybe_continue_restore_anchor_after_diff")
+            .expect("handle_materialize_timeline_anchor_continue must exist")
+            .split("async fn maybe_continue_materialize_anchor_after_diff")
             .next()
             .expect("continue handler must end before maybe_continue helper");
         assert!(
-            !continue_handler_src.contains("self.emit_anchor_restore_finished("),
-            "handle_restore_timeline_anchor_continue must use finish_anchor_restore (never raw \
-             emit_anchor_restore_finished) — all its terminals have an active restore buffer"
+            !continue_handler_src.contains("self.emit_anchor_materialize_finished("),
+            "handle_materialize_timeline_anchor_continue must use finish_anchor_materialize (never raw \
+             emit_anchor_materialize_finished) — all its terminals have an active materialize buffer"
         );
     }
 
-    // --- Deterministic anchor-present terminal + invalid-request no-flush ---
+    // --- Deterministic anchor-present materialize terminal + invalid-request no-flush ---
 
     /// Proves the authoritative anchor-present terminal: the SDK's
     /// `anchor_present` signal determines whether to wait-for-relay (Found
     /// guaranteed) or conclude EndReached immediately (anchor genuinely absent).
-    /// This makes the restore terminal deterministic — no timing heuristic.
+    /// This makes the materialize terminal deterministic — no timing heuristic.
     ///
     /// NOTE: a behavioral unit test requires constructing a real `TimelineActor`
     /// with an active Matrix SDK session, which this test module does not support
@@ -8766,28 +8816,28 @@ mod tests {
     /// correctness of the anchor-present path; these assertions guard the
     /// structural contracts.
     #[test]
-    fn restore_terminal_is_anchor_present_not_timing_dependent() {
+    fn materialize_terminal_is_anchor_present_not_timing_dependent() {
         let source = include_str!("timeline.rs");
         let production = source.split("\nmod tests").next().unwrap_or(source);
 
-        // 1. anchor_relay_wait must exist on RestoreTimelineAnchorState.
+        // 1. anchor_relay_wait must exist on MaterializeTimelineAnchorState.
         let struct_src = production
-            .split("struct RestoreTimelineAnchorState {")
+            .split("struct MaterializeTimelineAnchorState {")
             .nth(1)
-            .expect("RestoreTimelineAnchorState must exist")
+            .expect("MaterializeTimelineAnchorState must exist")
             .split('}')
             .next()
             .expect("struct body must end");
         assert!(
             struct_src.contains("anchor_relay_wait"),
-            "RestoreTimelineAnchorState must carry anchor_relay_wait for the relay-wait backstop"
+            "MaterializeTimelineAnchorState must carry anchor_relay_wait for the relay-wait backstop"
         );
         // 2. The continuation handler must enter the relay-wait path when anchor_present.
         let continue_src = production
-            .split("async fn handle_restore_timeline_anchor_continue(")
+            .split("async fn handle_materialize_timeline_anchor_continue(")
             .nth(1)
             .expect("continuation must exist")
-            .split("async fn maybe_continue_restore_anchor_after_diff")
+            .split("async fn maybe_continue_materialize_anchor_after_diff")
             .next()
             .expect("continuation must end before maybe_continue");
         assert!(
@@ -8813,24 +8863,24 @@ mod tests {
             "timing-heuristic settle_awaiting_first_diff must be removed"
         );
         assert!(
-            !production.contains("RESTORE_ANCHOR_SETTLE_TICK_DELAY_MS"),
+            !production.contains("MATERIALIZE_ANCHOR_SETTLE_TICK_DELAY_MS"),
             "50ms tick delay constant must be removed"
         );
         assert!(
-            !production.contains("schedule_restore_anchor_settle_tick"),
-            "schedule_restore_anchor_settle_tick function must be removed"
+            !production.contains("schedule_materialize_anchor_settle_tick"),
+            "schedule_materialize_anchor_settle_tick function must be removed"
         );
-        // 5. P3: invalid-request path must NOT call finish_anchor_restore.
-        let restore_handler_src = production
-            .split("async fn handle_restore_timeline_anchor(")
+        // 5. P3: invalid-request path must NOT call finish_anchor_materialize.
+        let materialize_handler_src = production
+            .split("async fn handle_materialize_timeline_anchor(")
             .nth(1)
-            .expect("handle_restore_timeline_anchor must exist")
-            .split("async fn handle_restore_timeline_anchor_continue")
+            .expect("handle_materialize_timeline_anchor must exist")
+            .split("async fn handle_materialize_timeline_anchor_continue")
             .next()
-            .expect("restore handler must end before continuation");
+            .expect("materialize handler must end before continuation");
         assert!(
-            restore_handler_src.contains("emit_anchor_restore_finished"),
-            "invalid-request path must call emit_anchor_restore_finished (not finish_anchor_restore)"
+            materialize_handler_src.contains("emit_anchor_materialize_finished"),
+            "invalid-request path must call emit_anchor_materialize_finished (not finish_anchor_materialize)"
         );
     }
 

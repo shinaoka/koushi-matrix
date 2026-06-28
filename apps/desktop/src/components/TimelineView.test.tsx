@@ -794,17 +794,17 @@ describe("TimelineView", () => {
     });
   });
 
-  it("requests a live anchor restore once and restores when the anchor enters live items", async () => {
+  it("requests a live anchor materialize once and restores when the anchor enters live items", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const roomId = "!room:example.invalid";
     const anchorEventId = "$anchor:example.invalid";
-    const restoreTimelineAnchor = vi.fn(async () => undefined);
+    const materializeTimelineAnchor = vi.fn(async () => undefined);
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
         emit = nextListener;
         return () => undefined;
       },
-      restoreTimelineAnchor
+      materializeTimelineAnchor
     });
 
     mockTimelineRects(
@@ -855,8 +855,8 @@ describe("TimelineView", () => {
     await waitFor(() => {
       expect(screen.getByText("Live top")).toBeTruthy();
       expect(timeline.getAttribute("data-timeline-generation")).toBe("1");
-      expect(restoreTimelineAnchor).toHaveBeenCalledTimes(1);
-      expect(restoreTimelineAnchor).toHaveBeenCalledWith(
+      expect(materializeTimelineAnchor).toHaveBeenCalledTimes(1);
+      expect(materializeTimelineAnchor).toHaveBeenCalledWith(
         KEY,
         anchorEventId,
         expect.any(Number),
@@ -897,17 +897,17 @@ describe("TimelineView", () => {
     });
   });
 
-  it("falls back to the live edge when live anchor restore exhausts its budget", async () => {
+  it("falls back to the live edge when live anchor materialize exhausts its budget", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const roomId = "!room:example.invalid";
     const anchorEventId = "$anchor:example.invalid";
-    const restoreTimelineAnchor = vi.fn(async () => undefined);
+    const materializeTimelineAnchor = vi.fn(async () => undefined);
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
         emit = nextListener;
         return () => undefined;
       },
-      restoreTimelineAnchor
+      materializeTimelineAnchor
     });
 
     render(
@@ -952,7 +952,7 @@ describe("TimelineView", () => {
     });
 
     await waitFor(() => {
-      expect(restoreTimelineAnchor).toHaveBeenCalledTimes(1);
+      expect(materializeTimelineAnchor).toHaveBeenCalledTimes(1);
       expect(timeline.scrollTop).toBe(0);
     });
 
@@ -960,7 +960,7 @@ describe("TimelineView", () => {
       emit({
         kind: "Timeline",
         event: {
-          AnchorRestoreFinished: {
+          AnchorMaterializeFinished: {
             request_id: { connection_id: 1, sequence: 99 },
             key: KEY,
             status: "BudgetExhausted"
@@ -972,7 +972,7 @@ describe("TimelineView", () => {
     await waitFor(() => {
       expect(timeline.scrollTop).toBe(1400);
     });
-    expect(restoreTimelineAnchor).toHaveBeenCalledTimes(1);
+    expect(materializeTimelineAnchor).toHaveBeenCalledTimes(1);
   });
 
   it("restores the live edge after a same-key timeline resync generation arrives", async () => {
