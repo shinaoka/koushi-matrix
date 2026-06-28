@@ -96,6 +96,11 @@ import {
   recordTimelineResync
 } from "../domain/timelineTransportStats";
 import {
+  createTimelineViewportMachineState,
+  reduceTimelineViewportMachine,
+  type TimelineViewportMachineEvent
+} from "../domain/timelineViewportMachine";
+import {
   timelineItemDomId,
   timelineKeyEquals
 } from "../domain/coreEvents";
@@ -515,8 +520,6 @@ type TimelineViewportMetrics = {
   clientHeight: number;
   listOffsetTop: number;
 };
-
-type ViewportIntent = { kind: "free-scroll" } | { kind: "live-edge" };
 
 type TimelineHeightModel = {
   fallbackHeight: number;
@@ -1711,45 +1714,17 @@ export const TimelineView = memo(function TimelineView({
   const itemHeightByDomIdRef = useRef<Map<string, number>>(new Map());
   /** Anchor captured before the latest prepend batch was applied. */
   const pendingAnchorRef = useRef<ScrollAnchor | null>(null);
-  /** True from prepend-apply until anchor restoration completed. */
-  const anchorRestorePendingRef = useRef(false);
-  /** True while the live-room scroll anchor is being restored. */
-  const roomScrollAnchorRestorePendingRef = useRef(false);
-  /** Suppresses capture while programmatic scroll adjustments are running. */
-  const suppressScrollAnchorCaptureRef = useRef(false);
-  /** scrollHeight the last time a programmatic scrollTop assignment was
-   *  made. Together with the pair of containerHeight + scrollTop recorded
-   *  inside `runWithSuppressedScrollAnchorCapture`, this lets `onScroll`
-   *  recognise a scroll event caused by our own assignment (same scroll-
-   *  height + same scrollTop) and suppress cascading side-effects while
-   *  letting through real pointer-driven scrolls. */
-  const programmaticScrollSignatureRef = useRef<{
-    scrollHeight: number;
-    scrollTop: number;
-  } | null>(null);
-  const lastPersistedViewportAnchorSignatureRef = useRef<string | null>(null);
-  const restoredRoomScrollAnchorSignatureRef = useRef<string | null>(null);
-  const requestedRoomScrollAnchorRestoreSignatureRef = useRef<string | null>(null);
-  const exhaustedRoomScrollAnchorRestoreSignatureRef = useRef<string | null>(null);
-  /**
-   * Tracks which room-anchor signature already received its post-settle
-   * re-correction, so the re-correction runs at most once per restore.
-   */
-  const postSettleRestoredSignatureRef = useRef<string | null>(null);
+  const viewportMachineRef = useRef(createTimelineViewportMachineState());
+  const dispatchViewportMachine = useCallback((event: TimelineViewportMachineEvent) => {
+    viewportMachineRef.current = reduceTimelineViewportMachine(
+      viewportMachineRef.current,
+      event
+    );
+    return viewportMachineRef.current;
+  }, []);
   const anchorAsyncGenerationRef = useRef(0);
-  const retainedRoomScrollAnchorRef = useRef<{
-    signature: string;
-    anchor: TimelineScrollAnchor;
-    scrollTop: number;
-  } | null>(null);
   /** Tracks whether the current key already got its first live-edge scroll. */
   const initialLiveEdgeScrollAppliedRef = useRef<string | null>(null);
-  /** Keeps the live edge pinned when measured virtual heights change. */
-  const stickToBottomAfterMeasurementRef = useRef(false);
-  /** Viewport intent that survives timeline re-renders until user scroll input changes it. */
-  const viewportIntentRef = useRef<ViewportIntent>({ kind: "free-scroll" });
-  /** Set by wheel/touch/keyboard/scrollbar intent; consumed by the next scroll event. */
-  const userScrollInputPendingRef = useRef(false);
   /** Coalesces ResizeObserver-driven live-edge corrections. */
   const viewportIntentResizeFrameRef = useRef<number | null>(null);
   /** Pagination request currently in flight (suppresses duplicates). */
@@ -1805,10 +1780,11 @@ export const TimelineView = memo(function TimelineView({
     if (!transport.updateScrollAnchor || roomTimelineRoomId !== roomId) {
       return false;
     }
+    const viewportState = viewportMachineRef.current;
     if (
-      anchorRestorePendingRef.current ||
-      roomScrollAnchorRestorePendingRef.current ||
-      (!options?.allowSuppressed && suppressScrollAnchorCaptureRef.current)
+      viewportState.prependAnchorRestorePending ||
+      viewportState.roomAnchorRestorePending ||
+      (!options?.allowSuppressed && viewportState.suppressScrollAnchorCapture)
     ) {
       return false;
     }
@@ -1821,10 +1797,13 @@ export const TimelineView = memo(function TimelineView({
       return false;
     }
     const stableSignature = roomScrollAnchorStableSignature(roomId, captured);
-    if (lastPersistedViewportAnchorSignatureRef.current === stableSignature) {
+    if (
+      viewportMachineRef.current.lastPersistedViewportAnchorSignature ===
+      stableSignature
+    ) {
       return false;
     }
-    lastPersistedViewportAnchorSignatureRef.current = stableSignature;
+    dispatchViewportMachine({ type: "persisted-room-anchor", signature: stableSignature });
     const updatedAtMs = Date.now();
     void transport
       .updateScrollAnchor(roomId, {
@@ -1833,49 +1812,45 @@ export const TimelineView = memo(function TimelineView({
       })
       .catch(() => undefined);
     return true;
-  }, [roomId, roomTimelineRoomId, transport]);
+  }, [dispatchViewportMachine, roomId, roomTimelineRoomId, transport]);
 
   const runWithSuppressedScrollAnchorCapture = useCallback((action: () => void) => {
     const asyncGeneration = anchorAsyncGenerationRef.current;
-    suppressScrollAnchorCaptureRef.current = true;
+    dispatchViewportMachine({ type: "scroll-capture-suppression-started" });
     const container = containerRef.current;
     const beforeScrollTop = container?.scrollTop ?? 0;
     action();
     if (container && container.scrollTop !== beforeScrollTop) {
-      programmaticScrollSignatureRef.current = {
+      dispatchViewportMachine({
+        type: "programmatic-scroll-assigned",
         scrollHeight: container.scrollHeight,
         scrollTop: container.scrollTop
-      };
+      });
     }
     requestAnimationFrame(() => {
       if (anchorAsyncGenerationRef.current !== asyncGeneration) {
         return;
       }
-      suppressScrollAnchorCaptureRef.current = false;
-      programmaticScrollSignatureRef.current = null;
+      dispatchViewportMachine({ type: "scroll-capture-suppression-finished" });
       setScrollAnchorSettlementVersion((current) => current + 1);
     });
-  }, []);
+  }, [dispatchViewportMachine]);
 
   const setViewportIntentToLiveEdge = useCallback(() => {
-    viewportIntentRef.current = { kind: "live-edge" };
-    retainedRoomScrollAnchorRef.current = null;
-  }, []);
+    dispatchViewportMachine({ type: "live-edge-requested" });
+  }, [dispatchViewportMachine]);
 
   const releaseViewportIntent = useCallback(() => {
-    viewportIntentRef.current = { kind: "free-scroll" };
-    stickToBottomAfterMeasurementRef.current = false;
-    retainedRoomScrollAnchorRef.current = null;
-    userScrollInputPendingRef.current = false;
-  }, []);
+    dispatchViewportMachine({ type: "free-scroll-requested" });
+  }, [dispatchViewportMachine]);
 
   const markUserScrollInput = useCallback(() => {
-    userScrollInputPendingRef.current = true;
-  }, []);
+    dispatchViewportMachine({ type: "mark-user-scroll-input" });
+  }, [dispatchViewportMachine]);
 
   const applyViewportIntent = useCallback((): boolean => {
     const container = containerRef.current;
-    if (!container || viewportIntentRef.current.kind !== "live-edge") {
+    if (!container || viewportMachineRef.current.intent.kind !== "live-edge") {
       return false;
     }
     const targetScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
@@ -1898,15 +1873,7 @@ export const TimelineView = memo(function TimelineView({
         // clearing alone would leave the timeline permanently blank.
         recordTimelineResync();
         pendingAnchorRef.current = null;
-        anchorRestorePendingRef.current = false;
-        roomScrollAnchorRestorePendingRef.current = false;
-        retainedRoomScrollAnchorRef.current = null;
-        viewportIntentRef.current = { kind: "free-scroll" };
-        userScrollInputPendingRef.current = false;
-        lastPersistedViewportAnchorSignatureRef.current = null;
-        requestedRoomScrollAnchorRestoreSignatureRef.current = null;
-        exhaustedRoomScrollAnchorRestoreSignatureRef.current = null;
-        restoredRoomScrollAnchorSignatureRef.current = null;
+        dispatchViewportMachine({ type: "resync-required" });
         setNavigationSnapshot(null);
         relevantAvatarMxcsRef.current = new Set();
         if (!isAppLevelStore) {
@@ -2005,18 +1972,13 @@ export const TimelineView = memo(function TimelineView({
         const container = containerRef.current;
         if (container) {
           pendingAnchorRef.current = captureAnchor(container);
-          anchorRestorePendingRef.current = true;
+          dispatchViewportMachine({ type: "prepend-anchor-restore-started" });
         }
       }
 
       if ("ResyncRequired" in event) {
         pendingAnchorRef.current = null;
-        anchorRestorePendingRef.current = false;
-        roomScrollAnchorRestorePendingRef.current = false;
-        retainedRoomScrollAnchorRef.current = null;
-        viewportIntentRef.current = { kind: "free-scroll" };
-        userScrollInputPendingRef.current = false;
-        lastPersistedViewportAnchorSignatureRef.current = null;
+        dispatchViewportMachine({ type: "resync-required" });
         setNavigationSnapshot(null);
       }
 
@@ -2024,14 +1986,11 @@ export const TimelineView = memo(function TimelineView({
         if (event.AnchorRestoreFinished.status === "Superseded") {
           return;
         }
-        const restoreSignature = requestedRoomScrollAnchorRestoreSignatureRef.current;
-        if (
-          restoreSignature !== null &&
-          event.AnchorRestoreFinished.status !== "Found"
-        ) {
-          exhaustedRoomScrollAnchorRestoreSignatureRef.current = restoreSignature;
-        }
-        roomScrollAnchorRestorePendingRef.current = false;
+        dispatchViewportMachine({
+          type: "room-anchor-restore-finished",
+          status:
+            event.AnchorRestoreFinished.status === "Found" ? "found" : "not-found"
+        });
         setAnchorRestoreCompletionVersion((current) => current + 1);
         return;
       }
@@ -2055,7 +2014,10 @@ export const TimelineView = memo(function TimelineView({
         timelineDiffsContainOwnOutgoingItem(event.ItemsUpdated.diffs, currentUserId)
       ) {
         setViewportIntentToLiveEdge();
-        stickToBottomAfterMeasurementRef.current = true;
+        dispatchViewportMachine({
+          type: "stick-to-bottom-after-measurement",
+          value: true
+        });
       }
 
       if (!isAppLevelStore) {
@@ -2072,6 +2034,7 @@ export const TimelineView = memo(function TimelineView({
     return unsubscribe;
   }, [
     currentUserId,
+    dispatchViewportMachine,
     emitDiagnosticLog,
     isAppLevelStore,
     setViewportIntentToLiveEdge,
@@ -2086,18 +2049,8 @@ export const TimelineView = memo(function TimelineView({
   useLayoutEffect(() => {
     anchorAsyncGenerationRef.current += 1;
     pendingAnchorRef.current = null;
-    anchorRestorePendingRef.current = false;
-    roomScrollAnchorRestorePendingRef.current = false;
-    suppressScrollAnchorCaptureRef.current = false;
-    restoredRoomScrollAnchorSignatureRef.current = null;
-    requestedRoomScrollAnchorRestoreSignatureRef.current = null;
-    exhaustedRoomScrollAnchorRestoreSignatureRef.current = null;
-    retainedRoomScrollAnchorRef.current = null;
-    viewportIntentRef.current = { kind: "free-scroll" };
-    userScrollInputPendingRef.current = false;
-    lastPersistedViewportAnchorSignatureRef.current = null;
-    postSettleRestoredSignatureRef.current = null;
-  }, [timelineKeyHash]);
+    dispatchViewportMachine({ type: "timeline-key-changed" });
+  }, [dispatchViewportMachine, timelineKeyHash]);
 
   useEffect(() => {
     setNavigationSnapshot(null);
@@ -2112,42 +2065,26 @@ export const TimelineView = memo(function TimelineView({
     emptyThreadBackfillRequestedRef.current = false;
     lastDiagnosticsEmissionRef.current = null;
     initialLiveEdgeScrollAppliedRef.current = null;
-    stickToBottomAfterMeasurementRef.current = false;
     itemHeightByDomIdRef.current = new Map();
-    roomScrollAnchorRestorePendingRef.current = false;
-    suppressScrollAnchorCaptureRef.current = false;
-    viewportIntentRef.current = { kind: "free-scroll" };
-    userScrollInputPendingRef.current = false;
-    lastPersistedViewportAnchorSignatureRef.current = null;
-    restoredRoomScrollAnchorSignatureRef.current = null;
-    requestedRoomScrollAnchorRestoreSignatureRef.current = null;
-    exhaustedRoomScrollAnchorRestoreSignatureRef.current = null;
-    retainedRoomScrollAnchorRef.current = null;
-    postSettleRestoredSignatureRef.current = null;
+    dispatchViewportMachine({ type: "timeline-key-changed" });
     if (viewportIntentResizeFrameRef.current !== null) {
       window.cancelAnimationFrame(viewportIntentResizeFrameRef.current);
       viewportIntentResizeFrameRef.current = null;
     }
     setMeasuredHeightVersion((current) => current + 1);
     backfillInFlightRef.current = false;
-  }, [timelineKeyHash]);
+  }, [dispatchViewportMachine, timelineKeyHash]);
 
   useEffect(
     () => () => {
       anchorAsyncGenerationRef.current += 1;
-      anchorRestorePendingRef.current = false;
-      roomScrollAnchorRestorePendingRef.current = false;
-      suppressScrollAnchorCaptureRef.current = false;
-      retainedRoomScrollAnchorRef.current = null;
-      viewportIntentRef.current = { kind: "free-scroll" };
-      userScrollInputPendingRef.current = false;
-      lastPersistedViewportAnchorSignatureRef.current = null;
+      dispatchViewportMachine({ type: "timeline-key-changed" });
       if (viewportIntentResizeFrameRef.current !== null) {
         window.cancelAnimationFrame(viewportIntentResizeFrameRef.current);
         viewportIntentResizeFrameRef.current = null;
       }
     },
-    []
+    [dispatchViewportMachine]
   );
 
   const items = getItems(store, timelineKey);
@@ -2530,7 +2467,7 @@ export const TimelineView = memo(function TimelineView({
     }
 
     const observer = new ResizeObserver(() => {
-      if (viewportIntentRef.current.kind !== "live-edge") {
+      if (viewportMachineRef.current.intent.kind !== "live-edge") {
         return;
       }
       if (viewportIntentResizeFrameRef.current !== null) {
@@ -2594,20 +2531,21 @@ export const TimelineView = memo(function TimelineView({
     const activeRoomAnchorRestoreSignature = activeRoomAnchorSignature
       ? `${activeRoomAnchorSignature}\u0000${generation}`
       : null;
+    const viewportState = viewportMachineRef.current;
     const roomAnchorRestoreExhausted =
       activeRoomAnchorRestoreSignature !== null &&
-      exhaustedRoomScrollAnchorRestoreSignatureRef.current ===
+      viewportState.exhaustedRoomAnchorRestoreSignature ===
         activeRoomAnchorRestoreSignature;
     const roomAnchorAlreadyRestored =
       activeRoomAnchorSignature !== null &&
-      restoredRoomScrollAnchorSignatureRef.current === activeRoomAnchorSignature;
+      viewportState.restoredRoomAnchorSignature === activeRoomAnchorSignature;
     let roomAnchorRestored = false;
     if (
       timelineInitialized &&
       items.length > 0 &&
       activeRoomAnchor &&
       activeRoomAnchorSignature !== null &&
-      restoredRoomScrollAnchorSignatureRef.current !== activeRoomAnchorSignature &&
+      viewportState.restoredRoomAnchorSignature !== activeRoomAnchorSignature &&
       !roomAnchorRestoreExhausted
     ) {
       const restoreActiveRoomAnchor = () => {
@@ -2616,24 +2554,20 @@ export const TimelineView = memo(function TimelineView({
         }
         const restored = restoreRoomScrollAnchor(container, activeRoomAnchor);
         if (restored) {
-          restoredRoomScrollAnchorSignatureRef.current = activeRoomAnchorSignature;
-          roomScrollAnchorRestorePendingRef.current = false;
           initialLiveEdgeScrollAppliedRef.current = initialLiveEdgeScrollKey;
-          retainedRoomScrollAnchorRef.current =
-            activeRoomAnchorSignature && container
-              ? {
-                  signature: activeRoomAnchorSignature,
-                  anchor: activeRoomAnchor,
-                  scrollTop: container.scrollTop
-                }
-              : null;
+          dispatchViewportMachine({
+            type: "room-anchor-restored",
+            signature: activeRoomAnchorSignature,
+            anchor: activeRoomAnchor,
+            scrollTop: container.scrollTop
+          });
         }
         return restored;
       };
 
       const anchorIsLive = timelineContainsEventId(items, activeRoomAnchor.event_id);
       if (anchorIsLive) {
-        roomScrollAnchorRestorePendingRef.current = true;
+        dispatchViewportMachine({ type: "room-anchor-restore-started" });
         runWithSuppressedScrollAnchorCapture(() => {
           roomAnchorRestored = restoreActiveRoomAnchor();
         });
@@ -2671,7 +2605,10 @@ export const TimelineView = memo(function TimelineView({
                 }
               });
               if (!roomAnchorRestoredInFrame) {
-                roomScrollAnchorRestorePendingRef.current = false;
+                dispatchViewportMachine({
+                  type: "room-anchor-restore-finished",
+                  status: "not-found"
+                });
               }
               updateViewportMetrics();
               reportViewportObservation();
@@ -2680,7 +2617,10 @@ export const TimelineView = memo(function TimelineView({
           }
         }
         if (!roomAnchorRestored && !roomAnchorAlreadyRestored) {
-          roomScrollAnchorRestorePendingRef.current = false;
+          dispatchViewportMachine({
+            type: "room-anchor-restore-finished",
+            status: "not-found"
+          });
         }
 
         // Post-settle re-correction: fonts/media/virtualized-row heights settle
@@ -2690,7 +2630,8 @@ export const TimelineView = memo(function TimelineView({
         // document.fonts.ready (ensures text reflow is complete), then wait for
         // any media element inside the anchor row to load (with a 250ms timeout
         // fallback so we never hang on a missing resource).  Guard with
-        // postSettleRestoredSignatureRef so this fires at most once per restore,
+        // the viewport state machine's post-settle signature so this fires at
+        // most once per restore,
         // and keep capture suppressed so the in-flight adjustment is not saved as
         // a new anchor.  Skip if the user has already scrolled (handled by the
         // existing capture-suppression check on the onscroll path).
@@ -2698,11 +2639,14 @@ export const TimelineView = memo(function TimelineView({
           roomAnchorRestored &&
           container !== null &&
           activeRoomAnchorSignature !== null &&
-          postSettleRestoredSignatureRef.current !== activeRoomAnchorSignature
+          viewportMachineRef.current.postSettleRestoredSignature !== activeRoomAnchorSignature
         ) {
           // Mark immediately so a second layout-effect run (e.g. a concurrent
           // items update) does not schedule a duplicate re-correction.
-          postSettleRestoredSignatureRef.current = activeRoomAnchorSignature;
+          dispatchViewportMachine({
+            type: "post-settle-restore-scheduled",
+            signature: activeRoomAnchorSignature
+          });
           // Snapshot the anchor + signature for the async callback.
           const anchorSnapshot = activeRoomAnchor;
           const signatureSnapshot = activeRoomAnchorSignature;
@@ -2717,14 +2661,17 @@ export const TimelineView = memo(function TimelineView({
               return;
             }
             // Abort if another restore started since we were scheduled.
-            if (postSettleRestoredSignatureRef.current !== signatureSnapshot) {
+            if (viewportMachineRef.current.postSettleRestoredSignature !== signatureSnapshot) {
               return;
             }
             // Abort if the user scrolled during the rAF/fonts/media wait.
             // A real user scroll changes scrollTop beyond the programmatic
             // restore; the suppression guard covers programmatic adjustments.
             if (containerSnapshot.scrollTop !== scrollTopAfterRestore) {
-              roomScrollAnchorRestorePendingRef.current = false;
+              dispatchViewportMachine({
+                type: "room-anchor-restore-finished",
+                status: "not-found"
+              });
               setScrollAnchorSettlementVersion((current) => current + 1);
               return;
             }
@@ -2732,25 +2679,32 @@ export const TimelineView = memo(function TimelineView({
               `[data-event-id="${cssEscape(anchorSnapshot.event_id)}"]`
             );
             if (!anchorNode) {
-              roomScrollAnchorRestorePendingRef.current = false;
+              dispatchViewportMachine({
+                type: "room-anchor-restore-finished",
+                status: "not-found"
+              });
               setScrollAnchorSettlementVersion((current) => current + 1);
               return;
             }
-            suppressScrollAnchorCaptureRef.current = true;
+            dispatchViewportMachine({ type: "scroll-capture-suppression-started" });
             const restored = restoreRoomScrollAnchor(containerSnapshot, anchorSnapshot);
             if (restored) {
-              retainedRoomScrollAnchorRef.current = {
+              dispatchViewportMachine({
+                type: "room-anchor-restored",
                 signature: signatureSnapshot,
                 anchor: anchorSnapshot,
                 scrollTop: containerSnapshot.scrollTop
-              };
+              });
             }
             requestAnimationFrame(() => {
               if (anchorAsyncGenerationRef.current !== asyncGenerationSnapshot) {
                 return;
               }
-              suppressScrollAnchorCaptureRef.current = false;
-              roomScrollAnchorRestorePendingRef.current = false;
+              dispatchViewportMachine({ type: "scroll-capture-suppression-finished" });
+              dispatchViewportMachine({
+                type: "room-anchor-restore-finished",
+                status: restored ? "found" : "not-found"
+              });
               updateViewportMetrics();
               reportViewportObservation();
               setScrollAnchorSettlementVersion((current) => current + 1);
@@ -2787,12 +2741,13 @@ export const TimelineView = memo(function TimelineView({
       } else if (
         transport.restoreTimelineAnchor &&
         activeRoomAnchorRestoreSignature !== null &&
-        requestedRoomScrollAnchorRestoreSignatureRef.current !==
+        viewportMachineRef.current.requestedRoomAnchorRestoreSignature !==
           activeRoomAnchorRestoreSignature
       ) {
-        roomScrollAnchorRestorePendingRef.current = true;
-        requestedRoomScrollAnchorRestoreSignatureRef.current = activeRoomAnchorRestoreSignature;
-        exhaustedRoomScrollAnchorRestoreSignatureRef.current = null;
+        dispatchViewportMachine({
+          type: "room-anchor-restore-requested",
+          signature: activeRoomAnchorRestoreSignature
+        });
         const restorePromise = transport.restoreTimelineAnchor(
           timelineKeyRef.current,
           activeRoomAnchor.event_id,
@@ -2801,7 +2756,10 @@ export const TimelineView = memo(function TimelineView({
         );
         if (restorePromise) {
           void restorePromise.catch(() => {
-            roomScrollAnchorRestorePendingRef.current = false;
+            dispatchViewportMachine({
+              type: "room-anchor-restore-finished",
+              status: "not-found"
+            });
           });
         }
       }
@@ -2811,7 +2769,7 @@ export const TimelineView = memo(function TimelineView({
       initialLiveEdgeScrollKey !== null &&
       initialLiveEdgeScrollAppliedRef.current !== initialLiveEdgeScrollKey &&
       !roomAnchorAlreadyRestored &&
-      !roomScrollAnchorRestorePendingRef.current
+      !viewportMachineRef.current.roomAnchorRestorePending
     ) {
       if (container) {
         setViewportIntentToLiveEdge();
@@ -2830,19 +2788,25 @@ export const TimelineView = memo(function TimelineView({
           // The DOM scrollHeight used above may be an underestimate before
           // variable-height rows are measured. Force a follow-up snap to the
           // new bottom once the measurement effect has actual heights.
-          stickToBottomAfterMeasurementRef.current = true;
+          dispatchViewportMachine({
+            type: "stick-to-bottom-after-measurement",
+            value: true
+          });
         }
       }
     }
-    if (stickToBottomAfterMeasurementRef.current) {
+    if (viewportMachineRef.current.stickToBottomAfterMeasurement) {
       if (container) {
         runWithSuppressedScrollAnchorCapture(() => {
           scrollContainerToBottom(container);
         });
       }
-      stickToBottomAfterMeasurementRef.current = false;
+      dispatchViewportMachine({
+        type: "stick-to-bottom-after-measurement",
+        value: false
+      });
     }
-    if (anchorRestorePendingRef.current) {
+    if (viewportMachineRef.current.prependAnchorRestorePending) {
       const anchor = pendingAnchorRef.current;
       let restored = false;
       if (container && anchor) {
@@ -2872,7 +2836,7 @@ export const TimelineView = memo(function TimelineView({
       }
       pendingAnchorRef.current = null;
       // Restoration complete: the next automatic fill request is allowed again.
-      anchorRestorePendingRef.current = false;
+      dispatchViewportMachine({ type: "prepend-anchor-restore-finished" });
     }
     updateViewportMetrics();
     reportViewportObservation();
@@ -2897,7 +2861,7 @@ export const TimelineView = memo(function TimelineView({
   ]);
 
   useLayoutEffect(() => {
-    if (viewportIntentRef.current.kind === "live-edge") {
+    if (viewportMachineRef.current.intent.kind === "live-edge") {
       const changed = applyViewportIntent();
       if (changed) {
         updateViewportMetrics();
@@ -2905,18 +2869,19 @@ export const TimelineView = memo(function TimelineView({
       }
       return;
     }
-    const retained = retainedRoomScrollAnchorRef.current;
+    const viewportState = viewportMachineRef.current;
+    const retained = viewportState.retainedRoomAnchor;
     const container = containerRef.current;
     const pendingDifferentRoomRestore =
       retained !== null &&
-      roomScrollAnchorRestorePendingRef.current &&
-      restoredRoomScrollAnchorSignatureRef.current !== retained.signature;
+      viewportState.roomAnchorRestorePending &&
+      viewportState.restoredRoomAnchorSignature !== retained.signature;
     if (
       !retained ||
       !container ||
-      suppressScrollAnchorCaptureRef.current ||
+      viewportState.suppressScrollAnchorCapture ||
       pendingDifferentRoomRestore ||
-      anchorRestorePendingRef.current
+      viewportState.prependAnchorRestorePending
     ) {
       return;
     }
@@ -2930,21 +2895,24 @@ export const TimelineView = memo(function TimelineView({
       ? roomScrollAnchorSignature(roomId, activeRoomAnchor)
       : null;
     if (!activeRoomAnchor || retained.signature !== activeRoomAnchorSignature) {
-      retainedRoomScrollAnchorRef.current = null;
+      dispatchViewportMachine({ type: "clear-retained-room-anchor" });
       return;
     }
     const anchorNode = findRoomScrollAnchorNode(container, activeRoomAnchor);
     if (!anchorNode) {
-      retainedRoomScrollAnchorRef.current = null;
+      dispatchViewportMachine({ type: "clear-retained-room-anchor" });
       return;
     }
     const currentOffset = currentRoomScrollAnchorOffset(container, anchorNode, activeRoomAnchor);
     if (Math.abs(currentOffset - activeRoomAnchor.offset_px) <= 1) {
-      retainedRoomScrollAnchorRef.current = {
-        signature: activeRoomAnchorSignature,
-        anchor: activeRoomAnchor,
-        scrollTop: container.scrollTop
-      };
+      dispatchViewportMachine({
+        type: "retain-room-anchor",
+        retained: {
+          signature: activeRoomAnchorSignature,
+          anchor: activeRoomAnchor,
+          scrollTop: container.scrollTop
+        }
+      });
       return;
     }
     const previousScrollTop = container.scrollTop;
@@ -2953,14 +2921,17 @@ export const TimelineView = memo(function TimelineView({
       restored = restoreRoomScrollAnchor(container, activeRoomAnchor);
     });
     if (!restored) {
-      retainedRoomScrollAnchorRef.current = null;
+      dispatchViewportMachine({ type: "clear-retained-room-anchor" });
       return;
     }
-    retainedRoomScrollAnchorRef.current = {
-      signature: activeRoomAnchorSignature,
-      anchor: activeRoomAnchor,
-      scrollTop: container.scrollTop
-    };
+    dispatchViewportMachine({
+      type: "retain-room-anchor",
+      retained: {
+        signature: activeRoomAnchorSignature,
+        anchor: activeRoomAnchor,
+        scrollTop: container.scrollTop
+      }
+    });
     if (container.scrollTop !== previousScrollTop) {
       updateViewportMetrics();
       reportViewportObservation();
@@ -3007,13 +2978,17 @@ export const TimelineView = memo(function TimelineView({
     }
     const container = containerRef.current;
     const measuredAtBottom = Boolean(container && isScrolledToBottom(container));
-    stickToBottomAfterMeasurementRef.current = measuredAtBottom;
+    dispatchViewportMachine({
+      type: "stick-to-bottom-after-measurement",
+      value: measuredAtBottom
+    });
     if (measuredAtBottom) {
       setViewportIntentToLiveEdge();
     }
     itemHeightByDomIdRef.current = nextHeights;
     setMeasuredHeightVersion((current) => current + 1);
   }, [
+    dispatchViewportMachine,
     setViewportIntentToLiveEdge,
     virtualWindow.endIndex,
     virtualWindow.startIndex,
@@ -3049,9 +3024,10 @@ export const TimelineView = memo(function TimelineView({
     }
     // Block while: a previous diff's anchor restoration is pending, a
     // request is already in flight, or pagination is Paginating/EndReached.
+    const viewportState = viewportMachineRef.current;
     if (
-      anchorRestorePendingRef.current ||
-      roomScrollAnchorRestorePendingRef.current ||
+      viewportState.prependAnchorRestorePending ||
+      viewportState.roomAnchorRestorePending ||
       backfillInFlightRef.current
     ) {
       return;
@@ -3068,24 +3044,22 @@ export const TimelineView = memo(function TimelineView({
   }, [store, transport, suppressPaginationUi, autoLoadOlderMessages, virtualItemHeight]);
   const onTimelineScroll = useCallback(() => {
     const container = containerRef.current;
-    const sig = programmaticScrollSignatureRef.current;
+    const viewportState = viewportMachineRef.current;
+    const sig = viewportState.programmaticScrollSignature;
     const isProgrammaticEcho =
       sig !== null &&
       container !== null &&
       container.scrollTop === sig.scrollTop &&
       container.scrollHeight === sig.scrollHeight;
-    const isUserDrivenScroll = userScrollInputPendingRef.current && !isProgrammaticEcho;
+    const isUserDrivenScroll = viewportState.userScrollInputPending && !isProgrammaticEcho;
+    const atBottom = Boolean(container && isScrolledToBottom(container));
     if (!isProgrammaticEcho && container) {
-      const atBottom = isScrolledToBottom(container);
-      if (isUserDrivenScroll && atBottom) {
-        setViewportIntentToLiveEdge();
-        userScrollInputPendingRef.current = false;
-      } else if (isUserDrivenScroll || viewportIntentRef.current.kind === "live-edge") {
-        releaseViewportIntent();
-      }
-    }
-    if (!isProgrammaticEcho) {
-      retainedRoomScrollAnchorRef.current = null;
+      dispatchViewportMachine({
+        type: "scroll-observed",
+        programmaticEcho: isProgrammaticEcho,
+        atBottom,
+        userInput: isUserDrivenScroll
+      });
     }
     updateViewportMetrics();
     if (!isProgrammaticEcho) {
@@ -3094,11 +3068,10 @@ export const TimelineView = memo(function TimelineView({
       persistViewportAnchor();
     }
   }, [
-    setViewportIntentToLiveEdge,
+    dispatchViewportMachine,
     maybeAutoBackfill,
     persistViewportAnchor,
     reportViewportObservation,
-    releaseViewportIntent,
     updateViewportMetrics
   ]);
   const onTimelinePointerDown = useCallback(
