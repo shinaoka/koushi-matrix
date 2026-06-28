@@ -123,6 +123,9 @@ Allowed transitions to `LiveEdge`:
   "jump to bottom" is equivalent to jump-to-bottom / latest, even if the visual
   icon changes. It transitions to `LiveEdge` directly as a user command, not as
   a side effect of a later scroll observation.
+- Concretely, the down-arrow latest button performs two actions as one command:
+  scroll to the latest projected timeline position and set the viewport mode to
+  `LiveEdge`.
 - The user performs a real scroll gesture or keyboard scroll and the settled
   viewport is within the live-edge enter threshold.
 - A local send action explicitly requests live-edge follow, because sending a
