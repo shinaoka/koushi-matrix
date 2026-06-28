@@ -1851,6 +1851,9 @@ export const TimelineView = memo(function TimelineView({
         scrollHeight: container.scrollHeight,
         scrollTop: container.scrollTop
       });
+      // Scroll events are intentionally suppressed for programmatic moves, but
+      // the virtualizer still needs the new viewport immediately.
+      updateViewportMetrics();
     }
     requestAnimationFrame(() => {
       if (anchorAsyncGenerationRef.current !== asyncGeneration) {
@@ -1859,7 +1862,7 @@ export const TimelineView = memo(function TimelineView({
       dispatchViewportMachine({ type: "scroll-capture-suppression-finished" });
       setScrollAnchorSettlementVersion((current) => current + 1);
     });
-  }, [dispatchViewportMachine]);
+  }, [dispatchViewportMachine, updateViewportMetrics]);
 
   const setViewportIntentToLiveEdge = useCallback(() => {
     dispatchViewportMachine({ type: "live-edge-requested" });

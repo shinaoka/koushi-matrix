@@ -926,6 +926,92 @@ describe("TimelineView", () => {
     });
   });
 
+  it("mounts a persisted room anchor in the virtual window during startup restore", async () => {
+    const frameCallbacks: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    });
+
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    const items = Array.from({ length: 650 }, (_, index) =>
+      message(`$virtual-${index}:example.invalid`, `Virtual message ${index}`)
+    );
+    items[500] = {
+      ...message("$thread-root:example.invalid", "Thread root anchor"),
+      timestamp_ms: 1_800_000_500_000,
+      thread_summary: {
+        reply_count: 13,
+        latest_sender: "@ken:example.invalid",
+        latest_sender_label: "Ken Inayoshi",
+        latest_body_preview: "latest thread reply",
+        latest_timestamp_ms: 1_800_000_500_000
+      }
+    };
+    mockTimelineRects(
+      Object.fromEntries(
+        items.map((item, index) => {
+          const eventId = "Event" in item.id ? item.id.Event.event_id : `item-${index}`;
+          return [eventId, { top: index * 72, height: 72 }];
+        })
+      ),
+      { top: 0, height: 500 },
+      scrollContainerRef
+    );
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        roomScrollAnchor={{
+          event_id: "$thread-root:example.invalid",
+          edge: "bottom",
+          offset_px: 0,
+          updated_at_ms: Date.now()
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "clientHeight", { value: 500, configurable: true });
+    Object.defineProperty(timeline, "scrollHeight", { value: 650 * 72, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(timeline.getAttribute("data-virtualized")).toBe("true");
+      expect(timeline.scrollTop).toBeGreaterThan(30_000);
+      expect(screen.getByText("Thread root anchor")).toBeTruthy();
+    });
+  });
+
   it("does not overwrite the persisted room anchor while restoring it", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const observeViewport = vi.fn(async () => undefined);
