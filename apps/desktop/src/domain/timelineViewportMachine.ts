@@ -44,6 +44,7 @@ export type TimelineViewportMachineState = {
   requestedRoomAnchorMaterializeSignature: string | null;
   exhaustedRoomAnchorMaterializeSignature: string | null;
   postSettleRestoredSignature: string | null;
+  postSettleRestorePendingSignature: string | null;
   stickToBottomAfterMeasurement: boolean;
   lastCoverageBackfillRequestSignature: string | null;
 };
@@ -99,6 +100,7 @@ export function createTimelineViewportMachineState(): TimelineViewportMachineSta
     requestedRoomAnchorMaterializeSignature: null,
     exhaustedRoomAnchorMaterializeSignature: null,
     postSettleRestoredSignature: null,
+    postSettleRestorePendingSignature: null,
     stickToBottomAfterMeasurement: false,
     lastCoverageBackfillRequestSignature: null
   };
@@ -198,7 +200,8 @@ export function reduceTimelineViewportMachine(
       }
       return {
         ...state,
-        roomAnchorRestorePending: false
+        roomAnchorRestorePending: false,
+        postSettleRestorePendingSignature: null
       };
     case "room-anchor-materialize-requested":
       return {
@@ -220,7 +223,11 @@ export function reduceTimelineViewportMachine(
             : state.exhaustedRoomAnchorMaterializeSignature
       };
     case "post-settle-restore-scheduled":
-      return { ...state, postSettleRestoredSignature: event.signature };
+      return {
+        ...state,
+        postSettleRestoredSignature: event.signature,
+        postSettleRestorePendingSignature: event.signature
+      };
     case "retain-room-anchor":
       return { ...state, retainedRoomAnchor: event.retained };
     case "clear-retained-room-anchor":
@@ -239,6 +246,7 @@ export function reduceTimelineViewportMachine(
         roomAnchorRestorePending: false,
         roomAnchorMaterializePending: false,
         retainedRoomAnchor: null,
+        postSettleRestorePendingSignature: null,
         stickToBottomAfterMeasurement: false
       };
     case "free-scroll-requested":
@@ -247,7 +255,8 @@ export function reduceTimelineViewportMachine(
         intent: { kind: "anchored" },
         userScrollInputPending: false,
         stickToBottomAfterMeasurement: false,
-        retainedRoomAnchor: null
+        retainedRoomAnchor: null,
+        postSettleRestorePendingSignature: null
       };
     case "targeting-requested":
       return {
@@ -255,6 +264,7 @@ export function reduceTimelineViewportMachine(
         intent: { kind: "targeting", target: event.target },
         userScrollInputPending: false,
         retainedRoomAnchor: null,
+        postSettleRestorePendingSignature: null,
         stickToBottomAfterMeasurement: false
       };
     case "targeting-settled":

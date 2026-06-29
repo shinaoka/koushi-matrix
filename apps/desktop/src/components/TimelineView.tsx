@@ -3181,7 +3181,10 @@ export const TimelineView = memo(function TimelineView({
       });
       return;
     }
-    if (retained.scrollTop === container.scrollTop) {
+    if (
+      retained.scrollTop === container.scrollTop &&
+      viewportState.postSettleRestorePendingSignature === retained.signature
+    ) {
       return;
     }
     const previousScrollTop = container.scrollTop;
