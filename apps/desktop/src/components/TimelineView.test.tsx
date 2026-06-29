@@ -29,6 +29,7 @@ import {
   MessageSourceDialog,
   TimelineView,
   clearTimelineViewportSessionMemoryForTests,
+  timelineMediaDisplayBoxForTests,
   type TimelineTransport
 } from "./TimelineView";
 import type { LiveSignalsState } from "../domain/types";
@@ -219,6 +220,19 @@ function installResizeObserverMock() {
 }
 
 describe("TimelineView", () => {
+  it("computes a stable clamped media box for known image dimensions", () => {
+    expect(timelineMediaDisplayBoxForTests(2048, 1188)).toEqual({
+      inlineSize: 420,
+      blockSize: 244
+    });
+    expect(timelineMediaDisplayBoxForTests(800, 1600)).toEqual({
+      inlineSize: 130,
+      blockSize: 260
+    });
+    expect(timelineMediaDisplayBoxForTests(null, 1600)).toBeNull();
+    expect(timelineMediaDisplayBoxForTests(800, null)).toBeNull();
+  });
+
   it("ensures the timeline subscription after registering the CoreEvent listener", async () => {
     const calls: string[] = [];
     let listener: ((payload: CoreEventPayload) => void) | null = null;

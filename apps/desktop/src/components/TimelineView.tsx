@@ -44,6 +44,7 @@ import {
 } from "lucide-react";
 import {
   Fragment,
+  type CSSProperties,
   type FormEvent,
   type KeyboardEvent,
   type MouseEvent,
@@ -5492,6 +5493,21 @@ function TimelineMediaAttachment({
     downloadState?.kind === "pending" ? downloadState.progress : null;
   const downloadProgressPercent = uploadProgressPercent(downloadProgress);
   const Icon = media.kind === "Image" ? ImageIcon : FileText;
+  const displayBox = timelineMediaDisplayBox(media.width, media.height);
+  const readyDisplayBox =
+    downloadState?.kind === "ready"
+      ? timelineMediaDisplayBox(
+          downloadState.width ?? media.width,
+          downloadState.height ?? media.height
+        )
+      : displayBox;
+  const mediaFrameStyle =
+    readyDisplayBox === null
+      ? undefined
+      : ({
+          inlineSize: `${readyDisplayBox.inlineSize}px`,
+          blockSize: `${readyDisplayBox.blockSize}px`
+        } satisfies CSSProperties);
 
   if (downloadState?.kind === "ready" && media.kind === "Image") {
     const sourceUrl = mediaSourceUrl(downloadState.source_url);
@@ -5509,14 +5525,16 @@ function TimelineMediaAttachment({
           rel="noreferrer"
           aria-label={t("timeline.mediaOpenFile")}
         >
-          <img
-            className="message-media-image"
-            src={sourceUrl}
-            alt={media.filename}
-            width={downloadState.width ?? undefined}
-            height={downloadState.height ?? undefined}
-            loading="lazy"
-          />
+          <span className="message-media-image-frame" style={mediaFrameStyle}>
+            <img
+              className="message-media-image"
+              src={sourceUrl}
+              alt={media.filename}
+              width={downloadState.width ?? undefined}
+              height={downloadState.height ?? undefined}
+              loading="lazy"
+            />
+          </span>
         </a>
       </div>
     );
@@ -5532,7 +5550,17 @@ function TimelineMediaAttachment({
       data-media-encrypted={media.source.encrypted || undefined}
       data-download-state={downloadState?.kind ?? "notRequested"}
     >
-      <Icon className="message-media-icon" size={18} aria-hidden="true" />
+      {media.kind === "Image" && displayBox ? (
+        <span
+          className="message-media-image-frame message-media-image-frame-reserved"
+          style={mediaFrameStyle}
+          aria-hidden="true"
+        >
+          <Icon className="message-media-icon" size={22} aria-hidden="true" />
+        </span>
+      ) : (
+        <Icon className="message-media-icon" size={18} aria-hidden="true" />
+      )}
       <div className="message-media-main">
         <div className="message-media-title" dir="auto">
           {media.filename}
@@ -5622,6 +5650,29 @@ function formatDimensions(width: number | null, height: number | null): string |
   }
   return `${width}x${height}`;
 }
+
+const TIMELINE_MEDIA_MAX_INLINE_PX = 420;
+const TIMELINE_MEDIA_MAX_BLOCK_PX = 260;
+
+function timelineMediaDisplayBox(
+  width: number | null | undefined,
+  height: number | null | undefined
+): { inlineSize: number; blockSize: number } | null {
+  if (!width || !height || width <= 0 || height <= 0) {
+    return null;
+  }
+  const scale = Math.min(
+    TIMELINE_MEDIA_MAX_INLINE_PX / width,
+    TIMELINE_MEDIA_MAX_BLOCK_PX / height,
+    1
+  );
+  return {
+    inlineSize: Math.round(width * scale),
+    blockSize: Math.round(height * scale)
+  };
+}
+
+export const timelineMediaDisplayBoxForTests = timelineMediaDisplayBox;
 
 function uploadProgressPercent(progress: MediaTransferProgress | null): number | null {
   if (!progress || progress.total <= 0) {

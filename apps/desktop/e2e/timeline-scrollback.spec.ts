@@ -45,6 +45,26 @@ function makeItem(id: string, body: string) {
   };
 }
 
+function makeImageItem(id: string) {
+  return {
+    ...makeItem(id, "image body"),
+    media: {
+      kind: "Image",
+      filename: "synthetic.png",
+      source: {
+        mxc_uri: "mxc://example.invalid/synthetic",
+        encrypted: false,
+        encryption_version: null
+      },
+      mimetype: "image/png",
+      size: 12345,
+      width: 2048,
+      height: 1188,
+      thumbnail: null
+    }
+  };
+}
+
 async function pushInitialTimelineItems(page: Page, count: number) {
   await page.evaluate(
     ({ key, items }) => {
@@ -921,6 +941,61 @@ test("large timelines keep only the viewport window in the DOM", async ({ page }
   await expect
     .poll(() => container.locator("[data-item-id]").count())
     .toBeLessThan(220);
+});
+
+test("known-dimension media keeps row height stable across download completion", async ({
+  page
+}) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 1, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 650 }, (_, index) =>
+        index === 620 ? makeImageItem("$image620") : makeItem(`$m${index}`, `message ${index}`)
+      )
+    }
+  );
+
+  const frame = page.locator('[data-frame-item-id="$image620"]');
+  await expect(frame).toBeVisible();
+  const beforeHeight = await frame.evaluate((node) => node.getBoundingClientRect().height);
+
+  await page.evaluate(
+    ({ key }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          MediaDownloadCompleted: {
+            request_id: "media-request",
+            key,
+            event_id: "$image620",
+            source_url: "appmedia://synthetic-image",
+            byte_count: 12345,
+            mimetype: "image/png",
+            width: 2048,
+            height: 1188
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    { key: timelineKey() }
+  );
+
+  await waitAnimationFrames(page, 3);
+  const afterHeight = await frame.evaluate((node) => node.getBoundingClientRect().height);
+  expect(Math.abs(afterHeight - beforeHeight)).toBeLessThanOrEqual(1);
 });
 
 test("active scroll inside mounted overscan does not recompose the virtual window", async ({ page }) => {

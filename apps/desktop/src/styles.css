@@ -3405,6 +3405,26 @@ button:disabled {
   outline-offset: 2px;
 }
 
+.message-media-image-frame {
+  display: inline-grid;
+  place-items: center;
+  overflow: hidden;
+  max-inline-size: min(100%, 420px);
+  max-block-size: 260px;
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.message-media-image-frame-reserved {
+  color: var(--text-muted);
+  border: 1px dashed var(--line);
+}
+
+.message-media-image-frame .message-media-image {
+  inline-size: 100%;
+  block-size: 100%;
+}
+
 .message-media-image {
   max-width: min(100%, 420px);
   max-height: 260px;
