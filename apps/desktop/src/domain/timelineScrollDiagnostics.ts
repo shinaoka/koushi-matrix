@@ -1,5 +1,24 @@
 export type TimelineScrollActivity = "idle" | "active";
 
+const WRITE_REASONS = [
+  "liveEdge",
+  "jumpToEvent",
+  "jumpToBottom",
+  "roomRestore",
+  "backfillCompensation",
+  "measurementFlush"
+] as const;
+
+const ROW_KINDS = [
+  "text",
+  "formatted",
+  "reply",
+  "reactionReceiptThread",
+  "linkPreview",
+  "media",
+  "redactedSystem"
+] as const;
+
 export type TimelineViewportIntentKind =
   | "freeScroll"
   | "liveEdge"
@@ -10,24 +29,11 @@ export type TimelineViewportIntentKind =
   | "backfillCompensation"
   | "measurementFlush";
 
-export type TimelineScrollWriteReason =
-  | "liveEdge"
-  | "jumpToEvent"
-  | "jumpToBottom"
-  | "roomRestore"
-  | "backfillCompensation"
-  | "measurementFlush";
+export type TimelineScrollWriteReason = (typeof WRITE_REASONS)[number];
 
 export type TimelineScrollHeightCommitReason = "initial" | "idleFlush" | "timelineReset";
 
-export type TimelineScrollRowKind =
-  | "text"
-  | "formatted"
-  | "reply"
-  | "reactionReceiptThread"
-  | "linkPreview"
-  | "media"
-  | "redactedSystem";
+export type TimelineScrollRowKind = (typeof ROW_KINDS)[number];
 
 export interface TimelineScrollFrameSample {
   scrollActivity: TimelineScrollActivity;
@@ -70,25 +76,6 @@ export interface TimelineScrollDiagnostics {
   latestFrame: TimelineScrollFrameSample | null;
   estimateBuckets: Record<TimelineScrollRowKind, TimelineScrollEstimateBucket>;
 }
-
-const WRITE_REASONS: readonly TimelineScrollWriteReason[] = [
-  "liveEdge",
-  "jumpToEvent",
-  "jumpToBottom",
-  "roomRestore",
-  "backfillCompensation",
-  "measurementFlush"
-];
-
-const ROW_KINDS: readonly TimelineScrollRowKind[] = [
-  "text",
-  "formatted",
-  "reply",
-  "reactionReceiptThread",
-  "linkPreview",
-  "media",
-  "redactedSystem"
-];
 
 function emptyWriteCounts(): Record<TimelineScrollWriteReason, number> {
   return Object.fromEntries(WRITE_REASONS.map((reason) => [reason, 0])) as Record<
