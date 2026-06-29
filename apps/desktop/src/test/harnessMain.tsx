@@ -12,6 +12,7 @@ import { createRoot } from "react-dom/client";
 
 import type { CoreEventPayload } from "../domain/coreEvents";
 import { roomTimelineKey } from "../domain/coreEvents";
+import type { TimelineScrollDiagnostics } from "../domain/timelineScrollDiagnostics";
 import {
   TimelineView,
   type TimelineTransport
@@ -24,6 +25,8 @@ declare global {
       pushCoreEvent(event: CoreEventPayload): void;
       invocations(): readonly IpcInvocation[];
       invocationsOf(command: string): IpcInvocation[];
+      scrollDiagnostics(): TimelineScrollDiagnostics | null;
+      resetScrollDiagnostics(): void;
     };
   }
 }
@@ -40,11 +43,16 @@ if (variableHeights) {
 }
 
 const ipc = new TauriIpcMock();
+let latestScrollDiagnostics: TimelineScrollDiagnostics | null = null;
 
 window.__harness = {
   pushCoreEvent: (event) => ipc.emitCoreEvent(event),
   invocations: () => ipc.recordedInvocations(),
-  invocationsOf: (command) => ipc.invocationsOf(command)
+  invocationsOf: (command) => ipc.invocationsOf(command),
+  scrollDiagnostics: () => latestScrollDiagnostics,
+  resetScrollDiagnostics: () => {
+    latestScrollDiagnostics = null;
+  }
 };
 
 const transport: TimelineTransport = {
@@ -149,6 +157,9 @@ createRoot(root).render(
     autoLoadOlderMessages={autoLoadOlderMessages}
     onReply={(roomId, eventId) => {
       void ipc.invoke("set_composer_reply_target", { roomId, eventId });
+    }}
+    onScrollDiagnosticsChange={(diagnostics) => {
+      latestScrollDiagnostics = diagnostics;
     }}
   />
 );

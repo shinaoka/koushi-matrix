@@ -111,6 +111,14 @@ import {
   shouldSuppressAutoBackfill,
   type TimelineStoreState
 } from "../domain/timelineStore";
+import {
+  createInitialTimelineScrollDiagnostics,
+  recordTimelineScrollCommit,
+  recordTimelineScrollFrame,
+  recordTimelineScrollHeightCommit,
+  type TimelineScrollDiagnostics,
+  type TimelineViewportIntentKind
+} from "../domain/timelineScrollDiagnostics";
 import { useTimelineStoreContext } from "./timelineStoreContext";
 import {
   IS_MAC_PLATFORM,
@@ -1610,6 +1618,7 @@ export const TimelineView = memo(function TimelineView({
   roomScrollAnchor: _persistedRoomScrollAnchor = null,
   enableAvatarThumbnailDownloads = AVATAR_THUMBNAIL_DOWNLOADS_ENABLED,
   onDiagnosticsChange,
+  onScrollDiagnosticsChange,
   onDiagnosticLogEntry,
   timelineStore,
   setTimelineStore,
@@ -1649,6 +1658,7 @@ export const TimelineView = memo(function TimelineView({
    */
   enableAvatarThumbnailDownloads?: boolean;
   onDiagnosticsChange?: (diagnostics: TimelineDiagnostics) => void;
+  onScrollDiagnosticsChange?: (diagnostics: TimelineScrollDiagnostics) => void;
   onDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
   /**
    * Optional App-level timeline store. When supplied, the view renders from
@@ -1741,6 +1751,9 @@ export const TimelineView = memo(function TimelineView({
     callback: (diagnostics: TimelineDiagnostics) => void;
     signature: string;
   } | null>(null);
+  const scrollDiagnosticsRef = useRef<TimelineScrollDiagnostics>(
+    createInitialTimelineScrollDiagnostics()
+  );
   const profileUsersRef = useRef(profileUsers);
   profileUsersRef.current = profileUsers;
   const timelineKeyRef = useRef(timelineKey);
@@ -1757,6 +1770,16 @@ export const TimelineView = memo(function TimelineView({
       });
     },
     [onDiagnosticLogEntry]
+  );
+  const emitScrollDiagnostics = useCallback(() => {
+    onScrollDiagnosticsChange?.(scrollDiagnosticsRef.current);
+  }, [onScrollDiagnosticsChange]);
+  const updateScrollDiagnostics = useCallback(
+    (update: (current: TimelineScrollDiagnostics) => TimelineScrollDiagnostics) => {
+      scrollDiagnosticsRef.current = update(scrollDiagnosticsRef.current);
+      emitScrollDiagnostics();
+    },
+    [emitScrollDiagnostics]
   );
   const updateViewportMetrics = useCallback(() => {
     const container = containerRef.current;
@@ -1878,6 +1901,11 @@ export const TimelineView = memo(function TimelineView({
     }
     return persistViewportAnchor({ allowSuppressed: true }) || changed;
   }, [persistViewportAnchor, runWithSuppressedScrollAnchorCapture]);
+
+  useEffect(() => {
+    updateScrollDiagnostics(recordTimelineScrollCommit);
+  });
+
   // --- Event subscription: local stores apply reducers; App stores keep view effects here. ---
   useEffect(() => {
     const unsubscribe = transport.listenCoreEvents((payload) => {
@@ -2176,6 +2204,34 @@ export const TimelineView = memo(function TimelineView({
       items: visibleItems.slice(startIndex, endIndex)
     };
   }, [timelineHeightModel, visibleItems, viewportMetrics]);
+  useEffect(() => {
+    const intentKind: TimelineViewportIntentKind =
+      viewportIntentRef.current.kind === "live-edge" ? "liveEdge" : "freeScroll";
+    updateScrollDiagnostics((current) =>
+      recordTimelineScrollFrame(current, {
+        scrollActivity: "idle",
+        viewportIntent: intentKind,
+        userInputPending: userScrollInputPendingRef.current,
+        virtualized: virtualWindow.virtualized,
+        startIndex: virtualWindow.startIndex,
+        endIndex: virtualWindow.endIndex,
+        paddingTop: virtualWindow.paddingTop,
+        paddingBottom: virtualWindow.paddingBottom,
+        changedMeasuredRowCount: 0,
+        heightDeltaAboveViewportPx: 0,
+        heightDeltaInsideViewportPx: 0,
+        heightDeltaBelowViewportPx: 0,
+        anchorTopDeltaPx: 0
+      })
+    );
+  }, [
+    updateScrollDiagnostics,
+    virtualWindow.endIndex,
+    virtualWindow.paddingBottom,
+    virtualWindow.paddingTop,
+    virtualWindow.startIndex,
+    virtualWindow.virtualized
+  ]);
   const sideEffectItems = virtualWindow.virtualized ? virtualWindow.items : visibleItems;
   useEffect(() => {
     const avatarDiagnostics = timelineAvatarDiagnostics(
@@ -2785,9 +2841,13 @@ export const TimelineView = memo(function TimelineView({
       setViewportIntentToLiveEdge();
     }
     itemHeightByDomIdRef.current = nextHeights;
+    updateScrollDiagnostics((current) =>
+      recordTimelineScrollHeightCommit(current, "initial")
+    );
     setMeasuredHeightVersion((current) => current + 1);
   }, [
     setViewportIntentToLiveEdge,
+    updateScrollDiagnostics,
     virtualWindow.endIndex,
     virtualWindow.startIndex,
     virtualWindow.virtualized,

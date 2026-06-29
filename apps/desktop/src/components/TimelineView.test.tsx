@@ -361,6 +361,49 @@ describe("TimelineView", () => {
     );
   });
 
+  it("emits private-data-free scroll diagnostics for the mounted timeline", async () => {
+    const onScrollDiagnosticsChange = vi.fn();
+    let listener: ((payload: CoreEventPayload) => void) | null = null;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        listener = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={() => undefined}
+        onScrollDiagnosticsChange={onScrollDiagnosticsChange}
+      />
+    );
+
+    act(() => {
+      listener?.({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: Array.from({ length: 700 }, (_, index) =>
+              message(`$item${index}`, `message ${index}`)
+            )
+          }
+        }
+      });
+    });
+
+    await waitFor(() => expect(onScrollDiagnosticsChange).toHaveBeenCalled());
+    const latest = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    expect(latest.renderCommits).toBeGreaterThan(0);
+    expect(JSON.stringify(latest)).not.toContain("!room:example.invalid");
+    expect(JSON.stringify(latest)).not.toContain("$item");
+  });
+
   it("paginates older history when the user scrolls to the top even if prefetch is disabled", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const paginateBackwards = vi.fn(async () => undefined);
