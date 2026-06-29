@@ -1495,6 +1495,110 @@ describe("TimelineView", () => {
     expect(materializeTimelineAnchor).not.toHaveBeenCalled();
   });
 
+  it("handles an external latest jump request as a live-edge command", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const observeViewport = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      observeViewport
+    });
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    const rects = mockTimelineRects(
+      {
+        "$first:example.invalid": { top: 0, height: 200 },
+        "$middle:example.invalid": { top: 200, height: 200 },
+        "$latest:example.invalid": { top: 400, height: 200 }
+      },
+      { top: 0, height: 200 },
+      scrollContainerRef
+    );
+
+    try {
+      const { rerender } = render(
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={transport}
+          roomViewport={{
+            kind: "anchored",
+            event_id: "$first:example.invalid",
+            edge: "top",
+            offset_px: 0,
+            updated_at_ms: Date.now()
+          }}
+          latestJumpRequest={0}
+          onReply={vi.fn()}
+        />
+      );
+
+      const timeline = await screen.findByTestId("timeline-view");
+      scrollContainerRef.current = timeline;
+      Object.defineProperty(timeline, "clientHeight", { value: 200, configurable: true });
+      Object.defineProperty(timeline, "scrollHeight", { value: 600, configurable: true });
+      Object.defineProperty(timeline, "scrollTop", {
+        value: 0,
+        writable: true,
+        configurable: true
+      });
+
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            InitialItems: {
+              request_id: null,
+              key: KEY,
+              generation: 1,
+              items: [
+                message("$first:example.invalid", "First"),
+                message("$middle:example.invalid", "Middle"),
+                message("$latest:example.invalid", "Latest")
+              ]
+            }
+          }
+        });
+      });
+
+      await screen.findByText("Latest");
+      observeViewport.mockClear();
+
+      rerender(
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={transport}
+          roomViewport={{
+            kind: "anchored",
+            event_id: "$first:example.invalid",
+            edge: "top",
+            offset_px: 0,
+            updated_at_ms: Date.now()
+          }}
+          latestJumpRequest={1}
+          onReply={vi.fn()}
+        />
+      );
+
+      await waitFor(() => {
+        expect(timeline.scrollTop).toBe(400);
+        expect(observeViewport).toHaveBeenCalled();
+      });
+      expect(observeViewport).toHaveBeenLastCalledWith(
+        "!room:example.invalid",
+        "$latest:example.invalid",
+        "$latest:example.invalid",
+        true,
+        null,
+        expect.objectContaining({ kind: "liveEdge" })
+      );
+    } finally {
+      rects.mockRestore();
+    }
+  });
+
   it("does not restart startup anchor materialization for same-room viewport echoes", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const materializeTimelineAnchor = vi.fn(async () => undefined);

@@ -1680,6 +1680,7 @@ export const TimelineView = memo(function TimelineView({
   mediaDownloads = {},
   roomViewport = null,
   roomScrollAnchor = null,
+  latestJumpRequest = 0,
   enableAvatarThumbnailDownloads = AVATAR_THUMBNAIL_DOWNLOADS_ENABLED,
   onDiagnosticsChange,
   onDiagnosticLogEntry,
@@ -1717,6 +1718,7 @@ export const TimelineView = memo(function TimelineView({
   mediaDownloads?: Record<string, TimelineMediaDownloadState>;
   roomViewport?: TimelinePersistedViewport | null;
   roomScrollAnchor?: TimelineScrollAnchor | null;
+  latestJumpRequest?: number;
   /**
    * Temporary #116 perf gate. Defaults to AVATAR_THUMBNAIL_DOWNLOADS_ENABLED
    * (currently false). Set to true in tests that verify the firing path, or
@@ -1790,6 +1792,7 @@ export const TimelineView = memo(function TimelineView({
   const eventViewportTarget = viewportController.eventTarget;
   const canRequestCoverageBackfill = viewportController.canRequestCoverageBackfill;
   const viewportCoverageMode = viewportController.coverageMode;
+  const latestJumpRequestRef = useRef(latestJumpRequest);
   const anchorAsyncGenerationRef = useRef(0);
   /** Tracks whether the current key already got its first live-edge scroll. */
   const initialLiveEdgeScrollAppliedRef = useRef<string | null>(null);
@@ -3427,6 +3430,13 @@ export const TimelineView = memo(function TimelineView({
     runWithSuppressedScrollAnchorCapture,
     updateViewportMetrics
   ]);
+  useEffect(() => {
+    if (latestJumpRequestRef.current === latestJumpRequest) {
+      return;
+    }
+    latestJumpRequestRef.current = latestJumpRequest;
+    jumpToBottom();
+  }, [jumpToBottom, latestJumpRequest]);
   const canRenderRoomNavigation =
     roomTimelineRoomId === roomId;
   const firstUnreadEventId = navigationSnapshot?.first_unread_event_id ?? null;

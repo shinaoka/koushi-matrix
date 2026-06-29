@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -11,7 +11,8 @@ import type { TimelineTransport } from "./TimelineView";
 
 const renderCounts = vi.hoisted(() => ({
   composer: 0,
-  timelineView: 0
+  timelineView: 0,
+  timelineViewLatestJumpRequests: [] as number[]
 }));
 
 vi.mock("./composer", async () => {
@@ -36,6 +37,7 @@ vi.mock("./TimelineView", async () => {
   const TimelineViewProbe = memo(
     function TimelineViewProbe(props: Parameters<typeof actual.TimelineView>[0]) {
       renderCounts.timelineView += 1;
+      renderCounts.timelineViewLatestJumpRequests.push(props.latestJumpRequest ?? 0);
       return createElement(actual.TimelineView, props);
     }
   );
@@ -51,6 +53,7 @@ describe("TimelinePane render isolation", () => {
     clearAppStoreSnapshot();
     renderCounts.composer = 0;
     renderCounts.timelineView = 0;
+    renderCounts.timelineViewLatestJumpRequests = [];
   });
 
   afterEach(() => {
@@ -196,6 +199,55 @@ describe("TimelinePane render isolation", () => {
 
     expect(renderCounts.composer).toBe(2);
     expect(renderCounts.timelineView).toBe(3);
+  });
+
+  test("routes the header latest button through the timeline viewport owner", () => {
+    const snapshot = makeSnapshot();
+    const noop = () => undefined;
+    const resolveComposerKeyAction = async (): Promise<"noop"> => "noop";
+    setAppStoreSnapshot(snapshot);
+
+    render(
+      createElement(TimelinePane, {
+        activeRoomName: "Alpha Room",
+        composerDraft: snapshot.state.ui.timeline.composer.draft,
+        composerMode: { kind: "plain" },
+        mentionIntent: { targets: [] },
+        resolveComposerKeyAction,
+        searchQuery: "",
+        searchResults: [],
+        showSearchResults: false,
+        snapshot,
+        timelineBackfill: "unknown",
+        timelineTransport: noopTimelineTransport(),
+        onCancelReply: noop,
+        onCancelScheduledSend: noop,
+        onAttachFiles: noop,
+        onClearUploadStaging: noop,
+        onUpdateStagedUploadCaption: noop,
+        onUpdateStagedUploadCompression: noop,
+        onComposerDraftChange: noop,
+        onMentionIntentChange: noop,
+        onEditMessage: noop,
+        onOpenContextMenu: noop,
+        onOpenThread: noop,
+        onRedactMessage: noop,
+        onReply: noop,
+        onRescheduleScheduledSend: noop,
+        onResultSelect: noop,
+        onScheduleSend: noop,
+        onSendText: noop,
+        onSetLocalUserAlias: noop,
+        onUnpinPinnedEvent: noop,
+        onOpenPeople: noop,
+        onOpenThreads: noop,
+        onToggleRoomInfo: noop
+      })
+    );
+
+    expect(renderCounts.timelineViewLatestJumpRequests.at(-1)).toBe(0);
+    fireEvent.click(screen.getByRole("button", { name: "Latest" }));
+    expect(renderCounts.timelineViewLatestJumpRequests.at(-1)).toBe(1);
   });
 
   test("does not re-render TimelineView when live_signals for a different room change", async () => {
