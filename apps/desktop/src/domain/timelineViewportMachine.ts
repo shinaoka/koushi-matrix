@@ -8,10 +8,6 @@ export type TimelineRetainedRoomAnchor = {
   scrollTop: number;
 };
 
-export type TimelineViewportAnchorCaptureOptions = {
-  allowSuppressed?: boolean;
-};
-
 export type TimelineViewportTargetSource =
   | "activity"
   | "search"
@@ -40,7 +36,6 @@ export type TimelineViewportMachineState = {
   scrollActivity: TimelineScrollActivity;
   programmaticToken: number;
   pendingProgrammaticScrollToken: number | null;
-  suppressScrollAnchorCapture: boolean;
   prependAnchorRestorePending: boolean;
   roomAnchorRestorePending: boolean;
   roomAnchorMaterializePending: boolean;
@@ -84,8 +79,6 @@ export type TimelineViewportMachineEvent =
       userInput: boolean;
     }
   | { type: "scroll-activity-idle" }
-  | { type: "scroll-capture-suppression-started" }
-  | { type: "scroll-capture-suppression-finished" }
   | { type: "programmatic-scroll-assigned" }
   | { type: "programmatic-scroll-cancelled"; token: number }
   | { type: "stick-to-bottom-after-measurement"; value: boolean }
@@ -98,7 +91,6 @@ export function createTimelineViewportMachineState(): TimelineViewportMachineSta
     scrollActivity: "idle",
     programmaticToken: 0,
     pendingProgrammaticScrollToken: null,
-    suppressScrollAnchorCapture: false,
     prependAnchorRestorePending: false,
     roomAnchorRestorePending: false,
     roomAnchorMaterializePending: false,
@@ -127,13 +119,12 @@ export function timelineViewportHasBlockingAnchorWork(
 }
 
 export function timelineViewportCanPersistAnchor(
-  state: TimelineViewportMachineState,
-  options?: TimelineViewportAnchorCaptureOptions
+  state: TimelineViewportMachineState
 ): boolean {
   return (
     state.intent.kind === "anchored" &&
     !timelineViewportHasBlockingAnchorWork(state) &&
-    (options?.allowSuppressed === true || !state.suppressScrollAnchorCapture)
+    state.retainedRoomAnchor === null
   );
 }
 
@@ -315,13 +306,6 @@ export function reduceTimelineViewportMachine(
         ...state,
         scrollActivity: "idle",
         userScrollInputPending: false
-      };
-    case "scroll-capture-suppression-started":
-      return { ...state, suppressScrollAnchorCapture: true };
-    case "scroll-capture-suppression-finished":
-      return {
-        ...state,
-        suppressScrollAnchorCapture: false
       };
     case "programmatic-scroll-assigned":
       {

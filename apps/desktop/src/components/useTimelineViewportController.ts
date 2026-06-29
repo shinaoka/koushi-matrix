@@ -10,7 +10,6 @@ import {
   timelineViewportHasBlockingAnchorWork,
   timelineViewportIsLiveEdge,
   timelineViewportProgrammaticScrollTokenMatches,
-  type TimelineViewportAnchorCaptureOptions,
   type TimelineViewportMachineEvent,
   type TimelineViewportMachineState,
   type TimelineViewportTargetBlock,
@@ -45,8 +44,7 @@ export function useTimelineViewportController() {
   );
 
   const canPersistAnchor = useCallback(
-    (options?: TimelineViewportAnchorCaptureOptions) =>
-      timelineViewportCanPersistAnchor(stateRef.current, options),
+    () => timelineViewportCanPersistAnchor(stateRef.current),
     []
   );
 

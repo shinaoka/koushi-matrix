@@ -2196,7 +2196,7 @@ async fn run_scheduled_send_stage(
     const SCHEDULED_FIRE_BODY: &str = "Koushi scheduled fire QA body";
 
     let select_id = conn.next_request_id();
-    conn.command(CoreCommand::Room(RoomCommand::SelectRoom {
+    conn.command(CoreCommand::App(AppCommand::SelectRoom {
         request_id: select_id,
         room_id: room_id.to_owned(),
     }))

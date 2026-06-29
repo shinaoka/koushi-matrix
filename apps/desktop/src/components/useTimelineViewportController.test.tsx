@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ReactNode } from "react";
@@ -9,6 +11,16 @@ import { useTimelineViewportController } from "./useTimelineViewportController";
 afterEach(cleanup);
 
 describe("useTimelineViewportController", () => {
+  it("does not keep the legacy scroll capture suppression path in TimelineView", () => {
+    const source = readFileSync(
+      resolve(process.cwd(), "src/components/TimelineView.tsx"),
+      "utf8"
+    );
+
+    expect(source).not.toContain("runWithSuppressedScrollAnchorCapture");
+    expect(source).not.toContain("scroll-capture-suppression");
+  });
+
   it("keeps reducer access behind a stable controller API", () => {
     let controller: ReturnType<typeof useTimelineViewportController> | null = null;
 
@@ -38,20 +50,24 @@ describe("useTimelineViewportController", () => {
     expect(mountedController.isLiveEdge()).toBe(true);
 
     act(() => {
-      mountedController.dispatch({ type: "scroll-capture-suppression-started" });
+      mountedController.dispatch({
+        type: "room-anchor-materialize-requested",
+        signature: "!room\u0000$event\u0000bottom\u00000\u00008"
+      });
     });
 
     expect(mountedController.canPersistAnchor()).toBe(false);
-    expect(mountedController.canPersistAnchor({ allowSuppressed: true })).toBe(false);
 
     act(() => {
       mountedController.dispatch({ type: "free-scroll-requested" });
-      mountedController.dispatch({ type: "scroll-capture-suppression-started" });
+      mountedController.dispatch({
+        type: "room-anchor-materialize-finished",
+        status: "found"
+      });
     });
 
     expect(mountedController.coverageMode()).toBe("anchored");
-    expect(mountedController.canPersistAnchor()).toBe(false);
-    expect(mountedController.canPersistAnchor({ allowSuppressed: true })).toBe(true);
+    expect(mountedController.canPersistAnchor()).toBe(true);
   });
 
   it("owns programmatic scroll writes and classifies their token echoes", () => {

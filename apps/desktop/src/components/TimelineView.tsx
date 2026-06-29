@@ -1884,19 +1884,11 @@ export const TimelineView = memo(function TimelineView({
     );
   }, []);
 
-  const capturePersistableViewportAnchor = useCallback((
-    options?: { allowSuppressed?: boolean }
-  ): TimelineScrollAnchor | null => {
+  const capturePersistableViewportAnchor = useCallback((): TimelineScrollAnchor | null => {
     if (roomTimelineRoomId !== roomId) {
       return null;
     }
-    if (
-      options?.allowSuppressed === true &&
-      currentViewportState().retainedRoomAnchor !== null
-    ) {
-      return null;
-    }
-    if (!viewportCanPersistAnchor(options)) {
+    if (!viewportCanPersistAnchor()) {
       return null;
     }
     const container = containerRef.current;
@@ -1913,9 +1905,8 @@ export const TimelineView = memo(function TimelineView({
     };
   }, [roomId, roomTimelineRoomId, viewportCanPersistAnchor]);
 
-  const runWithSuppressedScrollAnchorCapture = useCallback((action: () => void) => {
+  const runViewportScrollWork = useCallback((action: () => void) => {
     const asyncGeneration = anchorAsyncGenerationRef.current;
-    dispatchViewportMachine({ type: "scroll-capture-suppression-started" });
     const container = containerRef.current;
     const beforeScrollTop = container?.scrollTop ?? 0;
     action();
@@ -1926,10 +1917,9 @@ export const TimelineView = memo(function TimelineView({
       if (anchorAsyncGenerationRef.current !== asyncGeneration) {
         return;
       }
-      dispatchViewportMachine({ type: "scroll-capture-suppression-finished" });
       setScrollAnchorSettlementVersion((current) => current + 1);
     });
-  }, [dispatchViewportMachine, updateViewportMetrics]);
+  }, [updateViewportMetrics]);
 
   const setViewportIntentToLiveEdge = useCallback(() => {
     dispatchViewportMachine({ type: "live-edge-requested" });
@@ -1967,13 +1957,13 @@ export const TimelineView = memo(function TimelineView({
     const targetScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
     let changed = false;
     if (Math.abs(container.scrollTop - targetScrollTop) > SCROLL_EDGE_TOLERANCE_PX) {
-      runWithSuppressedScrollAnchorCapture(() => {
+      runViewportScrollWork(() => {
         viewportScrollTo(container, targetScrollTop);
       });
       changed = true;
     }
     return changed;
-  }, [runWithSuppressedScrollAnchorCapture, viewportIsLiveEdge, viewportScrollTo]);
+  }, [runViewportScrollWork, viewportIsLiveEdge, viewportScrollTo]);
   // --- Event subscription: local stores apply reducers; App stores keep view effects here. ---
   useEffect(() => {
     const unsubscribe = transport.listenCoreEvents((payload) => {
@@ -2560,9 +2550,7 @@ export const TimelineView = memo(function TimelineView({
     },
     [roomId, transport]
   );
-  const reportViewportObservation = useCallback((
-    options?: { allowSuppressedAnchor?: boolean }
-  ) => {
+  const reportViewportObservation = useCallback(() => {
     if (!transport.observeViewport || roomTimelineRoomId !== roomId) {
       return;
     }
@@ -2579,9 +2567,7 @@ export const TimelineView = memo(function TimelineView({
     if (atBottom && latestReadableEventId) {
       sendReadSignalsForEvent(latestReadableEventId);
     }
-    const scrollAnchor = capturePersistableViewportAnchor({
-      allowSuppressed: options?.allowSuppressedAnchor === true
-    });
+    const scrollAnchor = capturePersistableViewportAnchor();
     const persistedViewport: TimelinePersistedViewport | null =
       atBottom && viewportIsLiveEdge()
         ? { kind: "liveEdge", updated_at_ms: Date.now() }
@@ -2663,7 +2649,7 @@ export const TimelineView = memo(function TimelineView({
           return;
         }
         updateViewportMetrics();
-        reportViewportObservation({ allowSuppressedAnchor: true });
+        reportViewportObservation();
       });
     });
 
@@ -2832,7 +2818,7 @@ export const TimelineView = memo(function TimelineView({
           forceUserBackfill: true
         };
         dispatchViewportMachine({ type: "room-anchor-restore-started" });
-        runWithSuppressedScrollAnchorCapture(() => {
+        runViewportScrollWork(() => {
           roomAnchorRestored = restoreActiveRoomAnchor();
         });
         if (
@@ -2856,26 +2842,24 @@ export const TimelineView = memo(function TimelineView({
                   container.clientHeight -
                   activeRoomAnchor.offset_px
                 : viewportMetrics.listOffsetTop + anchorTop - activeRoomAnchor.offset_px;
-            runWithSuppressedScrollAnchorCapture(() => {
+            runViewportScrollWork(() => {
               viewportScrollTo(container, Math.max(0, targetScrollTop));
             });
             requestAnimationFrame(() => {
               let roomAnchorRestoredInFrame = false;
-              runWithSuppressedScrollAnchorCapture(() => {
+              runViewportScrollWork(() => {
                 roomAnchorRestoredInFrame = restoreActiveRoomAnchor();
                 if (roomAnchorRestoredInFrame) {
                   updateViewportMetrics();
-                  reportViewportObservation({ allowSuppressedAnchor: true });
+                  reportViewportObservation();
                 }
               });
-              if (!roomAnchorRestoredInFrame) {
-                dispatchViewportMachine({
-                  type: "room-anchor-restore-finished",
-                  status: "not-found"
-                });
-              }
               updateViewportMetrics();
-              reportViewportObservation({ allowSuppressedAnchor: true });
+              reportViewportObservation();
+              dispatchViewportMachine({
+                type: "room-anchor-restore-finished",
+                status: roomAnchorRestoredInFrame ? "found" : "not-found"
+              });
             });
             return;
           }
@@ -2895,10 +2879,8 @@ export const TimelineView = memo(function TimelineView({
         // any media element inside the anchor row to load (with a 250ms timeout
         // fallback so we never hang on a missing resource).  Guard with
         // the viewport state machine's post-settle signature so this fires at
-        // most once per restore,
-        // and keep capture suppressed so the in-flight adjustment is not saved as
-        // a new anchor.  Skip if the user has already scrolled (handled by the
-        // existing capture-suppression check on the onscroll path).
+        // most once per restore. Skip if the user has already scrolled during
+        // the asynchronous settle wait.
         if (
           roomAnchorRestored &&
           container !== null &&
@@ -2929,8 +2911,6 @@ export const TimelineView = memo(function TimelineView({
               return;
             }
             // Abort if the user scrolled during the rAF/fonts/media wait.
-            // A real user scroll changes scrollTop beyond the programmatic
-            // restore; the suppression guard covers programmatic adjustments.
             if (containerSnapshot.scrollTop !== scrollTopAfterRestore) {
               dispatchViewportMachine({
                 type: "room-anchor-restore-finished",
@@ -2950,7 +2930,6 @@ export const TimelineView = memo(function TimelineView({
               setScrollAnchorSettlementVersion((current) => current + 1);
               return;
             }
-            dispatchViewportMachine({ type: "scroll-capture-suppression-started" });
             const restored = restoreRoomScrollAnchor(
               containerSnapshot,
               anchorSnapshot,
@@ -2968,13 +2947,12 @@ export const TimelineView = memo(function TimelineView({
               if (anchorAsyncGenerationRef.current !== asyncGenerationSnapshot) {
                 return;
               }
-              dispatchViewportMachine({ type: "scroll-capture-suppression-finished" });
               dispatchViewportMachine({
                 type: "room-anchor-restore-finished",
                 status: restored ? "found" : "not-found"
               });
               updateViewportMetrics();
-              reportViewportObservation({ allowSuppressedAnchor: true });
+              reportViewportObservation();
               setScrollAnchorSettlementVersion((current) => current + 1);
             });
           };
@@ -3045,7 +3023,7 @@ export const TimelineView = memo(function TimelineView({
       };
       if (container) {
         setViewportIntentToLiveEdge();
-        runWithSuppressedScrollAnchorCapture(() => {
+        runViewportScrollWork(() => {
           scrollContainerToBottom(container, viewportScrollTo);
         });
         // Only mark the live-edge scroll as applied once the content actually
@@ -3069,7 +3047,7 @@ export const TimelineView = memo(function TimelineView({
     }
     if (currentViewportState().stickToBottomAfterMeasurement) {
       if (container && viewportIsLiveEdge()) {
-        runWithSuppressedScrollAnchorCapture(() => {
+        runViewportScrollWork(() => {
           scrollContainerToBottom(container, viewportScrollTo);
         });
       }
@@ -3086,7 +3064,7 @@ export const TimelineView = memo(function TimelineView({
       const anchor = pendingAnchorRef.current;
       let restored = false;
       if (container && anchor) {
-        runWithSuppressedScrollAnchorCapture(() => {
+        runViewportScrollWork(() => {
           restored = restoreAnchor(container, anchor, viewportScrollBy);
         });
       }
@@ -3095,7 +3073,7 @@ export const TimelineView = memo(function TimelineView({
           (item) => timelineItemDomId(item.id) === anchor.itemId
         );
         if (anchorIndex >= 0) {
-          runWithSuppressedScrollAnchorCapture(() => {
+          runViewportScrollWork(() => {
             viewportScrollTo(
               container,
               Math.max(
@@ -3107,11 +3085,11 @@ export const TimelineView = memo(function TimelineView({
             );
           });
           requestAnimationFrame(() => {
-            runWithSuppressedScrollAnchorCapture(() => {
+            runViewportScrollWork(() => {
               restoreAnchor(container, anchor, viewportScrollBy);
             });
             updateViewportMetrics();
-            reportViewportObservation({ allowSuppressedAnchor: true });
+            reportViewportObservation();
           });
         }
       }
@@ -3119,7 +3097,7 @@ export const TimelineView = memo(function TimelineView({
       dispatchViewportMachine({ type: "prepend-anchor-restore-finished" });
     }
     updateViewportMetrics();
-    reportViewportObservation({ allowSuppressedAnchor: true });
+    reportViewportObservation();
     if (coverageEvaluation) {
       evaluateViewportCoverageAndMaybeBackfill(coverageEvaluation.source, {
         forceUserBackfill: coverageEvaluation.forceUserBackfill
@@ -3141,7 +3119,7 @@ export const TimelineView = memo(function TimelineView({
     virtualWindow.virtualized,
     visibleItems,
     activePersistedRoomAnchor,
-    runWithSuppressedScrollAnchorCapture,
+    runViewportScrollWork,
     setViewportIntentToLiveEdge,
     viewportScrollBy,
     viewportScrollTo,
@@ -3153,7 +3131,7 @@ export const TimelineView = memo(function TimelineView({
       const changed = applyViewportIntent();
       if (changed) {
         updateViewportMetrics();
-        reportViewportObservation({ allowSuppressedAnchor: true });
+        reportViewportObservation();
       }
       return;
     }
@@ -3167,7 +3145,7 @@ export const TimelineView = memo(function TimelineView({
     if (
       !retained ||
       !container ||
-      viewportState.suppressScrollAnchorCapture ||
+      viewportState.roomAnchorRestorePending ||
       pendingDifferentRoomRestore ||
       viewportState.prependAnchorRestorePending
     ) {
@@ -3203,12 +3181,20 @@ export const TimelineView = memo(function TimelineView({
       });
       return;
     }
+    if (retained.scrollTop === container.scrollTop) {
+      return;
+    }
     const previousScrollTop = container.scrollTop;
     let restored = false;
-    runWithSuppressedScrollAnchorCapture(() => {
+    dispatchViewportMachine({ type: "room-anchor-restore-started" });
+    runViewportScrollWork(() => {
       restored = restoreRoomScrollAnchor(container, activeRoomAnchor, viewportScrollBy);
     });
     if (!restored) {
+      dispatchViewportMachine({
+        type: "room-anchor-restore-finished",
+        status: "not-found"
+      });
       dispatchViewportMachine({ type: "clear-retained-room-anchor" });
       return;
     }
@@ -3222,8 +3208,14 @@ export const TimelineView = memo(function TimelineView({
     });
     if (container.scrollTop !== previousScrollTop) {
       updateViewportMetrics();
-      reportViewportObservation({ allowSuppressedAnchor: true });
+      reportViewportObservation();
     }
+    requestAnimationFrame(() => {
+      dispatchViewportMachine({
+        type: "room-anchor-restore-finished",
+        status: "found"
+      });
+    });
   });
 
   useLayoutEffect(() => {
@@ -3390,14 +3382,14 @@ export const TimelineView = memo(function TimelineView({
         `[data-event-id="${cssEscape(eventId)}"]`
       );
       if (row && container) {
-        runWithSuppressedScrollAnchorCapture(() => {
+        runViewportScrollWork(() => {
           viewportRunProgrammaticScroll(container, () => {
             row.scrollIntoView({ block: scrollBlock, inline: "nearest" });
           });
         });
         updateViewportMetrics();
         dispatchViewportMachine({ type: "targeting-settled" });
-        reportViewportObservation({ allowSuppressedAnchor: true });
+        reportViewportObservation();
         return;
       }
       if (container && virtualWindow.virtualized) {
@@ -3417,17 +3409,17 @@ export const TimelineView = memo(function TimelineView({
                 itemTop +
                 itemHeight / 2 -
                 container.clientHeight / 2;
-          runWithSuppressedScrollAnchorCapture(() => {
+          runViewportScrollWork(() => {
             viewportScrollTo(container, Math.max(0, targetScrollTop));
           });
           updateViewportMetrics();
           requestAnimationFrame(() => {
-            runWithSuppressedScrollAnchorCapture(() => {
+            runViewportScrollWork(() => {
               scrollMountedRowIntoView();
             });
             updateViewportMetrics();
             dispatchViewportMachine({ type: "targeting-settled" });
-            reportViewportObservation({ allowSuppressedAnchor: true });
+            reportViewportObservation();
           });
           return;
         }
@@ -3437,7 +3429,7 @@ export const TimelineView = memo(function TimelineView({
     },
     [
       dispatchViewportMachine,
-      runWithSuppressedScrollAnchorCapture,
+      runViewportScrollWork,
       reportViewportObservation,
       timelineHeightModel,
       updateViewportMetrics,
@@ -3458,22 +3450,22 @@ export const TimelineView = memo(function TimelineView({
       activeElement.blur();
     }
     setViewportIntentToLiveEdge();
-    runWithSuppressedScrollAnchorCapture(() => {
+    runViewportScrollWork(() => {
       scrollContainerToBottom(container, viewportScrollTo);
     });
     updateViewportMetrics();
-    reportViewportObservation({ allowSuppressedAnchor: true });
+    reportViewportObservation();
     requestAnimationFrame(() => {
-      runWithSuppressedScrollAnchorCapture(() => {
+      runViewportScrollWork(() => {
         scrollContainerToBottom(container, viewportScrollTo);
       });
       updateViewportMetrics();
-      reportViewportObservation({ allowSuppressedAnchor: true });
+      reportViewportObservation();
     });
   }, [
     setViewportIntentToLiveEdge,
     reportViewportObservation,
-    runWithSuppressedScrollAnchorCapture,
+    runViewportScrollWork,
     updateViewportMetrics,
     viewportScrollTo
   ]);

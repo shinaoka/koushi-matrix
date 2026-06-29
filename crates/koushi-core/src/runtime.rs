@@ -63,11 +63,10 @@ pub const EVENT_QUEUE_CAPACITY: usize = 16384;
 /// - background work (search-crawler room availability, inactive enrichment,
 ///   non-visible media) is latest-wins / coalesced / drop-recoverable only.
 ///
-/// The action queue remains large because the RoomActor projects through a
-/// drop-on-full `try_send`: an overflow silently drops one-shot actions such as
-/// room selection (`SelectRoom`) and room-settings/member loads, which is the
-/// large-account "room selection did not complete" / blank-timeline bug. See
-/// the async channel-capacity rule in docs/policies/engineering-rules.md.
+/// The action queue remains large because actors project through drop-on-full
+/// `try_send`: an overflow silently drops one-shot projections such as
+/// room-settings/member loads, which caused blank-timeline bugs. See the async
+/// channel-capacity rule in docs/policies/engineering-rules.md.
 pub const ACTION_QUEUE_CAPACITY: usize = 16384;
 /// Inter-actor command/message inboxes (AppActor -> AccountActor ->
 /// Room/Timeline actors). Sized so that forwarding a command under heavy sync
@@ -241,7 +240,6 @@ impl CoreRuntime {
             account_actor,
             activity_projection: ActivityProjection::default(),
             next_internal_request_sequence: 1,
-            pending_select: HashMap::new(),
         };
         let actor = executor::spawn(actor.run());
 
@@ -391,12 +389,6 @@ struct AppActor {
     account_actor: AccountActorHandle,
     activity_projection: ActivityProjection,
     next_internal_request_sequence: u64,
-    /// Correlation map for SelectRoom intents: room_id → FIFO queue of request_ids.
-    /// Multiple concurrent SelectRoom commands for the same room are queued in
-    /// submission order; each `AppAction::SelectRoom` pops the oldest entry so
-    /// every submitted command receives a terminal `IntentLifecycle` outcome.
-    /// Private-data-free: stores opaque ids only, never room names or content.
-    pending_select: HashMap<String, std::collections::VecDeque<RequestId>>,
 }
 
 struct PendingComposerDraftPersist {
@@ -419,6 +411,13 @@ struct ActivityProjection {
 struct ActivityMarkReadResult {
     cleared_event_ids: Vec<String>,
     cleared_placeholder_room_ids: Vec<String>,
+}
+
+struct SelectRoomPreconditions {
+    session_ready: bool,
+    room_found: bool,
+    already_active: bool,
+    rooms_len: usize,
 }
 
 impl ActivityProjection {
@@ -894,37 +893,6 @@ impl AppActor {
                         if let AppAction::ActivityRowsObserved { rows } = &action {
                             self.activity_projection.ingest(rows.clone());
                         }
-                        // For SelectRoom: capture observable facts BEFORE reduce so
-                        // we can classify the outcome afterwards and emit the
-                        // telemetry-lane IntentLifecycle event. Private-data-free:
-                        // we capture only boolean flags and a count.
-                        let select_intent_pre: Option<(String, bool, bool, bool, usize)> =
-                            if let AppAction::SelectRoom { room_id } = &action {
-                                let session_ready = matches!(
-                                    self.state.session,
-                                    SessionState::Ready(_)
-                                        | SessionState::NeedsRecovery { .. }
-                                        | SessionState::Recovering { .. }
-                                );
-                                let found =
-                                    self.state.rooms.iter().any(|r| r.room_id == *room_id);
-                                let already = self
-                                    .state
-                                    .navigation
-                                    .active_room_id
-                                    .as_deref()
-                                    == Some(room_id.as_str());
-                                let rooms_len = self.state.rooms.len();
-                                Some((
-                                    room_id.clone(),
-                                    session_ready,
-                                    found,
-                                    already,
-                                    rooms_len,
-                                ))
-                            } else {
-                                None
-                            };
                         // Actor-originated actions are post-side-effect
                         // projections: the owner actor has already performed
                         // the corresponding Matrix/store/sync operation.
@@ -932,53 +900,6 @@ impl AppActor {
                         // actor-projection effects here would double-execute
                         // login, restore, sync, or recovery work.
                         let post_projection_effects = self.reduce_app_action(action).await;
-                        // After reduce: determine outcome and emit IntentLifecycle
-                        // for correlated pending SelectRoom intents.
-                        if let Some((room_id, session_ready, found, already, rooms_len)) =
-                            select_intent_pre
-                        {
-                            let committed = self
-                                .state
-                                .navigation
-                                .active_room_id
-                                .as_deref()
-                                == Some(room_id.as_str());
-                            let outcome = if !session_ready {
-                                IntentOutcome::FailedNoOp(IntentNoOpReason::SessionNotReady)
-                            } else if !found {
-                                IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState)
-                            } else if already {
-                                IntentOutcome::BenignNoOp(IntentNoOpReason::AlreadyActive)
-                            } else if committed {
-                                IntentOutcome::Committed
-                            } else {
-                                // Room was present, session ready, but reduce
-                                // did not commit — classify as FailedNoOp to
-                                // prevent a silent timeout (defensive case).
-                                IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState)
-                            };
-                            // Env-gated private-data-free trace (counts/flags only).
-                            if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
-                                eprintln!(
-                                    "koushi.select_reduce found={found} session_ready={session_ready} rooms_len={rooms_len}"
-                                );
-                            }
-                            let request_id_to_emit = self
-                                .pending_select
-                                .get_mut(&room_id)
-                                .and_then(|q| q.pop_front());
-                            if self
-                                .pending_select
-                                .get(&room_id)
-                                .map(|q| q.is_empty())
-                                .unwrap_or(false)
-                            {
-                                self.pending_select.remove(&room_id);
-                            }
-                            if let Some(request_id) = request_id_to_emit {
-                                self.emit(CoreEvent::IntentLifecycle { request_id, outcome });
-                            }
-                        }
                         if let Some(activity_update) = self
                             .activity_projection
                             .update_action_for_open_state(&self.state)
@@ -1181,8 +1102,7 @@ impl AppActor {
                 body: item.body,
                 mentions: MentionIntent::default(),
             },
-        )
-        .await;
+        );
         true
     }
 
@@ -1193,6 +1113,49 @@ impl AppActor {
             connection_id: INTERNAL_RUNTIME_CONNECTION_ID,
             sequence,
         }
+    }
+
+    fn capture_select_room_preconditions(&self, room_id: &str) -> SelectRoomPreconditions {
+        SelectRoomPreconditions {
+            session_ready: matches!(
+                self.state.session,
+                SessionState::Ready(_)
+                    | SessionState::NeedsRecovery { .. }
+                    | SessionState::Recovering { .. }
+            ),
+            room_found: self.state.rooms.iter().any(|room| room.room_id == room_id),
+            already_active: self.state.navigation.active_room_id.as_deref() == Some(room_id),
+            rooms_len: self.state.rooms.len(),
+        }
+    }
+
+    fn classify_select_room_outcome(
+        &self,
+        room_id: &str,
+        pre: SelectRoomPreconditions,
+    ) -> IntentOutcome {
+        let committed = self.state.navigation.active_room_id.as_deref() == Some(room_id);
+        let outcome = if !pre.session_ready {
+            IntentOutcome::FailedNoOp(IntentNoOpReason::SessionNotReady)
+        } else if !pre.room_found {
+            IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState)
+        } else if pre.already_active {
+            IntentOutcome::BenignNoOp(IntentNoOpReason::AlreadyActive)
+        } else if committed {
+            IntentOutcome::Committed
+        } else {
+            // Room was present and the session was ready, but reduce did not
+            // commit. Surface a terminal outcome instead of letting callers
+            // wait for the full selection timeout.
+            IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState)
+        };
+        if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+            eprintln!(
+                "koushi.select_reduce found={} session_ready={} rooms_len={}",
+                pre.room_found, pre.session_ready, pre.rooms_len
+            );
+        }
+        outcome
     }
 
     /// Returns whether `AppState` changed.
@@ -1480,8 +1443,7 @@ impl AppActor {
                             self.send_timeline_command_or_fail(
                                 request_id,
                                 TimelineCommand::Unsubscribe { request_id, key },
-                            )
-                            .await;
+                            );
                         }
                     }
                     self.handle_app_effects(request_id, effects).await;
@@ -1494,8 +1456,7 @@ impl AppActor {
                         self.send_timeline_command_or_fail(
                             request_id,
                             TimelineCommand::Unsubscribe { request_id, key },
-                        )
-                        .await;
+                        );
                     }
                     self.handle_app_effects(request_id, effects).await;
                     true
@@ -1515,8 +1476,7 @@ impl AppActor {
                             self.send_timeline_command_or_fail(
                                 request_id,
                                 TimelineCommand::Unsubscribe { request_id, key },
-                            )
-                            .await;
+                            );
                         }
                     }
                     self.handle_app_effects(request_id, effects).await;
@@ -1533,8 +1493,7 @@ impl AppActor {
                         self.send_timeline_command_or_fail(
                             request_id,
                             TimelineCommand::Unsubscribe { request_id, key },
-                        )
-                        .await;
+                        );
                     }
                     self.handle_app_effects(request_id, effects).await;
                     if let Some(event_id) = self
@@ -1578,8 +1537,7 @@ impl AppActor {
                         self.send_timeline_command_or_fail(
                             request_id,
                             TimelineCommand::Unsubscribe { request_id, key },
-                        )
-                        .await;
+                        );
                     }
                     self.handle_app_effects(request_id, effects).await;
                     true
@@ -1845,6 +1803,24 @@ impl AppActor {
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
+                AppCommand::SelectRoom {
+                    request_id,
+                    room_id,
+                } => {
+                    let pre = self.capture_select_room_preconditions(&room_id);
+                    let effects = self
+                        .reduce_app_action(AppAction::SelectRoom {
+                            room_id: room_id.clone(),
+                        })
+                        .await;
+                    let outcome = self.classify_select_room_outcome(&room_id, pre);
+                    self.emit(CoreEvent::IntentLifecycle {
+                        request_id,
+                        outcome,
+                    });
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
             },
             CoreCommand::Sync(sync_command) => {
                 // Route to AccountActor (which forwards to SyncActor).
@@ -1855,20 +1831,6 @@ impl AppActor {
                 false
             }
             CoreCommand::Room(room_command) => {
-                // User-intent lane: for SelectRoom, record the request_id→room_id
-                // correlation BEFORE forwarding so the action loop can emit the
-                // terminal IntentLifecycle outcome. This command path is reliable
-                // and must never be converted into a drop-on-full background path.
-                if let crate::command::RoomCommand::SelectRoom {
-                    request_id,
-                    ref room_id,
-                } = room_command
-                {
-                    self.pending_select
-                        .entry(room_id.clone())
-                        .or_default()
-                        .push_back(request_id);
-                }
                 // Route to AccountActor (which forwards to RoomActor).
                 let _ = self
                     .account_actor
@@ -1975,8 +1937,7 @@ impl AppActor {
                             kind: TimelineKind::Room { room_id },
                         },
                     },
-                )
-                .await;
+                );
             } else if let AppEffect::OpenThreadTimeline {
                 room_id,
                 root_event_id,
@@ -2001,8 +1962,7 @@ impl AppActor {
                             },
                         },
                     },
-                )
-                .await;
+                );
             } else if let AppEffect::OpenFocusedTimeline { room_id, event_id } = effect {
                 let Some(account_key) = self.current_account_key() else {
                     self.emit(CoreEvent::OperationFailed {
@@ -2020,8 +1980,7 @@ impl AppActor {
                             kind: TimelineKind::Focused { room_id, event_id },
                         },
                     },
-                )
-                .await;
+                );
             } else if let AppEffect::SearchMessages {
                 request_id: effect_request_id,
                 query,
@@ -2179,8 +2138,7 @@ impl AppActor {
                             },
                         },
                     },
-                )
-                .await;
+                );
             }
         }
     }
@@ -2259,8 +2217,7 @@ impl AppActor {
                     .encrypted_url_previews_enabled,
                 room_overrides: self.state.link_preview_settings.room_overrides.clone(),
             },
-        )
-        .await;
+        );
     }
 
     fn emit_timeline_display_label_updates(&self, additional_user_ids: &[&str]) {
@@ -2283,19 +2240,22 @@ impl AppActor {
         }));
     }
 
-    async fn send_timeline_command_or_fail(&self, request_id: RequestId, command: TimelineCommand) {
-        if !self
-            .account_actor
-            .send(AccountMessage::TimelineCommand(command))
-            .await
-        {
-            self.emit(CoreEvent::OperationFailed {
-                request_id,
-                failure: CoreFailure::TimelineOperationFailed {
-                    kind: TimelineFailureKind::QueueOverflow,
-                },
-            });
-        }
+    fn send_timeline_command_or_fail(&self, request_id: RequestId, command: TimelineCommand) {
+        let account_actor = self.account_actor.clone();
+        let event_tx = self.event_tx.clone();
+        executor::spawn(async move {
+            if !account_actor
+                .send(AccountMessage::TimelineCommand(command))
+                .await
+            {
+                let _ = event_tx.send(CoreEvent::OperationFailed {
+                    request_id,
+                    failure: CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::QueueOverflow,
+                    },
+                });
+            }
+        });
     }
 
     fn current_account_key(&self) -> Option<AccountKey> {

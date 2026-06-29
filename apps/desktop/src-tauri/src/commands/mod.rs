@@ -946,32 +946,6 @@ pub(crate) fn build_submit_identity_reset_oauth_command(
     })
 }
 
-pub(crate) fn build_load_account_management_capabilities_command(
-    request_id: koushi_core::RequestId,
-) -> CoreCommand {
-    CoreCommand::Account(AccountCommand::LoadAccountManagementCapabilities { request_id })
-}
-
-pub(crate) fn build_change_password_command(
-    request_id: koushi_core::RequestId,
-    new_password: AuthSecret,
-) -> CoreCommand {
-    CoreCommand::Account(AccountCommand::ChangePassword {
-        request_id,
-        new_password,
-    })
-}
-
-pub(crate) fn build_deactivate_account_command(
-    request_id: koushi_core::RequestId,
-    erase_data: bool,
-) -> CoreCommand {
-    CoreCommand::Account(AccountCommand::DeactivateAccount {
-        request_id,
-        erase_data,
-    })
-}
-
 pub(crate) fn build_submit_account_management_uia_command(
     request_id: koushi_core::RequestId,
     flow_id: u64,
@@ -1008,7 +982,7 @@ pub(crate) fn build_select_room_command(
     request_id: koushi_core::RequestId,
     room_id: String,
 ) -> CoreCommand {
-    CoreCommand::Room(RoomCommand::SelectRoom {
+    CoreCommand::App(AppCommand::SelectRoom {
         request_id,
         room_id,
     })
@@ -2811,7 +2785,7 @@ mod tests {
         }
 
         match build_select_room_command(fake_request_id(7), room_id.clone()) {
-            CoreCommand::Room(RoomCommand::SelectRoom {
+            CoreCommand::App(AppCommand::SelectRoom {
                 request_id,
                 room_id: route_room_id,
             }) => {

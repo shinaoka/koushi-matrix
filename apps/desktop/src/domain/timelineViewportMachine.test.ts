@@ -90,6 +90,23 @@ describe("timeline viewport machine", () => {
     expect(observed.retainedRoomAnchor).toEqual(retained.retainedRoomAnchor);
   });
 
+  it("blocks anchor persistence while a retained room anchor is protecting the viewport", () => {
+    const started = reduceTimelineViewportMachine(createTimelineViewportMachineState(), {
+      type: "room-anchor-restore-started"
+    });
+
+    const restored = reduceTimelineViewportMachine(started, {
+      type: "room-anchor-restored",
+      signature: "!room\u0000$event\u0000bottom\u000012",
+      anchor,
+      scrollTop: 480
+    });
+
+    expect(restored.roomAnchorRestorePending).toBe(false);
+    expect(restored.retainedRoomAnchor).not.toBeNull();
+    expect(timelineViewportCanPersistAnchor(restored)).toBe(false);
+  });
+
   it("resets transient viewport state on room changes", () => {
     const active = reduceTimelineViewportMachine(
       reduceTimelineViewportMachine(withRetainedAnchor(), {
@@ -137,22 +154,11 @@ describe("timeline viewport machine", () => {
     expect(timelineViewportHasBlockingAnchorWork(state)).toBe(false);
 
     state = reduceTimelineViewportMachine(state, {
-      type: "scroll-capture-suppression-started"
-    });
-
-    expect(timelineViewportCanPersistAnchor(state)).toBe(false);
-    expect(timelineViewportCanPersistAnchor(state, { allowSuppressed: true })).toBe(
-      true
-    );
-
-    state = reduceTimelineViewportMachine(state, {
       type: "room-anchor-materialize-requested",
       signature: "!room\u0000$event\u0000bottom\u00000\u00008"
     });
 
-    expect(timelineViewportCanPersistAnchor(state, { allowSuppressed: true })).toBe(
-      false
-    );
+    expect(timelineViewportCanPersistAnchor(state)).toBe(false);
     expect(timelineViewportHasBlockingAnchorWork(state)).toBe(true);
   });
 
