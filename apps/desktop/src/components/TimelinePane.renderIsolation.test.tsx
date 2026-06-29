@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -11,7 +11,8 @@ import type { TimelineTransport } from "./TimelineView";
 
 const renderCounts = vi.hoisted(() => ({
   composer: 0,
-  timelineView: 0
+  timelineView: 0,
+  timelineViewLatestJumpRequests: [] as number[]
 }));
 
 vi.mock("./composer", async () => {
@@ -36,6 +37,7 @@ vi.mock("./TimelineView", async () => {
   const TimelineViewProbe = memo(
     function TimelineViewProbe(props: Parameters<typeof actual.TimelineView>[0]) {
       renderCounts.timelineView += 1;
+      renderCounts.timelineViewLatestJumpRequests.push(props.latestJumpRequest ?? 0);
       return createElement(actual.TimelineView, props);
     }
   );
@@ -51,6 +53,7 @@ describe("TimelinePane render isolation", () => {
     clearAppStoreSnapshot();
     renderCounts.composer = 0;
     renderCounts.timelineView = 0;
+    renderCounts.timelineViewLatestJumpRequests = [];
   });
 
   afterEach(() => {
@@ -196,6 +199,187 @@ describe("TimelinePane render isolation", () => {
 
     expect(renderCounts.composer).toBe(2);
     expect(renderCounts.timelineView).toBe(3);
+  });
+
+  test("routes the header latest button through the timeline viewport owner", () => {
+    const snapshot = makeSnapshot();
+    const noop = () => undefined;
+    const resolveComposerKeyAction = async (): Promise<"noop"> => "noop";
+    setAppStoreSnapshot(snapshot);
+
+    render(
+      createElement(TimelinePane, {
+        activeRoomName: "Alpha Room",
+        composerDraft: snapshot.state.ui.timeline.composer.draft,
+        composerMode: { kind: "plain" },
+        mentionIntent: { targets: [] },
+        resolveComposerKeyAction,
+        searchQuery: "",
+        searchResults: [],
+        showSearchResults: false,
+        snapshot,
+        timelineBackfill: "unknown",
+        timelineTransport: noopTimelineTransport(),
+        onCancelReply: noop,
+        onCancelScheduledSend: noop,
+        onAttachFiles: noop,
+        onClearUploadStaging: noop,
+        onUpdateStagedUploadCaption: noop,
+        onUpdateStagedUploadCompression: noop,
+        onComposerDraftChange: noop,
+        onMentionIntentChange: noop,
+        onEditMessage: noop,
+        onOpenContextMenu: noop,
+        onOpenThread: noop,
+        onRedactMessage: noop,
+        onReply: noop,
+        onRescheduleScheduledSend: noop,
+        onResultSelect: noop,
+        onScheduleSend: noop,
+        onSendText: noop,
+        onSetLocalUserAlias: noop,
+        onUnpinPinnedEvent: noop,
+        onOpenPeople: noop,
+        onOpenThreads: noop,
+        onToggleRoomInfo: noop
+      })
+    );
+
+    expect(renderCounts.timelineViewLatestJumpRequests.at(-1)).toBe(0);
+    fireEvent.click(screen.getByRole("button", { name: "Latest" }));
+    expect(renderCounts.timelineViewLatestJumpRequests.at(-1)).toBe(1);
+  });
+
+  test("does not re-render TimelineView when live_signals for a different room change", async () => {
+    const snapshot = makeSnapshot();
+    const resolveComposerKeyAction = async (): Promise<"noop"> => "noop";
+    const noop = () => undefined;
+    const mentionIntent: MentionIntent = { targets: [] };
+    const emptySearchResults: never[] = [];
+    const timelineTransport = noopTimelineTransport();
+
+    // Seed live_signals for both active room (room-alpha) and a different room (room-beta)
+    snapshot.state.domain.live_signals = {
+      rooms: {
+        "!room-alpha:example.invalid": {
+          fully_read_event_id: "$ev1:example.invalid",
+          typing_user_ids: [],
+          receipts_by_event: {}
+        },
+        "!room-beta:example.invalid": {
+          fully_read_event_id: null,
+          typing_user_ids: [],
+          receipts_by_event: {}
+        }
+      },
+      presence: {
+        "@alpha-user:example.invalid": "online"
+      }
+    };
+
+    setAppStoreSnapshot(snapshot);
+
+    const renderPane = (currentSnapshot: DesktopSnapshot) =>
+      createElement(TimelinePane, {
+        activeRoomName: "Alpha Room",
+        composerDraft: currentSnapshot.state.ui.timeline.composer.draft,
+        composerMode: { kind: "plain" },
+        mentionIntent,
+        resolveComposerKeyAction,
+        searchQuery: "",
+        searchResults: emptySearchResults,
+        showSearchResults: false,
+        snapshot: currentSnapshot,
+        timelineBackfill: "unknown",
+        timelineTransport,
+        onCancelReply: noop,
+        onCancelScheduledSend: noop,
+        onAttachFiles: noop,
+        onClearUploadStaging: noop,
+        onUpdateStagedUploadCaption: noop,
+        onUpdateStagedUploadCompression: noop,
+        onComposerDraftChange: noop,
+        onMentionIntentChange: noop,
+        onEditMessage: noop,
+        onOpenContextMenu: noop,
+        onOpenThread: noop,
+        onRedactMessage: noop,
+        onReply: noop,
+        onRescheduleScheduledSend: noop,
+        onResultSelect: noop,
+        onScheduleSend: noop,
+        onSendText: noop,
+        onSetLocalUserAlias: noop,
+        onUnpinPinnedEvent: noop,
+        onOpenPeople: noop,
+        onOpenThreads: noop,
+        onToggleRoomInfo: noop
+      });
+
+    const { rerender } = render(renderPane(snapshot));
+
+    expect(renderCounts.composer).toBe(1);
+    expect(renderCounts.timelineView).toBe(1);
+
+    // Change live_signals for a different room (room-beta) — should NOT re-render TimelineView
+    const otherRoomSignalsChanged = structuredClone(snapshot);
+    otherRoomSignalsChanged.state.domain.live_signals.rooms["!room-beta:example.invalid"] = {
+      fully_read_event_id: "$ev2:example.invalid",
+      typing_user_ids: [],
+      receipts_by_event: {
+        "$other-seen": {
+          total_count: 1,
+          overflow_count: 0,
+          readers: [
+            {
+              user_id: "@beta-user:example.invalid",
+              display_name: "Beta User",
+              original_display_label: "Beta User",
+              avatar: null,
+              timestamp_ms: 1_800_000_000_000
+            }
+          ]
+        }
+      }
+    };
+
+    await act(async () => {
+      setAppStoreSnapshot(otherRoomSignalsChanged);
+    });
+
+    const projectedOtherChanged = getAppStoreSnapshot();
+    expect(projectedOtherChanged).not.toBeNull();
+    if (!projectedOtherChanged) {
+      return;
+    }
+
+    rerender(renderPane(projectedOtherChanged));
+
+    // TimelineView should NOT have re-rendered — same room signals
+    expect(renderCounts.timelineView).toBe(1);
+
+    // Change live_signals for the active room (room-alpha) — SHOULD re-render TimelineView
+    const sameRoomSignalsChanged = structuredClone(otherRoomSignalsChanged);
+    sameRoomSignalsChanged.state.domain.live_signals.rooms["!room-alpha:example.invalid"] = {
+      fully_read_event_id: "$ev3:example.invalid",
+      typing_user_ids: ["@alpha-user:example.invalid"],
+      receipts_by_event: {}
+    };
+
+    await act(async () => {
+      setAppStoreSnapshot(sameRoomSignalsChanged);
+    });
+
+    const projectedSameChanged = getAppStoreSnapshot();
+    expect(projectedSameChanged).not.toBeNull();
+    if (!projectedSameChanged) {
+      return;
+    }
+
+    rerender(renderPane(projectedSameChanged));
+
+    // TimelineView SHOULD re-render — its room signals changed
+    expect(renderCounts.timelineView).toBe(2);
   });
 });
 

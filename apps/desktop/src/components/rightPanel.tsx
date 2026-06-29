@@ -536,7 +536,8 @@ export function ContextualRightPanel({
               suppressPaginationUi={true}
               onReply={onReply}
               resolveComposerKeyAction={onResolveComposerKeyAction}
-              liveSignals={snapshot.state.domain.live_signals}
+              roomSignals={snapshot.state.domain.live_signals.rooms[focusedRoomId] ?? null}
+              presenceByUserId={snapshot.state.domain.live_signals.presence}
               profileUsers={snapshot.state.domain.profile.users}
               pinnedEventIds={focusedPinnedEventIds}
               forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
@@ -607,7 +608,8 @@ export function ContextualRightPanel({
             onReply={onReply}
             onOpenThread={() => undefined}
             resolveComposerKeyAction={onResolveComposerKeyAction}
-            liveSignals={snapshot.state.domain.live_signals}
+            roomSignals={snapshot.state.domain.live_signals.rooms[threadRoomId] ?? null}
+            presenceByUserId={snapshot.state.domain.live_signals.presence}
             profileUsers={snapshot.state.domain.profile.users}
             pinnedEventIds={threadPinnedEventIds}
             forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}

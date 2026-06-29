@@ -450,6 +450,7 @@ export interface NavigationState {
   space_order?: string[];
   last_room_by_space_id?: Record<string, string>;
   room_scroll_anchors?: Record<string, TimelineScrollAnchor>;
+  room_viewports?: Record<string, TimelinePersistedViewport>;
 }
 
 export interface TimelineScrollAnchor {
@@ -458,6 +459,16 @@ export interface TimelineScrollAnchor {
   offset_px: number;
   updated_at_ms: number;
 }
+
+export type TimelinePersistedViewport =
+  | { kind: "liveEdge"; updated_at_ms: number }
+  | {
+      kind: "anchored";
+      event_id: string;
+      edge?: "top" | "bottom";
+      offset_px: number;
+      updated_at_ms: number;
+    };
 
 export interface ProfileState {
   own: OwnProfile;

@@ -9,7 +9,8 @@ use koushi_state::{
     JapaneseCatalogProfile, KeyBackupStatus, LocalEncryptionHealth, MediaTransferProgress,
     NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind, ProfileState,
     ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind, SessionState, SyncMode,
-    ThreadsListItem, TimelineScrollAnchor, VerificationFlowState, resolve_user_display_name,
+    ThreadsListItem, TimelinePersistedViewport, TimelineScrollAnchor, VerificationFlowState,
+    resolve_user_display_name,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -1124,6 +1125,8 @@ pub struct TimelineViewportObservation {
     pub at_bottom: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll_anchor: Option<TimelineScrollAnchor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport: Option<TimelinePersistedViewport>,
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]

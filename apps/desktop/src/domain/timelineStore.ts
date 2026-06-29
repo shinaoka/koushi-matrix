@@ -76,6 +76,9 @@ export interface TimelineStoreState {
 
 export interface TimelineDisplayOptions {
   threadRootOrder?: TimelineThreadRootOrder;
+  /** When available, non-Room timelines (Thread, Focused) skip thread-root
+   *  latest-reply projection and preserve SDK/actor item order. */
+  timelineKey?: TimelineKey;
 }
 
 export const TIMELINE_STORE_INACTIVE_RETAIN_LIMIT = 8;
@@ -782,6 +785,8 @@ export function batchContainsPrepend(diffs: TimelineDiff[]): boolean {
 // Selector helpers
 // ---------------------------------------------------------------------------
 
+const EMPTY_TIMELINE_ITEMS = Object.freeze([]) as unknown as TimelineItem[];
+
 export function getKeyState(
   store: TimelineStoreState,
   key: TimelineKey
@@ -793,7 +798,7 @@ export function getItems(
   store: TimelineStoreState,
   key: TimelineKey
 ): TimelineItem[] {
-  return store.keys.get(keyStr(key))?.items ?? [];
+  return store.keys.get(keyStr(key))?.items ?? EMPTY_TIMELINE_ITEMS;
 }
 
 export function getTimelineDisplayItems(
@@ -801,7 +806,22 @@ export function getTimelineDisplayItems(
   key: TimelineKey,
   options?: TimelineDisplayOptions
 ): TimelineItem[] {
-  const items = getItems(store, key);
+  return projectTimelineItemsForDisplay(getItems(store, key), {
+    ...options,
+    timelineKey: key
+  });
+}
+
+export function projectTimelineItemsForDisplay(
+  items: TimelineItem[],
+  options?: TimelineDisplayOptions
+): TimelineItem[] {
+  // Only Room timelines reposition thread roots by latest reply.
+  // Thread and Focused timelines must preserve SDK/actor order so that the
+  // thread root stays at the top and replies follow in canonical order.
+  if (options?.timelineKey && !("Room" in options.timelineKey.kind)) {
+    return items;
+  }
   if ((options?.threadRootOrder?.kind ?? "latestReply") === "rootEvent") {
     return items;
   }
@@ -836,13 +856,20 @@ function projectThreadRootsByLatestReply(items: TimelineItem[]): TimelineItem[] 
     return left.index - right.index;
   });
 
-  const projected = [...fixedItems];
+  const insertionIndex = buildFixedTimelineInsertionIndex(fixedItems);
+  const buckets = Array.from(
+    { length: fixedItems.length + 1 },
+    () => [] as TimelineItem[]
+  );
   for (const root of movableThreadRoots) {
-    projected.splice(
-      insertionIndexForTimelineTimestamp(projected, root.displayTimestamp),
-      0,
-      root.item
-    );
+    buckets[insertionIndex(root.displayTimestamp)].push(root.item);
+  }
+
+  const projected: TimelineItem[] = [];
+  projected.push(...buckets[0]);
+  for (const [index, item] of fixedItems.entries()) {
+    projected.push(item);
+    projected.push(...buckets[index + 1]);
   }
 
   if (projected.every((item, index) => item === items[index])) {
@@ -851,18 +878,48 @@ function projectThreadRootsByLatestReply(items: TimelineItem[]): TimelineItem[] 
   return projected;
 }
 
-function insertionIndexForTimelineTimestamp(
-  items: readonly TimelineItem[],
-  targetTimestamp: number
-): number {
-  let insertionIndex = 0;
-  for (const [index, item] of items.entries()) {
+function buildFixedTimelineInsertionIndex(
+  fixedItems: readonly TimelineItem[]
+): (targetTimestamp: number) => number {
+  let nullTimestampMaxIndex = -1;
+  const timestampIndexes: Array<{ timestamp: number; index: number }> = [];
+
+  fixedItems.forEach((item, index) => {
     const timestamp = timelineProjectionTimestamp(item);
-    if (timestamp === null || timestamp <= targetTimestamp) {
-      insertionIndex = index + 1;
+    if (timestamp === null) {
+      nullTimestampMaxIndex = index;
+      return;
     }
+    timestampIndexes.push({ timestamp, index });
+  });
+
+  timestampIndexes.sort((left, right) =>
+    left.timestamp === right.timestamp
+      ? left.index - right.index
+      : left.timestamp - right.timestamp
+  );
+
+  const prefixMaxIndexes: number[] = [];
+  let maxIndex = -1;
+  for (const entry of timestampIndexes) {
+    maxIndex = Math.max(maxIndex, entry.index);
+    prefixMaxIndexes.push(maxIndex);
   }
-  return insertionIndex;
+
+  return (targetTimestamp: number) => {
+    let low = 0;
+    let high = timestampIndexes.length;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (timestampIndexes[mid].timestamp <= targetTimestamp) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    const timestampMaxIndex = low > 0 ? prefixMaxIndexes[low - 1] : -1;
+    return Math.max(nullTimestampMaxIndex, timestampMaxIndex) + 1;
+  };
 }
 
 function timelineProjectionTimestamp(item: TimelineItem): number | null {
@@ -904,18 +961,6 @@ export function isAwaitingResync(
   key: TimelineKey
 ): boolean {
   return store.keys.get(keyStr(key))?.awaitingResync ?? true;
-}
-
-// ---------------------------------------------------------------------------
-// Convenience: check if auto-backward pagination should be suppressed
-// ---------------------------------------------------------------------------
-
-export function shouldSuppressAutoBackfill(
-  store: TimelineStoreState,
-  key: TimelineKey
-): boolean {
-  const state = getPaginationState(store, key, "Backward");
-  return state === "Paginating" || state === "EndReached";
 }
 
 // ---------------------------------------------------------------------------

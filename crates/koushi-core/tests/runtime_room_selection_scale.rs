@@ -147,7 +147,7 @@ async fn select_room_deep_in_large_account_lands_on_clicked_room() {
         "precondition: clicked room is present in state.rooms"
     );
 
-    // Separate batch, mirroring the RoomActor projecting SelectRoom on its own.
+    // Separate batch, mirroring a reducer-side selection projection.
     runtime
         .inject_actions(vec![AppAction::SelectRoom {
             room_id: target.clone(),

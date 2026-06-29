@@ -1478,6 +1478,7 @@ mod tests {
             space_order: vec!["!space:example.invalid".to_owned()],
             last_room_by_space_id: BTreeMap::new(),
             room_scroll_anchors: BTreeMap::new(),
+            room_viewports: BTreeMap::new(),
         };
 
         // room_interactions

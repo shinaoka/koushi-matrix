@@ -31,7 +31,8 @@ use koushi_state::{
     ImageUploadCompressionMode, LoginRequest, MentionIntent, PresenceKind, RecoveryRequest,
     RoomListFilter, RoomModerationAction, RoomNotificationMode, RoomSettingChange, RoomTagKind,
     SessionInfo, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
-    TimelineScrollAnchor, TimelineScrollAnchorEdge, VerificationCancelReason,
+    TimelinePersistedViewport, TimelineScrollAnchor, TimelineScrollAnchorEdge,
+    VerificationCancelReason,
     build_formatted_message_draft,
 };
 use serde::Deserialize;
@@ -945,32 +946,6 @@ pub(crate) fn build_submit_identity_reset_oauth_command(
     })
 }
 
-pub(crate) fn build_load_account_management_capabilities_command(
-    request_id: koushi_core::RequestId,
-) -> CoreCommand {
-    CoreCommand::Account(AccountCommand::LoadAccountManagementCapabilities { request_id })
-}
-
-pub(crate) fn build_change_password_command(
-    request_id: koushi_core::RequestId,
-    new_password: AuthSecret,
-) -> CoreCommand {
-    CoreCommand::Account(AccountCommand::ChangePassword {
-        request_id,
-        new_password,
-    })
-}
-
-pub(crate) fn build_deactivate_account_command(
-    request_id: koushi_core::RequestId,
-    erase_data: bool,
-) -> CoreCommand {
-    CoreCommand::Account(AccountCommand::DeactivateAccount {
-        request_id,
-        erase_data,
-    })
-}
-
 pub(crate) fn build_submit_account_management_uia_command(
     request_id: koushi_core::RequestId,
     flow_id: u64,
@@ -1007,7 +982,7 @@ pub(crate) fn build_select_room_command(
     request_id: koushi_core::RequestId,
     room_id: String,
 ) -> CoreCommand {
-    CoreCommand::Room(RoomCommand::SelectRoom {
+    CoreCommand::App(AppCommand::SelectRoom {
         request_id,
         room_id,
     })
@@ -1132,6 +1107,7 @@ pub(crate) fn build_observe_timeline_viewport_command(
     last_visible_event_id: Option<String>,
     at_bottom: bool,
     scroll_anchor: Option<TimelineScrollAnchor>,
+    viewport: Option<TimelinePersistedViewport>,
 ) -> CoreCommand {
     CoreCommand::Timeline(TimelineCommand::ObserveViewport {
         request_id,
@@ -1141,6 +1117,7 @@ pub(crate) fn build_observe_timeline_viewport_command(
             last_visible_event_id,
             at_bottom,
             scroll_anchor,
+            viewport,
         },
     })
 }
@@ -2415,7 +2392,7 @@ mod tests {
     use koushi_state::{
         ActivityMarkReadTarget, ActivityTab, AppearanceSettings, ImageUploadCompressionMode,
         LocaleSettings, SettingsPatch, TextDirectionPreference, ThemePreference,
-        TimelineScrollAnchor, TimelineScrollAnchorEdge,
+        TimelinePersistedViewport, TimelineScrollAnchor, TimelineScrollAnchorEdge,
     };
     use koushi_state::{
         AppState, AuthSecret, IdentityResetAuthRequest, LoginRequest, MentionIntent, MentionTarget,
@@ -2808,7 +2785,7 @@ mod tests {
         }
 
         match build_select_room_command(fake_request_id(7), room_id.clone()) {
-            CoreCommand::Room(RoomCommand::SelectRoom {
+            CoreCommand::App(AppCommand::SelectRoom {
                 request_id,
                 room_id: route_room_id,
             }) => {
@@ -3523,6 +3500,7 @@ mod tests {
                 offset_px: -24,
                 updated_at_ms: 1_820_000_000_000,
             }),
+            None,
         ) {
             CoreCommand::Timeline(TimelineCommand::ObserveViewport {
                 request_id,
@@ -5401,6 +5379,12 @@ mod tests {
                 offset_px: -16,
                 updated_at_ms: 1_820_000_000_000,
             }),
+            Some(TimelinePersistedViewport::Anchored {
+                event_id: "$last".to_owned(),
+                edge: TimelineScrollAnchorEdge::Bottom,
+                offset_px: -16,
+                updated_at_ms: 1_820_000_000_000,
+            }),
         );
         let debug = format!("{command:?}");
         assert!(!debug.contains("!room:example.org"), "{debug}");
@@ -5433,6 +5417,58 @@ mod tests {
                         .as_ref()
                         .map(|anchor| (anchor.event_id.as_str(), anchor.edge, anchor.offset_px)),
                     Some(("$last", TimelineScrollAnchorEdge::Bottom, -16))
+                );
+                assert_eq!(
+                    observation.viewport,
+                    Some(TimelinePersistedViewport::Anchored {
+                        event_id: "$last".to_owned(),
+                        edge: TimelineScrollAnchorEdge::Bottom,
+                        offset_px: -16,
+                        updated_at_ms: 1_820_000_000_000,
+                    })
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn observe_timeline_viewport_command_routes_live_edge_viewport_without_anchor() {
+        let account_key = AccountKey("@alice:example.org".to_owned());
+        let command = build_observe_timeline_viewport_command(
+            fake_request_id(42),
+            account_key.clone(),
+            "!room:example.org".to_owned(),
+            Some("$latest".to_owned()),
+            Some("$latest".to_owned()),
+            true,
+            None,
+            Some(TimelinePersistedViewport::LiveEdge {
+                updated_at_ms: 1_820_000_000_100,
+            }),
+        );
+
+        match command {
+            CoreCommand::Timeline(TimelineCommand::ObserveViewport {
+                request_id,
+                key,
+                observation,
+            }) => {
+                assert_eq!(request_id, fake_request_id(42));
+                assert_eq!(key.account_key, account_key);
+                assert_eq!(
+                    key.kind,
+                    koushi_core::TimelineKind::Room {
+                        room_id: "!room:example.org".to_owned()
+                    }
+                );
+                assert!(observation.at_bottom);
+                assert!(observation.scroll_anchor.is_none());
+                assert_eq!(
+                    observation.viewport,
+                    Some(TimelinePersistedViewport::LiveEdge {
+                        updated_at_ms: 1_820_000_000_100,
+                    })
                 );
             }
             other => panic!("unexpected command: {other:?}"),

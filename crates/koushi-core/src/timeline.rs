@@ -4575,6 +4575,12 @@ fn viewport_scroll_anchor_action(
     let TimelineKind::Room { room_id } = &key.kind else {
         return None;
     };
+    if let Some(viewport) = observation.viewport.clone() {
+        return Some(AppAction::TimelineViewportUpdated {
+            room_id: room_id.clone(),
+            viewport,
+        });
+    }
     observation
         .scroll_anchor
         .clone()
@@ -6544,8 +6550,8 @@ mod tests {
 
     use koushi_state::{
         AppAction, MentionIntent, MentionTarget, SessionInfo, SessionState,
-        TimelineMediaKind as GalleryTimelineMediaKind, TimelineScrollAnchor,
-        TimelineScrollAnchorEdge,
+        TimelineMediaKind as GalleryTimelineMediaKind, TimelinePersistedViewport,
+        TimelineScrollAnchor, TimelineScrollAnchorEdge,
     };
     use matrix_sdk::ruma::events::room::message::{
         EmoteMessageEventContent, MessageType, NoticeMessageEventContent, TextMessageEventContent,
@@ -6593,6 +6599,7 @@ mod tests {
             last_visible_event_id: Some("$event:test".to_owned()),
             at_bottom: false,
             scroll_anchor: Some(anchor.clone()),
+            viewport: None,
         };
 
         assert_eq!(
@@ -6600,6 +6607,33 @@ mod tests {
             Some(AppAction::TimelineScrollAnchorUpdated {
                 room_id: "!r:test".to_owned(),
                 anchor,
+            })
+        );
+    }
+
+    #[test]
+    fn viewport_scroll_anchor_action_prefers_persisted_viewport_over_legacy_anchor() {
+        let viewport = TimelinePersistedViewport::LiveEdge {
+            updated_at_ms: 1_820_000_000_100,
+        };
+        let observation = TimelineViewportObservation {
+            first_visible_event_id: Some("$first:test".to_owned()),
+            last_visible_event_id: Some("$event:test".to_owned()),
+            at_bottom: true,
+            scroll_anchor: Some(TimelineScrollAnchor {
+                event_id: "$event:test".to_owned(),
+                edge: TimelineScrollAnchorEdge::Bottom,
+                offset_px: -12,
+                updated_at_ms: 1_820_000_000_000,
+            }),
+            viewport: Some(viewport.clone()),
+        };
+
+        assert_eq!(
+            viewport_scroll_anchor_action(&room_key(), &observation),
+            Some(AppAction::TimelineViewportUpdated {
+                room_id: "!r:test".to_owned(),
+                viewport,
             })
         );
     }
@@ -6616,6 +6650,7 @@ mod tests {
                 offset_px: -12,
                 updated_at_ms: 1_820_000_000_000,
             }),
+            viewport: None,
         };
 
         assert_eq!(
@@ -6849,6 +6884,7 @@ mod tests {
                 last_visible_event_id: Some("$newer:test".to_owned()),
                 at_bottom: true,
                 scroll_anchor: None,
+                viewport: None,
             },
             Some("@me:test"),
         );
@@ -6883,6 +6919,7 @@ mod tests {
                 last_visible_event_id: Some("$visible:test".to_owned()),
                 at_bottom: false,
                 scroll_anchor: None,
+                viewport: None,
             },
             Some("@me:test"),
         );
@@ -6921,6 +6958,7 @@ mod tests {
                 last_visible_event_id: Some("$visible:test".to_owned()),
                 at_bottom: false,
                 scroll_anchor: None,
+                viewport: None,
             },
             Some("@me:test"),
         );
@@ -6946,6 +6984,7 @@ mod tests {
                 last_visible_event_id: Some("$visible:test".to_owned()),
                 at_bottom: false,
                 scroll_anchor: None,
+                viewport: None,
             },
             Some("@me:test"),
         );
@@ -6986,6 +7025,7 @@ mod tests {
                 last_visible_event_id: Some("$remote:test".to_owned()),
                 at_bottom: true,
                 scroll_anchor: None,
+                viewport: None,
             },
             Some("@me:test"),
         );
@@ -7033,6 +7073,7 @@ mod tests {
                 last_visible_event_id: Some("$thread-root:test".to_owned()),
                 at_bottom: true,
                 scroll_anchor: None,
+                viewport: None,
             },
             Some("@me:test"),
         );
@@ -7062,6 +7103,7 @@ mod tests {
                 last_visible_event_id: Some("$visible:test".to_owned()),
                 at_bottom: true,
                 scroll_anchor: None,
+                viewport: None,
             },
             Some("@me:test"),
         );

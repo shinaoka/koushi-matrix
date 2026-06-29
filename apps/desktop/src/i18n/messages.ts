@@ -665,7 +665,6 @@ export type MessageId =
   | "timeline.reactionSenderUnknown"
   | "timeline.readBy"
   | "timeline.readReceiptOverflow"
-  | "timeline.readMarker"
   | "timeline.unreadMarker"
   | "timeline.jumpToFirstUnread"
   | "timeline.jumpToBottom"
@@ -1591,7 +1590,6 @@ const en: Catalog = {
   "timeline.reactionSenderUnknown": "{count} people",
   "timeline.readBy": "Read by {count}",
   "timeline.readReceiptOverflow": "{count} more",
-  "timeline.readMarker": "Read up to here",
   "timeline.unreadMarker": "Unread messages",
   "timeline.jumpToFirstUnread": "Jump to first unread, {count} unread",
   "timeline.jumpToBottom": "Jump to bottom, {count} new messages",
@@ -2403,7 +2401,6 @@ const ja: Catalog = {
   "timeline.reactionSenderUnknown": "{count} 人",
   "timeline.readBy": "{count} 人が既読",
   "timeline.readReceiptOverflow": "他 {count} 人",
-  "timeline.readMarker": "ここまで既読",
   "timeline.unreadMarker": "未読メッセージ",
   "timeline.jumpToFirstUnread": "最初の未読へ移動、未読 {count} 件",
   "timeline.jumpToBottom": "最新へ移動、新着 {count} 件",

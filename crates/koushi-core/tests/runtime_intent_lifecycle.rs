@@ -1,6 +1,6 @@
 //! Invariant test for SelectRoom intent lifecycle (issue #116, §4.7 Slice 1).
 //!
-//! Drives the REAL command path (`conn.command(CoreCommand::Room(...))`, not
+//! Drives the REAL command path (`conn.command(CoreCommand::App(...))`, not
 //! `inject_actions`) and asserts that every submitted SelectRoom reaches a
 //! correlated, observable terminal `IntentLifecycle` outcome — no silent
 //! vanishing.
@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use koushi_core::{
-    command::{CoreCommand, RoomCommand},
+    command::{AppCommand, CoreCommand},
     event::CoreEvent,
     runtime::CoreRuntime,
 };
@@ -184,7 +184,7 @@ async fn select_room_present_emits_committed() {
 
     // Submit SelectRoom for room_b through the REAL command path.
     let request_id = conn.next_request_id();
-    conn.command(CoreCommand::Room(RoomCommand::SelectRoom {
+    conn.command(CoreCommand::App(AppCommand::SelectRoom {
         request_id,
         room_id: room_b.to_owned(),
     }))
@@ -209,22 +209,24 @@ fn select_room_routing_is_reliable_and_correlated() {
     let command_source = include_str!("../src/command.rs");
 
     assert!(
-        runtime_source.contains("User-intent lane: for SelectRoom, record the request_id→room_id")
-            && runtime_source.contains("terminal IntentLifecycle outcome"),
-        "runtime must keep the SelectRoom correlation comment next to the reliable command path"
+        runtime_source.contains("AppCommand::SelectRoom")
+            && runtime_source.contains("capture_select_room_preconditions")
+            && runtime_source.contains("classify_select_room_outcome"),
+        "runtime must keep SelectRoom lifecycle classification in the AppCommand path"
     );
     assert!(
-        runtime_source.contains("AccountMessage::RoomCommand(room_command)")
-            && runtime_source.contains(".await;"),
-        "SelectRoom must continue to route through the awaited command path"
+        runtime_source.contains("CoreEvent::IntentLifecycle")
+            && runtime_source.contains("request_id"),
+        "SelectRoom must emit a correlated lifecycle event from the AppCommand path"
     );
     assert!(
-        !runtime_source.contains("try_send(crate::account::AccountMessage::RoomCommand"),
-        "SelectRoom must not be routed through a drop-on-full command path"
+        !command_source.contains("RoomCommand::SelectRoom")
+            && !command_source.contains("SelectRoom {\n        request_id: RequestId,\n        room_id: String,\n    },\n    MarkRoomAsRead"),
+        "RoomCommand must not retain the old SelectRoom compatibility path"
     );
     assert!(
-        command_source.contains("User-intent lane: room selection is request-id correlated"),
-        "RoomCommand::SelectRoom should carry an explicit user-intent lane comment"
+        command_source.contains("AppCommand::SelectRoom"),
+        "AppCommand::SelectRoom is the only command-level room selection entrypoint"
     );
 }
 
@@ -283,7 +285,7 @@ async fn select_room_commits_within_one_second_during_background_action_flood() 
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     let request_id = conn.next_request_id();
-    conn.command(CoreCommand::Room(RoomCommand::SelectRoom {
+    conn.command(CoreCommand::App(AppCommand::SelectRoom {
         request_id,
         room_id: target.to_owned(),
     }))
@@ -341,7 +343,7 @@ async fn select_room_missing_from_state_emits_failed_noop_room_not_in_state() {
 
     // Submit SelectRoom for the absent room through the REAL command path.
     let request_id = conn.next_request_id();
-    conn.command(CoreCommand::Room(RoomCommand::SelectRoom {
+    conn.command(CoreCommand::App(AppCommand::SelectRoom {
         request_id,
         room_id: absent_room.to_owned(),
     }))
@@ -393,7 +395,7 @@ async fn two_concurrent_select_room_for_same_room_both_receive_terminal_outcome(
 
     // Submit TWO SelectRoom commands for the same absent room.
     let request_id_a = conn.next_request_id();
-    conn.command(CoreCommand::Room(RoomCommand::SelectRoom {
+    conn.command(CoreCommand::App(AppCommand::SelectRoom {
         request_id: request_id_a,
         room_id: absent_room.to_owned(),
     }))
@@ -401,7 +403,7 @@ async fn two_concurrent_select_room_for_same_room_both_receive_terminal_outcome(
     .expect("first command should submit");
 
     let request_id_b = conn.next_request_id();
-    conn.command(CoreCommand::Room(RoomCommand::SelectRoom {
+    conn.command(CoreCommand::App(AppCommand::SelectRoom {
         request_id: request_id_b,
         room_id: absent_room.to_owned(),
     }))

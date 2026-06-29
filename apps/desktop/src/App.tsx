@@ -6,6 +6,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState
 } from "react";
@@ -42,10 +43,12 @@ import {
   applyTimelineEventWithRetention,
   createTimelineStore,
   pruneTimelineStore,
-  timelineStoreKeyId,
-  type TimelineStoreState
+  timelineStoreKeyId
 } from "./domain/timelineStore";
-import { TimelineStoreContext } from "./components/timelineStoreContext";
+import {
+  createTimelineStoreController,
+  TimelineStoreContext
+} from "./components/timelineStoreContext";
 import {
   type ContextMenuActionId,
   type ContextMenuItem
@@ -56,12 +59,15 @@ import {
 } from "./domain/shortcuts";
 import {
   effectiveRightPanelModeForSnapshot,
-  type PeoplePanelScope,
   type RightPanelContextMenuTarget,
   type RightPanelMode,
   rightPanelIntentForContextMenuAction,
   rightPanelModeForSearchQuery
 } from "./domain/rightPanel";
+import {
+  createInitialUiNavigationState,
+  uiNavigationReducer
+} from "./domain/uiNavigationState";
 import {
   applyDesktopAttentionToWindow,
   dispatchDesktopAttentionTransientEffects,
@@ -128,6 +134,7 @@ import type {
   SettingsPatch,
   StagedUploadCompressionChoice,
   StagedUploadItem,
+  TimelinePersistedViewport,
   TimelineScrollAnchor,
   UploadStagingRequestItem
 } from "./domain/types";
@@ -369,14 +376,16 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
         firstVisibleEventId: string | null,
         lastVisibleEventId: string | null,
         atBottom: boolean,
-        scrollAnchor: TimelineScrollAnchor | null
+        scrollAnchor: TimelineScrollAnchor | null,
+        viewport: TimelinePersistedViewport | null
       ) {
         await invoke("observe_timeline_viewport", {
           roomId,
           firstVisibleEventId,
           lastVisibleEventId,
           atBottom,
-          scrollAnchor
+          scrollAnchor,
+          viewport
         });
       },
       async openAtTimestamp(roomId: string, timestampMs: number) {
@@ -1020,9 +1029,19 @@ export function App() {
   const [loginDeviceName, setLoginDeviceName] = useState("Koushi");
   const [loginPasswordFilled, setLoginPasswordFilled] = useState(false);
   const [recoverySecretFilled, setRecoverySecretFilled] = useState(false);
-  const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>("closed");
-  const [selectedProfileUserId, setSelectedProfileUserId] = useState<string | null>(null);
-  const [peoplePanelScope, setPeoplePanelScope] = useState<PeoplePanelScope | null>(null);
+  const [navState, dispatchNav] = useReducer(
+    uiNavigationReducer,
+    createInitialUiNavigationState()
+  );
+  const { primaryView, rightPanelMode, selectedProfileUserId, peoplePanelScope } = navState;
+  const setPrimaryView = useCallback(
+    (v: PrimaryView) => dispatchNav({ kind: "setPrimaryView", primaryView: v }),
+    [dispatchNav]
+  );
+  const setRightPanelMode = useCallback(
+    (v: RightPanelMode) => dispatchNav({ kind: "setRightPanelMode", mode: v }),
+    [dispatchNav]
+  );
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_RIGHT_PANEL_WIDTH);
   const [qaSendStatus, setQaSendStatus] = useState<QaSendSmokeStatus>("idle");
@@ -1033,7 +1052,6 @@ export function App() {
   const [savedSessions, setSavedSessions] = useState<SavedSessionInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<ActiveContextMenu | null>(null);
   const [isBusy, setIsBusy] = useState(false);
-  const [primaryView, setPrimaryView] = useState<PrimaryView>("timeline");
   const [homeSelection, setHomeSelectionState] =
     useState<HomeSelection>(readHomeSelection);
   const [directorySearchDraft, setDirectorySearchDraft] = useState("");
@@ -1053,7 +1071,11 @@ export function App() {
   const [createDraftName, setCreateDraftName] = useState("");
   const [reportDialog, setReportDialog] = useState<ReportDialogState | null>(null);
   const [reportReasonDraft, setReportReasonDraft] = useState("");
-  const [timelineStore, setTimelineStore] = useState<TimelineStoreState>(createTimelineStore);
+  const timelineStoreController = useMemo(
+    () => createTimelineStoreController(createTimelineStore()),
+    []
+  );
+  const setTimelineStore = timelineStoreController.setStore;
   const uiLatencyDiagnostics = useUiLatencyDiagnostics();
   const verboseDiagnosticBuild = verboseDiagnosticsEnabled();
   const searchTimer = useRef<number | null>(null);
@@ -1119,8 +1141,7 @@ export function App() {
       async openAtTimestamp(roomId: string, timestampMs: number) {
         const nextSnapshot = await api.openTimelineAtTimestamp(roomId, timestampMs);
         setSnapshot(nextSnapshot);
-        setPrimaryView("timeline");
-        setRightPanelMode("focusedContext");
+        dispatchNav({ kind: "openTimelineAtTimestamp" });
       }
     };
   }, []);
@@ -1173,13 +1194,9 @@ export function App() {
   retainedTimelineKeyIdsRef.current = retainedTimelineKeyIds;
   const currentTimelineStoreSessionKey = timelineStoreSessionKey(snapshot);
   const timelineStoreSessionKeyRef = useRef(currentTimelineStoreSessionKey);
-  const timelineStoreContextValue = useMemo(
-    () =>
-      appTimelineTransport
-        ? { store: timelineStore, setStore: setTimelineStore }
-        : null,
-    [appTimelineTransport, timelineStore]
-  );
+  const timelineStoreContextValue = appTimelineTransport
+    ? timelineStoreController
+    : null;
 
   useEffect(() => {
     if (timelineStoreSessionKeyRef.current === currentTimelineStoreSessionKey) {
@@ -2921,13 +2938,7 @@ export function App() {
 
   async function setRightPanelModeClosingFocusedContext(nextMode: RightPanelMode) {
     await closeFocusedContextIfHiddenBy(nextMode);
-    if (nextMode !== "profile") {
-      setSelectedProfileUserId(null);
-    }
-    if (nextMode !== "people" && nextMode !== "profile") {
-      setPeoplePanelScope(null);
-    }
-    setRightPanelMode(nextMode);
+    dispatchNav({ kind: "setRightPanelMode", mode: nextMode });
   }
 
   async function closeFocusedContextPanel() {
@@ -2939,15 +2950,13 @@ export function App() {
       await closeThreadsListPanel();
       return;
     }
-    setSelectedProfileUserId(null);
     await setRightPanelModeClosingFocusedContext("closed");
   }
 
   function openActivityRow(roomId: string, eventId: string) {
     void api.openActivityEvent(roomId, eventId).then((nextSnapshot) => {
       setSnapshot(nextSnapshot);
-      setPrimaryView("timeline");
-      setRightPanelMode("closed");
+      dispatchNav({ kind: "openActivityEvent" });
     });
   }
 
@@ -2960,8 +2969,7 @@ export function App() {
   function selectSearchResult(roomId: string, eventId: string) {
     void api.selectSearchResult(roomId, eventId).then((nextSnapshot) => {
       setSnapshot(nextSnapshot);
-      setPrimaryView("timeline");
-      setRightPanelMode("search");
+      dispatchNav({ kind: "selectSearchResult" });
     });
   }
 
@@ -3405,12 +3413,12 @@ export function App() {
                 roomSettingsLoadRef.current = null;
                 const next = await api.loadRoomSettings(roomId);
                 setSnapshot(next);
-                setPeoplePanelScope({ kind: "room", roomId });
-              } else {
-                setPeoplePanelScope(null);
               }
-              setSelectedProfileUserId(null);
-              await setRightPanelModeClosingFocusedContext("people");
+              await closeFocusedContextIfHiddenBy("people");
+              dispatchNav({
+                kind: "openPeoplePanel",
+                scope: roomId ? { kind: "room", roomId } : null
+              });
             }}
             onOpenThreads={() => {
               const roomId = snapshot.state.ui.navigation.active_room_id;
@@ -3469,9 +3477,11 @@ export function App() {
                   spaceSettingsLoadRef.current = null;
                   const next = await api.loadRoomSettings(activeSpace.space_id);
                   setSnapshot(next);
-                  setPeoplePanelScope({ kind: "space", spaceId: activeSpace.space_id });
-                  setSelectedProfileUserId(null);
-                  await setRightPanelModeClosingFocusedContext("people");
+                  await closeFocusedContextIfHiddenBy("people");
+                  dispatchNav({
+                    kind: "openPeoplePanel",
+                    scope: { kind: "space", spaceId: activeSpace.space_id }
+                  });
                 }
               : undefined
           }
@@ -3480,20 +3490,20 @@ export function App() {
               roomSettingsLoadRef.current = null;
               const next = await api.loadRoomSettings(activeRoom.room_id);
               setSnapshot(next);
-              setPeoplePanelScope({ kind: "room", roomId: activeRoom.room_id });
-            } else {
-              setPeoplePanelScope(null);
             }
-            setSelectedProfileUserId(null);
-            await setRightPanelModeClosingFocusedContext("people");
+            await closeFocusedContextIfHiddenBy("people");
+            dispatchNav({
+              kind: "openPeoplePanel",
+              scope: activeRoom ? { kind: "room", roomId: activeRoom.room_id } : null
+            });
           }}
           onOpenProfile={(userId) => {
-            setSelectedProfileUserId(userId);
-            void setRightPanelModeClosingFocusedContext("profile");
+            dispatchNav({ kind: "openProfilePanel", userId });
+            void closeFocusedContextIfHiddenBy("profile");
           }}
           onBackToPeople={() => {
-            setSelectedProfileUserId(null);
-            void setRightPanelModeClosingFocusedContext("people");
+            dispatchNav({ kind: "backToPeople" });
+            void closeFocusedContextIfHiddenBy("people");
           }}
           onRefreshFilesView={(scope, filter, sort) => {
             void refreshFilesView(scope, filter, sort);
