@@ -1,9 +1,6 @@
 import type { TimelineScrollAnchor } from "./types";
 
-export type TimelineProgrammaticScrollSignature = {
-  scrollHeight: number;
-  scrollTop: number;
-};
+export type TimelineScrollActivity = "idle" | "active";
 
 export type TimelineRetainedRoomAnchor = {
   signature: string;
@@ -13,11 +10,6 @@ export type TimelineRetainedRoomAnchor = {
 
 export type TimelineViewportAnchorCaptureOptions = {
   allowSuppressed?: boolean;
-};
-
-export type TimelineViewportScrollMetrics = {
-  scrollHeight: number;
-  scrollTop: number;
 };
 
 export type TimelineViewportTargetSource =
@@ -45,8 +37,10 @@ export type TimelineViewportCoverageMode = "anchored" | "liveEdge" | "targeting"
 export type TimelineViewportMachineState = {
   intent: TimelineViewportIntent;
   userScrollInputPending: boolean;
+  scrollActivity: TimelineScrollActivity;
+  programmaticToken: number;
+  pendingProgrammaticScrollToken: number | null;
   suppressScrollAnchorCapture: boolean;
-  programmaticScrollSignature: TimelineProgrammaticScrollSignature | null;
   prependAnchorRestorePending: boolean;
   roomAnchorRestorePending: boolean;
   roomAnchorMaterializePending: boolean;
@@ -85,13 +79,15 @@ export type TimelineViewportMachineEvent =
   | { type: "mark-user-scroll-input" }
   | {
       type: "scroll-observed";
-      programmaticEcho: boolean;
+      programmaticToken: number | null;
       atBottom: boolean;
       userInput: boolean;
     }
+  | { type: "scroll-activity-idle" }
   | { type: "scroll-capture-suppression-started" }
   | { type: "scroll-capture-suppression-finished" }
-  | { type: "programmatic-scroll-assigned"; scrollHeight: number; scrollTop: number }
+  | { type: "programmatic-scroll-assigned" }
+  | { type: "programmatic-scroll-cancelled"; token: number }
   | { type: "stick-to-bottom-after-measurement"; value: boolean }
   | { type: "coverage-backfill-requested"; signature: string };
 
@@ -99,8 +95,10 @@ export function createTimelineViewportMachineState(): TimelineViewportMachineSta
   return {
     intent: { kind: "anchored" },
     userScrollInputPending: false,
+    scrollActivity: "idle",
+    programmaticToken: 0,
+    pendingProgrammaticScrollToken: null,
     suppressScrollAnchorCapture: false,
-    programmaticScrollSignature: null,
     prependAnchorRestorePending: false,
     roomAnchorRestorePending: false,
     roomAnchorMaterializePending: false,
@@ -139,14 +137,14 @@ export function timelineViewportCanPersistAnchor(
   );
 }
 
-export function timelineViewportProgrammaticScrollEchoMatches(
+export function timelineViewportProgrammaticScrollTokenMatches(
   state: TimelineViewportMachineState,
-  metrics: TimelineViewportScrollMetrics
+  token: number | null
 ): boolean {
   return (
-    state.programmaticScrollSignature !== null &&
-    state.programmaticScrollSignature.scrollHeight === metrics.scrollHeight &&
-    state.programmaticScrollSignature.scrollTop === metrics.scrollTop
+    token !== null &&
+    state.pendingProgrammaticScrollToken !== null &&
+    state.pendingProgrammaticScrollToken === token
   );
 }
 
@@ -278,38 +276,69 @@ export function reduceTimelineViewportMachine(
         userScrollInputPending: false
       };
     case "mark-user-scroll-input":
-      return { ...state, userScrollInputPending: true };
+      return {
+        ...state,
+        userScrollInputPending: true,
+        scrollActivity: "active",
+        pendingProgrammaticScrollToken: null
+      };
     case "scroll-observed":
-      if (event.programmaticEcho) {
-        return state;
-      }
-      if (event.userInput && event.atBottom) {
+      if (timelineViewportProgrammaticScrollTokenMatches(state, event.programmaticToken)) {
         return {
           ...state,
-          intent: { kind: "live-edge" },
-          userScrollInputPending: false,
-          retainedRoomAnchor: null
+          pendingProgrammaticScrollToken: null
         };
       }
-      if (event.userInput) {
-        return reduceTimelineViewportMachine(state, { type: "free-scroll-requested" });
+      {
+        const observedState = {
+          ...state,
+          scrollActivity: "active" as const,
+          pendingProgrammaticScrollToken: null
+        };
+        if (event.userInput && event.atBottom) {
+          return {
+            ...observedState,
+            intent: { kind: "live-edge" },
+            userScrollInputPending: false,
+            retainedRoomAnchor: null
+          };
+        }
+        if (event.userInput) {
+          return reduceTimelineViewportMachine(observedState, {
+            type: "free-scroll-requested"
+          });
+        }
+        return observedState;
       }
-      return state;
+    case "scroll-activity-idle":
+      return {
+        ...state,
+        scrollActivity: "idle",
+        userScrollInputPending: false
+      };
     case "scroll-capture-suppression-started":
       return { ...state, suppressScrollAnchorCapture: true };
     case "scroll-capture-suppression-finished":
       return {
         ...state,
-        suppressScrollAnchorCapture: false,
-        programmaticScrollSignature: null
+        suppressScrollAnchorCapture: false
       };
     case "programmatic-scroll-assigned":
+      {
+        const nextToken = state.programmaticToken + 1;
+        return {
+          ...state,
+          programmaticToken: nextToken,
+          pendingProgrammaticScrollToken: nextToken
+        };
+      }
+    case "programmatic-scroll-cancelled":
+      if (state.pendingProgrammaticScrollToken !== event.token) {
+        return state;
+      }
       return {
         ...state,
-        programmaticScrollSignature: {
-          scrollHeight: event.scrollHeight,
-          scrollTop: event.scrollTop
-        }
+        pendingProgrammaticScrollToken: null
       };
     case "stick-to-bottom-after-measurement":
       return {

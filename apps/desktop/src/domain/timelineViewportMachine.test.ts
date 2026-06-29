@@ -8,7 +8,7 @@ import {
   timelineViewportCanRequestCoverageBackfill,
   timelineViewportHasBlockingAnchorWork,
   timelineViewportIsLiveEdge,
-  timelineViewportProgrammaticScrollEchoMatches,
+  timelineViewportProgrammaticScrollTokenMatches,
   type TimelineViewportMachineState
 } from "./timelineViewportMachine";
 import type { TimelineScrollAnchor } from "./types";
@@ -34,9 +34,7 @@ describe("timeline viewport machine", () => {
     const retained = withRetainedAnchor();
 
     const afterProgrammaticWork = reduceTimelineViewportMachine(retained, {
-      type: "programmatic-scroll-assigned",
-      scrollHeight: 1200,
-      scrollTop: 800
+      type: "programmatic-scroll-assigned"
     });
 
     expect(afterProgrammaticWork.retainedRoomAnchor).toEqual(
@@ -45,7 +43,7 @@ describe("timeline viewport machine", () => {
 
     const afterUserScroll = reduceTimelineViewportMachine(afterProgrammaticWork, {
       type: "scroll-observed",
-      programmaticEcho: false,
+      programmaticToken: null,
       atBottom: false,
       userInput: true
     });
@@ -60,36 +58,31 @@ describe("timeline viewport machine", () => {
         type: "live-edge-requested"
       }),
       {
-        type: "programmatic-scroll-assigned",
-        scrollHeight: 1200,
-        scrollTop: 800
+        type: "programmatic-scroll-assigned"
       }
     );
 
+    const token = liveEdge.programmaticToken;
     const observed = reduceTimelineViewportMachine(liveEdge, {
       type: "scroll-observed",
-      programmaticEcho: true,
+      programmaticToken: token,
       atBottom: true,
       userInput: false
     });
 
     expect(observed.intent).toEqual({ kind: "live-edge" });
-    expect(observed.programmaticScrollSignature).toEqual({
-      scrollHeight: 1200,
-      scrollTop: 800
-    });
+    expect(observed.pendingProgrammaticScrollToken).toBeNull();
+    expect(observed.scrollActivity).toBe("idle");
   });
 
   it("does not release retained anchors for programmatic scroll echoes", () => {
     const retained = reduceTimelineViewportMachine(withRetainedAnchor(), {
-      type: "programmatic-scroll-assigned",
-      scrollHeight: 1200,
-      scrollTop: 800
+      type: "programmatic-scroll-assigned"
     });
 
     const observed = reduceTimelineViewportMachine(retained, {
       type: "scroll-observed",
-      programmaticEcho: true,
+      programmaticToken: retained.programmaticToken,
       atBottom: false,
       userInput: false
     });
@@ -163,25 +156,44 @@ describe("timeline viewport machine", () => {
     expect(timelineViewportHasBlockingAnchorWork(state)).toBe(true);
   });
 
-  it("keeps programmatic scroll echo detection behind the state-machine API", () => {
-    const state = reduceTimelineViewportMachine(createTimelineViewportMachineState(), {
-      type: "programmatic-scroll-assigned",
-      scrollHeight: 2048,
-      scrollTop: 512
+  it("assigns monotonic programmatic scroll tokens behind the state-machine API", () => {
+    const first = reduceTimelineViewportMachine(createTimelineViewportMachineState(), {
+      type: "programmatic-scroll-assigned"
+    });
+    const second = reduceTimelineViewportMachine(first, {
+      type: "programmatic-scroll-assigned"
     });
 
-    expect(
-      timelineViewportProgrammaticScrollEchoMatches(state, {
-        scrollHeight: 2048,
-        scrollTop: 512
-      })
-    ).toBe(true);
-    expect(
-      timelineViewportProgrammaticScrollEchoMatches(state, {
-        scrollHeight: 2048,
-        scrollTop: 513
-      })
-    ).toBe(false);
+    expect(first.programmaticToken).toBe(1);
+    expect(first.pendingProgrammaticScrollToken).toBe(1);
+    expect(second.programmaticToken).toBe(2);
+    expect(second.pendingProgrammaticScrollToken).toBe(2);
+    expect(timelineViewportProgrammaticScrollTokenMatches(second, 1)).toBe(false);
+    expect(timelineViewportProgrammaticScrollTokenMatches(second, 2)).toBe(true);
+    expect(timelineViewportProgrammaticScrollTokenMatches(second, null)).toBe(false);
+  });
+
+  it("keeps non-programmatic inertial scroll activity durable until idle", () => {
+    const liveEdge = reduceTimelineViewportMachine(createTimelineViewportMachineState(), {
+      type: "live-edge-requested"
+    });
+
+    const active = reduceTimelineViewportMachine(liveEdge, {
+      type: "scroll-observed",
+      programmaticToken: null,
+      atBottom: false,
+      userInput: false
+    });
+
+    expect(active.intent).toEqual({ kind: "live-edge" });
+    expect(active.scrollActivity).toBe("active");
+
+    const idle = reduceTimelineViewportMachine(active, {
+      type: "scroll-activity-idle"
+    });
+
+    expect(idle.scrollActivity).toBe("idle");
+    expect(idle.userScrollInputPending).toBe(false);
   });
 
   it("clears stickToBottomAfterMeasurement when user scrolls away from bottom while live-edge is active", () => {
@@ -200,7 +212,7 @@ describe("timeline viewport machine", () => {
 
     const afterUserScroll = reduceTimelineViewportMachine(withSticky, {
       type: "scroll-observed",
-      programmaticEcho: false,
+      programmaticToken: null,
       atBottom: false,
       userInput: true
     });
@@ -220,7 +232,7 @@ describe("timeline viewport machine", () => {
 
     const afterScroll = reduceTimelineViewportMachine(stickyLiveEdge, {
       type: "scroll-observed",
-      programmaticEcho: false,
+      programmaticToken: null,
       atBottom: false,
       userInput: false
     });
@@ -255,7 +267,7 @@ describe("timeline viewport machine", () => {
 
     const observed = reduceTimelineViewportMachine(anchored, {
       type: "scroll-observed",
-      programmaticEcho: false,
+      programmaticToken: null,
       atBottom: true,
       userInput: false
     });

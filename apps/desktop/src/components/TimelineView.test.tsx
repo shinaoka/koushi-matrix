@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -182,6 +184,18 @@ function installResizeObserverMock() {
 }
 
 describe("TimelineView", () => {
+  it("keeps direct scrollTop writes in the viewport controller", () => {
+    const source = readFileSync(
+      `${process.cwd()}/src/components/TimelineView.tsx`,
+      "utf8"
+    );
+    const directWrites = Array.from(
+      source.matchAll(/\.scrollTop\s*(?:[+\-*/]=|=(?!=))/g)
+    ).map((match) => match[0]);
+
+    expect(directWrites).toEqual([]);
+  });
+
   it("ensures the timeline subscription after registering the CoreEvent listener", async () => {
     const calls: string[] = [];
     let listener: ((payload: CoreEventPayload) => void) | null = null;
