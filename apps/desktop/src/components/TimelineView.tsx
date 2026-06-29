@@ -1780,6 +1780,7 @@ export const TimelineView = memo(function TimelineView({
     useState<TimelineVirtualRangeState>(EMPTY_TIMELINE_RANGE);
   const virtualRangeRef = useRef<TimelineVirtualRangeState>(EMPTY_TIMELINE_RANGE);
   const pendingScrollFrameRef = useRef<number | null>(null);
+  const rangeModelEpochRef = useRef(0);
   const virtualItemHeight = TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
   const [measuredHeightVersion, setMeasuredHeightVersion] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -2258,6 +2259,9 @@ export const TimelineView = memo(function TimelineView({
       ),
     [measuredHeightVersion, visibleItems, virtualItemHeight]
   );
+  useLayoutEffect(() => {
+    rangeModelEpochRef.current += 1;
+  }, [timelineHeightModel, visibleItems]);
   const commitVirtualRangeForMetrics = useCallback(
     (metrics: TimelineViewportMetrics) => {
       const next = calculateTimelineVirtualRange({
@@ -3029,11 +3033,15 @@ export const TimelineView = memo(function TimelineView({
     }
     if (pendingScrollFrameRef.current === null) {
       const frameTimelineKeyHash = timelineKeyHash;
+      const frameRangeModelEpoch = rangeModelEpochRef.current;
       pendingScrollFrameRef.current = window.requestAnimationFrame(() => {
         pendingScrollFrameRef.current = null;
         const userInputPending = pendingScrollFrameUserInputRef.current;
         pendingScrollFrameUserInputRef.current = false;
-        if (timelineKeyHashRef.current !== frameTimelineKeyHash) {
+        if (
+          timelineKeyHashRef.current !== frameTimelineKeyHash ||
+          rangeModelEpochRef.current !== frameRangeModelEpoch
+        ) {
           return;
         }
         const metrics = readViewportMetrics();
