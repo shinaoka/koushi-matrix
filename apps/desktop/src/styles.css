@@ -2048,7 +2048,7 @@ button:disabled {
 .timeline-view {
   min-inline-size: 0;
   max-inline-size: 100%;
-  overflow-anchor: none;
+  overflow-anchor: auto;
   overflow-x: hidden;
 }
 
@@ -2060,6 +2060,7 @@ button:disabled {
 
 .timeline-virtual-spacer {
   inline-size: 100%;
+  overflow-anchor: none;
   pointer-events: none;
 }
 
