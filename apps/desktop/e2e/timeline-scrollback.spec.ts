@@ -78,7 +78,19 @@ async function expectTimelineScrolledToBottom(container: ReturnType<Page["locato
 async function waitAnimationFrames(page: Page, count: number) {
   for (let i = 0; i < count; i += 1) {
     await page.evaluate(
-      () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      () =>
+        new Promise<void>((resolve) => {
+          let resolved = false;
+          const finish = () => {
+            if (resolved) {
+              return;
+            }
+            resolved = true;
+            resolve();
+          };
+          requestAnimationFrame(finish);
+          setTimeout(finish, 16);
+        })
     );
   }
 }

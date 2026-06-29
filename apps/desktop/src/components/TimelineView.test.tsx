@@ -768,6 +768,21 @@ describe("TimelineView", () => {
       />
     );
 
+    const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 1000,
+      writable: true,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "scrollHeight", {
+      value: 700 * 72,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "clientHeight", {
+      value: 600,
+      configurable: true
+    });
+
     act(() => {
       listener?.({
         kind: "Timeline",
@@ -784,20 +799,10 @@ describe("TimelineView", () => {
       });
     });
 
-    const timeline = await screen.findByTestId("timeline-view");
-    Object.defineProperty(timeline, "scrollTop", {
-      value: 1000,
-      writable: true,
-      configurable: true
-    });
-    Object.defineProperty(timeline, "scrollHeight", {
-      value: 700 * 72,
-      configurable: true
-    });
-    Object.defineProperty(timeline, "clientHeight", {
-      value: 600,
-      configurable: true
-    });
+    timeline.scrollTop = 1000;
+    fireEvent.wheel(timeline, { deltaY: -40 });
+    fireEvent.scroll(timeline);
+    onScrollDiagnosticsChange.mockClear();
 
     act(() => {
       listener?.({
