@@ -82,6 +82,33 @@ function imageMessage(eventId: string, encrypted = false): TimelineItem {
   };
 }
 
+function messages(count: number, prefix = "$item"): TimelineItem[] {
+  return Array.from({ length: count }, (_, index) =>
+    message(`${prefix}${index}`, `message ${index}`)
+  );
+}
+
+function navigationSnapshot(overrides: Partial<{
+  read_marker_event_id: string | null;
+  read_marker_display_event_id: string | null;
+  first_unread_event_id: string | null;
+  unread_event_count: number;
+  unread_position: "none" | "aboveViewport" | "insideViewport" | "belowViewport" | "unknown";
+  newer_event_count: number;
+  can_jump_to_bottom: boolean;
+}> = {}) {
+  return {
+    read_marker_event_id: null,
+    read_marker_display_event_id: null,
+    first_unread_event_id: null,
+    unread_event_count: 0,
+    unread_position: "none" as const,
+    newer_event_count: 0,
+    can_jump_to_bottom: false,
+    ...overrides
+  };
+}
+
 function baseTransport(
   overrides: Partial<TimelineTransport>
 ): TimelineTransport {
@@ -503,6 +530,227 @@ describe("TimelineView", () => {
     const idleDiagnostics = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
     expect(idleDiagnostics.measurementFlushes - baselineMeasurementFlushes).toBe(1);
     expect(idleDiagnostics.heightModelCommits - baselineHeightModelCommits).toBe(1);
+  });
+
+  it("does not defer measurements from a programmatic scroll echo", async () => {
+    vi.useFakeTimers();
+    let listener: ((payload: CoreEventPayload) => void) | null = null;
+    const onScrollDiagnosticsChange = vi.fn();
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        listener = nextListener;
+        return () => undefined;
+      }
+    });
+
+    const rects: Record<string, { top: number; height: number }> = {};
+    for (let index = 0; index < 700; index += 1) {
+      rects[`$item${index}`] = { top: index * 72, height: 72 };
+    }
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={() => undefined}
+        onScrollDiagnosticsChange={onScrollDiagnosticsChange}
+        listRefCallback={(element) => {
+          scrollContainerRef.current =
+            element?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null;
+        }}
+      />
+    );
+
+    act(() => {
+      listener?.({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: messages(700)
+          }
+        }
+      });
+      listener?.({
+        kind: "Timeline",
+        event: {
+          NavigationUpdated: {
+            key: KEY,
+            snapshot: navigationSnapshot({
+              unread_event_count: 1,
+              newer_event_count: 2,
+              can_jump_to_bottom: true
+            })
+          }
+        }
+      });
+    });
+
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 3000,
+      writable: true,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "scrollHeight", {
+      value: 700 * 72,
+      writable: true,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "clientHeight", {
+      value: 600,
+      writable: true,
+      configurable: true
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const jumpToBottomButton = screen.getByRole("button", { name: /Jump to bottom/i });
+    const baselineDiagnostics = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    const baselineHeightModelCommits = baselineDiagnostics?.heightModelCommits ?? 0;
+    const baselineMeasurementFlushes = baselineDiagnostics?.measurementFlushes ?? 0;
+
+    fireEvent.click(jumpToBottomButton);
+    rects.$item699 = { top: 699 * 72, height: 180 };
+    fireEvent.scroll(timeline);
+    act(() => {
+      listener?.({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 2,
+            items: messages(700)
+          }
+        }
+      });
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const afterEchoDiagnostics = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    expect(afterEchoDiagnostics.pendingMeasuredRows).toBe(0);
+    expect(afterEchoDiagnostics.heightModelCommits - baselineHeightModelCommits).toBeGreaterThan(0);
+
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+
+    const idleDiagnostics = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    expect(idleDiagnostics.measurementFlushes - baselineMeasurementFlushes).toBe(0);
+  });
+
+  it("drops stale pending measurements after same timeline items reset", async () => {
+    vi.useFakeTimers();
+    let listener: ((payload: CoreEventPayload) => void) | null = null;
+    const onScrollDiagnosticsChange = vi.fn();
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        listener = nextListener;
+        return () => undefined;
+      }
+    });
+
+    const rects: Record<string, { top: number; height: number }> = {};
+    for (let index = 0; index < 700; index += 1) {
+      rects[`$item${index}`] = { top: index * 72, height: 72 };
+    }
+    for (let index = 0; index < 20; index += 1) {
+      rects[`$reset${index}`] = { top: index * 72, height: 72 };
+    }
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={() => undefined}
+        onScrollDiagnosticsChange={onScrollDiagnosticsChange}
+        listRefCallback={(element) => {
+          scrollContainerRef.current =
+            element?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null;
+        }}
+      />
+    );
+
+    act(() => {
+      listener?.({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: messages(700)
+          }
+        }
+      });
+    });
+
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 3000,
+      writable: true,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "scrollHeight", {
+      value: 700 * 72,
+      writable: true,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "clientHeight", {
+      value: 600,
+      writable: true,
+      configurable: true
+    });
+
+    fireEvent.wheel(timeline, { deltaY: 40 });
+    fireEvent.scroll(timeline);
+    rects.$item50 = { top: 50 * 72, height: 180 };
+    fireEvent.scroll(timeline);
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(onScrollDiagnosticsChange.mock.calls.at(-1)?.[0].pendingMeasuredRows).toBeGreaterThan(0);
+
+    act(() => {
+      listener?.({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 2,
+            items: messages(20, "$reset")
+          }
+        }
+      });
+    });
+    expect(timeline.getAttribute("data-timeline-generation")).toBe("2");
+    expect(timeline.getAttribute("data-total-items")).toBe("20");
+    const resetDiagnostics = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    const resetHeightModelCommits = resetDiagnostics?.heightModelCommits ?? 0;
+    const resetMeasurementFlushes = resetDiagnostics?.measurementFlushes ?? 0;
+
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+
+    const idleDiagnostics = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    expect(idleDiagnostics.measurementFlushes - resetMeasurementFlushes).toBe(0);
+    expect(idleDiagnostics.heightModelCommits - resetHeightModelCommits).toBe(0);
   });
 
   it("drops pending scroll frame diagnostics after the timeline key changes", async () => {
