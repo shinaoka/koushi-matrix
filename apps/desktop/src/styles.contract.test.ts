@@ -157,9 +157,11 @@ describe("styles.css token system", () => {
     expect(block).toContain("z-index: 12;");
   });
 
-  test("timeline scroll container uses app-owned scroll anchoring", () => {
+  test("timeline scroll container allows browser scroll anchoring", () => {
     const block = selectorBlock(".timeline-view");
-    expect(block).toContain("overflow-anchor: none;");
+    expect(block).toContain("overflow-anchor: auto;");
+    const spacerBlock = selectorBlock(".timeline-virtual-spacer");
+    expect(spacerBlock).toContain("overflow-anchor: none;");
   });
 
   test("defines fixed-format sizing tokens for shared GUI controls", () => {
