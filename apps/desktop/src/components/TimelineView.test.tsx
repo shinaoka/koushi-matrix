@@ -2238,6 +2238,59 @@ describe("TimelineView", () => {
     });
   });
 
+  it("does not request encrypted image previews for off-window initial virtualized items", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const downloadMedia = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      downloadMedia,
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const items = Array.from({ length: 700 }, (_, index) =>
+      index === 350
+        ? imageMessage("$offscreen-image", true)
+        : message(`$plain-${index}`, `Plain ${index}`)
+    );
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      const renderedItems = Number(
+        screen.getByTestId("timeline-view").getAttribute("data-rendered-items")
+      );
+      expect(renderedItems).toBeGreaterThan(0);
+      expect(renderedItems).toBeLessThan(items.length);
+    });
+    expect(downloadMedia).not.toHaveBeenCalledWith(
+      "!room:example.invalid",
+      "$offscreen-image"
+    );
+    expect(downloadMedia).not.toHaveBeenCalled();
+  });
+
   it("renders ready image previews without technical metadata and opens the original source", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({

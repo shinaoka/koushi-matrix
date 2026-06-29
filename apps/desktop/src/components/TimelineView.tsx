@@ -2331,7 +2331,8 @@ export const TimelineView = memo(function TimelineView({
     virtualWindow.startIndex,
     virtualWindow.virtualized
   ]);
-  const sideEffectItems = virtualWindow.virtualized ? virtualWindow.items : visibleItems;
+  const sideEffectItems =
+    visibleItems.length > TIMELINE_VIRTUALIZATION_THRESHOLD ? virtualWindow.items : visibleItems;
   useEffect(() => {
     const avatarDiagnostics = timelineAvatarDiagnostics(
       visibleItems,
