@@ -1754,6 +1754,8 @@ export const TimelineView = memo(function TimelineView({
   const scrollDiagnosticsRef = useRef<TimelineScrollDiagnostics>(
     createInitialTimelineScrollDiagnostics()
   );
+  const onScrollDiagnosticsChangeRef = useRef(onScrollDiagnosticsChange);
+  onScrollDiagnosticsChangeRef.current = onScrollDiagnosticsChange;
   const profileUsersRef = useRef(profileUsers);
   profileUsersRef.current = profileUsers;
   const timelineKeyRef = useRef(timelineKey);
@@ -1772,8 +1774,8 @@ export const TimelineView = memo(function TimelineView({
     [onDiagnosticLogEntry]
   );
   const emitScrollDiagnostics = useCallback(() => {
-    onScrollDiagnosticsChange?.(scrollDiagnosticsRef.current);
-  }, [onScrollDiagnosticsChange]);
+    onScrollDiagnosticsChangeRef.current?.(scrollDiagnosticsRef.current);
+  }, []);
   const updateScrollDiagnostics = useCallback(
     (update: (current: TimelineScrollDiagnostics) => TimelineScrollDiagnostics) => {
       scrollDiagnosticsRef.current = update(scrollDiagnosticsRef.current);
@@ -1903,7 +1905,7 @@ export const TimelineView = memo(function TimelineView({
   }, [persistViewportAnchor, runWithSuppressedScrollAnchorCapture]);
 
   useEffect(() => {
-    updateScrollDiagnostics(recordTimelineScrollCommit);
+    scrollDiagnosticsRef.current = recordTimelineScrollCommit(scrollDiagnosticsRef.current);
   });
 
   // --- Event subscription: local stores apply reducers; App stores keep view effects here. ---

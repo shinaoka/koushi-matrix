@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { openExternalHttpUrl } from "../domain/externalLinks";
@@ -397,11 +398,44 @@ describe("TimelineView", () => {
       });
     });
 
-    await waitFor(() => expect(onScrollDiagnosticsChange).toHaveBeenCalled());
+    await waitFor(() => {
+      const latest = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+      expect(latest?.latestFrame?.endIndex ?? 0).toBeGreaterThan(0);
+    });
     const latest = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
     expect(latest.renderCommits).toBeGreaterThan(0);
+    expect(latest.scrollFrames).toBeGreaterThan(0);
     expect(JSON.stringify(latest)).not.toContain("!room:example.invalid");
     expect(JSON.stringify(latest)).not.toContain("$item");
+  });
+
+  it("does not re-emit scroll diagnostics from parent state commits", async () => {
+    const onScrollDiagnosticsChange = vi.fn();
+
+    function Parent() {
+      const [, setDiagnostics] = useState<unknown>(null);
+      return (
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={baseTransport({})}
+          onReply={() => undefined}
+          onScrollDiagnosticsChange={(diagnostics) => {
+            onScrollDiagnosticsChange(diagnostics);
+            if (onScrollDiagnosticsChange.mock.calls.length <= 4) {
+              setDiagnostics(diagnostics);
+            }
+          }}
+        />
+      );
+    }
+
+    render(<Parent />);
+
+    await waitFor(() => expect(onScrollDiagnosticsChange).toHaveBeenCalled());
+    await act(async () => undefined);
+
+    expect(onScrollDiagnosticsChange.mock.calls.length).toBeLessThanOrEqual(2);
   });
 
   it("paginates older history when the user scrolls to the top even if prefetch is disabled", async () => {
