@@ -454,6 +454,14 @@ function timelineDiffsContainOwnOutgoingItem(
   return diffs.some((diff) => timelineDiffItems(diff).some((item) => timelineItemIsOwnOutgoing(item, currentUserId)));
 }
 
+function timelineDiffIsReset(diff: TimelineDiff): boolean {
+  return diff === "Clear" || (typeof diff !== "string" && "Reset" in diff);
+}
+
+function timelineDiffsContainReset(diffs: readonly TimelineDiff[]): boolean {
+  return diffs.some(timelineDiffIsReset);
+}
+
 function timelineDiffItems(diff: TimelineDiff): TimelineItem[] {
   if (typeof diff === "string") {
     return [];
@@ -1898,6 +1906,29 @@ export const TimelineView = memo(function TimelineView({
       scrollMaxDeferTimerRef.current = null;
     }
   }, []);
+  const clearPendingMeasurementDiagnostics = useCallback(() => {
+    if (scrollDiagnosticsRef.current.pendingMeasuredRows === 0) {
+      return;
+    }
+    scrollDiagnosticsRef.current = {
+      ...scrollDiagnosticsRef.current,
+      pendingMeasuredRows: 0
+    };
+    emitScrollDiagnostics();
+  }, [emitScrollDiagnostics]);
+  const resetActiveMeasurementDeferral = useCallback(
+    (options: { clearMountedIds?: boolean } = {}) => {
+      clearMeasurementTimers();
+      scrollActivityRef.current = "idle";
+      measurementEpochRef.current += 1;
+      pendingMeasuredHeightsRef.current.clear();
+      if (options.clearMountedIds) {
+        mountedItemDomIdsRef.current = new Set();
+      }
+      clearPendingMeasurementDiagnostics();
+    },
+    [clearMeasurementTimers, clearPendingMeasurementDiagnostics]
+  );
   const readViewportMetrics = useCallback((): TimelineViewportMetrics => {
     const container = containerRef.current;
     if (!container) {
@@ -1981,6 +2012,7 @@ export const TimelineView = memo(function TimelineView({
       if (pending.size === 0) {
         clearMeasurementTimers();
         scrollActivityRef.current = "idle";
+        clearPendingMeasurementDiagnostics();
         return;
       }
 
@@ -2045,6 +2077,7 @@ export const TimelineView = memo(function TimelineView({
       scrollActivityRef.current = "idle";
 
       if (changedRows === 0) {
+        clearPendingMeasurementDiagnostics();
         return;
       }
 
@@ -2057,10 +2090,13 @@ export const TimelineView = memo(function TimelineView({
 
       itemHeightByDomIdRef.current = nextHeights;
       updateScrollDiagnostics((current) =>
-        recordTimelineScrollMeasurementFlush(
-          recordTimelineScrollHeightCommit(current, "idleFlush"),
-          changedRows
-        )
+        ({
+          ...recordTimelineScrollMeasurementFlush(
+            recordTimelineScrollHeightCommit(current, "idleFlush"),
+            changedRows
+          ),
+          pendingMeasuredRows: 0
+        })
       );
       setMeasuredHeightVersion((current) => current + 1);
 
@@ -2070,6 +2106,7 @@ export const TimelineView = memo(function TimelineView({
     },
     [
       clearMeasurementTimers,
+      clearPendingMeasurementDiagnostics,
       emitDiagnosticLog,
       setViewportIntentToLiveEdge,
       updateScrollDiagnostics
@@ -2150,8 +2187,7 @@ export const TimelineView = memo(function TimelineView({
         roomScrollAnchorRestorePendingRef.current = false;
         viewportIntentRef.current = { kind: "free-scroll" };
         userScrollInputPendingRef.current = false;
-        measurementEpochRef.current += 1;
-        pendingMeasuredHeightsRef.current.clear();
+        resetActiveMeasurementDeferral({ clearMountedIds: true });
         lastPersistedViewportAnchorSignatureRef.current = null;
         restoredRoomScrollAnchorSignatureRef.current = null;
         setNavigationSnapshot(null);
@@ -2241,8 +2277,13 @@ export const TimelineView = memo(function TimelineView({
       emitTimelineEventDiagnosticLog(event, eventKey, emitDiagnosticLog);
       if ("InitialItems" in event) {
         recordTimelineInitialItems(event.InitialItems.items.length);
-        measurementEpochRef.current += 1;
-        pendingMeasuredHeightsRef.current.clear();
+        resetActiveMeasurementDeferral({ clearMountedIds: true });
+      }
+      if (
+        "ItemsUpdated" in event &&
+        timelineDiffsContainReset(event.ItemsUpdated.diffs)
+      ) {
+        resetActiveMeasurementDeferral({ clearMountedIds: true });
       }
       if (timelineEventCompletesBackfillRequest(event)) {
         backfillInFlightRef.current = false;
@@ -2264,8 +2305,7 @@ export const TimelineView = memo(function TimelineView({
         roomScrollAnchorRestorePendingRef.current = false;
         viewportIntentRef.current = { kind: "free-scroll" };
         userScrollInputPendingRef.current = false;
-        measurementEpochRef.current += 1;
-        pendingMeasuredHeightsRef.current.clear();
+        resetActiveMeasurementDeferral({ clearMountedIds: true });
         lastPersistedViewportAnchorSignatureRef.current = null;
         setNavigationSnapshot(null);
       }
@@ -2308,6 +2348,7 @@ export const TimelineView = memo(function TimelineView({
     currentUserId,
     emitDiagnosticLog,
     isAppLevelStore,
+    resetActiveMeasurementDeferral,
     setViewportIntentToLiveEdge,
     timelineKeyHash,
     transport
@@ -2320,14 +2361,13 @@ export const TimelineView = memo(function TimelineView({
   useEffect(
     () => () => {
       cancelPendingScrollFrame();
-      clearMeasurementTimers();
+      resetActiveMeasurementDeferral({ clearMountedIds: true });
     },
-    [cancelPendingScrollFrame, clearMeasurementTimers]
+    [cancelPendingScrollFrame, resetActiveMeasurementDeferral]
   );
 
   useLayoutEffect(() => {
     cancelPendingScrollFrame();
-    clearMeasurementTimers();
     const sessionViewport = timelineViewportSessionMemory.get(timelineKeyHash) ?? null;
     sessionRoomScrollAnchorRef.current =
       sessionViewport?.mode === "anchor" ? sessionViewport.anchor : null;
@@ -2339,16 +2379,13 @@ export const TimelineView = memo(function TimelineView({
     restoredRoomScrollAnchorSignatureRef.current = null;
     viewportIntentRef.current =
       sessionViewport?.mode === "anchor" ? { kind: "free-scroll" } : { kind: "live-edge" };
-    scrollActivityRef.current = "idle";
-    measurementEpochRef.current += 1;
-    pendingMeasuredHeightsRef.current.clear();
+    resetActiveMeasurementDeferral({ clearMountedIds: true });
     userScrollInputPendingRef.current = false;
     pendingScrollFrameUserInputRef.current = false;
     lastPersistedViewportAnchorSignatureRef.current = null;
-  }, [cancelPendingScrollFrame, clearMeasurementTimers, timelineKeyHash]);
+  }, [cancelPendingScrollFrame, resetActiveMeasurementDeferral, timelineKeyHash]);
 
   useEffect(() => {
-    clearMeasurementTimers();
     const sessionViewport = timelineViewportSessionMemory.get(timelineKeyHash) ?? null;
     sessionRoomScrollAnchorRef.current =
       sessionViewport?.mode === "anchor" ? sessionViewport.anchor : null;
@@ -2365,11 +2402,8 @@ export const TimelineView = memo(function TimelineView({
     lastDiagnosticsEmissionRef.current = null;
     initialLiveEdgeScrollAppliedRef.current = null;
     stickToBottomAfterMeasurementRef.current = false;
-    scrollActivityRef.current = "idle";
-    measurementEpochRef.current += 1;
-    pendingMeasuredHeightsRef.current.clear();
+    resetActiveMeasurementDeferral({ clearMountedIds: true });
     itemHeightByDomIdRef.current = new Map();
-    mountedItemDomIdsRef.current = new Set();
     roomScrollAnchorRestorePendingRef.current = false;
     suppressScrollAnchorCaptureRef.current = false;
     viewportIntentRef.current =
@@ -2384,19 +2418,16 @@ export const TimelineView = memo(function TimelineView({
     }
     setMeasuredHeightVersion((current) => current + 1);
     backfillInFlightRef.current = false;
-  }, [clearMeasurementTimers, timelineKeyHash]);
+  }, [resetActiveMeasurementDeferral, timelineKeyHash]);
 
   useEffect(
     () => () => {
-      clearMeasurementTimers();
       anchorAsyncGenerationRef.current += 1;
       anchorRestorePendingRef.current = false;
       roomScrollAnchorRestorePendingRef.current = false;
       suppressScrollAnchorCaptureRef.current = false;
       viewportIntentRef.current = { kind: "free-scroll" };
-      scrollActivityRef.current = "idle";
-      measurementEpochRef.current += 1;
-      pendingMeasuredHeightsRef.current.clear();
+      resetActiveMeasurementDeferral({ clearMountedIds: true });
       userScrollInputPendingRef.current = false;
       pendingScrollFrameUserInputRef.current = false;
       lastPersistedViewportAnchorSignatureRef.current = null;
@@ -2405,7 +2436,7 @@ export const TimelineView = memo(function TimelineView({
         viewportIntentResizeFrameRef.current = null;
       }
     },
-    [clearMeasurementTimers]
+    [resetActiveMeasurementDeferral]
   );
 
   const items = getItems(store, timelineKey);
@@ -3090,7 +3121,6 @@ export const TimelineView = memo(function TimelineView({
       return;
     }
     const mountedDomIds = new Set<string>();
-    const changedDomIds: string[] = [];
     for (const node of nodes) {
       const domId =
         node.dataset["frameItemId"] ??
@@ -3104,7 +3134,6 @@ export const TimelineView = memo(function TimelineView({
         continue;
       }
       nextHeights.set(domId, height);
-      changedDomIds.push(domId);
       changed = true;
     }
     mountedItemDomIdsRef.current = mountedDomIds;

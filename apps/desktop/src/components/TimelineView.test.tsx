@@ -748,7 +748,7 @@ describe("TimelineView", () => {
     expect(idleDiagnostics.measurementFlushes - baselineMeasurementFlushes).toBe(0);
   });
 
-  it("drops stale pending measurements after same timeline items reset", async () => {
+  it("drops stale pending measurements after same timeline ItemsUpdated reset", async () => {
     vi.useFakeTimers();
     let listener: ((payload: CoreEventPayload) => void) | null = null;
     const onScrollDiagnosticsChange = vi.fn();
@@ -830,16 +830,21 @@ describe("TimelineView", () => {
       listener?.({
         kind: "Timeline",
         event: {
-          InitialItems: {
-            request_id: null,
+          ItemsUpdated: {
             key: KEY,
-            generation: 2,
-            items: messages(20, "$reset")
+            generation: 1,
+            batch_id: 2,
+            diffs: [
+              {
+                Reset: {
+                  items: messages(20, "$reset")
+                }
+              }
+            ]
           }
         }
       });
     });
-    expect(timeline.getAttribute("data-timeline-generation")).toBe("2");
     expect(timeline.getAttribute("data-total-items")).toBe("20");
     const resetDiagnostics = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
     const resetHeightModelCommits = resetDiagnostics?.heightModelCommits ?? 0;
@@ -852,6 +857,7 @@ describe("TimelineView", () => {
     const idleDiagnostics = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
     expect(idleDiagnostics.measurementFlushes - resetMeasurementFlushes).toBe(0);
     expect(idleDiagnostics.heightModelCommits - resetHeightModelCommits).toBe(0);
+    expect(idleDiagnostics.pendingMeasuredRows).toBe(0);
   });
 
   it("drops pending scroll frame diagnostics after the timeline key changes", async () => {
