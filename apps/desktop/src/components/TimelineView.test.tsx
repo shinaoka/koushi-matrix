@@ -2895,6 +2895,60 @@ describe("TimelineView", () => {
     });
   });
 
+  it("keeps ready image media filename and controls in the media row", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        mediaDownloads={{
+          "$ready-image": {
+            kind: "ready",
+            source_url: "appmedia://synthetic-image",
+            width: 2048,
+            height: 1188,
+            mime_type: "image/png"
+          }
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [imageMessage("$ready-image", false)]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      const media = document.querySelector('[data-event-id="$ready-image"] .message-media');
+      expect(media).not.toBeNull();
+      expect(media?.getAttribute("data-download-state")).toBe("ready");
+      expect(media?.textContent).toContain("photo.png");
+      expect(media?.textContent).toContain("image/png");
+      expect(media?.textContent).toContain("407 KB");
+      expect(media?.textContent).toContain("2048x1188");
+      expect(media?.querySelector(".message-media-image-frame img")).not.toBeNull();
+      expect(media?.querySelector(".message-media-download")).not.toBeNull();
+    });
+  });
+
   it("does not request encrypted image previews for off-window initial virtualized items", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const downloadMedia = vi.fn(async () => undefined);
@@ -2948,7 +3002,7 @@ describe("TimelineView", () => {
     expect(downloadMedia).not.toHaveBeenCalled();
   });
 
-  it("renders ready image previews without technical metadata and opens the original source", async () => {
+  it("renders ready image previews with media row metadata and opens the original source", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
@@ -2996,10 +3050,11 @@ describe("TimelineView", () => {
       expect(previewLink?.getAttribute("target")).toBe("_blank");
       expect(previewLink?.hasAttribute("download")).toBe(false);
       const media = document.querySelector(".message-media");
-      expect(media?.textContent).not.toContain("image/png");
-      expect(media?.textContent).not.toContain("407 KB");
-      expect(media?.textContent).not.toContain("2048x1188");
-      expect(media?.textContent).not.toContain("Encrypted");
+      expect(media?.textContent).toContain("photo.png");
+      expect(media?.textContent).toContain("image/png");
+      expect(media?.textContent).toContain("407 KB");
+      expect(media?.textContent).toContain("2048x1188");
+      expect(media?.textContent).toContain("Encrypted");
     });
   });
 

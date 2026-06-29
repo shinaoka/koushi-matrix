@@ -5508,19 +5508,30 @@ function TimelineMediaAttachment({
           inlineSize: `${readyDisplayBox.inlineSize}px`,
           blockSize: `${readyDisplayBox.blockSize}px`
         } satisfies CSSProperties);
+  const readyImageDownload =
+    downloadState?.kind === "ready" && media.kind === "Image" ? downloadState : null;
+  const readyImagePreview =
+    readyImageDownload === null
+      ? null
+      : {
+          sourceUrl: mediaSourceUrl(readyImageDownload.source_url),
+          width: readyImageDownload.width,
+          height: readyImageDownload.height
+        };
+  const progressPercent =
+    uploadProgressPercentValue ?? downloadProgressPercent;
 
-  if (downloadState?.kind === "ready" && media.kind === "Image") {
-    const sourceUrl = mediaSourceUrl(downloadState.source_url);
-    return (
-      <div
-        className="message-media message-media-ready"
-        data-media-kind={media.kind}
-        data-media-encrypted={media.source.encrypted || undefined}
-        data-download-state="ready"
-      >
+  return (
+    <div
+      className={readyImagePreview ? "message-media message-media-ready" : "message-media"}
+      data-media-kind={media.kind}
+      data-media-encrypted={media.source.encrypted || undefined}
+      data-download-state={downloadState?.kind ?? "notRequested"}
+    >
+      {readyImagePreview ? (
         <a
           className="message-media-preview-link"
-          href={sourceUrl}
+          href={readyImagePreview.sourceUrl}
           target="_blank"
           rel="noreferrer"
           aria-label={t("timeline.mediaOpenFile")}
@@ -5528,29 +5539,15 @@ function TimelineMediaAttachment({
           <span className="message-media-image-frame" style={mediaFrameStyle}>
             <img
               className="message-media-image"
-              src={sourceUrl}
+              src={readyImagePreview.sourceUrl}
               alt={media.filename}
-              width={downloadState.width ?? undefined}
-              height={downloadState.height ?? undefined}
+              width={readyImagePreview.width ?? undefined}
+              height={readyImagePreview.height ?? undefined}
               loading="lazy"
             />
           </span>
         </a>
-      </div>
-    );
-  }
-
-  const progressPercent =
-    uploadProgressPercentValue ?? downloadProgressPercent;
-
-  return (
-    <div
-      className="message-media"
-      data-media-kind={media.kind}
-      data-media-encrypted={media.source.encrypted || undefined}
-      data-download-state={downloadState?.kind ?? "notRequested"}
-    >
-      {media.kind === "Image" && displayBox ? (
+      ) : media.kind === "Image" && displayBox ? (
         <span
           className="message-media-image-frame message-media-image-frame-reserved"
           style={mediaFrameStyle}
