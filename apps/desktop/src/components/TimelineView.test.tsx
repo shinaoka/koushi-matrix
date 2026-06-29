@@ -902,13 +902,24 @@ describe("TimelineView", () => {
     const roomId = "!room:example.invalid";
     const anchorEventId = "$anchor:example.invalid";
     const restoreTimelineAnchor = vi.fn(async () => undefined);
+    const updateScrollAnchor = vi.fn(async () => undefined);
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
         emit = nextListener;
         return () => undefined;
       },
-      restoreTimelineAnchor
+      restoreTimelineAnchor,
+      updateScrollAnchor
     });
+    mockTimelineRects(
+      {
+        "$live-top:example.invalid": { top: 1300, height: 48 },
+        "$live-bottom:example.invalid": { top: 1900, height: 48 }
+      },
+      { top: 0, height: 600 },
+      scrollContainerRef
+    );
 
     render(
       <TimelineView
@@ -926,6 +937,7 @@ describe("TimelineView", () => {
     );
 
     const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
     Object.defineProperty(timeline, "scrollHeight", { value: 2000, configurable: true });
     Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
     Object.defineProperty(timeline, "scrollTop", {
@@ -971,6 +983,15 @@ describe("TimelineView", () => {
 
     await waitFor(() => {
       expect(timeline.scrollTop).toBe(1400);
+    });
+    await waitFor(() => {
+      expect(updateScrollAnchor).toHaveBeenCalledWith(
+        roomId,
+        expect.objectContaining({
+          event_id: "$live-bottom:example.invalid",
+          edge: "bottom"
+        })
+      );
     });
     expect(restoreTimelineAnchor).toHaveBeenCalledTimes(1);
   });

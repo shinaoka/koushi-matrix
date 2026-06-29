@@ -110,11 +110,6 @@ use crate::startup_trace::{self, StartupPhase};
 /// Bounded diff queue capacity per subscribed timeline (overview.md, Async rule 10).
 pub const TIMELINE_DIFF_QUEUE_CAPACITY: usize = 128;
 const REPLY_QUOTE_PREVIEW_MAX_CHARS: usize = 160;
-/// Rust-owned safety budget for offline deep-history anchor restore walks.
-/// The frontend hint (`max_batches`) is advisory; deep anchors must not be
-/// capped by the small UI-side value (6). The walk continues until `Found`,
-/// `EndReached`, a paginate failure, or this bound — whichever comes first.
-const RESTORE_ANCHOR_MAX_CHUNKS: u16 = 5000;
 /// Backstop tick count for the anchor-relay wait. After the SDK signals
 /// `anchor_present == true`, the anchor's diff has been broadcast through the
 /// 3-hop relay (conclude_backwards_pagination_from_disk → event-cache task →
@@ -2026,12 +2021,7 @@ impl TimelineActor {
         if let Some(mut existing) = self.restore_anchor.take() {
             if existing.event_id == event_id {
                 existing.request_id = request_id;
-                // Apply the Rust-owned floor: never let a small frontend hint
-                // shrink the in-flight budget below RESTORE_ANCHOR_MAX_CHUNKS.
-                existing.max_batches_remaining = existing
-                    .max_batches_remaining
-                    .max(max_batches)
-                    .max(RESTORE_ANCHOR_MAX_CHUNKS);
+                existing.max_batches_remaining = existing.max_batches_remaining.max(max_batches);
                 existing.event_count = event_count;
                 if existing.in_flight
                     || existing.awaiting_diff_batch
@@ -2052,9 +2042,7 @@ impl TimelineActor {
         let restore = RestoreTimelineAnchorState {
             request_id,
             event_id,
-            // The frontend hint is advisory; the Rust-owned floor ensures a
-            // deep anchor can be reached even when the UI sends max_batches=6.
-            max_batches_remaining: max_batches.max(RESTORE_ANCHOR_MAX_CHUNKS),
+            max_batches_remaining: max_batches,
             event_count,
             in_flight: false,
             awaiting_diff_batch: false,
@@ -2131,15 +2119,14 @@ impl TimelineActor {
         let request_id = restore.request_id;
         let event_count = restore.event_count;
 
-        // Stage 2: attempt a cache-only bulk backward load in a single call
+        // First try a cache-only bulk backward load in a single call
         // instead of looping one chunk at a time through `paginate_once`.
         // The SDK stops as soon as the anchor event is found (load-until-anchor),
         // or when it reaches a gap or the start of the on-disk timeline.
         //
-        // Pass the chunk budget directly as max_chunks so the SDK enforces
-        // RESTORE_ANCHOR_MAX_CHUNKS regardless of chunk size (P2b fix).
-        // The event count `n` is a secondary cap; set it large enough that only
-        // the chunk cap binds in practice.
+        // Pass the UI-provided chunk budget directly as max_chunks. Room entry
+        // must fail fast for stale/deep anchors instead of turning into a long
+        // history walk; the event count `n` is a secondary cap.
         let chunk_budget = restore.max_batches_remaining;
         let bulk_n = (chunk_budget as u32)
             .saturating_mul(event_count as u32)
@@ -3441,9 +3428,8 @@ impl TimelineActor {
         if self.restore_anchor.is_some() {
             // While a restore walk is in-flight, buffer this batch's diffs
             // instead of emitting ItemsUpdated per chunk. React receives ONE
-            // settled update when the restore terminates (RESTORE_ANCHOR_MAX_CHUNKS
-            // / Change 2). The batch_id counter is still advanced so later
-            // non-restore emits remain monotonic.
+            // settled update when the restore terminates. The batch_id counter
+            // is still advanced so later non-restore emits remain monotonic.
             self.next_batch_id = TimelineBatchId(self.next_batch_id.0 + 1);
             self.restore_emit_buffer.extend(core_diffs);
             // Navigation is also suppressed until the flush at restore end.
@@ -8579,56 +8565,36 @@ mod tests {
         );
     }
 
-    // --- Restore budget floor (Change 1) ---
+    // --- Restore budget (room entry must fail fast) ---
 
-    /// Proves that the Rust-owned RESTORE_ANCHOR_MAX_CHUNKS constant exists and
-    /// is applied as a floor in `handle_restore_timeline_anchor`, so the restore
-    /// walk is not capped by the small frontend hint (max_batches=6). A deep
-    /// anchor (hundreds of chunks) is reached by raising the budget past 6 via
-    /// the `max(max_batches, RESTORE_ANCHOR_MAX_CHUNKS)` expression, not by
-    /// changing the test or hardcoding a larger batch count in the call site.
+    /// Proves that room-entry anchor restore respects the frontend budget. A
+    /// stale or very deep persisted anchor must fail quickly and let the UI fall
+    /// back to live edge; it must not silently inflate `max_batches=6` into a
+    /// multi-thousand chunk walk that blocks entering the room.
     #[test]
-    fn restore_anchor_budget_floor_overrides_small_frontend_hint() {
+    fn restore_anchor_budget_respects_frontend_hint() {
         let source = include_str!("timeline.rs");
         // Limit to production code so test strings cannot self-satisfy.
         let production = source.split("\nmod tests").next().unwrap_or(source);
 
-        // 1. The constant must exist at 5000 (generous safety bound for deep history).
-        assert!(
-            production.contains("RESTORE_ANCHOR_MAX_CHUNKS: u16 = 5000"),
-            "RESTORE_ANCHOR_MAX_CHUNKS must be defined as u16 = 5000"
-        );
-
-        // 2. The new-state construction must apply the floor.
+        // 1. The new-state construction must use the request budget directly.
         let new_state_src = production
             .split("let restore = RestoreTimelineAnchorState {")
             .nth(1)
             .expect("new RestoreTimelineAnchorState construction must exist");
         assert!(
-            new_state_src.contains("RESTORE_ANCHOR_MAX_CHUNKS"),
-            "new restore state construction must apply RESTORE_ANCHOR_MAX_CHUNKS floor"
-        );
-        assert!(
-            new_state_src.contains(".max(RESTORE_ANCHOR_MAX_CHUNKS)"),
-            "max_batches_remaining initialization must take max with RESTORE_ANCHOR_MAX_CHUNKS"
+            new_state_src.contains("max_batches_remaining: max_batches,"),
+            "max_batches_remaining initialization must respect the frontend budget"
         );
 
-        // 3. The existing-state branch must also apply the floor (in-flight update path).
+        // 2. The existing-state branch must not inflate an in-flight budget.
         let existing_branch_src = production
             .split("if existing.event_id == event_id {")
             .nth(1)
             .expect("existing-state same-event branch must exist");
         assert!(
-            existing_branch_src.contains("RESTORE_ANCHOR_MAX_CHUNKS"),
-            "in-flight budget update must also apply RESTORE_ANCHOR_MAX_CHUNKS floor"
-        );
-
-        // 4. The RESTORE_ANCHOR_MAX_CHUNKS constant must be larger than the known
-        //    frontend value (6) so deep anchors are reachable offline.
-        assert!(
-            RESTORE_ANCHOR_MAX_CHUNKS > 6,
-            "RESTORE_ANCHOR_MAX_CHUNKS ({RESTORE_ANCHOR_MAX_CHUNKS}) must exceed the \
-             frontend max_batches hint (6) to allow deep anchor walks"
+            existing_branch_src.contains(".max(max_batches);"),
+            "in-flight budget update must only preserve/increase to the requested budget"
         );
     }
 
