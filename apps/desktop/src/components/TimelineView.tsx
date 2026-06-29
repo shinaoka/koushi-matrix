@@ -1828,7 +1828,6 @@ export const TimelineView = memo(function TimelineView({
   const measurementEpochRef = useRef(0);
   const visibleItemDomIdsRef = useRef<Set<string>>(new Set());
   const mountedItemDomIdsRef = useRef<Set<string>>(new Set());
-  const postFlushRemeasureDomIdsRef = useRef<Set<string> | null>(null);
   /** Set by wheel/touch/keyboard/scrollbar intent; consumed by the next scroll event. */
   const userScrollInputPendingRef = useRef(false);
   const pendingScrollFrameUserInputRef = useRef(false);
@@ -2010,6 +2009,11 @@ export const TimelineView = memo(function TimelineView({
       const nextHeights = new Map(itemHeightByDomIdRef.current);
       let changedRows = 0;
       const committedDomIds = new Set<string>();
+      for (const domId of nextHeights.keys()) {
+        if (!visibleDomIds.has(domId)) {
+          nextHeights.delete(domId);
+        }
+      }
       for (const [domId, entry] of pending) {
         if (
           entry.epoch !== currentEpoch ||
@@ -2058,7 +2062,6 @@ export const TimelineView = memo(function TimelineView({
           changedRows
         )
       );
-      postFlushRemeasureDomIdsRef.current = committedDomIds;
       setMeasuredHeightVersion((current) => current + 1);
 
       if (reason === "maxDefer") {
@@ -2149,7 +2152,6 @@ export const TimelineView = memo(function TimelineView({
         userScrollInputPendingRef.current = false;
         measurementEpochRef.current += 1;
         pendingMeasuredHeightsRef.current.clear();
-        postFlushRemeasureDomIdsRef.current = null;
         lastPersistedViewportAnchorSignatureRef.current = null;
         restoredRoomScrollAnchorSignatureRef.current = null;
         setNavigationSnapshot(null);
@@ -2241,7 +2243,6 @@ export const TimelineView = memo(function TimelineView({
         recordTimelineInitialItems(event.InitialItems.items.length);
         measurementEpochRef.current += 1;
         pendingMeasuredHeightsRef.current.clear();
-        postFlushRemeasureDomIdsRef.current = null;
       }
       if (timelineEventCompletesBackfillRequest(event)) {
         backfillInFlightRef.current = false;
@@ -2265,7 +2266,6 @@ export const TimelineView = memo(function TimelineView({
         userScrollInputPendingRef.current = false;
         measurementEpochRef.current += 1;
         pendingMeasuredHeightsRef.current.clear();
-        postFlushRemeasureDomIdsRef.current = null;
         lastPersistedViewportAnchorSignatureRef.current = null;
         setNavigationSnapshot(null);
       }
@@ -2342,7 +2342,6 @@ export const TimelineView = memo(function TimelineView({
     scrollActivityRef.current = "idle";
     measurementEpochRef.current += 1;
     pendingMeasuredHeightsRef.current.clear();
-    postFlushRemeasureDomIdsRef.current = null;
     userScrollInputPendingRef.current = false;
     pendingScrollFrameUserInputRef.current = false;
     lastPersistedViewportAnchorSignatureRef.current = null;
@@ -2369,7 +2368,6 @@ export const TimelineView = memo(function TimelineView({
     scrollActivityRef.current = "idle";
     measurementEpochRef.current += 1;
     pendingMeasuredHeightsRef.current.clear();
-    postFlushRemeasureDomIdsRef.current = null;
     itemHeightByDomIdRef.current = new Map();
     mountedItemDomIdsRef.current = new Set();
     roomScrollAnchorRestorePendingRef.current = false;
@@ -2399,7 +2397,6 @@ export const TimelineView = memo(function TimelineView({
       scrollActivityRef.current = "idle";
       measurementEpochRef.current += 1;
       pendingMeasuredHeightsRef.current.clear();
-      postFlushRemeasureDomIdsRef.current = null;
       userScrollInputPendingRef.current = false;
       pendingScrollFrameUserInputRef.current = false;
       lastPersistedViewportAnchorSignatureRef.current = null;
@@ -2442,16 +2439,6 @@ export const TimelineView = memo(function TimelineView({
       });
       if (virtualRangeEquals(virtualRangeRef.current, next)) {
         return next;
-      }
-      const current = virtualRangeRef.current;
-      if (
-        scrollActivityRef.current === "active" &&
-        current.virtualized &&
-        next.virtualized &&
-        next.startIndex >= current.startIndex &&
-        next.endIndex <= current.endIndex
-      ) {
-        return current;
       }
       virtualRangeRef.current = next;
       updateScrollDiagnostics(recordTimelineScrollRangeCommit);
@@ -3154,13 +3141,6 @@ export const TimelineView = memo(function TimelineView({
         })
       );
       return;
-    }
-    const postFlushRemeasureDomIds = postFlushRemeasureDomIdsRef.current;
-    if (postFlushRemeasureDomIds) {
-      postFlushRemeasureDomIdsRef.current = null;
-      if (!changedDomIds.some((domId) => postFlushRemeasureDomIds.has(domId))) {
-        return;
-      }
     }
     const container = containerRef.current;
     const measuredAtBottom = Boolean(container && isScrolledToBottom(container));
