@@ -22,19 +22,13 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 import type { TimelineItem, TimelineKey } from "./coreEvents";
-import {
-  roomTimelineKey,
-  threadTimelineKey,
-  focusedTimelineKey,
-  timelineItemDomId
-} from "./coreEvents";
+import { roomTimelineKey, timelineItemDomId } from "./coreEvents";
 import {
   applyDiffs,
   applyGlobalResync,
   applyTimelineEvent,
   batchContainsPrepend,
   createTimelineStore,
-  getTimelineDisplayItems,
   getMediaUploadProgress,
   getItems,
   getKeyState,
@@ -42,6 +36,7 @@ import {
   isAwaitingResync,
   applyTimelineEventWithRetention,
   pruneTimelineStore,
+  shouldSuppressAutoBackfill,
   timelineStoreKeyId,
   type TimelineStoreState
 } from "./timelineStore";
@@ -53,7 +48,6 @@ import { TauriIpcMock } from "../test/tauriIpcMock";
 
 const ACCOUNT_KEY = "@qa-user:example.invalid";
 const KEY: TimelineKey = roomTimelineKey(ACCOUNT_KEY, "!room:example.invalid");
-const OTHER_KEY: TimelineKey = roomTimelineKey(ACCOUNT_KEY, "!other-room:example.invalid");
 
 function makeMsg(id: string, body: string): TimelineItem {
   return {
@@ -86,36 +80,6 @@ function makeMsgAt(id: string, body: string, timestampMs: number): TimelineItem 
   return {
     ...makeMsg(id, body),
     timestamp_ms: timestampMs
-  };
-}
-
-function makeThreadRootAt(
-  id: string,
-  body: string,
-  timestampMs: number,
-  latestReplyTimestampMs: number | null
-): TimelineItem {
-  return {
-    ...makeMsgAt(id, body, timestampMs),
-    thread_root: null,
-    thread_summary: {
-      reply_count: latestReplyTimestampMs === null ? 0 : 1,
-      latest_sender: "@reply:example.invalid",
-      latest_body_preview: latestReplyTimestampMs === null ? null : "reply",
-      latest_timestamp_ms: latestReplyTimestampMs
-    }
-  };
-}
-
-function makeThreadReplyAt(
-  id: string,
-  body: string,
-  timestampMs: number,
-  threadRootId: string
-): TimelineItem {
-  return {
-    ...makeMsgAt(id, body, timestampMs),
-    thread_root: threadRootId
   };
 }
 
@@ -208,275 +172,6 @@ describe("timeline store — diff application", () => {
     });
 
     expect(getItems(store, KEY).map((item) => item.body)).toEqual(["Jun 17", "Jun 20", "Jun 13"]);
-  });
-
-  test("getItems keeps thread roots in SDK root-event order", () => {
-    const store = applyTimelineEvent(createTimelineStore(), {
-      InitialItems: {
-        request_id: null,
-        key: KEY,
-        generation: 1,
-        items: [
-          makeThreadRootAt("$root", "Root", 1_000, 5_000),
-          makeMsgAt("$middle", "Middle", 3_000),
-          makeMsgAt("$latest", "Latest", 7_000)
-        ]
-      }
-    });
-
-    expect(getItems(store, KEY).map(itemId)).toEqual(["$root", "$middle", "$latest"]);
-  });
-
-  test("getTimelineDisplayItems positions thread roots by latest reply timestamp by default", () => {
-    const store = applyTimelineEvent(createTimelineStore(), {
-      InitialItems: {
-        request_id: null,
-        key: KEY,
-        generation: 1,
-        items: [
-          makeThreadRootAt("$root", "Root", 1_000, 5_000),
-          makeMsgAt("$middle", "Middle", 3_000),
-          makeMsgAt("$latest", "Latest", 7_000)
-        ]
-      }
-    });
-
-    expect(getTimelineDisplayItems(store, KEY).map(itemId)).toEqual([
-      "$middle",
-      "$root",
-      "$latest"
-    ]);
-  });
-
-  test("getTimelineDisplayItems can keep thread roots in root-event chronology", () => {
-    const store = applyTimelineEvent(createTimelineStore(), {
-      InitialItems: {
-        request_id: null,
-        key: KEY,
-        generation: 1,
-        items: [
-          makeThreadRootAt("$root", "Root", 1_000, 5_000),
-          makeMsgAt("$middle", "Middle", 3_000),
-          makeMsgAt("$latest", "Latest", 7_000)
-        ]
-      }
-    });
-
-    expect(
-      getTimelineDisplayItems(store, KEY, { threadRootOrder: { kind: "rootEvent" } }).map(
-        itemId
-      )
-    ).toEqual(["$root", "$middle", "$latest"]);
-  });
-
-  test("getTimelineDisplayItems repositions a thread root when its latest reply timestamp changes", () => {
-    let store = applyTimelineEvent(createTimelineStore(), {
-      InitialItems: {
-        request_id: null,
-        key: KEY,
-        generation: 1,
-        items: [
-          makeThreadRootAt("$root", "Root", 1_000, 2_000),
-          makeMsgAt("$middle", "Middle", 3_000)
-        ]
-      }
-    });
-    expect(getTimelineDisplayItems(store, KEY).map(itemId)).toEqual(["$root", "$middle"]);
-
-    store = applyTimelineEvent(store, {
-      ItemsUpdated: {
-        key: KEY,
-        generation: 1,
-        batch_id: 2,
-        diffs: [
-          {
-            Set: {
-              index: 0,
-              item: makeThreadRootAt("$root", "Root", 1_000, 5_000)
-            }
-          }
-        ]
-      }
-    });
-
-    expect(getItems(store, KEY).map(itemId)).toEqual(["$root", "$middle"]);
-    expect(getTimelineDisplayItems(store, KEY).map(itemId)).toEqual(["$middle", "$root"]);
-  });
-
-  test("keeps active key item references stable when another key changes", () => {
-    let store = applyTimelineEvent(createTimelineStore(), {
-      InitialItems: {
-        request_id: null,
-        key: KEY,
-        generation: 1,
-        items: [makeThreadRootAt("$root", "Root", 1_000, 5_000), makeMsgAt("$middle", "Middle", 3_000)]
-      }
-    });
-    store = applyTimelineEvent(store, {
-      InitialItems: {
-        request_id: null,
-        key: OTHER_KEY,
-        generation: 1,
-        items: [makeMsgAt("$other", "Other", 4_000)]
-      }
-    });
-
-    const activeItems = getItems(store, KEY);
-
-    const afterOtherItemsUpdate = applyTimelineEvent(store, {
-      ItemsUpdated: {
-        key: OTHER_KEY,
-        generation: 1,
-        batch_id: 2,
-        diffs: [{ PushBack: { item: makeMsgAt("$other-new", "Other new", 5_000) } }]
-      }
-    });
-    expect(getItems(afterOtherItemsUpdate, KEY)).toBe(activeItems);
-
-    const afterOtherPagination = applyTimelineEvent(afterOtherItemsUpdate, {
-      PaginationStateChanged: {
-        request_id: null,
-        key: OTHER_KEY,
-        direction: "Backward",
-        state: "Paginating"
-      }
-    });
-    expect(getItems(afterOtherPagination, KEY)).toBe(activeItems);
-
-    const afterActiveItemsUpdate = applyTimelineEvent(afterOtherPagination, {
-      ItemsUpdated: {
-        key: KEY,
-        generation: 1,
-        batch_id: 2,
-        diffs: [{ PushBack: { item: makeMsgAt("$active-new", "Active new", 6_000) } }]
-      }
-    });
-    expect(getItems(afterActiveItemsUpdate, KEY)).not.toBe(activeItems);
-  });
-
-  test("returns a stable empty item reference for missing keys", () => {
-    const store = createTimelineStore();
-
-    expect(getItems(store, KEY)).toBe(getItems(store, KEY));
-  });
-
-  test("getTimelineDisplayItems does not reorder non-thread messages when placing thread roots", () => {
-    const store = applyTimelineEvent(createTimelineStore(), {
-      InitialItems: {
-        request_id: null,
-        key: KEY,
-        generation: 1,
-        items: [
-          makeMsgAt("$first", "First", 7_000),
-          makeThreadRootAt("$root", "Root", 1_000, 5_000),
-          makeMsgAt("$second", "Second", 3_000)
-        ]
-      }
-    });
-
-    expect(getTimelineDisplayItems(store, KEY).map(itemId)).toEqual([
-      "$first",
-      "$second",
-      "$root"
-    ]);
-  });
-
-  test("getTimelineDisplayItems treats thread summaries, not reply relations, as movable roots", () => {
-    const store = applyTimelineEvent(createTimelineStore(), {
-      InitialItems: {
-        request_id: null,
-        key: KEY,
-        generation: 1,
-        items: [
-          makeThreadRootAt("$root", "Root", 1_000, 5_000),
-          makeThreadReplyAt("$reply", "Reply", 2_000, "$root"),
-          makeMsgAt("$middle", "Middle", 3_000),
-          makeMsgAt("$latest", "Latest", 7_000)
-        ]
-      }
-    });
-
-    expect(getTimelineDisplayItems(store, KEY).map(itemId)).toEqual([
-      "$reply",
-      "$middle",
-      "$root",
-      "$latest"
-    ]);
-  });
-
-  test("Thread timeline does not reposition thread roots by latest reply", () => {
-    const threadKey = threadTimelineKey(
-      ACCOUNT_KEY,
-      "!room:example.invalid",
-      "$root"
-    );
-    const store = applyTimelineEvent(createTimelineStore(), {
-      InitialItems: {
-        request_id: null,
-        key: threadKey,
-        generation: 1,
-        items: [
-          makeThreadRootAt("$root", "Original message", 1_000, 5_000),
-          makeThreadReplyAt("$reply1", "Reply 1", 2_000, "$root"),
-          makeThreadReplyAt("$reply2", "Reply 2", 3_000, "$root")
-        ]
-      }
-    });
-
-    // Thread timeline must preserve SDK order: root first, replies after.
-    // The root must NOT be moved to the bottom as a "latest reply" item.
-    expect(getTimelineDisplayItems(store, threadKey).map(itemId)).toEqual([
-      "$root",
-      "$reply1",
-      "$reply2"
-    ]);
-  });
-
-  test("Focused timeline does not reposition thread roots by latest reply", () => {
-    const focusedKey = focusedTimelineKey(
-      ACCOUNT_KEY,
-      "!room:example.invalid",
-      "$focused"
-    );
-    const store = applyTimelineEvent(createTimelineStore(), {
-      InitialItems: {
-        request_id: null,
-        key: focusedKey,
-        generation: 1,
-        items: [
-          makeThreadRootAt("$root", "Root", 1_000, 5_000),
-          makeMsgAt("$msg", "Message", 3_000)
-        ]
-      }
-    });
-
-    // Focused timeline must preserve SDK order, not reposition thread roots.
-    expect(getTimelineDisplayItems(store, focusedKey).map(itemId)).toEqual([
-      "$root",
-      "$msg"
-    ]);
-  });
-
-  test("Room timeline continues to reposition thread roots by latest reply (regression guard)", () => {
-    const store = applyTimelineEvent(createTimelineStore(), {
-      InitialItems: {
-        request_id: null,
-        key: KEY,
-        generation: 1,
-        items: [
-          makeThreadRootAt("$root", "Root", 1_000, 5_000),
-          makeMsgAt("$middle", "Middle", 3_000),
-          makeMsgAt("$latest", "Latest", 7_000)
-        ]
-      }
-    });
-
-    // Room timeline still repositions thread roots by latest reply.
-    expect(getTimelineDisplayItems(store, KEY).map(itemId)).toEqual([
-      "$middle",
-      "$root",
-      "$latest"
-    ]);
   });
 
   test("duplicate ItemsUpdated batch ids are ignored instead of reapplying index diffs", () => {
@@ -971,6 +666,52 @@ describe("scroll anchoring — prepend keeps anchor stable", () => {
 // (4) EndReached stops further auto-pagination requests
 // ---------------------------------------------------------------------------
 
+describe("pagination suppression — EndReached stops auto-backfill", () => {
+  function withPaginationState(
+    state: "Idle" | "Paginating" | "EndReached" | { Failed: { kind: "Network" } }
+  ) {
+    let store = createTimelineStore();
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [makeMsg("$a", "a")]
+      }
+    });
+    return applyTimelineEvent(store, {
+      PaginationStateChanged: {
+        request_id: null,
+        key: KEY,
+        direction: "Backward",
+        state
+      }
+    });
+  }
+
+  test("Paginating state suppresses auto-backfill", () => {
+    const store = withPaginationState("Paginating");
+    expect(shouldSuppressAutoBackfill(store, KEY)).toBe(true);
+    expect(getPaginationState(store, KEY, "Backward")).toBe("Paginating");
+  });
+
+  test("EndReached state suppresses auto-backfill", () => {
+    const store = withPaginationState("EndReached");
+    expect(shouldSuppressAutoBackfill(store, KEY)).toBe(true);
+    expect(getPaginationState(store, KEY, "Backward")).toBe("EndReached");
+  });
+
+  test("Idle state allows auto-backfill", () => {
+    const store = withPaginationState("Idle");
+    expect(shouldSuppressAutoBackfill(store, KEY)).toBe(false);
+  });
+
+  test("Failed state does not suppress auto-backfill (user may retry)", () => {
+    const store = withPaginationState({ Failed: { kind: "Network" } });
+    expect(shouldSuppressAutoBackfill(store, KEY)).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // (5) Send path invokes the right command shape + renders local echo
 // ---------------------------------------------------------------------------
@@ -1170,6 +911,7 @@ describe("pagination state — per direction tracking", () => {
 
     expect(getPaginationState(store, KEY, "Backward")).toBe("EndReached");
     expect(getPaginationState(store, KEY, "Forward")).toBe("Paginating");
+    expect(shouldSuppressAutoBackfill(store, KEY)).toBe(true);
   });
 
   test("spinner from PaginationStateChanged: Paginating → Idle transition", () => {
@@ -1201,6 +943,7 @@ describe("pagination state — per direction tracking", () => {
       }
     });
     expect(getPaginationState(store, KEY, "Backward")).toBe("Idle");
+    expect(shouldSuppressAutoBackfill(store, KEY)).toBe(false);
   });
 });
 

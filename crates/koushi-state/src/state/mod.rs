@@ -60,7 +60,7 @@ pub use settings::{
     RoomNotificationMode, RoomNotificationModeOperation, RoomNotificationSettings, RoomUrlPreviews,
     SettingsPatch, SettingsPersistenceState, SettingsState, SettingsValues,
     TextDirectionPreference, ThemePreference, ThreadListOrder, TimelineSettings,
-    TimelineThreadRootOrder, TypographySettings,
+    TypographySettings,
 };
 
 // ── Re-exports: profile ─────────────────────────────────────────────────────
@@ -86,8 +86,8 @@ pub use room_interactions::{
 // ── Re-exports: navigation ──────────────────────────────────────────────────
 pub use navigation::{
     FocusedContextState, NavigationState, RoomListEntryKind, RoomListFilter, RoomListProjection,
-    RoomListProjectionItem, RoomListSort, TimelinePersistedViewport, TimelineScrollAnchor,
-    TimelineScrollAnchorEdge, compute_room_list_projection,
+    RoomListProjectionItem, RoomListSort, TimelineScrollAnchor, TimelineScrollAnchorEdge,
+    compute_room_list_projection,
 };
 
 // ── Re-exports: activity ────────────────────────────────────────────────────

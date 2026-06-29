@@ -536,14 +536,12 @@ export function ContextualRightPanel({
               suppressPaginationUi={true}
               onReply={onReply}
               resolveComposerKeyAction={onResolveComposerKeyAction}
-              roomSignals={snapshot.state.domain.live_signals.rooms[focusedRoomId] ?? null}
-              presenceByUserId={snapshot.state.domain.live_signals.presence}
+              liveSignals={snapshot.state.domain.live_signals}
               profileUsers={snapshot.state.domain.profile.users}
               pinnedEventIds={focusedPinnedEventIds}
               forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
               onSetLocalUserAlias={onSetLocalUserAlias}
               autoLoadOlderMessages={snapshot.state.domain.settings.values.timeline.auto_load_older_messages}
-              threadRootOrder={snapshot.state.domain.settings.values.timeline.thread_root_order}
               codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
               searchQuery={searchQuery}
               mediaDownloads={mediaDownloads}
@@ -608,14 +606,12 @@ export function ContextualRightPanel({
             onReply={onReply}
             onOpenThread={() => undefined}
             resolveComposerKeyAction={onResolveComposerKeyAction}
-            roomSignals={snapshot.state.domain.live_signals.rooms[threadRoomId] ?? null}
-            presenceByUserId={snapshot.state.domain.live_signals.presence}
+            liveSignals={snapshot.state.domain.live_signals}
             profileUsers={snapshot.state.domain.profile.users}
             pinnedEventIds={threadPinnedEventIds}
             forwardDestinations={forwardDestinationsFromSnapshot(snapshot)}
             onSetLocalUserAlias={onSetLocalUserAlias}
             autoLoadOlderMessages={snapshot.state.domain.settings.values.timeline.auto_load_older_messages}
-            threadRootOrder={snapshot.state.domain.settings.values.timeline.thread_root_order}
             codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
             searchQuery={searchQuery}
             mediaDownloads={mediaDownloads}

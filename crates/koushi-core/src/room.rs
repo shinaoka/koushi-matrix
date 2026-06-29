@@ -471,6 +471,18 @@ impl RoomActor {
                 self.reduce_reliable(vec![AppAction::ReorderSpaces { space_ids }])
                     .await;
             }
+            RoomCommand::SelectRoom {
+                request_id: _,
+                room_id,
+            } => {
+                // Pure navigation: project to reducer; no domain event.
+                // Core updates navigation state here and does not consume
+                // reducer effects in this actor. One-shot navigation MUST be
+                // delivered reliably: a dropped SelectRoom is the large-account
+                // "room selection did not complete" bug (see reduce_reliable).
+                self.reduce_reliable(vec![AppAction::SelectRoom { room_id }])
+                    .await;
+            }
             RoomCommand::MarkRoomAsRead {
                 request_id,
                 room_id,
@@ -2959,6 +2971,29 @@ pub mod tests {
             })
         );
         assert_eq!(rooms[0].tags.low_priority, None);
+    }
+
+    #[tokio::test]
+    async fn select_room_projects_action() {
+        let (action_tx, mut action_rx) = mpsc::channel(16);
+        let (event_tx, _event_rx) = broadcast::channel(16);
+        let handle = RoomActor::spawn(action_tx, event_tx);
+
+        handle
+            .send(RoomMessage::Command(RoomCommand::SelectRoom {
+                request_id: make_request_id(2),
+                room_id: "!room:example.test".to_owned(),
+            }))
+            .await;
+
+        let actions = action_rx.recv().await.expect("actions");
+        assert!(
+            matches!(
+                actions.as_slice(),
+                [AppAction::SelectRoom { room_id }] if room_id == "!room:example.test"
+            ),
+            "expected SelectRoom action, got {actions:?}"
+        );
     }
 
     // --- OperationFailed without session emits SessionRequired ---

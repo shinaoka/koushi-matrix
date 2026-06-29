@@ -66,8 +66,7 @@ impl CoreCommand {
                 | AppCommand::RecordLocalEncryptionHealth { request_id, .. }
                 | AppCommand::UpdateNativeAttentionState { request_id, .. }
                 | AppCommand::UpdateJapaneseCatalogProfile { request_id, .. }
-                | AppCommand::SelectRoomListFilter { request_id, .. }
-                | AppCommand::SelectRoom { request_id, .. },
+                | AppCommand::SelectRoomListFilter { request_id, .. },
             ) => *request_id,
             Self::Account(command) => match command {
                 AccountCommand::LoginPassword { request_id, .. }
@@ -143,6 +142,7 @@ impl CoreCommand {
                 | RoomCommand::UpdateRoomMemberRole { request_id, .. }
                 | RoomCommand::SelectSpace { request_id, .. }
                 | RoomCommand::ReorderSpaces { request_id, .. }
+                | RoomCommand::SelectRoom { request_id, .. }
                 | RoomCommand::MarkRoomAsRead { request_id, .. }
                 | RoomCommand::MarkRoomAsUnread { request_id, .. }
                 | RoomCommand::SetRoomNotificationMode { request_id, .. }
@@ -153,7 +153,7 @@ impl CoreCommand {
                 TimelineCommand::Subscribe { request_id, .. }
                 | TimelineCommand::Unsubscribe { request_id, .. }
                 | TimelineCommand::Paginate { request_id, .. }
-                | TimelineCommand::MaterializeTimelineAnchor { request_id, .. }
+                | TimelineCommand::RestoreTimelineAnchor { request_id, .. }
                 | TimelineCommand::ObserveViewport { request_id, .. }
                 | TimelineCommand::SendText { request_id, .. }
                 | TimelineCommand::SendReply { request_id, .. }
@@ -220,7 +220,6 @@ impl CoreCommand {
                         | AppCommand::CloseThreadsList { .. }
                         | AppCommand::PaginateThreadsList { .. }
                         | AppCommand::TimelineScrollAnchorUpdated { .. }
-                        | AppCommand::SelectRoom { .. }
                 )
             )
     }
@@ -375,10 +374,6 @@ pub enum AppCommand {
     SelectRoomListFilter {
         request_id: RequestId,
         filter: RoomListFilter,
-    },
-    SelectRoom {
-        request_id: RequestId,
-        room_id: String,
     },
 }
 
@@ -641,11 +636,6 @@ impl fmt::Debug for AppCommand {
                 .debug_struct("SelectRoomListFilter")
                 .field("request_id", request_id)
                 .field("filter", filter)
-                .finish(),
-            Self::SelectRoom { request_id, .. } => formatter
-                .debug_struct("SelectRoom")
-                .field("request_id", request_id)
-                .field("room_id", &"RoomId(..)")
                 .finish(),
         }
     }
@@ -1380,6 +1370,13 @@ pub enum RoomCommand {
         request_id: RequestId,
         space_ids: Vec<String>,
     },
+    /// User-intent lane: room selection is request-id correlated and must be
+    /// routed through the reliable command path, not a drop-on-full background
+    /// queue.
+    SelectRoom {
+        request_id: RequestId,
+        room_id: String,
+    },
     MarkRoomAsRead {
         request_id: RequestId,
         room_id: String,
@@ -1575,6 +1572,11 @@ impl fmt::Debug for RoomCommand {
                 .debug_struct("ReorderSpaces")
                 .field("request_id", request_id)
                 .field("space_ids", &"Vec<RoomId>(..)")
+                .finish(),
+            Self::SelectRoom { request_id, .. } => formatter
+                .debug_struct("SelectRoom")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
                 .finish(),
             Self::MarkRoomAsRead {
                 request_id,
@@ -1831,7 +1833,7 @@ pub enum TimelineCommand {
         direction: crate::event::PaginationDirection,
         event_count: u16,
     },
-    MaterializeTimelineAnchor {
+    RestoreTimelineAnchor {
         request_id: RequestId,
         key: TimelineKey,
         event_id: String,
@@ -1987,13 +1989,13 @@ impl fmt::Debug for TimelineCommand {
                 .field("direction", direction)
                 .field("event_count", event_count)
                 .finish(),
-            Self::MaterializeTimelineAnchor {
+            Self::RestoreTimelineAnchor {
                 request_id,
                 max_batches,
                 event_count,
                 ..
             } => formatter
-                .debug_struct("MaterializeTimelineAnchor")
+                .debug_struct("RestoreTimelineAnchor")
                 .field("request_id", request_id)
                 .field("key", &"TimelineKey(..)")
                 .field("event_id", &"EventId(..)")
@@ -2007,8 +2009,6 @@ impl fmt::Debug for TimelineCommand {
                 .field("first_visible_event_id", &"EventId(..)")
                 .field("last_visible_event_id", &"EventId(..)")
                 .field("at_bottom", &"ViewportFact(..)")
-                .field("scroll_anchor", &"TimelineScrollAnchor(..)")
-                .field("viewport", &"TimelinePersistedViewport(..)")
                 .finish(),
             Self::SendText {
                 request_id,

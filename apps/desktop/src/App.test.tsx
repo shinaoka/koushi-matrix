@@ -1363,7 +1363,7 @@ describe("Tauri state refresh wiring", () => {
     const selectSearchResultSource = source.slice(selectSearchResultStart, selectSearchResultEnd);
 
     expect(selectSearchResultSource).toContain("api.selectSearchResult(roomId, eventId)");
-    expect(selectSearchResultSource).toContain('dispatchNav({ kind: "selectSearchResult" })');
+    expect(selectSearchResultSource).toContain('setRightPanelMode("search")');
     expect(selectSearchResultSource).not.toContain("selectRoom(");
     expect(selectSearchResultSource).not.toContain('setSearchQuery("")');
     expect(selectSearchResultSource).not.toContain("document.querySelector");
@@ -1438,7 +1438,7 @@ describe("Tauri state refresh wiring", () => {
     expect(transportStart).toBeGreaterThanOrEqual(0);
     expect(transportSource).toContain("api.openTimelineAtTimestamp(roomId, timestampMs)");
     expect(transportSource).toContain("setSnapshot(nextSnapshot)");
-    expect(transportSource).toContain('dispatchNav({ kind: "openTimelineAtTimestamp" })');
+    expect(transportSource).toContain('setRightPanelMode("focusedContext")');
     expect(source).toContain("timelineTransport={appTimelineTransport}");
     expect(
       readFileSync(new URL("./components/rightPanel.tsx", import.meta.url), "utf8")
@@ -1471,7 +1471,7 @@ describe("Tauri state refresh wiring", () => {
     const modeHelperEnd = source.indexOf("async function closeFocusedContextPanel", modeHelperStart);
     const modeHelperSource = source.slice(modeHelperStart, modeHelperEnd);
     expect(modeHelperSource).toContain("await closeFocusedContextIfHiddenBy(nextMode)");
-    expect(modeHelperSource).toContain('dispatchNav({ kind: "setRightPanelMode", mode: nextMode })');
+    expect(modeHelperSource).toContain("setRightPanelMode(nextMode)");
 
     const renderStart = source.indexOf("<ContextualRightPanel");
     const renderEnd = source.indexOf("</ContextualRightPanel>", renderStart);
@@ -2016,9 +2016,9 @@ describe("Timeline item row rendering", () => {
     const timelinePaneSource = source.slice(timelinePaneStart, timelinePaneEnd);
 
     expect(timelinePaneSource).toContain("api.loadRoomSettings(");
-    expect(timelinePaneSource).toContain('dispatchNav({');
+    expect(timelinePaneSource).toContain('setRightPanelModeClosingFocusedContext("people")');
     expect(timelinePaneSource.indexOf("api.loadRoomSettings(")).toBeLessThan(
-      timelinePaneSource.indexOf('dispatchNav({')
+      timelinePaneSource.indexOf('setRightPanelModeClosingFocusedContext("people")')
     );
 
     const contextualRightPanelStart = source.indexOf("<ContextualRightPanel");
@@ -2032,10 +2032,10 @@ describe("Timeline item row rendering", () => {
 
     expect(contextualRightPanelSource).toContain("api.loadRoomSettings(");
     expect(contextualRightPanelSource).toContain(
-      'dispatchNav({'
+      'setRightPanelModeClosingFocusedContext("people")'
     );
     expect(contextualRightPanelSource.indexOf("api.loadRoomSettings(")).toBeLessThan(
-      contextualRightPanelSource.indexOf('dispatchNav({')
+      contextualRightPanelSource.indexOf('setRightPanelModeClosingFocusedContext("people")')
     );
   });
 });
