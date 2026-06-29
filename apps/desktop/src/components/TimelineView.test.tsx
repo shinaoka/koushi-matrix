@@ -748,6 +748,80 @@ describe("TimelineView", () => {
     expect(idleDiagnostics.measurementFlushes - baselineMeasurementFlushes).toBe(0);
   });
 
+  it("classifies programmatic scroll writes by reason and suppresses their scroll echo", async () => {
+    const onScrollDiagnosticsChange = vi.fn();
+    let listener: ((payload: CoreEventPayload) => void) | null = null;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        listener = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={() => undefined}
+        onScrollDiagnosticsChange={onScrollDiagnosticsChange}
+      />
+    );
+
+    act(() => {
+      listener?.({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: Array.from({ length: 700 }, (_, index) =>
+              message(`$item${index}`, `message ${index}`)
+            )
+          }
+        }
+      });
+    });
+
+    const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 1000,
+      writable: true,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "scrollHeight", {
+      value: 700 * 72,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "clientHeight", {
+      value: 600,
+      configurable: true
+    });
+
+    act(() => {
+      listener?.({
+        kind: "Timeline",
+        event: {
+          NavigationUpdated: {
+            key: KEY,
+            snapshot: navigationSnapshot({
+              can_jump_to_bottom: true,
+              newer_event_count: 4
+            })
+          }
+        }
+      });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Jump to bottom/ }));
+    fireEvent.scroll(timeline);
+
+    const diagnostics = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    expect(diagnostics.scrollWrites.jumpToBottom).toBe(1);
+    expect(diagnostics.latestFrame?.userInputPending).toBe(false);
+  });
+
   it("drops stale pending measurements after same timeline ItemsUpdated reset", async () => {
     vi.useFakeTimers();
     let listener: ((payload: CoreEventPayload) => void) | null = null;
