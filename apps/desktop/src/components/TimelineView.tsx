@@ -1884,6 +1884,7 @@ export const TimelineView = memo(function TimelineView({
   const pendingScrollFrameUserInputRef = useRef(false);
   /** Coalesces ResizeObserver-driven live-edge corrections. */
   const viewportIntentResizeFrameRef = useRef<TimelineScheduledFrame | null>(null);
+  const scrollFollowUpFramesRef = useRef<Set<TimelineScheduledFrame>>(new Set());
   /** Pagination request currently in flight (suppresses duplicates). */
   const backfillInFlightRef = useRef(false);
   const readSignalEventRef = useRef<string | null>(null);
@@ -1938,6 +1939,28 @@ export const TimelineView = memo(function TimelineView({
       pendingScrollFrameRef.current = null;
     }
     pendingScrollFrameUserInputRef.current = false;
+  }, []);
+  const cancelScrollFollowUpFrames = useCallback(() => {
+    for (const frame of scrollFollowUpFramesRef.current) {
+      frame.cancel();
+    }
+    scrollFollowUpFramesRef.current.clear();
+  }, []);
+  const scheduleScrollFollowUpFrame = useCallback((callback: FrameRequestCallback) => {
+    const frameRef: { current: TimelineScheduledFrame | null } = { current: null };
+    let completed = false;
+    const frame = scheduleTimelineFrame((timestamp) => {
+      completed = true;
+      if (frameRef.current) {
+        scrollFollowUpFramesRef.current.delete(frameRef.current);
+      }
+      callback(timestamp);
+    });
+    frameRef.current = frame;
+    if (!completed) {
+      scrollFollowUpFramesRef.current.add(frame);
+    }
+    return frame;
   }, []);
   const clearMeasurementTimers = useCallback(() => {
     if (scrollIdleTimerRef.current !== null) {
@@ -2029,10 +2052,14 @@ export const TimelineView = memo(function TimelineView({
       suppressScrollAnchorCaptureRef.current = true;
       const container = containerRef.current;
       const beforeScrollTop = container?.scrollTop ?? 0;
+      let clearSuppressionToken = programmaticScrollTokenRef.current;
+      let clearSignatureToken: number | null = null;
       action();
       if (container && container.scrollTop !== beforeScrollTop) {
         const token = programmaticScrollTokenRef.current + 1;
         programmaticScrollTokenRef.current = token;
+        clearSuppressionToken = token;
+        clearSignatureToken = token;
         programmaticScrollSignatureRef.current = {
           scrollHeight: container.scrollHeight,
           scrollTop: container.scrollTop,
@@ -2045,8 +2072,15 @@ export const TimelineView = memo(function TimelineView({
         if (anchorAsyncGenerationRef.current !== asyncGeneration) {
           return;
         }
-        suppressScrollAnchorCaptureRef.current = false;
-        programmaticScrollSignatureRef.current = null;
+        if (programmaticScrollTokenRef.current === clearSuppressionToken) {
+          suppressScrollAnchorCaptureRef.current = false;
+        }
+        if (
+          clearSignatureToken !== null &&
+          programmaticScrollSignatureRef.current?.token === clearSignatureToken
+        ) {
+          programmaticScrollSignatureRef.current = null;
+        }
       });
     },
     [updateScrollDiagnostics]
@@ -2232,6 +2266,7 @@ export const TimelineView = memo(function TimelineView({
         // events for this consumer (likely including this room's InitialItems).
         // Clear, then RE-SUBSCRIBE so the core re-emits a fresh InitialItems;
         // clearing alone would leave the timeline permanently blank.
+        cancelScrollFollowUpFrames();
         recordTimelineResync();
         pendingAnchorRef.current = null;
         anchorRestorePendingRef.current = false;
@@ -2328,6 +2363,7 @@ export const TimelineView = memo(function TimelineView({
       emitTimelineEventDiagnosticLog(event, eventKey, emitDiagnosticLog);
       if ("InitialItems" in event) {
         recordTimelineInitialItems(event.InitialItems.items.length);
+        cancelScrollFollowUpFrames();
         resetActiveMeasurementDeferral({ clearMountedIds: true });
         relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
           event.InitialItems.items,
@@ -2338,6 +2374,7 @@ export const TimelineView = memo(function TimelineView({
         "ItemsUpdated" in event &&
         timelineDiffsContainReset(event.ItemsUpdated.diffs)
       ) {
+        cancelScrollFollowUpFrames();
         resetActiveMeasurementDeferral({ clearMountedIds: true });
       }
       if (timelineEventCompletesBackfillRequest(event)) {
@@ -2355,6 +2392,7 @@ export const TimelineView = memo(function TimelineView({
       }
 
       if ("ResyncRequired" in event) {
+        cancelScrollFollowUpFrames();
         pendingAnchorRef.current = null;
         anchorRestorePendingRef.current = false;
         roomScrollAnchorRestorePendingRef.current = false;
@@ -2401,6 +2439,7 @@ export const TimelineView = memo(function TimelineView({
     return unsubscribe;
   }, [
     currentUserId,
+    cancelScrollFollowUpFrames,
     emitDiagnosticLog,
     isAppLevelStore,
     resetActiveMeasurementDeferral,
@@ -2416,13 +2455,15 @@ export const TimelineView = memo(function TimelineView({
   useEffect(
     () => () => {
       cancelPendingScrollFrame();
+      cancelScrollFollowUpFrames();
       resetActiveMeasurementDeferral({ clearMountedIds: true });
     },
-    [cancelPendingScrollFrame, resetActiveMeasurementDeferral]
+    [cancelPendingScrollFrame, cancelScrollFollowUpFrames, resetActiveMeasurementDeferral]
   );
 
   useLayoutEffect(() => {
     cancelPendingScrollFrame();
+    cancelScrollFollowUpFrames();
     const sessionViewport = timelineViewportSessionMemory.get(timelineKeyHash) ?? null;
     sessionRoomScrollAnchorRef.current =
       sessionViewport?.mode === "anchor" ? sessionViewport.anchor : null;
@@ -2438,7 +2479,12 @@ export const TimelineView = memo(function TimelineView({
     userScrollInputPendingRef.current = false;
     pendingScrollFrameUserInputRef.current = false;
     lastPersistedViewportAnchorSignatureRef.current = null;
-  }, [cancelPendingScrollFrame, resetActiveMeasurementDeferral, timelineKeyHash]);
+  }, [
+    cancelPendingScrollFrame,
+    cancelScrollFollowUpFrames,
+    resetActiveMeasurementDeferral,
+    timelineKeyHash
+  ]);
 
   useEffect(() => {
     const sessionViewport = timelineViewportSessionMemory.get(timelineKeyHash) ?? null;
@@ -3023,7 +3069,7 @@ export const TimelineView = memo(function TimelineView({
             runWithScrollWriteReason("roomRestore", () => {
               container.scrollTop = Math.max(0, targetScrollTop);
             });
-            scheduleTimelineFrame(() => {
+            scheduleScrollFollowUpFrame(() => {
               let roomAnchorRestoredInFrame = false;
               runWithScrollWriteReason("roomRestore", () => {
                 roomAnchorRestoredInFrame = restoreActiveRoomAnchor();
@@ -3111,7 +3157,7 @@ export const TimelineView = memo(function TimelineView({
                 anchor.offsetTop
             );
           });
-          scheduleTimelineFrame(() => {
+          scheduleScrollFollowUpFrame(() => {
             runWithScrollWriteReason("backfillCompensation", () => {
               restoreAnchor(container, anchor);
             });
@@ -3149,6 +3195,7 @@ export const TimelineView = memo(function TimelineView({
     virtualWindow.virtualized,
     visibleItems,
     runWithScrollWriteReason,
+    scheduleScrollFollowUpFrame,
     setViewportIntentToLiveEdge,
     timelineKeyHash
   ]);
@@ -3468,7 +3515,7 @@ export const TimelineView = memo(function TimelineView({
             );
           });
           updateViewportMetrics();
-          scheduleTimelineFrame(() => {
+          scheduleScrollFollowUpFrame(() => {
             runWithScrollWriteReason("jumpToEvent", () => {
               scrollMountedRowIntoView();
             });
@@ -3483,6 +3530,7 @@ export const TimelineView = memo(function TimelineView({
     [
       releaseViewportIntent,
       runWithScrollWriteReason,
+      scheduleScrollFollowUpFrame,
       reportViewportObservation,
       timelineHeightModel,
       updateViewportMetrics,
@@ -3505,7 +3553,7 @@ export const TimelineView = memo(function TimelineView({
     });
     updateViewportMetrics();
     reportViewportObservation();
-    scheduleTimelineFrame(() => {
+    scheduleScrollFollowUpFrame(() => {
       runWithScrollWriteReason("jumpToBottom", () => {
         scrollContainerToBottom(container);
       });
@@ -3516,6 +3564,7 @@ export const TimelineView = memo(function TimelineView({
     setViewportIntentToLiveEdge,
     reportViewportObservation,
     runWithScrollWriteReason,
+    scheduleScrollFollowUpFrame,
     updateViewportMetrics
   ]);
   const canRenderRoomNavigation =

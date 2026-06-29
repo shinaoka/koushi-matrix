@@ -768,7 +768,7 @@ describe("TimelineView", () => {
       />
     );
 
-    const timeline = await screen.findByTestId("timeline-view");
+    const timeline = screen.getByTestId("timeline-view");
     Object.defineProperty(timeline, "scrollTop", {
       value: 1000,
       writable: true,
@@ -981,7 +981,7 @@ describe("TimelineView", () => {
     );
 
     const { rerender } = render(renderView());
-    const timeline = await screen.findByTestId("timeline-view");
+    const timeline = screen.getByTestId("timeline-view");
     Object.defineProperty(timeline, "clientHeight", { value: 500, configurable: true });
     Object.defineProperty(timeline, "scrollHeight", { value: 700 * 72, configurable: true });
     Object.defineProperty(timeline, "scrollTop", {
@@ -1135,6 +1135,119 @@ describe("TimelineView", () => {
       .map(([diagnostics]) => diagnostics.latestFrame)
       .filter((frame) => frame?.scrollActivity === "active");
     expect(activeFrames).toEqual([]);
+  });
+
+  it("cancels delayed programmatic scroll follow-ups after timeline key changes", async () => {
+    vi.useFakeTimers();
+    const onScrollDiagnosticsChange = vi.fn();
+    let listener: ((payload: CoreEventPayload) => void) | null = null;
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      nextFrameId += 1;
+      frames.set(nextFrameId, callback);
+      return nextFrameId;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frameId) => {
+      frames.delete(frameId);
+    });
+    const flushFrames = () => {
+      const queued = [...frames.entries()];
+      frames.clear();
+      for (const [, callback] of queued) {
+        callback(0);
+      }
+    };
+    const threadKey = threadTimelineKey(
+      "@alice:example.invalid",
+      "!room:example.invalid",
+      "$root:example.invalid"
+    );
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        listener = nextListener;
+        return () => undefined;
+      }
+    });
+    const renderView = (timelineKey: typeof KEY | typeof threadKey) => (
+      <TimelineView
+        timelineKey={timelineKey}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={() => undefined}
+        onScrollDiagnosticsChange={onScrollDiagnosticsChange}
+      />
+    );
+
+    const { rerender } = render(renderView(KEY));
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 1000,
+      writable: true,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "scrollHeight", {
+      value: 700 * 72,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "clientHeight", {
+      value: 600,
+      configurable: true
+    });
+
+    act(() => {
+      listener?.({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: Array.from({ length: 700 }, (_, index) =>
+              message(`$item${index}`, `message ${index}`)
+            )
+          }
+        }
+      });
+    });
+    act(() => {
+      flushFrames();
+    });
+    timeline.scrollTop = 1000;
+    fireEvent.wheel(timeline, { deltaY: -40 });
+    fireEvent.scroll(timeline);
+    act(() => {
+      listener?.({
+        kind: "Timeline",
+        event: {
+          NavigationUpdated: {
+            key: KEY,
+            snapshot: navigationSnapshot({
+              can_jump_to_bottom: true,
+              newer_event_count: 4
+            })
+          }
+        }
+      });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Jump to bottom/ }));
+    expect(frames.size).toBeGreaterThan(0);
+
+    act(() => {
+      rerender(renderView(threadKey));
+    });
+    timeline.scrollTop = 1000;
+    onScrollDiagnosticsChange.mockClear();
+
+    act(() => {
+      flushFrames();
+    });
+
+    const jumpWritesAfterKeyChange = onScrollDiagnosticsChange.mock.calls
+      .map(([diagnostics]) => diagnostics.scrollWrites.jumpToBottom)
+      .filter((count) => count > 0);
+    expect(jumpWritesAfterKeyChange).toEqual([]);
   });
 
   it("does not re-emit scroll diagnostics from parent state commits", async () => {
