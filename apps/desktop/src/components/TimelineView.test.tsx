@@ -119,7 +119,10 @@ function mockTimelineRects(
   return vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
-    const eventId = this.getAttribute("data-event-id");
+    const eventId =
+      this.getAttribute("data-event-id") ??
+      this.getAttribute("data-frame-item-id") ??
+      this.getAttribute("data-item-id");
     const testId = this.getAttribute("data-testid");
     const scrollTop = scrollContainerRef?.current?.scrollTop ?? 0;
     const top =
@@ -407,6 +410,99 @@ describe("TimelineView", () => {
     expect(latest.scrollFrames).toBeGreaterThan(0);
     expect(JSON.stringify(latest)).not.toContain("!room:example.invalid");
     expect(JSON.stringify(latest)).not.toContain("$item");
+  });
+
+  it("defers virtual height commits during active scroll and flushes once after idle", async () => {
+    vi.useFakeTimers();
+    let listener: ((payload: CoreEventPayload) => void) | null = null;
+    const onScrollDiagnosticsChange = vi.fn();
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        listener = nextListener;
+        return () => undefined;
+      }
+    });
+
+    const rects: Record<string, { top: number; height: number }> = {};
+    for (let index = 0; index < 700; index += 1) {
+      rects[`$item${index}`] = { top: index * 72, height: 72 };
+    }
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    mockTimelineRects(rects, { top: 0, height: 600 }, scrollContainerRef);
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={() => undefined}
+        onScrollDiagnosticsChange={onScrollDiagnosticsChange}
+        listRefCallback={(element) => {
+          scrollContainerRef.current =
+            element?.closest<HTMLElement>("[data-testid=timeline-view]") ?? null;
+        }}
+      />
+    );
+
+    act(() => {
+      listener?.({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: Array.from({ length: 700 }, (_, index) =>
+              message(`$item${index}`, `message ${index}`)
+            )
+          }
+        }
+      });
+    });
+
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 3000,
+      writable: true,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "scrollHeight", {
+      value: 700 * 72,
+      writable: true,
+      configurable: true
+    });
+    Object.defineProperty(timeline, "clientHeight", {
+      value: 600,
+      writable: true,
+      configurable: true
+    });
+    const baselineDiagnostics = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    const baselineHeightModelCommits = baselineDiagnostics?.heightModelCommits ?? 0;
+    const baselineMeasurementFlushes = baselineDiagnostics?.measurementFlushes ?? 0;
+
+    fireEvent.wheel(timeline, { deltaY: 40 });
+    fireEvent.scroll(timeline);
+
+    rects.$item50 = { top: 50 * 72, height: 180 };
+    fireEvent.scroll(timeline);
+    act(() => {
+      vi.advanceTimersByTime(16);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const activeDiagnostics = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    expect(activeDiagnostics.heightModelCommits - baselineHeightModelCommits).toBe(0);
+    expect(activeDiagnostics.pendingMeasuredRows).toBeGreaterThan(0);
+
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+
+    const idleDiagnostics = onScrollDiagnosticsChange.mock.calls.at(-1)?.[0];
+    expect(idleDiagnostics.measurementFlushes - baselineMeasurementFlushes).toBe(1);
+    expect(idleDiagnostics.heightModelCommits - baselineHeightModelCommits).toBe(1);
   });
 
   it("drops pending scroll frame diagnostics after the timeline key changes", async () => {
