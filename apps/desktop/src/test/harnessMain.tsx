@@ -13,16 +13,19 @@ import { createRoot } from "react-dom/client";
 import type { CoreEventPayload } from "../domain/coreEvents";
 import { roomTimelineKey } from "../domain/coreEvents";
 import type { TimelineScrollDiagnostics } from "../domain/timelineScrollDiagnostics";
+import type { TimelineMediaDownloadState } from "../domain/types";
 import {
   TimelineView,
   type TimelineTransport
 } from "../components/TimelineView";
 import { TauriIpcMock, type IpcInvocation } from "./tauriIpcMock";
+import "../styles.css";
 
 declare global {
   interface Window {
     __harness: {
       pushCoreEvent(event: CoreEventPayload): void;
+      setMediaDownloadState(eventId: string, state: TimelineMediaDownloadState): void;
       invocations(): readonly IpcInvocation[];
       invocationsOf(command: string): IpcInvocation[];
       scrollDiagnostics(): TimelineScrollDiagnostics | null;
@@ -45,6 +48,8 @@ if (variableHeights) {
 const ipc = new TauriIpcMock();
 let latestScrollDiagnostics: TimelineScrollDiagnostics | null = null;
 let scrollDiagnosticsBaseline: TimelineScrollDiagnostics | null = null;
+let mediaDownloads: Record<string, TimelineMediaDownloadState> = {};
+let renderTimeline: () => void = () => undefined;
 
 function cloneScrollDiagnostics(
   diagnostics: TimelineScrollDiagnostics
@@ -129,6 +134,10 @@ function diagnosticsSinceBaseline(
 
 window.__harness = {
   pushCoreEvent: (event) => ipc.emitCoreEvent(event),
+  setMediaDownloadState: (eventId, state) => {
+    mediaDownloads = { ...mediaDownloads, [eventId]: state };
+    renderTimeline();
+  },
   invocations: () => ipc.recordedInvocations(),
   invocationsOf: (command) => ipc.invocationsOf(command),
   scrollDiagnostics: () =>
@@ -236,17 +245,22 @@ if (!root) {
   throw new Error("harness root element missing");
 }
 
-createRoot(root).render(
-  <TimelineView
-    roomId={ROOM_ID}
-    timelineKey={roomTimelineKey(ACCOUNT_KEY, ROOM_ID)}
-    transport={transport}
-    autoLoadOlderMessages={autoLoadOlderMessages}
-    onReply={(roomId, eventId) => {
-      void ipc.invoke("set_composer_reply_target", { roomId, eventId });
-    }}
-    onScrollDiagnosticsChange={(diagnostics) => {
-      latestScrollDiagnostics = diagnostics;
-    }}
-  />
-);
+const timelineRoot = createRoot(root);
+renderTimeline = () => {
+  timelineRoot.render(
+    <TimelineView
+      roomId={ROOM_ID}
+      timelineKey={roomTimelineKey(ACCOUNT_KEY, ROOM_ID)}
+      transport={transport}
+      autoLoadOlderMessages={autoLoadOlderMessages}
+      mediaDownloads={mediaDownloads}
+      onReply={(roomId, eventId) => {
+        void ipc.invoke("set_composer_reply_target", { roomId, eventId });
+      }}
+      onScrollDiagnosticsChange={(diagnostics) => {
+        latestScrollDiagnostics = diagnostics;
+      }}
+    />
+  );
+};
+renderTimeline();

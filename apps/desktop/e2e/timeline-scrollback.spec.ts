@@ -993,7 +993,29 @@ test("known-dimension media keeps row height stable across download completion",
     { key: timelineKey() }
   );
 
+  await page.evaluate(() =>
+    window.__harness.setMediaDownloadState("$image620", {
+      kind: "ready",
+      source_url: "appmedia://synthetic-image",
+      width: 2048,
+      height: 1188,
+      mime_type: "image/png"
+    })
+  );
+
   await waitAnimationFrames(page, 3);
+  const media = frame.locator(".message-media");
+  await expect(media).toHaveAttribute("data-download-state", "ready");
+  await expect(media.locator(".message-media-preview-link")).toBeVisible();
+  await expect(media.locator(".message-media-download")).toBeVisible();
+  await expect
+    .poll(() => media.evaluate((node) => getComputedStyle(node).display))
+    .toBe("inline-grid");
+  await expect
+    .poll(() =>
+      media.evaluate((node) => getComputedStyle(node).gridTemplateColumns.split(" ").length)
+    )
+    .toBe(3);
   const afterHeight = await frame.evaluate((node) => node.getBoundingClientRect().height);
   expect(Math.abs(afterHeight - beforeHeight)).toBeLessThanOrEqual(1);
 });

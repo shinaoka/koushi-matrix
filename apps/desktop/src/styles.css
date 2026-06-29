@@ -3388,12 +3388,6 @@ button:disabled {
   background: var(--brand);
 }
 
-.message-media-ready {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
 .message-media-preview-link {
   display: inline-flex;
   max-width: 100%;
