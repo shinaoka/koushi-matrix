@@ -1,7 +1,5 @@
 import type { TimelineScrollAnchor } from "./types";
 
-export type TimelineViewportIntent = { kind: "free-scroll" } | { kind: "live-edge" };
-
 export type TimelineProgrammaticScrollSignature = {
   scrollHeight: number;
   scrollTop: number;
@@ -36,6 +34,13 @@ export type TimelineViewportTarget = {
   source: TimelineViewportTargetSource;
   block: TimelineViewportTargetBlock;
 };
+
+export type TimelineViewportIntent =
+  | { kind: "anchored" }
+  | { kind: "live-edge" }
+  | { kind: "targeting"; target: TimelineViewportTarget };
+
+export type TimelineViewportCoverageMode = "anchored" | "liveEdge" | "targeting";
 
 export type TimelineViewportMachineState = {
   intent: TimelineViewportIntent;
@@ -72,8 +77,11 @@ export type TimelineViewportMachineEvent =
   | { type: "post-settle-restore-scheduled"; signature: string }
   | { type: "retain-room-anchor"; retained: TimelineRetainedRoomAnchor | null }
   | { type: "clear-retained-room-anchor" }
+  | { type: "startup-viewport-mode-selected"; mode: "anchored" | "live-edge" }
   | { type: "live-edge-requested" }
   | { type: "free-scroll-requested" }
+  | { type: "targeting-requested"; target: TimelineViewportTarget }
+  | { type: "targeting-settled" }
   | { type: "mark-user-scroll-input" }
   | {
       type: "scroll-observed";
@@ -89,7 +97,7 @@ export type TimelineViewportMachineEvent =
 
 export function createTimelineViewportMachineState(): TimelineViewportMachineState {
   return {
-    intent: { kind: "free-scroll" },
+    intent: { kind: "anchored" },
     userScrollInputPending: false,
     suppressScrollAnchorCapture: false,
     programmaticScrollSignature: null,
@@ -125,6 +133,7 @@ export function timelineViewportCanPersistAnchor(
   options?: TimelineViewportAnchorCaptureOptions
 ): boolean {
   return (
+    state.intent.kind === "anchored" &&
     !timelineViewportHasBlockingAnchorWork(state) &&
     (options?.allowSuppressed === true || !state.suppressScrollAnchorCapture)
   );
@@ -146,6 +155,19 @@ export function timelineViewportCanRequestCoverageBackfill(
   signature: string
 ): boolean {
   return state.lastCoverageBackfillRequestSignature !== signature;
+}
+
+export function timelineViewportCoverageMode(
+  state: TimelineViewportMachineState
+): TimelineViewportCoverageMode {
+  switch (state.intent.kind) {
+    case "live-edge":
+      return "liveEdge";
+    case "targeting":
+      return "targeting";
+    case "anchored":
+      return "anchored";
+  }
 }
 
 export function eventTimelineViewportTarget(
@@ -214,15 +236,46 @@ export function reduceTimelineViewportMachine(
       return { ...state, retainedRoomAnchor: event.retained };
     case "clear-retained-room-anchor":
       return { ...state, retainedRoomAnchor: null };
+    case "startup-viewport-mode-selected":
+      return {
+        ...state,
+        intent: event.mode === "live-edge" ? { kind: "live-edge" } : { kind: "anchored" }
+      };
     case "live-edge-requested":
-      return { ...state, intent: { kind: "live-edge" }, retainedRoomAnchor: null };
+      return {
+        ...state,
+        intent: { kind: "live-edge" },
+        userScrollInputPending: false,
+        prependAnchorRestorePending: false,
+        roomAnchorRestorePending: false,
+        roomAnchorMaterializePending: false,
+        retainedRoomAnchor: null,
+        stickToBottomAfterMeasurement: false
+      };
     case "free-scroll-requested":
       return {
         ...state,
-        intent: { kind: "free-scroll" },
+        intent: { kind: "anchored" },
         userScrollInputPending: false,
         stickToBottomAfterMeasurement: false,
         retainedRoomAnchor: null
+      };
+    case "targeting-requested":
+      return {
+        ...state,
+        intent: { kind: "targeting", target: event.target },
+        userScrollInputPending: false,
+        retainedRoomAnchor: null,
+        stickToBottomAfterMeasurement: false
+      };
+    case "targeting-settled":
+      if (state.intent.kind !== "targeting") {
+        return state;
+      }
+      return {
+        ...state,
+        intent: { kind: "anchored" },
+        userScrollInputPending: false
       };
     case "mark-user-scroll-input":
       return { ...state, userScrollInputPending: true };
@@ -238,10 +291,10 @@ export function reduceTimelineViewportMachine(
           retainedRoomAnchor: null
         };
       }
-      if (event.userInput || state.intent.kind === "live-edge") {
+      if (event.userInput) {
         return reduceTimelineViewportMachine(state, { type: "free-scroll-requested" });
       }
-      return { ...state, retainedRoomAnchor: null };
+      return state;
     case "scroll-capture-suppression-started":
       return { ...state, suppressScrollAnchorCapture: true };
     case "scroll-capture-suppression-finished":

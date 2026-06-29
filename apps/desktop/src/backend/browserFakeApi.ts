@@ -879,13 +879,24 @@ class BrowserFakeApi implements DesktopApi {
     }
 
     await this.selectRoom(roomId);
+    const updatedAtMs = Date.now();
     this.snapshot.state.ui.navigation.room_scroll_anchors = {
       ...(this.snapshot.state.ui.navigation.room_scroll_anchors ?? {}),
       [roomId]: {
         event_id: eventId,
         edge: "top",
         offset_px: 0,
-        updated_at_ms: Date.now()
+        updated_at_ms: updatedAtMs
+      }
+    };
+    this.snapshot.state.ui.navigation.room_viewports = {
+      ...(this.snapshot.state.ui.navigation.room_viewports ?? {}),
+      [roomId]: {
+        kind: "anchored",
+        event_id: eventId,
+        edge: "top",
+        offset_px: 0,
+        updated_at_ms: updatedAtMs
       }
     };
     this.snapshot.state.ui.focused_context = {
@@ -902,13 +913,24 @@ class BrowserFakeApi implements DesktopApi {
     }
 
     await this.selectRoom(roomId);
+    const updatedAtMs = Date.now();
     this.snapshot.state.ui.navigation.room_scroll_anchors = {
       ...(this.snapshot.state.ui.navigation.room_scroll_anchors ?? {}),
       [roomId]: {
         event_id: eventId,
         edge: "bottom",
         offset_px: 0,
-        updated_at_ms: Date.now()
+        updated_at_ms: updatedAtMs
+      }
+    };
+    this.snapshot.state.ui.navigation.room_viewports = {
+      ...(this.snapshot.state.ui.navigation.room_viewports ?? {}),
+      [roomId]: {
+        kind: "anchored",
+        event_id: eventId,
+        edge: "bottom",
+        offset_px: 0,
+        updated_at_ms: updatedAtMs
       }
     };
     this.snapshot.state.ui.focused_context = { kind: "closed" };

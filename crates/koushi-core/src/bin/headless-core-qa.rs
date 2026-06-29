@@ -4011,6 +4011,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
                 last_visible_event_id: Some(event1_id.clone()),
                 at_bottom: false,
                 scroll_anchor: None,
+                viewport: None,
             },
         }))
         .await
@@ -6670,7 +6671,8 @@ async fn wait_for_operation_failed(
             }
             CoreEvent::Account(account_event) => {
                 let matches_request = match &account_event {
-                    AccountEvent::LoggedIn { request_id: id, .. }
+                    AccountEvent::OidcAuthorizationCreated { request_id: id, .. }
+                    | AccountEvent::LoggedIn { request_id: id, .. }
                     | AccountEvent::SessionRestored { request_id: id, .. }
                     | AccountEvent::SavedSessionsListed { request_id: id, .. }
                     | AccountEvent::RecoveryCompleted { request_id: id, .. }

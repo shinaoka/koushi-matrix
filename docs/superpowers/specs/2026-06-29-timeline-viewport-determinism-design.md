@@ -62,22 +62,23 @@ is that viewport intent is under-modeled and scroll ownership is distributed.
 
 ## Viewport Model
 
-Replace the event-only persisted shape with an explicit mode. Backward
-compatibility with legacy `room_scroll_anchors` is not required for this cleanup;
-old anchors may be ignored or dropped at schema migration time.
+Replace the event-only persisted shape with an explicit mode. The production
+snapshot carries `room_viewports` as the new source of truth. During the
+transition, legacy `room_scroll_anchors` remains as a compatibility mirror for
+anchored viewports and as a fallback when loading older navigation state.
 
 ```ts
 type PersistedTimelineViewport =
   | {
       kind: "liveEdge";
-      updatedAtMs: number;
+      updated_at_ms: number;
     }
   | {
       kind: "anchored";
-      eventId: string;
+      event_id: string;
       edge: "top" | "bottom";
-      offsetPx: number;
-      updatedAtMs: number;
+      offset_px: number;
+      updated_at_ms: number;
     };
 ```
 
@@ -414,15 +415,21 @@ paths, homeserver URLs, or SDK error bodies.
 
 ## Migration
 
-Compatibility is intentionally not a constraint for this cleanup. On schema
-change:
+On schema change:
 
-- Drop legacy `room_scroll_anchors`.
+- Add `room_viewports: Record<roomId, PersistedTimelineViewport>` to navigation
+  state.
 - Initialize rooms without a stored viewport as `LiveEdge`.
-- Persist the new explicit viewport mode after the first user-settled
-  observation.
+- Treat an existing legacy `room_scroll_anchors[room_id]` entry as an
+  `Anchored` fallback only when no `room_viewports[room_id]` exists.
+- Persist `LiveEdge` by writing `room_viewports[room_id] = LiveEdge` and
+  clearing the legacy anchor for that room.
+- Persist `Anchored` by writing `room_viewports[room_id] = Anchored` and a
+  legacy `room_scroll_anchors` mirror for compatibility.
 
-This avoids converting ambiguous old anchors into new deterministic modes.
+This avoids converting ambiguous old anchors into live-edge state while still
+letting an explicit `LiveEdge` overwrite stale anchors after the first
+user-settled bottom/latest observation.
 
 ## Out Of Scope
 

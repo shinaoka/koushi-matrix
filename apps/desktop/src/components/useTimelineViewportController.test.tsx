@@ -53,6 +53,15 @@ describe("useTimelineViewportController", () => {
     });
 
     expect(mountedController.canPersistAnchor()).toBe(false);
+    expect(mountedController.canPersistAnchor({ allowSuppressed: true })).toBe(false);
+
+    act(() => {
+      mountedController.dispatch({ type: "free-scroll-requested" });
+      mountedController.dispatch({ type: "scroll-capture-suppression-started" });
+    });
+
+    expect(mountedController.coverageMode()).toBe("anchored");
+    expect(mountedController.canPersistAnchor()).toBe(false);
     expect(mountedController.canPersistAnchor({ allowSuppressed: true })).toBe(true);
   });
 });

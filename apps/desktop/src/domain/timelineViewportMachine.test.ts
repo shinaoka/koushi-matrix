@@ -50,7 +50,7 @@ describe("timeline viewport machine", () => {
       userInput: true
     });
 
-    expect(afterUserScroll.intent).toEqual({ kind: "free-scroll" });
+    expect(afterUserScroll.intent).toEqual({ kind: "anchored" });
     expect(afterUserScroll.retainedRoomAnchor).toBeNull();
   });
 
@@ -205,11 +205,11 @@ describe("timeline viewport machine", () => {
       userInput: true
     });
 
-    expect(afterUserScroll.intent).toEqual({ kind: "free-scroll" });
+    expect(afterUserScroll.intent).toEqual({ kind: "anchored" });
     expect(afterUserScroll.stickToBottomAfterMeasurement).toBe(false);
   });
 
-  it("clears stickToBottomAfterMeasurement when non-user scroll observation from live-edge transitions to free-scroll", () => {
+  it("keeps live-edge intent through non-user scroll observations", () => {
     const stickyLiveEdge = reduceTimelineViewportMachine(
       reduceTimelineViewportMachine(
         createTimelineViewportMachineState(),
@@ -218,8 +218,6 @@ describe("timeline viewport machine", () => {
       { type: "stick-to-bottom-after-measurement", value: true }
     );
 
-    // A non-user-initiated scroll that is not a programmatic echo and
-    // not at bottom → the live-edge intent triggers free-scroll.
     const afterScroll = reduceTimelineViewportMachine(stickyLiveEdge, {
       type: "scroll-observed",
       programmaticEcho: false,
@@ -227,8 +225,8 @@ describe("timeline viewport machine", () => {
       userInput: false
     });
 
-    expect(afterScroll.intent).toEqual({ kind: "free-scroll" });
-    expect(afterScroll.stickToBottomAfterMeasurement).toBe(false);
+    expect(afterScroll.intent).toEqual({ kind: "live-edge" });
+    expect(afterScroll.stickToBottomAfterMeasurement).toBe(true);
   });
 
   it("builds explicit viewport targets for all event navigation entry points", () => {
@@ -240,6 +238,47 @@ describe("timeline viewport machine", () => {
       source: "activity",
       block: "end"
     });
+  });
+
+  it("uses anchored as the explicit free-scroll viewport intent", () => {
+    const state = reduceTimelineViewportMachine(createTimelineViewportMachineState(), {
+      type: "free-scroll-requested"
+    });
+
+    expect(state.intent).toEqual({ kind: "anchored" });
+  });
+
+  it("does not promote anchored layout observations to live edge", () => {
+    const anchored = reduceTimelineViewportMachine(createTimelineViewportMachineState(), {
+      type: "free-scroll-requested"
+    });
+
+    const observed = reduceTimelineViewportMachine(anchored, {
+      type: "scroll-observed",
+      programmaticEcho: false,
+      atBottom: true,
+      userInput: false
+    });
+
+    expect(observed.intent).toEqual({ kind: "anchored" });
+  });
+
+  it("models targeting as a bounded transition that settles to an anchor", () => {
+    const targeting = reduceTimelineViewportMachine(createTimelineViewportMachineState(), {
+      type: "targeting-requested",
+      target: eventTimelineViewportTarget("$event", "activity", "end")
+    });
+
+    expect(targeting.intent).toEqual({
+      kind: "targeting",
+      target: eventTimelineViewportTarget("$event", "activity", "end")
+    });
+
+    const settled = reduceTimelineViewportMachine(targeting, {
+      type: "targeting-settled"
+    });
+
+    expect(settled.intent).toEqual({ kind: "anchored" });
   });
 
   it("deduplicates coverage-driven backfill requests by signature", () => {

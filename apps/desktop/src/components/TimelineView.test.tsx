@@ -460,7 +460,10 @@ describe("TimelineView", () => {
     });
 
     const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "clientHeight", { value: 500, configurable: true });
+    Object.defineProperty(timeline, "scrollHeight", { value: 1200, configurable: true });
     Object.defineProperty(timeline, "scrollTop", { value: 0, configurable: true });
+    fireEvent.wheel(timeline, { deltaY: -120 });
     fireEvent.scroll(timeline);
 
     await waitFor(() => {
@@ -538,6 +541,7 @@ describe("TimelineView", () => {
     observeViewport.mockClear();
 
     act(() => {
+      fireEvent.wheel(timeline, { deltaY: -120 });
       fireEvent.scroll(timeline);
     });
 
@@ -548,6 +552,13 @@ describe("TimelineView", () => {
       "$second:example.invalid",
       false,
       expect.objectContaining({
+        event_id: "$second:example.invalid",
+        edge: "bottom",
+        offset_px: -132,
+        updated_at_ms: expect.any(Number)
+      }),
+      expect.objectContaining({
+        kind: "anchored",
         event_id: "$second:example.invalid",
         edge: "bottom",
         offset_px: -132,
@@ -628,6 +639,7 @@ describe("TimelineView", () => {
     });
 
     act(() => {
+      fireEvent.wheel(timeline, { deltaY: -120 });
       timeline.scrollTop = 8;
       fireEvent.scroll(timeline);
       timeline.scrollTop = 16;
@@ -754,7 +766,7 @@ describe("TimelineView", () => {
     );
   });
 
-  it("persists the sent message as the room anchor after a programmatic live-edge scroll", async () => {
+  it("reports live-edge send viewport facts without persisting an event anchor", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const observeViewport = vi.fn(
       async (
@@ -856,10 +868,9 @@ describe("TimelineView", () => {
         "$older:example.invalid",
         "$sent:example.invalid",
         true,
+        null,
         expect.objectContaining({
-          event_id: "$sent:example.invalid",
-          edge: "bottom",
-          offset_px: -20,
+          kind: "liveEdge",
           updated_at_ms: expect.any(Number)
         })
       );
@@ -1157,6 +1168,7 @@ describe("TimelineView", () => {
       "$anchor:example.invalid",
       "$after:example.invalid",
       false,
+      null,
       null
     );
   });
@@ -1425,6 +1437,130 @@ describe("TimelineView", () => {
       expect(timeline.getAttribute("data-timeline-generation")).toBe("2");
       expect(timeline.scrollTop).toBe(598);
     });
+  });
+
+  it("does not materialize a legacy anchor when persisted viewport mode is live edge", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const materializeTimelineAnchor = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      materializeTimelineAnchor
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        roomViewport={{ kind: "liveEdge", updated_at_ms: Date.now() }}
+        roomScrollAnchor={{
+          event_id: "$old-anchor:example.invalid",
+          edge: "bottom",
+          offset_px: 0,
+          updated_at_ms: Date.now()
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollHeight", { value: 2000, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$latest:example.invalid", "Latest")]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(1400);
+    });
+    expect(materializeTimelineAnchor).not.toHaveBeenCalled();
+  });
+
+  it("does not restart startup anchor materialization for same-room viewport echoes", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const materializeTimelineAnchor = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      materializeTimelineAnchor
+    });
+
+    const { rerender } = render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        roomViewport={{ kind: "liveEdge", updated_at_ms: Date.now() }}
+        onReply={vi.fn()}
+      />
+    );
+
+    const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollHeight", { value: 2000, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$latest:example.invalid", "Latest")]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(1400);
+    });
+    materializeTimelineAnchor.mockClear();
+
+    rerender(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        roomViewport={{
+          kind: "anchored",
+          event_id: "$echoed-anchor:example.invalid",
+          edge: "bottom",
+          offset_px: 0,
+          updated_at_ms: Date.now()
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    expect(materializeTimelineAnchor).not.toHaveBeenCalled();
   });
 
   it("falls back to the live edge when live anchor materialize exhausts its budget", async () => {
@@ -1943,7 +2079,7 @@ describe("TimelineView", () => {
         expect(timeline.scrollTop).toBe(1800);
       });
 
-      // User scrolls UP away from bottom → free-scroll
+      // User scrolls UP away from bottom → anchored reading mode
       act(() => {
         fireEvent.wheel(timeline, { deltaY: -120 });
         timeline.scrollTop = 1700;
@@ -3098,6 +3234,131 @@ describe("TimelineView", () => {
     }
   });
 
+  it("persists a targeted unread jump as an anchored viewport", async () => {
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    let timelineElement: HTMLElement | null = null;
+    const scrollIntoView = vi.fn(function (this: Element) {
+      if (
+        timelineElement &&
+        this instanceof HTMLElement &&
+        this.dataset["eventId"] === "$target:example.invalid"
+      ) {
+        timelineElement.scrollTop = 20;
+      }
+    });
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    const rects = mockTimelineRects(
+      {
+        "$first:example.invalid": { top: 0, height: 60 },
+        "$target:example.invalid": { top: 60, height: 60 },
+        "$third:example.invalid": { top: 120, height: 60 }
+      },
+      { top: 0, height: 100 },
+      scrollContainerRef
+    );
+
+    try {
+      let emit: (payload: CoreEventPayload) => void = () => undefined;
+      const observeViewport = vi.fn(async () => undefined);
+      const transport = baseTransport({
+        listenCoreEvents(nextListener) {
+          emit = nextListener;
+          return () => undefined;
+        },
+        observeViewport
+      });
+
+      render(
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+        />
+      );
+
+      const timeline = await screen.findByTestId("timeline-view");
+      timelineElement = timeline;
+      scrollContainerRef.current = timeline;
+      Object.defineProperty(timeline, "clientHeight", { value: 100, configurable: true });
+      Object.defineProperty(timeline, "scrollHeight", { value: 300, configurable: true });
+      Object.defineProperty(timeline, "scrollTop", {
+        value: 0,
+        writable: true,
+        configurable: true
+      });
+
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            InitialItems: {
+              request_id: null,
+              key: KEY,
+              generation: 1,
+              items: [
+                message("$first:example.invalid", "First"),
+                message("$target:example.invalid", "Target"),
+                message("$third:example.invalid", "Third")
+              ]
+            }
+          }
+        });
+        emit({
+          kind: "Timeline",
+          event: {
+            NavigationUpdated: {
+              key: KEY,
+              snapshot: {
+                can_jump_to_bottom: false,
+                first_unread_event_id: "$target:example.invalid",
+                latest_readable_event_id: "$third:example.invalid",
+                newer_event_count: 0,
+                read_marker_display_event_id: null,
+                read_marker_event_id: null,
+                unread_event_count: 1,
+                unread_position: "belowViewport"
+              }
+            }
+          }
+        });
+      });
+
+      await screen.findByRole("button", { name: /Jump to first unread/ });
+      observeViewport.mockClear();
+
+      fireEvent.click(screen.getByRole("button", { name: /Jump to first unread/ }));
+
+      await waitFor(() => {
+        expect(scrollIntoView).toHaveBeenCalled();
+        expect(observeViewport).toHaveBeenCalled();
+      });
+      expect(observeViewport).toHaveBeenLastCalledWith(
+        "!room:example.invalid",
+        "$first:example.invalid",
+        "$target:example.invalid",
+        false,
+        expect.objectContaining({
+          event_id: "$target:example.invalid",
+          edge: "bottom",
+          offset_px: 0,
+          updated_at_ms: expect.any(Number)
+        }),
+        expect.objectContaining({
+          kind: "anchored",
+          event_id: "$target:example.invalid",
+          edge: "bottom",
+          offset_px: 0,
+          updated_at_ms: expect.any(Number)
+        })
+      );
+    } finally {
+      Element.prototype.scrollIntoView = originalScrollIntoView;
+      rects.mockRestore();
+    }
+  });
+
   it("backfills an empty thread timeline even when the first Core generation is zero", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const threadKey = threadTimelineKey(
@@ -3889,6 +4150,51 @@ describe("TimelineView", () => {
     });
 
     await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(paginateBackwards).not.toHaveBeenCalled();
+  });
+
+  it("does not coverage-backfill during live-edge startup when auto-load is enabled", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const paginateBackwards = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      paginateBackwards
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        autoLoadOlderMessages={true}
+        onReply={vi.fn()}
+      />
+    );
+    const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "clientHeight", { value: 500, configurable: true });
+    Object.defineProperty(timeline, "scrollHeight", { value: 1200, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", { value: 0, writable: true, configurable: true });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$latest", "Latest")]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(700);
+    });
     expect(paginateBackwards).not.toHaveBeenCalled();
   });
 

@@ -264,6 +264,7 @@ pub async fn observe_timeline_viewport(
     last_visible_event_id: Option<String>,
     at_bottom: bool,
     scroll_anchor: Option<koushi_state::TimelineScrollAnchor>,
+    viewport: Option<koushi_state::TimelinePersistedViewport>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<(), String> {
@@ -279,6 +280,7 @@ pub async fn observe_timeline_viewport(
             last_visible_event_id,
             at_bottom,
             scroll_anchor,
+            viewport,
         ),
     )
     .await?;

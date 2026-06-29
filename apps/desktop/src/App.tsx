@@ -134,6 +134,7 @@ import type {
   SettingsPatch,
   StagedUploadCompressionChoice,
   StagedUploadItem,
+  TimelinePersistedViewport,
   TimelineScrollAnchor,
   UploadStagingRequestItem
 } from "./domain/types";
@@ -375,14 +376,16 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
         firstVisibleEventId: string | null,
         lastVisibleEventId: string | null,
         atBottom: boolean,
-        scrollAnchor: TimelineScrollAnchor | null
+        scrollAnchor: TimelineScrollAnchor | null,
+        viewport: TimelinePersistedViewport | null
       ) {
         await invoke("observe_timeline_viewport", {
           roomId,
           firstVisibleEventId,
           lastVisibleEventId,
           atBottom,
-          scrollAnchor
+          scrollAnchor,
+          viewport
         });
       },
       async openAtTimestamp(roomId: string, timestampMs: number) {

@@ -20,6 +20,7 @@ function input(
     suppressPaginationUi: false,
     backfillInFlight: false,
     blockingAnchorWork: false,
+    viewportMode: "anchored",
     ...overrides
   };
 }
@@ -74,5 +75,18 @@ describe("timeline viewport coverage", () => {
         })
       )
     ).toEqual({ kind: "blocked", reason: "automatic-backfill-disabled" });
+  });
+
+  test("blocks viewport-driven backward pagination while live-edge owns startup", () => {
+    expect(
+      decideTimelineViewportCoverage(
+        input({
+          source: "layout-settle",
+          viewportMode: "liveEdge",
+          autoLoadOlderMessages: true,
+          relativeScrollTopPx: 48
+        })
+      )
+    ).toEqual({ kind: "blocked", reason: "live-edge-does-not-backfill" });
   });
 });

@@ -6,6 +6,7 @@ import {
   reduceTimelineViewportMachine,
   timelineViewportCanPersistAnchor,
   timelineViewportCanRequestCoverageBackfill,
+  timelineViewportCoverageMode,
   timelineViewportHasBlockingAnchorWork,
   timelineViewportIsLiveEdge,
   timelineViewportProgrammaticScrollEchoMatches,
@@ -64,6 +65,11 @@ export function useTimelineViewportController() {
     []
   );
 
+  const coverageMode = useCallback(
+    () => timelineViewportCoverageMode(stateRef.current),
+    []
+  );
+
   return {
     current,
     dispatch,
@@ -72,6 +78,7 @@ export function useTimelineViewportController() {
     canPersistAnchor,
     programmaticScrollEchoMatches,
     eventTarget,
-    canRequestCoverageBackfill
+    canRequestCoverageBackfill,
+    coverageMode
   };
 }

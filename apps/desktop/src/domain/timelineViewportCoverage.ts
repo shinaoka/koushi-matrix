@@ -6,8 +6,11 @@ export type TimelineViewportCoverageSource =
   | "programmatic-navigation"
   | "layout-settle";
 
+export type TimelineViewportCoverageMode = "anchored" | "liveEdge" | "targeting";
+
 export type TimelineViewportCoverageInput = {
   source: TimelineViewportCoverageSource;
+  viewportMode: TimelineViewportCoverageMode;
   relativeScrollTopPx: number;
   clientHeightPx: number;
   loadedContentHeightPx: number;
@@ -30,12 +33,16 @@ export type TimelineViewportCoverageDecision =
         | "blocking-anchor-work"
         | "backfill-in-flight"
         | "backward-pagination-unavailable"
-        | "automatic-backfill-disabled";
+        | "automatic-backfill-disabled"
+        | "live-edge-does-not-backfill";
     };
 
 export function decideTimelineViewportCoverage(
   input: TimelineViewportCoverageInput
 ): TimelineViewportCoverageDecision {
+  if (input.viewportMode === "liveEdge") {
+    return { kind: "blocked", reason: "live-edge-does-not-backfill" };
+  }
   if (input.suppressPaginationUi) {
     return { kind: "blocked", reason: "pagination-ui-suppressed" };
   }
