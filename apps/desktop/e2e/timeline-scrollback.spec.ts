@@ -939,6 +939,7 @@ test("active scroll inside mounted overscan does not recompose the virtual windo
   const diagnostics = await page.evaluate(() => window.__harness.scrollDiagnostics());
   expect(diagnostics).not.toBeNull();
   expect(diagnostics?.scrollFrames ?? 0).toBeGreaterThanOrEqual(1);
+  expect(diagnostics?.latestFrame?.userInputPending).toBe(true);
   expect(diagnostics?.rangeCommits ?? 0).toBe(0);
   expect(diagnostics?.heightModelCommits ?? 0).toBe(0);
   expect(diagnostics?.renderCommits ?? 0).toBeLessThanOrEqual(1);

@@ -409,6 +409,99 @@ describe("TimelineView", () => {
     expect(JSON.stringify(latest)).not.toContain("$item");
   });
 
+  it("drops pending scroll frame diagnostics after the timeline key changes", async () => {
+    const onScrollDiagnosticsChange = vi.fn();
+    let listener: ((payload: CoreEventPayload) => void) | null = null;
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      nextFrameId += 1;
+      frames.set(nextFrameId, callback);
+      return nextFrameId;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frameId) => {
+      frames.delete(frameId);
+    });
+    const flushFrames = () => {
+      const queued = [...frames.entries()];
+      frames.clear();
+      for (const [, callback] of queued) {
+        callback(0);
+      }
+    };
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        listener = nextListener;
+        return () => undefined;
+      }
+    });
+    const threadKey = threadTimelineKey(
+      "@alice:example.invalid",
+      "!room:example.invalid",
+      "$root:example.invalid"
+    );
+    const renderView = (timelineKey = KEY) => (
+      <TimelineView
+        timelineKey={timelineKey}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={() => undefined}
+        onScrollDiagnosticsChange={onScrollDiagnosticsChange}
+      />
+    );
+
+    const { rerender } = render(renderView());
+    const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "clientHeight", { value: 500, configurable: true });
+    Object.defineProperty(timeline, "scrollHeight", { value: 700 * 72, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 20_000,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      listener?.({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: Array.from({ length: 700 }, (_, index) =>
+              message(`$item${index}`, `message ${index}`)
+            )
+          }
+        }
+      });
+    });
+
+    await waitFor(() => expect(timeline.getAttribute("data-virtualized")).toBe("true"));
+    act(() => {
+      flushFrames();
+    });
+    onScrollDiagnosticsChange.mockClear();
+
+    act(() => {
+      fireEvent.wheel(timeline, { deltaY: 4 });
+      timeline.scrollTop += 4;
+      fireEvent.scroll(timeline);
+    });
+    expect(frames.size).toBe(1);
+
+    act(() => {
+      rerender(renderView(threadKey));
+    });
+    act(() => {
+      flushFrames();
+    });
+
+    const activeFrames = onScrollDiagnosticsChange.mock.calls
+      .map(([diagnostics]) => diagnostics.latestFrame)
+      .filter((frame) => frame?.scrollActivity === "active");
+    expect(activeFrames).toEqual([]);
+  });
+
   it("does not re-emit scroll diagnostics from parent state commits", async () => {
     const onScrollDiagnosticsChange = vi.fn();
 

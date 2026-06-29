@@ -1814,6 +1814,7 @@ export const TimelineView = memo(function TimelineView({
   const viewportIntentRef = useRef<ViewportIntent>({ kind: "free-scroll" });
   /** Set by wheel/touch/keyboard/scrollbar intent; consumed by the next scroll event. */
   const userScrollInputPendingRef = useRef(false);
+  const pendingScrollFrameUserInputRef = useRef(false);
   /** Coalesces ResizeObserver-driven live-edge corrections. */
   const viewportIntentResizeFrameRef = useRef<number | null>(null);
   /** Pagination request currently in flight (suppresses duplicates). */
@@ -1840,6 +1841,8 @@ export const TimelineView = memo(function TimelineView({
   const timelineKeyRef = useRef(timelineKey);
   timelineKeyRef.current = timelineKey;
   const timelineKeyHash = JSON.stringify(timelineKey);
+  const timelineKeyHashRef = useRef(timelineKeyHash);
+  timelineKeyHashRef.current = timelineKeyHash;
   const sessionRoomScrollAnchorRef = useRef<TimelineScrollAnchor | null>(null);
   const roomTimelineRoomId = "Room" in timelineKey.kind ? timelineKey.kind.Room.room_id : null;
   const emitDiagnosticLog = useCallback(
@@ -1862,6 +1865,13 @@ export const TimelineView = memo(function TimelineView({
     },
     [emitScrollDiagnostics]
   );
+  const cancelPendingScrollFrame = useCallback(() => {
+    if (pendingScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(pendingScrollFrameRef.current);
+      pendingScrollFrameRef.current = null;
+    }
+    pendingScrollFrameUserInputRef.current = false;
+  }, []);
   const readViewportMetrics = useCallback((): TimelineViewportMetrics => {
     const container = containerRef.current;
     if (!container) {
@@ -2084,23 +2094,6 @@ export const TimelineView = memo(function TimelineView({
       }
       emitTimelineEventDiagnosticLog(event, eventKey, emitDiagnosticLog);
       if ("InitialItems" in event) {
-        relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
-          event.InitialItems.items,
-          profileUsersRef.current
-        );
-      } else if ("ItemsUpdated" in event) {
-        const relevantAvatarMxcs = new Set(relevantAvatarMxcsRef.current);
-        for (const diff of event.ItemsUpdated.diffs) {
-          for (const mxc of timelineAvatarMxcsForItems(
-            timelineDiffItems(diff),
-            profileUsersRef.current
-          )) {
-            relevantAvatarMxcs.add(mxc);
-          }
-        }
-        relevantAvatarMxcsRef.current = relevantAvatarMxcs;
-      }
-      if ("InitialItems" in event) {
         recordTimelineInitialItems(event.InitialItems.items.length);
       }
       if (timelineEventCompletesBackfillRequest(event)) {
@@ -2176,15 +2169,13 @@ export const TimelineView = memo(function TimelineView({
 
   useEffect(
     () => () => {
-      if (pendingScrollFrameRef.current !== null) {
-        window.cancelAnimationFrame(pendingScrollFrameRef.current);
-        pendingScrollFrameRef.current = null;
-      }
+      cancelPendingScrollFrame();
     },
-    []
+    [cancelPendingScrollFrame]
   );
 
   useLayoutEffect(() => {
+    cancelPendingScrollFrame();
     const sessionViewport = timelineViewportSessionMemory.get(timelineKeyHash) ?? null;
     sessionRoomScrollAnchorRef.current =
       sessionViewport?.mode === "anchor" ? sessionViewport.anchor : null;
@@ -2197,8 +2188,9 @@ export const TimelineView = memo(function TimelineView({
     viewportIntentRef.current =
       sessionViewport?.mode === "anchor" ? { kind: "free-scroll" } : { kind: "live-edge" };
     userScrollInputPendingRef.current = false;
+    pendingScrollFrameUserInputRef.current = false;
     lastPersistedViewportAnchorSignatureRef.current = null;
-  }, [timelineKeyHash]);
+  }, [cancelPendingScrollFrame, timelineKeyHash]);
 
   useEffect(() => {
     const sessionViewport = timelineViewportSessionMemory.get(timelineKeyHash) ?? null;
@@ -2223,6 +2215,7 @@ export const TimelineView = memo(function TimelineView({
     viewportIntentRef.current =
       sessionViewport?.mode === "anchor" ? { kind: "free-scroll" } : { kind: "live-edge" };
     userScrollInputPendingRef.current = false;
+    pendingScrollFrameUserInputRef.current = false;
     lastPersistedViewportAnchorSignatureRef.current = null;
     restoredRoomScrollAnchorSignatureRef.current = null;
     if (viewportIntentResizeFrameRef.current !== null) {
@@ -2241,6 +2234,7 @@ export const TimelineView = memo(function TimelineView({
       suppressScrollAnchorCaptureRef.current = false;
       viewportIntentRef.current = { kind: "free-scroll" };
       userScrollInputPendingRef.current = false;
+      pendingScrollFrameUserInputRef.current = false;
       lastPersistedViewportAnchorSignatureRef.current = null;
       if (viewportIntentResizeFrameRef.current !== null) {
         window.cancelAnimationFrame(viewportIntentResizeFrameRef.current);
@@ -3010,6 +3004,8 @@ export const TimelineView = memo(function TimelineView({
       Math.abs(container.scrollTop - sig.scrollTop) <= SCROLL_EDGE_TOLERANCE_PX &&
       Math.abs(container.scrollHeight - sig.scrollHeight) <= SCROLL_EDGE_TOLERANCE_PX;
     const isUserDrivenScroll = userScrollInputPendingRef.current && !isProgrammaticEcho;
+    pendingScrollFrameUserInputRef.current =
+      pendingScrollFrameUserInputRef.current || isUserDrivenScroll;
     if (!isProgrammaticEcho && container) {
       const atBottom = isScrolledToBottom(container);
       if (isUserDrivenScroll) {
@@ -3032,8 +3028,14 @@ export const TimelineView = memo(function TimelineView({
       }
     }
     if (pendingScrollFrameRef.current === null) {
+      const frameTimelineKeyHash = timelineKeyHash;
       pendingScrollFrameRef.current = window.requestAnimationFrame(() => {
         pendingScrollFrameRef.current = null;
+        const userInputPending = pendingScrollFrameUserInputRef.current;
+        pendingScrollFrameUserInputRef.current = false;
+        if (timelineKeyHashRef.current !== frameTimelineKeyHash) {
+          return;
+        }
         const metrics = readViewportMetrics();
         const nextRange = commitVirtualRangeForMetrics(metrics);
         updateScrollDiagnostics((current) =>
@@ -3041,7 +3043,7 @@ export const TimelineView = memo(function TimelineView({
             scrollActivity: "active",
             viewportIntent:
               viewportIntentRef.current.kind === "live-edge" ? "liveEdge" : "freeScroll",
-            userInputPending: userScrollInputPendingRef.current,
+            userInputPending,
             virtualized: nextRange.virtualized,
             startIndex: nextRange.startIndex,
             endIndex: nextRange.endIndex,
