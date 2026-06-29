@@ -581,6 +581,10 @@ function scheduleTimelineFrame(callback: FrameRequestCallback): TimelineSchedule
       return;
     }
     cancelled = true;
+    if (frameId !== null && typeof window.cancelAnimationFrame === "function") {
+      window.cancelAnimationFrame(frameId);
+      frameId = null;
+    }
     if (timeoutId !== null) {
       window.clearTimeout(timeoutId);
       timeoutId = null;
