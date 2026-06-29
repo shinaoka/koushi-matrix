@@ -1,6 +1,16 @@
 # Timeline Viewport Determinism Design
 
-Status: draft for review. Date: 2026-06-29.
+Status: superseded. See `2026-06-29-timeline-projection-viewport-redesign.md`.
+Date: 2026-06-29.
+
+## Superseded
+
+This document is superseded by
+[2026-06-29-timeline-projection-viewport-redesign.md](2026-06-29-timeline-projection-viewport-redesign.md),
+which replaces the legacy architecture entirely. The redesign removes all
+compatibility mirrors, fallback paths, and migration shims. No legacy
+`room_scroll_anchors` mirror or fallback is retained. See the redesign doc for
+the authoritative compatibility-free architecture and implementation slices.
 
 ## Goal
 
@@ -63,9 +73,9 @@ is that viewport intent is under-modeled and scroll ownership is distributed.
 ## Viewport Model
 
 Replace the event-only persisted shape with an explicit mode. The production
-snapshot carries `room_viewports` as the new source of truth. During the
-transition, legacy `room_scroll_anchors` remains as a compatibility mirror for
-anchored viewports and as a fallback when loading older navigation state.
+snapshot carries `room_viewports` as the source of truth. Legacy
+`room_scroll_anchors` is deleted — no compatibility mirror or fallback is
+retained.
 
 ```ts
 type PersistedTimelineViewport =
@@ -415,21 +425,20 @@ paths, homeserver URLs, or SDK error bodies.
 
 ## Migration
 
-On schema change:
+Legacy `room_scroll_anchors` is deleted. No compatibility mirror, fallback path,
+or migration shim is retained.
 
-- Add `room_viewports: Record<roomId, PersistedTimelineViewport>` to navigation
-  state.
-- Initialize rooms without a stored viewport as `LiveEdge`.
-- Treat an existing legacy `room_scroll_anchors[room_id]` entry as an
-  `Anchored` fallback only when no `room_viewports[room_id]` exists.
-- Persist `LiveEdge` by writing `room_viewports[room_id] = LiveEdge` and
-  clearing the legacy anchor for that room.
-- Persist `Anchored` by writing `room_viewports[room_id] = Anchored` and a
-  legacy `room_scroll_anchors` mirror for compatibility.
+New schema:
 
-This avoids converting ambiguous old anchors into live-edge state while still
-letting an explicit `LiveEdge` overwrite stale anchors after the first
-user-settled bottom/latest observation.
+- `room_viewports: Record<roomId, PersistedTimelineViewport>` is the sole
+  persisted viewport state.
+- Rooms without a stored viewport initialize as `LiveEdge`.
+- Old `room_scroll_anchors` entries are ignored on first read of the new state
+  shape and are not migrated.
+
+See the implementation slices in
+[2026-06-29-timeline-projection-viewport-redesign.md](2026-06-29-timeline-projection-viewport-redesign.md)
+for the deletion and replacement approach.
 
 ## Out Of Scope
 

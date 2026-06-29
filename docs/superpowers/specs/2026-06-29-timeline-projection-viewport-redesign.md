@@ -1,7 +1,7 @@
 # Timeline Projection and Viewport Redesign
 
 Date: 2026-06-29
-Status: design ready for implementation planning
+Status: authoritative — replaces all legacy viewport/scroll code paths
 
 ## Context
 
@@ -42,6 +42,31 @@ pipeline.
 - Do not solve every reaction UI enhancement in this pass. The immediate goal is
   delivery correctness for canonical reaction aggregates.
 - Do not add more ad hoc flags to `TimelineView.tsx` to mask current symptoms.
+
+## No Compatibility Layer
+
+This design replaces the old timeline/viewport architecture rather than
+extending or mirroring it. Every legacy code path listed below is deleted — no
+compatibility mirror, fallback, or migration shim is retained:
+
+- `room_scroll_anchors` persisted state: deleted. `room_viewports` typed mode
+  model is the sole persisted viewport state.
+- Direct `scrollTop` writes outside the controller: deleted. All programmatic
+  scroll writes pass through one tested controller.
+- Pixel-based backfill request keys: deleted. Range/coverage-based
+  deterministic dedup replaces them.
+- View-local `TimelineStoreState` reducer ownership: deleted. App-level
+  canonical store is the single source of truth.
+- Coordinate-equality echo detection and suppression window: deleted.
+  Token-based programmatic scroll ownership replaces them.
+
+Old persisted `room_scroll_anchors` entries are ignored on first read of the
+new state shape. Implementation slices below annotate each deletion explicitly.
+
+This document supersedes
+[2026-06-29-timeline-viewport-determinism-design.md](2026-06-29-timeline-viewport-determinism-design.md),
+whose mode model and startup algorithm are absorbed here without the
+compatibility mirror/fallback approach.
 
 ## Architecture
 
@@ -119,6 +144,49 @@ The controller exposes commands such as:
 - report visible range for persistence and coverage.
 
 Components and effects do not write `scrollTop` directly.
+
+### Layer D: Coverage and Backfill Planner
+
+The coverage and backfill planner is a separate boundary from the viewport
+controller. It decides data availability from the visible range:
+
+- emits that a desired range is not renderable from loaded data;
+- requests older or newer data based on range buckets and coverage mode;
+- uses deterministic dedup keyed by timeline generation, loaded content
+  signature, visible range bucket, and coverage mode — not by pixel scroll
+  position;
+- LiveEdge must not suppress required coverage loading, but must not
+  materialize old roots just because a thread summary references them;
+- requests are ranged and coarse. The planner never writes `scrollTop`
+  directly; prepended results apply through the layout mutation protocol.
+
+This separates "do I have data for the visible range" from "where in the
+visible range is the user reading."
+
+### Layer E: Async Enrichment
+
+Several render-time dependencies have async resolution (network, decode, or
+crypto):
+
+- preview link metadata;
+- image/video decode or natural-size reveal;
+- avatar thumbnails;
+- thread summary text for newly referenced threads.
+
+These must not block the first paint of canonical timeline items.
+
+Protocol:
+1. Canonical data arrives synchronously from Rust DTO diffs.
+2. React renders initial rows with height-stable placeholders for unresolved
+   enrichment.
+3. As each async dependency resolves, it updates the canonical or presentation
+   layer through the normal state flow (Rust DTO for canonical fields, or
+   component-local presentation state for visual-only expansion).
+4. Height changes from enrichment resolution go through the layout mutation
+   protocol rather than ad hoc `scrollTop` correction.
+
+This keeps first-paint fast, prevents enrichment timing from affecting
+viewport determinism, and ensures compensation is centralized.
 
 ## Viewport State Model
 
@@ -272,8 +340,9 @@ This directly addresses the current mid-history symptom: while the user is
 resting at an arbitrary timeline position, preview expansion or similar state
 changes must not continuously move the first or bottom visible message.
 
-## Coverage and Backfill
+## Coverage and Backfill (Elaboration on Layer D)
 
+This section elaborates on Layer D's contract (see Architecture above).
 Backfill is data coverage, not viewport state.
 
 The viewport controller may emit that a desired visible range is not renderable
@@ -294,6 +363,10 @@ materialize the root.
 
 When older events are prepended, apply them through the layout mutation protocol
 so the visible content does not move.
+
+Delete pixel-based backfill signatures and old restore paths that request
+backfill by exact `scrollTop` position or by fallback anchor materialization
+for unrequested thread roots.
 
 ## Thread Summary and Root Policy
 
@@ -422,7 +495,41 @@ Use a local Matrix homeserver where practical.
   move;
 - muted/unread/activity updates do not affect viewport controller state.
 
+### Local Matrix Homeserver QA
+
+Add scenarios to `scripts/desktop-headless-local-qa.mjs` and the Rust QA binary
+for the `qa:headless-local` path:
+
+- **deterministic restart**: same persisted `LiveEdge` and `Anchored` viewport
+  state must produce identical visible event range and scroll command sequence
+  across repeated runs. Record private-data-safe tokens: viewport mode, command
+  kinds and counts, visible range ordinal hashes.
+- **visible-range coverage backfill**: scroll to mid-history anchor; backfill
+  requests use range/coverage keys (not pixel bands); visible anchor does not
+  drift after older events are prepended.
+- **latest thread reply near live edge**: with `threadRootOrder = latestReply`,
+  a recent reply to an old root appears near the live edge without viewport-
+  driven backward pagination or anchor materialization. `LiveEdge` restart
+  does not materialize the old root unless the user explicitly opens the thread
+  or focused context.
+- **preview/image expansion during active scroll**: while `scrollActivity =
+  Active`, deferred visual expansion does not move the viewport. On idle flush,
+  the layout transaction compensates without jitter.
+- **reaction same-key update**: two users reacting with the same key on the
+  same event produces a canonical item replacement that increments
+  `total_count` and flips `own_reaction`. Verified at Rust DTO boundary and
+  in full-timeline QA.
+- **unread/activity source consistency**: `ActivityProjection` Unread membership
+  comes from `RoomSummary` unread/highlight/marked-unread, not from observed
+  timeline rows. Activity unread and sidebar unread count agree when no timeline
+  row exists for a room.
+- **all diagnostics are private-data-free**: no room IDs, event IDs, user IDs,
+  message bodies, or raw SDK errors in diagnostics, QA tokens, or test output.
+
 ## Implementation Slices
+
+Each slice annotates legacy code paths to delete. No old path is retained as a
+compatibility branch.
 
 ### Slice 1: Scroll Ownership Foundation
 
@@ -434,6 +541,8 @@ This is the first safe task for DS V4 Flash.
 - Delete coordinate-equality echo detection.
 - Delete the overlapping scroll-capture suppression window if token ownership
   makes it redundant.
+- Delete any component or effect that writes `scrollTop` directly without going
+  through the controller (check `TimelineView.tsx`, hooks, and effects).
 - Add invariant tests preventing direct scroll writes outside the controller.
 
 No transaction protocol, no backfill rewrite, no reaction fix in this slice.
@@ -444,6 +553,8 @@ No transaction protocol, no backfill rewrite, no reaction fix in this slice.
 - Add `overflow-anchor: none`.
 - Handle preview/image/receipt/reaction/thread-summary height changes through
   the protocol.
+- Delete old per-update scroll compensation that bypasses the transaction
+  protocol (e.g., ad hoc `scrollBy` calls in resize/intersection observers).
 - Add Playwright or measurement-port tests for anchor stability.
 
 ### Slice 3: Restore and Persistence Cleanup
@@ -452,24 +563,36 @@ No transaction protocol, no backfill rewrite, no reaction fix in this slice.
 - Remove wall-clock timestamps from restore identity.
 - Flush viewport on room switch and quit.
 - Make fallback deterministic when an anchor cannot be materialized.
+- Delete legacy `room_scroll_anchors` persistence, compatibility mirror code,
+  and any fallback migration path that reads old anchors.
 
 ### Slice 4: Coverage and Backfill Boundary
 
 - Move backfill state out of viewport controller.
 - Use range-based coverage requests and deterministic dedup.
 - Ensure prepends use transaction compensation.
+- Delete pixel-based backfill request key computation from the viewport
+  controller.
+- Delete any React effect or observer that requests backfill by `scrollTop`
+  band or by unloaded fallback anchor.
 
 ### Slice 5: Canonical Reaction Delivery
 
 - Add RED test at SDK/Rust DTO boundary for same-key own reaction.
 - Fix the delivery layer identified by that test.
 - Add local echo success/failure coverage.
+- Delete any component-local reaction count state or optimistic update that
+  bypasses canonical item store delivery.
 
 ### Slice 6: Thread Projection Cleanup
 
 - Represent thread ordering policy in canonical projection/render sort keys.
 - Ensure missing roots use stable placeholders.
 - Materialize roots only on explicit context/thread operations.
+- Remove any code path in the viewport controller or effects that triggers
+  viewport-driven materialization for unloaded thread roots.
+- Delete fallback backfill paths that were designed to support thread-root
+  loading as a viewport concern.
 
 ## Acceptance Criteria
 
