@@ -19,48 +19,6 @@ pub struct TimelineScrollAnchor {
     pub updated_at_ms: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind")]
-pub enum TimelinePersistedViewport {
-    #[serde(rename = "liveEdge")]
-    LiveEdge { updated_at_ms: u64 },
-    #[serde(rename = "anchored")]
-    Anchored {
-        event_id: String,
-        #[serde(default)]
-        edge: TimelineScrollAnchorEdge,
-        offset_px: i32,
-        updated_at_ms: u64,
-    },
-}
-
-impl TimelinePersistedViewport {
-    pub fn updated_at_ms(&self) -> u64 {
-        match self {
-            Self::LiveEdge { updated_at_ms } | Self::Anchored { updated_at_ms, .. } => {
-                *updated_at_ms
-            }
-        }
-    }
-
-    pub fn as_scroll_anchor(&self) -> Option<TimelineScrollAnchor> {
-        match self {
-            Self::LiveEdge { .. } => None,
-            Self::Anchored {
-                event_id,
-                edge,
-                offset_px,
-                updated_at_ms,
-            } => Some(TimelineScrollAnchor {
-                event_id: event_id.clone(),
-                edge: *edge,
-                offset_px: *offset_px,
-                updated_at_ms: *updated_at_ms,
-            }),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NavigationState {
     pub active_space_id: Option<String>,
@@ -71,8 +29,6 @@ pub struct NavigationState {
     pub last_room_by_space_id: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub room_scroll_anchors: BTreeMap<String, TimelineScrollAnchor>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub room_viewports: BTreeMap<String, TimelinePersistedViewport>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

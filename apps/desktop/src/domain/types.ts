@@ -119,9 +119,6 @@ export interface SettingsPatch {
 // Rust ThreadListOrder is #[serde(tag = "kind", rename_all = "camelCase")].
 export type ThreadListOrder = { kind: "latestReply" } | { kind: "rootChronology" };
 
-// Rust TimelineThreadRootOrder is #[serde(tag = "kind", rename_all = "camelCase")].
-export type TimelineThreadRootOrder = { kind: "latestReply" } | { kind: "rootEvent" };
-
 // Rust RoomListSort is #[serde(tag = "kind", rename_all = "camelCase")].
 export type RoomListSort =
   | { kind: "activity" }
@@ -206,7 +203,6 @@ export interface MediaSettings {
 
 export interface TimelineSettings {
   auto_load_older_messages: boolean;
-  thread_root_order: TimelineThreadRootOrder;
 }
 
 export type ImageUploadCompressionMode = "always" | "ask" | "never";
@@ -450,7 +446,6 @@ export interface NavigationState {
   space_order?: string[];
   last_room_by_space_id?: Record<string, string>;
   room_scroll_anchors?: Record<string, TimelineScrollAnchor>;
-  room_viewports?: Record<string, TimelinePersistedViewport>;
 }
 
 export interface TimelineScrollAnchor {
@@ -459,16 +454,6 @@ export interface TimelineScrollAnchor {
   offset_px: number;
   updated_at_ms: number;
 }
-
-export type TimelinePersistedViewport =
-  | { kind: "liveEdge"; updated_at_ms: number }
-  | {
-      kind: "anchored";
-      event_id: string;
-      edge?: "top" | "bottom";
-      offset_px: number;
-      updated_at_ms: number;
-    };
 
 export interface ProfileState {
   own: OwnProfile;

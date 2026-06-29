@@ -595,10 +595,6 @@ pub enum AppAction {
         room_id: String,
         anchor: TimelineScrollAnchor,
     },
-    TimelineViewportUpdated {
-        room_id: String,
-        viewport: crate::state::TimelinePersistedViewport,
-    },
     SelectSpace {
         space_id: Option<String>,
     },

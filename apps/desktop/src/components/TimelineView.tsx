@@ -56,7 +56,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type Dispatch,
   type SetStateAction
 } from "react";
@@ -82,7 +81,7 @@ import type {
   PaginationState,
   TimelineEvent,
   TimelineDiff,
-  TimelineAnchorMaterializeStatus,
+  TimelineAnchorRestoreStatus,
   TimelineItem,
   TimelineKey,
   TimelineNavigationSnapshot,
@@ -97,10 +96,6 @@ import {
   recordTimelineResync
 } from "../domain/timelineTransportStats";
 import {
-  type TimelineViewportTarget
-} from "../domain/timelineViewportMachine";
-import { decideTimelineViewportCoverage, type TimelineViewportCoverageSource } from "../domain/timelineViewportCoverage";
-import {
   timelineItemDomId,
   timelineKeyEquals
 } from "../domain/coreEvents";
@@ -113,9 +108,7 @@ import {
   getMediaUploadProgress,
   getKeyState,
   getPaginationState,
-  projectTimelineItemsForDisplay,
-  timelineStoreKeyId,
-  type TimelineKeyState,
+  shouldSuppressAutoBackfill,
   type TimelineStoreState
 } from "../domain/timelineStore";
 import { useTimelineStoreContext } from "./timelineStoreContext";
@@ -130,18 +123,15 @@ import {
 } from "../domain/composerKeyEvents";
 import type {
   LiveReadReceipt,
+  LiveSignalsState,
   PresenceKind,
   ResolveComposerKeyAction,
-  RoomLiveSignals,
-  TimelineMediaDownloadState,
-  TimelinePersistedViewport,
   TimelineScrollAnchor,
-  TimelineThreadRootOrder,
+  TimelineMediaDownloadState,
   UserProfile
 } from "../domain/types";
 import type { TimelineLinkRange } from "../domain/coreEvents";
 import type { TimelineForwardDestination } from "../domain/projectionTypes";
-import { useTimelineViewportController } from "./useTimelineViewportController";
 
 export type { TimelineForwardDestination } from "../domain/projectionTypes";
 
@@ -157,7 +147,7 @@ export interface TimelineTransport {
   /** Invoke a backward-pagination command for this timeline key. */
   paginateBackwards(timelineKey: TimelineKey): Promise<void>;
   /** Ask the live room timeline actor to backfill until the anchor event appears. */
-  materializeTimelineAnchor?(
+  restoreTimelineAnchor?(
     timelineKey: TimelineKey,
     eventId: string,
     maxBatches: number,
@@ -213,10 +203,10 @@ export interface TimelineTransport {
     roomId: string,
     firstVisibleEventId: string | null,
     lastVisibleEventId: string | null,
-    atBottom: boolean,
-    scrollAnchor: TimelineScrollAnchor | null,
-    viewport: TimelinePersistedViewport | null
+    atBottom: boolean
   ): Promise<void>;
+  /** Persist the current room-local read/scroll anchor. */
+  updateScrollAnchor?(roomId: string, anchor: TimelineScrollAnchor): Promise<void>;
   /** Resolve a timestamp through Rust and open focused context. */
   openAtTimestamp?(roomId: string, timestampMs: number): Promise<void>;
 }
@@ -281,11 +271,7 @@ function captureAnchor(container: HTMLElement): ScrollAnchor | null {
 }
 
 /** Restore the anchor by adjusting scrollTop; true if the anchor was found. */
-function restoreAnchor(
-  container: HTMLElement,
-  anchor: ScrollAnchor,
-  scrollBy: (container: HTMLElement, delta: number) => number | null
-): boolean {
+function restoreAnchor(container: HTMLElement, anchor: ScrollAnchor): boolean {
   const node = container.querySelector<HTMLElement>(
     `[data-item-id="${cssEscape(anchor.itemId)}"]`
   );
@@ -294,7 +280,7 @@ function restoreAnchor(
   }
   const containerTop = container.getBoundingClientRect().top;
   const currentOffset = node.getBoundingClientRect().top - containerTop;
-  scrollBy(container, currentOffset - anchor.offsetTop);
+  container.scrollTop += currentOffset - anchor.offsetTop;
   return true;
 }
 
@@ -329,17 +315,13 @@ function captureRoomScrollAnchor(container: HTMLElement): CapturedTimelineScroll
   return captured;
 }
 
-function restoreRoomScrollAnchor(
-  container: HTMLElement,
-  anchor: TimelineScrollAnchor,
-  scrollBy: (container: HTMLElement, delta: number) => number | null
-): boolean {
+function restoreRoomScrollAnchor(container: HTMLElement, anchor: TimelineScrollAnchor): boolean {
   const node = findRoomScrollAnchorNode(container, anchor);
   if (!node) {
     return false;
   }
   const currentOffset = currentRoomScrollAnchorOffset(container, node, anchor);
-  scrollBy(container, currentOffset - anchor.offset_px);
+  container.scrollTop += currentOffset - anchor.offset_px;
   return true;
 }
 
@@ -391,42 +373,22 @@ function roomScrollAnchorSignature(roomId: string, anchor: TimelineScrollAnchor)
   ].join("\u0000");
 }
 
-function timelineScrollAnchorFromPersistedViewport(
-  viewport: TimelinePersistedViewport | null | undefined
-): TimelineScrollAnchor | null {
-  if (!viewport || viewport.kind !== "anchored") {
-    return null;
-  }
-  return {
-    event_id: viewport.event_id,
-    edge: viewport.edge,
-    offset_px: viewport.offset_px,
-    updated_at_ms: viewport.updated_at_ms
-  };
-}
-
-function persistedViewportStartupMode(
-  viewport: TimelinePersistedViewport | null | undefined,
-  anchor: TimelineScrollAnchor | null
-): "anchored" | "live-edge" {
-  if (viewport?.kind === "liveEdge") {
-    return "live-edge";
-  }
-  return anchor ? "anchored" : "live-edge";
+function roomScrollAnchorStableSignature(
+  roomId: string,
+  anchor: Pick<TimelineScrollAnchor, "event_id" | "edge" | "offset_px">
+): string {
+  return [
+    roomId,
+    anchor.event_id,
+    anchor.edge ?? "top",
+    anchor.offset_px
+  ].join("\u0000");
 }
 
 function timelineContainsEventId(items: readonly TimelineItem[], eventId: string): boolean {
   return items.some(
     (item) => "Event" in item.id && item.id.Event.event_id === eventId
   );
-}
-
-function timelineCoverageContentSignature(items: readonly TimelineItem[]): string {
-  const firstItem = items[0];
-  const lastItem = items.length > 0 ? items[items.length - 1] : undefined;
-  const first = firstItem ? timelineItemDomId(firstItem.id) : "";
-  const last = lastItem ? timelineItemDomId(lastItem.id) : "";
-  return [items.length, first, last].join("\u0000");
 }
 
 function visibleEventIds(container: HTMLElement): {
@@ -459,11 +421,8 @@ function isScrolledToBottom(container: HTMLElement): boolean {
   );
 }
 
-function scrollContainerToBottom(
-  container: HTMLElement,
-  scrollTo: (container: HTMLElement, scrollTop: number) => number | null
-): void {
-  scrollTo(container, Math.max(0, container.scrollHeight - container.clientHeight));
+function scrollContainerToBottom(container: HTMLElement): void {
+  container.scrollTop = container.scrollHeight - container.clientHeight;
 }
 
 function timelineKeyShouldReleaseViewportIntent(event: KeyboardEvent<HTMLDivElement>): boolean {
@@ -524,10 +483,12 @@ function cssEscape(value: string): string {
   return value.replace(/["\\]/g, "\\$&");
 }
 
-const LIVE_ROOM_ANCHOR_MATERIALIZE_MAX_BATCHES = 6;
-const LIVE_ROOM_ANCHOR_MATERIALIZE_EVENT_COUNT = 100;
+/** Distance (px) from the top edge that triggers automatic backfill. */
+const AUTO_BACKFILL_THRESHOLD_PX = 80;
+const AUTO_BACKFILL_PREFETCH_ITEMS = 100;
+const LIVE_ROOM_ANCHOR_RESTORE_MAX_BATCHES = 6;
+const LIVE_ROOM_ANCHOR_RESTORE_EVENT_COUNT = 100;
 const SCROLL_EDGE_TOLERANCE_PX = 2;
-const TIMELINE_SCROLL_ACTIVITY_IDLE_DELAY_MS = 180;
 const TIMELINE_VIRTUALIZATION_THRESHOLD = 600;
 const TIMELINE_VIRTUAL_OVERSCAN_ITEMS = 60;
 const TIMELINE_ESTIMATED_ITEM_HEIGHT_PX = 72;
@@ -537,7 +498,6 @@ const REACTION_CHOICES = ["👍", "🎉", "❤️", "😂", "👀"] as const;
 
 const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "noop";
 const ignoreSendQueueAction = () => undefined;
-const DEFAULT_THREAD_ROOT_ORDER: TimelineThreadRootOrder = { kind: "latestReply" };
 
 type TimelineMentionToken = {
   token: string;
@@ -555,6 +515,8 @@ type TimelineViewportMetrics = {
   clientHeight: number;
   listOffsetTop: number;
 };
+
+type ViewportIntent = { kind: "free-scroll" } | { kind: "live-edge" };
 
 type TimelineHeightModel = {
   fallbackHeight: number;
@@ -1641,33 +1603,6 @@ export interface TimelineDiagnostics {
 
 export type TimelineDiagnosticLogEntry = DiagnosticLogEntry;
 
-const EMPTY_SCOPED_TIMELINE_STORE = createTimelineStore();
-
-function subscribeNoop(_listener: () => void): () => void {
-  return () => undefined;
-}
-
-function useTimelineContextKeyState(
-  context: ReturnType<typeof useTimelineStoreContext>,
-  keyId: string
-): TimelineKeyState | undefined {
-  return useSyncExternalStore(
-    context?.subscribe ?? subscribeNoop,
-    () => context?.getKeyStateById(keyId),
-    () => context?.getKeyStateById(keyId)
-  );
-}
-
-function scopedTimelineStore(
-  keyId: string,
-  keyState: TimelineKeyState | undefined
-): TimelineStoreState {
-  if (!keyState) {
-    return EMPTY_SCOPED_TIMELINE_STORE;
-  }
-  return { keys: new Map([[keyId, keyState]]) };
-}
-
 export const TimelineView = memo(function TimelineView({
   timelineKey,
   roomId,
@@ -1675,8 +1610,7 @@ export const TimelineView = memo(function TimelineView({
   onReply,
   onOpenThread = () => undefined,
   resolveComposerKeyAction = ignoreComposerKeyAction,
-  roomSignals,
-  presenceByUserId,
+  liveSignals,
   profileUsers = {},
   pinnedEventIds = [],
   forwardDestinations = [],
@@ -1686,13 +1620,10 @@ export const TimelineView = memo(function TimelineView({
   ignoredUserIds = [],
   suppressPaginationUi = false,
   autoLoadOlderMessages = false,
-  threadRootOrder = DEFAULT_THREAD_ROOT_ORDER,
   codeBlockWrap = true,
   searchQuery = "",
   mediaDownloads = {},
-  roomViewport = null,
   roomScrollAnchor = null,
-  latestJumpRequest = 0,
   enableAvatarThumbnailDownloads = AVATAR_THUMBNAIL_DOWNLOADS_ENABLED,
   onDiagnosticsChange,
   onDiagnosticLogEntry,
@@ -1706,8 +1637,7 @@ export const TimelineView = memo(function TimelineView({
   onReply: TimelineRowActionHandlers["onReply"];
   onOpenThread?: TimelineRowActionHandlers["onOpenThread"];
   resolveComposerKeyAction?: ResolveComposerKeyAction;
-  roomSignals?: RoomLiveSignals | null;
-  presenceByUserId?: Record<string, PresenceKind>;
+  liveSignals?: LiveSignalsState;
   profileUsers?: Record<string, UserProfile>;
   pinnedEventIds?: readonly string[];
   forwardDestinations?: readonly TimelineForwardDestination[];
@@ -1724,13 +1654,10 @@ export const TimelineView = memo(function TimelineView({
   ignoredUserIds?: string[];
   suppressPaginationUi?: boolean;
   autoLoadOlderMessages?: boolean;
-  threadRootOrder?: TimelineThreadRootOrder;
   codeBlockWrap?: boolean;
   searchQuery?: string;
   mediaDownloads?: Record<string, TimelineMediaDownloadState>;
-  roomViewport?: TimelinePersistedViewport | null;
   roomScrollAnchor?: TimelineScrollAnchor | null;
-  latestJumpRequest?: number;
   /**
    * Temporary #116 perf gate. Defaults to AVATAR_THUMBNAIL_DOWNLOADS_ENABLED
    * (currently false). Set to true in tests that verify the firing path, or
@@ -1758,16 +1685,7 @@ export const TimelineView = memo(function TimelineView({
 }) {
   const timelineStoreContext = useTimelineStoreContext();
   const [localStore, localSetStore] = useState<TimelineStoreState>(createTimelineStore);
-  const timelineKeyHash = timelineStoreKeyId(timelineKey);
-  const contextTimelineKeyState = useTimelineContextKeyState(
-    timelineStoreContext,
-    timelineKeyHash
-  );
-  const contextStore = useMemo(
-    () => scopedTimelineStore(timelineKeyHash, contextTimelineKeyState),
-    [contextTimelineKeyState, timelineKeyHash]
-  );
-  const store = timelineStore ?? (timelineStoreContext ? contextStore : localStore);
+  const store = timelineStore ?? timelineStoreContext?.store ?? localStore;
   const setStore = setTimelineStore ?? timelineStoreContext?.setStore ?? localSetStore;
   const isAppLevelStore = timelineStore !== undefined || timelineStoreContext !== null;
   const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
@@ -1784,7 +1702,7 @@ export const TimelineView = memo(function TimelineView({
     clientHeight: 0,
     listOffsetTop: 0
   });
-  const [anchorMaterializeCompletionVersion, setAnchorMaterializeCompletionVersion] = useState(0);
+  const [anchorRestoreCompletionVersion, setAnchorRestoreCompletionVersion] = useState(0);
   const [, setScrollAnchorSettlementVersion] = useState(0);
   const virtualItemHeight = TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
   const [measuredHeightVersion, setMeasuredHeightVersion] = useState(0);
@@ -1793,30 +1711,47 @@ export const TimelineView = memo(function TimelineView({
   const itemHeightByDomIdRef = useRef<Map<string, number>>(new Map());
   /** Anchor captured before the latest prepend batch was applied. */
   const pendingAnchorRef = useRef<ScrollAnchor | null>(null);
-  const viewportController = useTimelineViewportController();
-  const currentViewportState = viewportController.current;
-  const dispatchViewportMachine = viewportController.dispatch;
-  const viewportIsLiveEdge = viewportController.isLiveEdge;
-  const viewportCanPersistAnchor = viewportController.canPersistAnchor;
-  const viewportHasBlockingAnchorWork = viewportController.hasBlockingAnchorWork;
-  const viewportScrollTo = viewportController.scrollTo;
-  const viewportScrollBy = viewportController.scrollBy;
-  const viewportRunProgrammaticScroll = viewportController.runProgrammaticScroll;
-  const viewportObserveScroll = viewportController.observeScroll;
-  const viewportMarkUserScrollInput = viewportController.markUserScrollInput;
-  const viewportSettleScrollActivityIdle = viewportController.settleScrollActivityIdle;
-  const eventViewportTarget = viewportController.eventTarget;
-  const canRequestCoverageBackfill = viewportController.canRequestCoverageBackfill;
-  const viewportCoverageMode = viewportController.coverageMode;
-  const latestJumpRequestRef = useRef(latestJumpRequest);
+  /** True from prepend-apply until anchor restoration completed. */
+  const anchorRestorePendingRef = useRef(false);
+  /** True while the live-room scroll anchor is being restored. */
+  const roomScrollAnchorRestorePendingRef = useRef(false);
+  /** Suppresses capture while programmatic scroll adjustments are running. */
+  const suppressScrollAnchorCaptureRef = useRef(false);
+  /** scrollHeight the last time a programmatic scrollTop assignment was
+   *  made. Together with the pair of containerHeight + scrollTop recorded
+   *  inside `runWithSuppressedScrollAnchorCapture`, this lets `onScroll`
+   *  recognise a scroll event caused by our own assignment (same scroll-
+   *  height + same scrollTop) and suppress cascading side-effects while
+   *  letting through real pointer-driven scrolls. */
+  const programmaticScrollSignatureRef = useRef<{
+    scrollHeight: number;
+    scrollTop: number;
+  } | null>(null);
+  const lastPersistedViewportAnchorSignatureRef = useRef<string | null>(null);
+  const restoredRoomScrollAnchorSignatureRef = useRef<string | null>(null);
+  const requestedRoomScrollAnchorRestoreSignatureRef = useRef<string | null>(null);
+  const exhaustedRoomScrollAnchorRestoreSignatureRef = useRef<string | null>(null);
+  /**
+   * Tracks which room-anchor signature already received its post-settle
+   * re-correction, so the re-correction runs at most once per restore.
+   */
+  const postSettleRestoredSignatureRef = useRef<string | null>(null);
   const anchorAsyncGenerationRef = useRef(0);
+  const retainedRoomScrollAnchorRef = useRef<{
+    signature: string;
+    anchor: TimelineScrollAnchor;
+    scrollTop: number;
+  } | null>(null);
   /** Tracks whether the current key already got its first live-edge scroll. */
   const initialLiveEdgeScrollAppliedRef = useRef<string | null>(null);
+  /** Keeps the live edge pinned when measured virtual heights change. */
+  const stickToBottomAfterMeasurementRef = useRef(false);
+  /** Viewport intent that survives timeline re-renders until user scroll input changes it. */
+  const viewportIntentRef = useRef<ViewportIntent>({ kind: "free-scroll" });
+  /** Set by wheel/touch/keyboard/scrollbar intent; consumed by the next scroll event. */
+  const userScrollInputPendingRef = useRef(false);
   /** Coalesces ResizeObserver-driven live-edge corrections. */
   const viewportIntentResizeFrameRef = useRef<number | null>(null);
-  const viewportScrollWorkFrameRef = useRef<number | null>(null);
-  const scrollActivityIdleTimeoutRef = useRef<number | null>(null);
-  const pendingViewportObservationRef = useRef(false);
   /** Pagination request currently in flight (suppresses duplicates). */
   const backfillInFlightRef = useRef(false);
   const readSignalEventRef = useRef<string | null>(null);
@@ -1835,6 +1770,7 @@ export const TimelineView = memo(function TimelineView({
   profileUsersRef.current = profileUsers;
   const timelineKeyRef = useRef(timelineKey);
   timelineKeyRef.current = timelineKey;
+  const timelineKeyHash = JSON.stringify(timelineKey);
   const roomTimelineRoomId = "Room" in timelineKey.kind ? timelineKey.kind.Room.room_id : null;
   const emitDiagnosticLog = useCallback(
     (source: string, message: string) => {
@@ -1846,25 +1782,6 @@ export const TimelineView = memo(function TimelineView({
     },
     [onDiagnosticLogEntry]
   );
-  const activePersistedRoomAnchor = useMemo(() => {
-    if (roomViewport?.kind === "liveEdge") {
-      return null;
-    }
-    return timelineScrollAnchorFromPersistedViewport(roomViewport) ?? roomScrollAnchor;
-  }, [roomScrollAnchor, roomViewport]);
-  const startupViewportMode = persistedViewportStartupMode(
-    roomViewport,
-    activePersistedRoomAnchor
-  );
-  const startupViewportModeRef = useRef(startupViewportMode);
-  startupViewportModeRef.current = startupViewportMode;
-  const resetViewportMachineForStartup = useCallback(() => {
-    dispatchViewportMachine({ type: "timeline-key-changed" });
-    dispatchViewportMachine({
-      type: "startup-viewport-mode-selected",
-      mode: startupViewportModeRef.current
-    });
-  }, [dispatchViewportMachine]);
   const updateViewportMetrics = useCallback(() => {
     const container = containerRef.current;
     if (!container) {
@@ -1884,86 +1801,93 @@ export const TimelineView = memo(function TimelineView({
     );
   }, []);
 
-  const capturePersistableViewportAnchor = useCallback((): TimelineScrollAnchor | null => {
-    if (roomTimelineRoomId !== roomId) {
-      return null;
+  const persistViewportAnchor = useCallback((options?: { allowSuppressed?: boolean }): boolean => {
+    if (!transport.updateScrollAnchor || roomTimelineRoomId !== roomId) {
+      return false;
     }
-    if (!viewportCanPersistAnchor()) {
-      return null;
+    if (
+      anchorRestorePendingRef.current ||
+      roomScrollAnchorRestorePendingRef.current ||
+      (!options?.allowSuppressed && suppressScrollAnchorCaptureRef.current)
+    ) {
+      return false;
     }
     const container = containerRef.current;
     if (!container) {
-      return null;
+      return false;
     }
     const captured = captureRoomScrollAnchor(container);
     if (!captured) {
-      return null;
+      return false;
     }
-    return {
-      ...captured,
-      updated_at_ms: Date.now()
-    };
-  }, [roomId, roomTimelineRoomId, viewportCanPersistAnchor]);
+    const stableSignature = roomScrollAnchorStableSignature(roomId, captured);
+    if (lastPersistedViewportAnchorSignatureRef.current === stableSignature) {
+      return false;
+    }
+    lastPersistedViewportAnchorSignatureRef.current = stableSignature;
+    const updatedAtMs = Date.now();
+    void transport
+      .updateScrollAnchor(roomId, {
+        ...captured,
+        updated_at_ms: updatedAtMs
+      })
+      .catch(() => undefined);
+    return true;
+  }, [roomId, roomTimelineRoomId, transport]);
 
-  const runViewportScrollWork = useCallback((action: () => void) => {
+  const runWithSuppressedScrollAnchorCapture = useCallback((action: () => void) => {
     const asyncGeneration = anchorAsyncGenerationRef.current;
+    suppressScrollAnchorCaptureRef.current = true;
     const container = containerRef.current;
     const beforeScrollTop = container?.scrollTop ?? 0;
     action();
     if (container && container.scrollTop !== beforeScrollTop) {
-      updateViewportMetrics();
+      programmaticScrollSignatureRef.current = {
+        scrollHeight: container.scrollHeight,
+        scrollTop: container.scrollTop
+      };
     }
     requestAnimationFrame(() => {
       if (anchorAsyncGenerationRef.current !== asyncGeneration) {
         return;
       }
+      suppressScrollAnchorCaptureRef.current = false;
+      programmaticScrollSignatureRef.current = null;
       setScrollAnchorSettlementVersion((current) => current + 1);
     });
-  }, [updateViewportMetrics]);
+  }, []);
 
   const setViewportIntentToLiveEdge = useCallback(() => {
-    dispatchViewportMachine({ type: "live-edge-requested" });
-  }, [dispatchViewportMachine]);
+    viewportIntentRef.current = { kind: "live-edge" };
+    retainedRoomScrollAnchorRef.current = null;
+  }, []);
 
-  const scheduleScrollActivityIdle = useCallback(() => {
-    if (scrollActivityIdleTimeoutRef.current !== null) {
-      window.clearTimeout(scrollActivityIdleTimeoutRef.current);
-    }
-    scrollActivityIdleTimeoutRef.current = window.setTimeout(() => {
-      scrollActivityIdleTimeoutRef.current = null;
-      viewportSettleScrollActivityIdle();
-    }, TIMELINE_SCROLL_ACTIVITY_IDLE_DELAY_MS);
-  }, [viewportSettleScrollActivityIdle]);
-
-  useEffect(() => {
-    return () => {
-      if (scrollActivityIdleTimeoutRef.current !== null) {
-        window.clearTimeout(scrollActivityIdleTimeoutRef.current);
-        scrollActivityIdleTimeoutRef.current = null;
-      }
-    };
+  const releaseViewportIntent = useCallback(() => {
+    viewportIntentRef.current = { kind: "free-scroll" };
+    stickToBottomAfterMeasurementRef.current = false;
+    retainedRoomScrollAnchorRef.current = null;
+    userScrollInputPendingRef.current = false;
   }, []);
 
   const markUserScrollInput = useCallback(() => {
-    viewportMarkUserScrollInput(containerRef.current);
-    scheduleScrollActivityIdle();
-  }, [scheduleScrollActivityIdle, viewportMarkUserScrollInput]);
+    userScrollInputPendingRef.current = true;
+  }, []);
 
   const applyViewportIntent = useCallback((): boolean => {
     const container = containerRef.current;
-    if (!container || !viewportIsLiveEdge()) {
+    if (!container || viewportIntentRef.current.kind !== "live-edge") {
       return false;
     }
     const targetScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
     let changed = false;
     if (Math.abs(container.scrollTop - targetScrollTop) > SCROLL_EDGE_TOLERANCE_PX) {
-      runViewportScrollWork(() => {
-        viewportScrollTo(container, targetScrollTop);
+      runWithSuppressedScrollAnchorCapture(() => {
+        container.scrollTop = targetScrollTop;
       });
       changed = true;
     }
-    return changed;
-  }, [runViewportScrollWork, viewportIsLiveEdge, viewportScrollTo]);
+    return persistViewportAnchor({ allowSuppressed: true }) || changed;
+  }, [persistViewportAnchor, runWithSuppressedScrollAnchorCapture]);
   // --- Event subscription: local stores apply reducers; App stores keep view effects here. ---
   useEffect(() => {
     const unsubscribe = transport.listenCoreEvents((payload) => {
@@ -1974,18 +1898,24 @@ export const TimelineView = memo(function TimelineView({
         // clearing alone would leave the timeline permanently blank.
         recordTimelineResync();
         pendingAnchorRef.current = null;
-        dispatchViewportMachine({ type: "resync-required" });
+        anchorRestorePendingRef.current = false;
+        roomScrollAnchorRestorePendingRef.current = false;
+        retainedRoomScrollAnchorRef.current = null;
+        viewportIntentRef.current = { kind: "free-scroll" };
+        userScrollInputPendingRef.current = false;
+        lastPersistedViewportAnchorSignatureRef.current = null;
+        requestedRoomScrollAnchorRestoreSignatureRef.current = null;
+        exhaustedRoomScrollAnchorRestoreSignatureRef.current = null;
+        restoredRoomScrollAnchorSignatureRef.current = null;
         setNavigationSnapshot(null);
         relevantAvatarMxcsRef.current = new Set();
         if (!isAppLevelStore) {
           setStore((current) => {
             const next = applyGlobalResync(current);
-            relevantAvatarMxcsRef.current = enableAvatarThumbnailDownloads
-              ? timelineAvatarMxcsForItems(
-                  getItems(next, timelineKeyRef.current),
-                  profileUsersRef.current
-                )
-              : new Set();
+            relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
+              getItems(next, timelineKeyRef.current),
+              profileUsersRef.current
+            );
             return next;
           });
         }
@@ -2020,12 +1950,10 @@ export const TimelineView = memo(function TimelineView({
         if (!isAppLevelStore) {
           setStore((current) => {
             const next = applyTimelineEvent(current, event);
-            relevantAvatarMxcsRef.current = enableAvatarThumbnailDownloads
-              ? timelineAvatarMxcsForItems(
-                  getItems(next, timelineKeyRef.current),
-                  profileUsersRef.current
-                )
-              : new Set();
+            relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
+              getItems(next, timelineKeyRef.current),
+              profileUsersRef.current
+            );
             return next;
           });
         }
@@ -2040,8 +1968,8 @@ export const TimelineView = memo(function TimelineView({
             ? event.ItemsUpdated.key
             : "PaginationStateChanged" in event
               ? event.PaginationStateChanged.key
-              : "AnchorMaterializeFinished" in event
-                ? event.AnchorMaterializeFinished.key
+              : "AnchorRestoreFinished" in event
+                ? event.AnchorRestoreFinished.key
                 : "SendCompleted" in event
                   ? event.SendCompleted.key
                   : "MediaUploadProgress" in event
@@ -2077,27 +2005,34 @@ export const TimelineView = memo(function TimelineView({
         const container = containerRef.current;
         if (container) {
           pendingAnchorRef.current = captureAnchor(container);
-          dispatchViewportMachine({ type: "prepend-anchor-restore-started" });
+          anchorRestorePendingRef.current = true;
         }
       }
 
       if ("ResyncRequired" in event) {
         pendingAnchorRef.current = null;
-        dispatchViewportMachine({ type: "resync-required" });
+        anchorRestorePendingRef.current = false;
+        roomScrollAnchorRestorePendingRef.current = false;
+        retainedRoomScrollAnchorRef.current = null;
+        viewportIntentRef.current = { kind: "free-scroll" };
+        userScrollInputPendingRef.current = false;
+        lastPersistedViewportAnchorSignatureRef.current = null;
         setNavigationSnapshot(null);
       }
 
-      if ("AnchorMaterializeFinished" in event) {
-        dispatchViewportMachine({
-          type: "room-anchor-materialize-finished",
-          status:
-            event.AnchorMaterializeFinished.status === "Superseded"
-              ? "superseded"
-              : event.AnchorMaterializeFinished.status === "Found"
-                ? "found"
-                : "not-found"
-        });
-        setAnchorMaterializeCompletionVersion((current) => current + 1);
+      if ("AnchorRestoreFinished" in event) {
+        if (event.AnchorRestoreFinished.status === "Superseded") {
+          return;
+        }
+        const restoreSignature = requestedRoomScrollAnchorRestoreSignatureRef.current;
+        if (
+          restoreSignature !== null &&
+          event.AnchorRestoreFinished.status !== "Found"
+        ) {
+          exhaustedRoomScrollAnchorRestoreSignatureRef.current = restoreSignature;
+        }
+        roomScrollAnchorRestorePendingRef.current = false;
+        setAnchorRestoreCompletionVersion((current) => current + 1);
         return;
       }
 
@@ -2120,21 +2055,16 @@ export const TimelineView = memo(function TimelineView({
         timelineDiffsContainOwnOutgoingItem(event.ItemsUpdated.diffs, currentUserId)
       ) {
         setViewportIntentToLiveEdge();
-        dispatchViewportMachine({
-          type: "stick-to-bottom-after-measurement",
-          value: true
-        });
+        stickToBottomAfterMeasurementRef.current = true;
       }
 
       if (!isAppLevelStore) {
         setStore((current) => {
           const next = applyTimelineEvent(current, event);
-          relevantAvatarMxcsRef.current = enableAvatarThumbnailDownloads
-            ? timelineAvatarMxcsForItems(
-                getItems(next, timelineKeyRef.current),
-                profileUsersRef.current
-              )
-            : new Set();
+          relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
+            getItems(next, timelineKeyRef.current),
+            profileUsersRef.current
+          );
           return next;
         });
       }
@@ -2142,8 +2072,6 @@ export const TimelineView = memo(function TimelineView({
     return unsubscribe;
   }, [
     currentUserId,
-    dispatchViewportMachine,
-    enableAvatarThumbnailDownloads,
     emitDiagnosticLog,
     isAppLevelStore,
     setViewportIntentToLiveEdge,
@@ -2158,8 +2086,18 @@ export const TimelineView = memo(function TimelineView({
   useLayoutEffect(() => {
     anchorAsyncGenerationRef.current += 1;
     pendingAnchorRef.current = null;
-    resetViewportMachineForStartup();
-  }, [resetViewportMachineForStartup, timelineKeyHash]);
+    anchorRestorePendingRef.current = false;
+    roomScrollAnchorRestorePendingRef.current = false;
+    suppressScrollAnchorCaptureRef.current = false;
+    restoredRoomScrollAnchorSignatureRef.current = null;
+    requestedRoomScrollAnchorRestoreSignatureRef.current = null;
+    exhaustedRoomScrollAnchorRestoreSignatureRef.current = null;
+    retainedRoomScrollAnchorRef.current = null;
+    viewportIntentRef.current = { kind: "free-scroll" };
+    userScrollInputPendingRef.current = false;
+    lastPersistedViewportAnchorSignatureRef.current = null;
+    postSettleRestoredSignatureRef.current = null;
+  }, [timelineKeyHash]);
 
   useEffect(() => {
     setNavigationSnapshot(null);
@@ -2174,16 +2112,22 @@ export const TimelineView = memo(function TimelineView({
     emptyThreadBackfillRequestedRef.current = false;
     lastDiagnosticsEmissionRef.current = null;
     initialLiveEdgeScrollAppliedRef.current = null;
+    stickToBottomAfterMeasurementRef.current = false;
     itemHeightByDomIdRef.current = new Map();
+    roomScrollAnchorRestorePendingRef.current = false;
+    suppressScrollAnchorCaptureRef.current = false;
+    viewportIntentRef.current = { kind: "free-scroll" };
+    userScrollInputPendingRef.current = false;
+    lastPersistedViewportAnchorSignatureRef.current = null;
+    restoredRoomScrollAnchorSignatureRef.current = null;
+    requestedRoomScrollAnchorRestoreSignatureRef.current = null;
+    exhaustedRoomScrollAnchorRestoreSignatureRef.current = null;
+    retainedRoomScrollAnchorRef.current = null;
+    postSettleRestoredSignatureRef.current = null;
     if (viewportIntentResizeFrameRef.current !== null) {
       window.cancelAnimationFrame(viewportIntentResizeFrameRef.current);
       viewportIntentResizeFrameRef.current = null;
     }
-    if (viewportScrollWorkFrameRef.current !== null) {
-      window.cancelAnimationFrame(viewportScrollWorkFrameRef.current);
-      viewportScrollWorkFrameRef.current = null;
-    }
-    pendingViewportObservationRef.current = false;
     setMeasuredHeightVersion((current) => current + 1);
     backfillInFlightRef.current = false;
   }, [timelineKeyHash]);
@@ -2191,35 +2135,25 @@ export const TimelineView = memo(function TimelineView({
   useEffect(
     () => () => {
       anchorAsyncGenerationRef.current += 1;
-      dispatchViewportMachine({ type: "timeline-key-changed" });
+      anchorRestorePendingRef.current = false;
+      roomScrollAnchorRestorePendingRef.current = false;
+      suppressScrollAnchorCaptureRef.current = false;
+      retainedRoomScrollAnchorRef.current = null;
+      viewportIntentRef.current = { kind: "free-scroll" };
+      userScrollInputPendingRef.current = false;
+      lastPersistedViewportAnchorSignatureRef.current = null;
       if (viewportIntentResizeFrameRef.current !== null) {
         window.cancelAnimationFrame(viewportIntentResizeFrameRef.current);
         viewportIntentResizeFrameRef.current = null;
       }
-      if (viewportScrollWorkFrameRef.current !== null) {
-        window.cancelAnimationFrame(viewportScrollWorkFrameRef.current);
-        viewportScrollWorkFrameRef.current = null;
-      }
-      pendingViewportObservationRef.current = false;
     },
-    [dispatchViewportMachine]
+    []
   );
 
-  const rawItems = getItems(store, timelineKey);
-  const threadRootOrderKind = threadRootOrder.kind;
-  const items = useMemo(
-    () =>
-      projectTimelineItemsForDisplay(rawItems, {
-        threadRootOrder: { kind: threadRootOrderKind },
-        timelineKey
-      }),
-    [rawItems, threadRootOrderKind, timelineKey]
-  );
+  const items = getItems(store, timelineKey);
   useEffect(() => {
-    relevantAvatarMxcsRef.current = enableAvatarThumbnailDownloads
-      ? timelineAvatarMxcsForItems(rawItems, profileUsers)
-      : new Set();
-  }, [enableAvatarThumbnailDownloads, rawItems, profileUsers]);
+    relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(items, profileUsers);
+  }, [items, profileUsers]);
   const visibleItems = useMemo(() => items.filter((item) => !item.is_hidden), [items]);
   const timelineHeightModel = useMemo(
     () =>
@@ -2275,16 +2209,12 @@ export const TimelineView = memo(function TimelineView({
   }, [timelineHeightModel, visibleItems, viewportMetrics]);
   const sideEffectItems = virtualWindow.virtualized ? virtualWindow.items : visibleItems;
   useEffect(() => {
-    if (!onDiagnosticsChange) {
-      lastDiagnosticsEmissionRef.current = null;
-      return;
-    }
     const avatarDiagnostics = timelineAvatarDiagnostics(
-      sideEffectItems,
+      visibleItems,
       profileUsers,
       avatarThumbnails
     );
-    for (const item of sideEffectItems) {
+    for (const item of items) {
       if ("Event" in item.id) {
         downloadedEventIdsRef.current.add(item.id.Event.event_id);
       }
@@ -2296,6 +2226,10 @@ export const TimelineView = memo(function TimelineView({
       ...avatarDiagnostics,
       ...timelineRenderedAvatarDiagnostics(containerRef.current)
     };
+    if (!onDiagnosticsChange) {
+      lastDiagnosticsEmissionRef.current = null;
+      return;
+    }
     const diagnosticsSignature = `${timelineKeyHash}\u0000${JSON.stringify(diagnostics)}`;
     const lastEmission = lastDiagnosticsEmissionRef.current;
     if (
@@ -2311,9 +2245,9 @@ export const TimelineView = memo(function TimelineView({
     onDiagnosticsChange(diagnostics);
   }, [
     avatarThumbnails,
+    items,
     onDiagnosticsChange,
     profileUsers,
-    sideEffectItems,
     store,
     timelineKeyHash,
     visibleItems
@@ -2378,21 +2312,17 @@ export const TimelineView = memo(function TimelineView({
       });
     }
   }, [mediaDownloads, roomId, sideEffectItems, transport]);
-  const notSentTransactionIds = useMemo(() => items.flatMap((item) => {
+  const notSentTransactionIds = items.flatMap((item) => {
     if (item.send_state?.kind !== "notSent" || !("Transaction" in item.id)) {
       return [];
     }
     return [item.id.Transaction.transaction_id];
-  }), [items]);
+  });
   const backwardState = getPaginationState(store, timelineKey, "Backward");
   const isPaginating = backwardState === "Paginating";
   const endReached = backwardState === "EndReached";
-  const latestReadableFallbackEventId = useMemo(
-    () => latestReadableEventBackedItemId(rawItems),
-    [rawItems]
-  );
-  const latestReadableEventId =
-    navigationSnapshot?.latest_readable_event_id ?? latestReadableFallbackEventId;
+  const roomSignals = liveSignals?.rooms[roomId] ?? null;
+  const latestReadableEventId = latestEventBackedItemId(items);
   const timelineKeyState = getKeyState(store, timelineKey);
   const timelineInitialized = Boolean(timelineKeyState && !timelineKeyState.awaitingResync);
   // Stable, render-visible timeline generation for this key. Bumps when the
@@ -2567,43 +2497,11 @@ export const TimelineView = memo(function TimelineView({
     if (atBottom && latestReadableEventId) {
       sendReadSignalsForEvent(latestReadableEventId);
     }
-    const scrollAnchor = capturePersistableViewportAnchor();
-    const persistedViewport: TimelinePersistedViewport | null =
-      atBottom && viewportIsLiveEdge()
-        ? { kind: "liveEdge", updated_at_ms: Date.now() }
-        : scrollAnchor
-          ? {
-              kind: "anchored",
-              event_id: scrollAnchor.event_id,
-              edge: scrollAnchor.edge,
-              offset_px: scrollAnchor.offset_px,
-              updated_at_ms: scrollAnchor.updated_at_ms
-            }
-          : null;
-    const scrollAnchorSignature = scrollAnchor
-      ? [
-          scrollAnchor.event_id,
-          scrollAnchor.edge ?? "top",
-          scrollAnchor.offset_px
-        ].join("\u0000")
-      : "";
-    const viewportSignature = persistedViewport
-      ? persistedViewport.kind === "liveEdge"
-        ? "liveEdge"
-        : [
-            "anchored",
-            persistedViewport.event_id,
-            persistedViewport.edge ?? "top",
-            persistedViewport.offset_px
-          ].join("\u0000")
-      : "";
     const signature = [
       roomId,
       visible.firstVisibleEventId ?? "",
       visible.lastVisibleEventId ?? "",
-      atBottom ? "bottom" : "not-bottom",
-      scrollAnchorSignature,
-      viewportSignature
+      atBottom ? "bottom" : "not-bottom"
     ].join("\u0000");
     if (lastViewportObservationRef.current === signature) {
       return;
@@ -2614,19 +2512,15 @@ export const TimelineView = memo(function TimelineView({
         roomId,
         visible.firstVisibleEventId,
         visible.lastVisibleEventId,
-        atBottom,
-        scrollAnchor,
-        persistedViewport
+        atBottom
       )
       .catch(() => undefined);
   }, [
-    capturePersistableViewportAnchor,
     latestReadableEventId,
     roomId,
     roomTimelineRoomId,
     sendReadSignalsForEvent,
-    transport,
-    viewportIsLiveEdge
+    transport
   ]);
 
   useEffect(() => {
@@ -2636,7 +2530,7 @@ export const TimelineView = memo(function TimelineView({
     }
 
     const observer = new ResizeObserver(() => {
-      if (!viewportIsLiveEdge()) {
+      if (viewportIntentRef.current.kind !== "live-edge") {
         return;
       }
       if (viewportIntentResizeFrameRef.current !== null) {
@@ -2685,140 +2579,62 @@ export const TimelineView = memo(function TimelineView({
     viewportAtBottom
   ]);
 
-  // --- Viewport coverage-driven backfill ---
-  const evaluateViewportCoverageAndMaybeBackfill = useCallback(
-    (source: TimelineViewportCoverageSource, options?: { forceUserBackfill?: boolean }) => {
-      const container = containerRef.current;
-      if (!container) {
-        return;
-      }
-      const relativeScrollTopPx = Math.max(
-        0,
-        container.scrollTop - (listRef.current?.offsetTop ?? 0)
-      );
-      const coverageMarginPx = Math.max(
-        virtualItemHeight * TIMELINE_VIRTUAL_OVERSCAN_ITEMS,
-        container.clientHeight * 2
-      );
-      const decision = decideTimelineViewportCoverage({
-        source,
-        viewportMode: viewportCoverageMode(),
-        relativeScrollTopPx,
-        clientHeightPx: container.clientHeight,
-        loadedContentHeightPx: timelineHeightModel.totalHeight,
-        coverageMarginPx,
-        backwardPaginationState: getPaginationState(store, timelineKeyRef.current, "Backward"),
-        autoLoadOlderMessages,
-        forceUserBackfill: options?.forceUserBackfill === true,
-        suppressPaginationUi,
-        backfillInFlight: backfillInFlightRef.current,
-        blockingAnchorWork: viewportHasBlockingAnchorWork()
-      });
-      if (decision.kind !== "request-backward") {
-        return;
-      }
-      const signature = [
-        timelineStoreKeyId(timelineKeyRef.current),
-        generation,
-        timelineCoverageContentSignature(visibleItems),
-        Math.floor(relativeScrollTopPx),
-        "backward"
-      ].join("\u0000");
-      if (!canRequestCoverageBackfill(signature)) {
-        return;
-      }
-      dispatchViewportMachine({
-        type: "coverage-backfill-requested",
-        signature
-      });
-      backfillInFlightRef.current = true;
-      void transport.paginateBackwards(timelineKeyRef.current)
-        .finally(() => {
-          backfillInFlightRef.current = false;
-        });
-    },
-    [
-      autoLoadOlderMessages,
-      canRequestCoverageBackfill,
-      dispatchViewportMachine,
-      generation,
-      store,
-      suppressPaginationUi,
-      timelineHeightModel.totalHeight,
-      transport,
-      virtualItemHeight,
-      visibleItems,
-      viewportCoverageMode,
-      viewportHasBlockingAnchorWork
-    ]
-  );
-
   // --- Anchor restoration: after React commits the prepend ---
   useLayoutEffect(() => {
     const container = containerRef.current;
-    const activeRoomAnchor =
-      activePersistedRoomAnchor &&
+    const activeRoomAnchor = 
+      roomScrollAnchor &&
       roomTimelineRoomId === roomId &&
-      !roomScrollAnchorIsStale(activePersistedRoomAnchor)
-        ? activePersistedRoomAnchor
+      !roomScrollAnchorIsStale(roomScrollAnchor)
+        ? roomScrollAnchor
         : null;
     const activeRoomAnchorSignature = activeRoomAnchor
       ? roomScrollAnchorSignature(roomId, activeRoomAnchor)
       : null;
-    const activeRoomAnchorMaterializeSignature = activeRoomAnchorSignature
+    const activeRoomAnchorRestoreSignature = activeRoomAnchorSignature
       ? `${activeRoomAnchorSignature}\u0000${generation}`
       : null;
-    const viewportState = currentViewportState();
-    const roomAnchorMaterializeExhausted =
-      activeRoomAnchorMaterializeSignature !== null &&
-      viewportState.exhaustedRoomAnchorMaterializeSignature ===
-        activeRoomAnchorMaterializeSignature;
+    const roomAnchorRestoreExhausted =
+      activeRoomAnchorRestoreSignature !== null &&
+      exhaustedRoomScrollAnchorRestoreSignatureRef.current ===
+        activeRoomAnchorRestoreSignature;
     const roomAnchorAlreadyRestored =
       activeRoomAnchorSignature !== null &&
-      viewportState.restoredRoomAnchorSignature === activeRoomAnchorSignature;
+      restoredRoomScrollAnchorSignatureRef.current === activeRoomAnchorSignature;
     let roomAnchorRestored = false;
-    let coverageEvaluation: {
-      source: TimelineViewportCoverageSource;
-      forceUserBackfill: boolean;
-    } | null = null;
     if (
       timelineInitialized &&
       items.length > 0 &&
-      viewportState.intent.kind === "anchored" &&
       activeRoomAnchor &&
       activeRoomAnchorSignature !== null &&
-      viewportState.restoredRoomAnchorSignature !== activeRoomAnchorSignature &&
-      !roomAnchorMaterializeExhausted
+      restoredRoomScrollAnchorSignatureRef.current !== activeRoomAnchorSignature &&
+      !roomAnchorRestoreExhausted
     ) {
       const restoreActiveRoomAnchor = () => {
         if (!container) {
           return false;
         }
-        const restored = restoreRoomScrollAnchor(
-          container,
-          activeRoomAnchor,
-          viewportScrollBy
-        );
+        const restored = restoreRoomScrollAnchor(container, activeRoomAnchor);
         if (restored) {
+          restoredRoomScrollAnchorSignatureRef.current = activeRoomAnchorSignature;
+          roomScrollAnchorRestorePendingRef.current = false;
           initialLiveEdgeScrollAppliedRef.current = initialLiveEdgeScrollKey;
-          dispatchViewportMachine({
-            type: "room-anchor-restored",
-            signature: activeRoomAnchorSignature,
-            anchor: activeRoomAnchor,
-            scrollTop: container.scrollTop
-          });
+          retainedRoomScrollAnchorRef.current =
+            activeRoomAnchorSignature && container
+              ? {
+                  signature: activeRoomAnchorSignature,
+                  anchor: activeRoomAnchor,
+                  scrollTop: container.scrollTop
+                }
+              : null;
         }
         return restored;
       };
 
       const anchorIsLive = timelineContainsEventId(items, activeRoomAnchor.event_id);
       if (anchorIsLive) {
-        coverageEvaluation = {
-          source: "programmatic-restore",
-          forceUserBackfill: true
-        };
-        dispatchViewportMachine({ type: "room-anchor-restore-started" });
-        runViewportScrollWork(() => {
+        roomScrollAnchorRestorePendingRef.current = true;
+        runWithSuppressedScrollAnchorCapture(() => {
           roomAnchorRestored = restoreActiveRoomAnchor();
         });
         if (
@@ -2842,33 +2658,29 @@ export const TimelineView = memo(function TimelineView({
                   container.clientHeight -
                   activeRoomAnchor.offset_px
                 : viewportMetrics.listOffsetTop + anchorTop - activeRoomAnchor.offset_px;
-            runViewportScrollWork(() => {
-              viewportScrollTo(container, Math.max(0, targetScrollTop));
+            runWithSuppressedScrollAnchorCapture(() => {
+              container.scrollTop = Math.max(0, targetScrollTop);
             });
             requestAnimationFrame(() => {
               let roomAnchorRestoredInFrame = false;
-              runViewportScrollWork(() => {
+              runWithSuppressedScrollAnchorCapture(() => {
                 roomAnchorRestoredInFrame = restoreActiveRoomAnchor();
                 if (roomAnchorRestoredInFrame) {
                   updateViewportMetrics();
                   reportViewportObservation();
                 }
               });
+              if (!roomAnchorRestoredInFrame) {
+                roomScrollAnchorRestorePendingRef.current = false;
+              }
               updateViewportMetrics();
               reportViewportObservation();
-              dispatchViewportMachine({
-                type: "room-anchor-restore-finished",
-                status: roomAnchorRestoredInFrame ? "found" : "not-found"
-              });
             });
             return;
           }
         }
         if (!roomAnchorRestored && !roomAnchorAlreadyRestored) {
-          dispatchViewportMachine({
-            type: "room-anchor-restore-finished",
-            status: "not-found"
-          });
+          roomScrollAnchorRestorePendingRef.current = false;
         }
 
         // Post-settle re-correction: fonts/media/virtualized-row heights settle
@@ -2878,21 +2690,19 @@ export const TimelineView = memo(function TimelineView({
         // document.fonts.ready (ensures text reflow is complete), then wait for
         // any media element inside the anchor row to load (with a 250ms timeout
         // fallback so we never hang on a missing resource).  Guard with
-        // the viewport state machine's post-settle signature so this fires at
-        // most once per restore. Skip if the user has already scrolled during
-        // the asynchronous settle wait.
+        // postSettleRestoredSignatureRef so this fires at most once per restore,
+        // and keep capture suppressed so the in-flight adjustment is not saved as
+        // a new anchor.  Skip if the user has already scrolled (handled by the
+        // existing capture-suppression check on the onscroll path).
         if (
           roomAnchorRestored &&
           container !== null &&
           activeRoomAnchorSignature !== null &&
-          currentViewportState().postSettleRestoredSignature !== activeRoomAnchorSignature
+          postSettleRestoredSignatureRef.current !== activeRoomAnchorSignature
         ) {
           // Mark immediately so a second layout-effect run (e.g. a concurrent
           // items update) does not schedule a duplicate re-correction.
-          dispatchViewportMachine({
-            type: "post-settle-restore-scheduled",
-            signature: activeRoomAnchorSignature
-          });
+          postSettleRestoredSignatureRef.current = activeRoomAnchorSignature;
           // Snapshot the anchor + signature for the async callback.
           const anchorSnapshot = activeRoomAnchor;
           const signatureSnapshot = activeRoomAnchorSignature;
@@ -2907,15 +2717,14 @@ export const TimelineView = memo(function TimelineView({
               return;
             }
             // Abort if another restore started since we were scheduled.
-            if (currentViewportState().postSettleRestoredSignature !== signatureSnapshot) {
+            if (postSettleRestoredSignatureRef.current !== signatureSnapshot) {
               return;
             }
             // Abort if the user scrolled during the rAF/fonts/media wait.
+            // A real user scroll changes scrollTop beyond the programmatic
+            // restore; the suppression guard covers programmatic adjustments.
             if (containerSnapshot.scrollTop !== scrollTopAfterRestore) {
-              dispatchViewportMachine({
-                type: "room-anchor-restore-finished",
-                status: "not-found"
-              });
+              roomScrollAnchorRestorePendingRef.current = false;
               setScrollAnchorSettlementVersion((current) => current + 1);
               return;
             }
@@ -2923,34 +2732,25 @@ export const TimelineView = memo(function TimelineView({
               `[data-event-id="${cssEscape(anchorSnapshot.event_id)}"]`
             );
             if (!anchorNode) {
-              dispatchViewportMachine({
-                type: "room-anchor-restore-finished",
-                status: "not-found"
-              });
+              roomScrollAnchorRestorePendingRef.current = false;
               setScrollAnchorSettlementVersion((current) => current + 1);
               return;
             }
-            const restored = restoreRoomScrollAnchor(
-              containerSnapshot,
-              anchorSnapshot,
-              viewportScrollBy
-            );
+            suppressScrollAnchorCaptureRef.current = true;
+            const restored = restoreRoomScrollAnchor(containerSnapshot, anchorSnapshot);
             if (restored) {
-              dispatchViewportMachine({
-                type: "room-anchor-restored",
+              retainedRoomScrollAnchorRef.current = {
                 signature: signatureSnapshot,
                 anchor: anchorSnapshot,
                 scrollTop: containerSnapshot.scrollTop
-              });
+              };
             }
             requestAnimationFrame(() => {
               if (anchorAsyncGenerationRef.current !== asyncGenerationSnapshot) {
                 return;
               }
-              dispatchViewportMachine({
-                type: "room-anchor-restore-finished",
-                status: restored ? "found" : "not-found"
-              });
+              suppressScrollAnchorCaptureRef.current = false;
+              roomScrollAnchorRestorePendingRef.current = false;
               updateViewportMetrics();
               reportViewportObservation();
               setScrollAnchorSettlementVersion((current) => current + 1);
@@ -2985,27 +2785,23 @@ export const TimelineView = memo(function TimelineView({
           });
         }
       } else if (
-        transport.materializeTimelineAnchor &&
-        activeRoomAnchorMaterializeSignature !== null &&
-        currentViewportState().requestedRoomAnchorMaterializeSignature !==
-          activeRoomAnchorMaterializeSignature
+        transport.restoreTimelineAnchor &&
+        activeRoomAnchorRestoreSignature !== null &&
+        requestedRoomScrollAnchorRestoreSignatureRef.current !==
+          activeRoomAnchorRestoreSignature
       ) {
-        dispatchViewportMachine({
-          type: "room-anchor-materialize-requested",
-          signature: activeRoomAnchorMaterializeSignature
-        });
-        const materializePromise = transport.materializeTimelineAnchor(
+        roomScrollAnchorRestorePendingRef.current = true;
+        requestedRoomScrollAnchorRestoreSignatureRef.current = activeRoomAnchorRestoreSignature;
+        exhaustedRoomScrollAnchorRestoreSignatureRef.current = null;
+        const restorePromise = transport.restoreTimelineAnchor(
           timelineKeyRef.current,
           activeRoomAnchor.event_id,
-          LIVE_ROOM_ANCHOR_MATERIALIZE_MAX_BATCHES,
-          LIVE_ROOM_ANCHOR_MATERIALIZE_EVENT_COUNT
+          LIVE_ROOM_ANCHOR_RESTORE_MAX_BATCHES,
+          LIVE_ROOM_ANCHOR_RESTORE_EVENT_COUNT
         );
-        if (materializePromise) {
-          void materializePromise.catch(() => {
-            dispatchViewportMachine({
-              type: "room-anchor-materialize-finished",
-              status: "not-found"
-            });
+        if (restorePromise) {
+          void restorePromise.catch(() => {
+            roomScrollAnchorRestorePendingRef.current = false;
           });
         }
       }
@@ -3015,16 +2811,12 @@ export const TimelineView = memo(function TimelineView({
       initialLiveEdgeScrollKey !== null &&
       initialLiveEdgeScrollAppliedRef.current !== initialLiveEdgeScrollKey &&
       !roomAnchorAlreadyRestored &&
-      !viewportHasBlockingAnchorWork()
+      !roomScrollAnchorRestorePendingRef.current
     ) {
-      coverageEvaluation = {
-        source: "layout-settle",
-        forceUserBackfill: false
-      };
       if (container) {
         setViewportIntentToLiveEdge();
-        runViewportScrollWork(() => {
-          scrollContainerToBottom(container, viewportScrollTo);
+        runWithSuppressedScrollAnchorCapture(() => {
+          scrollContainerToBottom(container);
         });
         // Only mark the live-edge scroll as applied once the content actually
         // overflows the viewport. If the first batch is too short to scroll,
@@ -3038,55 +2830,40 @@ export const TimelineView = memo(function TimelineView({
           // The DOM scrollHeight used above may be an underestimate before
           // variable-height rows are measured. Force a follow-up snap to the
           // new bottom once the measurement effect has actual heights.
-          dispatchViewportMachine({
-            type: "stick-to-bottom-after-measurement",
-            value: true
-          });
+          stickToBottomAfterMeasurementRef.current = true;
         }
       }
     }
-    if (currentViewportState().stickToBottomAfterMeasurement) {
-      if (container && viewportIsLiveEdge()) {
-        runViewportScrollWork(() => {
-          scrollContainerToBottom(container, viewportScrollTo);
+    if (stickToBottomAfterMeasurementRef.current) {
+      if (container) {
+        runWithSuppressedScrollAnchorCapture(() => {
+          scrollContainerToBottom(container);
         });
       }
-      dispatchViewportMachine({
-        type: "stick-to-bottom-after-measurement",
-        value: false
-      });
+      stickToBottomAfterMeasurementRef.current = false;
     }
-    if (currentViewportState().prependAnchorRestorePending) {
-      coverageEvaluation = {
-        source: "programmatic-restore",
-        forceUserBackfill: true
-      };
+    if (anchorRestorePendingRef.current) {
       const anchor = pendingAnchorRef.current;
       let restored = false;
       if (container && anchor) {
-        runViewportScrollWork(() => {
-          restored = restoreAnchor(container, anchor, viewportScrollBy);
-        });
+        restored = restoreAnchor(container, anchor);
       }
       if (!restored && container && anchor && virtualWindow.virtualized) {
         const anchorIndex = visibleItems.findIndex(
           (item) => timelineItemDomId(item.id) === anchor.itemId
         );
         if (anchorIndex >= 0) {
-          runViewportScrollWork(() => {
-            viewportScrollTo(
-              container,
-              Math.max(
-                0,
-                viewportMetrics.listOffsetTop +
-                  (timelineHeightModel.offsets[anchorIndex] ?? 0) -
-                  anchor.offsetTop
-              )
+          runWithSuppressedScrollAnchorCapture(() => {
+            container.scrollTop = Math.max(
+              0,
+              viewportMetrics.listOffsetTop +
+                (timelineHeightModel.offsets[anchorIndex] ?? 0) -
+                anchor.offsetTop
             );
           });
           requestAnimationFrame(() => {
-            runViewportScrollWork(() => {
-              restoreAnchor(container, anchor, viewportScrollBy);
+            runWithSuppressedScrollAnchorCapture(() => {
+              restoreAnchor(container, anchor);
             });
             updateViewportMetrics();
             reportViewportObservation();
@@ -3094,19 +2871,14 @@ export const TimelineView = memo(function TimelineView({
         }
       }
       pendingAnchorRef.current = null;
-      dispatchViewportMachine({ type: "prepend-anchor-restore-finished" });
+      // Restoration complete: the next automatic fill request is allowed again.
+      anchorRestorePendingRef.current = false;
     }
     updateViewportMetrics();
     reportViewportObservation();
-    if (coverageEvaluation) {
-      evaluateViewportCoverageAndMaybeBackfill(coverageEvaluation.source, {
-        forceUserBackfill: coverageEvaluation.forceUserBackfill
-      });
-    }
   }, [
-    evaluateViewportCoverageAndMaybeBackfill,
     generation,
-    anchorMaterializeCompletionVersion,
+    anchorRestoreCompletionVersion,
     roomId,
     roomTimelineRoomId,
     initialLiveEdgeScrollKey,
@@ -3118,16 +2890,14 @@ export const TimelineView = memo(function TimelineView({
     viewportMetrics.listOffsetTop,
     virtualWindow.virtualized,
     visibleItems,
-    activePersistedRoomAnchor,
-    runViewportScrollWork,
+    roomScrollAnchor,
+    runWithSuppressedScrollAnchorCapture,
     setViewportIntentToLiveEdge,
-    viewportScrollBy,
-    viewportScrollTo,
     transport
   ]);
 
   useLayoutEffect(() => {
-    if (viewportIsLiveEdge()) {
+    if (viewportIntentRef.current.kind === "live-edge") {
       const changed = applyViewportIntent();
       if (changed) {
         updateViewportMetrics();
@@ -3135,90 +2905,66 @@ export const TimelineView = memo(function TimelineView({
       }
       return;
     }
-    const viewportState = currentViewportState();
-    const retained = viewportState.retainedRoomAnchor;
+    const retained = retainedRoomScrollAnchorRef.current;
     const container = containerRef.current;
     const pendingDifferentRoomRestore =
       retained !== null &&
-      viewportState.roomAnchorRestorePending &&
-      viewportState.restoredRoomAnchorSignature !== retained.signature;
+      roomScrollAnchorRestorePendingRef.current &&
+      restoredRoomScrollAnchorSignatureRef.current !== retained.signature;
     if (
       !retained ||
       !container ||
-      viewportState.roomAnchorRestorePending ||
+      suppressScrollAnchorCaptureRef.current ||
       pendingDifferentRoomRestore ||
-      viewportState.prependAnchorRestorePending
+      anchorRestorePendingRef.current
     ) {
       return;
     }
     const activeRoomAnchor =
-      activePersistedRoomAnchor &&
+      roomScrollAnchor &&
       roomTimelineRoomId === roomId &&
-      !roomScrollAnchorIsStale(activePersistedRoomAnchor)
-        ? activePersistedRoomAnchor
+      !roomScrollAnchorIsStale(roomScrollAnchor)
+        ? roomScrollAnchor
         : null;
     const activeRoomAnchorSignature = activeRoomAnchor
       ? roomScrollAnchorSignature(roomId, activeRoomAnchor)
       : null;
     if (!activeRoomAnchor || retained.signature !== activeRoomAnchorSignature) {
-      dispatchViewportMachine({ type: "clear-retained-room-anchor" });
+      retainedRoomScrollAnchorRef.current = null;
       return;
     }
     const anchorNode = findRoomScrollAnchorNode(container, activeRoomAnchor);
     if (!anchorNode) {
-      dispatchViewportMachine({ type: "clear-retained-room-anchor" });
+      retainedRoomScrollAnchorRef.current = null;
       return;
     }
     const currentOffset = currentRoomScrollAnchorOffset(container, anchorNode, activeRoomAnchor);
     if (Math.abs(currentOffset - activeRoomAnchor.offset_px) <= 1) {
-      dispatchViewportMachine({
-        type: "retain-room-anchor",
-        retained: {
-          signature: activeRoomAnchorSignature,
-          anchor: activeRoomAnchor,
-          scrollTop: container.scrollTop
-        }
-      });
-      return;
-    }
-    if (
-      retained.scrollTop === container.scrollTop &&
-      viewportState.postSettleRestorePendingSignature === retained.signature
-    ) {
+      retainedRoomScrollAnchorRef.current = {
+        signature: activeRoomAnchorSignature,
+        anchor: activeRoomAnchor,
+        scrollTop: container.scrollTop
+      };
       return;
     }
     const previousScrollTop = container.scrollTop;
     let restored = false;
-    dispatchViewportMachine({ type: "room-anchor-restore-started" });
-    runViewportScrollWork(() => {
-      restored = restoreRoomScrollAnchor(container, activeRoomAnchor, viewportScrollBy);
+    runWithSuppressedScrollAnchorCapture(() => {
+      restored = restoreRoomScrollAnchor(container, activeRoomAnchor);
     });
     if (!restored) {
-      dispatchViewportMachine({
-        type: "room-anchor-restore-finished",
-        status: "not-found"
-      });
-      dispatchViewportMachine({ type: "clear-retained-room-anchor" });
+      retainedRoomScrollAnchorRef.current = null;
       return;
     }
-    dispatchViewportMachine({
-      type: "retain-room-anchor",
-      retained: {
-        signature: activeRoomAnchorSignature,
-        anchor: activeRoomAnchor,
-        scrollTop: container.scrollTop
-      }
-    });
+    retainedRoomScrollAnchorRef.current = {
+      signature: activeRoomAnchorSignature,
+      anchor: activeRoomAnchor,
+      scrollTop: container.scrollTop
+    };
     if (container.scrollTop !== previousScrollTop) {
       updateViewportMetrics();
       reportViewportObservation();
     }
-    requestAnimationFrame(() => {
-      dispatchViewportMachine({
-        type: "room-anchor-restore-finished",
-        status: "found"
-      });
-    });
   });
 
   useLayoutEffect(() => {
@@ -3261,17 +3007,13 @@ export const TimelineView = memo(function TimelineView({
     }
     const container = containerRef.current;
     const measuredAtBottom = Boolean(container && isScrolledToBottom(container));
-    dispatchViewportMachine({
-      type: "stick-to-bottom-after-measurement",
-      value: measuredAtBottom
-    });
-    if (measuredAtBottom && viewportIsLiveEdge()) {
+    stickToBottomAfterMeasurementRef.current = measuredAtBottom;
+    if (measuredAtBottom) {
       setViewportIntentToLiveEdge();
     }
     itemHeightByDomIdRef.current = nextHeights;
     setMeasuredHeightVersion((current) => current + 1);
   }, [
-    dispatchViewportMachine,
     setViewportIntentToLiveEdge,
     virtualWindow.endIndex,
     virtualWindow.startIndex,
@@ -3279,42 +3021,85 @@ export const TimelineView = memo(function TimelineView({
     visibleItems
   ]);
 
-  const scheduleViewportScrollWork = useCallback((observeViewport: boolean) => {
-    pendingViewportObservationRef.current =
-      pendingViewportObservationRef.current || observeViewport;
-    if (viewportScrollWorkFrameRef.current !== null) {
+  // --- Automatic backfill on scroll near the top ---
+  const maybeAutoBackfill = useCallback(() => {
+    if (suppressPaginationUi) {
       return;
     }
-    viewportScrollWorkFrameRef.current = window.requestAnimationFrame(() => {
-      viewportScrollWorkFrameRef.current = null;
-      updateViewportMetrics();
-      if (!pendingViewportObservationRef.current) {
-        return;
-      }
-      pendingViewportObservationRef.current = false;
-      reportViewportObservation();
-      evaluateViewportCoverageAndMaybeBackfill("user-scroll", { forceUserBackfill: true });
-    });
-  }, [evaluateViewportCoverageAndMaybeBackfill, reportViewportObservation, updateViewportMetrics]);
-  const onTimelineScroll = useCallback(() => {
     const container = containerRef.current;
     if (!container) {
       return;
     }
-    const viewportState = currentViewportState();
-    const observed = viewportObserveScroll(container, {
-      atBottom: isScrolledToBottom(container),
-      userInput: viewportState.userScrollInputPending
-    });
-    if (!observed.programmaticEcho) {
-      scheduleScrollActivityIdle();
+    const desiredBackfillThreshold = autoLoadOlderMessages
+      ? Math.max(AUTO_BACKFILL_THRESHOLD_PX, virtualItemHeight * AUTO_BACKFILL_PREFETCH_ITEMS)
+      : 0;
+    const maxScrollTop = container.scrollHeight - container.clientHeight;
+    // Only prefetch when the viewport is actually near the top edge. If the
+    // loaded timeline is shorter than the desired prefetch window, fall back
+    // to the near-top threshold so that a small scroll up from the live edge
+    // does not immediately fire a backfill request (and the prepend/anchor
+    // restoration that can follow).
+    const backfillThreshold = autoLoadOlderMessages
+      ? (maxScrollTop > desiredBackfillThreshold
+          ? desiredBackfillThreshold
+          : AUTO_BACKFILL_THRESHOLD_PX)
+      : 0;
+    if (container.scrollTop > backfillThreshold) {
+      return;
     }
-    scheduleViewportScrollWork(!observed.programmaticEcho);
+    // Block while: a previous diff's anchor restoration is pending, a
+    // request is already in flight, or pagination is Paginating/EndReached.
+    if (
+      anchorRestorePendingRef.current ||
+      roomScrollAnchorRestorePendingRef.current ||
+      backfillInFlightRef.current
+    ) {
+      return;
+    }
+    if (shouldSuppressAutoBackfill(store, timelineKeyRef.current)) {
+      return;
+    }
+    backfillInFlightRef.current = true;
+    void transport
+      .paginateBackwards(timelineKeyRef.current)
+      .catch(() => {
+        backfillInFlightRef.current = false;
+      });
+  }, [store, transport, suppressPaginationUi, autoLoadOlderMessages, virtualItemHeight]);
+  const onTimelineScroll = useCallback(() => {
+    const container = containerRef.current;
+    const sig = programmaticScrollSignatureRef.current;
+    const isProgrammaticEcho =
+      sig !== null &&
+      container !== null &&
+      container.scrollTop === sig.scrollTop &&
+      container.scrollHeight === sig.scrollHeight;
+    const isUserDrivenScroll = userScrollInputPendingRef.current && !isProgrammaticEcho;
+    if (!isProgrammaticEcho && container) {
+      const atBottom = isScrolledToBottom(container);
+      if (isUserDrivenScroll && atBottom) {
+        setViewportIntentToLiveEdge();
+        userScrollInputPendingRef.current = false;
+      } else if (isUserDrivenScroll || viewportIntentRef.current.kind === "live-edge") {
+        releaseViewportIntent();
+      }
+    }
+    if (!isProgrammaticEcho) {
+      retainedRoomScrollAnchorRef.current = null;
+    }
+    updateViewportMetrics();
+    if (!isProgrammaticEcho) {
+      reportViewportObservation();
+      maybeAutoBackfill();
+      persistViewportAnchor();
+    }
   }, [
-    currentViewportState,
-    scheduleScrollActivityIdle,
-    scheduleViewportScrollWork,
-    viewportObserveScroll
+    setViewportIntentToLiveEdge,
+    maybeAutoBackfill,
+    persistViewportAnchor,
+    reportViewportObservation,
+    releaseViewportIntent,
+    updateViewportMetrics
   ]);
   const onTimelinePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -3364,34 +3149,24 @@ export const TimelineView = memo(function TimelineView({
     timelineInitialized,
     transport
   ]);
-  const scrollToViewportTarget = useCallback(
-    (target: TimelineViewportTarget) => {
-      dispatchViewportMachine({ type: "targeting-requested", target });
-      const eventId = target.eventId;
-      const scrollBlock: ScrollLogicalPosition =
-        target.block === "end" ? "end" : "center";
+  const jumpToEvent = useCallback(
+    (eventId: string) => {
+      releaseViewportIntent();
       const container = containerRef.current;
       const scrollMountedRowIntoView = () => {
         const row = container?.querySelector<HTMLElement>(
           `[data-event-id="${cssEscape(eventId)}"]`
         );
-        if (row && container) {
-          viewportRunProgrammaticScroll(container, () => {
-            row.scrollIntoView({ block: scrollBlock, inline: "nearest" });
-          });
-        }
+        row?.scrollIntoView({ block: "center", inline: "nearest" });
       };
       const row = container?.querySelector<HTMLElement>(
         `[data-event-id="${cssEscape(eventId)}"]`
       );
-      if (row && container) {
-        runViewportScrollWork(() => {
-          viewportRunProgrammaticScroll(container, () => {
-            row.scrollIntoView({ block: scrollBlock, inline: "nearest" });
-          });
+      if (row) {
+        runWithSuppressedScrollAnchorCapture(() => {
+          row.scrollIntoView({ block: "center", inline: "nearest" });
         });
         updateViewportMetrics();
-        dispatchViewportMachine({ type: "targeting-settled" });
         reportViewportObservation();
         return;
       }
@@ -3402,43 +3177,35 @@ export const TimelineView = memo(function TimelineView({
         if (itemIndex >= 0) {
           const itemTop = timelineHeightModel.offsets[itemIndex] ?? 0;
           const itemHeight = timelineItemHeightAtIndex(timelineHeightModel, itemIndex);
-          const targetScrollTop =
-            target.block === "end"
-              ? viewportMetrics.listOffsetTop +
-                itemTop +
-                itemHeight -
-                container.clientHeight
-              : viewportMetrics.listOffsetTop +
+          runWithSuppressedScrollAnchorCapture(() => {
+            container.scrollTop = Math.max(
+              0,
+              viewportMetrics.listOffsetTop +
                 itemTop +
                 itemHeight / 2 -
-                container.clientHeight / 2;
-          runViewportScrollWork(() => {
-            viewportScrollTo(container, Math.max(0, targetScrollTop));
+                container.clientHeight / 2
+            );
           });
           updateViewportMetrics();
           requestAnimationFrame(() => {
-            runViewportScrollWork(() => {
+            runWithSuppressedScrollAnchorCapture(() => {
               scrollMountedRowIntoView();
             });
             updateViewportMetrics();
-            dispatchViewportMachine({ type: "targeting-settled" });
             reportViewportObservation();
           });
           return;
         }
       }
-      dispatchViewportMachine({ type: "targeting-settled" });
       reportViewportObservation();
     },
     [
-      dispatchViewportMachine,
-      runViewportScrollWork,
+      releaseViewportIntent,
+      runWithSuppressedScrollAnchorCapture,
       reportViewportObservation,
       timelineHeightModel,
       updateViewportMetrics,
       viewportMetrics.listOffsetTop,
-      viewportRunProgrammaticScroll,
-      viewportScrollTo,
       virtualWindow.virtualized,
       visibleItems
     ]
@@ -3453,14 +3220,14 @@ export const TimelineView = memo(function TimelineView({
       activeElement.blur();
     }
     setViewportIntentToLiveEdge();
-    runViewportScrollWork(() => {
-      scrollContainerToBottom(container, viewportScrollTo);
+    runWithSuppressedScrollAnchorCapture(() => {
+      scrollContainerToBottom(container);
     });
     updateViewportMetrics();
     reportViewportObservation();
     requestAnimationFrame(() => {
-      runViewportScrollWork(() => {
-        scrollContainerToBottom(container, viewportScrollTo);
+      runWithSuppressedScrollAnchorCapture(() => {
+        scrollContainerToBottom(container);
       });
       updateViewportMetrics();
       reportViewportObservation();
@@ -3468,17 +3235,9 @@ export const TimelineView = memo(function TimelineView({
   }, [
     setViewportIntentToLiveEdge,
     reportViewportObservation,
-    runViewportScrollWork,
-    updateViewportMetrics,
-    viewportScrollTo
+    runWithSuppressedScrollAnchorCapture,
+    updateViewportMetrics
   ]);
-  useEffect(() => {
-    if (latestJumpRequestRef.current === latestJumpRequest) {
-      return;
-    }
-    latestJumpRequestRef.current = latestJumpRequest;
-    jumpToBottom();
-  }, [jumpToBottom, latestJumpRequest]);
   const canRenderRoomNavigation =
     roomTimelineRoomId === roomId;
   const firstUnreadEventId = navigationSnapshot?.first_unread_event_id ?? null;
@@ -3494,6 +3253,11 @@ export const TimelineView = memo(function TimelineView({
       (navigationSnapshot.newer_event_count > 0 || navigationSnapshot.unread_event_count > 0)
   );
   const unreadMarkerEventId = navigationSnapshot?.first_unread_event_id ?? null;
+  const readMarkerDisplayEventId =
+    navigationSnapshot?.read_marker_display_event_id ??
+    navigationSnapshot?.read_marker_event_id ??
+    roomSignals?.fully_read_event_id ??
+    null;
 
   return (
     <div
@@ -3526,15 +3290,7 @@ export const TimelineView = memo(function TimelineView({
               <button
                 className="timeline-navigation-pill"
                 type="button"
-                onClick={() =>
-                  scrollToViewportTarget(
-                    eventViewportTarget(
-                      firstUnreadEventId,
-                      "timeline-navigation",
-                      "end"
-                    )
-                  )
-                }
+                onClick={() => jumpToEvent(firstUnreadEventId)}
               >
                 <ArrowDown size={14} aria-hidden="true" />
                 <span>{t("timeline.jumpToFirstUnread", { count: firstUnreadCount })}</span>
@@ -3610,6 +3366,9 @@ export const TimelineView = memo(function TimelineView({
           const itemDomId = timelineItemDomId(item.id);
           const eventId = "Event" in item.id ? item.id.Event.event_id : null;
           const isUnreadMarker = Boolean(eventId && unreadMarkerEventId === eventId);
+          const isReadMarker = Boolean(
+            eventId && readMarkerDisplayEventId === eventId && !unreadMarkerEventId
+          );
           return (
             <div
               className="timeline-item-frame"
@@ -3648,7 +3407,7 @@ export const TimelineView = memo(function TimelineView({
                 forwardDestinations={effectiveForwardDestinations}
                 onRetrySend={onRetrySend}
                 onCancelSend={onCancelSend}
-                presence={item.sender ? presenceByUserId?.[item.sender] : undefined}
+                presence={item.sender ? liveSignals?.presence[item.sender] : undefined}
                 profile={item.sender ? profileUsers[item.sender] : undefined}
                 avatarThumbnails={avatarThumbnails}
                 currentUserId={currentUserId}
@@ -3664,6 +3423,11 @@ export const TimelineView = memo(function TimelineView({
                   eventId ? roomSignals?.receipts_by_event[eventId]?.overflow_count ?? 0 : 0
                 }
               />
+              {isReadMarker ? (
+                <div className="read-marker" role="separator" aria-label={t("timeline.readMarker")}>
+                  <span>{t("timeline.readMarker")}</span>
+                </div>
+              ) : null}
             </div>
           );
         })}
@@ -4813,27 +4577,14 @@ export function TimelineItemRow({
   );
 }
 
-function latestReadableEventBackedItemId(items: TimelineItem[]): string | null {
+function latestEventBackedItemId(items: TimelineItem[]): string | null {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
-    if (!item.is_hidden && timelineItemHasReadableContent(item) && "Event" in item.id) {
+    if ("Event" in item.id) {
       return item.id.Event.event_id;
     }
   }
   return null;
-}
-
-function timelineItemHasReadableContent(item: TimelineItem): boolean {
-  if (item.body?.trim()) {
-    return true;
-  }
-  if (item.media) {
-    return true;
-  }
-  if (item.formatted?.plain_text.trim()) {
-    return true;
-  }
-  return item.formatted?.code_blocks.some((block) => block.body.trim()) ?? false;
 }
 
 function emitTimelineEventDiagnosticLog(
@@ -4863,10 +4614,10 @@ function emitTimelineEventDiagnosticLog(
     );
     return;
   }
-  if ("AnchorMaterializeFinished" in event) {
+  if ("AnchorRestoreFinished" in event) {
     emit(
       "timeline.event",
-      `kind=${kind} anchor materialize status=${anchorMaterializeStatusLogLabel(event.AnchorMaterializeFinished.status)}`
+      `kind=${kind} anchor restore status=${anchorRestoreStatusLogLabel(event.AnchorRestoreFinished.status)}`
     );
     return;
   }
@@ -4915,7 +4666,7 @@ function paginationStateLogLabel(state: PaginationState): string {
   return `Failed(${state.Failed.kind})`;
 }
 
-function anchorMaterializeStatusLogLabel(status: TimelineAnchorMaterializeStatus): string {
+function anchorRestoreStatusLogLabel(status: TimelineAnchorRestoreStatus): string {
   if (typeof status === "string") {
     return status;
   }

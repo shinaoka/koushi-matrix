@@ -628,9 +628,9 @@
     },
     "kind": "ThreadsList"
   },
-  "timelineAnchorMaterializeFinished": {
+  "timelineAnchorRestoreFinished": {
     "event": {
-      "AnchorMaterializeFinished": {
+      "AnchorRestoreFinished": {
         "key": {
           "account_key": "@u:example.test",
           "kind": {
@@ -1150,7 +1150,6 @@
         "snapshot": {
           "can_jump_to_bottom": true,
           "first_unread_event_id": "$unread:example.test",
-          "latest_readable_event_id": "$latest:example.test",
           "newer_event_count": 3,
           "read_marker_display_event_id": "$read:example.test",
           "read_marker_event_id": "$read:example.test",

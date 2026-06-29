@@ -717,7 +717,7 @@ export function TimelinePane({
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [dateJumpDialogOpen, setDateJumpDialogOpen] = useState(false);
-  const [latestJumpRequest, setLatestJumpRequest] = useState(0);
+  const timelineListRef = useRef<HTMLDivElement | null>(null);
   const [jumpDateValue, setJumpDateValue] = useState("");
 
   function submitJumpDate(event: FormEvent<HTMLFormElement>) {
@@ -740,6 +740,13 @@ export function TimelinePane({
   }
   const canPaginateOlderMessages = Boolean(timelineRoomId && currentUserId && timelineTransport);
   const canJumpToTimelineDate = Boolean(timelineTransport?.openAtTimestamp && timelineRoomId);
+  const listRefCallback = useCallback(
+    (element: HTMLDivElement | null) => {
+      timelineListRef.current = element;
+    },
+    []
+  );
+
   return (
     <main className="main-pane" aria-label={t("timeline.conversation")}>
       <header className="channel-header">
@@ -780,15 +787,20 @@ export function TimelinePane({
                 <CalendarDays size={ICON_SIZE.control} aria-hidden="true" />
               </button>
             ) : null}
-              <button
-                className="icon-button timeline-control"
-                type="button"
-                aria-label={t("timeline.latest")}
-                title={t("timeline.latest")}
-                onClick={() => setLatestJumpRequest((current) => current + 1)}
-              >
-                <ArrowDown size={ICON_SIZE.control} aria-hidden="true" />
-              </button>
+            <button
+              className="icon-button timeline-control"
+              type="button"
+              aria-label={t("timeline.latest")}
+              title={t("timeline.latest")}
+              onClick={() => {
+                const list = timelineListRef.current;
+                if (list) {
+                  list.scrollTop = list.scrollHeight;
+                }
+              }}
+            >
+              <ArrowDown size={ICON_SIZE.control} aria-hidden="true" />
+            </button>
           </nav>
           <button
             className="icon-button"
@@ -913,8 +925,7 @@ export function TimelinePane({
               onReply={onReplyStable}
               onOpenThread={onOpenThreadStable}
               resolveComposerKeyAction={resolveComposerKeyActionStable}
-              roomSignals={snapshot.state.domain.live_signals.rooms[timelineRoomId] ?? null}
-              presenceByUserId={snapshot.state.domain.live_signals.presence}
+              liveSignals={snapshot.state.domain.live_signals}
               profileUsers={snapshot.state.domain.profile.users}
               pinnedEventIds={pinnedEventIds}
               forwardDestinations={forwardDestinations}
@@ -926,12 +937,10 @@ export function TimelinePane({
               codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
               searchQuery={searchQuery}
               mediaDownloads={mediaDownloads}
-              roomViewport={snapshot.state.ui.navigation.room_viewports?.[timelineRoomId] ?? null}
               roomScrollAnchor={snapshot.state.ui.navigation.room_scroll_anchors?.[timelineRoomId] ?? null}
-              latestJumpRequest={latestJumpRequest}
               onDiagnosticsChange={onTimelineDiagnosticsChangeStable}
               onDiagnosticLogEntry={onTimelineDiagnosticLogEntryStable}
-              threadRootOrder={snapshot.state.domain.settings.values.timeline.thread_root_order}
+              listRefCallback={listRefCallback}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).

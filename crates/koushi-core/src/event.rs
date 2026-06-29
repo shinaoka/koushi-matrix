@@ -9,8 +9,7 @@ use koushi_state::{
     JapaneseCatalogProfile, KeyBackupStatus, LocalEncryptionHealth, MediaTransferProgress,
     NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind, ProfileState,
     ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind, SessionState, SyncMode,
-    ThreadsListItem, TimelinePersistedViewport, TimelineScrollAnchor, VerificationFlowState,
-    resolve_user_display_name,
+    ThreadsListItem, VerificationFlowState, resolve_user_display_name,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -876,10 +875,10 @@ pub enum TimelineEvent {
         direction: PaginationDirection,
         state: PaginationState,
     },
-    AnchorMaterializeFinished {
+    AnchorRestoreFinished {
         request_id: RequestId,
         key: TimelineKey,
-        status: TimelineAnchorMaterializeStatus,
+        status: TimelineAnchorRestoreStatus,
     },
     NavigationUpdated {
         key: TimelineKey,
@@ -984,10 +983,10 @@ impl fmt::Debug for TimelineEvent {
                 .field("direction", direction)
                 .field("state", state)
                 .finish(),
-            Self::AnchorMaterializeFinished {
+            Self::AnchorRestoreFinished {
                 request_id, status, ..
             } => formatter
-                .debug_struct("AnchorMaterializeFinished")
+                .debug_struct("AnchorRestoreFinished")
                 .field("request_id", request_id)
                 .field("key", &"TimelineKey(..)")
                 .field("status", status)
@@ -1094,7 +1093,7 @@ impl fmt::Debug for TimelineEvent {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum TimelineAnchorMaterializeStatus {
+pub enum TimelineAnchorRestoreStatus {
     Found,
     EndReached,
     BudgetExhausted,
@@ -1123,17 +1122,12 @@ pub struct TimelineViewportObservation {
     pub first_visible_event_id: Option<String>,
     pub last_visible_event_id: Option<String>,
     pub at_bottom: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scroll_anchor: Option<TimelineScrollAnchor>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub viewport: Option<TimelinePersistedViewport>,
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelineNavigationSnapshot {
     pub read_marker_event_id: Option<String>,
     pub read_marker_display_event_id: Option<String>,
-    pub latest_readable_event_id: Option<String>,
     pub first_unread_event_id: Option<String>,
     pub unread_event_count: u64,
     pub unread_position: TimelineUnreadPosition,
@@ -1153,13 +1147,6 @@ impl fmt::Debug for TimelineNavigationSnapshot {
                 "read_marker_display_event_id",
                 &self
                     .read_marker_display_event_id
-                    .as_ref()
-                    .map(|_| "EventId(..)"),
-            )
-            .field(
-                "latest_readable_event_id",
-                &self
-                    .latest_readable_event_id
                     .as_ref()
                     .map(|_| "EventId(..)"),
             )
@@ -1749,7 +1736,7 @@ pub fn project_timeline_event_display_labels(event: &mut TimelineEvent, state: &
             }
         }
         TimelineEvent::PaginationStateChanged { .. }
-        | TimelineEvent::AnchorMaterializeFinished { .. }
+        | TimelineEvent::AnchorRestoreFinished { .. }
         | TimelineEvent::SendCompleted { .. }
         | TimelineEvent::MessageSourceLoaded { .. }
         | TimelineEvent::MessageForwarded { .. }

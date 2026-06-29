@@ -159,7 +159,6 @@ pub enum AccountMessage {
 }
 
 /// Handle to the AccountActor background task.
-#[derive(Clone)]
 pub struct AccountActorHandle {
     tx: mpsc::Sender<AccountMessage>,
 }

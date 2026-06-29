@@ -447,12 +447,9 @@ stateDiagram-v2
     Projected --> Unobserved: Unsubscribe/Resync reset
 ```
 
-- `ObserveViewport` accepts only Rust-consumed viewport facts for navigation:
-  first visible event id, last visible event id, and `at_bottom`. It may also
-  carry a separate durable viewport persistence DTO (`LiveEdge` or `Anchored`)
-  for `AppState.navigation.room_viewports`; that DTO is not used to compute
-  unread counts or marker placement. It does not carry unread counts, marker
-  decisions, or Matrix API responses.
+- `ObserveViewport` accepts only facts: first visible event id, last visible
+  event id, and `at_bottom`. It does not carry unread counts, marker decisions,
+  scroll intent, or Matrix API responses.
 - The actor derives `read_marker_event_id`, `first_unread_event_id`,
   `unread_event_count`, `unread_position`, `newer_event_count`, and
   `can_jump_to_bottom` from Rust-owned item order. Local echoes, synthetic
@@ -461,11 +458,6 @@ stateDiagram-v2
 - `NavigationUpdated` is emitted only when the projection changes. Diff-driven
   updates are emitted after the corresponding `ItemsUpdated` event so the GUI
   has the referenced rows before it renders or scrolls to an anchor.
-- `TimelineViewportUpdated` persists the selected room viewport mode. `LiveEdge`
-  clears any legacy `room_scroll_anchors` entry for that room; `Anchored`
-  stores both `room_viewports[room_id]` and a legacy `room_scroll_anchors`
-  mirror for backward compatibility. Legacy anchor-only updates are normalized
-  to `Anchored` viewport entries when navigation state is loaded.
 - Jump-to-date is `AppCommand::OpenTimelineAtTimestamp`. Core resolves
   `timestamp_to_event` through the active Matrix session and then opens the
   existing focused-context timeline. React must not call raw Matrix APIs or

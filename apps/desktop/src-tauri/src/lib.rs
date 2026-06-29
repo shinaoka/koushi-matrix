@@ -1101,7 +1101,7 @@ pub fn run() {
             commands::navigation::observe_timeline_viewport,
             commands::timeline::ensure_timeline_subscribed,
             commands::timeline::paginate_timeline_backwards,
-            commands::timeline::materialize_timeline_anchor,
+            commands::timeline::restore_timeline_anchor,
             commands::timeline::paginate_thread_timeline_backwards,
             commands::timeline::send_text,
             commands::timeline::schedule_send,
@@ -1720,7 +1720,7 @@ mod tests {
                 IntentOutcome, LinkPreview, LinkPreviewImage, LinkPreviewState, LiveSignalsEvent,
                 LocalEncryptionEvent, NativeAttentionEvent, PaginationDirection, PaginationState,
                 ReactionGroup, RoomEvent, SearchEvent, SyncEvent, ThreadsListEvent,
-                TimelineAnchorMaterializeStatus, TimelineCodeBlock, TimelineDisplayLabelUpdate,
+                TimelineAnchorRestoreStatus, TimelineCodeBlock, TimelineDisplayLabelUpdate,
                 TimelineEvent, TimelineFormattedBody, TimelineItem, TimelineItemId, TimelineMedia,
                 TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
                 TimelineMessageActions, TimelineMessageKind, TimelineMessageSource,
@@ -2294,15 +2294,15 @@ mod tests {
         assert_eq!(pagination["direction"], json!("Backward"));
         assert_eq!(pagination["state"], json!("EndReached"));
 
-        let anchor_materialize_finished =
-            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::AnchorMaterializeFinished {
+        let anchor_restore_finished =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
                 request_id,
                 key: key.clone(),
-                status: TimelineAnchorMaterializeStatus::BudgetExhausted,
+                status: TimelineAnchorRestoreStatus::BudgetExhausted,
             }))
-            .expect("serialize anchor materialize finished");
+            .expect("serialize anchor restore finished");
         assert_eq!(
-            anchor_materialize_finished["event"]["AnchorMaterializeFinished"]["status"],
+            anchor_restore_finished["event"]["AnchorRestoreFinished"]["status"],
             json!("BudgetExhausted")
         );
 
@@ -2323,7 +2323,6 @@ mod tests {
                 snapshot: TimelineNavigationSnapshot {
                     read_marker_event_id: Some("$read:example.test".to_owned()),
                     read_marker_display_event_id: Some("$read:example.test".to_owned()),
-                    latest_readable_event_id: Some("$latest:example.test".to_owned()),
                     first_unread_event_id: Some("$unread:example.test".to_owned()),
                     unread_event_count: 2,
                     unread_position: TimelineUnreadPosition::BelowViewport,
@@ -2948,7 +2947,7 @@ mod tests {
             "timelineMessageForwarded": message_forwarded,
             "timelineMessageSourceLoaded": message_source_loaded,
             "timelineNavigationUpdated": navigation_updated,
-            "timelineAnchorMaterializeFinished": anchor_materialize_finished,
+            "timelineAnchorRestoreFinished": anchor_restore_finished,
             "timelinePaginationEndReached": serialize_core_event(&CoreEvent::Timeline(
                 TimelineEvent::PaginationStateChanged {
                     request_id: None,
@@ -3061,7 +3060,7 @@ mod tests {
             "timelineMediaUploadProgress",
             "timelineMessageForwarded",
             "timelineMessageSourceLoaded",
-            "timelineAnchorMaterializeFinished",
+            "timelineAnchorRestoreFinished",
             "timelineNavigationUpdated",
             "timelinePaginationEndReached",
             "timelineReplyQuoteInitialItems",

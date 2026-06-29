@@ -183,8 +183,7 @@ function defaultSnapshotResponse() {
             }
           },
           timeline: {
-            auto_load_older_messages: true,
-            thread_root_order: { kind: "latestReply" }
+            auto_load_older_messages: true
           }
         },
         persistence: { kind: "idle" }

@@ -218,8 +218,7 @@ function defaultSettingsState(): DesktopSnapshot["state"]["domain"]["settings"] 
         }
       },
       timeline: {
-        auto_load_older_messages: true,
-        thread_root_order: { kind: "latestReply" }
+        auto_load_older_messages: true
       },
       search_crawler: {
         speed: "standard",
@@ -1679,7 +1678,6 @@ mock.setCommandResponse(
 mock.setCommandResponse(
   "open_activity_event",
   ({ roomId, eventId }: { roomId: string; eventId: string }) => {
-    const updatedAtMs = Date.now();
     const next: DesktopSnapshot = {
       ...currentSnapshot,
       state: {
@@ -1695,17 +1693,7 @@ mock.setCommandResponse(
                 event_id: eventId,
                 edge: "bottom",
                 offset_px: 0,
-                updated_at_ms: updatedAtMs
-              }
-            },
-            room_viewports: {
-              ...(currentSnapshot.state.ui.navigation.room_viewports ?? {}),
-              [roomId]: {
-                kind: "anchored",
-                event_id: eventId,
-                edge: "bottom",
-                offset_px: 0,
-                updated_at_ms: updatedAtMs
+                updated_at_ms: Date.now()
               }
             }
           },

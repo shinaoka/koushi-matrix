@@ -123,14 +123,12 @@ const transport: TimelineTransport = {
   hideLinkPreview(roomId, eventId) {
     return ipc.invoke("hide_link_preview", { roomId, eventId });
   },
-  observeViewport(roomId, firstVisibleEventId, lastVisibleEventId, atBottom, scrollAnchor, viewport) {
+  observeViewport(roomId, firstVisibleEventId, lastVisibleEventId, atBottom) {
     return ipc.invoke("observe_timeline_viewport", {
       roomId,
       firstVisibleEventId,
       lastVisibleEventId,
-      atBottom,
-      scrollAnchor,
-      viewport
+      atBottom
     });
   },
   openAtTimestamp(roomId, timestampMs) {

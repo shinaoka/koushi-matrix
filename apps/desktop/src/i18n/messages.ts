@@ -347,8 +347,6 @@ export type MessageId =
   | "settings.current"
   | "settings.autoLoadOlderMessages"
   | "settings.autoLoadOlderMessagesDescription"
-  | "settings.threadRootLatestReply"
-  | "settings.threadRootLatestReplyDescription"
   | "settings.checkLocalEncryption"
   | "settings.credentialStore"
   | "settings.credentialStoreLinux"
@@ -665,6 +663,7 @@ export type MessageId =
   | "timeline.reactionSenderUnknown"
   | "timeline.readBy"
   | "timeline.readReceiptOverflow"
+  | "timeline.readMarker"
   | "timeline.unreadMarker"
   | "timeline.jumpToFirstUnread"
   | "timeline.jumpToBottom"
@@ -1260,8 +1259,6 @@ const en: Catalog = {
   "settings.current": "Current",
   "settings.autoLoadOlderMessages": "Automatically load older messages",
   "settings.autoLoadOlderMessagesDescription": "Prefetch room history when scrolling near the start of the loaded timeline",
-  "settings.threadRootLatestReply": "Position thread roots by latest reply",
-  "settings.threadRootLatestReplyDescription": "Move a thread root to the latest reply's position in the room timeline",
   "settings.checkLocalEncryption": "Check local encryption",
   "settings.credentialStore": "Credential store",
   "settings.credentialStoreLinux": "Secret Service",
@@ -1590,6 +1587,7 @@ const en: Catalog = {
   "timeline.reactionSenderUnknown": "{count} people",
   "timeline.readBy": "Read by {count}",
   "timeline.readReceiptOverflow": "{count} more",
+  "timeline.readMarker": "Read up to here",
   "timeline.unreadMarker": "Unread messages",
   "timeline.jumpToFirstUnread": "Jump to first unread, {count} unread",
   "timeline.jumpToBottom": "Jump to bottom, {count} new messages",
@@ -2071,8 +2069,6 @@ const ja: Catalog = {
   "settings.current": "現在",
   "settings.autoLoadOlderMessages": "古いメッセージを自動で読み込む",
   "settings.autoLoadOlderMessagesDescription": "読み込み済みタイムラインの先頭付近までスクロールしたらルーム履歴を先読みします",
-  "settings.threadRootLatestReply": "スレッド元を最新返信の位置に表示",
-  "settings.threadRootLatestReplyDescription": "スレッドに返信があると、ルームのタイムライン上でスレッド元を最新返信の位置へ移動します",
   "settings.checkLocalEncryption": "ローカル暗号化を確認",
   "settings.credentialStore": "資格情報ストア",
   "settings.credentialStoreLinux": "Linux Secret Service",
@@ -2401,6 +2397,7 @@ const ja: Catalog = {
   "timeline.reactionSenderUnknown": "{count} 人",
   "timeline.readBy": "{count} 人が既読",
   "timeline.readReceiptOverflow": "他 {count} 人",
+  "timeline.readMarker": "ここまで既読",
   "timeline.unreadMarker": "未読メッセージ",
   "timeline.jumpToFirstUnread": "最初の未読へ移動、未読 {count} 件",
   "timeline.jumpToBottom": "最新へ移動、新着 {count} 件",

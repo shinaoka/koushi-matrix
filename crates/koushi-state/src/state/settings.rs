@@ -376,29 +376,13 @@ impl Default for ImageUploadCompressionPolicy {
 pub struct TimelineSettings {
     #[serde(default = "default_true")]
     pub auto_load_older_messages: bool,
-    #[serde(default)]
-    pub thread_root_order: TimelineThreadRootOrder,
 }
 
 impl Default for TimelineSettings {
     fn default() -> Self {
         Self {
             auto_load_older_messages: true,
-            thread_root_order: TimelineThreadRootOrder::LatestReply,
         }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum TimelineThreadRootOrder {
-    LatestReply,
-    RootEvent,
-}
-
-impl Default for TimelineThreadRootOrder {
-    fn default() -> Self {
-        Self::LatestReply
     }
 }
 

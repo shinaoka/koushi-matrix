@@ -52,7 +52,7 @@ use koushi_core::command::{
 use koushi_core::event::{
     AccountEvent, ActivityEvent, CoreEvent, E2eeTrustEvent, LinkPreviewState, LiveSignalsEvent,
     LocalEncryptionEvent, PaginationDirection, PaginationState, RoomEvent, SearchEvent,
-    SyncBackendKind, SyncEvent, TimelineAnchorMaterializeStatus, TimelineDiff, TimelineEvent,
+    SyncBackendKind, SyncEvent, TimelineAnchorRestoreStatus, TimelineDiff, TimelineEvent,
     TimelineItem, TimelineItemId, TimelineMessageActions, TimelineSendState,
     TimelineUnreadPosition, TimelineViewportObservation,
 };
@@ -131,13 +131,13 @@ const DEFAULT_CACHE_RESTORE_DEPTH: usize = 200;
 const CACHE_RESTORE_PAGINATE_BATCH: u16 = 20;
 /// Production-faithful restore parameters, matching the app's live-room constants.
 /// Source: apps/desktop/src/components/TimelineView.tsx:406-407
-/// (LIVE_ROOM_ANCHOR_MATERIALIZE_MAX_BATCHES=6, EVENT_COUNT=100).
+/// (LIVE_ROOM_ANCHOR_RESTORE_MAX_BATCHES=6, EVENT_COUNT=100).
 /// With depth=200 and each SDK paginate_backwards returning ~one stored chunk,
 /// 6 batches reaches only ~6 chunks (~tens of events) → BudgetExhausted on main.
 const CACHE_RESTORE_PROD_MAX_BATCHES: u16 = 6;
 const CACHE_RESTORE_PROD_EVENT_COUNT: u16 = 100;
 /// Stage 2 speed gate: maximum backward-paginate cycles allowed per room during
-/// an offline anchor materialize.  With a bulk cache load (Stage 2), the runtime
+/// an offline anchor restore.  With a bulk cache load (Stage 2), the runtime
 /// should reach the anchor in ≤ 3 cycles.  On current main (~12 cycles/room)
 /// this gate is RED — that is the intended signal before Stage 2 lands.
 const CACHE_RESTORE_MAX_CYCLES: u16 = 3;
@@ -2196,7 +2196,7 @@ async fn run_scheduled_send_stage(
     const SCHEDULED_FIRE_BODY: &str = "Koushi scheduled fire QA body";
 
     let select_id = conn.next_request_id();
-    conn.command(CoreCommand::App(AppCommand::SelectRoom {
+    conn.command(CoreCommand::Room(RoomCommand::SelectRoom {
         request_id: select_id,
         room_id: room_id.to_owned(),
     }))
@@ -2841,7 +2841,7 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
 
     // -----------------------------------------------------------------------
     // Connect 2: restart over the same data dir, BLOCK the network, then drive
-    // MaterializeTimelineAnchor per room using production-faithful params.
+    // RestoreTimelineAnchor per room using production-faithful params.
     // PRIMARY GATE: status == Found, OR (EndReached AND anchor present in items).
     // Cycle count + ms are diagnostics only.
     // -----------------------------------------------------------------------
@@ -2894,12 +2894,12 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
         let restore_req = conn2.next_request_id();
         conn2
             .command(CoreCommand::Timeline(
-                TimelineCommand::MaterializeTimelineAnchor {
+                TimelineCommand::RestoreTimelineAnchor {
                     request_id: restore_req,
                     key: key.clone(),
                     event_id: anchor.clone(),
                     // Production-faithful params: source TimelineView.tsx:406-407
-                    // (LIVE_ROOM_ANCHOR_MATERIALIZE_MAX_BATCHES=6, EVENT_COUNT=100).
+                    // (LIVE_ROOM_ANCHOR_RESTORE_MAX_BATCHES=6, EVENT_COUNT=100).
                     // With depth=200, each paginate_backwards returns ~one stored chunk,
                     // so 6 batches reaches only ~tens of events → BudgetExhausted on main.
                     max_batches: CACHE_RESTORE_PROD_MAX_BATCHES,
@@ -2908,10 +2908,10 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
             ))
             .await
             .map_err(|e| {
-                format!("cache_restore: offline MaterializeTimelineAnchor submit failed: {e}")
+                format!("cache_restore: offline RestoreTimelineAnchor submit failed: {e}")
             })?;
 
-        // Consume events until AnchorMaterializeFinished. Count Paginating transitions
+        // Consume events until AnchorRestoreFinished. Count Paginating transitions
         // as internal backward-paginate cycles (PRIMARY diagnostic; also gated by
         // CACHE_RESTORE_MAX_CYCLES as Stage 2 speed regression gate).
         let mut cycle_count: u16 = 0;
@@ -2919,8 +2919,7 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
             let event = tokio::time::timeout(Duration::from_secs(120), conn2.recv_event())
                 .await
                 .map_err(|_| {
-                    "cache_restore offline: timed out waiting for AnchorMaterializeFinished"
-                        .to_owned()
+                    "cache_restore offline: timed out waiting for AnchorRestoreFinished".to_owned()
                 })?
                 .map_err(|lag| {
                     format!(
@@ -2946,7 +2945,7 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
                         apply_timeline_diff(&mut offline_items, diff);
                     }
                 }
-                CoreEvent::Timeline(TimelineEvent::AnchorMaterializeFinished {
+                CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
                     request_id: ev_req,
                     key: ref ev_key,
                     ref status,
@@ -2961,11 +2960,11 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
         total_cycles += cycle_count as u32;
         room_cycle_counts.push(cycle_count);
         let status_label = match &status {
-            TimelineAnchorMaterializeStatus::Found => "found",
-            TimelineAnchorMaterializeStatus::EndReached => "end_reached",
-            TimelineAnchorMaterializeStatus::BudgetExhausted => "budget_exhausted",
-            TimelineAnchorMaterializeStatus::Superseded => "superseded",
-            TimelineAnchorMaterializeStatus::Failed { .. } => "failed",
+            TimelineAnchorRestoreStatus::Found => "found",
+            TimelineAnchorRestoreStatus::EndReached => "end_reached",
+            TimelineAnchorRestoreStatus::BudgetExhausted => "budget_exhausted",
+            TimelineAnchorRestoreStatus::Superseded => "superseded",
+            TimelineAnchorRestoreStatus::Failed { .. } => "failed",
         };
         // Private-data-free diagnostics: cycles + ms only, no ids or bodies.
         eprintln!(
@@ -2977,8 +2976,8 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
         // EndReached → paginated to start of room; succeed only if anchor is in items.
         // BudgetExhausted/Failed/Superseded → deep anchor not restored (RED on main).
         let room_succeeded = match &status {
-            TimelineAnchorMaterializeStatus::Found => true,
-            TimelineAnchorMaterializeStatus::EndReached => {
+            TimelineAnchorRestoreStatus::Found => true,
+            TimelineAnchorRestoreStatus::EndReached => {
                 let anchor_present = find_timeline_item_with_body(
                     &offline_items,
                     &format!("cache_restore fixture r{room_idx} m0"),
@@ -2991,15 +2990,15 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
                 }
                 anchor_present
             }
-            TimelineAnchorMaterializeStatus::BudgetExhausted => {
+            TimelineAnchorRestoreStatus::BudgetExhausted => {
                 eprintln!(
                     "cache_restore room={room_idx}: BudgetExhausted — deep anchor not restored \
                      within production budget (EXPECTED RED on current main)"
                 );
                 false
             }
-            TimelineAnchorMaterializeStatus::Failed { .. }
-            | TimelineAnchorMaterializeStatus::Superseded => {
+            TimelineAnchorRestoreStatus::Failed { .. }
+            | TimelineAnchorRestoreStatus::Superseded => {
                 eprintln!("cache_restore room={room_idx}: restore status={status_label} offline");
                 false
             }
@@ -3048,7 +3047,7 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
     let shallow_restore_req = conn2.next_request_id();
     conn2
         .command(CoreCommand::Timeline(
-            TimelineCommand::MaterializeTimelineAnchor {
+            TimelineCommand::RestoreTimelineAnchor {
                 request_id: shallow_restore_req,
                 key: shallow_key2.clone(),
                 event_id: shallow_anchor_id.clone(),
@@ -3058,7 +3057,7 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
         ))
         .await
         .map_err(|e| {
-            format!("cache_restore shallow: offline MaterializeTimelineAnchor submit failed: {e}")
+            format!("cache_restore shallow: offline RestoreTimelineAnchor submit failed: {e}")
         })?;
 
     let mut shallow_cycle_count: u16 = 0;
@@ -3066,7 +3065,7 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
         let event = tokio::time::timeout(Duration::from_secs(60), conn2.recv_event())
             .await
             .map_err(|_| {
-                "cache_restore shallow: timed out waiting for AnchorMaterializeFinished".to_owned()
+                "cache_restore shallow: timed out waiting for AnchorRestoreFinished".to_owned()
             })?
             .map_err(|lag| {
                 format!(
@@ -3083,7 +3082,7 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
             }) if ev_key == &shallow_key2 && direction == PaginationDirection::Backward => {
                 shallow_cycle_count += 1;
             }
-            CoreEvent::Timeline(TimelineEvent::AnchorMaterializeFinished {
+            CoreEvent::Timeline(TimelineEvent::AnchorRestoreFinished {
                 request_id: ev_req,
                 key: ref ev_key,
                 ref status,
@@ -3095,19 +3094,19 @@ async fn run_cache_restore_scenario(config: &QaConfig) -> Result<(), String> {
     };
 
     let shallow_status_label = match &shallow_status {
-        TimelineAnchorMaterializeStatus::Found => "found",
-        TimelineAnchorMaterializeStatus::EndReached => "end_reached",
-        TimelineAnchorMaterializeStatus::BudgetExhausted => "budget_exhausted",
-        TimelineAnchorMaterializeStatus::Superseded => "superseded",
-        TimelineAnchorMaterializeStatus::Failed { .. } => "failed",
+        TimelineAnchorRestoreStatus::Found => "found",
+        TimelineAnchorRestoreStatus::EndReached => "end_reached",
+        TimelineAnchorRestoreStatus::BudgetExhausted => "budget_exhausted",
+        TimelineAnchorRestoreStatus::Superseded => "superseded",
+        TimelineAnchorRestoreStatus::Failed { .. } => "failed",
     };
     eprintln!("cache_restore shallow cycles={shallow_cycle_count} status={shallow_status_label}");
 
     // Gate: shallow anchor must reach Found (the lazy-reveal path must settle
-    // before declaring the materialize terminal).  cycle_count==0 is the expected
+    // before declaring the restore terminal).  cycle_count==0 is the expected
     // value after the P1 fix (no disk chunk needed); a non-zero count is
     // unexpected but not a hard gate here — correctness (Found) is the gate.
-    let shallow_succeeded = matches!(&shallow_status, TimelineAnchorMaterializeStatus::Found);
+    let shallow_succeeded = matches!(&shallow_status, TimelineAnchorRestoreStatus::Found);
     if !shallow_succeeded {
         eprintln!(
             "cache_restore shallow: status={shallow_status_label} — \
@@ -4010,8 +4009,6 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
                 first_visible_event_id: Some(event1_id.clone()),
                 last_visible_event_id: Some(event1_id.clone()),
                 at_bottom: false,
-                scroll_anchor: None,
-                viewport: None,
             },
         }))
         .await
@@ -6671,8 +6668,7 @@ async fn wait_for_operation_failed(
             }
             CoreEvent::Account(account_event) => {
                 let matches_request = match &account_event {
-                    AccountEvent::OidcAuthorizationCreated { request_id: id, .. }
-                    | AccountEvent::LoggedIn { request_id: id, .. }
+                    AccountEvent::LoggedIn { request_id: id, .. }
                     | AccountEvent::SessionRestored { request_id: id, .. }
                     | AccountEvent::SavedSessionsListed { request_id: id, .. }
                     | AccountEvent::RecoveryCompleted { request_id: id, .. }

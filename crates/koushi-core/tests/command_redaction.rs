@@ -115,14 +115,13 @@ fn secret_bearing_commands_redact_debug() {
             updated_at_ms: 1_900_000_000_000,
         },
     });
-    let materialize_timeline_anchor =
-        CoreCommand::Timeline(TimelineCommand::MaterializeTimelineAnchor {
-            request_id: fake_request_id(),
-            key: key.clone(),
-            event_id: "$anchor:example.test".to_owned(),
-            max_batches: 6,
-            event_count: 100,
-        });
+    let restore_timeline_anchor = CoreCommand::Timeline(TimelineCommand::RestoreTimelineAnchor {
+        request_id: fake_request_id(),
+        key: key.clone(),
+        event_id: "$anchor:example.test".to_owned(),
+        max_batches: 6,
+        event_count: 100,
+    });
 
     for (command, secrets) in [
         (&login, vec![PASSWORD, "alice-login-name", "Alice Laptop"]),
@@ -144,7 +143,7 @@ fn secret_bearing_commands_redact_debug() {
             vec!["!room:example.test", "$anchor:example.test"],
         ),
         (
-            &materialize_timeline_anchor,
+            &restore_timeline_anchor,
             vec!["!room:example.test", "$anchor:example.test"],
         ),
     ] {

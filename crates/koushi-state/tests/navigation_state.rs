@@ -3,9 +3,8 @@ use koushi_state::{
     NativeAttentionObservationKind, NativeAttentionProjectionInput, RoomListFilter, RoomListSort,
     RoomNotificationMode, RoomNotificationSettings, RoomSummary, RoomTags, SearchCrawlerSettings,
     SessionInfo, SessionState, SpaceSummary, ThreadPaneState, TimelinePaneState,
-    TimelinePersistedViewport, TimelineScrollAnchor, TimelineScrollAnchorEdge, UiEvent,
-    UserProfile, compose_sidebar, compose_sidebar_with_room_notification_settings,
-    native_attention_state_from_rooms, reduce,
+    TimelineScrollAnchorEdge, UiEvent, UserProfile, compose_sidebar,
+    compose_sidebar_with_room_notification_settings, native_attention_state_from_rooms, reduce,
 };
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
@@ -1610,160 +1609,6 @@ fn legacy_navigation_scroll_anchor_without_edge_defaults_to_top() {
 }
 
 #[test]
-fn live_edge_viewport_update_clears_legacy_room_anchor() {
-    let mut state = ready_state();
-    state.navigation.room_scroll_anchors.insert(
-        "!room:test.example.com".to_owned(),
-        TimelineScrollAnchor {
-            event_id: "$stale:event".to_owned(),
-            edge: TimelineScrollAnchorEdge::Bottom,
-            offset_px: 0,
-            updated_at_ms: 1_820_000_000_000,
-        },
-    );
-
-    reduce(
-        &mut state,
-        AppAction::TimelineViewportUpdated {
-            room_id: "!room:test.example.com".to_owned(),
-            viewport: TimelinePersistedViewport::LiveEdge {
-                updated_at_ms: 1_820_000_000_100,
-            },
-        },
-    );
-
-    assert!(state.navigation.room_scroll_anchors.is_empty());
-    assert_eq!(
-        state
-            .navigation
-            .room_viewports
-            .get("!room:test.example.com"),
-        Some(&TimelinePersistedViewport::LiveEdge {
-            updated_at_ms: 1_820_000_000_100,
-        })
-    );
-}
-
-#[test]
-fn anchored_viewport_update_keeps_legacy_anchor_for_compatibility() {
-    let mut state = ready_state();
-    reduce(
-        &mut state,
-        AppAction::TimelineViewportUpdated {
-            room_id: "!room:test.example.com".to_owned(),
-            viewport: TimelinePersistedViewport::Anchored {
-                event_id: "$anchor:event".to_owned(),
-                edge: TimelineScrollAnchorEdge::Top,
-                offset_px: 24,
-                updated_at_ms: 1_820_000_000_000,
-            },
-        },
-    );
-
-    assert_eq!(
-        state
-            .navigation
-            .room_viewports
-            .get("!room:test.example.com"),
-        Some(&TimelinePersistedViewport::Anchored {
-            event_id: "$anchor:event".to_owned(),
-            edge: TimelineScrollAnchorEdge::Top,
-            offset_px: 24,
-            updated_at_ms: 1_820_000_000_000,
-        })
-    );
-    let legacy_anchor = state
-        .navigation
-        .room_scroll_anchors
-        .get("!room:test.example.com")
-        .expect("anchored viewport should maintain legacy anchor");
-    assert_eq!(legacy_anchor.event_id, "$anchor:event");
-    assert_eq!(legacy_anchor.edge, TimelineScrollAnchorEdge::Top);
-    assert_eq!(legacy_anchor.offset_px, 24);
-}
-
-#[test]
-fn pruning_room_viewports_also_removes_matching_legacy_anchor() {
-    let mut state = ready_state();
-    let stale_room_id = "!room-stale:test.example.com".to_owned();
-    state.navigation.room_viewports.insert(
-        stale_room_id.clone(),
-        TimelinePersistedViewport::Anchored {
-            event_id: "$stale:event".to_owned(),
-            edge: TimelineScrollAnchorEdge::Bottom,
-            offset_px: 0,
-            updated_at_ms: 1,
-        },
-    );
-    state.navigation.room_scroll_anchors.insert(
-        stale_room_id.clone(),
-        TimelineScrollAnchor {
-            event_id: "$stale:event".to_owned(),
-            edge: TimelineScrollAnchorEdge::Bottom,
-            offset_px: 0,
-            updated_at_ms: 1,
-        },
-    );
-    for index in 0..200 {
-        state.navigation.room_viewports.insert(
-            format!("!room-live-{index}:test.example.com"),
-            TimelinePersistedViewport::LiveEdge {
-                updated_at_ms: 1_000 + index,
-            },
-        );
-    }
-
-    reduce(
-        &mut state,
-        AppAction::TimelineViewportUpdated {
-            room_id: "!room-new:test.example.com".to_owned(),
-            viewport: TimelinePersistedViewport::LiveEdge {
-                updated_at_ms: 2_000,
-            },
-        },
-    );
-
-    assert_eq!(state.navigation.room_viewports.len(), 200);
-    assert!(!state.navigation.room_viewports.contains_key(&stale_room_id));
-    assert!(
-        !state
-            .navigation
-            .room_scroll_anchors
-            .contains_key(&stale_room_id),
-        "legacy anchor mirror must not outlive a pruned anchored viewport"
-    );
-}
-
-#[test]
-fn persisted_viewport_json_uses_camel_kind_and_snake_fields() {
-    let live_edge = serde_json::to_value(TimelinePersistedViewport::LiveEdge {
-        updated_at_ms: 1_820_000_000_100,
-    })
-    .expect("serialize live-edge viewport");
-
-    assert_eq!(live_edge["kind"], json!("liveEdge"));
-    assert_eq!(live_edge["updated_at_ms"], json!(1_820_000_000_100_u64));
-    assert_eq!(live_edge.get("updatedAtMs"), None);
-
-    let anchored = serde_json::to_value(TimelinePersistedViewport::Anchored {
-        event_id: "$anchor:event".to_owned(),
-        edge: TimelineScrollAnchorEdge::Bottom,
-        offset_px: 24,
-        updated_at_ms: 1_820_000_000_000,
-    })
-    .expect("serialize anchored viewport");
-
-    assert_eq!(anchored["kind"], json!("anchored"));
-    assert_eq!(anchored["event_id"], json!("$anchor:event"));
-    assert_eq!(anchored["edge"], json!("bottom"));
-    assert_eq!(anchored["offset_px"], json!(24));
-    assert_eq!(anchored["updated_at_ms"], json!(1_820_000_000_000_u64));
-    assert_eq!(anchored.get("eventId"), None);
-    assert_eq!(anchored.get("offsetPx"), None);
-    assert_eq!(anchored.get("updatedAtMs"), None);
-}
-
-#[test]
 fn navigation_state_round_trips_scroll_anchors_through_serde() {
     let navigation = koushi_state::NavigationState {
         active_space_id: Some("!space:test.example.com".to_owned()),
@@ -1782,7 +1627,6 @@ fn navigation_state_round_trips_scroll_anchors_through_serde() {
                 updated_at_ms: 1_820_000_000_000,
             },
         )]),
-        room_viewports: BTreeMap::new(),
     };
 
     let encoded = serde_json::to_string(&navigation).expect("serialize navigation");
