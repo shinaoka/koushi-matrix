@@ -116,6 +116,7 @@ import {
   recordTimelineScrollCommit,
   recordTimelineScrollFrame,
   recordTimelineScrollHeightCommit,
+  recordTimelineScrollRangeCommit,
   type TimelineScrollDiagnostics,
   type TimelineViewportIntentKind
 } from "../domain/timelineScrollDiagnostics";
@@ -508,6 +509,26 @@ type TimelineViewportMetrics = {
   listOffsetTop: number;
 };
 
+type TimelineVirtualRangeState = {
+  virtualized: boolean;
+  startIndex: number;
+  endIndex: number;
+  paddingTop: number;
+  paddingBottom: number;
+};
+
+type TimelineVirtualWindow = TimelineVirtualRangeState & {
+  items: readonly TimelineItem[];
+};
+
+const EMPTY_TIMELINE_RANGE: TimelineVirtualRangeState = {
+  virtualized: false,
+  startIndex: 0,
+  endIndex: 0,
+  paddingTop: 0,
+  paddingBottom: 0
+};
+
 type ViewportIntent = { kind: "free-scroll" } | { kind: "live-edge" };
 
 type TimelineHeightModel = {
@@ -566,6 +587,60 @@ function timelineIndexAtOffset(offsets: readonly number[], offset: number): numb
     return mid;
   }
   return Math.max(0, Math.min(offsets.length - 2, low));
+}
+
+function virtualRangeEquals(
+  left: TimelineVirtualRangeState,
+  right: TimelineVirtualRangeState
+): boolean {
+  return (
+    left.virtualized === right.virtualized &&
+    left.startIndex === right.startIndex &&
+    left.endIndex === right.endIndex &&
+    left.paddingTop === right.paddingTop &&
+    left.paddingBottom === right.paddingBottom
+  );
+}
+
+function calculateTimelineVirtualRange({
+  visibleItemsLength,
+  metrics,
+  model
+}: {
+  visibleItemsLength: number;
+  metrics: TimelineViewportMetrics;
+  model: TimelineHeightModel;
+}): TimelineVirtualRangeState {
+  if (visibleItemsLength <= TIMELINE_VIRTUALIZATION_THRESHOLD) {
+    return {
+      virtualized: false,
+      startIndex: 0,
+      endIndex: visibleItemsLength,
+      paddingTop: 0,
+      paddingBottom: 0
+    };
+  }
+
+  const viewportHeight = metrics.clientHeight || 600;
+  const relativeScrollTop = Math.max(0, metrics.scrollTop - metrics.listOffsetTop);
+  const firstVisibleIndex = timelineIndexAtOffset(model.offsets, relativeScrollTop);
+  const lastVisibleIndex = timelineIndexAtOffset(
+    model.offsets,
+    relativeScrollTop + viewportHeight
+  );
+  const startIndex = Math.max(0, firstVisibleIndex - TIMELINE_VIRTUAL_OVERSCAN_ITEMS);
+  const endIndex = Math.min(
+    visibleItemsLength,
+    Math.max(startIndex + 1, lastVisibleIndex + TIMELINE_VIRTUAL_OVERSCAN_ITEMS + 1)
+  );
+
+  return {
+    virtualized: true,
+    startIndex,
+    endIndex,
+    paddingTop: Math.round(model.offsets[startIndex] ?? 0),
+    paddingBottom: Math.round(model.totalHeight - (model.offsets[endIndex] ?? 0))
+  };
 }
 
 function timelineItemHeightAtIndex(model: TimelineHeightModel, index: number): number {
@@ -1696,11 +1771,15 @@ export const TimelineView = memo(function TimelineView({
   const [viewportAtBottom, setViewportAtBottom] = useState(false);
   const [aliasTarget, setAliasTarget] = useState<TimelineAliasTarget | null>(null);
   const [aliasDraft, setAliasDraft] = useState("");
-  const [viewportMetrics, setViewportMetrics] = useState<TimelineViewportMetrics>({
+  const viewportMetricsRef = useRef<TimelineViewportMetrics>({
     scrollTop: 0,
     clientHeight: 0,
     listOffsetTop: 0
   });
+  const [virtualRange, setVirtualRange] =
+    useState<TimelineVirtualRangeState>(EMPTY_TIMELINE_RANGE);
+  const virtualRangeRef = useRef<TimelineVirtualRangeState>(EMPTY_TIMELINE_RANGE);
+  const pendingScrollFrameRef = useRef<number | null>(null);
   const virtualItemHeight = TIMELINE_ESTIMATED_ITEM_HEIGHT_PX;
   const [measuredHeightVersion, setMeasuredHeightVersion] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1783,23 +1862,18 @@ export const TimelineView = memo(function TimelineView({
     },
     [emitScrollDiagnostics]
   );
-  const updateViewportMetrics = useCallback(() => {
+  const readViewportMetrics = useCallback((): TimelineViewportMetrics => {
     const container = containerRef.current;
     if (!container) {
-      return;
+      return viewportMetricsRef.current;
     }
     const next = {
       scrollTop: container.scrollTop,
       clientHeight: container.clientHeight,
       listOffsetTop: listRef.current?.offsetTop ?? 0
     };
-    setViewportMetrics((current) =>
-      current.scrollTop === next.scrollTop &&
-      current.clientHeight === next.clientHeight &&
-      current.listOffsetTop === next.listOffsetTop
-        ? current
-        : next
-    );
+    viewportMetricsRef.current = next;
+    return next;
   }, []);
 
   const persistViewportAnchor = useCallback((options?: { allowSuppressed?: boolean }): boolean => {
@@ -2010,6 +2084,23 @@ export const TimelineView = memo(function TimelineView({
       }
       emitTimelineEventDiagnosticLog(event, eventKey, emitDiagnosticLog);
       if ("InitialItems" in event) {
+        relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(
+          event.InitialItems.items,
+          profileUsersRef.current
+        );
+      } else if ("ItemsUpdated" in event) {
+        const relevantAvatarMxcs = new Set(relevantAvatarMxcsRef.current);
+        for (const diff of event.ItemsUpdated.diffs) {
+          for (const mxc of timelineAvatarMxcsForItems(
+            timelineDiffItems(diff),
+            profileUsersRef.current
+          )) {
+            relevantAvatarMxcs.add(mxc);
+          }
+        }
+        relevantAvatarMxcsRef.current = relevantAvatarMxcs;
+      }
+      if ("InitialItems" in event) {
         recordTimelineInitialItems(event.InitialItems.items.length);
       }
       if (timelineEventCompletesBackfillRequest(event)) {
@@ -2082,6 +2173,16 @@ export const TimelineView = memo(function TimelineView({
   useEffect(() => {
     void transport.ensureSubscribed?.(timelineKeyRef.current).catch(() => undefined);
   }, [timelineKeyHash, transport]);
+
+  useEffect(
+    () => () => {
+      if (pendingScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(pendingScrollFrameRef.current);
+        pendingScrollFrameRef.current = null;
+      }
+    },
+    []
+  );
 
   useLayoutEffect(() => {
     const sessionViewport = timelineViewportSessionMemory.get(timelineKeyHash) ?? null;
@@ -2163,49 +2264,47 @@ export const TimelineView = memo(function TimelineView({
       ),
     [measuredHeightVersion, visibleItems, virtualItemHeight]
   );
-  const virtualWindow = useMemo(() => {
-    if (visibleItems.length <= TIMELINE_VIRTUALIZATION_THRESHOLD) {
-      return {
-        virtualized: false,
-        startIndex: 0,
-        endIndex: visibleItems.length,
-        paddingTop: 0,
-        paddingBottom: 0,
-        items: visibleItems
-      };
-    }
-    const viewportHeight = viewportMetrics.clientHeight || 600;
-    const relativeScrollTop = Math.max(
-      0,
-      viewportMetrics.scrollTop - viewportMetrics.listOffsetTop
-    );
-    const firstVisibleIndex = timelineIndexAtOffset(
-      timelineHeightModel.offsets,
-      relativeScrollTop
-    );
-    const lastVisibleIndex = timelineIndexAtOffset(
-      timelineHeightModel.offsets,
-      relativeScrollTop + viewportHeight
-    );
-    const startIndex = Math.max(0, firstVisibleIndex - TIMELINE_VIRTUAL_OVERSCAN_ITEMS);
-    const endIndex = Math.min(
-      visibleItems.length,
-      Math.max(
-        startIndex + 1,
-        lastVisibleIndex + TIMELINE_VIRTUAL_OVERSCAN_ITEMS + 1
-      )
-    );
+  const commitVirtualRangeForMetrics = useCallback(
+    (metrics: TimelineViewportMetrics) => {
+      const next = calculateTimelineVirtualRange({
+        visibleItemsLength: visibleItems.length,
+        metrics,
+        model: timelineHeightModel
+      });
+      if (virtualRangeEquals(virtualRangeRef.current, next)) {
+        return next;
+      }
+      virtualRangeRef.current = next;
+      updateScrollDiagnostics(recordTimelineScrollRangeCommit);
+      setVirtualRange(next);
+      return next;
+    },
+    [timelineHeightModel, updateScrollDiagnostics, visibleItems.length]
+  );
+  const updateViewportMetrics = useCallback(() => {
+    const metrics = readViewportMetrics();
+    commitVirtualRangeForMetrics(metrics);
+  }, [commitVirtualRangeForMetrics, readViewportMetrics]);
+  const virtualWindow = useMemo<TimelineVirtualWindow>(() => {
+    const range =
+      visibleItems.length <= TIMELINE_VIRTUALIZATION_THRESHOLD
+        ? {
+            virtualized: false,
+            startIndex: 0,
+            endIndex: visibleItems.length,
+            paddingTop: 0,
+            paddingBottom: 0
+          }
+        : virtualRange;
+
     return {
-      virtualized: true,
-      startIndex,
-      endIndex,
-      paddingTop: Math.round(timelineHeightModel.offsets[startIndex] ?? 0),
-      paddingBottom: Math.round(
-        timelineHeightModel.totalHeight - (timelineHeightModel.offsets[endIndex] ?? 0)
-      ),
-      items: visibleItems.slice(startIndex, endIndex)
+      ...range,
+      items: visibleItems.slice(range.startIndex, range.endIndex)
     };
-  }, [timelineHeightModel, visibleItems, viewportMetrics]);
+  }, [virtualRange, visibleItems]);
+  useLayoutEffect(() => {
+    commitVirtualRangeForMetrics(readViewportMetrics());
+  }, [commitVirtualRangeForMetrics, readViewportMetrics]);
   useEffect(() => {
     const intentKind: TimelineViewportIntentKind =
       viewportIntentRef.current.kind === "live-edge" ? "liveEdge" : "freeScroll";
@@ -2660,12 +2759,14 @@ export const TimelineView = memo(function TimelineView({
             const anchorHeight = timelineItemHeightAtIndex(timelineHeightModel, anchorIndex);
             const targetScrollTop =
               (activeRoomAnchor.edge ?? "top") === "bottom"
-                ? viewportMetrics.listOffsetTop +
+                ? viewportMetricsRef.current.listOffsetTop +
                   anchorTop +
                   anchorHeight -
                   container.clientHeight -
                   activeRoomAnchor.offset_px
-                : viewportMetrics.listOffsetTop + anchorTop - activeRoomAnchor.offset_px;
+                : viewportMetricsRef.current.listOffsetTop +
+                  anchorTop -
+                  activeRoomAnchor.offset_px;
             runWithSuppressedScrollAnchorCapture(() => {
               container.scrollTop = Math.max(0, targetScrollTop);
             });
@@ -2750,7 +2851,7 @@ export const TimelineView = memo(function TimelineView({
           runWithSuppressedScrollAnchorCapture(() => {
             container.scrollTop = Math.max(
               0,
-              viewportMetrics.listOffsetTop +
+              viewportMetricsRef.current.listOffsetTop +
                 (timelineHeightModel.offsets[anchorIndex] ?? 0) -
                 anchor.offsetTop
             );
@@ -2790,7 +2891,6 @@ export const TimelineView = memo(function TimelineView({
     timelineHeightModel,
     timelineInitialized,
     updateViewportMetrics,
-    viewportMetrics.listOffsetTop,
     virtualWindow.virtualized,
     visibleItems,
     runWithSuppressedScrollAnchorCapture,
@@ -2931,7 +3031,31 @@ export const TimelineView = memo(function TimelineView({
         userScrollInputPendingRef.current = false;
       }
     }
-    updateViewportMetrics();
+    if (pendingScrollFrameRef.current === null) {
+      pendingScrollFrameRef.current = window.requestAnimationFrame(() => {
+        pendingScrollFrameRef.current = null;
+        const metrics = readViewportMetrics();
+        const nextRange = commitVirtualRangeForMetrics(metrics);
+        updateScrollDiagnostics((current) =>
+          recordTimelineScrollFrame(current, {
+            scrollActivity: "active",
+            viewportIntent:
+              viewportIntentRef.current.kind === "live-edge" ? "liveEdge" : "freeScroll",
+            userInputPending: userScrollInputPendingRef.current,
+            virtualized: nextRange.virtualized,
+            startIndex: nextRange.startIndex,
+            endIndex: nextRange.endIndex,
+            paddingTop: nextRange.paddingTop,
+            paddingBottom: nextRange.paddingBottom,
+            changedMeasuredRowCount: 0,
+            heightDeltaAboveViewportPx: 0,
+            heightDeltaInsideViewportPx: 0,
+            heightDeltaBelowViewportPx: 0,
+            anchorTopDeltaPx: 0
+          })
+        );
+      });
+    }
     if (!isProgrammaticEcho) {
       reportViewportObservation();
       maybeAutoBackfill();
@@ -2941,10 +3065,12 @@ export const TimelineView = memo(function TimelineView({
     setViewportIntentToLiveEdge,
     maybeAutoBackfill,
     persistViewportAnchor,
+    readViewportMetrics,
     reportViewportObservation,
     releaseViewportIntent,
     timelineKeyHash,
-    updateViewportMetrics
+    commitVirtualRangeForMetrics,
+    updateScrollDiagnostics
   ]);
   const onTimelinePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -3025,7 +3151,7 @@ export const TimelineView = memo(function TimelineView({
           runWithSuppressedScrollAnchorCapture(() => {
             container.scrollTop = Math.max(
               0,
-              viewportMetrics.listOffsetTop +
+              viewportMetricsRef.current.listOffsetTop +
                 itemTop +
                 itemHeight / 2 -
                 container.clientHeight / 2
@@ -3050,7 +3176,6 @@ export const TimelineView = memo(function TimelineView({
       reportViewportObservation,
       timelineHeightModel,
       updateViewportMetrics,
-      viewportMetrics.listOffsetTop,
       virtualWindow.virtualized,
       visibleItems
     ]

@@ -911,6 +911,39 @@ test("large timelines keep only the viewport window in the DOM", async ({ page }
     .toBeLessThan(220);
 });
 
+test("active scroll inside mounted overscan does not recompose the virtual window", async ({ page }) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+  await pushInitialTimelineItems(page, 1_000);
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container).toHaveAttribute("data-virtualized", "true");
+
+  await container.evaluate((node) => {
+    node.scrollTop = 20_000;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await waitAnimationFrames(page, 3);
+
+  await page.evaluate(() => window.__harness.resetScrollDiagnostics());
+
+  await container.evaluate((node) => {
+    for (let index = 0; index < 12; index += 1) {
+      node.scrollTop += 4;
+      node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 4 }));
+      node.dispatchEvent(new Event("scroll", { bubbles: true }));
+    }
+  });
+  await waitAnimationFrames(page, 5);
+
+  const diagnostics = await page.evaluate(() => window.__harness.scrollDiagnostics());
+  expect(diagnostics).not.toBeNull();
+  expect(diagnostics?.scrollFrames ?? 0).toBeGreaterThanOrEqual(1);
+  expect(diagnostics?.rangeCommits ?? 0).toBe(0);
+  expect(diagnostics?.heightModelCommits ?? 0).toBe(0);
+  expect(diagnostics?.renderCommits ?? 0).toBeLessThanOrEqual(1);
+});
+
 test("timeline keeps SDK diff order and ignores duplicate update batches", async ({ page }) => {
   await page.goto("/harness.html");
   await page.waitForSelector("[data-testid=timeline-view]");
