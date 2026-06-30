@@ -1,7 +1,7 @@
 use koushi_state::{
-    AppAction, AppState, NotificationSettings, OperationFailureKind, RoomNotificationMode,
-    RoomNotificationModeOperation, RoomSummary, SessionInfo, SessionState, SettingsPatch,
-    SettingsValues, UiEvent, reduce,
+    AppAction, AppEffect, AppState, NotificationSettings, OperationFailureKind,
+    RoomNotificationMode, RoomNotificationModeOperation, RoomPreference, RoomPreferencesState,
+    RoomSummary, SessionInfo, SessionState, SettingsPatch, SettingsValues, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -68,6 +68,12 @@ fn set_room_notification_mode_updates_known_room_and_sets_pending() {
         settings.operation,
         RoomNotificationModeOperation::Pending { request_id: 1 }
     );
+    assert!(state.room_preferences.rooms.is_empty());
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::PersistRoomPreferences { .. }))
+    );
 }
 
 #[test]
@@ -107,6 +113,99 @@ fn set_room_notification_mode_requires_ready_session() {
 }
 
 #[test]
+fn setting_room_notification_mode_to_all_removes_persisted_preference() {
+    let mut state = ready_state();
+    reduce(
+        &mut state,
+        AppAction::RoomNotificationModeSet {
+            request_id: 1,
+            room_id: "!known:example.invalid".to_owned(),
+            mode: RoomNotificationMode::Mute,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::RoomNotificationModeCompleted {
+            request_id: 1,
+            room_id: "!known:example.invalid".to_owned(),
+        },
+    );
+    assert!(
+        state
+            .room_preferences
+            .rooms
+            .contains_key("!known:example.invalid")
+    );
+
+    reduce(
+        &mut state,
+        AppAction::RoomNotificationModeSet {
+            request_id: 2,
+            room_id: "!known:example.invalid".to_owned(),
+            mode: RoomNotificationMode::All,
+        },
+    );
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomNotificationModeCompleted {
+            request_id: 2,
+            room_id: "!known:example.invalid".to_owned(),
+        },
+    );
+
+    assert!(
+        !state
+            .room_preferences
+            .rooms
+            .contains_key("!known:example.invalid")
+    );
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        AppEffect::PersistRoomPreferences {
+            request_id: 2,
+            preferences
+        } if preferences.rooms.is_empty()
+    )));
+}
+
+#[test]
+fn room_preferences_loaded_restores_room_notification_modes() {
+    let mut state = ready_state();
+    let preferences = RoomPreferencesState {
+        rooms: std::collections::BTreeMap::from([(
+            "!known:example.invalid".to_owned(),
+            RoomPreference {
+                notification_mode: Some(RoomNotificationMode::Mute),
+                ..RoomPreference::default()
+            },
+        )]),
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomPreferencesLoaded {
+            preferences: preferences.clone(),
+        },
+    );
+
+    assert_eq!(state.room_preferences, preferences);
+    assert_eq!(
+        state
+            .room_notification_settings
+            .get("!known:example.invalid")
+            .map(|settings| (settings.mode, settings.operation.clone())),
+        Some((
+            RoomNotificationMode::Mute,
+            RoomNotificationModeOperation::Idle
+        ))
+    );
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        AppEffect::EmitUiEvent(UiEvent::RoomNotificationSettingsChanged)
+    )));
+}
+
+#[test]
 fn completed_mode_set_clears_pending() {
     let mut state = ready_state();
     reduce(
@@ -134,6 +233,20 @@ fn completed_mode_set_clears_pending() {
         .get("!known:example.invalid")
         .unwrap();
     assert_eq!(settings.operation, RoomNotificationModeOperation::Idle);
+    assert_eq!(
+        state.room_preferences.rooms.get("!known:example.invalid"),
+        Some(&RoomPreference {
+            notification_mode: Some(RoomNotificationMode::Mute),
+            ..RoomPreference::default()
+        })
+    );
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        AppEffect::PersistRoomPreferences {
+            request_id: 1,
+            preferences
+        } if preferences == &state.room_preferences
+    )));
 }
 
 #[test]

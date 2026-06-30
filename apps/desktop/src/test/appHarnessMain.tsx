@@ -154,6 +154,7 @@ function readySnapshot(
           auth: { kind: "unknown" },
           settings: defaultSettingsState(),
           link_preview_settings: { room_overrides: {} },
+          room_preferences: { rooms: {} },
           locale_profile: defaultLocaleDisplayProfile(),
           typography_profile: defaultTypographyDisplayProfile(),
           profile: { own: { display_name: "Harness User", avatar: null }, users: {}, local_aliases: {}, local_alias_update: { kind: "idle" }, ignored_user_ids: [], ignored_user_update: { kind: "idle" }, update: { kind: "idle" } },
@@ -870,10 +871,22 @@ mock.setCommandResponse(
     const defaultEnabled = room.is_encrypted
       ? currentSnapshot.state.domain.settings.values.display.encrypted_url_previews_enabled
       : currentSnapshot.state.domain.settings.values.display.url_previews_enabled;
+    const roomPreferences = { ...currentSnapshot.state.domain.room_preferences.rooms };
+    const preference = { ...roomPreferences[roomId] };
     if (enabled === defaultEnabled) {
       delete roomOverrides[roomId];
+      delete preference.url_previews_enabled_override;
     } else {
       roomOverrides[roomId] = enabled;
+      preference.url_previews_enabled_override = enabled;
+    }
+    if (
+      preference.url_previews_enabled_override === undefined &&
+      preference.notification_mode === undefined
+    ) {
+      delete roomPreferences[roomId];
+    } else {
+      roomPreferences[roomId] = preference;
     }
     return setCurrentSnapshot({
       ...currentSnapshot,
@@ -881,9 +894,12 @@ mock.setCommandResponse(
         ...currentSnapshot.state,
         domain: {
           ...currentSnapshot.state.domain,
-        link_preview_settings: {
-          room_overrides: roomOverrides
-        }
+          link_preview_settings: {
+            room_overrides: roomOverrides
+          },
+          room_preferences: {
+            rooms: roomPreferences
+          }
         },
       }
     });
@@ -985,13 +1001,31 @@ mock.setCommandResponse(
       ...currentSnapshot.state.domain.room_notification_settings,
       [roomId]: { mode, operation: { kind: "idle" } }
     };
+    const roomPreferences = { ...currentSnapshot.state.domain.room_preferences.rooms };
+    const preference = { ...roomPreferences[roomId] };
+    if (mode.kind === "all") {
+      delete preference.notification_mode;
+    } else {
+      preference.notification_mode = mode;
+    }
+    if (
+      preference.url_previews_enabled_override === undefined &&
+      preference.notification_mode === undefined
+    ) {
+      delete roomPreferences[roomId];
+    } else {
+      roomPreferences[roomId] = preference;
+    }
     return setCurrentSnapshot({
       ...currentSnapshot,
       state: {
         ...currentSnapshot.state,
         domain: {
           ...currentSnapshot.state.domain,
-        room_notification_settings: next
+          room_notification_settings: next,
+          room_preferences: {
+            rooms: roomPreferences
+          }
         },
       }
     });

@@ -8,13 +8,13 @@ use crate::state::{
     IdentityResetAuthType, JapaneseCatalogProfile, LiveEventReceipts, LocalEncryptionHealth,
     LoginFlow, NativeAttentionState, NavigationState, OperationFailureKind, OwnProfile,
     PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryKeyDeliveryState, RecoveryMethod,
-    RoomListFilter, RoomListProjection, RoomModerationAction, RoomSettingChange,
-    RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji,
-    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope,
-    SessionInfo, SettingsPatch, SettingsValues, SpaceSummary, StagedUploadCompressionChoice,
-    StagedUploadItem, SyncMode, TimelineMediaDownloadState, TimelineMediaGalleryItem,
-    TimelineScrollAnchor, TrustOperationFailureKind, UserProfile, VerificationCancelReason,
-    VerificationTarget,
+    RoomListFilter, RoomListProjection, RoomModerationAction, RoomPreferencesState,
+    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
+    SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult,
+    SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
+    StagedUploadCompressionChoice, StagedUploadItem, SyncMode, TimelineMediaDownloadState,
+    TimelineMediaGalleryItem, TimelineScrollAnchor, TrustOperationFailureKind, UserProfile,
+    VerificationCancelReason, VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
@@ -109,6 +109,9 @@ pub enum AppAction {
         request_id: u64,
         room_id: String,
         enabled: bool,
+    },
+    RoomPreferencesLoaded {
+        preferences: RoomPreferencesState,
     },
     OwnProfileUpdated {
         profile: OwnProfile,

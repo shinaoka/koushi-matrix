@@ -1,8 +1,9 @@
 use crate::{
     action::{LoginRequest, RecoveryRequest},
     state::{
-        AttachmentFilter, AttachmentScope, AttachmentSort, SearchCrawlerSettings, SearchScope,
-        SessionInfo, SettingsValues, VerificationCancelReason, VerificationTarget,
+        AttachmentFilter, AttachmentScope, AttachmentSort, RoomPreferencesState,
+        SearchCrawlerSettings, SearchScope, SessionInfo, SettingsValues, VerificationCancelReason,
+        VerificationTarget,
     },
 };
 
@@ -46,6 +47,10 @@ pub enum AppEffect {
     PersistSettings {
         request_id: u64,
         values: SettingsValues,
+    },
+    PersistRoomPreferences {
+        request_id: u64,
+        preferences: RoomPreferencesState,
     },
     ClearSession,
     StartSync,

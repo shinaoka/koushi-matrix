@@ -1,6 +1,10 @@
 use crate::{
     effect::{AppEffect, UiEvent},
-    state::{AppError, AppState, SettingsPersistenceState, sort_threads_list_items},
+    state::{
+        AppError, AppState, RoomNotificationMode, RoomNotificationModeOperation,
+        RoomNotificationSettings, RoomPreference, RoomPreferencesState, RoomUrlPreviews,
+        SettingsPersistenceState, sort_threads_list_items,
+    },
 };
 
 use super::{is_session_ready, recompute_room_list_projection};
@@ -180,7 +184,7 @@ pub(crate) fn handle_settings_persist_failed(
 
 pub(crate) fn handle_room_url_preview_override_set(
     state: &mut AppState,
-    _request_id: u64,
+    request_id: u64,
     room_id: String,
     enabled: bool,
 ) -> Vec<AppEffect> {
@@ -194,20 +198,56 @@ pub(crate) fn handle_room_url_preview_override_set(
     };
     if enabled == default_enabled {
         state.link_preview_settings.room_overrides.remove(&room_id);
+        clear_room_preference_field(state, &room_id, |preference| {
+            preference.url_previews_enabled_override = None;
+        });
     } else {
         state
             .link_preview_settings
             .room_overrides
-            .insert(room_id, enabled);
+            .insert(room_id.clone(), enabled);
+        let preference = state.room_preferences.rooms.entry(room_id).or_default();
+        preference.url_previews_enabled_override = Some(enabled);
     }
-    vec![AppEffect::EmitUiEvent(UiEvent::LinkPreviewSettingsChanged)]
+    vec![
+        AppEffect::PersistRoomPreferences {
+            request_id,
+            preferences: state.room_preferences.clone(),
+        },
+        AppEffect::EmitUiEvent(UiEvent::LinkPreviewSettingsChanged),
+    ]
+}
+
+pub(crate) fn handle_room_preferences_loaded(
+    state: &mut AppState,
+    preferences: RoomPreferencesState,
+) -> Vec<AppEffect> {
+    let previous_link_preview_settings = state.link_preview_settings.room_overrides.clone();
+    let previous_room_notification_settings = state.room_notification_settings.clone();
+
+    state.room_preferences = preferences;
+    state.link_preview_settings.room_overrides =
+        room_url_preview_overrides_from_preferences(&state.room_preferences);
+    state.room_notification_settings =
+        room_notification_settings_from_preferences(&state.room_preferences);
+
+    let mut effects = Vec::new();
+    if state.link_preview_settings.room_overrides != previous_link_preview_settings {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::LinkPreviewSettingsChanged));
+    }
+    if state.room_notification_settings != previous_room_notification_settings {
+        effects.push(AppEffect::EmitUiEvent(
+            UiEvent::RoomNotificationSettingsChanged,
+        ));
+    }
+    effects
 }
 
 pub(crate) fn handle_room_notification_mode_set(
     state: &mut AppState,
     request_id: u64,
     room_id: String,
-    mode: crate::state::RoomNotificationMode,
+    mode: RoomNotificationMode,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
@@ -219,10 +259,25 @@ pub(crate) fn handle_room_notification_mode_set(
     }
     let entry = state.room_notification_settings.entry(room_id).or_default();
     entry.mode = mode;
-    entry.operation = crate::state::RoomNotificationModeOperation::Pending { request_id };
+    entry.operation = RoomNotificationModeOperation::Pending { request_id };
     vec![AppEffect::EmitUiEvent(
         UiEvent::RoomNotificationSettingsChanged,
     )]
+}
+
+fn update_room_notification_preference(
+    state: &mut AppState,
+    room_id: String,
+    mode: RoomNotificationMode,
+) {
+    if mode == RoomNotificationMode::All {
+        clear_room_preference_field(state, &room_id, |preference| {
+            preference.notification_mode = None;
+        });
+    } else {
+        let preference = state.room_preferences.rooms.entry(room_id).or_default();
+        preference.notification_mode = Some(mode);
+    }
 }
 
 pub(crate) fn handle_room_notification_mode_completed(
@@ -233,19 +288,78 @@ pub(crate) fn handle_room_notification_mode_completed(
     if !is_session_ready(state) {
         return Vec::new();
     }
+    let mut completed_mode = None;
     if let Some(entry) = state.room_notification_settings.get_mut(&room_id) {
         if matches!(
             entry.operation,
-            crate::state::RoomNotificationModeOperation::Pending {
+            RoomNotificationModeOperation::Pending {
                 request_id: pending_id,
             } if pending_id == request_id
         ) {
-            entry.operation = crate::state::RoomNotificationModeOperation::Idle;
+            entry.operation = RoomNotificationModeOperation::Idle;
+            completed_mode = Some(entry.mode);
         }
     }
-    vec![AppEffect::EmitUiEvent(
+    let mut effects = Vec::new();
+    if let Some(mode) = completed_mode {
+        update_room_notification_preference(state, room_id, mode);
+        effects.push(AppEffect::PersistRoomPreferences {
+            request_id,
+            preferences: state.room_preferences.clone(),
+        });
+    }
+    effects.push(AppEffect::EmitUiEvent(
         UiEvent::RoomNotificationSettingsChanged,
-    )]
+    ));
+    effects
+}
+
+fn clear_room_preference_field(
+    state: &mut AppState,
+    room_id: &str,
+    clear: impl FnOnce(&mut RoomPreference),
+) {
+    let Some(preference) = state.room_preferences.rooms.get_mut(room_id) else {
+        return;
+    };
+    clear(preference);
+    if preference.is_empty() {
+        state.room_preferences.rooms.remove(room_id);
+    }
+}
+
+fn room_url_preview_overrides_from_preferences(
+    preferences: &RoomPreferencesState,
+) -> RoomUrlPreviews {
+    preferences
+        .rooms
+        .iter()
+        .filter_map(|(room_id, preference)| {
+            preference
+                .url_previews_enabled_override
+                .map(|enabled| (room_id.clone(), enabled))
+        })
+        .collect()
+}
+
+fn room_notification_settings_from_preferences(
+    preferences: &RoomPreferencesState,
+) -> std::collections::HashMap<String, RoomNotificationSettings> {
+    preferences
+        .rooms
+        .iter()
+        .filter_map(|(room_id, preference)| {
+            preference.notification_mode.map(|mode| {
+                (
+                    room_id.clone(),
+                    RoomNotificationSettings {
+                        mode,
+                        operation: RoomNotificationModeOperation::Idle,
+                    },
+                )
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn handle_room_notification_mode_failed(

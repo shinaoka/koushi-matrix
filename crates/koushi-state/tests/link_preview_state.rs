@@ -1,5 +1,6 @@
 use koushi_state::{
-    AppAction, AppEffect, AppState, DisplaySettings, SettingsPatch, SettingsValues, UiEvent, reduce,
+    AppAction, AppEffect, AppState, DisplaySettings, RoomPreference, RoomPreferencesState,
+    SettingsPatch, SettingsValues, UiEvent, reduce,
 };
 
 fn ready_state_with_room(room_id: &str) -> AppState {
@@ -108,7 +109,7 @@ fn settings_update_toggles_encrypted_global_url_previews() {
 }
 
 #[test]
-fn per_room_override_updates_runtime_state_without_persisting_settings() {
+fn per_room_override_updates_room_preferences_without_persisting_settings_values() {
     let mut state = ready_state_with_room("!room:example.invalid");
 
     let effects = reduce(
@@ -127,6 +128,20 @@ fn per_room_override_updates_runtime_state_without_persisting_settings() {
             .get("!room:example.invalid"),
         Some(&false)
     );
+    assert_eq!(
+        state.room_preferences.rooms.get("!room:example.invalid"),
+        Some(&RoomPreference {
+            url_previews_enabled_override: Some(false),
+            ..RoomPreference::default()
+        })
+    );
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        AppEffect::PersistRoomPreferences {
+            request_id: 2,
+            preferences
+        } if preferences == &state.room_preferences
+    )));
     assert!(effects.iter().any(|effect| matches!(
         effect,
         AppEffect::EmitUiEvent(UiEvent::LinkPreviewSettingsChanged)
@@ -139,6 +154,40 @@ fn per_room_override_updates_runtime_state_without_persisting_settings() {
     let persisted = serde_json::to_string(&state.settings.values).unwrap();
     assert!(!persisted.contains("room_url_previews"));
     assert!(!persisted.contains("!room:example.invalid"));
+}
+
+#[test]
+fn room_preferences_loaded_restores_room_preview_overrides() {
+    let mut state = ready_state_with_room("!room:example.invalid");
+    let preferences = RoomPreferencesState {
+        rooms: std::collections::BTreeMap::from([(
+            "!room:example.invalid".to_owned(),
+            RoomPreference {
+                url_previews_enabled_override: Some(false),
+                ..RoomPreference::default()
+            },
+        )]),
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomPreferencesLoaded {
+            preferences: preferences.clone(),
+        },
+    );
+
+    assert_eq!(state.room_preferences, preferences);
+    assert_eq!(
+        state
+            .link_preview_settings
+            .room_overrides
+            .get("!room:example.invalid"),
+        Some(&false)
+    );
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        AppEffect::EmitUiEvent(UiEvent::LinkPreviewSettingsChanged)
+    )));
 }
 
 #[test]

@@ -236,6 +236,7 @@ impl CoreRuntime {
             composer_draft_loaded_for: None,
             navigation_loaded_for: None,
             scheduled_sends_loaded_for: None,
+            room_preferences_loaded_for: None,
             state_generation: 0,
             pending_composer_draft_persist: None,
             account_actor,
@@ -386,6 +387,7 @@ struct AppActor {
     composer_draft_loaded_for: Option<koushi_key::SessionKeyId>,
     navigation_loaded_for: Option<koushi_key::SessionKeyId>,
     scheduled_sends_loaded_for: Option<koushi_key::SessionKeyId>,
+    room_preferences_loaded_for: Option<koushi_key::SessionKeyId>,
     state_generation: u64,
     pending_composer_draft_persist: Option<PendingComposerDraftPersist>,
     account_actor: AccountActorHandle,
@@ -983,6 +985,7 @@ impl AppActor {
                         self.handle_post_projection_effects(&post_projection_effects)
                             .await;
                         self.handle_ui_event_effects(&post_projection_effects).await;
+                        self.load_room_preferences_for_current_session().await;
                         self.load_navigation_for_current_session().await;
                         self.load_composer_drafts_for_current_session().await;
                         self.load_scheduled_sends_for_current_session().await;
@@ -1089,6 +1092,27 @@ impl AppActor {
         self.handle_ui_event_effects(&effects).await;
     }
 
+    async fn load_room_preferences_for_current_session(&mut self) {
+        let Some(key_id) = room_preferences_session_key(&self.state) else {
+            self.room_preferences_loaded_for = None;
+            return;
+        };
+        if self.room_preferences_loaded_for.as_ref() == Some(&key_id) {
+            return;
+        }
+
+        let preferences = self
+            .composer_draft_store_actor
+            .load_room_preferences(&key_id)
+            .unwrap_or_default();
+        let effects = reduce(
+            &mut self.state,
+            AppAction::RoomPreferencesLoaded { preferences },
+        );
+        self.room_preferences_loaded_for = Some(key_id);
+        self.handle_ui_event_effects(&effects).await;
+    }
+
     async fn persist_scheduled_sends(&mut self, key_id: koushi_key::SessionKeyId) {
         let _ = self
             .composer_draft_store_actor
@@ -1099,6 +1123,15 @@ impl AppActor {
         let _ = self
             .composer_draft_store_actor
             .save_navigation(&key_id, &self.state.navigation);
+    }
+
+    async fn persist_room_preferences(&mut self, preferences: &koushi_state::RoomPreferencesState) {
+        let Some(key_id) = room_preferences_session_key(&self.state) else {
+            return;
+        };
+        let _ = self
+            .composer_draft_store_actor
+            .save_room_preferences(&key_id, preferences);
     }
 
     async fn schedule_composer_draft_persist(
@@ -2137,6 +2170,15 @@ impl AppActor {
                     },
                 };
                 let _ = self.reduce_app_action(action).await;
+            } else if let AppEffect::PersistRoomPreferences {
+                request_id: effect_request_id,
+                preferences,
+            } = effect
+            {
+                if effect_request_id != request_id.sequence {
+                    continue;
+                }
+                self.persist_room_preferences(&preferences).await;
             } else if let AppEffect::EmitUiEvent(ui_event) = effect {
                 self.handle_ui_event_effect(&ui_event, &[]).await;
             }
@@ -2175,6 +2217,8 @@ impl AppActor {
                     },
                 )
                 .await;
+            } else if let AppEffect::PersistRoomPreferences { preferences, .. } = effect {
+                self.persist_room_preferences(preferences).await;
             }
         }
     }
@@ -2453,6 +2497,10 @@ fn navigation_session_key(state: &AppState) -> Option<koushi_key::SessionKeyId> 
 }
 
 fn scheduled_send_session_key(state: &AppState) -> Option<koushi_key::SessionKeyId> {
+    composer_draft_session_key(state)
+}
+
+fn room_preferences_session_key(state: &AppState) -> Option<koushi_key::SessionKeyId> {
     composer_draft_session_key(state)
 }
 

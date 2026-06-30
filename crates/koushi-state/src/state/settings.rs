@@ -32,6 +32,26 @@ fn default_room_list_sort() -> RoomListSort {
 
 pub type RoomUrlPreviews = std::collections::BTreeMap<String, bool>;
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomPreferencesState {
+    #[serde(default)]
+    pub rooms: std::collections::BTreeMap<String, RoomPreference>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoomPreference {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_previews_enabled_override: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_mode: Option<RoomNotificationMode>,
+}
+
+impl RoomPreference {
+    pub fn is_empty(&self) -> bool {
+        self.url_previews_enabled_override.is_none() && self.notification_mode.is_none()
+    }
+}
+
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LinkPreviewSettingsState {
     #[serde(default)]

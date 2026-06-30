@@ -412,6 +412,7 @@ impl FakeDesktopBackend {
             AppEffect::RestoreSessionFor(_)
             | AppEffect::PersistSession(_)
             | AppEffect::PersistSettings { .. }
+            | AppEffect::PersistRoomPreferences { .. }
             | AppEffect::StopSync
             | AppEffect::EmitUiEvent(_)
             | AppEffect::SubscribeThreadsList { .. }

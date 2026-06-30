@@ -92,6 +92,15 @@ async fn next_request_id(state: &CoreRuntimeState) -> koushi_core::RequestId {
     state.connection.lock().await.next_request_id()
 }
 
+pub(crate) fn trace_tauri_timeline_command(stage: &str, kind: &str, request_id: RequestId) {
+    if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+        eprintln!(
+            "koushi.desktop stage={stage} kind={kind} request_id={}/{}",
+            request_id.connection_id.0, request_id.sequence
+        );
+    }
+}
+
 /// Read the latest `AppStateSnapshot` and convert to `FrontendDesktopSnapshot`.
 async fn current_snapshot(state: &CoreRuntimeState) -> Result<FrontendDesktopSnapshot, String> {
     let snapshot = state.connection.lock().await.versioned_snapshot();
@@ -945,32 +954,6 @@ pub(crate) fn build_submit_identity_reset_oauth_command(
     })
 }
 
-pub(crate) fn build_load_account_management_capabilities_command(
-    request_id: koushi_core::RequestId,
-) -> CoreCommand {
-    CoreCommand::Account(AccountCommand::LoadAccountManagementCapabilities { request_id })
-}
-
-pub(crate) fn build_change_password_command(
-    request_id: koushi_core::RequestId,
-    new_password: AuthSecret,
-) -> CoreCommand {
-    CoreCommand::Account(AccountCommand::ChangePassword {
-        request_id,
-        new_password,
-    })
-}
-
-pub(crate) fn build_deactivate_account_command(
-    request_id: koushi_core::RequestId,
-    erase_data: bool,
-) -> CoreCommand {
-    CoreCommand::Account(AccountCommand::DeactivateAccount {
-        request_id,
-        erase_data,
-    })
-}
-
 pub(crate) fn build_submit_account_management_uia_command(
     request_id: koushi_core::RequestId,
     flow_id: u64,
@@ -1018,17 +1001,6 @@ fn build_timeline_key(account_key: AccountKey, room_id: String) -> TimelineKey {
         account_key,
         kind: TimelineKind::Room { room_id },
     }
-}
-
-pub(crate) fn build_subscribe_timeline_command(
-    request_id: koushi_core::RequestId,
-    account_key: AccountKey,
-    room_id: String,
-) -> CoreCommand {
-    CoreCommand::Timeline(TimelineCommand::Subscribe {
-        request_id,
-        key: build_timeline_key(account_key, room_id),
-    })
 }
 
 #[cfg(test)]
@@ -2457,12 +2429,11 @@ mod tests {
         build_start_direct_message_command, build_submit_identity_reset_oauth_command,
         build_submit_identity_reset_password_command, build_submit_login_command,
         build_submit_recovery_command, build_submit_search_command,
-        build_subscribe_focused_timeline_command, build_subscribe_timeline_command,
-        build_switch_account_command, build_toggle_reaction_command, build_unignore_user_command,
-        build_unpin_event_command, build_update_room_member_role_command,
-        build_update_room_setting_command, build_update_settings_command,
-        build_upload_media_command, parse_qa_control_pipe_line, parse_qa_login_pipe_payload,
-        qa_recovery_prompt_is_available, qa_window_title_string,
+        build_subscribe_focused_timeline_command, build_switch_account_command,
+        build_toggle_reaction_command, build_unignore_user_command, build_unpin_event_command,
+        build_update_room_member_role_command, build_update_room_setting_command,
+        build_update_settings_command, build_upload_media_command, parse_qa_control_pipe_line,
+        parse_qa_login_pipe_payload, qa_recovery_prompt_is_available, qa_window_title_string,
         resolve_search_scope_from_active_room,
     };
     use koushi_state::{
@@ -2811,24 +2782,6 @@ mod tests {
             }) => {
                 assert_eq!(request_id, fake_request_id(7));
                 assert_eq!(route_room_id, room_id);
-            }
-            other => panic!("unexpected command: {other:?}"),
-        }
-
-        match build_subscribe_timeline_command(
-            fake_request_id(8),
-            active_account_key.clone(),
-            room_id.clone(),
-        ) {
-            CoreCommand::Timeline(TimelineCommand::Subscribe { request_id, key }) => {
-                assert_eq!(request_id, fake_request_id(8));
-                assert_eq!(key.account_key, active_account_key);
-                assert_eq!(
-                    key.kind,
-                    koushi_core::TimelineKind::Room {
-                        room_id: room_id.clone()
-                    }
-                );
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -5157,7 +5110,7 @@ mod tests {
     }
 
     #[test]
-    fn select_room_submits_timeline_subscribe_after_room_selection() {
+    fn select_room_waits_for_core_selection_without_resubscribing_timeline() {
         let source = commands_source();
         let fn_name = concat!("pub async fn select", "_room");
         let select_token = concat!("build_select", "_room_command");
@@ -5171,7 +5124,7 @@ mod tests {
             .expect("select_room command should exist");
         let rest = &source[fn_offset..];
         let end = rest
-            .find("pub async fn paginate_timeline_backwards")
+            .find("pub async fn open_activity_event")
             .expect("next command should exist");
         let select_room_source = &rest[..end];
         let attach_offset = select_room_source
@@ -5183,21 +5136,22 @@ mod tests {
         let wait_offset = select_room_source
             .find(wait_token)
             .expect("select_room should wait for selected-room state");
-        let subscribe_offset = select_room_source
-            .find(subscribe_token)
-            .expect("select_room should subscribe the selected timeline");
 
         assert!(
             attach_offset < select_offset,
             "event connection should be attached before room selection"
         );
         assert!(
-            select_offset < wait_offset && wait_offset < subscribe_offset,
-            "room selection state should be observed before timeline subscription"
+            select_offset < wait_offset,
+            "room selection state should be observed after submitting selection"
         );
         assert!(
-            select_room_source.contains(account_key_token),
-            "select_room should derive the active account key for timeline subscription"
+            !select_room_source.contains(subscribe_token),
+            "room selection reducers already emit the canonical timeline subscription"
+        );
+        assert!(
+            !select_room_source.contains(account_key_token),
+            "select_room should not derive an account key just to duplicate timeline subscription"
         );
         assert!(
             select_room_source.contains(timeout_token),
@@ -5206,7 +5160,46 @@ mod tests {
     }
 
     #[test]
-    fn select_search_result_submits_room_selection_then_focused_timeline_subscription() {
+    fn room_transition_and_backfill_commands_emit_submit_trace_tokens() {
+        let source = commands_source();
+        assert!(
+            source.contains("fn trace_tauri_timeline_command"),
+            "Tauri command layer must expose a private-data-free timeline trace helper"
+        );
+        assert!(
+            source.contains("koushi.desktop"),
+            "Tauri command traces must share a stable koushi.desktop prefix"
+        );
+        let select_start = source
+            .find("pub async fn select_room")
+            .expect("select_room command should exist");
+        let paginate_start = source
+            .find("pub async fn paginate_timeline_backwards")
+            .expect("paginate command should exist");
+        let load_link_previews_start = source
+            .find("pub async fn load_link_previews")
+            .expect("load_link_previews command should exist");
+        let select_source = &source[select_start..paginate_start];
+        let paginate_source = &source[paginate_start..load_link_previews_start];
+        let load_link_previews_source = &source[load_link_previews_start..];
+        assert!(
+            select_source.contains("trace_tauri_timeline_command(\"submit\", \"select_room\""),
+            "select_room should trace the submitted room transition command"
+        );
+        assert!(
+            paginate_source
+                .contains("trace_tauri_timeline_command(\"submit\", \"paginate_backwards\""),
+            "paginate_timeline_backwards should trace submitted backfill requests"
+        );
+        assert!(
+            load_link_previews_source
+                .contains("trace_tauri_timeline_command(\"submit\", \"load_link_previews\""),
+            "load_link_previews should trace submitted preview expansion requests"
+        );
+    }
+
+    #[test]
+    fn select_search_result_selects_room_then_opens_focused_context_without_room_resubscribe() {
         let source = commands_source();
         let fn_name = "pub async fn select_search_result";
         let select_token = "select_search_result";
@@ -5220,7 +5213,7 @@ mod tests {
             .expect("select_search_result command should exist");
         let rest = &source[fn_offset..];
         let end = rest
-            .find("pub async fn paginate_timeline_backwards")
+            .find("pub async fn close_focused_context")
             .expect("next command should exist");
         let select_source = &rest[..end];
 
@@ -5241,8 +5234,8 @@ mod tests {
             "select_search_result should select the room before opening the focused context"
         );
         assert!(
-            select_source.contains(subscribe_room_token),
-            "select_search_result should subscribe the selected room timeline before opening focused context"
+            !select_source.contains(subscribe_room_token),
+            "select_search_result should rely on room selection reducers for room timeline subscription"
         );
         assert!(
             select_source.contains("wait_for_selected_room"),
@@ -5253,15 +5246,18 @@ mod tests {
             "select_search_result should attach a fresh core connection"
         );
 
-        let subscribe_offset = select_source
-            .find(subscribe_room_token)
-            .expect("search result command should subscribe the normal room timeline");
+        let select_offset = select_source
+            .find(select_room_token)
+            .expect("search result command should select the room");
+        let wait_offset = select_source
+            .find("wait_for_selected_room")
+            .expect("search result command should wait for the selected room");
         let open_offset = select_source
             .find(open_token)
             .expect("search result command should open focused context");
         assert!(
-            subscribe_offset < open_offset,
-            "normal room timeline subscription should happen before focused context open"
+            select_offset < wait_offset && wait_offset < open_offset,
+            "focused context should open only after the selected room state is observed"
         );
     }
 
@@ -5284,8 +5280,8 @@ mod tests {
             "activity event navigation should select the destination room"
         );
         assert!(
-            command_source.contains("build_subscribe_timeline_command"),
-            "activity event navigation should subscribe the destination timeline"
+            !command_source.contains("build_subscribe_timeline_command"),
+            "activity event navigation should rely on room selection reducers for timeline subscription"
         );
         assert!(
             command_source.contains("build_update_navigation_scroll_anchor_command"),

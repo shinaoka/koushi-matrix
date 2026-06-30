@@ -198,6 +198,9 @@
       "link_preview_settings": {
         "room_overrides": {}
       },
+      "room_preferences": {
+        "rooms": {}
+      },
       "live_signals": {
         "presence": {
           "@fixture:example.invalid": "online"

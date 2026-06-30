@@ -2206,11 +2206,23 @@ export function App() {
 
   async function selectRoom(roomId: string) {
     const selectedRoom = snapshot?.state.domain.rooms.find((room) => room.room_id === roomId);
+    const previousActiveRoomId = snapshot?.state.ui.navigation.active_room_id ?? null;
+    appendDiagnosticLog({
+      timestampMs: Date.now(),
+      source: "room.transition",
+      message: `stage=select_start current_active=${Boolean(previousActiveRoomId)} target_known=${Boolean(selectedRoom)} same_active=${previousActiveRoomId === roomId}`
+    });
     if (snapshot?.sidebar.account_home.is_active && selectedRoom?.is_dm) {
       setHomeSelection({ kind: "dm", roomId });
     }
     setPrimaryView("timeline");
-    setSnapshot(await api.selectRoom(roomId));
+    const nextSnapshot = await api.selectRoom(roomId);
+    appendDiagnosticLog({
+      timestampMs: Date.now(),
+      source: "room.transition",
+      message: `stage=select_done active_changed=${nextSnapshot.state.ui.navigation.active_room_id !== previousActiveRoomId} timeline_matches=${nextSnapshot.state.ui.timeline.room_id === nextSnapshot.state.ui.navigation.active_room_id}`
+    });
+    setSnapshot(nextSnapshot);
   }
 
   async function openHomeActivityView() {

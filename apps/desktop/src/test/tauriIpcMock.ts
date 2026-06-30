@@ -189,6 +189,7 @@ function defaultSnapshotResponse() {
         persistence: { kind: "idle" }
       },
       link_preview_settings: { room_overrides: {} },
+      room_preferences: { rooms: {} },
       locale_profile: {
         lang: "en",
         dir: "ltr",
@@ -309,7 +310,7 @@ function defaultSnapshotResponse() {
   const DOMAIN_KEYS = new Set([
     "session", "auth", "device_sessions", "account_management",
     "account_management_capabilities", "soft_logout_reauth", "qr_login", "settings",
-    "link_preview_settings", "locale_profile", "typography_profile", "profile", "sync",
+    "link_preview_settings", "room_preferences", "locale_profile", "typography_profile", "profile", "sync",
     "sync_mode", "spaces", "rooms", "invites", "room_notification_settings",
     "room_interactions", "directory", "room_management", "activity", "thread_attention",
     "search", "search_crawler", "live_signals", "e2ee_trust", "local_encryption",

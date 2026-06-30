@@ -8,9 +8,10 @@ use koushi_state::{
     DirectoryState, E2eeTrustState, FilesViewState, FocusedContextState, InvitePreview,
     LinkPreviewSettingsState, LiveSignalsState, LocalEncryptionState, NativeAttentionState,
     NavigationState, ProfileState, QrLoginState, RoomInteractionState, RoomListProjection,
-    RoomManagementState, RoomNotificationSettings, RoomSummary, SearchCrawlerState, SearchState,
-    SessionState, SettingsState, SidebarModel, SoftLogoutReauthState, SpaceSummary, SyncMode,
-    SyncState, ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
+    RoomManagementState, RoomNotificationSettings, RoomPreferencesState, RoomSummary,
+    SearchCrawlerState, SearchState, SessionState, SettingsState, SidebarModel,
+    SoftLogoutReauthState, SpaceSummary, SyncMode, SyncState, ThreadAttentionState,
+    ThreadPaneState, ThreadsListState, TimelinePaneState,
     compose_sidebar_with_room_notification_settings,
 };
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,7 @@ pub struct StateDeltaChangedSlices {
     pub qr_login: Option<QrLoginState>,
     pub settings: Option<SettingsState>,
     pub link_preview_settings: Option<LinkPreviewSettingsState>,
+    pub room_preferences: Option<RoomPreferencesState>,
     pub profile: Option<ProfileState>,
     pub sync: Option<SyncState>,
     pub sync_mode: Option<SyncMode>,
@@ -96,6 +98,7 @@ pub fn build_state_delta(
     changed_slice!(qr_login);
     changed_slice!(settings);
     changed_slice!(link_preview_settings);
+    changed_slice!(room_preferences);
     changed_slice!(profile);
     changed_slice!(sync);
     changed_slice!(sync_mode);
@@ -168,6 +171,7 @@ fn audit_app_state_delta_slices(state: &AppState) {
         qr_login: _,
         settings: _,
         link_preview_settings: _,
+        room_preferences: _,
         profile: _,
         sync: _,
         sync_mode: _,
