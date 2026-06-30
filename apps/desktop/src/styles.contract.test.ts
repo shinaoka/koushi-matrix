@@ -157,10 +157,11 @@ describe("styles.css token system", () => {
     expect(block).toContain("z-index: 12;");
   });
 
-  test("timeline scroll container allows browser scroll anchoring", () => {
-    const block = selectorBlock(".timeline-view");
-    expect(block).toContain("overflow-anchor: auto;");
+  test("timeline uses Koushi-owned event anchoring rather than browser scroll anchoring", () => {
+    const timelineBlock = selectorBlock(".timeline-view");
     const spacerBlock = selectorBlock(".timeline-virtual-spacer");
+
+    expect(timelineBlock).toContain("overflow-anchor: none;");
     expect(spacerBlock).toContain("overflow-anchor: none;");
   });
 

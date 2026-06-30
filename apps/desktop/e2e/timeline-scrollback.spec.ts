@@ -1082,6 +1082,64 @@ test("active scroll inside mounted overscan does not recompose the virtual windo
   expect(diagnostics?.renderCommits ?? 0).toBeLessThanOrEqual(1);
 });
 
+test("manual anchor correction is the only row-growth correction path", async ({ page }) => {
+  await page.goto("/harness.html?variableHeights=true");
+  await page.waitForSelector("[data-testid=timeline-view]");
+  await pushInitialTimelineItems(page, 1_000);
+
+  const container = page.locator("[data-testid=timeline-view]");
+  // Enter free-scroll mid-history. A bare scrollTop write stays live-edge and
+  // snaps back (see the prepend anchor test); a wheel marks it user-driven.
+  await container.evaluate((node) => {
+    node.scrollTop = 20_000;
+    node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -50 }));
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await waitAnimationFrames(page, 3);
+
+  // Discover the first visible row (anchor) and the mounted row directly above
+  // the viewport to grow, so the assertion is independent of measured heights.
+  const targets = await container.evaluate((node) => {
+    const containerTop = node.getBoundingClientRect().top;
+    let anchorId: string | null = null;
+    let growId: string | null = null;
+    for (const frame of Array.from(
+      node.querySelectorAll<HTMLElement>("[data-frame-item-id]")
+    )) {
+      const id = frame.dataset["frameItemId"] ?? null;
+      if (!id) {
+        continue;
+      }
+      if (frame.getBoundingClientRect().bottom > containerTop) {
+        anchorId = id;
+        break;
+      }
+      growId = id;
+    }
+    return { anchorId, growId };
+  });
+  expect(targets.growId).not.toBeNull();
+  expect(targets.anchorId).not.toBeNull();
+
+  const anchor = page.locator(`[data-item-id="${targets.anchorId}"]`);
+  await expect(anchor).toBeVisible();
+  const beforeTop = await anchor.evaluate((node) => node.getBoundingClientRect().top);
+
+  await page.addStyleTag({
+    content: `
+      [data-frame-item-id="${targets.growId}"] .message-body::after {
+        content: "";
+        display: block;
+        block-size: 96px;
+      }
+    `
+  });
+  await waitAnimationFrames(page, 5);
+
+  const afterTop = await anchor.evaluate((node) => node.getBoundingClientRect().top);
+  expect(Math.abs(afterTop - beforeTop)).toBeLessThanOrEqual(ANCHOR_PIXEL_TOLERANCE);
+});
+
 test("timeline keeps SDK diff order and ignores duplicate update batches", async ({ page }) => {
   await page.goto("/harness.html");
   await page.waitForSelector("[data-testid=timeline-view]");

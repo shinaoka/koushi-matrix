@@ -2048,7 +2048,7 @@ button:disabled {
 .timeline-view {
   min-inline-size: 0;
   max-inline-size: 100%;
-  overflow-anchor: auto;
+  overflow-anchor: none;
   overflow-x: hidden;
 }
 

@@ -1858,6 +1858,22 @@ export const TimelineView = memo(function TimelineView({
   const anchorRestorePendingRef = useRef(false);
   /** True while the live-room scroll anchor is being restored. */
   const roomScrollAnchorRestorePendingRef = useRef(false);
+  /**
+   * Last first-visible anchor captured while in free-scroll. Because
+   * `.timeline-view` uses `overflow-anchor: none`, the browser no longer
+   * corrects scroll position when an above-viewport row resizes (image load,
+   * deferred measurement, CSS growth). This anchor lets the ResizeObserver
+   * restore the viewport so the visible row stays put — Koushi-owned anchoring.
+   */
+  const freeScrollAnchorRef = useRef<ScrollAnchor | null>(null);
+  /**
+   * True while a programmatic jump (jump-to-event/bottom) owns the viewport.
+   * A jump centers/targets a specific row and runs its own follow-up
+   * re-centering across measurement frames, so free-scroll resize anchoring
+   * must stand down until the user scrolls and takes control again. Otherwise
+   * the two corrections fight and the jump target drifts.
+   */
+  const jumpViewportControlRef = useRef(false);
   /** Suppresses capture while programmatic scroll adjustments are running. */
   const suppressScrollAnchorCaptureRef = useRef(false);
   /** Last reason-tagged programmatic scroll write, used to classify its echo. */
@@ -2476,6 +2492,8 @@ export const TimelineView = memo(function TimelineView({
     pendingAnchorRef.current = null;
     anchorRestorePendingRef.current = false;
     roomScrollAnchorRestorePendingRef.current = false;
+    freeScrollAnchorRef.current = null;
+    jumpViewportControlRef.current = false;
     suppressScrollAnchorCaptureRef.current = false;
     restoredRoomScrollAnchorSignatureRef.current = null;
     viewportIntentRef.current =
@@ -2960,7 +2978,34 @@ export const TimelineView = memo(function TimelineView({
     }
 
     const observer = new ResizeObserver(() => {
-      if (viewportIntentRef.current.kind !== "live-edge") {
+      if (viewportIntentRef.current.kind === "live-edge") {
+        if (viewportIntentResizeFrameRef.current !== null) {
+          viewportIntentResizeFrameRef.current.cancel();
+        }
+        viewportIntentResizeFrameRef.current = scheduleTimelineFrame(() => {
+          viewportIntentResizeFrameRef.current = null;
+          const changed = applyViewportIntent();
+          if (!changed) {
+            return;
+          }
+          updateViewportMetrics();
+          reportViewportObservation();
+        });
+        return;
+      }
+      // Free-scroll: `.timeline-view` is `overflow-anchor: none`, so the browser
+      // no longer corrects scroll position when an above-viewport row resizes.
+      // Restore the last captured first-visible anchor so the visible row stays
+      // put. Prepend restoration owns its own correction, so defer while pending.
+      const container = containerRef.current;
+      const anchor = freeScrollAnchorRef.current;
+      if (
+        !container ||
+        !anchor ||
+        anchorRestorePendingRef.current ||
+        roomScrollAnchorRestorePendingRef.current ||
+        jumpViewportControlRef.current
+      ) {
         return;
       }
       if (viewportIntentResizeFrameRef.current !== null) {
@@ -2968,10 +3013,9 @@ export const TimelineView = memo(function TimelineView({
       }
       viewportIntentResizeFrameRef.current = scheduleTimelineFrame(() => {
         viewportIntentResizeFrameRef.current = null;
-        const changed = applyViewportIntent();
-        if (!changed) {
-          return;
-        }
+        runWithScrollWriteReason("backfillCompensation", () => {
+          restoreAnchor(container, anchor);
+        });
         updateViewportMetrics();
         reportViewportObservation();
       });
@@ -2988,6 +3032,7 @@ export const TimelineView = memo(function TimelineView({
   }, [
     applyViewportIntent,
     reportViewportObservation,
+    runWithScrollWriteReason,
     timelineKeyHash,
     updateViewportMetrics
   ]);
@@ -3182,6 +3227,16 @@ export const TimelineView = memo(function TimelineView({
       !roomScrollAnchorRestorePendingRef.current
     ) {
       applyViewportIntent();
+    } else if (
+      container &&
+      !anchorRestorePendingRef.current &&
+      !roomScrollAnchorRestorePendingRef.current &&
+      !jumpViewportControlRef.current
+    ) {
+      // Refresh the free-scroll anchor after layout/measurement commits so a
+      // later above-viewport resize (overflow-anchor: none) restores the
+      // viewport against the settled position rather than a stale pre-measure one.
+      freeScrollAnchorRef.current = captureAnchor(container);
     }
     updateViewportMetrics();
     reportViewportObservation();
@@ -3364,6 +3419,8 @@ export const TimelineView = memo(function TimelineView({
     if (!isProgrammaticEcho && container) {
       const atBottom = isScrolledToBottom(container);
       if (isUserDrivenScroll) {
+        // A genuine user scroll takes viewport control back from any jump.
+        jumpViewportControlRef.current = false;
         if (atBottom) {
           setViewportIntentToLiveEdge();
         } else {
@@ -3380,6 +3437,16 @@ export const TimelineView = memo(function TimelineView({
           }
         }
         userScrollInputPendingRef.current = false;
+      }
+      // In free-scroll, remember the first-visible anchor synchronously (not in
+      // the range-gated frame below) so the ResizeObserver can restore it when
+      // an above-viewport row resizes under `overflow-anchor: none`. Skip while
+      // a jump owns the viewport so its re-centering is not fought.
+      if (
+        viewportIntentRef.current.kind !== "live-edge" &&
+        !jumpViewportControlRef.current
+      ) {
+        freeScrollAnchorRef.current = captureAnchor(container);
       }
     }
     if (pendingScrollFrameRef.current === null) {
@@ -3485,6 +3552,7 @@ export const TimelineView = memo(function TimelineView({
   const jumpToEvent = useCallback(
     (eventId: string) => {
       releaseViewportIntent();
+      jumpViewportControlRef.current = true;
       const container = containerRef.current;
       const scrollMountedRowIntoView = () => {
         const row = container?.querySelector<HTMLElement>(
