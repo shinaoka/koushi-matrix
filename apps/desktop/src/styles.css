@@ -2048,7 +2048,7 @@ button:disabled {
 .timeline-view {
   min-inline-size: 0;
   max-inline-size: 100%;
-  overflow-anchor: auto;
+  overflow-anchor: none;
   overflow-x: hidden;
 }
 
@@ -3388,12 +3388,6 @@ button:disabled {
   background: var(--brand);
 }
 
-.message-media-ready {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
 .message-media-preview-link {
   display: inline-flex;
   max-width: 100%;
@@ -3403,6 +3397,26 @@ button:disabled {
 .message-media-preview-link:focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
+}
+
+.message-media-image-frame {
+  display: inline-grid;
+  place-items: center;
+  overflow: hidden;
+  max-inline-size: min(100%, 420px);
+  max-block-size: 260px;
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.message-media-image-frame-reserved {
+  color: var(--text-muted);
+  border: 1px dashed var(--line);
+}
+
+.message-media-image-frame .message-media-image {
+  inline-size: 100%;
+  block-size: 100%;
 }
 
 .message-media-image {

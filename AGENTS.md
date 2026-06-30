@@ -1129,6 +1129,31 @@ before GA. Do not open feature issues for these without re-deciding scope here.
   change. GUI Phase B must render these Rust projections and dispatch typed
   commands only; do not keep upload staging/gallery maps in React, synthesize a
   gallery from DOM rows, or parse Matrix media events in the webview.
+- `e2e/timeline-scrollback.spec.ts` full-file `--workers=1` runs had flaky
+  failures ("scrollback prepend keeps the anchor...", "active scroll inside
+  mounted overscan...", and "timeline navigation renders Rust-owned unread
+  controls...") that were NOT a product bug and NOT the #158 Task 7 media work:
+  they reproduce identically at the Task 7 base commit, and the Task 7
+  `TimelineView.tsx` diff only touches `TimelineMediaAttachment`. Root cause was
+  test fidelity around headless Chromium's unreliable native scroll/rAF
+  delivery. Fixed 2026-06-30. Durable rules for scrollback/timeline DOM specs:
+  - A bare `node.scrollTop = X` is a PROGRAMMATIC scroll: the component keeps
+    `live-edge` viewport intent and snaps back to the bottom, so prepend anchor
+    restoration never engages. To simulate a real user scroll-up, dispatch a
+    `WheelEvent` (or container `pointerdown`) so `userScrollInputPendingRef` is
+    set, then a `scroll` event. The component leaves live-edge only on
+    user-driven input, never on a programmatic scrollTop write.
+  - After changing `scrollTop`, always `dispatchEvent(new Event("scroll"))`
+    explicitly. Do not rely on the browser's native async scroll event; it is
+    not delivered reliably in cold/loaded headless Chromium and a dependent
+    `expect.poll` will time out (deterministically in isolation, intermittently
+    in the full run).
+  - Do not gate a diagnostics measurement window with a fixed
+    `waitAnimationFrames(n)` after a large scroll jump: the jump's
+    range-recomposition frames can spill past the wait under load and pollute
+    later counters. Wait on a CONDITION instead (e.g. poll until
+    `scrollDiagnostics().scrollFrames` stops changing) before
+    `resetScrollDiagnostics()`.
 
 ## Linux GUI QA Container
 

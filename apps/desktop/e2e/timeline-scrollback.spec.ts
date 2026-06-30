@@ -18,6 +18,7 @@
  */
 
 import { expect, test, type Page } from "@playwright/test";
+import path from "node:path";
 
 const ROOM_ID = "!harness-room:example.invalid";
 const ACCOUNT_KEY = "@harness-user:example.invalid";
@@ -42,6 +43,26 @@ function makeItem(id: string, body: string) {
     is_edited: false,
     can_edit: false,
     reactions: []
+  };
+}
+
+function makeImageItem(id: string) {
+  return {
+    ...makeItem(id, "image body"),
+    media: {
+      kind: "Image",
+      filename: "synthetic.png",
+      source: {
+        mxc_uri: "mxc://example.invalid/synthetic",
+        encrypted: false,
+        encryption_version: null
+      },
+      mimetype: "image/png",
+      size: 12345,
+      width: 2048,
+      height: 1188,
+      thumbnail: null
+    }
   };
 }
 
@@ -78,7 +99,19 @@ async function expectTimelineScrolledToBottom(container: ReturnType<Page["locato
 async function waitAnimationFrames(page: Page, count: number) {
   for (let i = 0; i < count; i += 1) {
     await page.evaluate(
-      () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      () =>
+        new Promise<void>((resolve) => {
+          let resolved = false;
+          const finish = () => {
+            if (resolved) {
+              return;
+            }
+            resolved = true;
+            resolve();
+          };
+          requestAnimationFrame(finish);
+          setTimeout(finish, 16);
+        })
     );
   }
 }
@@ -672,8 +705,16 @@ test("scrollback prepend keeps the anchor item visually stable and gates auto-ba
   });
 
   // ---- (b) scroll near the top → exactly one auto-backfill request ----
+  // Simulate a genuine user scroll-up: a bare scrollTop assignment is treated
+  // as a programmatic write and leaves the viewport intent at live-edge, so
+  // the component snaps back to the bottom and the anchor restoration never
+  // engages (the assertion below then races that snap). A wheel event marks
+  // the scroll as user-driven, switching the component to free-scroll exactly
+  // as a real trackpad/scrollbar drag would.
   await container.evaluate((node) => {
     node.scrollTop = 50; // below the 80px threshold
+    node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -50 }));
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
   });
   await expect
     .poll(async () =>
@@ -911,6 +952,194 @@ test("large timelines keep only the viewport window in the DOM", async ({ page }
     .toBeLessThan(220);
 });
 
+test("known-dimension media keeps row height stable across download completion", async ({
+  page
+}) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+  await page.addStyleTag({
+    path: path.join(process.cwd(), "apps/desktop/src/styles.css")
+  });
+
+  await page.evaluate(
+    ({ key, items }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key, generation: 1, items }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    {
+      key: timelineKey(),
+      items: Array.from({ length: 650 }, (_, index) =>
+        index === 620 ? makeImageItem("$image620") : makeItem(`$m${index}`, `message ${index}`)
+      )
+    }
+  );
+
+  const frame = page.locator('[data-frame-item-id="$image620"]');
+  await expect(frame).toBeVisible();
+  const beforeHeight = await frame.evaluate((node) => node.getBoundingClientRect().height);
+
+  await page.evaluate(
+    ({ key }) => {
+      window.__harness.pushCoreEvent({
+        kind: "Timeline",
+        event: {
+          MediaDownloadCompleted: {
+            request_id: "media-request",
+            key,
+            event_id: "$image620",
+            source_url: "appmedia://synthetic-image",
+            byte_count: 12345,
+            mimetype: "image/png",
+            width: 2048,
+            height: 1188
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    },
+    { key: timelineKey() }
+  );
+
+  await page.evaluate(() =>
+    window.__harness.setMediaDownloadState("$image620", {
+      kind: "ready",
+      source_url: "appmedia://synthetic-image",
+      width: 2048,
+      height: 1188,
+      mime_type: "image/png"
+    })
+  );
+
+  await waitAnimationFrames(page, 3);
+  const media = frame.locator(".message-media");
+  await expect(media).toHaveAttribute("data-download-state", "ready");
+  await expect(media.locator(".message-media-preview-link")).toBeVisible();
+  await expect(media.locator(".message-media-download")).toBeVisible();
+  await expect
+    .poll(() => media.evaluate((node) => getComputedStyle(node).display))
+    .toBe("inline-grid");
+  await expect
+    .poll(() =>
+      media.evaluate((node) => getComputedStyle(node).gridTemplateColumns.split(" ").length)
+    )
+    .toBe(3);
+  const afterHeight = await frame.evaluate((node) => node.getBoundingClientRect().height);
+  expect(Math.abs(afterHeight - beforeHeight)).toBeLessThanOrEqual(1);
+});
+
+test("active scroll inside mounted overscan does not recompose the virtual window", async ({ page }) => {
+  await page.goto("/harness.html");
+  await page.waitForSelector("[data-testid=timeline-view]");
+  await pushInitialTimelineItems(page, 1_000);
+
+  const container = page.locator("[data-testid=timeline-view]");
+  await expect(container).toHaveAttribute("data-virtualized", "true");
+
+  await container.evaluate((node) => {
+    node.scrollTop = 20_000;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  // The 20000px setup jump triggers virtual-range recomposition frames. Wait
+  // until those frames have fully settled (frame count stops changing across
+  // two reads) before resetting diagnostics, so leftover setup frames cannot
+  // leak into the active-scroll measurement window below. A fixed frame wait
+  // is flaky under load: headless Chromium frame scheduling drifts and the
+  // setup recomposition can spill past it.
+  let __settleFrames = -1;
+  await expect
+    .poll(async () => {
+      const current = await page.evaluate(
+        () => window.__harness.scrollDiagnostics()?.scrollFrames ?? 0
+      );
+      const settled = current === __settleFrames;
+      __settleFrames = current;
+      return settled;
+    })
+    .toBe(true);
+
+  await page.evaluate(() => window.__harness.resetScrollDiagnostics());
+
+  await container.evaluate((node) => {
+    for (let index = 0; index < 12; index += 1) {
+      node.scrollTop += 4;
+      node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 4 }));
+      node.dispatchEvent(new Event("scroll", { bubbles: true }));
+    }
+  });
+  await waitAnimationFrames(page, 5);
+
+  const diagnostics = await page.evaluate(() => window.__harness.scrollDiagnostics());
+  expect(diagnostics).not.toBeNull();
+  expect(diagnostics?.scrollFrames ?? 0).toBeGreaterThanOrEqual(1);
+  expect(diagnostics?.latestFrame?.userInputPending).toBe(true);
+  expect(diagnostics?.rangeCommits ?? 0).toBe(0);
+  expect(diagnostics?.heightModelCommits ?? 0).toBe(0);
+  expect(diagnostics?.renderCommits ?? 0).toBeLessThanOrEqual(1);
+});
+
+test("manual anchor correction is the only row-growth correction path", async ({ page }) => {
+  await page.goto("/harness.html?variableHeights=true");
+  await page.waitForSelector("[data-testid=timeline-view]");
+  await pushInitialTimelineItems(page, 1_000);
+
+  const container = page.locator("[data-testid=timeline-view]");
+  // Enter free-scroll mid-history. A bare scrollTop write stays live-edge and
+  // snaps back (see the prepend anchor test); a wheel marks it user-driven.
+  await container.evaluate((node) => {
+    node.scrollTop = 20_000;
+    node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -50 }));
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await waitAnimationFrames(page, 3);
+
+  // Discover the first visible row (anchor) and the mounted row directly above
+  // the viewport to grow, so the assertion is independent of measured heights.
+  const targets = await container.evaluate((node) => {
+    const containerTop = node.getBoundingClientRect().top;
+    let anchorId: string | null = null;
+    let growId: string | null = null;
+    for (const frame of Array.from(
+      node.querySelectorAll<HTMLElement>("[data-frame-item-id]")
+    )) {
+      const id = frame.dataset["frameItemId"] ?? null;
+      if (!id) {
+        continue;
+      }
+      if (frame.getBoundingClientRect().bottom > containerTop) {
+        anchorId = id;
+        break;
+      }
+      growId = id;
+    }
+    return { anchorId, growId };
+  });
+  expect(targets.growId).not.toBeNull();
+  expect(targets.anchorId).not.toBeNull();
+
+  const anchor = page.locator(`[data-item-id="${targets.anchorId}"]`);
+  await expect(anchor).toBeVisible();
+  const beforeTop = await anchor.evaluate((node) => node.getBoundingClientRect().top);
+
+  await page.addStyleTag({
+    content: `
+      [data-frame-item-id="${targets.growId}"] .message-body::after {
+        content: "";
+        display: block;
+        block-size: 96px;
+      }
+    `
+  });
+  await waitAnimationFrames(page, 5);
+
+  const afterTop = await anchor.evaluate((node) => node.getBoundingClientRect().top);
+  expect(Math.abs(afterTop - beforeTop)).toBeLessThanOrEqual(ANCHOR_PIXEL_TOLERANCE);
+});
+
 test("timeline keeps SDK diff order and ignores duplicate update batches", async ({ page }) => {
   await page.goto("/harness.html");
   await page.waitForSelector("[data-testid=timeline-view]");
@@ -1013,6 +1242,7 @@ test("timeline navigation renders Rust-owned unread controls and sends viewport 
 
   await container.evaluate((node) => {
     node.scrollTop = 0;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
   });
 
   await expect
