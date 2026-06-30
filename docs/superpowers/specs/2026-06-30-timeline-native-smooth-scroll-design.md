@@ -1,6 +1,6 @@
 # Design: Timeline native-smooth virtual scrolling (issue #158)
 
-Status: written design pending user review
+Status: implemented
 Date: 2026-06-30
 Issue: https://github.com/shinaoka/koushi-matrix/issues/158
 
