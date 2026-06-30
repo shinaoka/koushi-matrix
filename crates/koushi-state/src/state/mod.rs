@@ -57,9 +57,9 @@ pub use settings::{
     AppearanceSettings, ComposerSendShortcut, DisplaySettings, EmojiPreference, FontPreference,
     ImageUploadCompressionMode, ImageUploadCompressionPolicy, KeyboardSettings,
     LinkPreviewSettingsState, LocaleSettings, MediaSettings, NotificationSettings,
-    RoomNotificationMode, RoomNotificationModeOperation, RoomNotificationSettings, RoomUrlPreviews,
-    SettingsPatch, SettingsPersistenceState, SettingsState, SettingsValues,
-    TextDirectionPreference, ThemePreference, ThreadListOrder, TimelineSettings,
+    RoomNotificationMode, RoomNotificationModeOperation, RoomNotificationSettings, RoomPreference,
+    RoomPreferencesState, RoomUrlPreviews, SettingsPatch, SettingsPersistenceState, SettingsState,
+    SettingsValues, TextDirectionPreference, ThemePreference, ThreadListOrder, TimelineSettings,
     TypographySettings,
 };
 
@@ -193,6 +193,8 @@ pub struct AppState {
     pub settings: SettingsState,
     #[serde(default)]
     pub link_preview_settings: LinkPreviewSettingsState,
+    #[serde(default)]
+    pub room_preferences: RoomPreferencesState,
     pub profile: ProfileState,
     pub sync: SyncState,
     #[serde(default)]
@@ -247,6 +249,7 @@ impl Default for AppState {
             qr_login: QrLoginState::Idle,
             settings: SettingsState::default(),
             link_preview_settings: LinkPreviewSettingsState::default(),
+            room_preferences: RoomPreferencesState::default(),
             profile: ProfileState::default(),
             sync: SyncState::Stopped,
             sync_mode: SyncMode::Unsupported,

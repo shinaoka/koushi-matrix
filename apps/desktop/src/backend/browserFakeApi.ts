@@ -445,10 +445,21 @@ class BrowserFakeApi implements DesktopApi {
     const defaultEnabled = room.is_encrypted
       ? this.snapshot.state.domain.settings.values.display.encrypted_url_previews_enabled
       : this.snapshot.state.domain.settings.values.display.url_previews_enabled;
+    const preference = { ...this.snapshot.state.domain.room_preferences.rooms[roomId] };
     if (enabled === defaultEnabled) {
       delete this.snapshot.state.domain.link_preview_settings.room_overrides[roomId];
+      delete preference.url_previews_enabled_override;
     } else {
       this.snapshot.state.domain.link_preview_settings.room_overrides[roomId] = enabled;
+      preference.url_previews_enabled_override = enabled;
+    }
+    if (
+      preference.url_previews_enabled_override === undefined &&
+      preference.notification_mode === undefined
+    ) {
+      delete this.snapshot.state.domain.room_preferences.rooms[roomId];
+    } else {
+      this.snapshot.state.domain.room_preferences.rooms[roomId] = preference;
     }
     return this.getSnapshot();
   }
@@ -492,6 +503,20 @@ class BrowserFakeApi implements DesktopApi {
       mode,
       operation: { kind: "idle" }
     };
+    const preference = { ...this.snapshot.state.domain.room_preferences.rooms[roomId] };
+    if (mode.kind === "all") {
+      delete preference.notification_mode;
+    } else {
+      preference.notification_mode = mode;
+    }
+    if (
+      preference.url_previews_enabled_override === undefined &&
+      preference.notification_mode === undefined
+    ) {
+      delete this.snapshot.state.domain.room_preferences.rooms[roomId];
+    } else {
+      this.snapshot.state.domain.room_preferences.rooms[roomId] = preference;
+    }
     this.refreshSidebar();
     this.refreshActivityStreams();
     return this.getSnapshot();
@@ -2784,6 +2809,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
         qr_login: { kind: "idle" },
         settings: defaultSettingsState(),
         link_preview_settings: { room_overrides: {} },
+        room_preferences: { rooms: {} },
         locale_profile: defaultLocaleDisplayProfile(),
         typography_profile: defaultTypographyDisplayProfile(),
         profile: defaultProfileState(session.user_id),
@@ -2891,6 +2917,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
         qr_login: { kind: "idle" },
         settings: defaultSettingsState(),
         link_preview_settings: { room_overrides: {} },
+        room_preferences: { rooms: {} },
         locale_profile: defaultLocaleDisplayProfile(),
         typography_profile: defaultTypographyDisplayProfile(),
         profile: defaultProfileState(null),

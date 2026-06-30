@@ -44,6 +44,7 @@ export interface AppDomainState {
   qr_login: QrLoginState;
   settings: SettingsState;
   link_preview_settings: LinkPreviewSettingsState;
+  room_preferences: RoomPreferencesState;
   locale_profile: LocaleDisplayProfile;
   typography_profile: TypographyDisplayProfile;
   profile: ProfileState;
@@ -86,6 +87,15 @@ export interface SettingsState {
 
 export interface LinkPreviewSettingsState {
   room_overrides: Record<string, boolean>;
+}
+
+export interface RoomPreferencesState {
+  rooms: Record<string, RoomPreference>;
+}
+
+export interface RoomPreference {
+  url_previews_enabled_override?: boolean;
+  notification_mode?: RoomNotificationMode;
 }
 
 export interface SettingsValues {

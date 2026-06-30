@@ -565,7 +565,7 @@ fn deferred_sync_mode_defers_timeline_subscription_to_sdk_boundary() {
     });
     let room_id = "!sdk-room:example.invalid".to_owned();
 
-    backend.dispatch(compose_room_list_update(DesktopRoomListUpdate {
+    let effects = backend.dispatch(compose_room_list_update(DesktopRoomListUpdate {
         spaces: vec![DesktopRoomListSpace {
             space_id: "!sdk-space:example.invalid".to_owned(),
             display_name: "SDK Space".to_owned(),
@@ -581,10 +581,6 @@ fn deferred_sync_mode_defers_timeline_subscription_to_sdk_boundary() {
             joined_members: 0,
         }],
     }));
-
-    let effects = backend.dispatch(AppAction::SelectRoom {
-        room_id: room_id.clone(),
-    });
 
     assert!(effects.iter().any(|effect| {
         matches!(

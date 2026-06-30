@@ -21,6 +21,7 @@ const SEARCH_INDEX_INFO: &[u8] = b"koushi-desktop:search-index";
 const COMPOSER_DRAFTS_INFO: &[u8] = b"koushi-desktop:composer-drafts";
 const SCHEDULED_SENDS_INFO: &[u8] = b"koushi-desktop:scheduled-sends";
 const NAVIGATION_INFO: &[u8] = b"koushi-desktop:navigation";
+const ROOM_PREFERENCES_INFO: &[u8] = b"koushi-desktop:room-preferences";
 const LAST_SESSION_ACCOUNT_NAME: &str = "koushi-desktop:last-session:v1";
 const SAVED_SESSIONS_ACCOUNT_NAME: &str = "koushi-desktop:saved-sessions:v1";
 
@@ -398,6 +399,22 @@ impl fmt::Debug for NavigationKey {
     }
 }
 
+pub struct RoomPreferencesKey {
+    key: Zeroizing<[u8; LOCAL_UNLOCK_SECRET_LEN]>,
+}
+
+impl RoomPreferencesKey {
+    pub fn as_bytes(&self) -> &[u8; LOCAL_UNLOCK_SECRET_LEN] {
+        &self.key
+    }
+}
+
+impl fmt::Debug for RoomPreferencesKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RoomPreferencesKey(..)")
+    }
+}
+
 pub struct StoredLocalUnlockSecret {
     value: Zeroizing<String>,
 }
@@ -523,6 +540,14 @@ impl LocalUnlockSecret {
         NavigationKey {
             key: self
                 .derive_key(NAVIGATION_INFO)
+                .expect("32-byte HKDF output length is valid"),
+        }
+    }
+
+    pub fn derive_room_preferences_key(&self) -> RoomPreferencesKey {
+        RoomPreferencesKey {
+            key: self
+                .derive_key(ROOM_PREFERENCES_INFO)
                 .expect("32-byte HKDF output length is valid"),
         }
     }

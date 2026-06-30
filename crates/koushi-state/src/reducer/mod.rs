@@ -310,6 +310,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             enabled,
         } => settings::handle_room_url_preview_override_set(state, request_id, room_id, enabled),
+        AppAction::RoomPreferencesLoaded { preferences } => {
+            settings::handle_room_preferences_loaded(state, preferences)
+        }
         AppAction::RoomNotificationModeSet {
             request_id,
             room_id,
@@ -979,9 +982,13 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let had_native_attention = state.native_attention != Default::default();
     let had_files_view = state.files_view != FilesViewState::Closed;
     let had_threads_list = state.threads_list != ThreadsListState::Closed;
+    let had_link_preview_settings = !state.link_preview_settings.room_overrides.is_empty();
+    let had_room_preferences = !state.room_preferences.rooms.is_empty();
     let had_room_notification_settings = !state.room_notification_settings.is_empty();
 
     state.navigation = NavigationState::default();
+    state.link_preview_settings = Default::default();
+    state.room_preferences = Default::default();
     state.spaces.clear();
     state.rooms.clear();
     state.invites.clear();
@@ -1074,6 +1081,9 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     }
     if had_threads_list {
         effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged));
+    }
+    if had_link_preview_settings || had_room_preferences {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::LinkPreviewSettingsChanged));
     }
     if had_room_notification_settings {
         effects.push(AppEffect::EmitUiEvent(

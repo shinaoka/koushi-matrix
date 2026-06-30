@@ -18,11 +18,13 @@ fn namespaced_derivations_are_distinct() {
     let composer_drafts_key = secret.derive_composer_drafts_key();
     let scheduled_sends_key = secret.derive_scheduled_sends_key();
     let navigation_key = secret.derive_navigation_key();
+    let room_preferences_key = secret.derive_room_preferences_key();
 
     assert_eq!(sdk_store_key.as_bytes().len(), 32);
     assert_eq!(composer_drafts_key.as_bytes().len(), 32);
     assert_eq!(scheduled_sends_key.as_bytes().len(), 32);
     assert_eq!(navigation_key.as_bytes().len(), 32);
+    assert_eq!(room_preferences_key.as_bytes().len(), 32);
     assert_ne!(
         STANDARD.encode(sdk_store_key.as_bytes()),
         search_key.as_str()
@@ -35,6 +37,11 @@ fn namespaced_derivations_are_distinct() {
     );
     assert_ne!(composer_drafts_key.as_bytes(), navigation_key.as_bytes());
     assert_ne!(scheduled_sends_key.as_bytes(), navigation_key.as_bytes());
+    assert_ne!(navigation_key.as_bytes(), room_preferences_key.as_bytes());
+    assert_ne!(
+        composer_drafts_key.as_bytes(),
+        room_preferences_key.as_bytes()
+    );
     assert_ne!(
         search_key.as_str(),
         STANDARD.encode(composer_drafts_key.as_bytes())
@@ -47,6 +54,10 @@ fn namespaced_derivations_are_distinct() {
         search_key.as_str(),
         STANDARD.encode(navigation_key.as_bytes())
     );
+    assert_ne!(
+        search_key.as_str(),
+        STANDARD.encode(room_preferences_key.as_bytes())
+    );
 }
 
 #[test]
@@ -57,6 +68,7 @@ fn derived_and_stored_secrets_have_redacted_debug() {
     let composer_drafts_key = secret.derive_composer_drafts_key();
     let scheduled_sends_key = secret.derive_scheduled_sends_key();
     let navigation_key = secret.derive_navigation_key();
+    let room_preferences_key = secret.derive_room_preferences_key();
     let stored_secret = secret.to_storage_string();
 
     assert_eq!(format!("{sdk_store_key:?}"), "SdkStoreKey(..)");
@@ -64,6 +76,10 @@ fn derived_and_stored_secrets_have_redacted_debug() {
     assert_eq!(format!("{composer_drafts_key:?}"), "ComposerDraftsKey(..)");
     assert_eq!(format!("{scheduled_sends_key:?}"), "ScheduledSendsKey(..)");
     assert_eq!(format!("{navigation_key:?}"), "NavigationKey(..)");
+    assert_eq!(
+        format!("{room_preferences_key:?}"),
+        "RoomPreferencesKey(..)"
+    );
     assert_eq!(format!("{stored_secret:?}"), "StoredLocalUnlockSecret(..)");
     assert!(!format!("{secret:?}").contains(stored_secret.as_str()));
 }

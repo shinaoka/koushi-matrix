@@ -19,7 +19,8 @@ use koushi_state::{
     FocusedContextState, InvitePreview, LinkPreviewSettingsState, LiveSignalsState,
     LocalEncryptionState, LocaleDisplayProfile, NativeAttentionCapabilities, NativeAttentionState,
     NavigationState, ProfileState, QrLoginState, RecoveryMethod, RoomInteractionState,
-    RoomListProjection, RoomManagementState, RoomNotificationSettings, RoomSummary,
+    RoomListProjection, RoomManagementState, RoomNotificationSettings, RoomPreferencesState,
+    RoomSummary,
     SearchCrawlerState, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
     SessionState, SettingsState, SidebarModel, SoftLogoutReauthState, SpaceSummary, SyncMode,
     SyncState, ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
@@ -118,6 +119,8 @@ pub struct FrontendDomainStateChangedSlices {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link_preview_settings: Option<LinkPreviewSettingsState>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_preferences: Option<RoomPreferencesState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub locale_profile: Option<LocaleDisplayProfile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub typography_profile: Option<TypographyDisplayProfile>,
@@ -173,6 +176,7 @@ impl FrontendDomainStateChangedSlices {
             && self.qr_login.is_none()
             && self.settings.is_none()
             && self.link_preview_settings.is_none()
+            && self.room_preferences.is_none()
             && self.locale_profile.is_none()
             && self.typography_profile.is_none()
             && self.profile.is_none()
@@ -259,6 +263,7 @@ impl From<StateDelta> for FrontendDesktopSnapshotDelta {
             domain.settings = Some(settings);
         }
         domain.link_preview_settings = changed.link_preview_settings;
+        domain.room_preferences = changed.room_preferences;
         domain.profile = changed.profile;
         domain.sync = changed.sync.map(Into::into);
         domain.sync_mode = changed.sync_mode;
@@ -339,6 +344,7 @@ pub struct FrontendDomainState {
     pub qr_login: QrLoginState,
     pub settings: SettingsState,
     pub link_preview_settings: LinkPreviewSettingsState,
+    pub room_preferences: RoomPreferencesState,
     pub locale_profile: LocaleDisplayProfile,
     pub typography_profile: TypographyDisplayProfile,
     pub profile: ProfileState,
@@ -403,6 +409,7 @@ fn frontend_app_state_for_platform(state: AppState, platform: DisplayPlatform) -
             qr_login: state.qr_login,
             settings: state.settings,
             link_preview_settings: state.link_preview_settings,
+            room_preferences: state.room_preferences,
             locale_profile,
             typography_profile,
             profile: state.profile,

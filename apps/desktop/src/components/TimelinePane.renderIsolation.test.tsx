@@ -253,6 +253,7 @@ function makeSnapshot(): DesktopSnapshot {
           persistence: { kind: "idle" }
         },
         link_preview_settings: { room_overrides: {} },
+        room_preferences: { rooms: {} },
         locale_profile: {
           lang: "en",
           dir: "ltr",
