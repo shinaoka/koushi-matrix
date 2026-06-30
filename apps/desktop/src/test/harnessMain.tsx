@@ -19,7 +19,6 @@ import {
   type TimelineTransport
 } from "../components/TimelineView";
 import { TauriIpcMock, type IpcInvocation } from "./tauriIpcMock";
-import "../styles.css";
 
 declare global {
   interface Window {

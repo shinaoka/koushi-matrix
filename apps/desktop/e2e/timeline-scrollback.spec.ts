@@ -18,6 +18,7 @@
  */
 
 import { expect, test, type Page } from "@playwright/test";
+import path from "node:path";
 
 const ROOM_ID = "!harness-room:example.invalid";
 const ACCOUNT_KEY = "@harness-user:example.invalid";
@@ -948,6 +949,9 @@ test("known-dimension media keeps row height stable across download completion",
 }) => {
   await page.goto("/harness.html");
   await page.waitForSelector("[data-testid=timeline-view]");
+  await page.addStyleTag({
+    path: path.join(process.cwd(), "apps/desktop/src/styles.css")
+  });
 
   await page.evaluate(
     ({ key, items }) => {
