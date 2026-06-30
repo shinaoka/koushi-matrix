@@ -41,6 +41,7 @@ pub async fn select_room(
     let selected_room_id = room_id.clone();
     let mut event_conn = state.runtime.attach();
     let request_id = event_conn.next_request_id();
+    trace_tauri_timeline_command("submit", "select_room", request_id);
     event_conn
         .command(build_select_room_command(request_id, room_id))
         .await
@@ -52,16 +53,6 @@ pub async fn select_room(
         SELECT_ROOM_EVENT_TIMEOUT,
     )
     .await?;
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let subscribe_request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_subscribe_timeline_command(
-            subscribe_request_id,
-            account_key,
-            selected_room_id,
-        ))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
@@ -99,17 +90,6 @@ pub async fn open_activity_event(
         SELECT_ROOM_EVENT_TIMEOUT,
     )
     .await?;
-
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let subscribe_request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_subscribe_timeline_command(
-            subscribe_request_id,
-            account_key,
-            selected_room_id,
-        ))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
 
     let anchor_request_id = event_conn.next_request_id();
     event_conn
@@ -163,17 +143,6 @@ pub async fn select_search_result(
         SELECT_ROOM_EVENT_TIMEOUT,
     )
     .await?;
-
-    let account_key = account_key_from_snapshot(state.inner()).await;
-    let subscribe_request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_subscribe_timeline_command(
-            subscribe_request_id,
-            account_key,
-            selected_room_id,
-        ))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
 
     let open_request_id = event_conn.next_request_id();
     event_conn

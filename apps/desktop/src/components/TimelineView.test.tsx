@@ -274,7 +274,50 @@ describe("TimelineView", () => {
     expect(calls).toEqual(["listen", "ensure"]);
   });
 
-  it("renders from a prepopulated App-level store while keeping view-local event handling", async () => {
+  it("skips the fallback timeline subscription when InitialItems arrive after listener registration", async () => {
+    vi.useFakeTimers();
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const ensureSubscribed = vi.fn().mockResolvedValue(undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      ensureSubscribed
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$selected-room-initial", "Initial from select_room")]
+          }
+        }
+      });
+    });
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+
+    expect(screen.getByText("Initial from select_room")).toBeTruthy();
+    expect(ensureSubscribed).not.toHaveBeenCalled();
+  });
+
+  it("renders from a prepopulated App-level store without fallback resubscribe", async () => {
+    vi.useFakeTimers();
     const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
       InitialItems: {
         request_id: null,
@@ -306,9 +349,13 @@ describe("TimelineView", () => {
       </TimelineStoreContext.Provider>
     );
 
-    expect(await screen.findByText("From app store")).toBeTruthy();
+    expect(screen.getByText("From app store")).toBeTruthy();
     expect(listenCoreEvents).toHaveBeenCalledTimes(1);
-    expect(ensureSubscribed).toHaveBeenCalledWith(KEY);
+    expect(ensureSubscribed).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(ensureSubscribed).not.toHaveBeenCalled();
     act(() => {
       emit({
         kind: "Timeline",
@@ -335,7 +382,7 @@ describe("TimelineView", () => {
         }
       });
     });
-    expect(await screen.findByText("$source:example.invalid")).toBeTruthy();
+    expect(screen.getByText("$source:example.invalid")).toBeTruthy();
     expect(setStore).not.toHaveBeenCalled();
   });
 
@@ -1296,6 +1343,7 @@ describe("TimelineView", () => {
   it("paginates older history when the user scrolls to the top even if prefetch is disabled", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const paginateBackwards = vi.fn(async () => undefined);
+    const onDiagnosticLogEntry = vi.fn();
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
         emit = nextListener;
@@ -1311,6 +1359,7 @@ describe("TimelineView", () => {
         transport={transport}
         autoLoadOlderMessages={false}
         onReply={vi.fn()}
+        onDiagnosticLogEntry={onDiagnosticLogEntry}
       />
     );
 
@@ -1332,6 +1381,30 @@ describe("TimelineView", () => {
 
     await waitFor(() => {
       expect(paginateBackwards).toHaveBeenCalledWith(KEY);
+    });
+
+    emit({
+      kind: "Timeline",
+      event: {
+        PaginationStateChanged: {
+          request_id: null,
+          key: KEY,
+          direction: "Backward",
+          state: "Idle"
+        }
+      }
+    });
+
+    await waitFor(() => {
+      const backfillMessages = onDiagnosticLogEntry.mock.calls
+        .map(([entry]) => entry)
+        .filter((entry) => entry.source === "timeline.backfill")
+        .map((entry) => entry.message);
+      expect(backfillMessages[0]).toContain("stage=request trigger=scroll");
+      expect(backfillMessages[0]).toContain("threshold_px=0");
+      expect(backfillMessages).toEqual(
+        expect.arrayContaining([expect.stringContaining("stage=complete reason=pagination_idle")])
+      );
     });
   });
 
@@ -3105,6 +3178,57 @@ describe("TimelineView", () => {
     expect(downloadAvatarThumbnail).toHaveBeenCalledTimes(1);
   });
 
+  it("limits initial avatar thumbnail requests to the current viewport window", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const downloadAvatarThumbnail = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      downloadAvatarThumbnail
+    });
+    const items = Array.from({ length: 40 }, (_, index) => ({
+      ...message(`$avatar-window-${index}`, `Avatar row ${index}`),
+      sender_avatar: {
+        mxc_uri: `mxc://matrix.org/avatar-window-${index}`,
+        thumbnail: { kind: "notRequested" as const }
+      }
+    }));
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        enableAvatarThumbnailDownloads={true}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items
+        }
+      }
+    });
+
+    await waitFor(() => {
+      expect(downloadAvatarThumbnail).toHaveBeenCalledWith(
+        "mxc://matrix.org/avatar-window-0"
+      );
+    });
+    expect(downloadAvatarThumbnail).not.toHaveBeenCalledWith(
+      "mxc://matrix.org/avatar-window-39"
+    );
+    expect(downloadAvatarThumbnail.mock.calls.length).toBeLessThan(items.length);
+  });
+
   it("emits timestamped avatar diagnostics for request, success, and retryable failure", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const downloadAvatarThumbnail = vi.fn(async () => undefined);
@@ -4283,6 +4407,160 @@ describe("TimelineView", () => {
     await waitFor(() => {
       expect(hideLinkPreview).toHaveBeenCalledWith("!room:example.invalid", "$preview:example.invalid");
     });
+  });
+
+  it("emits private-data-free diagnostics when viewport pending link previews load", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const loadLinkPreviews = vi.fn(async () => undefined);
+    const onDiagnosticLogEntry = vi.fn();
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      loadLinkPreviews
+    });
+    const item: TimelineItem = {
+      ...message("$pending-preview:example.invalid", "look at https://secret.example/article"),
+      link_previews: [
+        {
+          url: "https://secret.example/article",
+          state: "pending"
+        }
+      ]
+    };
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        onDiagnosticLogEntry={onDiagnosticLogEntry}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [item]
+        }
+      }
+    });
+
+    await waitFor(() => {
+      expect(loadLinkPreviews).toHaveBeenCalledWith(
+        "!room:example.invalid",
+        "$pending-preview:example.invalid"
+      );
+      expect(onDiagnosticLogEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: "timeline.preview",
+          message: "kind=room stage=request trigger=viewport_pending pending=1"
+        })
+      );
+    });
+
+    emit({
+      kind: "Timeline",
+      event: {
+        ItemsUpdated: {
+          key: KEY,
+          generation: 1,
+          batch_id: 1,
+          diffs: [
+            {
+              Set: {
+                index: 0,
+                item: {
+                  ...item,
+                  link_previews: [
+                    {
+                      url: "https://secret.example/article",
+                      title: "Loaded",
+                      state: "ready"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    });
+
+    await waitFor(() => {
+      expect(onDiagnosticLogEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: "timeline.preview",
+          message: "kind=room stage=update items=1 pending=0 loading=0 ready=1 failed=0"
+        })
+      );
+    });
+
+    const diagnosticText = onDiagnosticLogEntry.mock.calls
+      .map(([entry]) => `${entry.source} ${entry.message}`)
+      .join("\n");
+    expect(diagnosticText).not.toContain("$pending-preview");
+    expect(diagnosticText).not.toContain("secret.example");
+  });
+
+  it("limits initial link preview requests to the current viewport window", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const loadLinkPreviews = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      loadLinkPreviews
+    });
+    const items = Array.from({ length: 40 }, (_, index) => ({
+      ...message(`$preview-window-${index}`, `Preview row ${index}`),
+      link_previews: [
+        {
+          url: `https://example.invalid/preview-window-${index}`,
+          state: "pending" as const
+        }
+      ]
+    }));
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items
+        }
+      }
+    });
+
+    await waitFor(() => {
+      expect(loadLinkPreviews).toHaveBeenCalledWith(
+        "!room:example.invalid",
+        "$preview-window-0"
+      );
+    });
+    expect(loadLinkPreviews).not.toHaveBeenCalledWith(
+      "!room:example.invalid",
+      "$preview-window-39"
+    );
+    expect(loadLinkPreviews.mock.calls.length).toBeLessThan(items.length);
   });
 
   it("keeps reactions and read receipts in one footer status row", async () => {

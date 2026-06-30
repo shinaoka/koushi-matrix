@@ -90,13 +90,13 @@ use crate::command::{
     MediaDownloadSelection, TimelineCommand, UploadMediaKind, UploadMediaRequest,
 };
 use crate::event::{
-    CoreEvent, LinkPreviewState, LiveSignalsEvent, PaginationDirection, PaginationState,
-    ThreadSummaryDto, TimelineAnchorRestoreStatus, TimelineDiff, TimelineEvent, TimelineItem,
-    TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
-    TimelineMessageActions, TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot,
-    TimelineResyncReason, TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
-    TimelineUnableToDecrypt, TimelineUnableToDecryptReason, TimelineUnreadPosition,
-    TimelineViewportObservation, message_actions_for_timeline_item,
+    CoreEvent, LinkPreview, LinkPreviewState, LiveSignalsEvent, PaginationDirection,
+    PaginationState, ThreadSummaryDto, TimelineAnchorRestoreStatus, TimelineDiff, TimelineEvent,
+    TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
+    TimelineMediaThumbnail, TimelineMessageActions, TimelineMessageKind, TimelineMessageSource,
+    TimelineNavigationSnapshot, TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
+    TimelineSpoilerSpan, TimelineUnableToDecrypt, TimelineUnableToDecryptReason,
+    TimelineUnreadPosition, TimelineViewportObservation, message_actions_for_timeline_item,
     message_source_for_timeline_item,
 };
 use crate::executor;
@@ -270,9 +270,11 @@ impl TimelineManagerActor {
     async fn handle_command(&mut self, command: TimelineCommand) {
         match command {
             TimelineCommand::Subscribe { request_id, key } => {
+                trace_timeline_route("manager_received", "subscribe", request_id, &key);
                 self.handle_subscribe(request_id, key).await;
             }
-            TimelineCommand::Unsubscribe { request_id: _, key } => {
+            TimelineCommand::Unsubscribe { request_id, key } => {
+                trace_timeline_route("manager_received", "unsubscribe", request_id, &key);
                 // Drop the actor handle, which cancels its relay task and drops
                 // the SDK Timeline handle — no dedicated success event per spec.
                 self.timelines.remove(&key);
@@ -283,6 +285,7 @@ impl TimelineManagerActor {
                 direction,
                 event_count,
             } => {
+                trace_timeline_route("manager_received", "paginate", request_id, &key);
                 self.route_to_actor_or_fail(
                     request_id,
                     &key,
@@ -637,6 +640,7 @@ impl TimelineManagerActor {
                 key,
                 event_id,
             } => {
+                trace_timeline_route("manager_received", "load_link_previews", request_id, &key);
                 self.route_to_actor_or_fail(
                     request_id,
                     &key,
@@ -1338,6 +1342,15 @@ enum TimelineActorMessage {
         request_id: RequestId,
         event_id: String,
     },
+    LinkPreviewsFetched {
+        request_id: RequestId,
+        event_id: String,
+        previews: Vec<LinkPreview>,
+        pending_count: usize,
+        ready_count: usize,
+        failed_count: usize,
+        elapsed_ms: u128,
+    },
     HideLinkPreview {
         request_id: RequestId,
         event_id: String,
@@ -1361,6 +1374,134 @@ enum TimelineActorMessage {
     ReplayInitialItems {
         request_id: RequestId,
     },
+}
+
+fn timeline_trace_enabled() -> bool {
+    std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some()
+}
+
+fn timeline_key_trace_kind(key: &TimelineKey) -> &'static str {
+    match &key.kind {
+        TimelineKind::Room { .. } => "room",
+        TimelineKind::Thread { .. } => "thread",
+        TimelineKind::Focused { .. } => "focused",
+    }
+}
+
+fn pagination_direction_trace_token(direction: PaginationDirection) -> &'static str {
+    match direction {
+        PaginationDirection::Backward => "backward",
+        PaginationDirection::Forward => "forward",
+    }
+}
+
+fn trace_timeline_route(stage: &str, kind: &str, request_id: RequestId, key: &TimelineKey) {
+    if timeline_trace_enabled() {
+        eprintln!(
+            "koushi.timeline stage={stage} kind={kind} timeline={} request_id={}/{}",
+            timeline_key_trace_kind(key),
+            request_id.connection_id.0,
+            request_id.sequence
+        );
+    }
+}
+
+fn trace_timeline_paginate(
+    stage: &str,
+    request_id: RequestId,
+    key: &TimelineKey,
+    direction: PaginationDirection,
+    event_count: u16,
+    elapsed_ms: Option<u128>,
+    gate_ms: Option<u128>,
+    outcome: Option<&'static str>,
+) {
+    if timeline_trace_enabled() {
+        eprintln!(
+            "koushi.timeline stage={stage} kind=paginate timeline={} direction={} event_count={} request_id={}/{} elapsed_ms={} gate_ms={} outcome={}",
+            timeline_key_trace_kind(key),
+            pagination_direction_trace_token(direction),
+            event_count,
+            request_id.connection_id.0,
+            request_id.sequence,
+            elapsed_ms.unwrap_or(0),
+            gate_ms.unwrap_or(0),
+            outcome.unwrap_or("pending")
+        );
+    }
+}
+
+fn trace_timeline_link_preview(
+    stage: &str,
+    request_id: RequestId,
+    key: &TimelineKey,
+    pending_count: usize,
+    ready_count: usize,
+    failed_count: usize,
+    elapsed_ms: Option<u128>,
+    outcome: Option<&'static str>,
+) {
+    if timeline_trace_enabled() {
+        eprintln!(
+            "koushi.timeline stage={stage} kind=link_preview timeline={} pending={} ready={} failed={} request_id={}/{} elapsed_ms={} outcome={}",
+            timeline_key_trace_kind(key),
+            pending_count,
+            ready_count,
+            failed_count,
+            request_id.connection_id.0,
+            request_id.sequence,
+            elapsed_ms.unwrap_or(0),
+            outcome.unwrap_or("pending")
+        );
+    }
+}
+
+fn spawn_link_preview_fetch(
+    session: Arc<MatrixClientSession>,
+    msg_tx: mpsc::Sender<TimelineActorMessage>,
+    request_id: RequestId,
+    event_id: String,
+    previews: Vec<LinkPreview>,
+) -> executor::JoinHandle<()> {
+    executor::spawn(async move {
+        let started = std::time::Instant::now();
+        let mut updated = Vec::with_capacity(previews.len());
+        let mut pending_count = 0usize;
+        let mut ready_count = 0usize;
+        let mut failed_count = 0usize;
+
+        for mut preview in previews {
+            if preview.state != LinkPreviewState::Pending {
+                updated.push(preview);
+                continue;
+            }
+
+            pending_count += 1;
+            match crate::link_preview::fetch_link_preview(&session, &preview.url).await {
+                Ok(fetched) => {
+                    updated.push(fetched);
+                    ready_count += 1;
+                }
+                Err(_) => {
+                    preview.state = LinkPreviewState::Failed;
+                    updated.push(preview);
+                    failed_count += 1;
+                }
+            }
+        }
+
+        let _ = msg_tx
+            .send(TimelineActorMessage::LinkPreviewsFetched {
+                request_id,
+                event_id,
+                previews: updated,
+                pending_count,
+                ready_count,
+                failed_count,
+                elapsed_ms: started.elapsed().as_millis(),
+            })
+            .await;
+    })
 }
 
 struct TimelineActorHandle {
@@ -1446,6 +1587,8 @@ struct TimelineActor {
     ignored_user_ids: std::collections::BTreeSet<String>,
     /// URL preview policy for this timeline.
     link_preview_policy: LinkPreviewContext,
+    /// In-flight URL preview fetch workers keyed by event_id.
+    link_preview_fetches: HashMap<String, executor::JoinHandle<()>>,
     /// Application data directory for cached preview images.
     data_dir: Option<std::path::PathBuf>,
     messages_backpressure: MessagesBackpressure,
@@ -1487,6 +1630,14 @@ struct ThreadAttentionCounters {
     notification_count: u64,
     highlight_count: u64,
     live_event_marker_count: u64,
+}
+
+impl Drop for TimelineActor {
+    fn drop(&mut self) {
+        for task in self.link_preview_fetches.values() {
+            task.abort();
+        }
+    }
 }
 
 impl TimelineActor {
@@ -1689,6 +1840,7 @@ impl TimelineActor {
             last_navigation_snapshot: None,
             ignored_user_ids,
             link_preview_policy,
+            link_preview_fetches: HashMap::new(),
             data_dir,
             messages_backpressure,
             restore_anchor: None,
@@ -1885,6 +2037,26 @@ impl TimelineActor {
             } => {
                 self.handle_load_link_previews(request_id, event_id).await;
             }
+            TimelineActorMessage::LinkPreviewsFetched {
+                request_id,
+                event_id,
+                previews,
+                pending_count,
+                ready_count,
+                failed_count,
+                elapsed_ms,
+            } => {
+                self.handle_link_previews_fetched(
+                    request_id,
+                    event_id,
+                    previews,
+                    pending_count,
+                    ready_count,
+                    failed_count,
+                    elapsed_ms,
+                )
+                .await;
+            }
             TimelineActorMessage::HideLinkPreview {
                 request_id,
                 event_id,
@@ -1924,6 +2096,16 @@ impl TimelineActor {
         direction: PaginationDirection,
         event_count: u16,
     ) {
+        trace_timeline_paginate(
+            "actor_paginate_start",
+            request_id,
+            &self.key,
+            direction,
+            event_count,
+            None,
+            None,
+            None,
+        );
         let _ = self.paginate_once(request_id, direction, event_count).await;
     }
 
@@ -1954,17 +2136,45 @@ impl TimelineActor {
             state: PaginationState::Paginating,
         }));
 
-        let gate_started = startup_trace::now_if_enabled();
+        let gate_started =
+            (startup_trace::enabled() || timeline_trace_enabled()).then(std::time::Instant::now);
         let result = {
             let _permit = self.messages_backpressure.acquire_timeline().await;
             let gate_wait = gate_started.map(|t| t.elapsed());
+            let gate_ms = gate_wait.map(|duration| duration.as_millis());
+            trace_timeline_paginate(
+                "gate_acquired",
+                request_id,
+                &self.key,
+                direction,
+                event_count,
+                None,
+                gate_ms,
+                None,
+            );
             let paginate_started = startup_trace::now_if_enabled();
+            let trace_started = timeline_trace_enabled().then(std::time::Instant::now);
             let outcome = match direction {
                 PaginationDirection::Backward => {
                     self.timeline.paginate_backwards(event_count).await
                 }
                 PaginationDirection::Forward => self.timeline.paginate_forwards(event_count).await,
             };
+            let outcome_token = match &outcome {
+                Ok(true) => "end_reached",
+                Ok(false) => "idle",
+                Err(_) => "failed",
+            };
+            trace_timeline_paginate(
+                "sdk_finish",
+                request_id,
+                &self.key,
+                direction,
+                event_count,
+                trace_started.map(|started| started.elapsed().as_millis()),
+                gate_ms,
+                Some(outcome_token),
+            );
             startup_trace::trace_paginate(paginate_started, gate_wait, matches!(outcome, Ok(true)));
             outcome
         };
@@ -3508,40 +3718,7 @@ impl TimelineActor {
         self.emit_navigation_if_changed();
     }
 
-    async fn handle_load_link_previews(&mut self, _request_id: RequestId, event_id: String) {
-        let Some(index) = self.navigation_items.iter().position(
-            |item| matches!(&item.id, TimelineItemId::Event { event_id: id } if id == &event_id),
-        ) else {
-            return;
-        };
-
-        let Some(previews) = self.navigation_items[index].link_previews.clone() else {
-            return;
-        };
-
-        let mut updated = Vec::new();
-        for mut preview in previews {
-            if preview.state != LinkPreviewState::Pending {
-                updated.push(preview);
-                continue;
-            }
-
-            preview.state = LinkPreviewState::Loading;
-            match crate::link_preview::fetch_link_preview(&self.session, &preview.url).await {
-                Ok(fetched) => {
-                    self.link_preview_policy
-                        .cache
-                        .insert(fetched.url.clone(), fetched.clone());
-                    updated.push(fetched);
-                }
-                Err(_) => {
-                    preview.state = LinkPreviewState::Failed;
-                    updated.push(preview);
-                }
-            }
-        }
-
-        self.navigation_items[index].link_previews = Some(updated);
+    fn emit_timeline_item_set(&mut self, index: usize) {
         let core_diffs = vec![TimelineDiff::Set {
             index,
             item: self.navigation_items[index].clone(),
@@ -3555,6 +3732,168 @@ impl TimelineActor {
             batch_id,
             diffs: core_diffs,
         }));
+    }
+
+    async fn handle_load_link_previews(&mut self, request_id: RequestId, event_id: String) {
+        let trace_started = timeline_trace_enabled().then(std::time::Instant::now);
+        let Some(index) = self.navigation_items.iter().position(
+            |item| matches!(&item.id, TimelineItemId::Event { event_id: id } if id == &event_id),
+        ) else {
+            trace_timeline_link_preview(
+                "lookup_miss",
+                request_id,
+                &self.key,
+                0,
+                0,
+                0,
+                trace_started.map(|started| started.elapsed().as_millis()),
+                Some("lookup_miss"),
+            );
+            return;
+        };
+
+        let Some(previews) = self.navigation_items[index].link_previews.clone() else {
+            trace_timeline_link_preview(
+                "no_previews",
+                request_id,
+                &self.key,
+                0,
+                0,
+                0,
+                trace_started.map(|started| started.elapsed().as_millis()),
+                Some("no_previews"),
+            );
+            return;
+        };
+
+        let pending_count = previews
+            .iter()
+            .filter(|preview| preview.state == LinkPreviewState::Pending)
+            .count();
+        trace_timeline_link_preview(
+            "start",
+            request_id,
+            &self.key,
+            pending_count,
+            0,
+            0,
+            None,
+            None,
+        );
+
+        if pending_count == 0 {
+            trace_timeline_link_preview(
+                "complete",
+                request_id,
+                &self.key,
+                pending_count,
+                0,
+                0,
+                trace_started.map(|started| started.elapsed().as_millis()),
+                Some("unchanged"),
+            );
+            return;
+        }
+
+        let mut loading_previews = previews.clone();
+        for preview in &mut loading_previews {
+            if preview.state == LinkPreviewState::Pending {
+                preview.state = LinkPreviewState::Loading;
+            }
+        }
+        self.navigation_items[index].link_previews = Some(loading_previews);
+        self.emit_timeline_item_set(index);
+
+        let task = spawn_link_preview_fetch(
+            self.session.clone(),
+            self.msg_tx.clone(),
+            request_id,
+            event_id.clone(),
+            previews,
+        );
+        if let Some(previous) = self.link_preview_fetches.insert(event_id, task) {
+            previous.abort();
+        }
+    }
+
+    async fn handle_link_previews_fetched(
+        &mut self,
+        request_id: RequestId,
+        event_id: String,
+        previews: Vec<LinkPreview>,
+        pending_count: usize,
+        ready_count: usize,
+        failed_count: usize,
+        elapsed_ms: u128,
+    ) {
+        self.link_preview_fetches.remove(&event_id);
+        let Some(index) = self.navigation_items.iter().position(
+            |item| matches!(&item.id, TimelineItemId::Event { event_id: id } if id == &event_id),
+        ) else {
+            trace_timeline_link_preview(
+                "lookup_miss",
+                request_id,
+                &self.key,
+                pending_count,
+                ready_count,
+                failed_count,
+                Some(elapsed_ms),
+                Some("lookup_miss"),
+            );
+            return;
+        };
+
+        let Some(current_previews) = self.navigation_items[index].link_previews.as_mut() else {
+            trace_timeline_link_preview(
+                "complete",
+                request_id,
+                &self.key,
+                pending_count,
+                ready_count,
+                failed_count,
+                Some(elapsed_ms),
+                Some("discarded"),
+            );
+            return;
+        };
+
+        let fetched_by_url: HashMap<String, LinkPreview> = previews
+            .into_iter()
+            .map(|preview| (preview.url.clone(), preview))
+            .collect();
+        let mut changed = false;
+        for current in current_previews {
+            if current.state != LinkPreviewState::Pending
+                && current.state != LinkPreviewState::Loading
+            {
+                continue;
+            }
+            if let Some(fetched) = fetched_by_url.get(&current.url) {
+                if fetched.state == LinkPreviewState::Ready {
+                    self.link_preview_policy
+                        .cache
+                        .insert(fetched.url.clone(), fetched.clone());
+                }
+                if current != fetched {
+                    *current = fetched.clone();
+                    changed = true;
+                }
+            }
+        }
+
+        if changed {
+            self.emit_timeline_item_set(index);
+        }
+        trace_timeline_link_preview(
+            "complete",
+            request_id,
+            &self.key,
+            pending_count,
+            ready_count,
+            failed_count,
+            Some(elapsed_ms),
+            Some(if changed { "updated" } else { "discarded" }),
+        );
     }
 
     async fn handle_hide_link_preview(&mut self, _request_id: RequestId, event_id: String) {
@@ -8539,6 +8878,88 @@ mod tests {
         assert!(
             paginate_src.contains("trace_paginate"),
             "pagination must emit a startup_trace paginate token"
+        );
+    }
+
+    #[test]
+    fn timeline_route_and_paginate_emit_ordered_trace_tokens() {
+        let source = include_str!("timeline.rs");
+        let production = source.split("\nmod tests").next().unwrap_or(source);
+        assert!(
+            production.contains("fn trace_timeline_route"),
+            "timeline manager routing must have a private-data-free trace helper"
+        );
+        assert!(
+            production.contains("fn trace_timeline_paginate"),
+            "timeline pagination must have a private-data-free trace helper"
+        );
+        assert!(
+            production.contains("koushi.timeline"),
+            "timeline traces must share a stable koushi.timeline prefix"
+        );
+        for token in [
+            "stage={stage}",
+            "\"manager_received\"",
+            "\"actor_paginate_start\"",
+            "\"gate_acquired\"",
+            "\"sdk_finish\"",
+            "request_id={}/{}",
+            "timeline={}",
+        ] {
+            assert!(
+                production.contains(token),
+                "missing timeline trace token {token}"
+            );
+        }
+    }
+
+    #[test]
+    fn timeline_link_preview_load_emits_private_data_free_trace_tokens() {
+        let source = include_str!("timeline.rs");
+        let production = source.split("\nmod tests").next().unwrap_or(source);
+        assert!(
+            production.contains("fn trace_timeline_link_preview"),
+            "link preview loads must have a private-data-free trace helper"
+        );
+        for token in [
+            "kind=link_preview",
+            "\"lookup_miss\"",
+            "\"no_previews\"",
+            "\"start\"",
+            "\"complete\"",
+            "\"load_link_previews\"",
+            "pending={}",
+            "elapsed_ms={}",
+            "request_id={}/{}",
+        ] {
+            assert!(
+                production.contains(token),
+                "missing link preview trace token {token}"
+            );
+        }
+    }
+
+    #[test]
+    fn timeline_link_preview_fetches_do_not_block_actor_command_queue() {
+        let source = include_str!("timeline.rs");
+        let production = source.split("\nmod tests").next().unwrap_or(source);
+        let load_src = production
+            .split("async fn handle_load_link_previews")
+            .nth(1)
+            .and_then(|s| s.split("async fn handle_hide_link_preview").next())
+            .expect("handle_load_link_previews should exist");
+
+        assert!(
+            !load_src.contains("fetch_link_preview("),
+            "link preview network fetches must not run on the TimelineActor command loop"
+        );
+        assert!(
+            production.contains("spawn_link_preview_fetch"),
+            "link preview loads must spawn fetch work outside the TimelineActor command loop"
+        );
+        assert!(
+            production.contains("LinkPreviewsFetched"),
+            "link preview worker results must return to the TimelineActor explicitly"
         );
     }
 

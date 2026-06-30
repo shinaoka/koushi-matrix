@@ -1523,6 +1523,27 @@ describe("Tauri state refresh wiring", () => {
     expect(source).toContain("document.title = title");
     expect(source).toContain("desktopAttentionWindowTitle");
   });
+
+  test("room selection appends private-data-free transition diagnostics around the API call", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const fnStart = source.indexOf("async function selectRoom(roomId: string)");
+    const fnEnd = source.indexOf("async function openHomeActivityView", fnStart);
+    expect(fnStart).toBeGreaterThanOrEqual(0);
+    expect(fnEnd).toBeGreaterThan(fnStart);
+    const selectRoomSource = source.slice(fnStart, fnEnd);
+
+    const startOffset = selectRoomSource.indexOf("stage=select_start");
+    const apiOffset = selectRoomSource.indexOf("api.selectRoom(roomId)");
+    const doneOffset = selectRoomSource.indexOf("stage=select_done");
+
+    expect(selectRoomSource).toContain('source: "room.transition"');
+    expect(selectRoomSource).toContain("target_known=");
+    expect(selectRoomSource).toContain("same_active=");
+    expect(selectRoomSource).toContain("timeline_matches=");
+    expect(startOffset).toBeGreaterThanOrEqual(0);
+    expect(apiOffset).toBeGreaterThan(startOffset);
+    expect(doneOffset).toBeGreaterThan(apiOffset);
+  });
 });
 
 describe("TopBar sync state rendering", () => {

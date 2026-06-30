@@ -1459,6 +1459,44 @@ fn selecting_room_subscribes_timeline_and_clears_thread() {
 }
 
 #[test]
+fn selecting_current_room_does_not_resubscribe_timeline() {
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        spaces: spaces(),
+        rooms: rooms(),
+        navigation: koushi_state::NavigationState {
+            active_space_id: Some("space-a".to_owned()),
+            active_room_id: Some("room-a".to_owned()),
+            ..Default::default()
+        },
+        timeline: TimelinePaneState {
+            room_id: Some("room-a".to_owned()),
+            is_subscribed: true,
+            ..Default::default()
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "room-a".to_owned(),
+        },
+    );
+
+    assert_eq!(state.navigation.active_room_id.as_deref(), Some("room-a"));
+    assert_eq!(state.timeline.room_id.as_deref(), Some("room-a"));
+    assert!(state.timeline.is_subscribed);
+    assert!(
+        effects
+            .iter()
+            .all(|effect| !matches!(effect, AppEffect::SubscribeTimeline { .. })),
+        "selecting the current room must not replay the existing room timeline"
+    );
+    assert_eq!(effects, Vec::<AppEffect>::new());
+}
+
+#[test]
 fn selecting_non_dm_room_moves_scope_to_containing_space_or_home() {
     let mut state = AppState {
         session: SessionState::Ready(session_info()),

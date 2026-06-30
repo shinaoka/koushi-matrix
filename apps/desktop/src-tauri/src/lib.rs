@@ -1638,7 +1638,9 @@ mod tests {
 
     #[test]
     fn oidc_callback_url_accepts_only_expected_auth_callback_shape() {
-        assert!(super::is_oidc_callback_url("koushi-desktop://auth/callback"));
+        assert!(super::is_oidc_callback_url(
+            "koushi-desktop://auth/callback"
+        ));
         assert!(super::is_oidc_callback_url(
             "koushi-desktop://auth/callback?code=synthetic&state=synthetic"
         ));
@@ -1734,12 +1736,12 @@ mod tests {
             ActivityRow, ActivityStream, ActivityTab, AppState, AttachmentKind, AttachmentResult,
             AvatarThumbnailState, DirectoryQuery, DirectoryRoomSummary, IdentityResetAuthType,
             IdentityResetState, JapaneseCatalogProfile, LocalEncryptionHealth,
-            MediaTransferProgress,
-            NativeAttentionCapabilities, NativeAttentionCapability, NativeAttentionSummary,
-            PresenceKind, ReplyQuote, ReplyQuoteState, RoomHistoryVisibility, RoomJoinRule,
-            RoomMemberRole, RoomModerationAction, RoomPermissionFacts, RoomSettingsSnapshot,
-            RoomTagKind, SasEmoji, SearchCrawlerFailureKind, SearchCrawlerRoomState, SyncMode,
-            UserTrustState, VerificationFlowState, VerificationTarget,
+            MediaTransferProgress, NativeAttentionCapabilities, NativeAttentionCapability,
+            NativeAttentionSummary, PresenceKind, ReplyQuote, ReplyQuoteState,
+            RoomHistoryVisibility, RoomJoinRule, RoomMemberRole, RoomModerationAction,
+            RoomPermissionFacts, RoomSettingsSnapshot, RoomTagKind, SasEmoji,
+            SearchCrawlerFailureKind, SearchCrawlerRoomState, SyncMode, UserTrustState,
+            VerificationFlowState, VerificationTarget,
         };
         use serde_json::json;
 
@@ -2389,13 +2391,14 @@ mod tests {
                 kind: koushi_core::event::ReportKind::User,
             }))
             .expect("serialize account report completed event");
-        let account_oidc_authorization_created =
-            serialize_core_event(&CoreEvent::Account(AccountEvent::OidcAuthorizationCreated {
+        let account_oidc_authorization_created = serialize_core_event(&CoreEvent::Account(
+            AccountEvent::OidcAuthorizationCreated {
                 request_id,
                 authorization_url: "https://auth.example.test/authorize".to_owned(),
                 state: "synthetic-state".to_owned(),
-            }))
-            .expect("serialize OIDC authorization event");
+            },
+        ))
+        .expect("serialize OIDC authorization event");
 
         // OperationFailed: unit failures are strings
         let failed = serialize_core_event(&CoreEvent::OperationFailed {

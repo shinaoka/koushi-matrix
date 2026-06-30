@@ -189,6 +189,12 @@ pub(crate) fn handle_select_room(state: &mut AppState, room_id: String) -> Vec<A
         recompute_room_list_projection(state);
         effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
     }
+    if state.navigation.active_room_id.as_deref() == Some(room_id.as_str())
+        && state.timeline.room_id.as_deref() == Some(room_id.as_str())
+    {
+        remember_active_room_for_current_space(state);
+        return effects;
+    }
     select_active_room_for_navigation(state, &mut effects, room_id);
     remember_active_room_for_current_space(state);
     effects

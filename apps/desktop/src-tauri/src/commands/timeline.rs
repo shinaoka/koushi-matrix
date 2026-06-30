@@ -28,6 +28,7 @@ pub async fn paginate_timeline_backwards(
 ) -> Result<FrontendDesktopSnapshot, String> {
     let account_key = account_key_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
+    trace_tauri_timeline_command("submit", "paginate_backwards", request_id);
     submit_core_command(
         state.inner(),
         build_paginate_timeline_backwards_command(request_id, account_key, room_id),
@@ -72,6 +73,7 @@ pub async fn ensure_timeline_subscribed(
 ) -> Result<FrontendDesktopSnapshot, String> {
     let account_key = account_key_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
+    trace_tauri_timeline_command("submit", "ensure_subscribed", request_id);
     submit_core_command(
         state.inner(),
         CoreCommand::Timeline(TimelineCommand::Subscribe {
@@ -523,6 +525,7 @@ pub async fn load_link_previews(
 ) -> Result<FrontendDesktopSnapshot, String> {
     let account_key = account_key_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
+    trace_tauri_timeline_command("submit", "load_link_previews", request_id);
     if let Some(command) =
         build_load_link_previews_command(request_id, account_key, room_id, event_id)
     {
