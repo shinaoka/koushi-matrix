@@ -705,8 +705,16 @@ test("scrollback prepend keeps the anchor item visually stable and gates auto-ba
   });
 
   // ---- (b) scroll near the top → exactly one auto-backfill request ----
+  // Simulate a genuine user scroll-up: a bare scrollTop assignment is treated
+  // as a programmatic write and leaves the viewport intent at live-edge, so
+  // the component snaps back to the bottom and the anchor restoration never
+  // engages (the assertion below then races that snap). A wheel event marks
+  // the scroll as user-driven, switching the component to free-scroll exactly
+  // as a real trackpad/scrollbar drag would.
   await container.evaluate((node) => {
     node.scrollTop = 50; // below the 80px threshold
+    node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -50 }));
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
   });
   await expect
     .poll(async () =>
@@ -1036,7 +1044,23 @@ test("active scroll inside mounted overscan does not recompose the virtual windo
     node.scrollTop = 20_000;
     node.dispatchEvent(new Event("scroll", { bubbles: true }));
   });
-  await waitAnimationFrames(page, 3);
+  // The 20000px setup jump triggers virtual-range recomposition frames. Wait
+  // until those frames have fully settled (frame count stops changing across
+  // two reads) before resetting diagnostics, so leftover setup frames cannot
+  // leak into the active-scroll measurement window below. A fixed frame wait
+  // is flaky under load: headless Chromium frame scheduling drifts and the
+  // setup recomposition can spill past it.
+  let __settleFrames = -1;
+  await expect
+    .poll(async () => {
+      const current = await page.evaluate(
+        () => window.__harness.scrollDiagnostics()?.scrollFrames ?? 0
+      );
+      const settled = current === __settleFrames;
+      __settleFrames = current;
+      return settled;
+    })
+    .toBe(true);
 
   await page.evaluate(() => window.__harness.resetScrollDiagnostics());
 
@@ -1160,6 +1184,7 @@ test("timeline navigation renders Rust-owned unread controls and sends viewport 
 
   await container.evaluate((node) => {
     node.scrollTop = 0;
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
   });
 
   await expect
