@@ -1505,7 +1505,7 @@ button:disabled {
   grid-row: 3;
 }
 
-.timeline-scroll:has(.message-action-menu, .message-forward-menu) > .message-list {
+.timeline-scroll:has(.message-action-menu, .message-forward-menu, .timeline-reaction-emoji-picker) > .message-list {
   position: relative;
   z-index: 12;
 }
@@ -2585,40 +2585,6 @@ button:disabled {
   display: inline-flex;
 }
 
-.reaction-picker {
-  position: absolute;
-  top: calc(100% + 6px);
-  inset-inline-end: 0;
-  z-index: 40;
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 4px;
-  min-width: 164px;
-  padding: 6px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: 0 16px 32px rgb(15 27 45 / 18%);
-}
-
-.reaction-picker-option {
-  display: inline-grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  color: var(--text-muted);
-  background: var(--surface-hover);
-  font-family: var(--font-emoji);
-  font-size: 15px;
-}
-
-.reaction-picker-option:hover,
-.reaction-picker-option:focus-visible {
-  color: var(--brand-contrast);
-  background: var(--brand);
-}
-
 .context-menu-backdrop {
   position: fixed;
   inset: 0;
@@ -3570,8 +3536,6 @@ mark {
 
 .emoji-picker {
   position: absolute;
-  inset-block-end: calc(100% + 6px);
-  inset-inline-start: 0;
   z-index: 80;
   display: grid;
   grid-template-rows: auto auto 1fr;
@@ -3582,6 +3546,26 @@ mark {
   border-radius: 8px;
   background: var(--surface);
   box-shadow: 0 16px 32px rgb(15 27 45 / 18%);
+}
+
+.emoji-picker.is-above {
+  inset-block-end: calc(100% + 6px);
+}
+
+.emoji-picker.is-below {
+  inset-block-start: calc(100% + 6px);
+}
+
+.emoji-picker.align-start {
+  inset-inline-start: 0;
+}
+
+.emoji-picker.align-end {
+  inset-inline-end: 0;
+}
+
+.timeline-reaction-emoji-picker {
+  z-index: 90;
 }
 
 .emoji-picker-header {

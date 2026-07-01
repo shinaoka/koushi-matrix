@@ -233,6 +233,48 @@ describe("TimelineView", () => {
     expect(timelineMediaDisplayBoxForTests(800, null)).toBeNull();
   });
 
+  it("keeps the reaction emoji picker attached to its message row", async () => {
+    const sendReaction = vi.fn(async () => undefined);
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [message("$react", "React here")]
+      }
+    });
+    const transport = baseTransport({ sendReaction });
+
+    render(
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+        />
+      </TimelineStoreContext.Provider>
+    );
+
+    const article = screen.getByText("React here").closest("article");
+    expect(article).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /add reaction/i }));
+
+    const picker = await screen.findByRole("dialog", { name: /emoji/i });
+    expect(article!.contains(picker)).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /grinning face$/i }));
+
+    await waitFor(() => {
+      expect(sendReaction).toHaveBeenCalledWith(
+        "!room:example.invalid",
+        "$react",
+        "😀"
+      );
+    });
+  });
+
   it("ensures the timeline subscription after registering the CoreEvent listener", async () => {
     const calls: string[] = [];
     let listener: ((payload: CoreEventPayload) => void) | null = null;

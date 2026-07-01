@@ -74,9 +74,19 @@ interface EmojiPickerProps {
    * so the trigger button can handle its own toggle without the picker
    * re-opening after the outside-click handler fires. */
   anchorRef?: RefObject<Element | null>;
+  placement?: "above" | "below";
+  align?: "start" | "end";
+  className?: string;
 }
 
-export function EmojiPicker({ onSelect, onClose, anchorRef }: EmojiPickerProps) {
+export function EmojiPicker({
+  onSelect,
+  onClose,
+  anchorRef,
+  placement = "above",
+  align = "start",
+  className
+}: EmojiPickerProps) {
   const [query, setQuery] = useState("");
   const [activeCategory, setActiveCategory] = useState<
     EmojiCategory | "recent"
@@ -179,7 +189,12 @@ export function EmojiPicker({ onSelect, onClose, anchorRef }: EmojiPickerProps) 
   return (
     <div
       ref={panelRef}
-      className="emoji-picker"
+      className={[
+        "emoji-picker",
+        `is-${placement}`,
+        `align-${align}`,
+        className
+      ].filter(Boolean).join(" ")}
       role="dialog"
       aria-label={t("composer.emoji")}
     >

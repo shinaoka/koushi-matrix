@@ -51,6 +51,8 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
+  Suspense,
+  lazy,
   memo,
   type ReactNode,
   useCallback,
@@ -511,10 +513,13 @@ const TIMELINE_MAX_ITEM_HEIGHT_PX = 480;
 const TIMELINE_SCROLL_IDLE_FLUSH_MS = 100;
 const TIMELINE_SCROLL_MAX_DEFER_MS = 500;
 const TIMELINE_SUBSCRIBE_FALLBACK_DELAY_MS = 120;
-const REACTION_CHOICES = ["👍", "🎉", "❤️", "😂", "👀"] as const;
 
 const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "noop";
 const ignoreSendQueueAction = () => undefined;
+
+const LazyEmojiPicker = lazy(() =>
+  import("./EmojiPicker").then((module) => ({ default: module.EmojiPicker }))
+);
 
 type TimelineMentionToken = {
   token: string;
@@ -4188,6 +4193,8 @@ export function TimelineItemRow({
   const [isEditing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(item.body ?? "");
   const [isReactionPickerOpen, setReactionPickerOpen] = useState(false);
+  const [reactionPickerPlacement, setReactionPickerPlacement] =
+    useState<"above" | "below">("above");
   const [isActionMenuOpen, setActionMenuOpen] = useState(false);
   const [isForwardMenuOpen, setForwardMenuOpen] = useState(false);
   const [actionMenuPlacement, setActionMenuPlacement] = useState<"above" | "below">("above");
@@ -4196,7 +4203,6 @@ export function TimelineItemRow({
   );
   const reactionControlRef = useRef<HTMLDivElement>(null);
   const reactionTriggerRef = useRef<HTMLButtonElement>(null);
-  const firstReactionRef = useRef<HTMLButtonElement>(null);
   const actionMenuControlRef = useRef<HTMLDivElement>(null);
   const actionMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const firstActionMenuItemRef = useRef<HTMLButtonElement>(null);
@@ -4220,13 +4226,6 @@ export function TimelineItemRow({
     requestedLinkPreviewsRef.current.add(eventId);
     onLoadLinkPreviews(roomId, eventId, pendingCount);
   }, [autoLoadLinkPreviews, eventId, item.link_previews, onLoadLinkPreviews, roomId]);
-
-  useEffect(() => {
-    if (!isReactionPickerOpen) {
-      return;
-    }
-    firstReactionRef.current?.focus();
-  }, [isReactionPickerOpen]);
 
   useEffect(() => {
     if (!isEditing) {
@@ -4282,6 +4281,20 @@ export function TimelineItemRow({
   const closeReactionPicker = useCallback(() => {
     setReactionPickerOpen(false);
     reactionTriggerRef.current?.focus();
+  }, []);
+
+  const toggleReactionPicker = useCallback(() => {
+    const control = reactionControlRef.current;
+    if (control) {
+      const controlRect = control.getBoundingClientRect();
+      const panelTop =
+        control.closest<HTMLElement>(".main-pane")?.getBoundingClientRect().top ?? 0;
+      const availableAbove = controlRect.top - panelTop;
+      setReactionPickerPlacement(availableAbove < 380 ? "below" : "above");
+    }
+    setActionMenuOpen(false);
+    setForwardMenuOpen(false);
+    setReactionPickerOpen((current) => !current);
   }, []);
 
   const closeActionMenu = useCallback(() => {
@@ -4976,36 +4989,22 @@ export function TimelineItemRow({
               type="button"
               aria-label={t("timeline.addReaction")}
               aria-expanded={isReactionPickerOpen}
-              aria-haspopup="true"
-              onClick={() => setReactionPickerOpen((current) => !current)}
+              aria-haspopup="dialog"
+              onClick={toggleReactionPicker}
             >
               <SmilePlus size={14} />
             </button>
             {isReactionPickerOpen ? (
-              <div
-                className="reaction-picker"
-                role="group"
-                aria-label={t("timeline.reactionPicker")}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    closeReactionPicker();
-                  }
-                }}
-              >
-                {REACTION_CHOICES.map((reactionKey, index) => (
-                  <button
-                    key={reactionKey}
-                    ref={index === 0 ? firstReactionRef : undefined}
-                    className="reaction-picker-option"
-                    type="button"
-                    aria-label={t("timeline.reactionOption", { emoji: reactionKey })}
-                    onClick={() => submitReaction(reactionKey)}
-                  >
-                    <span dir="auto">{reactionKey}</span>
-                  </button>
-                ))}
-              </div>
+              <Suspense fallback={null}>
+                <LazyEmojiPicker
+                  anchorRef={reactionTriggerRef}
+                  align="end"
+                  placement={reactionPickerPlacement}
+                  className="timeline-reaction-emoji-picker"
+                  onSelect={submitReaction}
+                  onClose={closeReactionPicker}
+                />
+              </Suspense>
             ) : null}
           </div>
         ) : null}
