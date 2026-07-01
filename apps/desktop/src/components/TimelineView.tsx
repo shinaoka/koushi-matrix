@@ -63,6 +63,7 @@ import {
 
 import { getActiveLocale, t } from "../i18n/messages";
 import { useRecoverableImageSource } from "./avatarImage";
+import { findQueryHighlightRange } from "./searchHighlight";
 import {
   contextMenuItems,
   type ContextMenuItem
@@ -1010,19 +1011,17 @@ function renderTimelineMessageLine(
 }
 
 function renderQueryHighlight(text: string, query: string): ReactNode {
-  const trimmed = query.trim();
-  if (!trimmed) {
-    return text;
-  }
-  const index = text.indexOf(trimmed);
-  if (index < 0) {
+  // #162: match with the same NFKC + case-fold rule as the Rust search matcher
+  // so a visible highlight and the Search panel's exact-match count agree.
+  const range = findQueryHighlightRange(text, query);
+  if (!range) {
     return text;
   }
   return (
     <>
-      {text.slice(0, index)}
-      <mark>{text.slice(index, index + trimmed.length)}</mark>
-      {text.slice(index + trimmed.length)}
+      {text.slice(0, range.start)}
+      <mark>{text.slice(range.start, range.end)}</mark>
+      {text.slice(range.end)}
     </>
   );
 }
