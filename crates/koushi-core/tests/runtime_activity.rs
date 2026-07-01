@@ -30,6 +30,13 @@ fn room_in_space_summary(room_id: &str, space_id: &str) -> RoomSummary {
     }
 }
 
+fn notification_room_summary(room_id: &str, unread_count: u64) -> RoomSummary {
+    RoomSummary {
+        notification_count: unread_count,
+        ..unread_room_summary(room_id, unread_count)
+    }
+}
+
 #[tokio::test]
 async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
     let runtime = CoreRuntime::start();
@@ -40,9 +47,9 @@ async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![
-                    unread_room_summary("!recent:example.test", 1),
-                    unread_room_summary("!stale:example.test", 1),
-                    unread_room_summary("!marker:example.test", 2),
+                    notification_room_summary("!recent:example.test", 1),
+                    notification_room_summary("!stale:example.test", 1),
+                    notification_room_summary("!marker:example.test", 2),
                 ],
             },
             AppAction::FullyReadMarkerUpdated {
@@ -346,8 +353,8 @@ async fn activity_room_mark_read_suppresses_unread_room_entry_only_for_cleared_r
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![
-                    unread_room_summary("!room-a:example.test", 1),
-                    unread_room_summary("!room-b:example.test", 1),
+                    notification_room_summary("!room-a:example.test", 1),
+                    notification_room_summary("!room-b:example.test", 1),
                 ],
             },
             AppAction::ActivityRowsObserved {
@@ -464,8 +471,9 @@ async fn activity_unread_uses_room_summary_rows_and_mark_all_does_not_emit_synth
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![
-                    unread_room_summary("!placeholder:example.test", 1),
-                    unread_room_summary("!with-row:example.test", 1),
+                    notification_room_summary("!placeholder:example.test", 1),
+                    notification_room_summary("!with-row:example.test", 1),
+                    unread_room_summary("!plain-unread:example.test", 1),
                 ],
             },
             AppAction::ActivityRowsObserved {
@@ -478,7 +486,7 @@ async fn activity_unread_uses_room_summary_rows_and_mark_all_does_not_emit_synth
         ])
         .await;
     wait_for_state(&mut conn, |state| {
-        matches!(state.session, SessionState::Ready(_)) && state.rooms.len() == 2
+        matches!(state.session, SessionState::Ready(_)) && state.rooms.len() == 3
     })
     .await;
 
@@ -524,6 +532,13 @@ async fn activity_unread_uses_room_summary_rows_and_mark_all_does_not_emit_synth
         "Activity/Unread must remain a room list even when recent has observed events"
     );
     assert!(
+        unread
+            .rows
+            .iter()
+            .all(|row| row.room_id != "!plain-unread:example.test"),
+        "plain unread message counts must not create Activity/Unread rows"
+    );
+    assert!(
         unread.rows.iter().all(|row| row.event_id.is_none()),
         "Activity/Unread must not mix event rows with room rows"
     );
@@ -537,12 +552,32 @@ async fn activity_unread_uses_room_summary_rows_and_mark_all_does_not_emit_synth
     .expect("mark activity read command");
 
     let snapshot = wait_for_state(&mut conn, |state| {
+        let notification_rooms_cleared = ["!placeholder:example.test", "!with-row:example.test"]
+            .iter()
+            .all(|room_id| {
+                state
+                    .rooms
+                    .iter()
+                    .find(|room| room.room_id == *room_id)
+                    .is_some_and(|room| {
+                        room.unread_count == 0
+                            && room.notification_count == 0
+                            && room.highlight_count == 0
+                            && !room.marked_unread
+                    })
+            });
+        let plain_unread_preserved = state
+            .rooms
+            .iter()
+            .find(|room| room.room_id == "!plain-unread:example.test")
+            .is_some_and(|room| room.unread_count == 1 && room.notification_count == 0);
         matches!(
             &state.activity,
             ActivityState::Open { unread, mark_read, .. }
                 if unread.rows.is_empty()
                     && matches!(mark_read, ActivityMarkReadState::Idle)
-                    && state.rooms.iter().all(|room| room.unread_count == 0)
+                    && notification_rooms_cleared
+                    && plain_unread_preserved
         )
     })
     .await;
@@ -589,9 +624,9 @@ async fn activity_unread_removes_rooms_when_notification_mode_is_mute() {
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![
-                    unread_room_summary("!normal:example.test", 1),
-                    unread_room_summary("!muted-with-row:example.test", 1),
-                    unread_room_summary("!muted-placeholder:example.test", 1),
+                    notification_room_summary("!normal:example.test", 1),
+                    notification_room_summary("!muted-with-row:example.test", 1),
+                    notification_room_summary("!muted-placeholder:example.test", 1),
                 ],
             },
             AppAction::ActivityRowsObserved {
