@@ -210,6 +210,7 @@ export interface TimelineTransport {
   hideLinkPreview(roomId: string, eventId: string): Promise<void>;
   /** Report viewport facts; Rust owns marker/count semantics. */
   observeViewport?(
+    timelineKey: TimelineKey,
     roomId: string,
     firstVisibleEventId: string | null,
     lastVisibleEventId: string | null,
@@ -3115,7 +3116,7 @@ export const TimelineView = memo(function TimelineView({
     [roomId, transport]
   );
   const reportViewportObservation = useCallback(() => {
-    if (!transport.observeViewport || roomTimelineRoomId !== roomId) {
+    if (!transport.observeViewport) {
       return;
     }
     const container = containerRef.current;
@@ -3128,10 +3129,12 @@ export const TimelineView = memo(function TimelineView({
     }
     const atBottom = isScrolledToBottom(container);
     setViewportAtBottom((current) => (current === atBottom ? current : atBottom));
-    if (atBottom && latestReadableEventId) {
+    const isRoomTimeline = "Room" in timelineKey.kind && roomTimelineRoomId === roomId;
+    if (atBottom && latestReadableEventId && isRoomTimeline) {
       sendReadSignalsForEvent(latestReadableEventId);
     }
     const signature = [
+      JSON.stringify(timelineKey),
       roomId,
       visible.firstVisibleEventId ?? "",
       visible.lastVisibleEventId ?? "",
@@ -3143,6 +3146,7 @@ export const TimelineView = memo(function TimelineView({
     lastViewportObservationRef.current = signature;
     void transport
       .observeViewport(
+        timelineKey,
         roomId,
         visible.firstVisibleEventId,
         visible.lastVisibleEventId,
@@ -3154,6 +3158,7 @@ export const TimelineView = memo(function TimelineView({
     roomId,
     roomTimelineRoomId,
     sendReadSignalsForEvent,
+    timelineKey,
     transport
   ]);
 

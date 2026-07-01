@@ -482,6 +482,65 @@ describe("TimelineView", () => {
     expect(setStore).not.toHaveBeenCalled();
   });
 
+  it("reports viewport observations with the thread timeline key", async () => {
+    vi.useFakeTimers();
+    const threadKey = threadTimelineKey(
+      "@me:example.invalid",
+      "!room:example.invalid",
+      "$root:example.invalid"
+    );
+    const observeViewport = vi.fn().mockResolvedValue(undefined);
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: threadKey,
+        generation: 1,
+        items: [message("$reply:example.invalid", "Thread reply")]
+      }
+    });
+
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement
+    ) {
+      const itemId = this.getAttribute("data-item-id");
+      const top = itemId ? 20 : 0;
+      const height = itemId ? 40 : 240;
+      return {
+        x: 0,
+        y: top,
+        top,
+        left: 0,
+        right: 480,
+        width: 480,
+        height,
+        bottom: top + height,
+        toJSON: () => ({})
+      } as DOMRect;
+    });
+
+    render(
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <TimelineView
+          timelineKey={threadKey}
+          roomId="!room:example.invalid"
+          transport={baseTransport({ observeViewport })}
+          onReply={vi.fn()}
+        />
+      </TimelineStoreContext.Provider>
+    );
+
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(observeViewport).toHaveBeenCalledWith(
+      threadKey,
+      "!room:example.invalid",
+      "$reply:example.invalid",
+      "$reply:example.invalid",
+      expect.any(Boolean)
+    );
+    vi.useRealTimers();
+  });
+
   it("emits safe timestamped timeline event diagnostics for thread timelines", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const onDiagnosticLogEntry = vi.fn();

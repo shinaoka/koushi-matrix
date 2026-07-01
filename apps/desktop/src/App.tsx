@@ -348,6 +348,7 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
         await invoke("hide_link_preview", { roomId, eventId });
       },
       async observeViewport(
+        timelineKey: TimelineKey,
         roomId: string,
         firstVisibleEventId: string | null,
         lastVisibleEventId: string | null,
@@ -355,6 +356,7 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
       ) {
         await invoke("observe_timeline_viewport", {
           roomId,
+          timelineKey,
           firstVisibleEventId,
           lastVisibleEventId,
           atBottom

@@ -1099,14 +1099,17 @@ pub(crate) fn build_update_navigation_scroll_anchor_command(
 pub(crate) fn build_observe_timeline_viewport_command(
     request_id: koushi_core::RequestId,
     account_key: AccountKey,
-    room_id: String,
+    timeline_key: TimelineKey,
     first_visible_event_id: Option<String>,
     last_visible_event_id: Option<String>,
     at_bottom: bool,
 ) -> CoreCommand {
     CoreCommand::Timeline(TimelineCommand::ObserveViewport {
         request_id,
-        key: build_timeline_key(account_key, room_id),
+        key: TimelineKey {
+            account_key,
+            kind: timeline_key.kind,
+        },
         observation: TimelineViewportObservation {
             first_visible_event_id,
             last_visible_event_id,
@@ -2379,8 +2382,8 @@ mod tests {
         AccountCommand, AppCommand, CoreCommand, ImageUploadCompressionPolicy,
         ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantInfo,
         ImageUploadVariantKind, MediaDownloadSelection, PaginationDirection, RoomCommand,
-        SearchCommand, SearchScope, SyncCommand, TimelineCommand, UploadMediaKind,
-        UploadMediaThumbnail,
+        SearchCommand, SearchScope, SyncCommand, TimelineCommand, TimelineKey, TimelineKind,
+        UploadMediaKind, UploadMediaThumbnail,
     };
     use koushi_state::{
         ActivityMarkReadTarget, ActivityTab, AppearanceSettings, ImageUploadCompressionMode,
@@ -3463,7 +3466,7 @@ mod tests {
         match build_observe_timeline_viewport_command(
             fake_request_id(31),
             active_account_key.clone(),
-            room_id.clone(),
+            TimelineKey::room(active_account_key.clone(), room_id.clone()),
             Some("$first-visible".to_owned()),
             Some("$last-visible".to_owned()),
             false,
@@ -5371,7 +5374,7 @@ mod tests {
         let command = build_observe_timeline_viewport_command(
             fake_request_id(41),
             account_key.clone(),
-            "!room:example.org".to_owned(),
+            TimelineKey::room(account_key.clone(), "!room:example.org"),
             Some("$first".to_owned()),
             Some("$last".to_owned()),
             false,
@@ -5404,6 +5407,51 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn observe_timeline_viewport_command_can_route_thread_key() {
+        let account_key = AccountKey("@me:example.invalid".to_owned());
+        let command = build_observe_timeline_viewport_command(
+            fake_request_id(1),
+            account_key.clone(),
+            TimelineKey {
+                account_key: AccountKey("@stale:example.invalid".to_owned()),
+                kind: TimelineKind::Thread {
+                    room_id: "!room:example.invalid".to_owned(),
+                    root_event_id: "$root:example.invalid".to_owned(),
+                },
+            },
+            Some("$first:example.invalid".to_owned()),
+            Some("$last:example.invalid".to_owned()),
+            true,
+        );
+
+        let CoreCommand::Timeline(TimelineCommand::ObserveViewport {
+            key, observation, ..
+        }) = command
+        else {
+            panic!("expected observe viewport timeline command");
+        };
+
+        assert_eq!(key.account_key, account_key);
+        assert!(matches!(
+            key.kind,
+            TimelineKind::Thread {
+                ref room_id,
+                ref root_event_id
+            } if room_id == "!room:example.invalid"
+                && root_event_id == "$root:example.invalid"
+        ));
+        assert_eq!(
+            observation.first_visible_event_id.as_deref(),
+            Some("$first:example.invalid")
+        );
+        assert_eq!(
+            observation.last_visible_event_id.as_deref(),
+            Some("$last:example.invalid")
+        );
+        assert!(observation.at_bottom);
     }
 
     #[test]

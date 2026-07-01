@@ -1,4 +1,5 @@
 use super::*;
+use koushi_core::{TimelineKey, TimelineKind};
 
 #[tauri::command]
 pub async fn select_space(
@@ -229,6 +230,7 @@ pub async fn update_navigation_scroll_anchor(
 #[tauri::command]
 pub async fn observe_timeline_viewport(
     room_id: String,
+    timeline_key: Option<TimelineKey>,
     first_visible_event_id: Option<String>,
     last_visible_event_id: Option<String>,
     at_bottom: bool,
@@ -236,13 +238,17 @@ pub async fn observe_timeline_viewport(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<(), String> {
     let account_key = account_key_from_snapshot(state.inner()).await;
+    let key = timeline_key.unwrap_or_else(|| TimelineKey {
+        account_key: account_key.clone(),
+        kind: TimelineKind::Room { room_id },
+    });
     let request_id = next_request_id(state.inner()).await;
     submit_core_command(
         state.inner(),
         build_observe_timeline_viewport_command(
             request_id,
             account_key,
-            room_id,
+            key,
             first_visible_event_id,
             last_visible_event_id,
             at_bottom,
