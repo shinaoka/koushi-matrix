@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useState } from "react";
+import { Profiler, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { openExternalHttpUrl } from "../domain/externalLinks";
@@ -446,6 +446,72 @@ describe("TimelineView", () => {
       expect(picker.classList.contains("is-below")).toBe(true);
       expect(picker.style.getPropertyValue("--emoji-picker-max-block-size")).toBe("200px");
     });
+  });
+
+  it("does not re-render the reaction emoji picker when scroll keeps the same layout", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement
+    ) {
+      let top = 0;
+      let height = 24;
+      if (this.getAttribute("data-testid") === "timeline-view") {
+        top = 120;
+        height = 260;
+      } else if (this.classList.contains("reaction-control")) {
+        top = 320;
+      } else if (this.classList.contains("main-pane")) {
+        top = 100;
+        height = 500;
+      }
+      return {
+        x: 0,
+        y: top,
+        top,
+        left: 0,
+        right: 480,
+        width: 480,
+        height,
+        bottom: top + height,
+        toJSON: () => ({})
+      } as DOMRect;
+    });
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [message("$react-stable-layout", "React stable layout")]
+      }
+    });
+    const onProfilerRender = vi.fn();
+
+    render(
+      <div className="main-pane">
+        <Profiler id="timeline" onRender={onProfilerRender}>
+          <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+            <TimelineView
+              timelineKey={KEY}
+              roomId="!room:example.invalid"
+              transport={baseTransport({})}
+              onReply={vi.fn()}
+            />
+          </TimelineStoreContext.Provider>
+        </Profiler>
+      </div>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /add reaction/i }));
+    const picker = await screen.findByRole("dialog", { name: /emoji/i });
+    await waitFor(() => {
+      expect(picker.style.getPropertyValue("--emoji-picker-max-block-size")).toBe("194px");
+    });
+    onProfilerRender.mockClear();
+
+    act(() => {
+      document.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+
+    expect(onProfilerRender).not.toHaveBeenCalled();
   });
 
   it("ensures the timeline subscription after registering the CoreEvent listener", async () => {
@@ -1365,6 +1431,51 @@ describe("TimelineView", () => {
       .map(([diagnostics]) => diagnostics.latestFrame)
       .filter((frame) => frame?.scrollActivity === "active");
     expect(activeFrames).toEqual([]);
+  });
+
+  it("virtualizes medium-length timelines before all rows render", async () => {
+    let listener: ((payload: CoreEventPayload) => void) | null = null;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        listener = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={() => undefined}
+      />
+    );
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperty(timeline, "clientHeight", { value: 500, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 8_000,
+      writable: true,
+      configurable: true
+    });
+
+    act(() => {
+      listener?.({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: Array.from({ length: 171 }, (_, index) =>
+              message(`$medium-${index}`, `medium message ${index}`)
+            )
+          }
+        }
+      });
+    });
+
+    await waitFor(() => expect(timeline.getAttribute("data-virtualized")).toBe("true"));
+    expect(Number(timeline.getAttribute("data-rendered-items"))).toBeLessThan(171);
   });
 
   it("drops pending scroll frame diagnostics after same timeline items reset", async () => {

@@ -549,11 +549,18 @@ function reactionPickerLayoutForControl(control: HTMLElement): ReactionPickerLay
   };
 }
 
+function reactionPickerLayoutEquals(
+  left: ReactionPickerLayout,
+  right: ReactionPickerLayout
+): boolean {
+  return left.placement === right.placement && left.maxBlockSize === right.maxBlockSize;
+}
+
 /** Distance (px) from the top edge that triggers automatic backfill. */
 const AUTO_BACKFILL_THRESHOLD_PX = 80;
 const AUTO_BACKFILL_PREFETCH_ITEMS = 100;
 const SCROLL_EDGE_TOLERANCE_PX = 2;
-const TIMELINE_VIRTUALIZATION_THRESHOLD = 600;
+const TIMELINE_VIRTUALIZATION_THRESHOLD = 120;
 const TIMELINE_VIRTUAL_OVERSCAN_ITEMS = 60;
 const TIMELINE_AVATAR_THUMBNAIL_OVERSCAN_ITEMS = 8;
 const TIMELINE_LINK_PREVIEW_OVERSCAN_ITEMS = 8;
@@ -4253,6 +4260,7 @@ export function TimelineItemRow({
     placement: "above",
     maxBlockSize: REACTION_PICKER_BLOCK_SIZE_PX
   });
+  const reactionPickerLayoutRef = useRef(reactionPickerLayout);
   const [isActionMenuOpen, setActionMenuOpen] = useState(false);
   const [isForwardMenuOpen, setForwardMenuOpen] = useState(false);
   const [actionMenuPlacement, setActionMenuPlacement] = useState<"above" | "below">("above");
@@ -4339,7 +4347,11 @@ export function TimelineItemRow({
   const updateReactionPickerLayout = useCallback(() => {
     const control = reactionControlRef.current;
     if (control) {
-      setReactionPickerLayout(reactionPickerLayoutForControl(control));
+      const next = reactionPickerLayoutForControl(control);
+      if (!reactionPickerLayoutEquals(reactionPickerLayoutRef.current, next)) {
+        reactionPickerLayoutRef.current = next;
+        setReactionPickerLayout(next);
+      }
     }
   }, []);
 
