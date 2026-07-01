@@ -478,20 +478,6 @@ export function Sidebar({
             onToggleCollapsed={() => toggleSection("favourites")}
           />
         ) : null}
-        <RoomSection
-          activeRoomId={activeRoomId}
-          collapsed={Boolean(collapsedSections.people)}
-          id="people"
-          kind="dm"
-          label={t("workspace.people")}
-          presence={presence}
-          roomById={roomById}
-          rooms={dms}
-          showWhenEmpty={true}
-          onOpenContextMenu={onOpenContextMenu}
-          onSelectRoom={onSelectRoom}
-          onToggleCollapsed={() => toggleSection("people")}
-        />
         {!accountHomeActive || sections.rooms.length > 0 ? (
           <RoomSection
             activeRoomId={activeRoomId}
@@ -508,6 +494,20 @@ export function Sidebar({
             onToggleCollapsed={() => toggleSection("rooms")}
           />
         ) : null}
+        <RoomSection
+          activeRoomId={activeRoomId}
+          collapsed={Boolean(collapsedSections.people)}
+          id="people"
+          kind="dm"
+          label={t("workspace.people")}
+          presence={presence}
+          roomById={roomById}
+          rooms={dms}
+          showWhenEmpty={true}
+          onOpenContextMenu={onOpenContextMenu}
+          onSelectRoom={onSelectRoom}
+          onToggleCollapsed={() => toggleSection("people")}
+        />
         {!accountHomeActive ? (
           <RoomSection
             activeRoomId={activeRoomId}

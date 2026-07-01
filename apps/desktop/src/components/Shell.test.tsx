@@ -13,6 +13,15 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+function expectSectionBefore(beforeName: string, afterName: string) {
+  const before = screen.getByRole("region", { name: beforeName });
+  const after = screen.getByRole("region", { name: afterName });
+
+  expect(Boolean(before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(
+    true
+  );
+}
+
 describe("EntityAvatar", () => {
   it("renders a ready avatar image", () => {
     render(
@@ -150,6 +159,7 @@ describe("Sidebar", () => {
     expect(screen.getByRole("button", { name: "unspaced-room" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "synthetic-room" })).toBeNull();
     expect(screen.getByRole("region", { name: "Direct Messages" })).toBeTruthy();
+    expectSectionBefore("Rooms", "Direct Messages");
   });
 
   it("renders rooms in Rust-projected sort order after settings update", async () => {
@@ -216,6 +226,7 @@ describe("Sidebar", () => {
     expect(screen.getByRole("button", { name: "Threads" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "Rooms" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "Direct Messages" })).toBeTruthy();
+    expectSectionBefore("Rooms", "Direct Messages");
   });
 
   it("shows online presence only on Direct Messages rows", async () => {
