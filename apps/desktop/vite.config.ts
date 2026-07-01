@@ -4,6 +4,10 @@ import { defineConfig } from "vite";
 
 export default defineConfig(({ mode }) => ({
   plugins: [react()],
+  define: {
+    "process.env.MAX_EMOJI_VERSION": "undefined",
+    "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? mode)
+  },
   build: {
     // The desktop app intentionally lazy-loads the full Element-compatible emoji
     // dataset. Keep warning headroom tight enough to catch growth beyond the

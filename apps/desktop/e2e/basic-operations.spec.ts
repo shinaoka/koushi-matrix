@@ -3479,8 +3479,11 @@ test("add reaction picker invokes send_reaction with the selected emoji", async 
   await page.evaluate(() => window.__harness.clearInvocations());
 
   await page.getByRole("button", { name: "Add reaction" }).first().click();
-  await expect(page.getByRole("button", { name: "React with 👀" })).toBeVisible();
-  await page.getByRole("button", { name: "React with 👀" }).click();
+  await expect(page.getByRole("dialog", { name: "Emoji" })).toBeVisible();
+  await page.getByRole("searchbox", { name: "Search emoji" }).fill("eyes");
+  const eyesEmoji = page.getByRole("button", { name: "eyes", exact: true });
+  await expect(eyesEmoji).toBeVisible();
+  await eyesEmoji.click();
 
   await expect.poll(() => invocationCount(page, "send_reaction")).toBeGreaterThanOrEqual(1);
   await expect
