@@ -187,6 +187,48 @@ stateDiagram-v2
   in a Ready session and emit `RoomListChanged` (requested) or `ErrorChanged`
   (failed).
 
+### Unread Source Of Truth
+
+Unread state crosses three Matrix concepts that must not be collapsed into one
+local flag:
+
+- `RoomSummary.unread_count`, `notification_count`, `highlight_count`, and
+  `marked_unread` are SDK/server observations. They can arrive later than a
+  local command response, and historical Matrix Rust SDK releases have had
+  unread-count/read-receipt convergence bugs (for example
+  matrix-rust-sdk#6211, fixed upstream by matrix-rust-sdk#6406). Koushi must
+  treat these counts as input snapshots, not as proof that a just-issued
+  mark-read command succeeded or failed.
+- A room is persistently marked read only after the Matrix read marker request
+  succeeds. The request must update the fully-read marker and a private read
+  receipt together; fully-read alone is not sufficient to clear notification
+  counts across devices. Runtime read-marker commands use the room read-marker
+  API directly rather than the timeline receipt helper, because the timeline
+  helper may suppress a receipt it believes is already covered while the
+  room-list unread snapshot is still stale.
+- `m.marked_unread` is separate from read receipts/read markers. Marking a room
+  read must also clear the explicit unread marker, while marking unread must not
+  move the fully-read marker.
+
+Activity may temporarily suppress rows to keep the panel responsive, but that
+suppression is not an authoritative read state. Any reducer action that clears
+room unread counts must be driven by a successful RoomActor/SDK operation or by
+a later SDK/server room-list snapshot that already reports the room as read.
+After a local successful mark-read, the reducer may suppress a later nonzero
+room-list snapshot only when the room was locally clear, a fully-read marker is
+known, and the incoming room-summary latest event and last-activity timestamp
+match the locally cleared room. If latest activity changes, the unread snapshot
+is treated as new information and is preserved.
+On startup there is no prior `AppState` to compare against, so the SDK room-list
+projection also reads persisted room account data / own receipts. If
+`m.fully_read` or the current user's unthreaded private read receipt points at
+the room summary latest event, nonzero unread/notification counts in that same
+SDK snapshot are treated as stale and projected as zero. If the marker points
+elsewhere, the counts are preserved until a timeline-aware path can prove event
+ordering.
+Do not reintroduce optimistic unread clearing in React or in Activity projection
+code without a matching command-success correlation.
+
 ## Navigation
 
 - Spaces filter non-DM rooms.

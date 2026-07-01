@@ -386,6 +386,92 @@ describe("TimelineView", () => {
     expect(setStore).not.toHaveBeenCalled();
   });
 
+  it("marks the latest visible room event as read even when bottom pixels are not exact", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const sendReadReceipt = vi.fn().mockResolvedValue(undefined);
+    const setFullyRead = vi.fn().mockResolvedValue(undefined);
+    const observeViewport = vi.fn().mockResolvedValue(undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      sendReadReceipt,
+      setFullyRead,
+      observeViewport
+    });
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    const rectSpy = mockTimelineRects(
+      {
+        "$older:example.invalid": { top: 40, height: 80 },
+        "$latest:example.invalid": { top: 140, height: 80 }
+      },
+      { top: 0, height: 500 },
+      scrollContainerRef
+    );
+
+    try {
+      render(
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+        />
+      );
+
+      const timeline = await screen.findByTestId("timeline-view");
+      scrollContainerRef.current = timeline;
+      Object.defineProperty(timeline, "clientHeight", { value: 500, configurable: true });
+      Object.defineProperty(timeline, "scrollHeight", { value: 2_000, configurable: true });
+      Object.defineProperty(timeline, "scrollTop", {
+        value: 0,
+        writable: true,
+        configurable: true
+      });
+
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            InitialItems: {
+              request_id: null,
+              key: KEY,
+              generation: 1,
+              items: [
+                message("$older:example.invalid", "Older visible message"),
+                message("$latest:example.invalid", "Latest visible message")
+              ]
+            }
+          }
+        });
+      });
+
+      timeline.scrollTop = 0;
+      fireEvent.wheel(timeline, { deltaY: 1 });
+      fireEvent.scroll(timeline);
+
+      await waitFor(() => {
+        expect(sendReadReceipt).toHaveBeenCalledWith(
+          "!room:example.invalid",
+          "$latest:example.invalid"
+        );
+      });
+      expect(setFullyRead).toHaveBeenCalledWith(
+        "!room:example.invalid",
+        "$latest:example.invalid"
+      );
+      expect(observeViewport).toHaveBeenCalledWith(
+        "!room:example.invalid",
+        "$older:example.invalid",
+        "$latest:example.invalid",
+        true
+      );
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+
   it("emits safe timestamped timeline event diagnostics for thread timelines", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const onDiagnosticLogEntry = vi.fn();

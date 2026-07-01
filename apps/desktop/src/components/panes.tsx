@@ -802,6 +802,10 @@ export function TimelinePane({
               aria-label={t("timeline.latest")}
               title={t("timeline.latest")}
               onClick={() => {
+                if (mainTimelineAnchorEventId && onReturnToLive) {
+                  onReturnToLive();
+                  return;
+                }
                 const list = timelineListRef.current;
                 if (list) {
                   list.scrollTop = list.scrollHeight;

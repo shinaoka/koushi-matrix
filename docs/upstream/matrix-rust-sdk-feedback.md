@@ -54,6 +54,23 @@ Current SDK-only patch area:
 - Late decryption still needs a durable SDK hook. The current desktop plan needs an event-cache or decryption-complete notification that can enqueue search reindex work without polling every room.
 - Thread timeline stability still needs validation with `matrix-sdk-ui::Timeline` focused on thread roots before enabling deeper thread subscriptions.
 - Recovery state timing is observable through the SDK recovery state stream, but the desktop flow still needs a clear contract for when `Unknown` should become actionable after sync/account-data observation.
+- Unread counts are a server/SDK observation, not a command-success signal.
+  Matrix Rust SDK issue
+  [#6211](https://github.com/matrix-org/matrix-rust-sdk/issues/6211)
+  described unread notification counts that could disagree with other clients
+  or fail to update after another session marked a room read; upstream
+  [#6406](https://github.com/matrix-org/matrix-rust-sdk/pull/6406)
+  fixed one read-receipt convergence path. Koushi's vendored SDK currently
+  includes that fix, but desktop mark-read flows still must wait for explicit
+  RoomActor/SDK success before treating a local Activity action as persistent
+  unread clearance.
+- `matrix-sdk-ui::Timeline::send_multiple_receipts` can intentionally drop
+  fully-read/read-receipt fields when its timeline metadata believes an older
+  receipt is already covered. For desktop unread clearance, Koushi sends the
+  combined fully-read marker and private read receipt through
+  `Room::send_multiple_receipts` so the homeserver receives a fresh read-marker
+  request even while the room-list unread snapshot is stale. This is a desktop
+  integration choice, not an SDK patch request.
 
 ## Non-Upstream Desktop Decisions
 

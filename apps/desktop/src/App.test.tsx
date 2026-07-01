@@ -1346,6 +1346,22 @@ describe("Tauri state refresh wiring", () => {
     expect(joinSource).not.toContain("api.selectRoom(");
   });
 
+  test("room mark-as-read prefers the room latest event over stale markers", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const actionStart = source.indexOf('case "markRoomAsRead"');
+    const actionEnd = source.indexOf('case "markRoomAsUnread"', actionStart);
+    const actionSource = source.slice(actionStart, actionEnd);
+
+    expect(actionStart).toBeGreaterThanOrEqual(0);
+    expect(actionSource).toContain("fully_read_event_id");
+    expect(actionSource).toContain("room?.latest_event?.event_id");
+    expect(actionSource.indexOf("room?.latest_event?.event_id")).toBeLessThan(
+      actionSource.indexOf("fully_read_event_id")
+    );
+    expect(actionSource).toContain("eventId.trim().length > 0");
+    expect(actionSource).toContain("api.markRoomAsRead(target.roomId, eventId)");
+  });
+
   test("keeps post-login recovery in the desktop render path", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 
@@ -1467,6 +1483,51 @@ describe("Tauri state refresh wiring", () => {
       "utf8"
     );
     expect(timelineViewSource).toContain("isAnchored && onReturnToLive");
+  });
+
+  test("anchored timeline header latest button returns to live instead of scrolling focused history", () => {
+    const panesSource = readFileSync(
+      new URL("./components/panes.tsx", import.meta.url),
+      "utf8"
+    );
+    const headerNavigationStart = panesSource.indexOf('className="timeline-header-navigation"');
+    const headerNavigationEnd = panesSource.indexOf("</nav>", headerNavigationStart);
+    const headerNavigationSource = panesSource.slice(headerNavigationStart, headerNavigationEnd);
+
+    expect(headerNavigationStart).toBeGreaterThanOrEqual(0);
+    expect(headerNavigationSource).toContain("mainTimelineAnchorEventId");
+    expect(headerNavigationSource).toContain("onReturnToLive");
+    expect(headerNavigationSource).toContain("scrollHeight");
+    expect(headerNavigationSource.indexOf("onReturnToLive")).toBeLessThan(
+      headerNavigationSource.indexOf("scrollHeight")
+    );
+  });
+
+  test("activity room-unread placeholders open rooms without forcing live edge", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const openActivityRoomStart = source.indexOf("async function openActivityRoom");
+    const openActivityRoomEnd = source.indexOf("function selectSearchResult", openActivityRoomStart);
+    const openActivityRoomSource = source.slice(openActivityRoomStart, openActivityRoomEnd);
+    const openRowStart = source.indexOf("onOpenRow={(row)");
+    const openRowEnd = source.indexOf("onSetTab={(tab)", openRowStart);
+    const openRowSource = source.slice(openRowStart, openRowEnd);
+
+    expect(openActivityRoomStart).toBeGreaterThanOrEqual(0);
+    expect(openRowSource).toContain('row.kind === "roomUnread"');
+    expect(openRowSource).toContain("openActivityRoom(row.room_id)");
+    expect(openActivityRoomSource).toContain("api.closeFocusedContext()");
+    expect(openActivityRoomSource).toContain("api.selectRoom(roomId)");
+    expect(openActivityRoomSource).not.toContain("setTimelineLiveEdgeReset");
+    expect(openActivityRoomSource).not.toContain("timelineLiveEdgeReset");
+
+    const coreEventsSource = readFileSync(
+      new URL("./domain/coreEvents.ts", import.meta.url),
+      "utf8"
+    );
+    const unreadTypeStart = coreEventsSource.indexOf("export interface ActivityRoomUnreadRow");
+    const unreadTypeEnd = coreEventsSource.indexOf("export type ActivityRow", unreadTypeStart);
+    const unreadTypeSource = coreEventsSource.slice(unreadTypeStart, unreadTypeEnd);
+    expect(unreadTypeSource).toContain("event_id: null");
   });
 
   test("member-panel avatar thumbnail requests respect the global avatar download gate", () => {

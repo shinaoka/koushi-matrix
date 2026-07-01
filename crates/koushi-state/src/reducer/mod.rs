@@ -1533,7 +1533,7 @@ mod tests {
     use crate::state::{
         AvatarImage, AvatarThumbnailState, LiveEventReceiptSummary, LiveEventReceipts,
         LiveReadReceipt, MediaTransferProgress, OperationFailureKind, PresenceKind,
-        RoomLiveSignals, TimelineMediaDownloadState, UserProfile,
+        RoomLatestEventSummary, RoomLiveSignals, TimelineMediaDownloadState, UserProfile,
     };
 
     fn ready_state() -> AppState {
@@ -1591,6 +1591,17 @@ mod tests {
             dm_space_ids: Vec::new(),
             is_encrypted: false,
             joined_members: 0,
+        }
+    }
+
+    fn latest_event(event_id: &str, timestamp_ms: u64) -> RoomLatestEventSummary {
+        RoomLatestEventSummary {
+            event_id: event_id.to_owned(),
+            sender_id: Some("@bob:example.invalid".to_owned()),
+            sender_label: Some("Bob".to_owned()),
+            sender_avatar: None,
+            preview: Some("body".to_owned()),
+            timestamp_ms,
         }
     }
 
@@ -1853,6 +1864,35 @@ mod tests {
             Some("$event:example.invalid")
         );
 
+        let mut unread_room = test_room("!room:example.invalid", None);
+        unread_room.unread_count = 3;
+        unread_room.notification_count = 2;
+        unread_room.highlight_count = 1;
+        unread_room.marked_unread = true;
+        state.rooms = vec![unread_room];
+
+        let effects = reduce(
+            &mut state,
+            AppAction::FullyReadMarkerUpdated {
+                room_id: "!room:example.invalid".to_owned(),
+                event_id: Some("$event-2:example.invalid".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            effects,
+            vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
+        );
+        let room = state
+            .rooms
+            .iter()
+            .find(|room| room.room_id == "!room:example.invalid")
+            .expect("room summary should exist");
+        assert_eq!(room.unread_count, 3);
+        assert_eq!(room.notification_count, 2);
+        assert_eq!(room.highlight_count, 1);
+        assert!(room.marked_unread);
+
         let effects = reduce(
             &mut state,
             AppAction::TypingUsersUpdated {
@@ -1897,6 +1937,147 @@ mod tests {
             state.live_signals.presence.get("@bob:example.invalid"),
             Some(&PresenceKind::Away)
         );
+    }
+
+    #[test]
+    fn room_list_update_does_not_reintroduce_stale_unread_after_fully_read_marker() {
+        let mut state = ready_state();
+        let latest_event = latest_event("$latest:example.invalid", 42);
+        let mut room = test_room("!room:example.invalid", None);
+        room.latest_event = Some(latest_event.clone());
+        room.last_activity_ms = 42;
+        state.rooms = vec![room];
+
+        reduce(
+            &mut state,
+            AppAction::FullyReadMarkerUpdated {
+                room_id: "!room:example.invalid".to_owned(),
+                event_id: Some("$latest:example.invalid".to_owned()),
+            },
+        );
+        reduce(
+            &mut state,
+            AppAction::RoomMarkedAsReadSucceeded {
+                request_id: 7,
+                room_id: "!room:example.invalid".to_owned(),
+            },
+        );
+
+        let mut stale_room = test_room("!room:example.invalid", None);
+        stale_room.unread_count = 2;
+        stale_room.notification_count = 2;
+        stale_room.highlight_count = 1;
+        stale_room.marked_unread = true;
+        stale_room.latest_event = Some(latest_event);
+        stale_room.last_activity_ms = 42;
+        reduce(
+            &mut state,
+            AppAction::RoomListUpdated {
+                spaces: Vec::new(),
+                rooms: vec![stale_room],
+            },
+        );
+
+        let room = state
+            .rooms
+            .iter()
+            .find(|room| room.room_id == "!room:example.invalid")
+            .expect("room summary should exist");
+        assert_eq!(room.unread_count, 0);
+        assert_eq!(room.notification_count, 0);
+        assert_eq!(room.highlight_count, 0);
+        assert!(!room.marked_unread);
+    }
+
+    #[test]
+    fn room_list_update_suppresses_stale_unread_when_read_marker_event_differs_from_latest_event() {
+        let mut state = ready_state();
+        let latest_event = latest_event("$room-summary-latest:example.invalid", 42);
+        let mut room = test_room("!room:example.invalid", None);
+        room.latest_event = Some(latest_event.clone());
+        room.last_activity_ms = 42;
+        state.rooms = vec![room];
+
+        reduce(
+            &mut state,
+            AppAction::FullyReadMarkerUpdated {
+                room_id: "!room:example.invalid".to_owned(),
+                event_id: Some("$visible-read-event:example.invalid".to_owned()),
+            },
+        );
+        reduce(
+            &mut state,
+            AppAction::RoomMarkedAsReadSucceeded {
+                request_id: 7,
+                room_id: "!room:example.invalid".to_owned(),
+            },
+        );
+
+        let mut stale_room = test_room("!room:example.invalid", None);
+        stale_room.unread_count = 1;
+        stale_room.notification_count = 1;
+        stale_room.latest_event = Some(latest_event);
+        stale_room.last_activity_ms = 42;
+        reduce(
+            &mut state,
+            AppAction::RoomListUpdated {
+                spaces: Vec::new(),
+                rooms: vec![stale_room],
+            },
+        );
+
+        let room = state
+            .rooms
+            .iter()
+            .find(|room| room.room_id == "!room:example.invalid")
+            .expect("room summary should exist");
+        assert_eq!(room.unread_count, 0);
+        assert_eq!(room.notification_count, 0);
+    }
+
+    #[test]
+    fn room_list_update_preserves_unread_when_latest_event_changes_after_local_read() {
+        let mut state = ready_state();
+        let mut room = test_room("!room:example.invalid", None);
+        room.latest_event = Some(latest_event("$old-latest:example.invalid", 42));
+        room.last_activity_ms = 42;
+        state.rooms = vec![room];
+
+        reduce(
+            &mut state,
+            AppAction::FullyReadMarkerUpdated {
+                room_id: "!room:example.invalid".to_owned(),
+                event_id: Some("$visible-read-event:example.invalid".to_owned()),
+            },
+        );
+        reduce(
+            &mut state,
+            AppAction::RoomMarkedAsReadSucceeded {
+                request_id: 7,
+                room_id: "!room:example.invalid".to_owned(),
+            },
+        );
+
+        let mut new_unread_room = test_room("!room:example.invalid", None);
+        new_unread_room.unread_count = 1;
+        new_unread_room.notification_count = 1;
+        new_unread_room.latest_event = Some(latest_event("$new-latest:example.invalid", 43));
+        new_unread_room.last_activity_ms = 43;
+        reduce(
+            &mut state,
+            AppAction::RoomListUpdated {
+                spaces: Vec::new(),
+                rooms: vec![new_unread_room],
+            },
+        );
+
+        let room = state
+            .rooms
+            .iter()
+            .find(|room| room.room_id == "!room:example.invalid")
+            .expect("room summary should exist");
+        assert_eq!(room.unread_count, 1);
+        assert_eq!(room.notification_count, 1);
     }
 
     #[test]

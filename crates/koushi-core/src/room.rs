@@ -78,6 +78,7 @@ use crate::event::{CoreEvent, ReportKind, RoomEvent};
 use crate::executor;
 use crate::failure::{CoreFailure, RoomFailureKind};
 use crate::ids::RequestId;
+use crate::unread_trace;
 
 /// Fixed, content-free messages recorded in `AppState.errors` when a basic
 /// operation fails. Raw SDK errors are classified into `RoomFailureKind` for the
@@ -1443,6 +1444,12 @@ impl RoomActor {
             return;
         };
 
+        unread_trace::trace_mark_read(
+            "mark_read_requested",
+            request_id.sequence,
+            &room_id,
+            Some(event_id.as_str()),
+        );
         self.reduce(vec![AppAction::RoomMarkedAsReadRequested {
             request_id: request_id.sequence,
             room_id: room_id.clone(),
@@ -1453,10 +1460,22 @@ impl RoomActor {
         }
         match koushi_sdk::mark_room_as_read(session, &room_id, &event_id).await {
             Ok(()) => {
-                self.reduce(vec![AppAction::RoomMarkedAsReadSucceeded {
-                    request_id: request_id.sequence,
-                    room_id: room_id.clone(),
-                }]);
+                unread_trace::trace_mark_read(
+                    "mark_read_success",
+                    request_id.sequence,
+                    &room_id,
+                    Some(event_id.as_str()),
+                );
+                self.reduce(vec![
+                    AppAction::FullyReadMarkerUpdated {
+                        room_id: room_id.clone(),
+                        event_id: Some(event_id.clone()),
+                    },
+                    AppAction::RoomMarkedAsReadSucceeded {
+                        request_id: request_id.sequence,
+                        room_id: room_id.clone(),
+                    },
+                ]);
                 self.emit(CoreEvent::Room(RoomEvent::MarkedAsRead {
                     request_id,
                     room_id: room_id.clone(),
@@ -1465,6 +1484,12 @@ impl RoomActor {
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
+                unread_trace::trace_mark_read(
+                    "mark_read_failed",
+                    request_id.sequence,
+                    &room_id,
+                    Some(event_id.as_str()),
+                );
                 self.reduce(vec![AppAction::RoomMarkedAsReadFailed {
                     request_id: request_id.sequence,
                     room_id,
@@ -1698,6 +1723,7 @@ fn project_room_list_snapshot(
     let rooms = normalize_rooms(snapshot);
     let invites = normalize_invites(snapshot);
     let user_profiles = normalize_user_profiles(snapshot);
+    unread_trace::trace_room_list_snapshot(&rooms);
     replace_known_room_ids(known_room_ids, &rooms);
     let _ = action_tx.try_send(vec![
         AppAction::RoomListUpdated { spaces, rooms },
@@ -2406,6 +2432,39 @@ pub mod tests {
     fn sdk_error_classifies_as_sdk() {
         let error = MatrixRoomOperationError::Sdk(koushi_sdk::MatrixRoomOperationFailureKind::Sdk);
         assert_eq!(classify_room_error(&error), RoomFailureKind::Sdk);
+    }
+
+    #[test]
+    fn mark_room_as_read_success_updates_fully_read_marker_before_clearing_counts() {
+        let source = include_str!("room.rs");
+        let handler = source
+            .split("async fn handle_mark_room_as_read")
+            .nth(1)
+            .expect("handle_mark_room_as_read should exist")
+            .split("async fn handle_mark_room_as_unread")
+            .next()
+            .expect("handle_mark_room_as_unread should follow handle_mark_room_as_read");
+        let success_arm = handler
+            .split("Ok(()) => {")
+            .nth(1)
+            .expect("mark read success arm should exist")
+            .split("Err(error) => {")
+            .next()
+            .expect("mark read error arm should follow success arm");
+
+        assert!(
+            success_arm.contains("AppAction::FullyReadMarkerUpdated"),
+            "mark-room-as-read success must update local fully-read state so stale room-list snapshots cannot resurrect unread counts"
+        );
+        assert!(
+            success_arm.contains("AppAction::RoomMarkedAsReadSucceeded"),
+            "mark-room-as-read success must still clear room summary unread counts"
+        );
+        assert!(
+            success_arm.find("FullyReadMarkerUpdated")
+                < success_arm.find("RoomMarkedAsReadSucceeded"),
+            "fully-read marker should be reduced before unread counts are cleared"
+        );
     }
 
     #[test]

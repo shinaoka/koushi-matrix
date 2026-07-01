@@ -4,7 +4,7 @@ use crate::{
     effect::{AppEffect, UiEvent},
     state::{
         AppError, AppState, OperationFailureKind, PinOp, PinOperationState, PinnedEvent,
-        RoomListFilter, RoomTagInfo, RoomTagKind, SpaceSummary, ThreadAttentionState,
+        RoomListFilter, RoomSummary, RoomTagInfo, RoomTagKind, SpaceSummary, ThreadAttentionState,
         ThreadPaneState, ThreadsListState, TimelinePaneState,
     },
 };
@@ -35,6 +35,7 @@ pub(crate) fn handle_room_list_updated(
     let mut rooms = rooms;
     let mut spaces = spaces;
     preserve_known_avatar_thumbnails(state, &mut spaces, &mut rooms);
+    suppress_stale_unread_after_local_read(state, &mut rooms);
     crate::state::refresh_room_summary_display_projection(
         &mut rooms,
         &state.profile,
@@ -171,6 +172,55 @@ pub(crate) fn handle_room_list_updated(
 
     recompute_room_list_projection(state);
     effects
+}
+
+fn suppress_stale_unread_after_local_read(state: &AppState, rooms: &mut [RoomSummary]) {
+    for room in rooms {
+        if !room_has_unread_metrics(room) {
+            continue;
+        }
+        let Some(existing_room) = state
+            .rooms
+            .iter()
+            .find(|candidate| candidate.room_id == room.room_id)
+        else {
+            continue;
+        };
+        if room_has_unread_metrics(existing_room) {
+            continue;
+        }
+        let fully_read_event_id_present = state
+            .live_signals
+            .rooms
+            .get(&room.room_id)
+            .and_then(|signals| signals.fully_read_event_id.as_deref())
+            .is_some();
+        if !fully_read_event_id_present || !same_room_activity(existing_room, room) {
+            continue;
+        }
+        room.marked_unread = false;
+        room.unread_count = 0;
+        room.notification_count = 0;
+        room.highlight_count = 0;
+    }
+}
+
+fn room_has_unread_metrics(room: &RoomSummary) -> bool {
+    room.unread_count > 0
+        || room.notification_count > 0
+        || room.highlight_count > 0
+        || room.marked_unread
+}
+
+fn same_room_activity(left: &RoomSummary, right: &RoomSummary) -> bool {
+    left.last_activity_ms == right.last_activity_ms
+        && latest_event_id(left) == latest_event_id(right)
+}
+
+fn latest_event_id(room: &RoomSummary) -> Option<&str> {
+    room.latest_event
+        .as_ref()
+        .map(|event| event.event_id.as_str())
 }
 
 fn preserve_known_avatar_thumbnails(
