@@ -275,6 +275,60 @@ describe("TimelineView", () => {
     });
   });
 
+  it("opens the reaction emoji picker above when the composer-side space is insufficient", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement
+    ) {
+      let top = 0;
+      let height = 24;
+      if (this.getAttribute("data-testid") === "timeline-view") {
+        height = 240;
+      } else if (this.classList.contains("reaction-control")) {
+        top = 200;
+      } else if (this.classList.contains("main-pane")) {
+        height = 320;
+      }
+      return {
+        x: 0,
+        y: top,
+        top,
+        left: 0,
+        right: 480,
+        width: 480,
+        height,
+        bottom: top + height,
+        toJSON: () => ({})
+      } as DOMRect;
+    });
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [message("$react-near-composer", "React near composer")]
+      }
+    });
+
+    render(
+      <div className="main-pane">
+        <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+          <TimelineView
+            timelineKey={KEY}
+            roomId="!room:example.invalid"
+            transport={baseTransport({})}
+            onReply={vi.fn()}
+          />
+        </TimelineStoreContext.Provider>
+      </div>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /add reaction/i }));
+
+    const picker = await screen.findByRole("dialog", { name: /emoji/i });
+    expect(picker.classList.contains("is-above")).toBe(true);
+    expect(picker.classList.contains("is-below")).toBe(false);
+  });
+
   it("ensures the timeline subscription after registering the CoreEvent listener", async () => {
     const calls: string[] = [];
     let listener: ((payload: CoreEventPayload) => void) | null = null;

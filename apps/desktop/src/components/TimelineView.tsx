@@ -499,6 +499,37 @@ function cssEscape(value: string): string {
   return value.replace(/["\\]/g, "\\$&");
 }
 
+function reactionPickerPlacementForControl(control: HTMLElement): "above" | "below" {
+  const controlRect = control.getBoundingClientRect();
+  const boundary =
+    control.closest<HTMLElement>(".timeline-view") ??
+    control.closest<HTMLElement>(".main-pane");
+  const boundaryRect = boundary?.getBoundingClientRect();
+  const boundaryTop = boundaryRect?.top ?? 0;
+  const boundaryBottom =
+    boundaryRect && boundaryRect.bottom > boundaryRect.top
+      ? boundaryRect.bottom
+      : typeof window === "undefined"
+        ? controlRect.bottom
+        : window.innerHeight;
+  const availableAbove = Math.max(
+    0,
+    controlRect.top - boundaryTop - REACTION_PICKER_GAP_PX
+  );
+  const availableBelow = Math.max(
+    0,
+    boundaryBottom - controlRect.bottom - REACTION_PICKER_GAP_PX
+  );
+
+  if (availableBelow >= REACTION_PICKER_BLOCK_SIZE_PX) {
+    return "below";
+  }
+  if (availableAbove >= REACTION_PICKER_BLOCK_SIZE_PX) {
+    return "above";
+  }
+  return availableAbove >= availableBelow ? "above" : "below";
+}
+
 /** Distance (px) from the top edge that triggers automatic backfill. */
 const AUTO_BACKFILL_THRESHOLD_PX = 80;
 const AUTO_BACKFILL_PREFETCH_ITEMS = 100;
@@ -513,6 +544,8 @@ const TIMELINE_MAX_ITEM_HEIGHT_PX = 480;
 const TIMELINE_SCROLL_IDLE_FLUSH_MS = 100;
 const TIMELINE_SCROLL_MAX_DEFER_MS = 500;
 const TIMELINE_SUBSCRIBE_FALLBACK_DELAY_MS = 120;
+const REACTION_PICKER_BLOCK_SIZE_PX = 360;
+const REACTION_PICKER_GAP_PX = 6;
 
 const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "noop";
 const ignoreSendQueueAction = () => undefined;
@@ -4286,11 +4319,7 @@ export function TimelineItemRow({
   const toggleReactionPicker = useCallback(() => {
     const control = reactionControlRef.current;
     if (control) {
-      const controlRect = control.getBoundingClientRect();
-      const panelTop =
-        control.closest<HTMLElement>(".main-pane")?.getBoundingClientRect().top ?? 0;
-      const availableAbove = controlRect.top - panelTop;
-      setReactionPickerPlacement(availableAbove < 380 ? "below" : "above");
+      setReactionPickerPlacement(reactionPickerPlacementForControl(control));
     }
     setActionMenuOpen(false);
     setForwardMenuOpen(false);
