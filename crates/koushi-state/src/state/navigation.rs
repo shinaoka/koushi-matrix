@@ -19,6 +19,19 @@ pub struct TimelineScrollAnchor {
     pub updated_at_ms: u64,
 }
 
+/// Rust-owned main-pane timeline mode (issue #161).
+///
+/// `NavigationState.main_timeline_anchor == None` means the main pane renders
+/// the room's live timeline (live edge). `Some` means jump-to-date resolved an
+/// event outside the loaded live window and the main pane is anchored to that
+/// event — it renders the event-focused timeline until the user returns to live.
+/// This is a guarded state machine: `Some` is only ever set for the active,
+/// known room and is cleared on any room change or return-to-live.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MainTimelineAnchor {
+    pub event_id: String,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NavigationState {
     pub active_space_id: Option<String>,
@@ -29,6 +42,8 @@ pub struct NavigationState {
     pub last_room_by_space_id: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub room_scroll_anchors: BTreeMap<String, TimelineScrollAnchor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_timeline_anchor: Option<MainTimelineAnchor>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

@@ -456,6 +456,13 @@ export interface NavigationState {
   space_order?: string[];
   last_room_by_space_id?: Record<string, string>;
   room_scroll_anchors?: Record<string, TimelineScrollAnchor>;
+  // #161: when set, the main pane renders the focused timeline anchored to this
+  // event (jump-to-date), not the live timeline; the right panel is not opened.
+  main_timeline_anchor?: MainTimelineAnchor | null;
+}
+
+export interface MainTimelineAnchor {
+  event_id: string;
 }
 
 export interface TimelineScrollAnchor {

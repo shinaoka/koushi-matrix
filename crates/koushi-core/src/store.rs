@@ -1508,6 +1508,7 @@ mod tests {
                 "!room:test.example.com".to_owned(),
             )]),
             room_scroll_anchors: std::collections::BTreeMap::new(),
+            main_timeline_anchor: None,
         };
 
         actor
@@ -1556,6 +1557,7 @@ mod tests {
                 "!room:test.example.com".to_owned(),
             )]),
             room_scroll_anchors: std::collections::BTreeMap::new(),
+            main_timeline_anchor: None,
         };
         let legacy_path = actor.account_navigation_legacy_file(&key_id);
         std::fs::create_dir_all(legacy_path.parent().expect("navigation parent"))
@@ -1599,6 +1601,7 @@ mod tests {
             space_order: Vec::new(),
             last_room_by_space_id: std::collections::BTreeMap::new(),
             room_scroll_anchors: std::collections::BTreeMap::new(),
+            main_timeline_anchor: None,
         };
 
         actor
@@ -1649,6 +1652,7 @@ mod tests {
                     updated_at_ms: 1_820_000_000_000,
                 },
             )]),
+            main_timeline_anchor: None,
         };
 
         actor

@@ -636,19 +636,25 @@ impl FakeDesktopBackend {
         scope: &SearchScope,
         candidates: &[SearchCandidate],
     ) -> Vec<SearchResult> {
-        let mut results = candidates
-            .iter()
-            .filter(|candidate| self.room_is_in_scope(&candidate.room_id, scope))
-            .filter_map(|candidate| self.search_store.verify_candidate(candidate.clone(), query))
-            .collect::<Vec<_>>();
-
-        results.sort_by(|left, right| {
-            right
-                .score_millis
-                .cmp(&left.score_millis)
-                .then_with(|| left.timestamp_ms.cmp(&right.timestamp_ms))
-                .then_with(|| left.event_id.cmp(&right.event_id))
-        });
+        // #162: the SDK ngram index is only an accelerator. Union the supplied
+        // candidates with a direct store scan via the shared matcher so any
+        // indexed message is findable, then apply the product scope. This keeps
+        // the fake backend faithful to the fixed core `SearchActor`.
+        const CANDIDATE_LIMIT: usize = 50;
+        // For a single-room scope, push the room filter into the scan so scoping
+        // happens before the cap (matching the core path); otherwise other
+        // rooms' matches could fill the cap and drop the target room's results.
+        let room_filter = match scope {
+            SearchScope::CurrentRoom { room_id } => Some(room_id.as_str()),
+            _ => None,
+        };
+        let mut results = self.search_store.search_with_candidates(
+            query,
+            room_filter,
+            candidates,
+            CANDIDATE_LIMIT,
+        );
+        results.retain(|result| self.room_is_in_scope(&result.room_id, scope));
         results
     }
 

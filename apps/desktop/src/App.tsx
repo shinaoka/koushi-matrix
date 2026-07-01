@@ -1018,6 +1018,20 @@ export function App() {
   const [contextMenu, setContextMenu] = useState<ActiveContextMenu | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [primaryView, setPrimaryView] = useState<PrimaryView>("timeline");
+  // #161: while the main pane is anchored to a jump-to-date event, the focused
+  // timeline renders in the MAIN pane, so a focused-context/search right panel
+  // must be closed. This backstops the Tauri command path, where
+  // openAtTimestamp cannot set React panel state directly.
+  const mainTimelineAnchorEventId =
+    snapshot?.state.ui.navigation.main_timeline_anchor?.event_id ?? null;
+  useEffect(() => {
+    if (
+      mainTimelineAnchorEventId &&
+      (rightPanelMode === "focusedContext" || rightPanelMode === "search")
+    ) {
+      setRightPanelMode("closed");
+    }
+  }, [mainTimelineAnchorEventId, rightPanelMode]);
   const [homeSelection, setHomeSelectionState] =
     useState<HomeSelection>(readHomeSelection);
   const [directorySearchDraft, setDirectorySearchDraft] = useState("");
@@ -1103,8 +1117,12 @@ export function App() {
       async openAtTimestamp(roomId: string, timestampMs: number) {
         const nextSnapshot = await api.openTimelineAtTimestamp(roomId, timestampMs);
         setSnapshot(nextSnapshot);
+        // #161: jump-to-date renders the focused timeline in the MAIN pane
+        // (via navigation.main_timeline_anchor), not the right panel. Explicitly
+        // close the right panel so an already-open focused-context/search panel
+        // does not linger over the anchored main timeline.
         setPrimaryView("timeline");
-        setRightPanelMode("focusedContext");
+        setRightPanelMode("closed");
       }
     };
   }, []);
@@ -3356,6 +3374,12 @@ export function App() {
             snapshot={snapshot}
             timelineBackfill={timelineDiagnostics.backfill}
             timelineTransport={appTimelineTransport}
+            onReturnToLive={() => {
+              // #161: leave the anchored (jump-to-date) main-pane view. Closing
+              // the focused context clears navigation.main_timeline_anchor in
+              // Rust, so the main pane re-renders the live room timeline.
+              void api.closeFocusedContext().then(setSnapshot);
+            }}
             onCancelReply={() => {
               void cancelComposerReply();
             }}

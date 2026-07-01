@@ -994,8 +994,12 @@ fn fake_backend_search_uses_visible_edited_message_body() {
     assert_eq!(results[0].snippet, "Final synthetic checklist");
 }
 
+// #162: the SDK ngram candidate list is an accelerator, not the authority. A
+// supplied candidate that does not match the query is still dropped, but store
+// messages matching the query are found via the direct scan even when they were
+// not supplied as candidates (the reported "0 results despite a visible match").
 #[test]
-fn fake_backend_search_with_sdk_candidates_verifies_only_supplied_candidates() {
+fn fake_backend_search_unions_store_scan_with_supplied_candidates() {
     let mut backend = FakeDesktopBackend::booted();
     let budget_file_candidate = SearchCandidate {
         room_id: "!room-alpha:example.invalid".to_owned(),
@@ -1003,13 +1007,20 @@ fn fake_backend_search_with_sdk_candidates_verifies_only_supplied_candidates() {
         score_millis: 950,
     };
 
-    let false_positive_results = backend.submit_search_candidates(
+    // Only a non-matching candidate is supplied, yet the store's "Alpha"
+    // message is still found via the direct scan (previously returned empty).
+    let store_scan_results = backend.submit_search_candidates(
         "Alpha",
         SearchScope::AllRooms,
         vec![budget_file_candidate.clone()],
     );
 
-    assert!(false_positive_results.is_empty());
+    assert!(
+        store_scan_results
+            .iter()
+            .any(|result| result.event_id == "$alpha-update"),
+        "store scan should surface the matching message without a supplied candidate"
+    );
 
     let exact_results = backend.submit_search_candidates(
         "fixture_budget.xlsx",

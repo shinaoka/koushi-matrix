@@ -156,6 +156,101 @@ impl SearchDocumentStore {
         crate::verify::verify_candidate(&resolved_candidate, &event, query)
     }
 
+    /// Scan the in-process document store directly for exact matches, using the
+    /// same matcher as [`Self::verify_candidate`].
+    ///
+    /// This makes the document store a first-class search candidate source, so
+    /// messages koushi has indexed (crawled history, live, CJK, short queries)
+    /// are findable even when the SDK ngram index — an accelerator, not the
+    /// authority — does not surface them as candidates (issue #162). Results
+    /// are ordered most-recent-first (then by event id) and capped at `limit`.
+    /// `room_filter == None` scans all rooms; `Some(room_id)` restricts scope.
+    pub fn scan_candidates(
+        &self,
+        query: &str,
+        room_filter: Option<&str>,
+        limit: usize,
+    ) -> Vec<SearchResult> {
+        if query.trim().is_empty() || limit == 0 {
+            return Vec::new();
+        }
+
+        let mut results: Vec<SearchResult> = self
+            .documents
+            .values()
+            .filter(|event| room_filter.map_or(true, |room_id| event.room_id == room_id))
+            .filter_map(|event| self.resolved_event(&event.event_id))
+            .filter_map(|event| {
+                let candidate = SearchCandidate {
+                    room_id: event.room_id.clone(),
+                    event_id: event.event_id.clone(),
+                    score_millis: 0,
+                };
+                crate::verify::verify_candidate(&candidate, &event, query)
+            })
+            .collect();
+
+        results.sort_by(|left, right| {
+            right
+                .timestamp_ms
+                .cmp(&left.timestamp_ms)
+                .then_with(|| left.event_id.cmp(&right.event_id))
+        });
+        results.truncate(limit);
+        results
+    }
+
+    /// Resolve a query against SDK ngram-index candidates (an accelerator)
+    /// unioned with a direct store scan (the authority) — issue #162.
+    ///
+    /// SDK-verified candidates are ranked first (by score), then store-only
+    /// matches by recency. Results are deduped by `(room_id, event_id)` and
+    /// capped at `limit`. `room_filter == None` searches all rooms; `Some`
+    /// restricts scope. This is the single matching path shared by the core
+    /// `SearchActor` and the fake backend so both agree that any message the
+    /// store holds is findable, regardless of SDK index coverage.
+    pub fn search_with_candidates(
+        &self,
+        query: &str,
+        room_filter: Option<&str>,
+        sdk_candidates: &[SearchCandidate],
+        limit: usize,
+    ) -> Vec<SearchResult> {
+        if query.trim().is_empty() || limit == 0 {
+            return Vec::new();
+        }
+
+        let mut seen: HashSet<(String, String)> = HashSet::new();
+        let mut results: Vec<SearchResult> = Vec::new();
+
+        for candidate in sdk_candidates {
+            if room_filter.is_some_and(|room_id| candidate.room_id != room_id) {
+                continue;
+            }
+            if let Some(result) = self.verify_candidate(candidate.clone(), query)
+                && seen.insert((result.room_id.clone(), result.event_id.clone()))
+            {
+                results.push(result);
+            }
+        }
+
+        for result in self.scan_candidates(query, room_filter, limit) {
+            if seen.insert((result.room_id.clone(), result.event_id.clone())) {
+                results.push(result);
+            }
+        }
+
+        results.sort_by(|left, right| {
+            right
+                .score_millis
+                .cmp(&left.score_millis)
+                .then_with(|| right.timestamp_ms.cmp(&left.timestamp_ms))
+                .then_with(|| left.event_id.cmp(&right.event_id))
+        });
+        results.truncate(limit);
+        results
+    }
+
     fn apply_edit(&mut self, edit: SearchEdit) {
         let target_event_id = edit.target_event_id.clone();
         match self.applied_edits.get(&target_event_id) {

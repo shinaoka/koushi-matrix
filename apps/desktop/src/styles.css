@@ -38,6 +38,10 @@
 
   --r-sm: 6px;
   --r-md: 8px;
+  /* #163: inline image attachment geometry (image-first layout). */
+  --media-image-max-inline: 420px;
+  --media-image-max-block: 260px;
+  --media-action-size: 30px;
   --r-lg: 12px;
   --r-pill: 999px;
 
@@ -3425,6 +3429,95 @@ button:disabled {
   object-fit: contain;
   border-radius: 6px;
   background: var(--surface);
+}
+
+/* #163: image-first inline attachment. The image is the primary block; actions
+   overlay on hover/focus and never occupy layout that covers the preview. */
+.message-media-image-ready {
+  display: inline-grid;
+  max-inline-size: min(100%, var(--media-image-max-inline));
+  margin-top: 8px;
+}
+
+.message-media-figure {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  overflow: hidden;
+  max-inline-size: min(100%, var(--media-image-max-inline));
+  max-block-size: var(--media-image-max-block);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.message-media-open {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 100%;
+  block-size: 100%;
+  border-radius: var(--r-md);
+}
+
+.message-media-figure .message-media-image {
+  display: block;
+  max-inline-size: 100%;
+  max-block-size: var(--media-image-max-block);
+  object-fit: contain;
+}
+
+.message-media-hover-actions {
+  position: absolute;
+  inset-block-start: 6px;
+  inset-inline-end: 6px;
+  display: inline-flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.message-media-figure:hover .message-media-hover-actions,
+.message-media-figure:focus-within .message-media-hover-actions {
+  opacity: 1;
+}
+
+.message-media-hover-action {
+  display: inline-grid;
+  place-items: center;
+  inline-size: var(--media-action-size);
+  block-size: var(--media-action-size);
+  border-radius: var(--r-md);
+  color: var(--brand-contrast);
+  background: rgb(15 27 45 / 62%);
+}
+
+.message-media-hover-action:hover,
+.message-media-hover-action:focus-visible {
+  background: var(--brand);
+}
+
+.message-media-image-badge {
+  position: absolute;
+  inset-block-start: 6px;
+  inset-inline-start: 6px;
+  padding: 2px 6px;
+  border-radius: var(--r-md);
+  font-size: 11px;
+  color: var(--brand-contrast);
+  background: rgb(15 27 45 / 62%);
+}
+
+.message-media-progress-overlay {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline: 0;
+  block-size: 3px;
+  background: rgb(15 27 45 / 30%);
+}
+
+.message-media-progress-overlay > span {
+  display: block;
+  block-size: 100%;
+  background: var(--brand);
 }
 
 .message-media-overlay {

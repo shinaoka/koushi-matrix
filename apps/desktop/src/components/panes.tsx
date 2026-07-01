@@ -35,7 +35,7 @@ import type {
   SearchResult,
   StagedUploadCompressionChoice
 } from "../domain/types";
-import { roomTimelineKey } from "../domain/coreEvents";
+import { focusedTimelineKey, roomTimelineKey } from "../domain/coreEvents";
 import {
   ICON_SIZE,
   initials,
@@ -602,6 +602,7 @@ export function TimelinePane({
   onOpenPeople,
   onOpenThreads,
   onToggleRoomInfo,
+  onReturnToLive,
   onTimelineDiagnosticsChange,
   onTimelineDiagnosticLogEntry
 }: {
@@ -641,6 +642,7 @@ export function TimelinePane({
   onOpenPeople: () => void;
   onOpenThreads: () => void;
   onToggleRoomInfo: () => void;
+  onReturnToLive?: () => void;
   onTimelineDiagnosticsChange?: (diagnostics: TimelineDiagnostics) => void;
   onTimelineDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
 }) {
@@ -659,13 +661,20 @@ export function TimelinePane({
     (threadAttention.notification_count > 0 ||
       threadAttention.highlight_count > 0 ||
       threadAttention.live_event_marker_count > 0);
-  const timelineKey = useMemo(
-    () =>
-      currentUserId && timelineRoomId
-        ? roomTimelineKey(currentUserId, timelineRoomId)
-        : null,
-    [currentUserId, timelineRoomId]
-  );
+  // #161: when the main pane is anchored (jump-to-date landed on an event), it
+  // renders the focused (event-centered) timeline instead of the live room
+  // timeline; the right panel is not opened.
+  const mainTimelineAnchorEventId =
+    snapshot.state.ui.navigation.main_timeline_anchor?.event_id ?? null;
+  const timelineKey = useMemo(() => {
+    if (!currentUserId || !timelineRoomId) {
+      return null;
+    }
+    if (mainTimelineAnchorEventId) {
+      return focusedTimelineKey(currentUserId, timelineRoomId, mainTimelineAnchorEventId);
+    }
+    return roomTimelineKey(currentUserId, timelineRoomId);
+  }, [currentUserId, timelineRoomId, mainTimelineAnchorEventId]);
   const composerModeForComposer = useMemo(
     () => composerMode,
     [
@@ -918,9 +927,15 @@ export function TimelinePane({
             // Production path: render from the event-driven timeline store
             // (CoreEvent diffs), never from AppState timeline fields.
             <TimelineView
-              key={timelineRoomId}
+              key={
+                mainTimelineAnchorEventId
+                  ? `anchored:${timelineRoomId}:${mainTimelineAnchorEventId}`
+                  : timelineRoomId
+              }
               roomId={timelineRoomId}
               timelineKey={timelineKey!}
+              isAnchored={Boolean(mainTimelineAnchorEventId)}
+              onReturnToLive={onReturnToLive}
               transport={timelineTransport}
               onReply={onReplyStable}
               onOpenThread={onOpenThreadStable}
@@ -937,7 +952,11 @@ export function TimelinePane({
               codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
               searchQuery={searchQuery}
               mediaDownloads={mediaDownloads}
-              roomScrollAnchor={snapshot.state.ui.navigation.room_scroll_anchors?.[timelineRoomId] ?? null}
+              roomScrollAnchor={
+                mainTimelineAnchorEventId
+                  ? null
+                  : (snapshot.state.ui.navigation.room_scroll_anchors?.[timelineRoomId] ?? null)
+              }
               onDiagnosticsChange={onTimelineDiagnosticsChangeStable}
               onDiagnosticLogEntry={onTimelineDiagnosticLogEntryStable}
               listRefCallback={listRefCallback}

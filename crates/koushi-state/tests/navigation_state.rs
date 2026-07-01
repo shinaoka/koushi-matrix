@@ -1,5 +1,5 @@
 use koushi_state::{
-    AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState,
+    AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState, MainTimelineAnchor,
     NativeAttentionObservationKind, NativeAttentionProjectionInput, RoomListFilter, RoomListSort,
     RoomNotificationMode, RoomNotificationSettings, RoomSummary, RoomTags, SearchCrawlerSettings,
     SessionInfo, SessionState, SpaceSummary, ThreadPaneState, TimelinePaneState,
@@ -1665,6 +1665,7 @@ fn navigation_state_round_trips_scroll_anchors_through_serde() {
                 updated_at_ms: 1_820_000_000_000,
             },
         )]),
+        main_timeline_anchor: None,
     };
 
     let encoded = serde_json::to_string(&navigation).expect("serialize navigation");
@@ -1811,4 +1812,148 @@ fn room_list_sort_supports_recent_and_locale_modes() {
             .collect::<Vec<_>>(),
         vec!["room-b", "room-a"]
     );
+}
+
+// #161: main-pane timeline mode is a guarded Live <-> Anchored state machine.
+#[test]
+fn main_timeline_anchor_enters_returns_and_resets_on_room_change() {
+    let mut state = ready_state();
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: spaces(),
+            rooms: rooms(),
+        },
+    );
+    assert_eq!(state.navigation.active_room_id.as_deref(), Some("room-a"));
+    assert_eq!(state.navigation.main_timeline_anchor, None);
+
+    // Enter anchored mode for the active room.
+    let effects = reduce(
+        &mut state,
+        AppAction::EnterAnchoredTimeline {
+            room_id: "room-a".to_owned(),
+            event_id: "$deep-event".to_owned(),
+        },
+    );
+    assert!(effects.is_empty());
+    assert_eq!(
+        state.navigation.main_timeline_anchor,
+        Some(MainTimelineAnchor {
+            event_id: "$deep-event".to_owned(),
+        })
+    );
+
+    // Returning to live clears the anchor.
+    reduce(
+        &mut state,
+        AppAction::ReturnMainTimelineToLive {
+            room_id: "room-a".to_owned(),
+        },
+    );
+    assert_eq!(state.navigation.main_timeline_anchor, None);
+
+    // Re-enter, then switch rooms -> the anchor resets to live.
+    reduce(
+        &mut state,
+        AppAction::EnterAnchoredTimeline {
+            room_id: "room-a".to_owned(),
+            event_id: "$deep-event".to_owned(),
+        },
+    );
+    assert!(state.navigation.main_timeline_anchor.is_some());
+    reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "global-room".to_owned(),
+        },
+    );
+    assert_eq!(
+        state.navigation.active_room_id.as_deref(),
+        Some("global-room")
+    );
+    assert_eq!(state.navigation.main_timeline_anchor, None);
+}
+
+#[test]
+fn main_timeline_anchor_is_guarded_by_session_and_active_room() {
+    // Not session-ready -> no-op.
+    let mut signed_out = AppState::default();
+    reduce(
+        &mut signed_out,
+        AppAction::EnterAnchoredTimeline {
+            room_id: "room-a".to_owned(),
+            event_id: "$e".to_owned(),
+        },
+    );
+    assert_eq!(signed_out.navigation.main_timeline_anchor, None);
+
+    // Ready, but the target room is not the active room -> no-op.
+    let mut state = ready_state();
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: spaces(),
+            rooms: rooms(),
+        },
+    );
+    assert_eq!(state.navigation.active_room_id.as_deref(), Some("room-a"));
+    reduce(
+        &mut state,
+        AppAction::EnterAnchoredTimeline {
+            room_id: "global-room".to_owned(),
+            event_id: "$e".to_owned(),
+        },
+    );
+    assert_eq!(state.navigation.main_timeline_anchor, None);
+}
+
+// #161: jump-to-date renders the focused timeline in the main pane; closing the
+// focused context (live-edge return) clears the main-pane anchor.
+#[test]
+fn closing_focused_context_returns_main_pane_to_live() {
+    let mut state = ready_state();
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: spaces(),
+            rooms: rooms(),
+        },
+    );
+    // Seed a persisted live-timeline scroll anchor for the room.
+    reduce(
+        &mut state,
+        AppAction::TimelineScrollAnchorUpdated {
+            room_id: "room-a".to_owned(),
+            anchor: koushi_state::TimelineScrollAnchor {
+                event_id: "$old-live-pos".to_owned(),
+                edge: TimelineScrollAnchorEdge::Bottom,
+                offset_px: 0,
+                updated_at_ms: 1_700_000_000_000,
+            },
+        },
+    );
+    assert!(state.navigation.room_scroll_anchors.contains_key("room-a"));
+
+    reduce(
+        &mut state,
+        AppAction::OpenFocusedContext {
+            room_id: "room-a".to_owned(),
+            event_id: "$deep-event".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::EnterAnchoredTimeline {
+            room_id: "room-a".to_owned(),
+            event_id: "$deep-event".to_owned(),
+        },
+    );
+    assert!(state.navigation.main_timeline_anchor.is_some());
+
+    reduce(&mut state, AppAction::CloseFocusedContext);
+    assert_eq!(state.navigation.main_timeline_anchor, None);
+    // #161: returning to live from the anchored view drops the stale room scroll
+    // anchor so the live timeline pins to the live edge, not a pre-jump position.
+    assert!(!state.navigation.room_scroll_anchors.contains_key("room-a"));
 }

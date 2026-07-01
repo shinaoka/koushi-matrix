@@ -1568,10 +1568,23 @@ impl AppActor {
                         .activity_projection
                         .event_at_or_after(&room_id, timestamp_ms)
                     {
+                        // #161: jump-to-date reuses the focused-context timeline
+                        // subscription lifecycle but renders it in the MAIN pane
+                        // (marked by `main_timeline_anchor`), not the right panel.
                         let effects = self
-                            .reduce_app_action(AppAction::OpenFocusedContext { room_id, event_id })
+                            .reduce_app_action(AppAction::OpenFocusedContext {
+                                room_id: room_id.clone(),
+                                event_id: event_id.clone(),
+                            })
                             .await;
                         self.handle_app_effects(request_id, effects).await;
+                        let anchor_effects = self
+                            .reduce_app_action(AppAction::EnterAnchoredTimeline {
+                                room_id,
+                                event_id,
+                            })
+                            .await;
+                        self.handle_app_effects(request_id, anchor_effects).await;
                         return true;
                     }
                     let _ = self

@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import {
   ChevronLeft,
   ChevronRight,
@@ -118,6 +118,20 @@ function MediaViewer({
   onSelectIndex: (index: number) => void;
 }) {
   const [zoom, setZoom] = useState(1);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // #163: a viewer opened from a single timeline image hides prev/next.
+  const showNavigation = items.length > 1;
+  useEffect(() => {
+    dialogRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
   const item = items[index];
   const previousIndex = (index + items.length - 1) % items.length;
   const nextIndex = (index + 1) % items.length;
@@ -129,7 +143,14 @@ function MediaViewer({
       : null;
 
   return (
-    <div className="media-viewer-backdrop" role="dialog" aria-label={t("mediaGallery.viewerTitle")}>
+    <div
+      ref={dialogRef}
+      tabIndex={-1}
+      className="media-viewer-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("mediaGallery.viewerTitle")}
+    >
       <div className="media-viewer">
         <header className="media-viewer-header">
           <div>
@@ -162,17 +183,19 @@ function MediaViewer({
           )}
         </div>
         <footer className="media-viewer-actions">
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={t("mediaGallery.previous")}
-            onClick={() => {
-              setZoom(1);
-              onSelectIndex(previousIndex);
-            }}
-          >
-            <ChevronLeft size={ICON_SIZE.control} />
-          </button>
+          {showNavigation ? (
+            <button
+              className="icon-button"
+              type="button"
+              aria-label={t("mediaGallery.previous")}
+              onClick={() => {
+                setZoom(1);
+                onSelectIndex(previousIndex);
+              }}
+            >
+              <ChevronLeft size={ICON_SIZE.control} />
+            </button>
+          ) : null}
           <button
             className="icon-button"
             type="button"
@@ -189,17 +212,19 @@ function MediaViewer({
           >
             <ZoomIn size={ICON_SIZE.control} />
           </button>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={t("mediaGallery.next")}
-            onClick={() => {
-              setZoom(1);
-              onSelectIndex(nextIndex);
-            }}
-          >
-            <ChevronRight size={ICON_SIZE.control} />
-          </button>
+          {showNavigation ? (
+            <button
+              className="icon-button"
+              type="button"
+              aria-label={t("mediaGallery.next")}
+              onClick={() => {
+                setZoom(1);
+                onSelectIndex(nextIndex);
+              }}
+            >
+              <ChevronRight size={ICON_SIZE.control} />
+            </button>
+          ) : null}
         </footer>
       </div>
     </div>

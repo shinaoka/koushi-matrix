@@ -2968,7 +2968,7 @@ describe("TimelineView", () => {
     });
   });
 
-  it("keeps ready image media filename and controls in the media row", async () => {
+  it("renders ready image with image-first layout and hover download overlay", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
@@ -3013,12 +3013,17 @@ describe("TimelineView", () => {
       const media = document.querySelector('[data-event-id="$ready-image"] .message-media');
       expect(media).not.toBeNull();
       expect(media?.getAttribute("data-download-state")).toBe("ready");
-      expect(media?.textContent).toContain("photo.png");
-      expect(media?.textContent).toContain("image/png");
-      expect(media?.textContent).toContain("407 KB");
-      expect(media?.textContent).toContain("2048x1188");
-      expect(media?.querySelector(".message-media-image-frame img")).not.toBeNull();
-      expect(media?.querySelector(".message-media-download")).not.toBeNull();
+      // #163: image-first layout — the preview is the primary block. The
+      // filename lives on the image (alt), not as text laid over the preview,
+      // and download appears in the hover/focus action overlay.
+      const image = media?.querySelector<HTMLImageElement>(".message-media-image");
+      expect(image).not.toBeNull();
+      expect(image?.getAttribute("alt")).toBe("photo.png");
+      expect(
+        media?.querySelector(".message-media-hover-actions .message-media-hover-action")
+      ).not.toBeNull();
+      expect(media?.textContent).not.toContain("image/png");
+      expect(media?.textContent).not.toContain("407 KB");
     });
   });
 
@@ -3075,7 +3080,7 @@ describe("TimelineView", () => {
     expect(downloadMedia).not.toHaveBeenCalled();
   });
 
-  it("renders ready image previews with media row metadata and opens the original source", async () => {
+  it("renders ready image preview (image-first) and opens the original source", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
@@ -3123,11 +3128,15 @@ describe("TimelineView", () => {
       expect(previewLink?.getAttribute("target")).toBe("_blank");
       expect(previewLink?.hasAttribute("download")).toBe(false);
       const media = document.querySelector(".message-media");
-      expect(media?.textContent).toContain("photo.png");
-      expect(media?.textContent).toContain("image/png");
-      expect(media?.textContent).toContain("407 KB");
-      expect(media?.textContent).toContain("2048x1188");
-      expect(media?.textContent).toContain("Encrypted");
+      // #163: image-first layout. The encrypted badge stays visible as a
+      // security signal and the download sits in the hover overlay, but
+      // filename/mimetype/size no longer occupy layout over the preview.
+      expect(media?.querySelector(".message-media-image-badge")?.textContent).toContain(
+        "Encrypted"
+      );
+      expect(media?.querySelector(".message-media-hover-actions")).not.toBeNull();
+      expect(media?.textContent).not.toContain("image/png");
+      expect(media?.textContent).not.toContain("407 KB");
     });
   });
 

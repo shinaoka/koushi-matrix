@@ -63,6 +63,7 @@ import {
 
 import { getActiveLocale, t } from "../i18n/messages";
 import { useRecoverableImageSource } from "./avatarImage";
+import { findQueryHighlightRange } from "./searchHighlight";
 import {
   contextMenuItems,
   type ContextMenuItem
@@ -1010,19 +1011,17 @@ function renderTimelineMessageLine(
 }
 
 function renderQueryHighlight(text: string, query: string): ReactNode {
-  const trimmed = query.trim();
-  if (!trimmed) {
-    return text;
-  }
-  const index = text.indexOf(trimmed);
-  if (index < 0) {
+  // #162: match with the same NFKC + case-fold rule as the Rust search matcher
+  // so a visible highlight and the Search panel's exact-match count agree.
+  const range = findQueryHighlightRange(text, query);
+  if (!range) {
     return text;
   }
   return (
     <>
-      {text.slice(0, index)}
-      <mark>{text.slice(index, index + trimmed.length)}</mark>
-      {text.slice(index + trimmed.length)}
+      {text.slice(0, range.start)}
+      <mark>{text.slice(range.start, range.end)}</mark>
+      {text.slice(range.end)}
     </>
   );
 }
@@ -1801,6 +1800,8 @@ export const TimelineView = memo(function TimelineView({
   currentUserId,
   ignoredUserIds = [],
   suppressPaginationUi = false,
+  isAnchored = false,
+  onReturnToLive,
   autoLoadOlderMessages = false,
   codeBlockWrap = true,
   searchQuery = "",
@@ -1836,6 +1837,10 @@ export const TimelineView = memo(function TimelineView({
   currentUserId?: string;
   ignoredUserIds?: string[];
   suppressPaginationUi?: boolean;
+  // #161: main pane is anchored to a jump-to-date event; the live-edge control
+  // returns to the live timeline instead of scrolling within the focused window.
+  isAnchored?: boolean;
+  onReturnToLive?: () => void;
   autoLoadOlderMessages?: boolean;
   codeBlockWrap?: boolean;
   searchQuery?: string;
@@ -3886,6 +3891,20 @@ export const TimelineView = memo(function TimelineView({
           </div>
         </div>
       ) : null}
+      {isAnchored && onReturnToLive ? (
+        <div className="timeline-navigation-bar">
+          <div className="timeline-navigation-pills">
+            <button
+              className="timeline-navigation-pill"
+              type="button"
+              onClick={onReturnToLive}
+            >
+              <ArrowDown size={14} aria-hidden="true" />
+              <span>{t("shortcut.jumpToLatestMessage")}</span>
+            </button>
+          </div>
+        </div>
+      ) : null}
       {!suppressPaginationUi && isPaginating ? (
         <div className="timeline-spinner" data-testid="timeline-spinner">
           {t("timeline.loading")}
@@ -5821,33 +5840,78 @@ function TimelineMediaAttachment({
   const progressPercent =
     uploadProgressPercentValue ?? downloadProgressPercent;
 
-  return (
-    <div
-      className={readyImagePreview ? "message-media message-media-ready" : "message-media"}
-      data-media-kind={media.kind}
-      data-media-encrypted={media.source.encrypted || undefined}
-      data-download-state={downloadState?.kind ?? "notRequested"}
-    >
-      {readyImagePreview ? (
-        <a
-          className="message-media-preview-link"
-          href={readyImagePreview.sourceUrl}
-          target="_blank"
-          rel="noreferrer"
-          aria-label={t("timeline.mediaOpenFile")}
-        >
-          <span className="message-media-image-frame" style={mediaFrameStyle}>
+  // #163: a ready image is rendered image-first. The preview is the primary
+  // block; filename/metadata are not laid out over it, and actions appear on
+  // hover/focus as an overlay. The encrypted badge stays visible as a security
+  // signal. (Clicking to open the full-size viewer is wired in a follow-up; the
+  // preview link opens the image for now.)
+  if (readyImagePreview) {
+    return (
+      <div
+        className="message-media message-media-image-ready"
+        data-media-kind={media.kind}
+        data-media-encrypted={media.source.encrypted || undefined}
+        data-download-state={downloadState?.kind ?? "notRequested"}
+      >
+        <div className="message-media-figure" style={mediaFrameStyle}>
+          <a
+            className="message-media-open"
+            href={readyImagePreview.sourceUrl}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={t("timeline.mediaOpenFile")}
+          >
             <img
               className="message-media-image"
               src={readyImagePreview.sourceUrl}
               alt={media.filename}
+              title={media.filename}
               width={readyImagePreview.width ?? undefined}
               height={readyImagePreview.height ?? undefined}
               loading="lazy"
             />
-          </span>
-        </a>
-      ) : media.kind === "Image" && displayBox ? (
+          </a>
+          {media.source.encrypted ? (
+            <span className="message-media-image-badge">{t("timeline.encryptedMedia")}</span>
+          ) : null}
+          {canDownload ? (
+            <div className="message-media-hover-actions">
+              <a
+                className="message-media-hover-action"
+                href={readyImagePreview.sourceUrl}
+                target="_blank"
+                rel="noreferrer"
+                download={media.filename}
+                aria-label={t("timeline.downloadMedia", { filename: media.filename })}
+              >
+                <Download size={16} />
+              </a>
+            </div>
+          ) : null}
+          {progressPercent !== null ? (
+            <div
+              className="message-media-progress-overlay"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={progressPercent}
+            >
+              <span style={{ width: `${progressPercent}%` }} />
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="message-media"
+      data-media-kind={media.kind}
+      data-media-encrypted={media.source.encrypted || undefined}
+      data-download-state={downloadState?.kind ?? "notRequested"}
+    >
+      {media.kind === "Image" && displayBox ? (
         <span
           className="message-media-image-frame message-media-image-frame-reserved"
           style={mediaFrameStyle}
