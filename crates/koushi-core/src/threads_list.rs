@@ -132,6 +132,13 @@ impl ThreadsListActor {
         };
 
         let service = Arc::new(ThreadListService::new(room));
+        let (_, subscriber) = service.subscribe_to_items_updates();
+
+        if let Err(_) = service.paginate().await {
+            self.emit_failed(request_id, OperationFailureKind::Sdk).await;
+            return None;
+        }
+
         let items = service.items();
         let projected: Vec<ThreadsListItem> = items.iter().map(project_item).collect();
         let end_reached = matches!(
@@ -147,7 +154,7 @@ impl ThreadsListActor {
 
         let items_relay_handle = {
             let service = Arc::clone(&service);
-            let mut subscriber = service.subscribe_to_items_updates().1;
+            let mut subscriber = subscriber;
             executor::spawn(async move {
                 loop {
                     match subscriber.next().await {
@@ -353,4 +360,30 @@ fn body_preview(content: Option<&matrix_sdk_ui::timeline::TimelineItemContent>) 
         return Some(sticker.content().body.clone());
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn open_subscription_loads_initial_page_before_emitting_opened() {
+        let source = include_str!("threads_list.rs");
+        let open_subscription = source
+            .split("async fn open_subscription")
+            .nth(1)
+            .expect("open_subscription body")
+            .split("async fn emit_opened")
+            .next()
+            .expect("open_subscription section");
+        let paginate_index = open_subscription
+            .find("service.paginate().await")
+            .expect("open_subscription must load the first thread page");
+        let emit_index = open_subscription
+            .find("self.emit_opened")
+            .expect("open_subscription must emit opened");
+
+        assert!(
+            paginate_index < emit_index,
+            "ThreadListService::new() starts empty; paginate before emitting Opened"
+        );
+    }
 }
