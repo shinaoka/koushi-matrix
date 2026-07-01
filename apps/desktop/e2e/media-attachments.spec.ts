@@ -315,8 +315,9 @@ test("ready image state renders img element with Rust-owned source_url", async (
   // The ready+Image variant renders an <img>.
   const img = article.locator("img.message-media-image");
   await expect(img).toBeVisible();
-  // The download link switches from button to <a> when ready.
-  await expect(article.locator("a.message-media-download")).toBeVisible();
+  // #163: image-first layout — the download is a hover/focus overlay action (an
+  // <a>) over the image, not a persistent row control.
+  await expect(article.locator("a.message-media-hover-action")).toBeVisible();
 });
 
 // ---------------------------------------------------------------------------

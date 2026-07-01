@@ -5840,33 +5840,78 @@ function TimelineMediaAttachment({
   const progressPercent =
     uploadProgressPercentValue ?? downloadProgressPercent;
 
-  return (
-    <div
-      className={readyImagePreview ? "message-media message-media-ready" : "message-media"}
-      data-media-kind={media.kind}
-      data-media-encrypted={media.source.encrypted || undefined}
-      data-download-state={downloadState?.kind ?? "notRequested"}
-    >
-      {readyImagePreview ? (
-        <a
-          className="message-media-preview-link"
-          href={readyImagePreview.sourceUrl}
-          target="_blank"
-          rel="noreferrer"
-          aria-label={t("timeline.mediaOpenFile")}
-        >
-          <span className="message-media-image-frame" style={mediaFrameStyle}>
+  // #163: a ready image is rendered image-first. The preview is the primary
+  // block; filename/metadata are not laid out over it, and actions appear on
+  // hover/focus as an overlay. The encrypted badge stays visible as a security
+  // signal. (Clicking to open the full-size viewer is wired in a follow-up; the
+  // preview link opens the image for now.)
+  if (readyImagePreview) {
+    return (
+      <div
+        className="message-media message-media-image-ready"
+        data-media-kind={media.kind}
+        data-media-encrypted={media.source.encrypted || undefined}
+        data-download-state={downloadState?.kind ?? "notRequested"}
+      >
+        <div className="message-media-figure" style={mediaFrameStyle}>
+          <a
+            className="message-media-open"
+            href={readyImagePreview.sourceUrl}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={t("timeline.mediaOpenFile")}
+          >
             <img
               className="message-media-image"
               src={readyImagePreview.sourceUrl}
               alt={media.filename}
+              title={media.filename}
               width={readyImagePreview.width ?? undefined}
               height={readyImagePreview.height ?? undefined}
               loading="lazy"
             />
-          </span>
-        </a>
-      ) : media.kind === "Image" && displayBox ? (
+          </a>
+          {media.source.encrypted ? (
+            <span className="message-media-image-badge">{t("timeline.encryptedMedia")}</span>
+          ) : null}
+          {canDownload ? (
+            <div className="message-media-hover-actions">
+              <a
+                className="message-media-hover-action"
+                href={readyImagePreview.sourceUrl}
+                target="_blank"
+                rel="noreferrer"
+                download={media.filename}
+                aria-label={t("timeline.downloadMedia", { filename: media.filename })}
+              >
+                <Download size={16} />
+              </a>
+            </div>
+          ) : null}
+          {progressPercent !== null ? (
+            <div
+              className="message-media-progress-overlay"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={progressPercent}
+            >
+              <span style={{ width: `${progressPercent}%` }} />
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="message-media"
+      data-media-kind={media.kind}
+      data-media-encrypted={media.source.encrypted || undefined}
+      data-download-state={downloadState?.kind ?? "notRequested"}
+    >
+      {media.kind === "Image" && displayBox ? (
         <span
           className="message-media-image-frame message-media-image-frame-reserved"
           style={mediaFrameStyle}

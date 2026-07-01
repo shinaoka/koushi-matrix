@@ -1018,8 +1018,10 @@ test("known-dimension media keeps row height stable across download completion",
   await waitAnimationFrames(page, 3);
   const media = frame.locator(".message-media");
   await expect(media).toHaveAttribute("data-download-state", "ready");
-  await expect(media.locator(".message-media-preview-link")).toBeVisible();
-  await expect(media.locator(".message-media-download")).toBeVisible();
+  // #163: image-first layout — the image is the open link; the download is a
+  // hover/focus overlay action.
+  await expect(media.locator(".message-media-open")).toBeVisible();
+  await expect(media.locator(".message-media-hover-action")).toBeVisible();
   await expect
     .poll(() => media.evaluate((node) => getComputedStyle(node).display))
     .toBe("inline-grid");
