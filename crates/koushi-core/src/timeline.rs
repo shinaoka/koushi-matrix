@@ -1121,6 +1121,35 @@ fn thread_attention_action_from_timeline_diffs(
     })
 }
 
+fn thread_attention_clear_action_from_viewport(
+    counts: &mut ThreadAttentionCounters,
+    key: &TimelineKey,
+    observation: &TimelineViewportObservation,
+) -> Option<AppAction> {
+    if !observation.at_bottom {
+        return None;
+    }
+    if *counts == ThreadAttentionCounters::default() {
+        return None;
+    }
+    let TimelineKind::Thread {
+        room_id,
+        root_event_id,
+    } = &key.kind
+    else {
+        return None;
+    };
+
+    *counts = ThreadAttentionCounters::default();
+    Some(AppAction::ThreadAttentionUpdated {
+        room_id: room_id.clone(),
+        root_event_id: root_event_id.clone(),
+        notification_count: 0,
+        highlight_count: 0,
+        live_event_marker_count: 0,
+    })
+}
+
 fn is_remote_renderable_timeline_message(item: &TimelineItem, own_user_id: Option<&str>) -> bool {
     if !matches!(item.id, TimelineItemId::Event { .. }) {
         return false;
@@ -1918,6 +1947,13 @@ impl TimelineActor {
             TimelineActorMessage::ObserveViewport { observation } => {
                 self.viewport_observation = observation;
                 self.maybe_fetch_visible_reply_details();
+                if let Some(action) = thread_attention_clear_action_from_viewport(
+                    &mut self.thread_attention_counts,
+                    &self.key,
+                    &self.viewport_observation,
+                ) {
+                    let _ = self.action_tx.try_send(vec![action]);
+                }
                 self.emit_navigation_if_changed();
             }
             TimelineActorMessage::SendText {
@@ -8250,6 +8286,44 @@ mod tests {
                 Some(own_user_id),
             ),
             None
+        );
+    }
+
+    #[test]
+    fn thread_attention_clear_action_resets_counts_at_thread_live_edge() {
+        let key = TimelineKey {
+            account_key: AccountKey("@me:test".to_owned()),
+            kind: TimelineKind::Thread {
+                room_id: "!room:test".to_owned(),
+                root_event_id: "$root:test".to_owned(),
+            },
+        };
+        let mut counts = ThreadAttentionCounters {
+            notification_count: 2,
+            highlight_count: 1,
+            live_event_marker_count: 2,
+        };
+
+        let action = thread_attention_clear_action_from_viewport(
+            &mut counts,
+            &key,
+            &TimelineViewportObservation {
+                first_visible_event_id: Some("$a:test".to_owned()),
+                last_visible_event_id: Some("$b:test".to_owned()),
+                at_bottom: true,
+            },
+        );
+
+        assert_eq!(counts, ThreadAttentionCounters::default());
+        assert_eq!(
+            action,
+            Some(AppAction::ThreadAttentionUpdated {
+                room_id: "!room:test".to_owned(),
+                root_event_id: "$root:test".to_owned(),
+                notification_count: 0,
+                highlight_count: 0,
+                live_event_marker_count: 0,
+            })
         );
     }
 
