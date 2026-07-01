@@ -61,6 +61,52 @@ pub(crate) fn handle_timeline_scroll_anchor_updated(
     Vec::new()
 }
 
+/// #161: enter event-anchored main-pane mode. Guarded: session must be ready
+/// and `room_id` must be the active, known room. The main pane then renders the
+/// event-focused timeline (core routes the `TimelineKind::Focused` subscription;
+/// this reducer only owns the mode state).
+pub(crate) fn handle_enter_anchored_timeline(
+    state: &mut AppState,
+    room_id: String,
+    event_id: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    if state.navigation.active_room_id.as_deref() != Some(room_id.as_str()) {
+        return Vec::new();
+    }
+    if !state.rooms.iter().any(|room| room.room_id == room_id) {
+        return Vec::new();
+    }
+
+    let anchor = crate::state::MainTimelineAnchor { event_id };
+    if state.navigation.main_timeline_anchor.as_ref() == Some(&anchor) {
+        return Vec::new();
+    }
+    state.navigation.main_timeline_anchor = Some(anchor);
+    Vec::new()
+}
+
+/// #161: return the main pane to the live timeline (live-edge control). Guarded:
+/// session ready and `room_id` is the active room. No-op when already live.
+pub(crate) fn handle_return_main_timeline_to_live(
+    state: &mut AppState,
+    room_id: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    if state.navigation.active_room_id.as_deref() != Some(room_id.as_str()) {
+        return Vec::new();
+    }
+    if state.navigation.main_timeline_anchor.is_none() {
+        return Vec::new();
+    }
+    state.navigation.main_timeline_anchor = None;
+    Vec::new()
+}
+
 fn preserve_known_avatar_thumbnails(
     state: &AppState,
     next_invites: &mut [crate::state::InvitePreview],

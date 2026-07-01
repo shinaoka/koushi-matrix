@@ -638,6 +638,12 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::TimelineScrollAnchorUpdated { room_id, anchor } => {
             navigation::handle_timeline_scroll_anchor_updated(state, room_id, anchor)
         }
+        AppAction::EnterAnchoredTimeline { room_id, event_id } => {
+            navigation::handle_enter_anchored_timeline(state, room_id, event_id)
+        }
+        AppAction::ReturnMainTimelineToLive { room_id } => {
+            navigation::handle_return_main_timeline_to_live(state, room_id)
+        }
         AppAction::SelectSpace { space_id } => navigation::handle_select_space(state, space_id),
         AppAction::ReorderSpaces { space_ids } => {
             navigation::handle_reorder_spaces(state, space_ids)
@@ -1311,6 +1317,8 @@ pub(crate) fn select_active_room_for_navigation(
     state.thread_attention = ThreadAttentionState::Closed;
     state.threads_list = ThreadsListState::Closed;
     state.focused_context = FocusedContextState::Closed;
+    // #161: switching rooms resets the main pane to the live timeline.
+    state.navigation.main_timeline_anchor = None;
     effects.push(AppEffect::SubscribeTimeline {
         room_id: room_id.clone(),
     });
@@ -1339,6 +1347,8 @@ pub(crate) fn clear_active_room_for_navigation(
     state.thread_attention = ThreadAttentionState::Closed;
     state.threads_list = ThreadsListState::Closed;
     state.focused_context = FocusedContextState::Closed;
+    // #161: clearing the active room resets the main pane to the live timeline.
+    state.navigation.main_timeline_anchor = None;
     effects.push(AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
         room_id: previous_room_id,
     }));

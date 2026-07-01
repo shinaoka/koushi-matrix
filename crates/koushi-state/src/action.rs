@@ -598,6 +598,16 @@ pub enum AppAction {
         room_id: String,
         anchor: TimelineScrollAnchor,
     },
+    /// #161: main pane enters event-anchored mode (jump-to-date landed on an
+    /// out-of-window event). Guarded: only applies to the active, known room.
+    EnterAnchoredTimeline {
+        room_id: String,
+        event_id: String,
+    },
+    /// #161: main pane returns to the live timeline (live-edge control).
+    ReturnMainTimelineToLive {
+        room_id: String,
+    },
     SelectSpace {
         space_id: Option<String>,
     },
