@@ -156,6 +156,50 @@ impl SearchDocumentStore {
         crate::verify::verify_candidate(&resolved_candidate, &event, query)
     }
 
+    /// Scan the in-process document store directly for exact matches, using the
+    /// same matcher as [`Self::verify_candidate`].
+    ///
+    /// This makes the document store a first-class search candidate source, so
+    /// messages koushi has indexed (crawled history, live, CJK, short queries)
+    /// are findable even when the SDK ngram index — an accelerator, not the
+    /// authority — does not surface them as candidates (issue #162). Results
+    /// are ordered most-recent-first (then by event id) and capped at `limit`.
+    /// `room_filter == None` scans all rooms; `Some(room_id)` restricts scope.
+    pub fn scan_candidates(
+        &self,
+        query: &str,
+        room_filter: Option<&str>,
+        limit: usize,
+    ) -> Vec<SearchResult> {
+        if query.trim().is_empty() || limit == 0 {
+            return Vec::new();
+        }
+
+        let mut results: Vec<SearchResult> = self
+            .documents
+            .values()
+            .filter(|event| room_filter.map_or(true, |room_id| event.room_id == room_id))
+            .filter_map(|event| self.resolved_event(&event.event_id))
+            .filter_map(|event| {
+                let candidate = SearchCandidate {
+                    room_id: event.room_id.clone(),
+                    event_id: event.event_id.clone(),
+                    score_millis: 0,
+                };
+                crate::verify::verify_candidate(&candidate, &event, query)
+            })
+            .collect();
+
+        results.sort_by(|left, right| {
+            right
+                .timestamp_ms
+                .cmp(&left.timestamp_ms)
+                .then_with(|| left.event_id.cmp(&right.event_id))
+        });
+        results.truncate(limit);
+        results
+    }
+
     fn apply_edit(&mut self, edit: SearchEdit) {
         let target_event_id = edit.target_event_id.clone();
         match self.applied_edits.get(&target_event_id) {
