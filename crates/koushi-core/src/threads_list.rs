@@ -135,7 +135,8 @@ impl ThreadsListActor {
         let (_, subscriber) = service.subscribe_to_items_updates();
 
         if let Err(_) = service.paginate().await {
-            self.emit_failed(request_id, OperationFailureKind::Sdk).await;
+            self.emit_failed(request_id, OperationFailureKind::Sdk)
+                .await;
             return None;
         }
 
