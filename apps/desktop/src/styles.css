@@ -3540,7 +3540,8 @@ mark {
   display: grid;
   grid-template-rows: auto auto 1fr;
   width: 320px;
-  height: 360px;
+  block-size: min(360px, var(--emoji-picker-max-block-size, 360px));
+  min-block-size: 0;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;

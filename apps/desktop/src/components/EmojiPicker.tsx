@@ -1,5 +1,6 @@
 import { Search, X } from "lucide-react";
 import {
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
   useCallback,
@@ -77,6 +78,7 @@ interface EmojiPickerProps {
   placement?: "above" | "below";
   align?: "start" | "end";
   className?: string;
+  style?: CSSProperties;
 }
 
 export function EmojiPicker({
@@ -85,7 +87,8 @@ export function EmojiPicker({
   anchorRef,
   placement = "above",
   align = "start",
-  className
+  className,
+  style
 }: EmojiPickerProps) {
   const [query, setQuery] = useState("");
   const [activeCategory, setActiveCategory] = useState<
@@ -195,6 +198,7 @@ export function EmojiPicker({
         `align-${align}`,
         className
       ].filter(Boolean).join(" ")}
+      style={style}
       role="dialog"
       aria-label={t("composer.emoji")}
     >

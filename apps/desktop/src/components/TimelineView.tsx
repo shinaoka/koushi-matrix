@@ -500,7 +500,12 @@ function cssEscape(value: string): string {
   return value.replace(/["\\]/g, "\\$&");
 }
 
-function reactionPickerPlacementForControl(control: HTMLElement): "above" | "below" {
+type ReactionPickerLayout = {
+  placement: "above" | "below";
+  maxBlockSize: number;
+};
+
+function reactionPickerLayoutForControl(control: HTMLElement): ReactionPickerLayout {
   const controlRect = control.getBoundingClientRect();
   const boundary =
     control.closest<HTMLElement>(".timeline-view") ??
@@ -523,12 +528,25 @@ function reactionPickerPlacementForControl(control: HTMLElement): "above" | "bel
   );
 
   if (availableBelow >= REACTION_PICKER_BLOCK_SIZE_PX) {
-    return "below";
+    return {
+      placement: "below",
+      maxBlockSize: REACTION_PICKER_BLOCK_SIZE_PX
+    };
   }
   if (availableAbove >= REACTION_PICKER_BLOCK_SIZE_PX) {
-    return "above";
+    return {
+      placement: "above",
+      maxBlockSize: REACTION_PICKER_BLOCK_SIZE_PX
+    };
   }
-  return availableAbove >= availableBelow ? "above" : "below";
+  const placement = availableAbove >= availableBelow ? "above" : "below";
+  return {
+    placement,
+    maxBlockSize: Math.max(
+      0,
+      Math.floor(placement === "above" ? availableAbove : availableBelow)
+    )
+  };
 }
 
 /** Distance (px) from the top edge that triggers automatic backfill. */
@@ -4231,8 +4249,10 @@ export function TimelineItemRow({
   const [isEditing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(item.body ?? "");
   const [isReactionPickerOpen, setReactionPickerOpen] = useState(false);
-  const [reactionPickerPlacement, setReactionPickerPlacement] =
-    useState<"above" | "below">("above");
+  const [reactionPickerLayout, setReactionPickerLayout] = useState<ReactionPickerLayout>({
+    placement: "above",
+    maxBlockSize: REACTION_PICKER_BLOCK_SIZE_PX
+  });
   const [isActionMenuOpen, setActionMenuOpen] = useState(false);
   const [isForwardMenuOpen, setForwardMenuOpen] = useState(false);
   const [actionMenuPlacement, setActionMenuPlacement] = useState<"above" | "below">("above");
@@ -4316,20 +4336,36 @@ export function TimelineItemRow({
     };
   }, [isActionMenuOpen]);
 
+  const updateReactionPickerLayout = useCallback(() => {
+    const control = reactionControlRef.current;
+    if (control) {
+      setReactionPickerLayout(reactionPickerLayoutForControl(control));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isReactionPickerOpen) {
+      return;
+    }
+    window.addEventListener("resize", updateReactionPickerLayout);
+    document.addEventListener("scroll", updateReactionPickerLayout, true);
+    return () => {
+      window.removeEventListener("resize", updateReactionPickerLayout);
+      document.removeEventListener("scroll", updateReactionPickerLayout, true);
+    };
+  }, [isReactionPickerOpen, updateReactionPickerLayout]);
+
   const closeReactionPicker = useCallback(() => {
     setReactionPickerOpen(false);
     reactionTriggerRef.current?.focus();
   }, []);
 
   const toggleReactionPicker = useCallback(() => {
-    const control = reactionControlRef.current;
-    if (control) {
-      setReactionPickerPlacement(reactionPickerPlacementForControl(control));
-    }
+    updateReactionPickerLayout();
     setActionMenuOpen(false);
     setForwardMenuOpen(false);
     setReactionPickerOpen((current) => !current);
-  }, []);
+  }, [updateReactionPickerLayout]);
 
   const closeActionMenu = useCallback(() => {
     setActionMenuOpen(false);
@@ -5033,7 +5069,10 @@ export function TimelineItemRow({
                 <LazyEmojiPicker
                   anchorRef={reactionTriggerRef}
                   align="end"
-                  placement={reactionPickerPlacement}
+                  placement={reactionPickerLayout.placement}
+                  style={{
+                    "--emoji-picker-max-block-size": `${reactionPickerLayout.maxBlockSize}px`
+                  } as CSSProperties}
                   className="timeline-reaction-emoji-picker"
                   onSelect={submitReaction}
                   onClose={closeReactionPicker}
