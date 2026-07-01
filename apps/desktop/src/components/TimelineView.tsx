@@ -4994,6 +4994,26 @@ export function TimelineItemRow({
             ) : null}
           </div>
         ) : null}
+        {!isEditing && canShowReply ? (
+          <button
+            className="message-action"
+            type="button"
+            aria-label={t("timeline.replyToMessage")}
+            onClick={submitReply}
+          >
+            <Reply size={14} />
+          </button>
+        ) : null}
+        {!isEditing && canShowThreadSummary ? (
+          <button
+            className="message-action"
+            type="button"
+            aria-label={t("context.openThread")}
+            onClick={submitOpenThread}
+          >
+            <MessagesSquare size={14} />
+          </button>
+        ) : null}
         {!isEditing && canShowActionButtons ? (
           <button
             className="message-action"
@@ -5095,13 +5115,13 @@ export function TimelineItemRow({
                 {canForward ? (
                   <div className="message-forward-menu-control">
                     <button
-	                      ref={
-	                        !senderAliasTarget &&
-	                        !canCopyMessage &&
-	                        !canCopyPermalink &&
-	                        !canViewSource
-	                          ? firstActionMenuItemRef
-	                          : undefined
+                      ref={
+                        !senderAliasTarget &&
+                        !canCopyMessage &&
+                        !canCopyPermalink &&
+                        !canViewSource
+                          ? firstActionMenuItemRef
+                          : undefined
                       }
                       className="message-action-menu-item"
                       type="button"
@@ -5134,26 +5154,6 @@ export function TimelineItemRow({
               </div>
             ) : null}
           </div>
-        ) : null}
-        {!isEditing && canShowReply ? (
-          <button
-            className="message-action"
-            type="button"
-            aria-label={t("timeline.replyToMessage")}
-            onClick={submitReply}
-          >
-            <Reply size={14} />
-          </button>
-        ) : null}
-        {!isEditing && canShowThreadSummary ? (
-          <button
-            className="message-action"
-            type="button"
-            aria-label={t("context.openThread")}
-            onClick={submitOpenThread}
-          >
-            <MessagesSquare size={14} />
-          </button>
         ) : null}
         {!isEditing && canShowActionButtons && item.can_redact ? (
           <button

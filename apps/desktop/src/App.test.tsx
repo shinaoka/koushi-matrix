@@ -280,12 +280,17 @@ describe("ContextualRightPanel", () => {
     expect(markup).toContain("3 replies");
     expect(markup).toContain("@bob:example.invalid: Latest thread reply");
     expect(markup).toContain('aria-label="Open thread, 3 replies');
-    const actionMenuIndex = markup.indexOf(`aria-label="${t("timeline.messageActions")}"`);
+    const reactionIndex = markup.indexOf(`aria-label="${t("timeline.addReaction")}"`);
     const replyIndex = markup.indexOf(`aria-label="${t("timeline.replyToMessage")}"`);
     const threadReplyIndex = markup.indexOf(`aria-label="${t("context.openThread")}"`);
-    expect(actionMenuIndex).toBeGreaterThanOrEqual(0);
-    expect(replyIndex).toBeGreaterThan(actionMenuIndex);
+    const pinIndex = markup.indexOf(`aria-label="${t("timeline.pinMessage")}"`);
+    const actionMenuIndex = markup.indexOf(`aria-label="${t("timeline.messageActions")}"`);
+    expect(reactionIndex).toBeGreaterThanOrEqual(0);
+    expect(replyIndex).toBeGreaterThan(reactionIndex);
     expect(threadReplyIndex).toBeGreaterThan(replyIndex);
+    expect(pinIndex).toBeGreaterThan(threadReplyIndex);
+    expect(actionMenuIndex).toBeGreaterThanOrEqual(0);
+    expect(actionMenuIndex).toBeGreaterThan(pinIndex);
   });
 
   test("TimelineItemRow renders add reaction affordance only for reactable events", () => {
