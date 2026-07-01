@@ -47,3 +47,21 @@ Local path: `apps/desktop/node_modules/twemoji-colr-font` during build; Vite bun
 License: package metadata `OFL-1.1`; package CSS header `MIT`; Twemoji visual design/artwork under Creative Commons Attribution 4.0 International (`CC-BY-4.0`)
 Copyright: Twemoji font package by Tilman Vatteroth; Twemoji artwork by the Twemoji project
 Notes: Used as the bundled-preferred emoji font when the Rust-owned typography profile selects `emoji = twemojiColr`; platform/system emoji fonts remain fallback. npm marks this package deprecated, so upgrades or replacement must revisit the font source and attribution.
+
+Project: @matrix-org/emojibase-bindings
+Repository: https://github.com/matrix-org/emojibase-bindings
+Upstream commit: package `@matrix-org/emojibase-bindings@1.5.0`
+Source path: package `build/emoji.js` and type declarations
+Local path: `apps/desktop/node_modules/@matrix-org/emojibase-bindings` during build; Vite bundles selected emoji lookup code into desktop release artifacts
+License: Apache-2.0
+Copyright: Copyright The Matrix.org Foundation C.I.C.
+Notes: Used to provide Element-compatible emoji category ordering and lookup data for the desktop emoji picker.
+
+Project: emojibase and emojibase-data
+Repository: https://github.com/milesj/emojibase
+Upstream commit: packages `emojibase@17.0.0` and `emojibase-data@17.0.0`
+Source path: packages `packages/core` and `packages/data`
+Local path: `apps/desktop/node_modules/emojibase` and `apps/desktop/node_modules/emojibase-data` during build; Vite bundles selected English compact emoji data into desktop release artifacts
+License: MIT
+Copyright: Copyright (c) 2017-2019 Miles Johnson
+Notes: Transitive runtime dependencies of `@matrix-org/emojibase-bindings`; used for the emoji picker data set, shortcodes, tags, and categories.

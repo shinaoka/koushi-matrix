@@ -20,6 +20,16 @@ import {
 
 const RECENT_EMOJIS_KEY = "koushi-recent-emojis";
 const MAX_RECENT = 24;
+const EMOJI_CATEGORY_ICONS: Record<EmojiCategory, string> = {
+  people: "😀",
+  nature: "🐕",
+  foods: "🍎",
+  activity: "⚽️",
+  places: "🚗",
+  objects: "💡",
+  symbols: "⁉️",
+  flags: "🏁",
+};
 
 function readRecentEmojis(): string[] {
   try {
@@ -70,21 +80,21 @@ export function EmojiPicker({ onSelect, onClose, anchorRef }: EmojiPickerProps) 
   const [query, setQuery] = useState("");
   const [activeCategory, setActiveCategory] = useState<
     EmojiCategory | "recent"
-  >("smileys");
+  >("people");
   const [recentEmojis, setRecentEmojis] = useState<string[]>(() =>
     readRecentEmojis(),
   );
   const panelRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const categoryRefs = useRef<Record<EmojiCategory, HTMLDivElement | null>>({
-    smileys: null,
     people: null,
     nature: null,
-    food: null,
-    activities: null,
-    travel: null,
+    foods: null,
+    activity: null,
+    places: null,
     objects: null,
     symbols: null,
+    flags: null,
   });
   const recentRef = useRef<HTMLDivElement | null>(null);
 
@@ -98,7 +108,7 @@ export function EmojiPicker({ onSelect, onClose, anchorRef }: EmojiPickerProps) 
     const results: EmojiEntry[] = [];
     for (const category of EMOJI_CATEGORIES) {
       for (const entry of EMOJI_BY_CATEGORY[category]) {
-        if (entry.label.toLowerCase().includes(trimmedQuery)) {
+        if (entry.search.includes(trimmedQuery)) {
           results.push(entry);
         }
       }
@@ -203,12 +213,14 @@ export function EmojiPicker({ onSelect, onClose, anchorRef }: EmojiPickerProps) 
               type="button"
               role="tab"
               aria-selected={activeCategory === "recent"}
+              aria-label={t("composer.emojiRecent")}
+              title={t("composer.emojiRecent")}
               onClick={() => {
                 setActiveCategory("recent");
                 scrollToCategory("recent");
               }}
             >
-              {t("composer.emojiRecent")}
+              <span aria-hidden="true">🕒</span>
             </button>
           )}
           {EMOJI_CATEGORIES.map((category) => (
@@ -218,12 +230,14 @@ export function EmojiPicker({ onSelect, onClose, anchorRef }: EmojiPickerProps) 
               type="button"
               role="tab"
               aria-selected={activeCategory === category}
+              aria-label={t(`emoji.category.${category}` as const)}
+              title={t(`emoji.category.${category}` as const)}
               onClick={() => {
                 setActiveCategory(category);
                 scrollToCategory(category);
               }}
             >
-              {t(`emoji.category.${category}` as const)}
+              <span aria-hidden="true">{EMOJI_CATEGORY_ICONS[category]}</span>
             </button>
           ))}
         </div>

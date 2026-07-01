@@ -11,7 +11,8 @@ import type { TimelineTransport } from "./TimelineView";
 
 const renderCounts = vi.hoisted(() => ({
   composer: 0,
-  timelineView: 0
+  timelineView: 0,
+  liveEdgeJumpRequestIds: [] as Array<number | undefined>
 }));
 
 vi.mock("./composer", async () => {
@@ -36,6 +37,9 @@ vi.mock("./TimelineView", async () => {
   const TimelineViewProbe = memo(
     function TimelineViewProbe(props: Parameters<typeof actual.TimelineView>[0]) {
       renderCounts.timelineView += 1;
+      renderCounts.liveEdgeJumpRequestIds.push(
+        (props as { liveEdgeJumpRequestId?: number }).liveEdgeJumpRequestId
+      );
       return createElement(actual.TimelineView, props);
     }
   );
@@ -51,6 +55,7 @@ describe("TimelinePane render isolation", () => {
     clearAppStoreSnapshot();
     renderCounts.composer = 0;
     renderCounts.timelineView = 0;
+    renderCounts.liveEdgeJumpRequestIds = [];
   });
 
   afterEach(() => {
@@ -66,6 +71,19 @@ describe("TimelinePane render isolation", () => {
     const threadsButton = screen.getByRole("button", { name: "Threads" });
     fireEvent.click(threadsButton);
     expect(onOpenThreads).toHaveBeenCalledOnce();
+  });
+
+  test("latest header action requests a TimelineView live-edge jump", async () => {
+    render(renderTimelinePane(makeSnapshot()));
+
+    const initialRequestId = renderCounts.liveEdgeJumpRequestIds.at(-1) ?? 0;
+    fireEvent.click(screen.getByRole("button", { name: "Latest" }));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(renderCounts.liveEdgeJumpRequestIds.at(-1)).toBeGreaterThan(initialRequestId);
   });
 
   test("keeps hot timeline and composer consumers from rerendering on search crawler updates", async () => {

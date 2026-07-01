@@ -736,7 +736,7 @@ export function TimelinePane({
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [dateJumpDialogOpen, setDateJumpDialogOpen] = useState(false);
-  const timelineListRef = useRef<HTMLDivElement | null>(null);
+  const [liveEdgeJumpRequestId, setLiveEdgeJumpRequestId] = useState(0);
   const [jumpDateValue, setJumpDateValue] = useState("");
 
   function submitJumpDate(event: FormEvent<HTMLFormElement>) {
@@ -759,13 +759,6 @@ export function TimelinePane({
   }
   const canPaginateOlderMessages = Boolean(timelineRoomId && currentUserId && timelineTransport);
   const canJumpToTimelineDate = Boolean(timelineTransport?.openAtTimestamp && timelineRoomId);
-  const listRefCallback = useCallback(
-    (element: HTMLDivElement | null) => {
-      timelineListRef.current = element;
-    },
-    []
-  );
-
   return (
     <main className="main-pane" aria-label={t("timeline.conversation")}>
       <header className="channel-header">
@@ -811,12 +804,7 @@ export function TimelinePane({
               type="button"
               aria-label={t("timeline.latest")}
               title={t("timeline.latest")}
-              onClick={() => {
-                const list = timelineListRef.current;
-                if (list) {
-                  list.scrollTop = list.scrollHeight;
-                }
-              }}
+              onClick={() => setLiveEdgeJumpRequestId((current) => current + 1)}
             >
               <ArrowDown size={ICON_SIZE.control} aria-hidden="true" />
             </button>
@@ -959,7 +947,7 @@ export function TimelinePane({
               roomScrollAnchor={snapshot.state.ui.navigation.room_scroll_anchors?.[timelineRoomId] ?? null}
               onDiagnosticsChange={onTimelineDiagnosticsChangeStable}
               onDiagnosticLogEntry={onTimelineDiagnosticLogEntryStable}
-              listRefCallback={listRefCallback}
+              liveEdgeJumpRequestId={liveEdgeJumpRequestId}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).

@@ -1814,7 +1814,8 @@ export const TimelineView = memo(function TimelineView({
   onDiagnosticLogEntry,
   timelineStore,
   setTimelineStore,
-  listRefCallback
+  listRefCallback,
+  liveEdgeJumpRequestId
 }: {
   timelineKey: TimelineKey;
   roomId: string;
@@ -1865,9 +1866,14 @@ export const TimelineView = memo(function TimelineView({
   setTimelineStore?: Dispatch<SetStateAction<TimelineStoreState>>;
   /**
    * Optional callback receiving the timeline list element so parent chrome can
-   * drive scroll actions such as "jump to latest".
+   * observe the mounted list element.
    */
   listRefCallback?: (element: HTMLDivElement | null) => void;
+  /**
+   * Monotonic signal from parent chrome requesting the view to jump to the
+   * latest message and resume live-edge pinning through the normal scroll path.
+   */
+  liveEdgeJumpRequestId?: number;
 }) {
   const timelineStoreContext = useTimelineStoreContext();
   const [localStore, localSetStore] = useState<TimelineStoreState>(createTimelineStore);
@@ -1963,6 +1969,7 @@ export const TimelineView = memo(function TimelineView({
   /** Coalesces ResizeObserver-driven live-edge corrections. */
   const viewportIntentResizeFrameRef = useRef<TimelineScheduledFrame | null>(null);
   const scrollFollowUpFramesRef = useRef<Set<TimelineScheduledFrame>>(new Set());
+  const handledLiveEdgeJumpRequestRef = useRef(liveEdgeJumpRequestId ?? 0);
   /** Pagination request currently in flight (suppresses duplicates). */
   const backfillInFlightRef = useRef(false);
   const readSignalEventRef = useRef<string | null>(null);
@@ -3808,6 +3815,14 @@ export const TimelineView = memo(function TimelineView({
     scheduleScrollFollowUpFrame,
     updateViewportMetrics
   ]);
+  useEffect(() => {
+    const requestId = liveEdgeJumpRequestId ?? 0;
+    if (requestId === 0 || handledLiveEdgeJumpRequestRef.current === requestId) {
+      return;
+    }
+    handledLiveEdgeJumpRequestRef.current = requestId;
+    jumpToBottom();
+  }, [jumpToBottom, liveEdgeJumpRequestId]);
   const canRenderRoomNavigation =
     roomTimelineRoomId === roomId;
   const firstUnreadEventId = navigationSnapshot?.first_unread_event_id ?? null;

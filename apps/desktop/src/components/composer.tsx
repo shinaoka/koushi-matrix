@@ -3,6 +3,8 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type MouseEvent,
+  Suspense,
+  lazy,
   memo,
   useEffect,
   useRef,
@@ -35,7 +37,6 @@ import {
   shouldLetNativeImeHandleComposerKeyEvent,
   shouldResolveComposerKeyEvent
 } from "../domain/composerKeyEvents";
-import { EmojiPicker } from "./EmojiPicker";
 import {
   ICON_SIZE,
   EMPTY_MENTION_INTENT,
@@ -50,6 +51,10 @@ import {
   type MentionCandidate,
   type ComposerModeProp
 } from "../app/uiShared";
+
+const LazyEmojiPicker = lazy(() =>
+  import("./EmojiPicker").then((module) => ({ default: module.EmojiPicker }))
+);
 
 export const Composer = memo(function Composer({
   composerMode,
@@ -493,11 +498,13 @@ export const Composer = memo(function Composer({
               <Smile size={ICON_SIZE.control} />
             </button>
             {emojiPickerOpen ? (
-              <EmojiPicker
-                anchorRef={emojiButtonRef}
-                onSelect={insertEmoji}
-                onClose={() => setEmojiPickerOpen(false)}
-              />
+              <Suspense fallback={null}>
+                <LazyEmojiPicker
+                  anchorRef={emojiButtonRef}
+                  onSelect={insertEmoji}
+                  onClose={() => setEmojiPickerOpen(false)}
+                />
+              </Suspense>
             ) : null}
           </span>
           <button

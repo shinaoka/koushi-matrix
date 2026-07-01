@@ -3623,13 +3623,18 @@ mark {
 
 .emoji-picker-tab {
   flex: 0 0 auto;
-  padding: 4px 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 34px;
+  block-size: 34px;
+  padding: 0;
   border: 0;
   border-radius: 6px;
   color: var(--text-muted);
   background: transparent;
-  font-size: 12px;
-  font-weight: 650;
+  font-size: 20px;
+  line-height: 1;
   cursor: pointer;
 }
 

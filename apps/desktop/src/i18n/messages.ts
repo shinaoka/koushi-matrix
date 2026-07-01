@@ -145,14 +145,14 @@ export type MessageId =
   | "diagnostics.copy"
   | "diagnostics.open"
   | "diagnostics.title"
-  | "emoji.category.smileys"
   | "emoji.category.people"
   | "emoji.category.nature"
-  | "emoji.category.food"
-  | "emoji.category.activities"
-  | "emoji.category.travel"
+  | "emoji.category.foods"
+  | "emoji.category.activity"
+  | "emoji.category.places"
   | "emoji.category.objects"
   | "emoji.category.symbols"
+  | "emoji.category.flags"
   | "emoji.noResults"
   | "files.empty"
   | "files.error"
@@ -1056,14 +1056,14 @@ const en: Catalog = {
   "diagnostics.copy": "Copy diagnostics",
   "diagnostics.open": "Open diagnostics",
   "diagnostics.title": "Diagnostics",
-  "emoji.category.smileys": "Smileys",
-  "emoji.category.people": "People",
-  "emoji.category.nature": "Nature",
-  "emoji.category.food": "Food",
-  "emoji.category.activities": "Activities",
-  "emoji.category.travel": "Travel",
+  "emoji.category.people": "Smileys & People",
+  "emoji.category.nature": "Animals & Nature",
+  "emoji.category.foods": "Food & Drink",
+  "emoji.category.activity": "Activities",
+  "emoji.category.places": "Travel & Places",
   "emoji.category.objects": "Objects",
   "emoji.category.symbols": "Symbols",
+  "emoji.category.flags": "Flags",
   "emoji.noResults": "No emojis match your search",
   "files.empty": "No files",
   "files.error": "Could not load files",
@@ -1870,14 +1870,14 @@ const ja: Catalog = {
   "diagnostics.copy": "診断情報をコピー",
   "diagnostics.open": "診断情報を開く",
   "diagnostics.title": "診断情報",
-  "emoji.category.smileys": "顔",
-  "emoji.category.people": "人",
-  "emoji.category.nature": "自然",
-  "emoji.category.food": "食べ物",
-  "emoji.category.activities": "アクティビティ",
-  "emoji.category.travel": "旅行",
+  "emoji.category.people": "顔と人",
+  "emoji.category.nature": "動物と自然",
+  "emoji.category.foods": "食べ物と飲み物",
+  "emoji.category.activity": "アクティビティ",
+  "emoji.category.places": "旅行と場所",
   "emoji.category.objects": "物",
   "emoji.category.symbols": "記号",
+  "emoji.category.flags": "旗",
   "emoji.noResults": "一致する絵文字がありません",
   "files.empty": "ファイルがありません",
   "files.error": "ファイルを読み込めませんでした",

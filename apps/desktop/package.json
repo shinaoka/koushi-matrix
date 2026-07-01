@@ -36,6 +36,7 @@
   },
   "dependencies": {
     "@fontsource/inter": "5.2.8",
+    "@matrix-org/emojibase-bindings": "^1.5.0",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-notification": "^2.3.3",
