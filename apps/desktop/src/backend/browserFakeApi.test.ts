@@ -781,20 +781,28 @@ describe("BrowserFakeApi settings preview", () => {
       true
     );
     expect(
-      opened.state.domain.activity.unread.rows.every(
-        (row) => row.kind === "roomUnread" && row.event_id === null
+      opened.state.domain.activity.unread.rows.some(
+        (row) =>
+          row.kind === "event" &&
+          row.event_id === "$alpha-update" &&
+          row.room_id === "!room-alpha:example.invalid"
       )
     ).toBe(true);
     expect(
       opened.state.domain.activity.unread.rows.some(
-        (row) => row.room_id === "!room-alpha:example.invalid"
+        (row) => row.room_id === "!room-alpha:example.invalid" && row.kind === "roomUnread"
       )
-    ).toBe(true);
+    ).toBe(false);
     expect(
       opened.state.domain.activity.unread.rows.some(
-        (row) => row.room_id === "!dm-member-1:example.invalid"
+        (row) =>
+          row.room_id === "!dm-member-1:example.invalid" &&
+          row.kind === "roomUnread" &&
+          row.event_id === null
       )
     ).toBe(true);
+    expect(opened.state.domain.activity.unread.summary.event_count).toBeGreaterThan(0);
+    expect(opened.state.domain.activity.unread.summary.unresolved_room_count).toBeGreaterThan(0);
 
     const switched = await api.setActivityTab("unread");
     expect(switched.state.domain.activity.kind).toBe("open");
@@ -802,11 +810,7 @@ describe("BrowserFakeApi settings preview", () => {
       throw new Error("activity should stay open");
     }
     expect(switched.state.domain.activity.active_tab).toBe("unread");
-    expect(
-      switched.state.domain.activity.unread.rows.every(
-        (row) => row.kind === "roomUnread" && row.event_id === null
-      )
-    ).toBe(true);
+    expect(switched.state.domain.activity.unread.summary.room_count).toBeGreaterThan(0);
 
     const paged = await api.paginateActivity("recent", switched.state.domain.activity.recent.next_batch);
     expect(paged.state.domain.activity.kind).toBe("open");
@@ -815,6 +819,9 @@ describe("BrowserFakeApi settings preview", () => {
     }
     expect(paged.state.domain.activity.recent.rows.at(-1)?.event_id).toBe("$alpha-history");
     expect(paged.state.domain.activity.recent.next_batch).toBeNull();
+    expect(paged.state.domain.activity.recent.summary.event_count).toBe(
+      paged.state.domain.activity.recent.rows.length
+    );
 
     const markedRoom = await api.markActivityRead({
       kind: "room",
@@ -831,6 +838,9 @@ describe("BrowserFakeApi settings preview", () => {
         (row) => row.room_id === "!room-alpha:example.invalid"
       )
     ).toBe(false);
+    expect(markedRoom.state.domain.activity.unread.summary.room_count).toBe(
+      new Set(markedRoom.state.domain.activity.unread.rows.map((row) => row.room_id)).size
+    );
 
     const markedAll = await api.markActivityRead({ kind: "all" });
     expect(markedAll.state.domain.activity.kind).toBe("open");
@@ -838,6 +848,12 @@ describe("BrowserFakeApi settings preview", () => {
       throw new Error("activity should stay open after mark-all-read");
     }
     expect(markedAll.state.domain.activity.unread.rows).toEqual([]);
+    expect(markedAll.state.domain.activity.unread.summary).toEqual({
+      event_count: 0,
+      room_count: 0,
+      highlight_count: 0,
+      unresolved_room_count: 0
+    });
   });
 
   test("removes muted rooms from activity unread rows", async () => {

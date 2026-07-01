@@ -769,8 +769,26 @@ mock.setCommandResponse("open_activity", () =>
         activity: {
           kind: "open",
           active_tab: "recent",
-          recent: { rows: [], next_batch: null },
-          unread: { rows: [], next_batch: null },
+          recent: {
+            rows: [],
+            next_batch: null,
+            summary: {
+              event_count: 0,
+              room_count: 0,
+              highlight_count: 0,
+              unresolved_room_count: 0
+            }
+          },
+          unread: {
+            rows: [],
+            next_batch: null,
+            summary: {
+              event_count: 0,
+              room_count: 0,
+              highlight_count: 0,
+              unresolved_room_count: 0
+            }
+          },
           mark_read: { kind: "idle" }
         }
       }

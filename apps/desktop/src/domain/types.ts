@@ -655,6 +655,14 @@ export type ActivityTab = "recent" | "unread";
 export interface ActivityStream {
   rows: ActivityRow[];
   next_batch: string | null;
+  summary: ActivityStreamSummary;
+}
+
+export interface ActivityStreamSummary {
+  event_count: number;
+  room_count: number;
+  highlight_count: number;
+  unresolved_room_count: number;
 }
 
 export type ActivityRowKind = "event" | "roomUnread";

@@ -78,7 +78,13 @@
               "timestamp_ms": 500000,
               "unread": false
             }
-          ]
+          ],
+          "summary": {
+            "event_count": 1,
+            "highlight_count": 0,
+            "room_count": 1,
+            "unresolved_room_count": 0
+          }
         },
         "unread": {
           "next_batch": null,
@@ -97,7 +103,13 @@
               "timestamp_ms": 499000,
               "unread": true
             }
-          ]
+          ],
+          "summary": {
+            "event_count": 0,
+            "highlight_count": 1,
+            "room_count": 1,
+            "unresolved_room_count": 1
+          }
         }
       },
       "auth": {
@@ -197,9 +209,6 @@
       ],
       "link_preview_settings": {
         "room_overrides": {}
-      },
-      "room_preferences": {
-        "rooms": {}
       },
       "live_signals": {
         "presence": {
@@ -363,6 +372,9 @@
             "kind": "idle"
           }
         }
+      },
+      "room_preferences": {
+        "rooms": {}
       },
       "rooms": [
         {

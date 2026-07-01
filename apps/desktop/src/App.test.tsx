@@ -1297,7 +1297,7 @@ describe("Tauri state refresh wiring", () => {
     expect((paneSource.match(/<MoreHorizontal/g) ?? []).length).toBe(1);
   });
 
-  test("room header wires People and media actions and conditionally shows threads", () => {
+  test("room header wires People and media actions and always shows threads for active rooms", () => {
     const source = readFileSync(new URL("./components/panes.tsx", import.meta.url), "utf8");
     const paneStart = source.indexOf("export function TimelinePane");
     const paneEnd = source.indexOf("function TimelineComposer", paneStart);
@@ -1306,7 +1306,7 @@ describe("Tauri state refresh wiring", () => {
     expect(paneSource).toContain('aria-label={t("panel.people")}');
     expect(paneSource).toContain("onOpenPeopleStable");
     expect(paneSource).toContain('aria-label={t("mediaGallery.open")}');
-    expect(paneSource).toContain("showThreadsHeader");
+    expect(paneSource).toContain("const showThreadsHeader = Boolean(timelineRoomId);");
     expect(paneSource).toContain("onOpenThreadsStable");
   });
 

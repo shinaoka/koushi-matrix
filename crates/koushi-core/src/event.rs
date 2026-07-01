@@ -2043,10 +2043,7 @@ mod tests {
     }
 
     fn activity_stream(rows: Vec<koushi_state::ActivityRow>) -> koushi_state::ActivityStream {
-        koushi_state::ActivityStream {
-            rows,
-            next_batch: Some("private-page-token".to_owned()),
-        }
+        koushi_state::ActivityStream::new(rows, Some("private-page-token".to_owned()))
     }
 
     #[test]

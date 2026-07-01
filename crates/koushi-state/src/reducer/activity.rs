@@ -141,6 +141,7 @@ pub(crate) fn handle_activity_mark_read_succeeded(
             .as_ref()
             .map_or(true, |id| !cleared_event_ids.contains(id))
     });
+    unread.refresh_summary();
     *mark_read = ActivityMarkReadState::Idle;
     vec![AppEffect::EmitUiEvent(UiEvent::ActivityChanged)]
 }
@@ -187,5 +188,6 @@ fn normalize_activity_stream(
             .then_with(|| left.room_id.cmp(&right.room_id))
             .then_with(|| left.event_id.cmp(&right.event_id))
     });
+    stream.refresh_summary();
     stream
 }

@@ -2628,8 +2628,8 @@ mod tests {
             serialize_core_event(&CoreEvent::Activity(ActivityEvent::SnapshotLoaded {
                 request_id,
                 active_tab: ActivityTab::Unread,
-                recent: ActivityStream {
-                    rows: vec![ActivityRow {
+                recent: ActivityStream::new(
+                    vec![ActivityRow {
                         kind: koushi_state::ActivityRowKind::Event,
                         room_id: "!activity-recent:example.test".to_owned(),
                         event_id: Some("$activity-recent:example.test".to_owned()),
@@ -2641,10 +2641,10 @@ mod tests {
                         highlight: false,
                         ..Default::default()
                     }],
-                    next_batch: Some("recent-next".to_owned()),
-                },
-                unread: ActivityStream {
-                    rows: vec![
+                    Some("recent-next".to_owned()),
+                ),
+                unread: ActivityStream::new(
+                    vec![
                         ActivityRow {
                             kind: koushi_state::ActivityRowKind::Event,
                             room_id: "!activity-unread:example.test".to_owned(),
@@ -2664,8 +2664,8 @@ mod tests {
                             false,
                         ),
                     ],
-                    next_batch: Some("unread-next".to_owned()),
-                },
+                    Some("unread-next".to_owned()),
+                ),
             }))
             .expect("serialize activity snapshot event");
         assert_eq!(

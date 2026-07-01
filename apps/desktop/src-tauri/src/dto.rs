@@ -1547,8 +1547,8 @@ mod tests {
         // activity — open with populated streams
         state.activity = ActivityState::Open {
             active_tab: ActivityTab::Recent,
-            recent: ActivityStream {
-                rows: vec![ActivityRow {
+            recent: ActivityStream::new(
+                vec![ActivityRow {
                     kind: koushi_state::ActivityRowKind::Event,
                     room_id: "!room:example.invalid".to_owned(),
                     event_id: Some("$act:example.invalid".to_owned()),
@@ -1560,17 +1560,17 @@ mod tests {
                     highlight: false,
                     ..Default::default()
                 }],
-                next_batch: None,
-            },
-            unread: ActivityStream {
-                rows: vec![ActivityRow::room_unread_placeholder(
+                None,
+            ),
+            unread: ActivityStream::new(
+                vec![ActivityRow::room_unread_placeholder(
                     "!placeholder:example.invalid".to_owned(),
                     "Placeholder Room".to_owned(),
                     499_000,
                     true,
                 )],
-                next_batch: None,
-            },
+                None,
+            ),
             mark_read: ActivityMarkReadState::Idle,
         };
 

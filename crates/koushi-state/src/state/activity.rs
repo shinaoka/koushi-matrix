@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{collections::BTreeSet, fmt};
 
 use serde::{Deserialize, Serialize};
 
@@ -65,10 +65,64 @@ pub enum ActivityTab {
     Unread,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ActivityStreamSummary {
+    pub event_count: u32,
+    pub room_count: u32,
+    pub highlight_count: u32,
+    pub unresolved_room_count: u32,
+}
+
+impl ActivityStreamSummary {
+    pub fn from_rows(rows: &[ActivityRow]) -> Self {
+        let mut room_ids = BTreeSet::new();
+        let mut event_count = 0_u32;
+        let mut highlight_count = 0_u32;
+        let mut unresolved_room_count = 0_u32;
+
+        for row in rows {
+            room_ids.insert(row.room_id.as_str());
+            if row.highlight {
+                highlight_count = highlight_count.saturating_add(1);
+            }
+            match row.kind {
+                ActivityRowKind::Event => event_count = event_count.saturating_add(1),
+                ActivityRowKind::RoomUnread => {
+                    unresolved_room_count = unresolved_room_count.saturating_add(1);
+                }
+            }
+        }
+
+        Self {
+            event_count,
+            room_count: room_ids.len().try_into().unwrap_or(u32::MAX),
+            highlight_count,
+            unresolved_room_count,
+        }
+    }
+}
+
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ActivityStream {
     pub rows: Vec<ActivityRow>,
     pub next_batch: Option<String>,
+    #[serde(default)]
+    pub summary: ActivityStreamSummary,
+}
+
+impl ActivityStream {
+    pub fn new(rows: Vec<ActivityRow>, next_batch: Option<String>) -> Self {
+        let summary = ActivityStreamSummary::from_rows(&rows);
+        Self {
+            rows,
+            next_batch,
+            summary,
+        }
+    }
+
+    pub fn refresh_summary(&mut self) {
+        self.summary = ActivityStreamSummary::from_rows(&self.rows);
+    }
 }
 
 impl fmt::Debug for ActivityStream {
@@ -80,6 +134,7 @@ impl fmt::Debug for ActivityStream {
                 "next_batch",
                 &self.next_batch.as_ref().map(|_| "PageToken(..)"),
             )
+            .field("summary", &self.summary)
             .finish()
     }
 }

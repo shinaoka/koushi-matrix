@@ -645,6 +645,7 @@ impl ActivityProjection {
         let mut recent = Vec::new();
         let mut unread = Vec::new();
         let mut recent_event_ids = BTreeSet::new();
+        let mut unread_event_room_ids = BTreeSet::new();
         for row in self.rows_by_event_id.values() {
             if excluded.contains(row.room_id.as_str()) {
                 continue;
@@ -657,6 +658,8 @@ impl ActivityProjection {
                 .rooms
                 .get(row.room_id.as_str())
                 .and_then(|signals| signals.fully_read_event_id.as_deref());
+            let room_has_unread =
+                room.unread_count > 0 || room.highlight_count > 0 || room.marked_unread;
             let unread_by_marker = match fully_read_event_id {
                 Some(event_id) => match row.event_id.as_deref() {
                     Some(row_event_id) if row_event_id == event_id => false,
@@ -664,10 +667,17 @@ impl ActivityProjection {
                         .rows_by_event_id
                         .get(event_id)
                         .map(|fully_read_row| row.timestamp_ms > fully_read_row.timestamp_ms)
-                        .unwrap_or(room.unread_count > 0),
+                        .unwrap_or_else(|| {
+                            room.latest_event.as_ref().is_some_and(|latest_event| {
+                                room_has_unread
+                                    && row.event_id.as_deref()
+                                        == Some(latest_event.event_id.as_str())
+                                    && fully_read_event_id != row.event_id.as_deref()
+                            })
+                        }),
                     None => false,
                 },
-                None => room.unread_count > 0,
+                None => room_has_unread,
             };
             let unread_row = unread_by_marker
                 && !self
@@ -690,6 +700,10 @@ impl ActivityProjection {
             };
             if let Some(event_id) = row.event_id.clone() {
                 recent_event_ids.insert(event_id);
+            }
+            if row.unread {
+                unread_event_room_ids.insert(row.room_id.clone());
+                unread.push(row.clone());
             }
             recent.push(row);
         }
@@ -728,6 +742,10 @@ impl ActivityProjection {
             );
             row.sender_avatar = latest_event.sender_avatar.clone();
             row.context_label = context_label;
+            if row.unread {
+                unread_event_room_ids.insert(row.room_id.clone());
+                unread.push(row.clone());
+            }
             recent.push(row);
         }
 
@@ -741,6 +759,9 @@ impl ActivityProjection {
                 continue;
             }
             if self.cleared_placeholder_room_ids.contains(&room.room_id) {
+                continue;
+            }
+            if unread_event_room_ids.contains(&room.room_id) {
                 continue;
             }
             let highlight = room.highlight_count > 0;
@@ -770,14 +791,8 @@ impl ActivityProjection {
         sort_activity_rows(&mut unread);
 
         (
-            ActivityStream {
-                rows: recent,
-                next_batch: None,
-            },
-            ActivityStream {
-                rows: unread,
-                next_batch: None,
-            },
+            ActivityStream::new(recent, None),
+            ActivityStream::new(unread, None),
             excluded_room_ids,
         )
     }

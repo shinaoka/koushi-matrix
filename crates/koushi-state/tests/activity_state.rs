@@ -35,10 +35,23 @@ fn row(room_id: &str, event_id: &str, timestamp_ms: u64) -> ActivityRow {
 }
 
 fn stream(rows: Vec<ActivityRow>, next_batch: Option<&str>) -> ActivityStream {
-    ActivityStream {
-        rows,
-        next_batch: next_batch.map(str::to_owned),
-    }
+    ActivityStream::new(rows, next_batch.map(str::to_owned))
+}
+
+#[test]
+fn activity_stream_summary_counts_event_rows_rooms_mentions_and_unresolved_rooms() {
+    let event_a1 = row("!a", "$a1", 30);
+    let mut event_a2 = row("!a", "$a2", 20);
+    event_a2.highlight = true;
+    let placeholder =
+        ActivityRow::room_unread_placeholder("!b".to_owned(), "Room B".to_owned(), 10, true);
+
+    let stream = ActivityStream::new(vec![event_a1, event_a2, placeholder], None);
+
+    assert_eq!(stream.summary.event_count, 2);
+    assert_eq!(stream.summary.room_count, 2);
+    assert_eq!(stream.summary.highlight_count, 2);
+    assert_eq!(stream.summary.unresolved_room_count, 1);
 }
 
 #[test]

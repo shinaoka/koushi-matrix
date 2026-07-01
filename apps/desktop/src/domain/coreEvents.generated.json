@@ -100,7 +100,13 @@
               "timestamp_ms": 20,
               "unread": false
             }
-          ]
+          ],
+          "summary": {
+            "event_count": 1,
+            "highlight_count": 0,
+            "room_count": 1,
+            "unresolved_room_count": 0
+          }
         },
         "request_id": {
           "connection_id": 3,
@@ -137,7 +143,13 @@
               "timestamp_ms": 9,
               "unread": true
             }
-          ]
+          ],
+          "summary": {
+            "event_count": 1,
+            "highlight_count": 1,
+            "room_count": 2,
+            "unresolved_room_count": 1
+          }
         }
       }
     },

@@ -31,6 +31,9 @@ export type MessageId =
   | "activity.tabs"
   | "activity.unread"
   | "activity.unreadBadge"
+  | "activity.unreadWithCount"
+  | "activity.unreadWithOneRoom"
+  | "activity.unreadWithRoomCount"
   | "auth.checking"
   | "auth.checkLoginMethods"
   | "auth.connecting"
@@ -936,6 +939,9 @@ const en: Catalog = {
   "activity.tabs": "Activity views",
   "activity.unread": "Unread",
   "activity.unreadBadge": "Unread",
+  "activity.unreadWithCount": "Unread ({count})",
+  "activity.unreadWithOneRoom": "Unread (1 room)",
+  "activity.unreadWithRoomCount": "Unread ({count} rooms)",
   "auth.checking": "Checking",
   "auth.checkLoginMethods": "Check login methods",
   "auth.connecting": "Connecting",
@@ -1755,6 +1761,9 @@ const ja: Catalog = {
   "activity.tabs": "アクティビティ表示",
   "activity.unread": "未読",
   "activity.unreadBadge": "未読",
+  "activity.unreadWithCount": "未読 ({count})",
+  "activity.unreadWithOneRoom": "未読 (1ルーム)",
+  "activity.unreadWithRoomCount": "未読 ({count}ルーム)",
   "auth.checking": "確認中",
   "auth.checkLoginMethods": "ログイン方法を確認",
   "auth.connecting": "接続中",

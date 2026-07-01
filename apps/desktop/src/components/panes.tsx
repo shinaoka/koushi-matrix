@@ -73,8 +73,29 @@ function activityStream(activity: Extract<ActivityState, { kind: "open" }>, tab:
   return tab === "recent" ? activity.recent : activity.unread;
 }
 
-function activityTabLabel(tab: ActivityTab): string {
-  return tab === "recent" ? t("activity.recent") : t("activity.unread");
+function activityTabLabel(
+  tab: ActivityTab,
+  activity?: Extract<ActivityState, { kind: "open" }>
+): string {
+  if (tab === "recent") {
+    return t("activity.recent");
+  }
+  const summary = activity?.unread.summary;
+  if (!summary) {
+    return t("activity.unread");
+  }
+  if (summary.event_count > 0) {
+    return t("activity.unreadWithCount", { count: String(summary.event_count) });
+  }
+  if (summary.unresolved_room_count === 1) {
+    return t("activity.unreadWithOneRoom");
+  }
+  if (summary.unresolved_room_count > 1) {
+    return t("activity.unreadWithRoomCount", {
+      count: String(summary.unresolved_room_count)
+    });
+  }
+  return t("activity.unread");
 }
 
 function activityTimestamp(timestampMs: number): string {
@@ -111,6 +132,7 @@ export function ActivityPane({
 }) {
   const activeTab =
     activity.kind === "open" ? activity.active_tab : activity.kind === "opening" ? activity.tab : "recent";
+  const activityOpenState = activity.kind === "open" ? activity : undefined;
   const stream = activity.kind === "open" ? activityStream(activity, activeTab) : null;
   const rows = stream?.rows ?? [];
   const markReadState = activity.kind === "open" ? activity.mark_read : { kind: "idle" as const };
@@ -161,7 +183,7 @@ export function ActivityPane({
             disabled={activity.kind !== "open"}
             onClick={() => onSetTab(tab)}
           >
-            {activityTabLabel(tab)}
+            {activityTabLabel(tab, activityOpenState)}
           </button>
         ))}
       </div>
@@ -170,7 +192,7 @@ export function ActivityPane({
           {t("activity.markReadFailed")}
         </p>
       ) : null}
-      <section className="activity-scroll" aria-label={activityTabLabel(activeTab)}>
+      <section className="activity-scroll" aria-label={activityTabLabel(activeTab, activityOpenState)}>
         {activity.kind === "opening" ? (
           <div className="activity-empty">
             <Clock3 size={ICON_SIZE.emptyState} />
@@ -651,14 +673,7 @@ export function TimelinePane({
   const activeRoom = timelineRoomId
     ? snapshot.state.domain.rooms.find((room) => room.room_id === timelineRoomId) ?? null
     : null;
-  const threadAttention = snapshot.state.domain.thread_attention;
-  const showThreadsHeader =
-    timelineRoomId &&
-    threadAttention.kind === "tracking" &&
-    threadAttention.room_id === timelineRoomId &&
-    (threadAttention.notification_count > 0 ||
-      threadAttention.highlight_count > 0 ||
-      threadAttention.live_event_marker_count > 0);
+  const showThreadsHeader = Boolean(timelineRoomId);
   const timelineKey = useMemo(
     () =>
       currentUserId && timelineRoomId

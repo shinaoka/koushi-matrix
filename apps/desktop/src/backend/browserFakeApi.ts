@@ -2230,10 +2230,10 @@ class BrowserFakeApi implements DesktopApi {
     )
       .filter((row) => !existingEventIds.has(row.event_id))
       .map((row) => ({ ...row, unread: false, highlight: false }));
-    this.snapshot.state.domain.activity.recent = {
-      rows: [...this.snapshot.state.domain.activity.recent.rows, ...olderRows],
-      next_batch: null
-    };
+    this.snapshot.state.domain.activity.recent = createActivityStream(
+      [...this.snapshot.state.domain.activity.recent.rows, ...olderRows],
+      null
+    );
     return this.getSnapshot();
   }
 
@@ -2252,18 +2252,18 @@ class BrowserFakeApi implements DesktopApi {
     await Promise.resolve();
 
     if (target.kind === "all") {
-      this.snapshot.state.domain.activity.unread = { rows: [], next_batch: null };
+      this.snapshot.state.domain.activity.unread = createActivityStream([], null);
       this.snapshot.state.domain.rooms = this.snapshot.state.domain.rooms.map((room) => ({
         ...room,
         unread_count: 0
       }));
     } else {
-      this.snapshot.state.domain.activity.unread = {
-        ...this.snapshot.state.domain.activity.unread,
-        rows: this.snapshot.state.domain.activity.unread.rows.filter(
+      this.snapshot.state.domain.activity.unread = createActivityStream(
+        this.snapshot.state.domain.activity.unread.rows.filter(
           (row) => row.room_id !== target.room_id
-        )
-      };
+        ),
+        this.snapshot.state.domain.activity.unread.next_batch
+      );
       this.snapshot.state.domain.rooms = this.snapshot.state.domain.rooms.map((room) =>
         room.room_id === target.room_id ? { ...room, unread_count: 0 } : room
       );
@@ -3499,7 +3499,13 @@ function createActivityStreams(
   );
   const unreadRoomIds = new Set(
     rooms
-      .filter((room) => room.unread_count > 0 && !mutedRoomIds.has(room.room_id))
+      .filter(
+        (room) =>
+          (room.unread_count > 0 ||
+            (room.highlight_count ?? 0) > 0 ||
+            Boolean(room.marked_unread)) &&
+          !mutedRoomIds.has(room.room_id)
+      )
       .map((room) => room.room_id)
   );
   const messages = includeBackfill
@@ -3511,13 +3517,16 @@ function createActivityStreams(
     profileUsers,
     spacesById
   );
+  const unreadEventRows = recentRows.filter((row) => row.unread);
+  const unreadEventRoomIds = new Set(unreadEventRows.map((row) => row.room_id));
   const unreadPlaceholderRows: ActivityRow[] = rooms
     .filter(
       (room) =>
         (room.unread_count > 0 ||
           (room.highlight_count ?? 0) > 0 ||
           Boolean(room.marked_unread)) &&
-        !mutedRoomIds.has(room.room_id)
+        !mutedRoomIds.has(room.room_id) &&
+        !unreadEventRoomIds.has(room.room_id)
     )
     .map((room) => ({
       kind: "roomUnread" as const,
@@ -3534,14 +3543,30 @@ function createActivityStreams(
       context_label: activityRowContextLabel(room, spacesById)
     }));
   return {
-    recent: {
-      rows: recentRows,
-      next_batch: includeBackfill ? null : "browser-activity-recent-page-2"
-    },
-    unread: {
-      rows: sortActivityRows(unreadPlaceholderRows),
-      next_batch: null
-    }
+    recent: createActivityStream(
+      recentRows,
+      includeBackfill ? null : "browser-activity-recent-page-2"
+    ),
+    unread: createActivityStream([...unreadEventRows, ...unreadPlaceholderRows], null)
+  };
+}
+
+function createActivityStream(rows: ActivityRow[], nextBatch: string | null): ActivityStream {
+  const sortedRows = sortActivityRows([...rows]);
+  return {
+    rows: sortedRows,
+    next_batch: nextBatch,
+    summary: summarizeActivityRows(sortedRows)
+  };
+}
+
+function summarizeActivityRows(rows: ActivityRow[]): ActivityStream["summary"] {
+  const roomIds = new Set(rows.map((row) => row.room_id));
+  return {
+    event_count: rows.filter((row) => row.kind === "event").length,
+    room_count: roomIds.size,
+    highlight_count: rows.filter((row) => row.highlight).length,
+    unresolved_room_count: rows.filter((row) => row.kind === "roomUnread").length
   };
 }
 

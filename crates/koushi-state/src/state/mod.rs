@@ -93,7 +93,7 @@ pub use navigation::{
 // ── Re-exports: activity ────────────────────────────────────────────────────
 pub use activity::{
     ActivityMarkReadState, ActivityMarkReadTarget, ActivityRow, ActivityRowKind, ActivityState,
-    ActivityStream, ActivityTab,
+    ActivityStream, ActivityStreamSummary, ActivityTab,
 };
 
 // ── Re-exports: directory ───────────────────────────────────────────────────

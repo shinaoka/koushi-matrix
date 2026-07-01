@@ -5,14 +5,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ActivityPane } from "./panes";
 import { setActiveLocaleProfile } from "../i18n/messages";
-import type { ActivityRow, ActivityState } from "../domain/types";
+import type { ActivityRow, ActivityState, ActivityStream } from "../domain/types";
 
-function activityState(rows: ActivityRow[]): ActivityState {
+function activityStream(rows: ActivityRow[]): ActivityStream {
+  return {
+    rows,
+    next_batch: null,
+    summary: {
+      event_count: rows.filter((row) => row.kind === "event").length,
+      room_count: new Set(rows.map((row) => row.room_id)).size,
+      highlight_count: rows.filter((row) => row.highlight).length,
+      unresolved_room_count: rows.filter((row) => row.kind === "roomUnread").length
+    }
+  };
+}
+
+function activityState(rows: ActivityRow[], activeTab: "recent" | "unread" = "unread"): ActivityState {
   return {
     kind: "open",
-    active_tab: "unread",
-    recent: { rows: [], next_batch: null },
-    unread: { rows, next_batch: null },
+    active_tab: activeTab,
+    recent: activityStream(activeTab === "recent" ? rows : []),
+    unread: activityStream(activeTab === "unread" ? rows : []),
     mark_read: { kind: "idle" }
   };
 }
@@ -114,6 +127,64 @@ describe("ActivityPane", () => {
       room_id: "!room:example.invalid",
       up_to_event_id: "$event:example.invalid"
     });
+  });
+
+  it("renders unread tab counts from event summary", () => {
+    const secondEventRow: ActivityRow = {
+      ...eventRow,
+      room_id: "!second:example.invalid",
+      event_id: "$second:example.invalid",
+      timestamp_ms: 3_000_000
+    };
+
+    render(
+      <ActivityPane
+        activity={activityState([eventRow, secondEventRow, placeholderRow])}
+        onClose={vi.fn()}
+        onLoadMore={vi.fn()}
+        onMarkRead={vi.fn()}
+        onOpenRow={vi.fn()}
+        onSetTab={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("tab", { name: "Unread (2)" })).toBeTruthy();
+  });
+
+  it("renders unread tab counts from unresolved room summary when no event rows exist", () => {
+    const secondPlaceholderRow: ActivityRow = {
+      ...placeholderRow,
+      room_id: "!second-placeholder:example.invalid",
+      room_label: "Second placeholder"
+    };
+
+    render(
+      <ActivityPane
+        activity={activityState([placeholderRow, secondPlaceholderRow])}
+        onClose={vi.fn()}
+        onLoadMore={vi.fn()}
+        onMarkRead={vi.fn()}
+        onOpenRow={vi.fn()}
+        onSetTab={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("tab", { name: "Unread (2 rooms)" })).toBeTruthy();
+  });
+
+  it("uses singular unread room copy for one unresolved room", () => {
+    render(
+      <ActivityPane
+        activity={activityState([placeholderRow])}
+        onClose={vi.fn()}
+        onLoadMore={vi.fn()}
+        onMarkRead={vi.fn()}
+        onOpenRow={vi.fn()}
+        onSetTab={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("tab", { name: "Unread (1 room)" })).toBeTruthy();
   });
 
   it("prefers observed event rows over placeholders for the same room", () => {

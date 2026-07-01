@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -56,6 +56,16 @@ describe("TimelinePane render isolation", () => {
   afterEach(() => {
     cleanup();
     clearAppStoreSnapshot();
+  });
+
+  test("shows the room Threads header action when thread attention is closed", () => {
+    const onOpenThreads = vi.fn();
+
+    render(renderTimelinePane(makeSnapshot(), onOpenThreads));
+
+    const threadsButton = screen.getByRole("button", { name: "Threads" });
+    fireEvent.click(threadsButton);
+    expect(onOpenThreads).toHaveBeenCalledOnce();
   });
 
   test("keeps hot timeline and composer consumers from rerendering on search crawler updates", async () => {
@@ -198,6 +208,47 @@ describe("TimelinePane render isolation", () => {
     expect(renderCounts.timelineView).toBe(3);
   });
 });
+
+function renderTimelinePane(snapshot: DesktopSnapshot, onOpenThreads = () => undefined) {
+  const noop = () => undefined;
+  const resolveComposerKeyAction = async (): Promise<"noop"> => "noop";
+  const mentionIntent: MentionIntent = { targets: [] };
+  return createElement(TimelinePane, {
+    activeRoomName: "Alpha Room",
+    composerDraft: snapshot.state.ui.timeline.composer.draft,
+    composerMode: { kind: "plain" },
+    mentionIntent,
+    resolveComposerKeyAction,
+    searchQuery: "",
+    searchResults: [],
+    showSearchResults: false,
+    snapshot,
+    timelineBackfill: "unknown",
+    timelineTransport: noopTimelineTransport(),
+    onCancelReply: noop,
+    onCancelScheduledSend: noop,
+    onAttachFiles: noop,
+    onClearUploadStaging: noop,
+    onUpdateStagedUploadCaption: noop,
+    onUpdateStagedUploadCompression: noop,
+    onComposerDraftChange: noop,
+    onMentionIntentChange: noop,
+    onEditMessage: noop,
+    onOpenContextMenu: noop,
+    onOpenThread: noop,
+    onRedactMessage: noop,
+    onReply: noop,
+    onRescheduleScheduledSend: noop,
+    onResultSelect: noop,
+    onScheduleSend: noop,
+    onSendText: noop,
+    onSetLocalUserAlias: noop,
+    onUnpinPinnedEvent: noop,
+    onOpenPeople: noop,
+    onOpenThreads,
+    onToggleRoomInfo: noop
+  });
+}
 
 function makeSnapshot(): DesktopSnapshot {
   return {
