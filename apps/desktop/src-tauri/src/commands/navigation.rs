@@ -190,6 +190,21 @@ pub async fn open_timeline_at_timestamp(
 ) -> Result<FrontendDesktopSnapshot, String> {
     let focused_room_id = room_id.clone();
     let mut event_conn = state.runtime.attach();
+
+    let close_request_id = event_conn.next_request_id();
+    event_conn
+        .command(CoreCommand::App(AppCommand::CloseFocusedContext {
+            request_id: close_request_id,
+        }))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_focused_context_closed(
+        &mut event_conn,
+        close_request_id,
+        FOCUSED_CONTEXT_EVENT_TIMEOUT,
+    )
+    .await?;
+
     let request_id = event_conn.next_request_id();
     event_conn
         .command(build_open_timeline_at_timestamp_command(
@@ -199,7 +214,7 @@ pub async fn open_timeline_at_timestamp(
         ))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_focused_context(
+    wait_for_focused_context_open(
         &mut event_conn,
         request_id,
         &focused_room_id,

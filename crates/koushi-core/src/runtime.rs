@@ -629,11 +629,11 @@ impl ActivityProjection {
         }
     }
 
-    fn event_at_or_after(&self, room_id: &str, timestamp_ms: u64) -> Option<String> {
+    fn event_nearest_to(&self, room_id: &str, timestamp_ms: u64) -> Option<String> {
         let mut rows = self
             .rows_by_event_id
             .values()
-            .filter(|row| row.room_id == room_id)
+            .filter(|row| row.room_id == room_id && row.kind == ActivityRowKind::Event)
             .collect::<Vec<_>>();
         rows.sort_by(|left, right| {
             left.timestamp_ms
@@ -642,9 +642,13 @@ impl ActivityProjection {
         });
 
         rows.iter()
-            .find(|row| row.timestamp_ms >= timestamp_ms)
-            .or_else(|| rows.last())
-            .filter(|row| row.kind == ActivityRowKind::Event)
+            .min_by(|left, right| {
+                left.timestamp_ms
+                    .abs_diff(timestamp_ms)
+                    .cmp(&right.timestamp_ms.abs_diff(timestamp_ms))
+                    .then_with(|| left.timestamp_ms.cmp(&right.timestamp_ms))
+                    .then_with(|| left.event_id.cmp(&right.event_id))
+            })
             .and_then(|row| row.event_id.clone())
     }
 
@@ -1753,7 +1757,7 @@ impl AppActor {
                     self.handle_app_effects(request_id, effects).await;
                     if let Some(event_id) = self
                         .activity_projection
-                        .event_at_or_after(&room_id, timestamp_ms)
+                        .event_nearest_to(&room_id, timestamp_ms)
                     {
                         let effects = self
                             .reduce_app_action(AppAction::OpenFocusedContext { room_id, event_id })
@@ -3572,8 +3576,8 @@ mod tests {
             .expect("CloseFocusedContext arm should follow OpenTimelineAtTimestamp");
 
         let local_projection_offset = timestamp_arm
-            .find("activity_projection")
-            .expect("timestamp jump must check the Rust-owned local activity projection");
+            .find("event_nearest_to")
+            .expect("timestamp jump must check the nearest Rust-owned local activity event");
         let account_fallback_offset = timestamp_arm
             .find("AccountMessage::OpenTimelineAtTimestamp")
             .expect("timestamp jump must keep the homeserver fallback");
@@ -3585,6 +3589,45 @@ mod tests {
         assert!(
             timestamp_arm.contains("AppAction::OpenFocusedContext"),
             "local timestamp resolution must still open focused context through the reducer"
+        );
+    }
+
+    #[test]
+    fn timestamp_projection_selects_the_nearest_local_event() {
+        let room_id = "!room:example.invalid".to_owned();
+        let mut projection = ActivityProjection::default();
+        projection.ingest(vec![
+            ActivityRow::event(
+                room_id.clone(),
+                "$early:example.invalid".to_owned(),
+                None,
+                "Room".to_owned(),
+                None,
+                None,
+                1_000,
+                false,
+                false,
+            ),
+            ActivityRow::event(
+                room_id.clone(),
+                "$late:example.invalid".to_owned(),
+                None,
+                "Room".to_owned(),
+                None,
+                None,
+                3_000,
+                false,
+                false,
+            ),
+        ]);
+
+        assert_eq!(
+            projection.event_nearest_to(&room_id, 1_900),
+            Some("$early:example.invalid".to_owned())
+        );
+        assert_eq!(
+            projection.event_nearest_to(&room_id, 2_400),
+            Some("$late:example.invalid".to_owned())
         );
     }
 

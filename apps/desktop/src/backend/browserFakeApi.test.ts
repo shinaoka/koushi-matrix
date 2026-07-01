@@ -570,6 +570,21 @@ describe("BrowserFakeApi settings preview", () => {
     });
   });
 
+  test("openTimelineAtTimestamp opens focused context for the nearest room event", async () => {
+    const api = createBrowserFakeApi();
+
+    const snapshot = await api.openTimelineAtTimestamp(
+      "!room-alpha:example.invalid",
+      1_806_987_000_000
+    );
+
+    expect(snapshot.state.ui.focused_context).toMatchObject({
+      kind: "opening",
+      room_id: "!room-alpha:example.invalid",
+      event_id: "$alpha-update"
+    });
+  });
+
   test("initial browser fake snapshot starts with thread panel closed", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.getSnapshot();

@@ -888,10 +888,18 @@ impl AccountActor {
             }
         };
 
-        let request = Self::timeline_event_by_timestamp_request(parsed_room_id, timestamp_ms);
-        let response = match session.client().send(request).await {
-            Ok(response) => response,
-            Err(_) => {
+        let since_request =
+            Self::timeline_event_by_timestamp_since_request(parsed_room_id.clone(), timestamp_ms);
+        let until_request =
+            Self::timeline_event_by_timestamp_until_request(parsed_room_id, timestamp_ms);
+        let since_response = session.client().send(since_request).await.ok();
+        let until_response = session.client().send(until_request).await.ok();
+        let response = match nearest_timestamp_response(
+            [since_response, until_response].into_iter().flatten(),
+            timestamp_ms,
+        ) {
+            Some(response) => response,
+            None => {
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -4144,13 +4152,25 @@ impl AccountActor {
             .map(|session| AccountKey(session.info.user_id.clone()))
     }
 
-    fn timeline_event_by_timestamp_request(
+    fn timeline_event_by_timestamp_since_request(
         room_id: matrix_sdk::ruma::OwnedRoomId,
         timestamp_ms: u64,
     ) -> matrix_sdk::ruma::api::client::room::get_event_by_timestamp::v1::Request {
         use matrix_sdk::ruma::{MilliSecondsSinceUnixEpoch, UInt};
 
         matrix_sdk::ruma::api::client::room::get_event_by_timestamp::v1::Request::since(
+            room_id,
+            MilliSecondsSinceUnixEpoch(UInt::new_saturating(timestamp_ms)),
+        )
+    }
+
+    fn timeline_event_by_timestamp_until_request(
+        room_id: matrix_sdk::ruma::OwnedRoomId,
+        timestamp_ms: u64,
+    ) -> matrix_sdk::ruma::api::client::room::get_event_by_timestamp::v1::Request {
+        use matrix_sdk::ruma::{MilliSecondsSinceUnixEpoch, UInt};
+
+        matrix_sdk::ruma::api::client::room::get_event_by_timestamp::v1::Request::until(
             room_id,
             MilliSecondsSinceUnixEpoch(UInt::new_saturating(timestamp_ms)),
         )
@@ -4199,6 +4219,23 @@ impl AccountActor {
     async fn send_actions(&self, actions: Vec<AppAction>) {
         let _ = self.action_tx.send(actions).await;
     }
+}
+
+fn nearest_timestamp_response(
+    responses: impl IntoIterator<
+        Item = matrix_sdk::ruma::api::client::room::get_event_by_timestamp::v1::Response,
+    >,
+    timestamp_ms: u64,
+) -> Option<matrix_sdk::ruma::api::client::room::get_event_by_timestamp::v1::Response> {
+    responses.into_iter().min_by(|left, right| {
+        let left_timestamp = u64::from(left.origin_server_ts.get());
+        let right_timestamp = u64::from(right.origin_server_ts.get());
+        left_timestamp
+            .abs_diff(timestamp_ms)
+            .cmp(&right_timestamp.abs_diff(timestamp_ms))
+            .then_with(|| left_timestamp.cmp(&right_timestamp))
+            .then_with(|| left.event_id.cmp(&right.event_id))
+    })
 }
 
 fn trace_room_route(stage: &str, command: &RoomCommand) {
@@ -5772,6 +5809,39 @@ mod tests {
 
         assert!(recover_offset < restore_request_offset);
         assert!(restore_request_offset < restore_offset);
+    }
+
+    #[test]
+    fn timestamp_fallback_queries_both_directions_and_opens_nearest_focused_context() {
+        let source = include_str!("account.rs");
+        let body = source
+            .split("async fn handle_open_timeline_at_timestamp")
+            .nth(1)
+            .expect("timestamp fallback handler should exist")
+            .split("    /// Ordered shutdown")
+            .next()
+            .expect("timestamp fallback handler should end before shutdown helper");
+
+        assert!(
+            body.contains("timeline_event_by_timestamp_since_request"),
+            "timestamp fallback should query the earliest event at or after the timestamp"
+        );
+        assert!(
+            body.contains("timeline_event_by_timestamp_until_request"),
+            "timestamp fallback should also query the latest event at or before the timestamp"
+        );
+        assert!(
+            body.contains("nearest_timestamp_response"),
+            "timestamp fallback should choose the response nearest to the requested timestamp"
+        );
+        assert!(
+            body.contains("AppAction::OpenFocusedContext"),
+            "timestamp fallback should still open the focused context for arbitrary history"
+        );
+        assert!(
+            body.contains("TimelineKind::Focused"),
+            "timestamp fallback should subscribe the focused timeline around the chosen event"
+        );
     }
 
     #[test]

@@ -950,9 +950,18 @@ class BrowserFakeApi implements DesktopApi {
 
     await this.selectRoom(roomId);
     const roomMessages = timelineMessages.filter((message) => message.room_id === roomId);
-    const target =
-      roomMessages.find((message) => message.timestamp_ms >= timestampMs) ??
-      roomMessages.at(-1);
+    const target = roomMessages
+      .slice()
+      .sort((left, right) => {
+        const leftDistance = Math.abs(left.timestamp_ms - timestampMs);
+        const rightDistance = Math.abs(right.timestamp_ms - timestampMs);
+        return (
+          leftDistance - rightDistance ||
+          left.timestamp_ms - right.timestamp_ms ||
+          left.event_id.localeCompare(right.event_id)
+        );
+      })
+      .at(0);
     if (target) {
       this.snapshot.state.ui.focused_context = {
         kind: "opening",

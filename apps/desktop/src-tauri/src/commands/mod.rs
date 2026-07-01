@@ -285,21 +285,63 @@ fn snapshot_has_authenticated_session(snapshot: &koushi_state::AppState) -> bool
     )
 }
 
-fn snapshot_has_focused_context(snapshot: &koushi_state::AppState, room_id: &str) -> bool {
+fn snapshot_has_closed_focused_context(snapshot: &koushi_state::AppState) -> bool {
+    matches!(snapshot.focused_context, FocusedContextState::Closed)
+}
+
+fn snapshot_has_open_focused_context(snapshot: &koushi_state::AppState, room_id: &str) -> bool {
     match &snapshot.focused_context {
-        FocusedContextState::Opening {
+        FocusedContextState::Open {
             room_id: focused_room_id,
-            ..
-        }
-        | FocusedContextState::Open {
-            room_id: focused_room_id,
+            is_subscribed: true,
             ..
         } => focused_room_id == room_id,
-        FocusedContextState::Closed => false,
+        FocusedContextState::Closed
+        | FocusedContextState::Opening { .. }
+        | FocusedContextState::Open {
+            is_subscribed: false,
+            ..
+        } => false,
     }
 }
 
-async fn wait_for_focused_context(
+async fn wait_for_focused_context_closed(
+    event_conn: &mut CoreConnection,
+    request_id: RequestId,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        if snapshot_has_closed_focused_context(&event_conn.snapshot()) {
+            return Ok(());
+        }
+
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "focused context did not close".to_owned())?;
+        match event {
+            Ok(CoreEvent::StateChanged(snapshot))
+                if snapshot_has_closed_focused_context(&snapshot) =>
+            {
+                return Ok(());
+            }
+            Ok(CoreEvent::OperationFailed {
+                request_id: failed_request_id,
+                ..
+            }) if failed_request_id == request_id => {
+                return Err("focused context close failed".to_owned());
+            }
+            Ok(_) => {}
+            Err(_) if snapshot_has_closed_focused_context(&event_conn.snapshot()) => {
+                return Ok(());
+            }
+            Err(_) => return Err("focused context close event stream lagged".to_owned()),
+        }
+    }
+}
+
+async fn wait_for_focused_context_open(
     event_conn: &mut CoreConnection,
     request_id: RequestId,
     room_id: &str,
@@ -308,7 +350,7 @@ async fn wait_for_focused_context(
     let deadline = tokio::time::Instant::now() + timeout;
 
     loop {
-        if snapshot_has_focused_context(&event_conn.snapshot(), room_id) {
+        if snapshot_has_open_focused_context(&event_conn.snapshot(), room_id) {
             return Ok(());
         }
 
@@ -317,7 +359,7 @@ async fn wait_for_focused_context(
             .map_err(|_| "focused context did not open".to_owned())?;
         match event {
             Ok(CoreEvent::StateChanged(snapshot))
-                if snapshot_has_focused_context(&snapshot, room_id) =>
+                if snapshot_has_open_focused_context(&snapshot, room_id) =>
             {
                 return Ok(());
             }
@@ -328,7 +370,7 @@ async fn wait_for_focused_context(
                 return Err("focused context open failed".to_owned());
             }
             Ok(_) => {}
-            Err(_) if snapshot_has_focused_context(&event_conn.snapshot(), room_id) => {
+            Err(_) if snapshot_has_open_focused_context(&event_conn.snapshot(), room_id) => {
                 return Ok(());
             }
             Err(_) => return Err("focused context event stream lagged".to_owned()),
@@ -5297,6 +5339,66 @@ mod tests {
         assert!(
             !command_source.contains("OpenFocusedContext"),
             "activity event navigation should not open the focused context panel"
+        );
+    }
+
+    #[test]
+    fn open_timeline_at_timestamp_closes_stale_context_and_waits_for_new_open_context() {
+        let source = commands_source();
+        let fn_name = "pub async fn open_timeline_at_timestamp";
+        let fn_offset = source
+            .find(fn_name)
+            .expect("open_timeline_at_timestamp command should exist");
+        let rest = &source[fn_offset..];
+        let end = rest
+            .find("pub async fn update_navigation_scroll_anchor")
+            .expect("update_navigation_scroll_anchor command should follow timestamp jump");
+        let command_source = &rest[..end];
+
+        let close_offset = command_source
+            .find("AppCommand::CloseFocusedContext")
+            .expect("timestamp jump should clear any previous focused context first");
+        let wait_closed_offset = command_source
+            .find("wait_for_focused_context_closed")
+            .expect("timestamp jump should wait until stale focused context is closed");
+        let open_offset = command_source
+            .find("build_open_timeline_at_timestamp_command")
+            .expect("timestamp jump should then resolve the requested timestamp");
+        let wait_open_offset = command_source
+            .find("wait_for_focused_context_open")
+            .expect("timestamp jump should wait for the new focused timeline subscription");
+
+        assert!(close_offset < wait_closed_offset);
+        assert!(wait_closed_offset < open_offset);
+        assert!(open_offset < wait_open_offset);
+        assert!(
+            !command_source.contains("wait_for_focused_context("),
+            "timestamp jump must not use the stale room-only focused-context wait"
+        );
+    }
+
+    #[test]
+    fn focused_context_wait_requires_open_subscribed_state() {
+        let source = commands_source();
+        let helper_name = "fn snapshot_has_open_focused_context";
+        let helper_offset = source
+            .find(helper_name)
+            .expect("open focused-context snapshot helper should exist");
+        let rest = &source[helper_offset..];
+        let end = rest
+            .find("async fn wait_for_focused_context_open")
+            .expect("open focused-context wait helper should follow snapshot helper");
+        let helper_source = &rest[..end];
+
+        assert!(helper_source.contains("FocusedContextState::Open"));
+        assert!(
+            helper_source.contains("FocusedContextState::Opening { .. }")
+                && helper_source.contains("=> false"),
+            "timestamp jump should not return while the focused timeline is still only opening"
+        );
+        assert!(
+            helper_source.contains("is_subscribed: true"),
+            "timestamp jump should wait for the focused timeline subscription"
         );
     }
 
