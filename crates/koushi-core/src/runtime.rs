@@ -776,7 +776,9 @@ impl ActivityProjection {
                 recent_event_ids.insert(event_id);
             }
             if row.unread {
-                unread_event_room_ids.insert(row.room_id.clone());
+                if row.root_event_id.is_none() {
+                    unread_event_room_ids.insert(row.room_id.clone());
+                }
                 if let Some(root_event_id) = row.root_event_id.clone() {
                     unread_thread_scopes.insert((row.room_id.clone(), root_event_id));
                 }
@@ -831,7 +833,6 @@ impl ActivityProjection {
             recent.push(row);
         }
 
-        let mut known_thread_unread_room_ids = BTreeSet::new();
         if let ThreadAttentionState::Tracking {
             room_id,
             root_event_id,
@@ -846,7 +847,6 @@ impl ActivityProjection {
                 live_event_marker_count: *live_event_marker_count,
             };
             if watermark.has_unread() && !excluded.contains(room_id.as_str()) {
-                known_thread_unread_room_ids.insert(room_id.clone());
                 if let Some(room) = rooms_by_id.get(room_id.as_str()) {
                     let is_locally_cleared = self
                         .cleared_thread_unread_scopes
@@ -886,9 +886,6 @@ impl ActivityProjection {
                 continue;
             }
             if unread_event_room_ids.contains(&room.room_id) {
-                continue;
-            }
-            if known_thread_unread_room_ids.contains(&room.room_id) {
                 continue;
             }
             let highlight = room.highlight_count > 0;

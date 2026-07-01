@@ -897,13 +897,16 @@ async fn activity_unread_projects_thread_attention_as_thread_scope_row() {
         "known thread attention should surface as a thread-scoped unread row"
     );
     assert!(
-        unread.rows.iter().all(|row| {
-            row.room_id != "!thread-room:example.test" || row.kind != ActivityRowKind::RoomUnread
+        unread.rows.iter().any(|row| {
+            row.kind == ActivityRowKind::RoomUnread
+                && row.room_id == "!thread-room:example.test"
+                && row.root_event_id.is_none()
+                && row.event_id.is_none()
         }),
-        "known thread unread should not also synthesize a room-scope placeholder"
+        "room unread aggregate should remain visible beside thread-scoped attention"
     );
     assert_eq!(unread.summary.event_count, 0);
-    assert_eq!(unread.summary.unresolved_room_count, 0);
+    assert_eq!(unread.summary.unresolved_room_count, 1);
     assert_eq!(unread.summary.thread_count, 1);
 
     let mark_request_id = conn.next_request_id();
@@ -915,16 +918,10 @@ async fn activity_unread_projects_thread_attention_as_thread_scope_row() {
     .expect("mark activity read command");
 
     wait_for_state(&mut conn, |state| {
-        let room_still_unread = state
-            .rooms
-            .iter()
-            .find(|room| room.room_id == "!thread-room:example.test")
-            .is_some_and(|room| room.unread_count == 2);
         matches!(
             &state.activity,
             ActivityState::Open { unread, mark_read, .. }
-                if room_still_unread
-                    && matches!(mark_read, ActivityMarkReadState::Idle)
+                if matches!(mark_read, ActivityMarkReadState::Idle)
                     && unread.rows.iter().all(|row| row.kind != ActivityRowKind::ThreadUnread)
                     && unread.rows.iter().all(|row| row.kind != ActivityRowKind::RoomUnread)
         )
@@ -958,6 +955,8 @@ async fn activity_unread_projects_thread_attention_as_thread_scope_row() {
 async fn activity_unread_opens_known_thread_reply_without_advancing_room_marker() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
+    let mut room = unread_room_summary("!thread-event-room:example.test", 2);
+    room.last_activity_ms = 60;
     let mut thread_reply = activity_row(
         "!thread-event-room:example.test",
         "$thread-reply:example.test",
@@ -970,7 +969,7 @@ async fn activity_unread_opens_known_thread_reply_without_advancing_room_marker(
             AppAction::RestoreSessionSucceeded(support::session_info()),
             AppAction::RoomListUpdated {
                 spaces: vec![],
-                rooms: vec![unread_room_summary("!thread-event-room:example.test", 2)],
+                rooms: vec![room],
             },
             AppAction::SelectRoom {
                 room_id: "!thread-event-room:example.test".to_owned(),
@@ -1029,11 +1028,22 @@ async fn activity_unread_opens_known_thread_reply_without_advancing_room_marker(
             .all(|row| row.kind != ActivityRowKind::ThreadUnread),
         "thread placeholder should not duplicate a known thread reply row"
     );
+    assert!(
+        unread.rows.iter().any(|row| {
+            row.kind == ActivityRowKind::RoomUnread
+                && row.room_id == "!thread-event-room:example.test"
+                && row.event_id.is_none()
+        }),
+        "room unread aggregate should remain visible beside a thread reply row"
+    );
 
     let mark_request_id = conn.next_request_id();
     conn.command(CoreCommand::App(AppCommand::MarkActivityRead {
         request_id: mark_request_id,
-        target: ActivityMarkReadTarget::All,
+        target: ActivityMarkReadTarget::Room {
+            room_id: "!thread-event-room:example.test".to_owned(),
+            up_to_event_id: "$thread-reply:example.test".to_owned(),
+        },
     }))
     .await
     .expect("mark activity read command");
@@ -1046,6 +1056,10 @@ async fn activity_unread_opens_known_thread_reply_without_advancing_room_marker(
                     && unread.rows.iter().all(|row| {
                         row.event_id.as_deref() != Some("$thread-reply:example.test")
                             && row.kind != ActivityRowKind::ThreadUnread
+                    })
+                    && unread.rows.iter().any(|row| {
+                        row.kind == ActivityRowKind::RoomUnread
+                            && row.room_id == "!thread-event-room:example.test"
                     })
         )
     })

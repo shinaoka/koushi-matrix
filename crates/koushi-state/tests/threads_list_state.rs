@@ -462,7 +462,7 @@ fn paginate_threads_list_requests_pagination_only_when_open_and_idle() {
     let effects = reduce(
         &mut state,
         AppAction::PaginateThreadsList {
-            request_id: 17,
+            request_id: 117,
             room_id: "room-a".to_owned(),
         },
     );
@@ -471,7 +471,7 @@ fn paginate_threads_list_requests_pagination_only_when_open_and_idle() {
         state.threads_list,
         ThreadsListState::Open {
             room_id: "room-a".to_owned(),
-            request_id: 17,
+            request_id: 117,
             items: vec![thread_item("$root-a:example.invalid")],
             is_paginating: true,
             end_reached: false,
@@ -481,7 +481,7 @@ fn paginate_threads_list_requests_pagination_only_when_open_and_idle() {
         effects,
         vec![
             AppEffect::PaginateThreadsList {
-                request_id: 17,
+                request_id: 117,
                 room_id: "room-a".to_owned(),
             },
             AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged),
@@ -514,7 +514,7 @@ fn paginate_threads_list_is_ignored_when_already_paginating() {
         reduce(
             &mut state,
             AppAction::PaginateThreadsList {
-                request_id: 18,
+                request_id: 118,
                 room_id: "room-a".to_owned(),
             },
         ),
@@ -546,11 +546,68 @@ fn paginate_threads_list_is_ignored_when_end_reached() {
         reduce(
             &mut state,
             AppAction::PaginateThreadsList {
-                request_id: 19,
+                request_id: 119,
                 room_id: "room-a".to_owned(),
             },
         ),
         Vec::<AppEffect>::new()
+    );
+}
+
+#[test]
+fn threads_list_pagination_completed_accepts_paginate_request_id() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::OpenThreadsList {
+            request_id: 21,
+            room_id: "room-a".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadsListOpened {
+            request_id: 21,
+            room_id: "room-a".to_owned(),
+            items: vec![thread_item("$root-a:example.invalid")],
+            end_reached: false,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::PaginateThreadsList {
+            request_id: 121,
+            room_id: "room-a".to_owned(),
+        },
+    );
+
+    let items = vec![
+        thread_item("$root-a:example.invalid"),
+        thread_item("$root-b:example.invalid"),
+    ];
+    let effects = reduce(
+        &mut state,
+        AppAction::ThreadsListPaginationCompleted {
+            request_id: 121,
+            room_id: "room-a".to_owned(),
+            items: items.clone(),
+            end_reached: true,
+        },
+    );
+
+    assert_eq!(
+        state.threads_list,
+        ThreadsListState::Open {
+            room_id: "room-a".to_owned(),
+            request_id: 121,
+            items,
+            is_paginating: false,
+            end_reached: true,
+        }
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged)]
     );
 }
 
