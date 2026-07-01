@@ -34,10 +34,12 @@ import {
   ImageIcon,
   KeyRound,
   MessageCircle,
+  MessagesSquare,
   MoreHorizontal,
   Pin,
   PinOff,
   RefreshCw,
+  Reply,
   SmilePlus,
   Trash2,
   XCircle
@@ -4992,16 +4994,6 @@ export function TimelineItemRow({
             ) : null}
           </div>
         ) : null}
-        {!isEditing && canShowReply ? (
-          <button
-            className="message-action"
-            type="button"
-            aria-label={t("timeline.replyToMessage")}
-            onClick={submitReply}
-          >
-            <MessageCircle size={14} />
-          </button>
-        ) : null}
         {!isEditing && canShowActionButtons ? (
           <button
             className="message-action"
@@ -5142,6 +5134,26 @@ export function TimelineItemRow({
               </div>
             ) : null}
           </div>
+        ) : null}
+        {!isEditing && canShowReply ? (
+          <button
+            className="message-action"
+            type="button"
+            aria-label={t("timeline.replyToMessage")}
+            onClick={submitReply}
+          >
+            <Reply size={14} />
+          </button>
+        ) : null}
+        {!isEditing && canShowThreadSummary ? (
+          <button
+            className="message-action"
+            type="button"
+            aria-label={t("context.openThread")}
+            onClick={submitOpenThread}
+          >
+            <MessagesSquare size={14} />
+          </button>
         ) : null}
         {!isEditing && canShowActionButtons && item.can_redact ? (
           <button

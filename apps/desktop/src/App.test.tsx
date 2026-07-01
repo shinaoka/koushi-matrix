@@ -257,6 +257,13 @@ describe("ContextualRightPanel", () => {
           can_redact: false,
           is_edited: false,
           can_edit: true,
+          actions: {
+            can_copy: true,
+            can_forward: false,
+            can_permalink: false,
+            can_view_source: false,
+            permalink: null
+          },
           reactions: []
         }}
         roomId="!room:example.invalid"
@@ -273,6 +280,12 @@ describe("ContextualRightPanel", () => {
     expect(markup).toContain("3 replies");
     expect(markup).toContain("@bob:example.invalid: Latest thread reply");
     expect(markup).toContain('aria-label="Open thread, 3 replies');
+    const actionMenuIndex = markup.indexOf(`aria-label="${t("timeline.messageActions")}"`);
+    const replyIndex = markup.indexOf(`aria-label="${t("timeline.replyToMessage")}"`);
+    const threadReplyIndex = markup.indexOf(`aria-label="${t("context.openThread")}"`);
+    expect(actionMenuIndex).toBeGreaterThanOrEqual(0);
+    expect(replyIndex).toBeGreaterThan(actionMenuIndex);
+    expect(threadReplyIndex).toBeGreaterThan(replyIndex);
   });
 
   test("TimelineItemRow renders add reaction affordance only for reactable events", () => {
