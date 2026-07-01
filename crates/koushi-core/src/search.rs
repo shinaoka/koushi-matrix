@@ -566,44 +566,39 @@ impl SearchActor {
             }
         }
 
-        let mut candidates = candidates_by_key.into_values().collect::<Vec<_>>();
-        candidates.sort_by(|left, right| {
-            right
-                .score_millis
-                .cmp(&left.score_millis)
-                .then_with(|| left.room_id.cmp(&right.room_id))
-                .then_with(|| left.event_id.cmp(&right.event_id))
-        });
+        let sdk_candidates = candidates_by_key
+            .into_values()
+            .map(|candidate| SearchCandidate {
+                room_id: candidate.room_id,
+                event_id: candidate.event_id,
+                score_millis: candidate.score_millis,
+            })
+            .collect::<Vec<_>>();
 
-        // Apply scope filter.
-        let candidates = match &scope {
-            SearchScope::Global => candidates,
-            SearchScope::Room { room_id } => candidates
-                .into_iter()
-                .filter(|c| &c.room_id == room_id)
-                .collect(),
+        let room_filter = match &scope {
+            SearchScope::Global => None,
+            SearchScope::Room { room_id } => Some(room_id.as_str()),
         };
 
-        // Verify each candidate against the document store's canonical text.
-        // Candidates that fail verification are silently dropped (Security Model).
-        let mut projected_results = Vec::new();
-        let mut compact_results = Vec::new();
-        for sdk_candidate in candidates {
-            let candidate = SearchCandidate {
-                room_id: sdk_candidate.room_id.clone(),
-                event_id: sdk_candidate.event_id.clone(),
-                score_millis: sdk_candidate.score_millis,
-            };
-            let Some(result) = self.document_store.verify_candidate(candidate, query) else {
-                continue;
-            };
-            compact_results.push(SearchResultItem {
+        // #162: the SDK ngram index is an accelerator, not the authority. Union
+        // the index candidates with a direct scan of the document store so any
+        // message koushi has indexed (crawled history, live, CJK, short
+        // queries) is found even when the sync-fed ngram index does not surface
+        // it. Verification against canonical text still drops false positives.
+        let projected_results = self.document_store.search_with_candidates(
+            query,
+            room_filter,
+            &sdk_candidates,
+            SEARCH_CANDIDATE_LIMIT,
+        );
+        let compact_results = projected_results
+            .iter()
+            .map(|result| SearchResultItem {
                 room_id: result.room_id.clone(),
                 event_id: result.event_id.clone(),
                 snippet: result.snippet.clone(),
-            });
-            projected_results.push(result);
-        }
+            })
+            .collect();
 
         self.emit_search_succeeded(request_id, projected_results)
             .await;

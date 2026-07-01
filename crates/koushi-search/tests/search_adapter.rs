@@ -434,3 +434,60 @@ fn document_store_scan_orders_recent_first_and_caps() {
     assert_eq!(capped.len(), 2);
     assert_eq!(capped[0].event_id, "$new");
 }
+
+// #162: search_with_candidates unions SDK ngram-index candidates (accelerator)
+// with a direct store scan (authority). A store message is found even when the
+// SDK candidate list is empty; SDK-verified hits rank first; results dedupe.
+#[test]
+fn search_with_candidates_unions_store_scan_with_index_candidates() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(SearchableEvent {
+        room_id: "!room-a:example.invalid".into(),
+        event_id: "$store-only".into(),
+        sender: "@user-a:example.invalid".into(),
+        timestamp_ms: 1_700_000_000_000,
+        body: Some(SensitiveString::new("検査しました")),
+        attachment_filename: None,
+        attachment: None,
+    });
+
+    // No SDK candidate at all → still found via the store scan (the reported bug).
+    let store_only = store.search_with_candidates("検査", None, &[], 50);
+    assert_eq!(store_only.len(), 1);
+    assert_eq!(store_only[0].event_id, "$store-only");
+
+    // Supplying the same event as an SDK candidate does not duplicate it.
+    let deduped = store.search_with_candidates(
+        "検査",
+        None,
+        &[SearchCandidate {
+            room_id: "!room-a:example.invalid".into(),
+            event_id: "$store-only".into(),
+            score_millis: 900,
+        }],
+        50,
+    );
+    assert_eq!(deduped.len(), 1);
+    assert_eq!(deduped[0].event_id, "$store-only");
+
+    // A non-matching SDK candidate is never fabricated into a result.
+    let no_fabrication = store.search_with_candidates(
+        "検査",
+        None,
+        &[SearchCandidate {
+            room_id: "!room-a:example.invalid".into(),
+            event_id: "$does-not-exist".into(),
+            score_millis: 900,
+        }],
+        50,
+    );
+    assert_eq!(no_fabrication.len(), 1);
+    assert_eq!(no_fabrication[0].event_id, "$store-only");
+
+    // Room filter restricts scope.
+    assert!(
+        store
+            .search_with_candidates("検査", Some("!other:example.invalid"), &[], 50)
+            .is_empty()
+    );
+}
