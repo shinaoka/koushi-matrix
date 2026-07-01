@@ -1103,8 +1103,9 @@ export function App() {
       async openAtTimestamp(roomId: string, timestampMs: number) {
         const nextSnapshot = await api.openTimelineAtTimestamp(roomId, timestampMs);
         setSnapshot(nextSnapshot);
+        // #161: jump-to-date renders the focused timeline in the MAIN pane
+        // (via navigation.main_timeline_anchor), not the right panel.
         setPrimaryView("timeline");
-        setRightPanelMode("focusedContext");
       }
     };
   }, []);

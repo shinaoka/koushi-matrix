@@ -1429,7 +1429,7 @@ describe("Tauri state refresh wiring", () => {
     expect(submitRecoverySource).toContain("api.submitRecovery(secret)");
   });
 
-  test("timeline date jump updates snapshot and opens focused context panel", () => {
+  test("timeline date jump navigates the main timeline without opening the right panel", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const transportStart = source.indexOf("const appTimelineTransport");
     const transportEnd = source.indexOf("const attentionSummary", transportStart);
@@ -1438,11 +1438,19 @@ describe("Tauri state refresh wiring", () => {
     expect(transportStart).toBeGreaterThanOrEqual(0);
     expect(transportSource).toContain("api.openTimelineAtTimestamp(roomId, timestampMs)");
     expect(transportSource).toContain("setSnapshot(nextSnapshot)");
-    expect(transportSource).toContain('setRightPanelMode("focusedContext")');
+    expect(transportSource).toContain('setPrimaryView("timeline")');
+    // #161: jump-to-date must NOT open the right panel. The focused timeline is
+    // rendered in the MAIN pane, marked by navigation.main_timeline_anchor.
+    expect(transportSource).not.toContain('setRightPanelMode("focusedContext")');
     expect(source).toContain("timelineTransport={appTimelineTransport}");
-    expect(
-      readFileSync(new URL("./components/rightPanel.tsx", import.meta.url), "utf8")
-    ).toContain("transport={timelineTransport}");
+
+    // The main pane switches to the focused timeline key when anchored.
+    const panesSource = readFileSync(
+      new URL("./components/panes.tsx", import.meta.url),
+      "utf8"
+    );
+    expect(panesSource).toContain("main_timeline_anchor");
+    expect(panesSource).toContain("focusedTimelineKey");
   });
 
   test("member-panel avatar thumbnail requests respect the global avatar download gate", () => {
