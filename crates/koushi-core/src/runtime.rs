@@ -38,6 +38,7 @@ use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, Timeli
 use crate::settings::SettingsStore;
 use crate::state_delta::build_state_delta;
 use crate::store::{StoreActor, session_key_id_from_info};
+use crate::unread_trace;
 
 pub const COMMAND_INBOX_CAPACITY: usize = 256;
 /// Per-consumer broadcast capacity. On large accounts (100+ rooms) initial and
@@ -535,12 +536,21 @@ impl ActivityProjection {
             } => vec![(room_id.clone(), up_to_event_id.clone())],
             ActivityMarkReadTarget::All => {
                 let (_recent, unread, _excluded) = self.snapshot(state);
+                let rooms_by_id = state
+                    .rooms
+                    .iter()
+                    .map(|room| (room.room_id.as_str(), room))
+                    .collect::<HashMap<_, _>>();
                 let mut latest_by_room: BTreeMap<String, (u64, String)> = BTreeMap::new();
                 for row in unread.rows {
-                    if row.kind != ActivityRowKind::Event {
-                        continue;
-                    }
-                    if let Some(event_id) = row.event_id {
+                    let event_id = match row.kind {
+                        ActivityRowKind::Event => row.event_id,
+                        ActivityRowKind::RoomUnread => rooms_by_id
+                            .get(row.room_id.as_str())
+                            .and_then(|room| room.latest_event.as_ref())
+                            .map(|event| event.event_id.clone()),
+                    };
+                    if let Some(event_id) = event_id {
                         latest_by_room
                             .entry(row.room_id)
                             .and_modify(|(timestamp_ms, existing_event_id)| {
@@ -657,18 +667,20 @@ impl ActivityProjection {
                 .rooms
                 .get(row.room_id.as_str())
                 .and_then(|signals| signals.fully_read_event_id.as_deref());
-            let unread_by_marker = match fully_read_event_id {
-                Some(event_id) => match row.event_id.as_deref() {
-                    Some(row_event_id) if row_event_id == event_id => false,
-                    Some(_) => self
-                        .rows_by_event_id
-                        .get(event_id)
-                        .map(|fully_read_row| row.timestamp_ms > fully_read_row.timestamp_ms)
-                        .unwrap_or(room.unread_count > 0),
-                    None => false,
-                },
-                None => room.unread_count > 0,
-            };
+            let room_activity_unread = room_has_activity_unread(room);
+            let unread_by_marker = room_activity_unread
+                && match fully_read_event_id {
+                    Some(event_id) => match row.event_id.as_deref() {
+                        Some(row_event_id) if row_event_id == event_id => false,
+                        Some(_) => self
+                            .rows_by_event_id
+                            .get(event_id)
+                            .map(|fully_read_row| row.timestamp_ms > fully_read_row.timestamp_ms)
+                            .unwrap_or(room_activity_unread),
+                        None => false,
+                    },
+                    None => true,
+                };
             let unread_row = unread_by_marker
                 && !self
                     .cleared_event_ids
@@ -709,11 +721,28 @@ impl ActivityProjection {
                 .rooms
                 .get(room.room_id.as_str())
                 .and_then(|signals| signals.fully_read_event_id.as_deref());
-            let room_has_unread =
-                room.unread_count > 0 || room.highlight_count > 0 || room.marked_unread;
-            let unread_row = room_has_unread
+            let room_activity_unread = room_has_activity_unread(room);
+            let has_room_metrics = room.unread_count > 0 || room_activity_unread;
+            let unread_row = room_activity_unread
                 && fully_read_event_id != Some(latest_event.event_id.as_str())
                 && !self.cleared_event_ids.contains(&latest_event.event_id);
+            if has_room_metrics {
+                let reason = if !room_activity_unread {
+                    "plain_unread_only"
+                } else if unread_row {
+                    "unread"
+                } else if fully_read_event_id == Some(latest_event.event_id.as_str()) {
+                    "fully_read_latest"
+                } else {
+                    "cleared_latest"
+                };
+                unread_trace::trace_activity_room(
+                    "activity_recent_event",
+                    room,
+                    unread_row,
+                    reason,
+                );
+            }
             let context_label = activity_row_context_label(room, &spaces_by_id);
             let mut row = ActivityRow::event(
                 room.room_id.clone(),
@@ -735,12 +764,26 @@ impl ActivityProjection {
             if excluded.contains(room.room_id.as_str()) {
                 continue;
             }
-            let has_unread =
-                room.unread_count > 0 || room.highlight_count > 0 || room.marked_unread;
-            if !has_unread {
+            let has_room_metrics = room.unread_count > 0 || room_has_activity_unread(room);
+            if !has_room_metrics {
+                continue;
+            }
+            if !room_has_activity_unread(room) {
+                unread_trace::trace_activity_room(
+                    "activity_placeholder",
+                    room,
+                    false,
+                    "plain_unread_only",
+                );
                 continue;
             }
             if self.cleared_placeholder_room_ids.contains(&room.room_id) {
+                unread_trace::trace_activity_room(
+                    "activity_placeholder",
+                    room,
+                    false,
+                    "cleared_local",
+                );
                 continue;
             }
             let highlight = room.highlight_count > 0;
@@ -756,13 +799,14 @@ impl ActivityProjection {
                 context_label,
                 ..placeholder
             };
+            unread_trace::trace_activity_room("activity_placeholder", room, true, "room_metrics");
             unread.push(placeholder);
         }
 
         self.cleared_placeholder_room_ids.retain(|room_id| {
             rooms_by_id
                 .get(room_id.as_str())
-                .map(|room| room.unread_count > 0 || room.highlight_count > 0 || room.marked_unread)
+                .map(|room| room_has_activity_unread(room))
                 .unwrap_or(false)
         });
 
@@ -781,6 +825,10 @@ impl ActivityProjection {
             excluded_room_ids,
         )
     }
+}
+
+fn room_has_activity_unread(room: &RoomSummary) -> bool {
+    room.notification_count > 0 || room.highlight_count > 0 || room.marked_unread
 }
 
 fn activity_row_context_label(
@@ -1010,7 +1058,17 @@ impl AppActor {
         let previous_navigation = self.state.navigation.clone();
         let previous_scheduled_session = scheduled_send_session_key(&self.state);
         let previous_scheduled_sends = self.state.scheduled_sends.clone();
+        let raw_room_list_trace = if unread_trace::enabled()
+            && let AppAction::RoomListUpdated { rooms, .. } = &action
+        {
+            Some(rooms.clone())
+        } else {
+            None
+        };
         let effects = reduce(&mut self.state, action);
+        if let Some(raw_rooms) = raw_room_list_trace {
+            unread_trace::trace_room_list_applied(&raw_rooms, &self.state.rooms);
+        }
         if previous_navigation != self.state.navigation {
             let target_session =
                 navigation_session_key(&self.state).or(previous_navigation_session);
@@ -1767,6 +1825,17 @@ impl AppActor {
                         self.handle_app_effects(request_id, room_effects).await;
                     }
                     for (room_id, event_id) in fully_read_updates {
+                        let room_read_request_id = self.next_internal_request_id();
+                        let _ = self
+                            .account_actor
+                            .send(AccountMessage::RoomCommand(
+                                crate::command::RoomCommand::MarkRoomAsRead {
+                                    request_id: room_read_request_id,
+                                    room_id: room_id.clone(),
+                                    event_id: event_id.clone(),
+                                },
+                            ))
+                            .await;
                         let marker_effects = self
                             .reduce_app_action(AppAction::FullyReadMarkerUpdated {
                                 room_id,
@@ -2767,8 +2836,9 @@ mod tests {
         ThreadSummaryDto, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
     };
     use koushi_state::{
-        DisplaySettings, LocalUserAliasUpdateState, OwnProfile, ProfileState, SessionInfo,
-        SettingsPatch, UserProfile, reduce,
+        DisplaySettings, LocalUserAliasUpdateState, OwnProfile, ProfileState,
+        RoomLatestEventSummary, RoomSummary, RoomTags, SessionInfo, SettingsPatch, UserProfile,
+        reduce,
     };
 
     #[test]
@@ -2780,6 +2850,122 @@ mod tests {
     fn default_data_dir_uses_xdg_like_user_data_path() {
         let dir = default_data_dir_from_home(Some("/tmp/synthetic-home".into())).unwrap();
         assert!(dir.ends_with(".local/share/koushi-desktop"));
+    }
+
+    #[test]
+    fn activity_mark_read_routes_persistent_room_mark_read_commands() {
+        let source = include_str!("runtime.rs");
+        let branch = source
+            .split("AppCommand::MarkActivityRead")
+            .nth(1)
+            .expect("MarkActivityRead branch should exist")
+            .split("AppCommand::OpenFilesView")
+            .next()
+            .expect("OpenFilesView should follow MarkActivityRead");
+
+        assert!(
+            branch.contains("RoomCommand::MarkRoomAsRead"),
+            "Activity mark-read must persist room unread state through RoomActor, not only mutate local projection"
+        );
+        assert!(
+            branch.contains("next_internal_request_id"),
+            "Activity mark-read persistence must use internal correlated requests"
+        );
+        assert!(
+            branch.contains("FullyReadMarkerUpdated"),
+            "Activity mark-read should still update the local marker after selecting the persistent event ids"
+        );
+    }
+
+    #[test]
+    fn activity_projection_ignores_plain_unread_count_for_activity_unread() {
+        let mut state = AppState::default();
+        state.rooms = vec![RoomSummary {
+            room_id: "!room:example.invalid".to_owned(),
+            display_name: "Room".to_owned(),
+            display_label: "Room".to_owned(),
+            original_display_label: "Room".to_owned(),
+            avatar: None,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: RoomTags::default(),
+            unread_count: 3,
+            notification_count: 0,
+            highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 42,
+            latest_event: Some(RoomLatestEventSummary {
+                event_id: "$latest:example.invalid".to_owned(),
+                sender_id: Some("@sender:example.invalid".to_owned()),
+                sender_label: Some("Sender".to_owned()),
+                sender_avatar: None,
+                preview: Some("body".to_owned()),
+                timestamp_ms: 42,
+            }),
+            parent_space_ids: Vec::new(),
+            dm_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 2,
+        }];
+
+        let mut projection = ActivityProjection::default();
+        let (recent, unread, _excluded_room_ids) = projection.snapshot(&state);
+
+        assert!(
+            unread.rows.is_empty(),
+            "Activity Unread should not invent un-navigable rows from plain unread message counts"
+        );
+        assert_eq!(recent.rows.len(), 1);
+        assert!(
+            !recent.rows[0].unread,
+            "plain unread message counts should not mark Activity recent rows unread"
+        );
+    }
+
+    #[test]
+    fn activity_projection_ignores_plain_unread_count_for_ingested_event_rows() {
+        let mut state = AppState::default();
+        state.rooms = vec![RoomSummary {
+            room_id: "!room:example.invalid".to_owned(),
+            display_name: "Room".to_owned(),
+            display_label: "Room".to_owned(),
+            original_display_label: "Room".to_owned(),
+            avatar: None,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: RoomTags::default(),
+            unread_count: 3,
+            notification_count: 0,
+            highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 42,
+            latest_event: None,
+            parent_space_ids: Vec::new(),
+            dm_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 2,
+        }];
+
+        let mut projection = ActivityProjection::default();
+        projection.ingest(vec![ActivityRow::event(
+            "!room:example.invalid".to_owned(),
+            "$event:example.invalid".to_owned(),
+            Some("@sender:example.invalid".to_owned()),
+            "Room".to_owned(),
+            Some("Sender".to_owned()),
+            Some("body".to_owned()),
+            42,
+            true,
+            false,
+        )]);
+        let (recent, unread, _excluded_room_ids) = projection.snapshot(&state);
+
+        assert!(unread.rows.is_empty());
+        assert_eq!(recent.rows.len(), 1);
+        assert!(
+            !recent.rows[0].unread,
+            "ingested event rows must not inherit plain unread-only state"
+        );
     }
 
     #[tokio::test]

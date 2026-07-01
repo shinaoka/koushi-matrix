@@ -20,7 +20,11 @@ use matrix_sdk::{
     ruma::{
         events::{
             AnyGlobalAccountDataEventContent, AnySyncTimelineEvent, GlobalAccountDataEventType,
-            SyncStateEvent, direct::DirectEventContent, space::child::SpaceChildEventContent,
+            SyncStateEvent,
+            direct::DirectEventContent,
+            fully_read::FullyReadEventContent,
+            receipt::{ReceiptThread, ReceiptType},
+            space::child::SpaceChildEventContent,
         },
         serde::Raw,
     },
@@ -3693,9 +3697,10 @@ pub async fn mark_room_as_read(
     let room = matrix_room(session, room_id)?;
     let event_id = matrix_sdk::ruma::EventId::parse(event_id)
         .map_err(|_| MatrixRoomOperationError::InvalidEventId)?;
-    use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
-    use matrix_sdk::ruma::events::receipt::ReceiptThread;
-    room.send_single_receipt(ReceiptType::FullyRead, ReceiptThread::Unthreaded, event_id)
+    let receipts = matrix_sdk::room::Receipts::new()
+        .fully_read_marker(event_id.clone())
+        .private_read_receipt(event_id);
+    room.send_multiple_receipts(receipts)
         .await
         .map_err(MatrixRoomOperationError::from_sdk_error)
 }
@@ -4605,6 +4610,8 @@ async fn matrix_room_list_snapshot_from_rooms(
             .map(|state| state.is_encrypted())
             .unwrap_or(false);
         let latest_event = matrix_room_latest_event_summary(&room).await;
+        let fully_read_event_id = matrix_room_fully_read_event_id(&room).await;
+        let private_read_receipt_event_id = matrix_room_private_read_receipt_event_id(&room).await;
 
         snapshot.rooms.push(matrix_room_list_room_from_counts(
             room_id,
@@ -4619,6 +4626,8 @@ async fn matrix_room_list_snapshot_from_rooms(
             is_marked_unread,
             room.recency_stamp().map(|stamp| stamp.into()).unwrap_or(0),
             latest_event,
+            fully_read_event_id,
+            private_read_receipt_event_id,
             parent_space_ids,
             is_encrypted,
             joined_members,
@@ -4821,10 +4830,22 @@ fn matrix_room_list_room_from_counts(
     marked_unread: bool,
     last_activity_ms: u64,
     latest_event: Option<MatrixRoomLatestEventSummary>,
+    fully_read_event_id: Option<String>,
+    private_read_receipt_event_id: Option<String>,
     parent_space_ids: Vec<String>,
     is_encrypted: bool,
     joined_members: u64,
 ) -> MatrixRoomListRoom {
+    let marker_covers_latest =
+        !marked_unread && read_marker_matches_latest(&latest_event, &fully_read_event_id);
+    let marker_covers_latest = marker_covers_latest
+        || (!marked_unread
+            && read_marker_matches_latest(&latest_event, &private_read_receipt_event_id));
+    let (unread_count, notification_count, highlight_count) = if marker_covers_latest {
+        (0, 0, 0)
+    } else {
+        (unread_count, notification_count, highlight_count)
+    };
     MatrixRoomListRoom {
         room_id,
         display_name,
@@ -4842,6 +4863,39 @@ fn matrix_room_list_room_from_counts(
         is_encrypted,
         joined_members,
     }
+}
+
+fn read_marker_matches_latest(
+    latest_event: &Option<MatrixRoomLatestEventSummary>,
+    read_marker_event_id: &Option<String>,
+) -> bool {
+    latest_event
+        .as_ref()
+        .map(|event| event.event_id.as_str())
+        .is_some_and(|latest_event_id| read_marker_event_id.as_deref() == Some(latest_event_id))
+}
+
+async fn matrix_room_fully_read_event_id(room: &matrix_sdk::Room) -> Option<String> {
+    room.account_data_static::<FullyReadEventContent>()
+        .await
+        .ok()
+        .flatten()?
+        .deserialize()
+        .ok()
+        .map(|event| event.content.event_id.to_string())
+}
+
+async fn matrix_room_private_read_receipt_event_id(room: &matrix_sdk::Room) -> Option<String> {
+    let user_id = room.client().user_id()?.to_owned();
+    room.load_user_receipt(
+        ReceiptType::ReadPrivate,
+        ReceiptThread::Unthreaded,
+        &user_id,
+    )
+    .await
+    .ok()
+    .flatten()
+    .map(|(event_id, _)| event_id.to_string())
 }
 
 async fn matrix_room_latest_event_summary(
@@ -5321,6 +5375,35 @@ mod tests {
     }
 
     #[test]
+    fn mark_room_as_read_sends_read_marker_with_private_receipt() {
+        let source = include_str!("lib.rs");
+        let body = source
+            .split("pub async fn mark_room_as_read")
+            .nth(1)
+            .expect("mark_room_as_read should exist")
+            .split("pub async fn mark_room_as_unread")
+            .next()
+            .expect("mark_room_as_unread should follow mark_room_as_read");
+
+        assert!(
+            body.contains("send_multiple_receipts"),
+            "mark_room_as_read must persist the read marker and unread-count receipt through one SDK request"
+        );
+        assert!(
+            body.contains("fully_read_marker"),
+            "mark_room_as_read must update the user's fully-read marker"
+        );
+        assert!(
+            body.contains("private_read_receipt"),
+            "mark_room_as_read must reset unread counts without publishing a public read receipt"
+        );
+        assert!(
+            !body.contains("send_single_receipt(ReceiptType::FullyRead"),
+            "fully-read alone must not be treated as sufficient to clear persistent unread counts"
+        );
+    }
+
+    #[test]
     fn joined_room_list_prefers_async_direct_dm_detection() {
         let source = include_str!("lib.rs");
         let projection_body = source
@@ -5611,6 +5694,8 @@ mod tests {
             false,
             0,
             None,
+            None,
+            None,
             vec!["!space:example.invalid".to_owned()],
             false,
             2,
@@ -5645,12 +5730,80 @@ mod tests {
             false,
             0,
             None,
+            None,
+            None,
             vec![],
             false,
             0,
         );
 
         assert_eq!(room.tags, tags);
+    }
+
+    fn test_latest_event(event_id: &str) -> crate::MatrixRoomLatestEventSummary {
+        crate::MatrixRoomLatestEventSummary {
+            event_id: event_id.to_owned(),
+            sender_id: None,
+            sender_label: None,
+            sender_avatar_mxc_uri: None,
+            preview: None,
+            timestamp_ms: 42,
+        }
+    }
+
+    #[test]
+    fn room_list_room_from_counts_suppresses_stale_unread_when_fully_read_matches_latest_event() {
+        let room = matrix_room_list_room_from_counts(
+            "!room:example.invalid".to_owned(),
+            "Room".to_owned(),
+            None,
+            false,
+            Vec::new(),
+            MatrixRoomTags::default(),
+            2,
+            1,
+            2,
+            false,
+            42,
+            Some(test_latest_event("$latest:example.invalid")),
+            Some("$latest:example.invalid".to_owned()),
+            None,
+            vec![],
+            false,
+            2,
+        );
+
+        assert_eq!(room.unread_count, 0);
+        assert_eq!(room.notification_count, 0);
+        assert_eq!(room.highlight_count, 0);
+        assert!(!room.marked_unread);
+    }
+
+    #[test]
+    fn room_list_room_from_counts_preserves_unread_when_read_marker_differs_from_latest_event() {
+        let room = matrix_room_list_room_from_counts(
+            "!room:example.invalid".to_owned(),
+            "Room".to_owned(),
+            None,
+            false,
+            Vec::new(),
+            MatrixRoomTags::default(),
+            2,
+            1,
+            2,
+            false,
+            42,
+            Some(test_latest_event("$latest:example.invalid")),
+            Some("$older:example.invalid".to_owned()),
+            None,
+            vec![],
+            false,
+            2,
+        );
+
+        assert_eq!(room.unread_count, 2);
+        assert_eq!(room.notification_count, 2);
+        assert_eq!(room.highlight_count, 1);
     }
 
     #[test]

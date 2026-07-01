@@ -29,6 +29,7 @@ pub mod store;
 pub mod sync;
 pub mod threads_list;
 pub mod timeline;
+pub(crate) mod unread_trace;
 
 pub use command::{
     AccountCommand, AppCommand, CoreCommand, ImageUploadCompressionPolicy,

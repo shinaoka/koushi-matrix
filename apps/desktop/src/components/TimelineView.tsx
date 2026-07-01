@@ -3090,15 +3090,21 @@ export const TimelineView = memo(function TimelineView({
       return;
     }
     const atBottom = isScrolledToBottom(container);
-    setViewportAtBottom((current) => (current === atBottom ? current : atBottom));
-    if (atBottom && latestReadableEventId) {
+    const latestVisible =
+      latestReadableEventId !== null &&
+      visible.lastVisibleEventId === latestReadableEventId;
+    const effectiveAtBottom = atBottom || latestVisible;
+    setViewportAtBottom((current) =>
+      current === effectiveAtBottom ? current : effectiveAtBottom
+    );
+    if (effectiveAtBottom && latestReadableEventId) {
       sendReadSignalsForEvent(latestReadableEventId);
     }
     const signature = [
       roomId,
       visible.firstVisibleEventId ?? "",
       visible.lastVisibleEventId ?? "",
-      atBottom ? "bottom" : "not-bottom"
+      effectiveAtBottom ? "bottom" : "not-bottom"
     ].join("\u0000");
     if (lastViewportObservationRef.current === signature) {
       return;
@@ -3109,7 +3115,7 @@ export const TimelineView = memo(function TimelineView({
         roomId,
         visible.firstVisibleEventId,
         visible.lastVisibleEventId,
-        atBottom
+        effectiveAtBottom
       )
       .catch(() => undefined);
   }, [

@@ -2965,10 +2965,20 @@ export function App() {
     });
   }
 
-  function openActivityRoom(roomId: string) {
-    void selectRoom(roomId).then(() => {
-      setRightPanelMode("closed");
-    });
+  async function openActivityRoom(roomId: string) {
+    setPrimaryView("timeline");
+    setRightPanelMode("closed");
+
+    const closedSnapshot = await api.closeFocusedContext();
+    if (
+      closedSnapshot.state.ui.navigation.active_room_id === roomId &&
+      closedSnapshot.state.ui.timeline.room_id === roomId
+    ) {
+      setSnapshot(closedSnapshot);
+      return;
+    }
+
+    setSnapshot(await api.selectRoom(roomId));
   }
 
   function selectSearchResult(roomId: string, eventId: string) {
@@ -3034,8 +3044,14 @@ export function App() {
           void api.removeRoomTag(target.roomId, "lowPriority").then(setSnapshot);
           return;
         case "markRoomAsRead": {
-          const eventId = snapshot?.state.domain.live_signals.rooms[target.roomId]?.fully_read_event_id ?? "";
-          void api.markRoomAsRead(target.roomId, eventId).then(setSnapshot);
+          const room = snapshot?.state.domain.rooms.find((candidate) => candidate.room_id === target.roomId);
+          const eventId =
+            room?.latest_event?.event_id ??
+            snapshot?.state.domain.live_signals.rooms[target.roomId]?.fully_read_event_id ??
+            "";
+          if (eventId.trim().length > 0) {
+            void api.markRoomAsRead(target.roomId, eventId).then(setSnapshot);
+          }
           return;
         }
         case "markRoomAsUnread":
@@ -3329,7 +3345,7 @@ export function App() {
               if (row.kind === "event" && row.event_id !== null) {
                 openActivityRow(row.room_id, row.event_id);
               } else if (row.kind === "roomUnread") {
-                openActivityRoom(row.room_id);
+                void openActivityRoom(row.room_id);
               }
             }}
             onSetTab={(tab) => {

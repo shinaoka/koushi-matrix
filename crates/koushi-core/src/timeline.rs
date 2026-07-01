@@ -65,6 +65,7 @@ use matrix_sdk::attachment::{
     AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo, Thumbnail,
 };
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
+use matrix_sdk::room::Receipts;
 use matrix_sdk::room::edit::EditedContent;
 use matrix_sdk::room::reply::{EnforceThread, Reply};
 use matrix_sdk::ruma::UserId;
@@ -106,9 +107,11 @@ use crate::link_preview::{LinkPreviewContext, extract_link_ranges};
 use crate::messages_backpressure::MessagesBackpressure;
 use crate::search::SearchIndexMessage;
 use crate::startup_trace::{self, StartupPhase};
+use crate::unread_trace;
 
 /// Bounded diff queue capacity per subscribed timeline (overview.md, Async rule 10).
 pub const TIMELINE_DIFF_QUEUE_CAPACITY: usize = 128;
+const ROOM_REPLAY_INITIAL_ITEMS_MAX: usize = 120;
 const REPLY_QUOTE_PREVIEW_MAX_CHARS: usize = 160;
 /// Backstop tick count for the anchor-relay wait. After the SDK signals
 /// `anchor_present == true`, the anchor's diff has been broadcast through the
@@ -3461,9 +3464,26 @@ impl TimelineActor {
     }
 
     async fn handle_set_fully_read(&mut self, request_id: RequestId, event_id: String) {
+        let room_id_for_trace = timeline_room_id(&self.key);
+        if let Some(room_id) = &room_id_for_trace {
+            unread_trace::trace_mark_read(
+                "set_fully_read_requested",
+                request_id.sequence,
+                room_id,
+                Some(event_id.as_str()),
+            );
+        }
         let parsed_event_id = match matrix_sdk::ruma::EventId::parse(event_id.as_str()) {
             Ok(event_id) => event_id,
             Err(_) => {
+                if let Some(room_id) = &room_id_for_trace {
+                    unread_trace::trace_mark_read(
+                        "set_fully_read_failed",
+                        request_id.sequence,
+                        room_id,
+                        Some(event_id.as_str()),
+                    );
+                }
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -3474,20 +3494,30 @@ impl TimelineActor {
             }
         };
 
-        match self
-            .timeline
-            .send_single_receipt(ReceiptType::FullyRead, parsed_event_id)
-            .await
-        {
+        let receipts = Receipts::new()
+            .fully_read_marker(parsed_event_id.clone())
+            .private_read_receipt(parsed_event_id);
+
+        match self.timeline.room().send_multiple_receipts(receipts).await {
             Ok(_) => {
                 self.fully_read_event_id = Some(event_id.clone());
-                if let Some(room_id) = timeline_room_id(&self.key) {
-                    let _ = self
-                        .action_tx
-                        .try_send(vec![AppAction::FullyReadMarkerUpdated {
-                            room_id,
+                if let Some(room_id) = room_id_for_trace {
+                    unread_trace::trace_mark_read(
+                        "set_fully_read_success",
+                        request_id.sequence,
+                        &room_id,
+                        Some(event_id.as_str()),
+                    );
+                    let _ = self.action_tx.try_send(vec![
+                        AppAction::FullyReadMarkerUpdated {
+                            room_id: room_id.clone(),
                             event_id: Some(event_id.clone()),
-                        }]);
+                        },
+                        AppAction::RoomMarkedAsReadSucceeded {
+                            request_id: request_id.sequence,
+                            room_id,
+                        },
+                    ]);
                 }
                 self.emit(CoreEvent::LiveSignals(LiveSignalsEvent::FullyReadSet {
                     request_id,
@@ -3497,6 +3527,14 @@ impl TimelineActor {
                 self.emit_navigation_if_changed();
             }
             Err(_) => {
+                if let Some(room_id) = &room_id_for_trace {
+                    unread_trace::trace_mark_read(
+                        "set_fully_read_failed",
+                        request_id.sequence,
+                        room_id,
+                        Some(event_id.as_str()),
+                    );
+                }
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -3534,17 +3572,22 @@ impl TimelineActor {
     /// needs a fresh InitialItems batch so a re-mounted TimelineView is
     /// populated.
     fn handle_replay_initial_items(&self, request_id: RequestId) {
+        let items = replay_initial_items_window(
+            &self.key.kind,
+            &self.navigation_items,
+            &self.viewport_observation,
+        );
         if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
             eprintln!(
                 "koushi.subscribe stage=replay_initial_emitted count={}",
-                self.navigation_items.len()
+                items.len()
             );
         }
         self.emit(CoreEvent::Timeline(TimelineEvent::InitialItems {
             request_id: Some(request_id),
             key: self.key.clone(),
             generation: self.generation,
-            items: self.navigation_items.clone(),
+            items,
         }));
     }
 
@@ -4758,6 +4801,21 @@ fn timeline_room_id(key: &TimelineKey) -> Option<String> {
         TimelineKind::Room { room_id }
         | TimelineKind::Thread { room_id, .. }
         | TimelineKind::Focused { room_id, .. } => Some(room_id.clone()),
+    }
+}
+
+fn replay_initial_items_window(
+    kind: &TimelineKind,
+    items: &[TimelineItem],
+    observation: &TimelineViewportObservation,
+) -> Vec<TimelineItem> {
+    if matches!(kind, TimelineKind::Room { .. })
+        && observation.at_bottom
+        && items.len() > ROOM_REPLAY_INITIAL_ITEMS_MAX
+    {
+        items[items.len() - ROOM_REPLAY_INITIAL_ITEMS_MAX..].to_vec()
+    } else {
+        items.to_vec()
     }
 }
 
@@ -6825,6 +6883,156 @@ mod tests {
 
     fn room_key() -> TimelineKey {
         TimelineKey::room(AccountKey("@a:test".to_owned()), "!r:test")
+    }
+
+    #[test]
+    fn resubscribe_replay_caps_room_timeline_to_live_window() {
+        let key = room_key();
+        let items = (0..(ROOM_REPLAY_INITIAL_ITEMS_MAX + 25))
+            .map(|index| {
+                timeline_item(
+                    &format!("$event-{index}:test"),
+                    Some("body"),
+                    "@bob:test",
+                    false,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let replay = replay_initial_items_window(
+            &key.kind,
+            &items,
+            &TimelineViewportObservation {
+                at_bottom: true,
+                ..TimelineViewportObservation::default()
+            },
+        );
+
+        assert_eq!(replay.len(), ROOM_REPLAY_INITIAL_ITEMS_MAX);
+        assert_eq!(
+            replay.first().and_then(timeline_item_event_id),
+            Some("$event-25:test")
+        );
+        let expected_last = format!("$event-{}:test", ROOM_REPLAY_INITIAL_ITEMS_MAX + 24);
+        assert_eq!(
+            replay.last().and_then(timeline_item_event_id),
+            Some(expected_last.as_str())
+        );
+    }
+
+    #[test]
+    fn resubscribe_replay_keeps_scrolled_room_context_complete() {
+        let key = room_key();
+        let items = (0..(ROOM_REPLAY_INITIAL_ITEMS_MAX + 25))
+            .map(|index| {
+                timeline_item(
+                    &format!("$event-{index}:test"),
+                    Some("body"),
+                    "@bob:test",
+                    false,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let replay = replay_initial_items_window(
+            &key.kind,
+            &items,
+            &TimelineViewportObservation {
+                at_bottom: false,
+                first_visible_event_id: Some("$event-10:test".to_owned()),
+                last_visible_event_id: Some("$event-20:test".to_owned()),
+            },
+        );
+
+        assert_eq!(replay.len(), ROOM_REPLAY_INITIAL_ITEMS_MAX + 25);
+        assert_eq!(
+            replay.first().and_then(timeline_item_event_id),
+            Some("$event-0:test")
+        );
+    }
+
+    #[test]
+    fn resubscribe_replay_keeps_focused_timeline_context_complete() {
+        let key = TimelineKey {
+            account_key: AccountKey("@a:test".to_owned()),
+            kind: TimelineKind::Focused {
+                room_id: "!r:test".to_owned(),
+                event_id: "$anchor:test".to_owned(),
+            },
+        };
+        let items = (0..(ROOM_REPLAY_INITIAL_ITEMS_MAX + 25))
+            .map(|index| {
+                timeline_item(
+                    &format!("$event-{index}:test"),
+                    Some("body"),
+                    "@bob:test",
+                    false,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let replay = replay_initial_items_window(
+            &key.kind,
+            &items,
+            &TimelineViewportObservation {
+                at_bottom: true,
+                ..TimelineViewportObservation::default()
+            },
+        );
+
+        assert_eq!(replay.len(), ROOM_REPLAY_INITIAL_ITEMS_MAX + 25);
+        assert_eq!(
+            replay.first().and_then(timeline_item_event_id),
+            Some("$event-0:test")
+        );
+    }
+
+    #[test]
+    fn set_fully_read_success_uses_private_read_receipt_before_clearing_room_unread_summary() {
+        let source = include_str!("timeline.rs");
+        let handler = source
+            .split("async fn handle_set_fully_read")
+            .nth(1)
+            .expect("handle_set_fully_read should exist")
+            .split("async fn handle_set_typing")
+            .next()
+            .expect("handle_set_typing should follow handle_set_fully_read");
+        let success_arm = handler
+            .split("Ok(_) => {")
+            .nth(1)
+            .expect("set fully read success arm should exist")
+            .split("Err(_) => {")
+            .next()
+            .expect("set fully read error arm should follow success arm");
+
+        assert!(
+            handler.contains("send_multiple_receipts"),
+            "set_fully_read must use SDK read-marker batching so the marker and read receipt share one source of truth"
+        );
+        assert!(
+            handler.contains("self.timeline.room().send_multiple_receipts"),
+            "set_fully_read must force the room read-marker API instead of Timeline receipt de-duplication; stale server unread counts still need a fresh private receipt"
+        );
+        assert!(
+            handler.contains("fully_read_marker"),
+            "set_fully_read must continue to update the fully-read marker"
+        );
+        assert!(
+            handler.contains("private_read_receipt"),
+            "set_fully_read must include a private read receipt so SDK/server unread counts advance without publishing public receipts"
+        );
+        assert!(
+            !handler.contains("send_single_receipt(ReceiptType::FullyRead"),
+            "fully-read alone must not be used as the persistent unread-count source of truth"
+        );
+        assert!(
+            success_arm.contains("AppAction::FullyReadMarkerUpdated"),
+            "set_fully_read must update the fully-read marker after SDK success"
+        );
+        assert!(
+            success_arm.contains("AppAction::RoomMarkedAsReadSucceeded"),
+            "set_fully_read SDK success must also clear RoomSummary unread counts so sidebar and Activity/Unread agree"
+        );
     }
 
     struct DropFlag(Arc<AtomicBool>);
