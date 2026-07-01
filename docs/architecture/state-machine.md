@@ -430,6 +430,45 @@ stateDiagram-v2
   messages are ignored. Future richer SDK thread notification counts must enter
   through the same Rust-owned action/state path.
 
+## Main Timeline Anchor (Jump To Date)
+
+Jump-to-date (issue #161) navigates the MAIN room timeline to the event nearest a
+selected date, at arbitrary depth, and must never open the right panel.
+`NavigationState.main_timeline_anchor: Option<MainTimelineAnchor { event_id }>` is
+the Rust-owned mode: `None` = the main pane renders the live room timeline;
+`Some` = the main pane renders the event-focused timeline (reusing the
+focused-context `TimelineFocus::Event` subscription lifecycle) anchored at that
+event. It is only ever set for the active, known room.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Live
+    Live --> Anchored: EnterAnchoredTimeline [Ready, active known room]
+    Anchored --> Anchored: EnterAnchoredTimeline [other event, active room]
+    Anchored --> Live: CloseFocusedContext (live-edge return)
+    Anchored --> Live: SelectRoom / room change
+    Anchored --> Live: LogoutRequested/SessionCleared
+```
+
+- Both timestamp-jump paths (the runtime local-activity projection and the
+  `AccountActor` server `timestamp_to_event` fallback) dispatch
+  `EnterAnchoredTimeline` alongside the existing `OpenFocusedContext`, so the
+  focused timeline is subscribed once through the shared focused-context
+  lifecycle and rendered in the main pane. They do not open the right panel.
+- `EnterAnchoredTimeline` is accepted only for a Ready session when `room_id` is
+  the active, known room; otherwise it is ignored.
+- `CloseFocusedContext` is the live-edge return: it clears
+  `main_timeline_anchor` and, when leaving the anchored view, also drops the
+  room's persisted `room_scroll_anchors` entry so the live timeline pins to the
+  live edge rather than a stale pre-jump position. `ReturnMainTimelineToLive`
+  clears the anchor for the active room without touching focused-context state.
+- Any room change (`SelectRoom`, `SelectSpace`) and account clear/logout reset
+  the anchor to `Live` through `select_active_room_for_navigation` /
+  `clear_active_room_for_navigation`.
+- React renders the mode from the snapshot (the main pane's timeline key
+  switches to the focused-timeline key when anchored) and reports viewport facts
+  only; it must not compute the mode, placement, or which timeline is active.
+
 ## Timeline Navigation Projection
 
 Timeline navigation aids are Rust-owned actor projections, not React-local

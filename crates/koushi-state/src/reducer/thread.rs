@@ -287,8 +287,14 @@ pub(crate) fn handle_close_focused_context(state: &mut AppState) -> Vec<AppEffec
     // #161: jump-to-date renders the focused timeline in the main pane, marked by
     // `main_timeline_anchor`. Closing the focused context therefore also returns
     // the main pane to the live timeline (live-edge control), independent of the
-    // right-panel focused-context state.
-    state.navigation.main_timeline_anchor = None;
+    // right-panel focused-context state. When leaving the anchored view, drop the
+    // room's persisted scroll anchor so the live timeline pins to the live edge
+    // (bottom) instead of restoring a stale pre-jump scroll position.
+    if state.navigation.main_timeline_anchor.take().is_some()
+        && let Some(room_id) = state.navigation.active_room_id.clone()
+    {
+        state.navigation.room_scroll_anchors.remove(&room_id);
+    }
 
     if state.focused_context == FocusedContextState::Closed {
         return Vec::new();

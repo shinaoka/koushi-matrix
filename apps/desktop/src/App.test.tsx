@@ -1439,9 +1439,12 @@ describe("Tauri state refresh wiring", () => {
     expect(transportSource).toContain("api.openTimelineAtTimestamp(roomId, timestampMs)");
     expect(transportSource).toContain("setSnapshot(nextSnapshot)");
     expect(transportSource).toContain('setPrimaryView("timeline")');
-    // #161: jump-to-date must NOT open the right panel. The focused timeline is
-    // rendered in the MAIN pane, marked by navigation.main_timeline_anchor.
+    // #161: jump-to-date must NOT open the right panel — it explicitly closes it
+    // so an already-open focused-context/search panel does not linger over the
+    // anchored main timeline. The focused timeline renders in the MAIN pane,
+    // marked by navigation.main_timeline_anchor.
     expect(transportSource).not.toContain('setRightPanelMode("focusedContext")');
+    expect(transportSource).toContain('setRightPanelMode("closed")');
     expect(source).toContain("timelineTransport={appTimelineTransport}");
 
     // The main pane switches to the focused timeline key when anchored.

@@ -1920,6 +1920,21 @@ fn closing_focused_context_returns_main_pane_to_live() {
             rooms: rooms(),
         },
     );
+    // Seed a persisted live-timeline scroll anchor for the room.
+    reduce(
+        &mut state,
+        AppAction::TimelineScrollAnchorUpdated {
+            room_id: "room-a".to_owned(),
+            anchor: koushi_state::TimelineScrollAnchor {
+                event_id: "$old-live-pos".to_owned(),
+                edge: TimelineScrollAnchorEdge::Bottom,
+                offset_px: 0,
+                updated_at_ms: 1_700_000_000_000,
+            },
+        },
+    );
+    assert!(state.navigation.room_scroll_anchors.contains_key("room-a"));
+
     reduce(
         &mut state,
         AppAction::OpenFocusedContext {
@@ -1938,4 +1953,7 @@ fn closing_focused_context_returns_main_pane_to_live() {
 
     reduce(&mut state, AppAction::CloseFocusedContext);
     assert_eq!(state.navigation.main_timeline_anchor, None);
+    // #161: returning to live from the anchored view drops the stale room scroll
+    // anchor so the live timeline pins to the live edge, not a pre-jump position.
+    assert!(!state.navigation.room_scroll_anchors.contains_key("room-a"));
 }

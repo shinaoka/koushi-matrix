@@ -641,9 +641,19 @@ impl FakeDesktopBackend {
         // indexed message is findable, then apply the product scope. This keeps
         // the fake backend faithful to the fixed core `SearchActor`.
         const CANDIDATE_LIMIT: usize = 50;
-        let mut results =
-            self.search_store
-                .search_with_candidates(query, None, candidates, CANDIDATE_LIMIT);
+        // For a single-room scope, push the room filter into the scan so scoping
+        // happens before the cap (matching the core path); otherwise other
+        // rooms' matches could fill the cap and drop the target room's results.
+        let room_filter = match scope {
+            SearchScope::CurrentRoom { room_id } => Some(room_id.as_str()),
+            _ => None,
+        };
+        let mut results = self.search_store.search_with_candidates(
+            query,
+            room_filter,
+            candidates,
+            CANDIDATE_LIMIT,
+        );
         results.retain(|result| self.room_is_in_scope(&result.room_id, scope));
         results
     }
