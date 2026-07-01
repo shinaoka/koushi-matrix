@@ -1277,6 +1277,9 @@ enum TimelineActorMessage {
         request_id: RequestId,
         event_id: String,
     },
+    ReplyDetailsFetchFinished {
+        event_id: String,
+    },
     RequestRoomKey {
         request_id: RequestId,
         event_id: String,
@@ -1504,6 +1507,21 @@ fn spawn_link_preview_fetch(
     })
 }
 
+fn spawn_reply_detail_fetch(
+    timeline: Arc<Timeline>,
+    msg_tx: mpsc::Sender<TimelineActorMessage>,
+    event_id: String,
+) -> executor::JoinHandle<()> {
+    executor::spawn(async move {
+        if let Ok(parsed_event_id) = matrix_sdk::ruma::EventId::parse(event_id.as_str()) {
+            let _ = timeline.fetch_details_for_event(&parsed_event_id).await;
+        }
+        let _ = msg_tx
+            .send(TimelineActorMessage::ReplyDetailsFetchFinished { event_id })
+            .await;
+    })
+}
+
 struct TimelineActorHandle {
     tx: mpsc::Sender<TimelineActorMessage>,
     task: executor::JoinHandle<()>,
@@ -1589,6 +1607,12 @@ struct TimelineActor {
     link_preview_policy: LinkPreviewContext,
     /// In-flight URL preview fetch workers keyed by event_id.
     link_preview_fetches: HashMap<String, executor::JoinHandle<()>>,
+    /// In-flight reply detail fetch workers keyed by the reply event_id.
+    reply_detail_fetches: HashMap<String, executor::JoinHandle<()>>,
+    /// Reply event IDs already handed to the SDK for replied-to details during
+    /// this actor lifetime. Keeps transient failures from retry-looping on every
+    /// viewport/diff tick.
+    reply_detail_fetch_attempted_event_ids: HashSet<String>,
     /// Application data directory for cached preview images.
     data_dir: Option<std::path::PathBuf>,
     messages_backpressure: MessagesBackpressure,
@@ -1635,6 +1659,9 @@ struct ThreadAttentionCounters {
 impl Drop for TimelineActor {
     fn drop(&mut self) {
         for task in self.link_preview_fetches.values() {
+            task.abort();
+        }
+        for task in self.reply_detail_fetches.values() {
             task.abort();
         }
     }
@@ -1841,6 +1868,8 @@ impl TimelineActor {
             ignored_user_ids,
             link_preview_policy,
             link_preview_fetches: HashMap::new(),
+            reply_detail_fetches: HashMap::new(),
+            reply_detail_fetch_attempted_event_ids: HashSet::new(),
             data_dir,
             messages_backpressure,
             restore_anchor: None,
@@ -1888,6 +1917,7 @@ impl TimelineActor {
             }
             TimelineActorMessage::ObserveViewport { observation } => {
                 self.viewport_observation = observation;
+                self.maybe_fetch_visible_reply_details();
                 self.emit_navigation_if_changed();
             }
             TimelineActorMessage::SendText {
@@ -1934,6 +1964,9 @@ impl TimelineActor {
                 event_id,
             } => {
                 self.handle_load_message_source(request_id, event_id).await;
+            }
+            TimelineActorMessage::ReplyDetailsFetchFinished { event_id } => {
+                self.reply_detail_fetches.remove(&event_id);
             }
             TimelineActorMessage::RequestRoomKey {
                 request_id,
@@ -3631,6 +3664,7 @@ impl TimelineActor {
                 }]);
         }
         apply_timeline_diffs_to_items(&mut self.navigation_items, &core_diffs);
+        self.maybe_fetch_visible_reply_details();
         self.emit_media_gallery_if_changed();
 
         let restore_diff_is_relevant = timeline_diffs_include_prepend(&core_diffs);
@@ -4295,6 +4329,30 @@ impl TimelineActor {
         self.navigation_items.iter().any(
             |item| matches!(&item.id, TimelineItemId::Event { event_id: id } if id == event_id),
         )
+    }
+
+    fn maybe_fetch_visible_reply_details(&mut self) {
+        let event_ids = visible_missing_reply_detail_event_ids(
+            &self.navigation_items,
+            &self.viewport_observation,
+            &self.reply_detail_fetch_attempted_event_ids,
+        );
+        for event_id in event_ids {
+            if !self
+                .reply_detail_fetch_attempted_event_ids
+                .insert(event_id.clone())
+            {
+                continue;
+            }
+            let task = spawn_reply_detail_fetch(
+                self.timeline.clone(),
+                self.msg_tx.clone(),
+                event_id.clone(),
+            );
+            if let Some(previous) = self.reply_detail_fetches.insert(event_id, task) {
+                previous.abort();
+            }
+        }
     }
 
     async fn project_message_source_for_event(
@@ -5240,6 +5298,39 @@ fn item_index_for_event_id(items: &[TimelineItem], event_id: &str) -> Option<usi
     items
         .iter()
         .position(|item| timeline_item_event_id(item) == Some(event_id))
+}
+
+fn visible_missing_reply_detail_event_ids(
+    items: &[TimelineItem],
+    observation: &TimelineViewportObservation,
+    already_requested_event_ids: &HashSet<String>,
+) -> Vec<String> {
+    let Some(first_visible_event_id) = observation.first_visible_event_id.as_deref() else {
+        return Vec::new();
+    };
+    let Some(last_visible_event_id) = observation.last_visible_event_id.as_deref() else {
+        return Vec::new();
+    };
+    let Some(first_visible_index) = item_index_for_event_id(items, first_visible_event_id) else {
+        return Vec::new();
+    };
+    let Some(last_visible_index) = item_index_for_event_id(items, last_visible_event_id) else {
+        return Vec::new();
+    };
+
+    let start = first_visible_index.min(last_visible_index);
+    let end = first_visible_index.max(last_visible_index);
+    items[start..=end]
+        .iter()
+        .filter_map(|item| {
+            let event_id = timeline_item_event_id(item)?;
+            if already_requested_event_ids.contains(event_id) {
+                return None;
+            }
+            let quote = item.reply_quote.as_ref()?;
+            (quote.state == ReplyQuoteState::Missing).then(|| event_id.to_owned())
+        })
+        .collect()
 }
 
 fn timeline_item_event_id(item: &TimelineItem) -> Option<&str> {
@@ -7195,6 +7286,79 @@ mod tests {
         );
         assert_eq!(snapshot.unread_event_count, 1);
         assert_eq!(snapshot.newer_event_count, 0);
+    }
+
+    #[test]
+    fn visible_missing_reply_detail_event_ids_only_returns_visible_unrequested_missing_replies() {
+        let mut before = timeline_item("$before:test", Some("before"), "@alice:test", false);
+        before.reply_quote = Some(ReplyQuote {
+            event_id: "$root-before:test".to_owned(),
+            sender: None,
+            sender_label: None,
+            body_preview: None,
+            state: ReplyQuoteState::Missing,
+        });
+        let first_visible =
+            timeline_item("$first-visible:test", Some("first"), "@alice:test", false);
+        let mut missing = timeline_item("$missing:test", Some("missing"), "@alice:test", false);
+        missing.reply_quote = Some(ReplyQuote {
+            event_id: "$root-missing:test".to_owned(),
+            sender: None,
+            sender_label: None,
+            body_preview: None,
+            state: ReplyQuoteState::Missing,
+        });
+        let mut ready = timeline_item("$ready:test", Some("ready"), "@alice:test", false);
+        ready.reply_quote = Some(ReplyQuote {
+            event_id: "$root-ready:test".to_owned(),
+            sender: Some("@bob:test".to_owned()),
+            sender_label: None,
+            body_preview: Some("loaded".to_owned()),
+            state: ReplyQuoteState::Ready,
+        });
+        let mut already_requested = timeline_item(
+            "$already-requested:test",
+            Some("already"),
+            "@alice:test",
+            false,
+        );
+        already_requested.reply_quote = Some(ReplyQuote {
+            event_id: "$root-already:test".to_owned(),
+            sender: None,
+            sender_label: None,
+            body_preview: None,
+            state: ReplyQuoteState::Missing,
+        });
+        let mut after = timeline_item("$after:test", Some("after"), "@alice:test", false);
+        after.reply_quote = Some(ReplyQuote {
+            event_id: "$root-after:test".to_owned(),
+            sender: None,
+            sender_label: None,
+            body_preview: None,
+            state: ReplyQuoteState::Missing,
+        });
+
+        let items = vec![
+            before,
+            first_visible,
+            missing,
+            ready,
+            already_requested,
+            after,
+        ];
+        let requested = HashSet::from(["$already-requested:test".to_owned()]);
+
+        let event_ids = visible_missing_reply_detail_event_ids(
+            &items,
+            &TimelineViewportObservation {
+                first_visible_event_id: Some("$first-visible:test".to_owned()),
+                last_visible_event_id: Some("$already-requested:test".to_owned()),
+                at_bottom: false,
+            },
+            &requested,
+        );
+
+        assert_eq!(event_ids, vec!["$missing:test".to_owned()]);
     }
 
     #[test]
