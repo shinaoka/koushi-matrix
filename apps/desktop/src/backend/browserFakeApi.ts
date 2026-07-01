@@ -3532,6 +3532,7 @@ function createActivityStreams(
       kind: "roomUnread" as const,
       room_id: room.room_id,
       event_id: null,
+      root_event_id: null,
       sender_id: null,
       room_label: room.display_label,
       sender_label: null,
@@ -3566,7 +3567,8 @@ function summarizeActivityRows(rows: ActivityRow[]): ActivityStream["summary"] {
     event_count: rows.filter((row) => row.kind === "event").length,
     room_count: roomIds.size,
     highlight_count: rows.filter((row) => row.highlight).length,
-    unresolved_room_count: rows.filter((row) => row.kind === "roomUnread").length
+    unresolved_room_count: rows.filter((row) => row.kind === "roomUnread").length,
+    thread_count: rows.filter((row) => row.kind === "threadUnread").length
   };
 }
 
@@ -3584,6 +3586,7 @@ function activityRows(
         kind: "event" as const,
         room_id: message.room_id,
         event_id: message.event_id,
+        root_event_id: message.thread_root ?? null,
         sender_id: message.sender,
         room_label: room?.display_label ?? room?.display_name ?? "Unknown room",
         sender_label: sender?.display_label ?? message.sender,

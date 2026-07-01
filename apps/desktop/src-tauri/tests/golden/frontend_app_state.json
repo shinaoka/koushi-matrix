@@ -72,6 +72,7 @@
               "preview": "Activity preview",
               "room_id": "!room:example.invalid",
               "room_label": "Fixture Room",
+              "root_event_id": null,
               "sender_avatar": null,
               "sender_id": null,
               "sender_label": "Fixture User",
@@ -83,6 +84,7 @@
             "event_count": 1,
             "highlight_count": 0,
             "room_count": 1,
+            "thread_count": 0,
             "unresolved_room_count": 0
           }
         },
@@ -97,6 +99,7 @@
               "preview": null,
               "room_id": "!placeholder:example.invalid",
               "room_label": "Placeholder Room",
+              "root_event_id": null,
               "sender_avatar": null,
               "sender_id": null,
               "sender_label": null,
@@ -108,6 +111,7 @@
             "event_count": 0,
             "highlight_count": 1,
             "room_count": 1,
+            "thread_count": 0,
             "unresolved_room_count": 1
           }
         }

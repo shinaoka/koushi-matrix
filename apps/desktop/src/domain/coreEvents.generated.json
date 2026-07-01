@@ -92,6 +92,7 @@
               "highlight": false,
               "kind": "event",
               "preview": "Recent preview",
+              "root_event_id": null,
               "room_id": "!activity-recent:example.test",
               "room_label": "Recent room",
               "sender_avatar": null,
@@ -105,6 +106,7 @@
             "event_count": 1,
             "highlight_count": 0,
             "room_count": 1,
+            "thread_count": 0,
             "unresolved_room_count": 0
           }
         },
@@ -121,6 +123,7 @@
               "highlight": true,
               "kind": "event",
               "preview": "Unread preview",
+              "root_event_id": null,
               "room_id": "!activity-unread:example.test",
               "room_label": "Unread room",
               "sender_avatar": null,
@@ -135,6 +138,7 @@
               "highlight": false,
               "kind": "roomUnread",
               "preview": null,
+              "root_event_id": null,
               "room_id": "!activity-placeholder:example.test",
               "room_label": "Placeholder room",
               "sender_avatar": null,
@@ -142,12 +146,28 @@
               "sender_label": null,
               "timestamp_ms": 9,
               "unread": true
+            },
+            {
+              "context_label": "",
+              "event_id": null,
+              "highlight": true,
+              "kind": "threadUnread",
+              "preview": null,
+              "root_event_id": "$activity-thread-root:example.test",
+              "room_id": "!activity-thread:example.test",
+              "room_label": "Thread room",
+              "sender_avatar": null,
+              "sender_id": null,
+              "sender_label": null,
+              "timestamp_ms": 8,
+              "unread": true
             }
           ],
           "summary": {
             "event_count": 1,
-            "highlight_count": 1,
-            "room_count": 2,
+            "highlight_count": 2,
+            "room_count": 3,
+            "thread_count": 1,
             "unresolved_room_count": 1
           }
         }

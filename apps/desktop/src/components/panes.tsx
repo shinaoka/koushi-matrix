@@ -84,8 +84,9 @@ function activityTabLabel(
   if (!summary) {
     return t("activity.unread");
   }
-  if (summary.event_count > 0) {
-    return t("activity.unreadWithCount", { count: String(summary.event_count) });
+  const directCount = summary.event_count + summary.thread_count;
+  if (directCount > 0) {
+    return t("activity.unreadWithCount", { count: String(directCount) });
   }
   if (summary.unresolved_room_count === 1) {
     return t("activity.unreadWithOneRoom");
@@ -208,7 +209,8 @@ export function ActivityPane({
         ) : (
           <ol className="activity-list">
             {rows.map((row) => {
-              const isPlaceholder = row.kind === "roomUnread";
+              const isPlaceholder = row.kind === "roomUnread" || row.kind === "threadUnread";
+              const isThreadPlaceholder = row.kind === "threadUnread";
               return (
                 <li
                   className={`activity-row ${row.unread ? "is-unread" : ""} ${
@@ -217,7 +219,7 @@ export function ActivityPane({
                   data-event-id={row.event_id ?? undefined}
                   data-room-id={row.room_id}
                   data-kind={row.kind}
-                  key={`${row.room_id}:${isPlaceholder ? "roomUnread" : row.event_id}`}
+                  key={`${row.room_id}:${row.kind}:${row.root_event_id ?? row.event_id ?? ""}`}
                 >
                   {isPlaceholder ? (
                     <button
@@ -236,6 +238,7 @@ export function ActivityPane({
                           <strong dir="auto">{row.room_label}</strong>
                         </span>
                         <span className="activity-row-meta">
+                          {isThreadPlaceholder ? <span>{t("activity.threadBadge")}</span> : null}
                           {row.unread ? <span>{t("activity.unreadBadge")}</span> : null}
                           {row.highlight ? <span>{t("activity.highlightBadge")}</span> : null}
                         </span>
@@ -270,12 +273,13 @@ export function ActivityPane({
                         </span>
                       </span>
                       <span className="activity-row-badges">
+                        {row.root_event_id ? <span>{t("activity.threadBadge")}</span> : null}
                         {row.unread ? <span>{t("activity.unreadBadge")}</span> : null}
                         {row.highlight ? <span>{t("activity.highlightBadge")}</span> : null}
                       </span>
                     </button>
                   )}
-                  {activeTab === "unread" && !isPlaceholder ? (
+                  {activeTab === "unread" && !isPlaceholder && row.root_event_id === null ? (
                     <button
                       className="activity-row-action"
                       type="button"

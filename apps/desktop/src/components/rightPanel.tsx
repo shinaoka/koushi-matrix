@@ -13,7 +13,8 @@ import type {
   RoomSettingChange,
   SavedSessionInfo,
   SearchResult,
-  SettingsPatch
+  SettingsPatch,
+  TimelineScrollAnchor
 } from "../domain/types";
 import {
   focusedTimelineKey,
@@ -133,7 +134,8 @@ export function ContextualRightPanel({
   onTimelineDiagnosticLogEntry,
   onThreadComposerDraftChange,
   onThreadReplySend,
-  threadComposerDraftOverrides = {}
+  threadComposerDraftOverrides = {},
+  threadScrollAnchor = null
 }: {
   activeRoom: DesktopSnapshot["state"]["domain"]["rooms"][number] | null;
   activeSpace: DesktopSnapshot["state"]["domain"]["spaces"][number] | null;
@@ -238,6 +240,7 @@ export function ContextualRightPanel({
   onThreadComposerDraftChange: (roomId: string, rootEventId: string, draft: string) => void;
   onThreadReplySend: (roomId: string, rootEventId: string, body: string) => void;
   threadComposerDraftOverrides?: Record<string, string>;
+  threadScrollAnchor?: TimelineScrollAnchor | null;
 }) {
   const mediaDownloads = snapshot.state.ui.timeline.media_downloads ?? {};
 
@@ -615,6 +618,7 @@ export function ContextualRightPanel({
             codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
             searchQuery={searchQuery}
             mediaDownloads={mediaDownloads}
+            roomScrollAnchor={threadScrollAnchor}
             onDiagnosticLogEntry={onTimelineDiagnosticLogEntry}
           />
         ) : browserThreadSnapshot ? (

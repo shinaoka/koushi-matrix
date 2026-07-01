@@ -39,19 +39,30 @@ fn stream(rows: Vec<ActivityRow>, next_batch: Option<&str>) -> ActivityStream {
 }
 
 #[test]
-fn activity_stream_summary_counts_event_rows_rooms_mentions_and_unresolved_rooms() {
+fn activity_stream_summary_counts_event_rows_rooms_threads_mentions_and_unresolved_rooms() {
     let event_a1 = row("!a", "$a1", 30);
     let mut event_a2 = row("!a", "$a2", 20);
     event_a2.highlight = true;
     let placeholder =
         ActivityRow::room_unread_placeholder("!b".to_owned(), "Room B".to_owned(), 10, true);
+    let thread_placeholder = ActivityRow::thread_unread_placeholder(
+        "!c".to_owned(),
+        "$root".to_owned(),
+        "Room C".to_owned(),
+        5,
+        false,
+    );
 
-    let stream = ActivityStream::new(vec![event_a1, event_a2, placeholder], None);
+    let stream = ActivityStream::new(
+        vec![event_a1, event_a2, placeholder, thread_placeholder],
+        None,
+    );
 
     assert_eq!(stream.summary.event_count, 2);
-    assert_eq!(stream.summary.room_count, 2);
+    assert_eq!(stream.summary.room_count, 3);
     assert_eq!(stream.summary.highlight_count, 2);
     assert_eq!(stream.summary.unresolved_room_count, 1);
+    assert_eq!(stream.summary.thread_count, 1);
 }
 
 #[test]
@@ -410,6 +421,7 @@ fn activity_row_event_source_serializes_real_event_id() {
     let value = serde_json::to_value(&row).expect("serialize activity row");
     assert_eq!(value["kind"], serde_json::json!("event"));
     assert_eq!(value["event_id"], serde_json::json!("$event"));
+    assert_eq!(value["root_event_id"], serde_json::Value::Null);
 }
 
 #[test]
@@ -423,7 +435,30 @@ fn activity_row_room_unread_source_has_no_event_id_and_redacted_debug() {
     let value = serde_json::to_value(&row).expect("serialize activity row");
     assert_eq!(value["kind"], serde_json::json!("roomUnread"));
     assert_eq!(value["event_id"], serde_json::Value::Null);
+    assert_eq!(value["root_event_id"], serde_json::Value::Null);
     let debug = format!("{row:?}");
     assert!(!debug.contains("!private-room:example.invalid"));
+    assert!(!debug.contains("Private Room"));
+}
+
+#[test]
+fn activity_row_thread_unread_source_serializes_root_event_id_and_redacts_debug() {
+    let row = ActivityRow::thread_unread_placeholder(
+        "!private-room:example.invalid".to_owned(),
+        "$private-root:example.invalid".to_owned(),
+        "Private Room".to_owned(),
+        42,
+        true,
+    );
+    let value = serde_json::to_value(&row).expect("serialize activity row");
+    assert_eq!(value["kind"], serde_json::json!("threadUnread"));
+    assert_eq!(value["event_id"], serde_json::Value::Null);
+    assert_eq!(
+        value["root_event_id"],
+        serde_json::json!("$private-root:example.invalid")
+    );
+    let debug = format!("{row:?}");
+    assert!(!debug.contains("!private-room:example.invalid"));
+    assert!(!debug.contains("$private-root:example.invalid"));
     assert!(!debug.contains("Private Room"));
 }

@@ -663,12 +663,14 @@ export interface ActivityStreamSummary {
   room_count: number;
   highlight_count: number;
   unresolved_room_count: number;
+  thread_count: number;
 }
 
-export type ActivityRowKind = "event" | "roomUnread";
+export type ActivityRowKind = "event" | "roomUnread" | "threadUnread";
 
 interface ActivityRowBase {
   room_id: string;
+  root_event_id: string | null;
   room_label: string;
   timestamp_ms: number;
   unread: boolean;
@@ -679,6 +681,7 @@ interface ActivityRowBase {
 export interface ActivityEventRow extends ActivityRowBase {
   kind: "event";
   event_id: string;
+  root_event_id: string | null;
   sender_id: string | null;
   sender_label: string | null;
   sender_avatar: AvatarImage | null;
@@ -688,13 +691,24 @@ export interface ActivityEventRow extends ActivityRowBase {
 export interface ActivityRoomUnreadRow extends ActivityRowBase {
   kind: "roomUnread";
   event_id: null;
+  root_event_id: null;
   sender_id: null;
   sender_label: null;
   sender_avatar: null;
   preview: null;
 }
 
-export type ActivityRow = ActivityEventRow | ActivityRoomUnreadRow;
+export interface ActivityThreadUnreadRow extends ActivityRowBase {
+  kind: "threadUnread";
+  event_id: null;
+  root_event_id: string;
+  sender_id: null;
+  sender_label: null;
+  sender_avatar: null;
+  preview: null;
+}
+
+export type ActivityRow = ActivityEventRow | ActivityRoomUnreadRow | ActivityThreadUnreadRow;
 
 export type ActivityMarkReadState =
   | { kind: "idle" }
@@ -1416,6 +1430,7 @@ export interface TimelineMessage {
   timestamp_ms: number;
   body: string;
   attachment_filename: string | null;
+  thread_root?: string | null;
   reply_count: number;
   link_previews?: LinkPreview[];
   link_ranges?: { url: string; start_utf16: number; end_utf16: number }[];

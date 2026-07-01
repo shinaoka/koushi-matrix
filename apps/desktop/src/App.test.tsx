@@ -1386,7 +1386,13 @@ describe("Tauri state refresh wiring", () => {
     expect(openActivityRowSource).toContain('setRightPanelMode("closed")');
     expect(openActivityRowSource).not.toContain('setRightPanelMode("focusedContext")');
     expect(openActivityRowSource).not.toContain('setRightPanelMode("search")');
+    expect(activityRenderSource).toContain(
+      'row.kind === "event" && row.event_id !== null && row.root_event_id !== null'
+    );
+    expect(activityRenderSource).toContain("openActivityThread(row.room_id, row.root_event_id, row.event_id)");
     expect(activityRenderSource).toContain("openActivityRow(row.room_id, row.event_id)");
+    expect(activityRenderSource).toContain('row.kind === "threadUnread"');
+    expect(activityRenderSource).toContain("openActivityThread(row.room_id, row.root_event_id)");
     expect(activityRenderSource).toContain('row.kind === "roomUnread"');
     expect(activityRenderSource).toContain("openActivityRoom(row.room_id)");
     expect(activityRenderSource).not.toContain("selectSearchResult(row.room_id, row.event_id)");

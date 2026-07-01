@@ -18,7 +18,7 @@ use koushi_state::{
     ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState, ComposerDraftStore,
     MentionIntent, ProfileUpdateRequest, RoomNotificationMode, RoomSummary,
     ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchScope as AppSearchScope,
-    SessionState, SpaceSummary, ThreadPaneState, UiEvent, reduce,
+    SessionState, SpaceSummary, ThreadAttentionState, ThreadPaneState, UiEvent, reduce,
 };
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -415,12 +415,32 @@ struct ActivityProjection {
     /// mark-read. Suppresses re-synthesizing the placeholder until the reducer
     /// has had a chance to zero out the room's unread counts.
     cleared_placeholder_room_ids: BTreeSet<String>,
+    cleared_thread_unread_scopes: BTreeMap<(String, String), ThreadUnreadWatermark>,
 }
 
 #[derive(Default)]
 struct ActivityMarkReadResult {
     cleared_event_ids: Vec<String>,
     cleared_placeholder_room_ids: Vec<String>,
+}
+
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+struct ThreadUnreadWatermark {
+    notification_count: u64,
+    highlight_count: u64,
+    live_event_marker_count: u64,
+}
+
+impl ThreadUnreadWatermark {
+    fn has_unread(self) -> bool {
+        self.notification_count > 0 || self.highlight_count > 0 || self.live_event_marker_count > 0
+    }
+
+    fn covers(self, current: Self) -> bool {
+        current.notification_count <= self.notification_count
+            && current.highlight_count <= self.highlight_count
+            && current.live_event_marker_count <= self.live_event_marker_count
+    }
 }
 
 impl ActivityProjection {
@@ -460,12 +480,39 @@ impl ActivityProjection {
                     match row.kind {
                         ActivityRowKind::Event => {
                             if let Some(event_id) = row.event_id {
+                                if let Some(root_event_id) = row.root_event_id.as_deref() {
+                                    if let Some(watermark) = thread_unread_watermark(
+                                        state,
+                                        row.room_id.as_str(),
+                                        root_event_id,
+                                    ) {
+                                        self.cleared_thread_unread_scopes.insert(
+                                            (row.room_id.clone(), root_event_id.to_owned()),
+                                            watermark,
+                                        );
+                                    }
+                                } else {
+                                    cleared_event_row_room_ids.insert(row.room_id);
+                                }
                                 cleared_event_ids.push(event_id);
-                                cleared_event_row_room_ids.insert(row.room_id);
                             }
                         }
                         ActivityRowKind::RoomUnread => {
                             cleared_placeholder_room_ids.push(row.room_id);
+                        }
+                        ActivityRowKind::ThreadUnread => {
+                            if let Some(root_event_id) = row.root_event_id.as_deref() {
+                                if let Some(watermark) = thread_unread_watermark(
+                                    state,
+                                    row.room_id.as_str(),
+                                    root_event_id,
+                                ) {
+                                    self.cleared_thread_unread_scopes.insert(
+                                        (row.room_id.clone(), root_event_id.to_owned()),
+                                        watermark,
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -495,13 +542,27 @@ impl ActivityProjection {
                     match row.kind {
                         ActivityRowKind::Event => {
                             if let Some(event_id) = row.event_id {
+                                if let Some(root_event_id) = row.root_event_id.as_deref() {
+                                    if let Some(watermark) = thread_unread_watermark(
+                                        state,
+                                        row.room_id.as_str(),
+                                        root_event_id,
+                                    ) {
+                                        self.cleared_thread_unread_scopes.insert(
+                                            (row.room_id.clone(), root_event_id.to_owned()),
+                                            watermark,
+                                        );
+                                    }
+                                } else {
+                                    cleared_event_row_room_ids.insert(row.room_id);
+                                }
                                 cleared_event_ids.push(event_id);
-                                cleared_event_row_room_ids.insert(row.room_id);
                             }
                         }
                         ActivityRowKind::RoomUnread => {
                             cleared_placeholder_room_ids.push(row.room_id);
                         }
+                        ActivityRowKind::ThreadUnread => {}
                     }
                 }
             }
@@ -532,12 +593,20 @@ impl ActivityProjection {
             ActivityMarkReadTarget::Room {
                 room_id,
                 up_to_event_id,
-            } => vec![(room_id.clone(), up_to_event_id.clone())],
+            } => self
+                .rows_by_event_id
+                .get(up_to_event_id)
+                .filter(|row| row.root_event_id.is_none())
+                .map(|_| vec![(room_id.clone(), up_to_event_id.clone())])
+                .unwrap_or_default(),
             ActivityMarkReadTarget::All => {
                 let (_recent, unread, _excluded) = self.snapshot(state);
                 let mut latest_by_room: BTreeMap<String, (u64, String)> = BTreeMap::new();
                 for row in unread.rows {
                     if row.kind != ActivityRowKind::Event {
+                        continue;
+                    }
+                    if row.root_event_id.is_some() {
                         continue;
                     }
                     if let Some(event_id) = row.event_id {
@@ -599,6 +668,7 @@ impl ActivityProjection {
         let affected_room_ids = cleared_event_ids
             .iter()
             .filter_map(|event_id| self.rows_by_event_id.get(event_id))
+            .filter(|row| row.root_event_id.is_none())
             .map(|row| row.room_id.clone())
             .collect::<BTreeSet<_>>();
         if affected_room_ids.is_empty() {
@@ -646,6 +716,7 @@ impl ActivityProjection {
         let mut unread = Vec::new();
         let mut recent_event_ids = BTreeSet::new();
         let mut unread_event_room_ids = BTreeSet::new();
+        let mut unread_thread_scopes = BTreeSet::new();
         for row in self.rows_by_event_id.values() {
             if excluded.contains(row.room_id.as_str()) {
                 continue;
@@ -660,25 +731,26 @@ impl ActivityProjection {
                 .and_then(|signals| signals.fully_read_event_id.as_deref());
             let room_has_unread =
                 room.unread_count > 0 || room.highlight_count > 0 || room.marked_unread;
-            let unread_by_marker = match fully_read_event_id {
-                Some(event_id) => match row.event_id.as_deref() {
-                    Some(row_event_id) if row_event_id == event_id => false,
-                    Some(_) => self
-                        .rows_by_event_id
-                        .get(event_id)
-                        .map(|fully_read_row| row.timestamp_ms > fully_read_row.timestamp_ms)
-                        .unwrap_or_else(|| {
-                            room.latest_event.as_ref().is_some_and(|latest_event| {
-                                room_has_unread
-                                    && row.event_id.as_deref()
-                                        == Some(latest_event.event_id.as_str())
-                                    && fully_read_event_id != row.event_id.as_deref()
-                            })
-                        }),
-                    None => false,
-                },
-                None => room_has_unread,
-            };
+            let thread_watermark = row.root_event_id.as_deref().and_then(|root_event_id| {
+                thread_unread_watermark(state, row.room_id.as_str(), root_event_id)
+            });
+            let unread_by_marker =
+                if row.root_event_id.is_some() {
+                    thread_watermark.is_some_and(ThreadUnreadWatermark::has_unread)
+                } else {
+                    match fully_read_event_id {
+                        Some(event_id) if room_has_unread => {
+                            match row.event_id.as_deref() {
+                                Some(row_event_id) if row_event_id == event_id => false,
+                                Some(_) => self.rows_by_event_id.get(event_id).is_some_and(
+                                    |fully_read_row| row.timestamp_ms > fully_read_row.timestamp_ms,
+                                ),
+                                None => false,
+                            }
+                        }
+                        _ => false,
+                    }
+                };
             let unread_row = unread_by_marker
                 && !self
                     .cleared_event_ids
@@ -695,7 +767,9 @@ impl ActivityProjection {
                 sender_avatar,
                 context_label,
                 unread: unread_row,
-                highlight: row.highlight || (unread_row && room.highlight_count > 0),
+                highlight: row.highlight
+                    || (unread_row
+                        && thread_watermark.is_some_and(|watermark| watermark.highlight_count > 0)),
                 ..row.clone()
             };
             if let Some(event_id) = row.event_id.clone() {
@@ -703,6 +777,9 @@ impl ActivityProjection {
             }
             if row.unread {
                 unread_event_room_ids.insert(row.room_id.clone());
+                if let Some(root_event_id) = row.root_event_id.clone() {
+                    unread_thread_scopes.insert((row.room_id.clone(), root_event_id));
+                }
                 unread.push(row.clone());
             }
             recent.push(row);
@@ -725,9 +802,14 @@ impl ActivityProjection {
                 .and_then(|signals| signals.fully_read_event_id.as_deref());
             let room_has_unread =
                 room.unread_count > 0 || room.highlight_count > 0 || room.marked_unread;
-            let unread_row = room_has_unread
-                && fully_read_event_id != Some(latest_event.event_id.as_str())
-                && !self.cleared_event_ids.contains(&latest_event.event_id);
+            let unread_row = fully_read_event_id
+                .and_then(|event_id| self.rows_by_event_id.get(event_id))
+                .is_some_and(|fully_read_row| {
+                    room_has_unread
+                        && latest_event.timestamp_ms > fully_read_row.timestamp_ms
+                        && fully_read_event_id != Some(latest_event.event_id.as_str())
+                        && !self.cleared_event_ids.contains(&latest_event.event_id)
+                });
             let context_label = activity_row_context_label(room, &spaces_by_id);
             let mut row = ActivityRow::event(
                 room.room_id.clone(),
@@ -749,6 +831,48 @@ impl ActivityProjection {
             recent.push(row);
         }
 
+        let mut known_thread_unread_room_ids = BTreeSet::new();
+        if let ThreadAttentionState::Tracking {
+            room_id,
+            root_event_id,
+            notification_count,
+            highlight_count,
+            live_event_marker_count,
+        } = &state.thread_attention
+        {
+            let watermark = ThreadUnreadWatermark {
+                notification_count: *notification_count,
+                highlight_count: *highlight_count,
+                live_event_marker_count: *live_event_marker_count,
+            };
+            if watermark.has_unread() && !excluded.contains(room_id.as_str()) {
+                known_thread_unread_room_ids.insert(room_id.clone());
+                if let Some(room) = rooms_by_id.get(room_id.as_str()) {
+                    let is_locally_cleared = self
+                        .cleared_thread_unread_scopes
+                        .get(&(room_id.clone(), root_event_id.clone()))
+                        .is_some_and(|cleared| cleared.covers(watermark));
+                    if !is_locally_cleared
+                        && !unread_thread_scopes.contains(&(room_id.clone(), root_event_id.clone()))
+                    {
+                        let context_label = activity_row_context_label(room, &spaces_by_id);
+                        let placeholder = ActivityRow::thread_unread_placeholder(
+                            room_id.clone(),
+                            root_event_id.clone(),
+                            room.display_label.clone(),
+                            room.last_activity_ms,
+                            *highlight_count > 0,
+                        );
+                        let placeholder = ActivityRow {
+                            context_label,
+                            ..placeholder
+                        };
+                        unread.push(placeholder);
+                    }
+                }
+            }
+        }
+
         for room in state.rooms.iter() {
             if excluded.contains(room.room_id.as_str()) {
                 continue;
@@ -762,6 +886,9 @@ impl ActivityProjection {
                 continue;
             }
             if unread_event_room_ids.contains(&room.room_id) {
+                continue;
+            }
+            if known_thread_unread_room_ids.contains(&room.room_id) {
                 continue;
             }
             let highlight = room.highlight_count > 0;
@@ -786,6 +913,29 @@ impl ActivityProjection {
                 .map(|room| room.unread_count > 0 || room.highlight_count > 0 || room.marked_unread)
                 .unwrap_or(false)
         });
+        self.cleared_thread_unread_scopes
+            .retain(|(room_id, root_event_id), cleared| {
+                if let ThreadAttentionState::Tracking {
+                    room_id: tracking_room_id,
+                    root_event_id: tracking_root_event_id,
+                    notification_count,
+                    highlight_count,
+                    live_event_marker_count,
+                } = &state.thread_attention
+                {
+                    if tracking_room_id != room_id || tracking_root_event_id != root_event_id {
+                        return false;
+                    }
+                    let current = ThreadUnreadWatermark {
+                        notification_count: *notification_count,
+                        highlight_count: *highlight_count,
+                        live_event_marker_count: *live_event_marker_count,
+                    };
+                    current.has_unread() && cleared.covers(current)
+                } else {
+                    false
+                }
+            });
 
         sort_activity_rows(&mut recent);
         sort_activity_rows(&mut unread);
@@ -796,6 +946,31 @@ impl ActivityProjection {
             excluded_room_ids,
         )
     }
+}
+
+fn thread_unread_watermark(
+    state: &AppState,
+    room_id: &str,
+    root_event_id: &str,
+) -> Option<ThreadUnreadWatermark> {
+    let ThreadAttentionState::Tracking {
+        room_id: tracking_room_id,
+        root_event_id: tracking_root_event_id,
+        notification_count,
+        highlight_count,
+        live_event_marker_count,
+    } = &state.thread_attention
+    else {
+        return None;
+    };
+    if tracking_room_id != room_id || tracking_root_event_id != root_event_id {
+        return None;
+    }
+    Some(ThreadUnreadWatermark {
+        notification_count: *notification_count,
+        highlight_count: *highlight_count,
+        live_event_marker_count: *live_event_marker_count,
+    })
 }
 
 fn activity_row_context_label(

@@ -776,7 +776,8 @@ mock.setCommandResponse("open_activity", () =>
               event_count: 0,
               room_count: 0,
               highlight_count: 0,
-              unresolved_room_count: 0
+              unresolved_room_count: 0,
+              thread_count: 0
             }
           },
           unread: {
@@ -786,7 +787,8 @@ mock.setCommandResponse("open_activity", () =>
               event_count: 0,
               room_count: 0,
               highlight_count: 0,
-              unresolved_room_count: 0
+              unresolved_room_count: 0,
+              thread_count: 0
             }
           },
           mark_read: { kind: "idle" }

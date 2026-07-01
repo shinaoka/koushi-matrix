@@ -71,6 +71,7 @@ pub struct ActivityStreamSummary {
     pub room_count: u32,
     pub highlight_count: u32,
     pub unresolved_room_count: u32,
+    pub thread_count: u32,
 }
 
 impl ActivityStreamSummary {
@@ -90,6 +91,7 @@ impl ActivityStreamSummary {
                 ActivityRowKind::RoomUnread => {
                     unresolved_room_count = unresolved_room_count.saturating_add(1);
                 }
+                ActivityRowKind::ThreadUnread => {}
             }
         }
 
@@ -98,6 +100,12 @@ impl ActivityStreamSummary {
             room_count: room_ids.len().try_into().unwrap_or(u32::MAX),
             highlight_count,
             unresolved_room_count,
+            thread_count: rows
+                .iter()
+                .filter(|row| row.kind == ActivityRowKind::ThreadUnread)
+                .count()
+                .try_into()
+                .unwrap_or(u32::MAX),
         }
     }
 }
@@ -145,6 +153,7 @@ pub enum ActivityRowKind {
     #[default]
     Event,
     RoomUnread,
+    ThreadUnread,
 }
 
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -153,6 +162,8 @@ pub struct ActivityRow {
     pub kind: ActivityRowKind,
     pub room_id: String,
     pub event_id: Option<String>,
+    #[serde(default)]
+    pub root_event_id: Option<String>,
     #[serde(default)]
     pub sender_id: Option<String>,
     pub room_label: String,
@@ -183,6 +194,7 @@ impl ActivityRow {
             kind: ActivityRowKind::Event,
             room_id,
             event_id: Some(event_id),
+            root_event_id: None,
             sender_id,
             room_label,
             sender_label,
@@ -205,6 +217,31 @@ impl ActivityRow {
             kind: ActivityRowKind::RoomUnread,
             room_id,
             event_id: None,
+            root_event_id: None,
+            sender_id: None,
+            room_label,
+            sender_label: None,
+            sender_avatar: None,
+            preview: None,
+            timestamp_ms,
+            unread: true,
+            highlight,
+            context_label: String::new(),
+        }
+    }
+
+    pub fn thread_unread_placeholder(
+        room_id: String,
+        root_event_id: String,
+        room_label: String,
+        timestamp_ms: u64,
+        highlight: bool,
+    ) -> Self {
+        Self {
+            kind: ActivityRowKind::ThreadUnread,
+            room_id,
+            event_id: None,
+            root_event_id: Some(root_event_id),
             sender_id: None,
             room_label,
             sender_label: None,
@@ -225,6 +262,10 @@ impl fmt::Debug for ActivityRow {
             .field("kind", &self.kind)
             .field("room_id", &"RoomId(..)")
             .field("event_id", &self.event_id.as_ref().map(|_| "EventId(..)"))
+            .field(
+                "root_event_id",
+                &self.root_event_id.as_ref().map(|_| "EventId(..)"),
+            )
             .field("sender_id", &self.sender_id.as_ref().map(|_| "UserId(..)"))
             .field("room_label", &"RoomLabel(..)")
             .field(

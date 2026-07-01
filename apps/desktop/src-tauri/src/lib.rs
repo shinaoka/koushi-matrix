@@ -2663,6 +2663,13 @@ mod tests {
                             9,
                             false,
                         ),
+                        ActivityRow::thread_unread_placeholder(
+                            "!activity-thread:example.test".to_owned(),
+                            "$activity-thread-root:example.test".to_owned(),
+                            "Thread room".to_owned(),
+                            8,
+                            true,
+                        ),
                     ],
                     Some("unread-next".to_owned()),
                 ),
@@ -2683,6 +2690,18 @@ mod tests {
         assert_eq!(
             activity_snapshot_loaded["event"]["SnapshotLoaded"]["unread"]["rows"][1]["event_id"],
             serde_json::Value::Null
+        );
+        assert_eq!(
+            activity_snapshot_loaded["event"]["SnapshotLoaded"]["unread"]["rows"][2]["kind"],
+            json!("threadUnread")
+        );
+        assert_eq!(
+            activity_snapshot_loaded["event"]["SnapshotLoaded"]["unread"]["rows"][2]["root_event_id"],
+            json!("$activity-thread-root:example.test")
+        );
+        assert_eq!(
+            activity_snapshot_loaded["event"]["SnapshotLoaded"]["unread"]["summary"]["thread_count"],
+            json!(1)
         );
         let activity_marked_read =
             serialize_core_event(&CoreEvent::Activity(ActivityEvent::MarkedRead {

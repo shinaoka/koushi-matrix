@@ -29,6 +29,7 @@ export type MessageId =
   | "activity.openItem"
   | "activity.recent"
   | "activity.tabs"
+  | "activity.threadBadge"
   | "activity.unread"
   | "activity.unreadBadge"
   | "activity.unreadWithCount"
@@ -937,6 +938,7 @@ const en: Catalog = {
   "activity.openItem": "Open activity item {room}",
   "activity.recent": "Recent",
   "activity.tabs": "Activity views",
+  "activity.threadBadge": "Thread",
   "activity.unread": "Unread",
   "activity.unreadBadge": "Unread",
   "activity.unreadWithCount": "Unread ({count})",
@@ -1759,6 +1761,7 @@ const ja: Catalog = {
   "activity.openItem": "{room}のアクティビティを開く",
   "activity.recent": "最近",
   "activity.tabs": "アクティビティ表示",
+  "activity.threadBadge": "スレッド",
   "activity.unread": "未読",
   "activity.unreadBadge": "未読",
   "activity.unreadWithCount": "未読 ({count})",

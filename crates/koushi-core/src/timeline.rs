@@ -4824,6 +4824,7 @@ fn activity_row_from_timeline_item(room_id: &str, item: &TimelineItem) -> Option
         false,
         false,
     );
+    row.root_event_id = item.thread_root.clone();
     row.sender_avatar = item.sender_avatar.clone();
     Some(row)
 }

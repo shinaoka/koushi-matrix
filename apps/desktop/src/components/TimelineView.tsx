@@ -1805,7 +1805,7 @@ export const TimelineView = memo(function TimelineView({
   codeBlockWrap = true,
   searchQuery = "",
   mediaDownloads = {},
-  roomScrollAnchor: _persistedRoomScrollAnchor = null,
+  roomScrollAnchor = null,
   enableAvatarThumbnailDownloads = AVATAR_THUMBNAIL_DOWNLOADS_ENABLED,
   onDiagnosticsChange,
   onScrollDiagnosticsChange,
@@ -1867,11 +1867,6 @@ export const TimelineView = memo(function TimelineView({
    */
   listRefCallback?: (element: HTMLDivElement | null) => void;
 }) {
-  // Persisted restart anchors are intentionally ignored for restoration:
-  // first entry after app startup goes to live edge, while in-session room
-  // switches use timelineViewportSessionMemory. persistViewportAnchor still
-  // writes these anchors for diagnostics and future cross-restart design work.
-  void _persistedRoomScrollAnchor;
   const timelineStoreContext = useTimelineStoreContext();
   const [localStore, localSetStore] = useState<TimelineStoreState>(createTimelineStore);
   const store = timelineStore ?? timelineStoreContext?.store ?? localStore;
@@ -3201,8 +3196,7 @@ export const TimelineView = memo(function TimelineView({
   // --- Anchor restoration: after React commits the prepend ---
   useLayoutEffect(() => {
     const container = containerRef.current;
-    const activeRoomAnchor =
-      roomTimelineRoomId === roomId ? sessionRoomScrollAnchorRef.current : null;
+    const activeRoomAnchor = roomScrollAnchor ?? sessionRoomScrollAnchorRef.current;
     const activeRoomAnchorSignature = activeRoomAnchor
       ? roomScrollAnchorSignature(roomId, activeRoomAnchor)
       : null;
@@ -3401,7 +3395,8 @@ export const TimelineView = memo(function TimelineView({
     runWithScrollWriteReason,
     scheduleScrollFollowUpFrame,
     setViewportIntentToLiveEdge,
-    timelineKeyHash
+    timelineKeyHash,
+    roomScrollAnchor
   ]);
 
   useLayoutEffect(() => {

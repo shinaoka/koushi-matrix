@@ -1005,6 +1005,7 @@ export function App() {
   const [loginPasswordFilled, setLoginPasswordFilled] = useState(false);
   const [recoverySecretFilled, setRecoverySecretFilled] = useState(false);
   const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>("closed");
+  const [threadScrollAnchor, setThreadScrollAnchor] = useState<TimelineScrollAnchor | null>(null);
   const [selectedProfileUserId, setSelectedProfileUserId] = useState<string | null>(null);
   const [peoplePanelScope, setPeoplePanelScope] = useState<PeoplePanelScope | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
@@ -2781,14 +2782,25 @@ export function App() {
     setSnapshot(await api.updateRoomMemberRole(roomId, targetUserId, powerLevel));
   }
 
-  async function openThread(roomId: string, rootEventId: string) {
+  async function openThread(roomId: string, rootEventId: string, targetEventId: string | null = null) {
     await closeFocusedContextIfHiddenBy("thread");
     setSnapshot(await api.openThread(roomId, rootEventId));
+    setThreadScrollAnchor(
+      targetEventId
+        ? {
+            event_id: targetEventId,
+            edge: "bottom",
+            offset_px: 0,
+            updated_at_ms: Date.now()
+          }
+        : null
+    );
     setRightPanelMode("thread");
   }
 
   async function closeThread() {
     setSnapshot(await api.closeThread());
+    setThreadScrollAnchor(null);
     setRightPanelMode("closed");
   }
 
@@ -2950,6 +2962,12 @@ export function App() {
   function openActivityRoom(roomId: string) {
     void selectRoom(roomId).then(() => {
       setRightPanelMode("closed");
+    });
+  }
+
+  function openActivityThread(roomId: string, rootEventId: string, targetEventId: string | null = null) {
+    void selectRoom(roomId).then(() => {
+      void openThread(roomId, rootEventId, targetEventId);
     });
   }
 
@@ -3308,8 +3326,12 @@ export function App() {
               void markActivityRead(target);
             }}
             onOpenRow={(row) => {
-              if (row.kind === "event" && row.event_id !== null) {
+              if (row.kind === "event" && row.event_id !== null && row.root_event_id !== null) {
+                openActivityThread(row.room_id, row.root_event_id, row.event_id);
+              } else if (row.kind === "event" && row.event_id !== null) {
                 openActivityRow(row.room_id, row.event_id);
+              } else if (row.kind === "threadUnread" && row.root_event_id !== null) {
+                openActivityThread(row.room_id, row.root_event_id);
               } else if (row.kind === "roomUnread") {
                 openActivityRoom(row.room_id);
               }
@@ -3549,6 +3571,7 @@ export function App() {
             updateThreadComposerDraft(roomId, rootEventId, draft);
           }}
           threadComposerDraftOverrides={localThreadComposerDrafts}
+          threadScrollAnchor={threadScrollAnchor}
           onThreadReplySend={(roomId, rootEventId, body) => {
             void sendThreadReply(roomId, rootEventId, body);
           }}

@@ -31,7 +31,7 @@ fn room_in_space_summary(room_id: &str, space_id: &str) -> RoomSummary {
 }
 
 #[tokio::test]
-async fn activity_unread_prefers_known_event_rows_over_room_placeholders() {
+async fn activity_unread_keeps_room_placeholder_without_main_timeline_cursor() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
@@ -72,20 +72,22 @@ async fn activity_unread_prefers_known_event_rows_over_room_placeholders() {
 
     assert!(
         unread.rows.iter().any(|row| {
-            row.kind == ActivityRowKind::Event
+            row.kind == ActivityRowKind::RoomUnread
                 && row.room_id == "!room-a:example.test"
-                && row.event_id.as_deref() == Some("$known-unread:example.test")
+                && row.event_id.is_none()
         }),
-        "known unread event should be directly openable from Activity"
+        "aggregate unread without a main-timeline cursor should stay an unresolved room row"
     );
     assert!(
-        unread.rows.iter().all(|row| {
-            row.kind != ActivityRowKind::RoomUnread || row.room_id != "!room-a:example.test"
-        }),
-        "placeholder should not be synthesized when a known unread event row exists"
+        unread
+            .rows
+            .iter()
+            .all(|row| { row.event_id.as_deref() != Some("$known-unread:example.test") }),
+        "room aggregate unread must not classify an observed event as unread"
     );
-    assert_eq!(unread.summary.event_count, 1);
-    assert_eq!(unread.summary.unresolved_room_count, 0);
+    assert_eq!(unread.summary.event_count, 0);
+    assert_eq!(unread.summary.unresolved_room_count, 1);
+    assert_eq!(unread.summary.thread_count, 0);
 }
 
 #[tokio::test]
@@ -197,7 +199,7 @@ async fn activity_unread_projects_only_rows_after_fully_read_marker() {
 }
 
 #[tokio::test]
-async fn activity_unread_uses_latest_event_fallback_without_recent_duplicates() {
+async fn activity_unread_keeps_latest_event_recent_when_marker_row_is_unobserved() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     let mut room = unread_room_summary("!latest:example.test", 1);
@@ -249,17 +251,19 @@ async fn activity_unread_uses_latest_event_fallback_without_recent_duplicates() 
             .filter(|row| row.event_id.as_deref() == Some("$latest:example.test"))
             .count(),
         1,
-        "latest fallback should not duplicate the Recent row"
+        "latest room event should still populate Recent"
     );
     assert!(
         unread.rows.iter().any(|row| {
-            row.kind == ActivityRowKind::Event
-                && row.event_id.as_deref() == Some("$latest:example.test")
+            row.kind == ActivityRowKind::RoomUnread
+                && row.room_id == "!latest:example.test"
+                && row.event_id.is_none()
         }),
-        "latest room event should be directly openable from Activity/Unread"
+        "unobserved marker rows should keep Unread at the room-scope fallback"
     );
-    assert_eq!(unread.summary.event_count, 1);
-    assert_eq!(unread.summary.unresolved_room_count, 0);
+    assert_eq!(unread.summary.event_count, 0);
+    assert_eq!(unread.summary.unresolved_room_count, 1);
+    assert_eq!(unread.summary.thread_count, 0);
 }
 
 #[tokio::test]
@@ -329,18 +333,19 @@ async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
             .iter()
             .filter_map(|row| row.event_id.as_deref())
             .collect::<Vec<_>>(),
-        [
-            "$marker-unread:example.test",
-            "$recent:example.test",
-            "$stale:example.test"
-        ]
+        ["$marker-unread:example.test"]
     );
     assert!(
-        unread
-            .rows
-            .iter()
-            .all(|row| row.kind == ActivityRowKind::Event),
-        "known unread events should be directly openable from Activity/Unread"
+        unread.rows.iter().any(|row| {
+            row.room_id == "!recent:example.test" && row.kind == ActivityRowKind::RoomUnread
+        }),
+        "rooms without a main-timeline cursor should remain room-scope fallbacks"
+    );
+    assert!(
+        unread.rows.iter().any(|row| {
+            row.room_id == "!stale:example.test" && row.kind == ActivityRowKind::RoomUnread
+        }),
+        "aggregate unread should not be promoted to event unread without a cursor"
     );
 
     let mark_request_id = conn.next_request_id();
@@ -383,8 +388,8 @@ async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
             .rooms
             .get("!stale:example.test")
             .and_then(|signals| signals.fully_read_event_id.as_deref()),
-        Some("$stale:example.test"),
-        "known stale unread event rows should still be markable from Activity"
+        None,
+        "room-scope placeholders must not write synthetic fully-read markers"
     );
 }
 
@@ -637,8 +642,8 @@ async fn activity_room_mark_read_suppresses_unread_room_entry_only_for_cleared_r
                     && unread.rows.iter().all(|row| row.room_id != "!room-a:example.test")
                     && unread.rows.iter().any(|row| {
                         row.room_id == "!room-b:example.test"
-                            && row.kind == ActivityRowKind::Event
-                            && row.event_id.as_deref() == Some("$event-b:example.test")
+                            && row.kind == ActivityRowKind::RoomUnread
+                            && row.event_id.is_none()
                     })
         )
     })
@@ -700,12 +705,19 @@ async fn activity_unread_uses_known_event_rows_and_keeps_unresolved_room_placeho
                     unread_room_summary("!with-row:example.test", 1),
                 ],
             },
+            AppAction::FullyReadMarkerUpdated {
+                room_id: "!with-row:example.test".to_owned(),
+                event_id: Some("$with-row-marker:example.test".to_owned()),
+            },
             AppAction::ActivityRowsObserved {
-                rows: vec![activity_row(
-                    "!with-row:example.test",
-                    "$with-row-event:example.test",
-                    20,
-                )],
+                rows: vec![
+                    activity_row(
+                        "!with-row:example.test",
+                        "$with-row-marker:example.test",
+                        10,
+                    ),
+                    activity_row("!with-row:example.test", "$with-row-event:example.test", 20),
+                ],
             },
         ])
         .await;
@@ -825,6 +837,240 @@ async fn activity_unread_uses_known_event_rows_and_keeps_unresolved_room_placeho
 }
 
 #[tokio::test]
+async fn activity_unread_projects_thread_attention_as_thread_scope_row() {
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(support::session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![unread_room_summary("!thread-room:example.test", 2)],
+            },
+            AppAction::SelectRoom {
+                room_id: "!thread-room:example.test".to_owned(),
+            },
+            AppAction::OpenThread {
+                room_id: "!thread-room:example.test".to_owned(),
+                root_event_id: "$thread-root:example.test".to_owned(),
+            },
+            AppAction::ThreadSubscribed {
+                room_id: "!thread-room:example.test".to_owned(),
+                root_event_id: "$thread-root:example.test".to_owned(),
+            },
+            AppAction::ThreadAttentionUpdated {
+                room_id: "!thread-room:example.test".to_owned(),
+                root_event_id: "$thread-root:example.test".to_owned(),
+                notification_count: 2,
+                highlight_count: 1,
+                live_event_marker_count: 1,
+            },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_)) && state.rooms.len() == 1
+    })
+    .await;
+
+    let open_request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::OpenActivity {
+        request_id: open_request_id,
+    }))
+    .await
+    .expect("open activity command");
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        matches!(state.activity, ActivityState::Open { .. })
+    })
+    .await;
+    let ActivityState::Open { unread, .. } = snapshot.activity else {
+        panic!("activity should be open");
+    };
+    assert!(
+        unread.rows.iter().any(|row| {
+            row.kind == ActivityRowKind::ThreadUnread
+                && row.room_id == "!thread-room:example.test"
+                && row.root_event_id.as_deref() == Some("$thread-root:example.test")
+                && row.event_id.is_none()
+                && row.highlight
+        }),
+        "known thread attention should surface as a thread-scoped unread row"
+    );
+    assert!(
+        unread.rows.iter().all(|row| {
+            row.room_id != "!thread-room:example.test" || row.kind != ActivityRowKind::RoomUnread
+        }),
+        "known thread unread should not also synthesize a room-scope placeholder"
+    );
+    assert_eq!(unread.summary.event_count, 0);
+    assert_eq!(unread.summary.unresolved_room_count, 0);
+    assert_eq!(unread.summary.thread_count, 1);
+
+    let mark_request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::MarkActivityRead {
+        request_id: mark_request_id,
+        target: ActivityMarkReadTarget::All,
+    }))
+    .await
+    .expect("mark activity read command");
+
+    wait_for_state(&mut conn, |state| {
+        let room_still_unread = state
+            .rooms
+            .iter()
+            .find(|room| room.room_id == "!thread-room:example.test")
+            .is_some_and(|room| room.unread_count == 2);
+        matches!(
+            &state.activity,
+            ActivityState::Open { unread, mark_read, .. }
+                if room_still_unread
+                    && matches!(mark_read, ActivityMarkReadState::Idle)
+                    && unread.rows.iter().all(|row| row.kind != ActivityRowKind::ThreadUnread)
+                    && unread.rows.iter().all(|row| row.kind != ActivityRowKind::RoomUnread)
+        )
+    })
+    .await;
+
+    runtime
+        .inject_actions(vec![AppAction::ThreadAttentionUpdated {
+            room_id: "!thread-room:example.test".to_owned(),
+            root_event_id: "$thread-root:example.test".to_owned(),
+            notification_count: 3,
+            highlight_count: 1,
+            live_event_marker_count: 2,
+        }])
+        .await;
+
+    wait_for_state(&mut conn, |state| {
+        matches!(
+            &state.activity,
+            ActivityState::Open { unread, .. }
+                if unread.rows.iter().any(|row| {
+                    row.kind == ActivityRowKind::ThreadUnread
+                        && row.root_event_id.as_deref() == Some("$thread-root:example.test")
+                })
+        )
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn activity_unread_opens_known_thread_reply_without_advancing_room_marker() {
+    let runtime = CoreRuntime::start();
+    let mut conn = runtime.attach();
+    let mut thread_reply = activity_row(
+        "!thread-event-room:example.test",
+        "$thread-reply:example.test",
+        30,
+    );
+    thread_reply.root_event_id = Some("$thread-root:example.test".to_owned());
+
+    runtime
+        .inject_actions(vec![
+            AppAction::RestoreSessionSucceeded(support::session_info()),
+            AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![unread_room_summary("!thread-event-room:example.test", 2)],
+            },
+            AppAction::SelectRoom {
+                room_id: "!thread-event-room:example.test".to_owned(),
+            },
+            AppAction::OpenThread {
+                room_id: "!thread-event-room:example.test".to_owned(),
+                root_event_id: "$thread-root:example.test".to_owned(),
+            },
+            AppAction::ThreadSubscribed {
+                room_id: "!thread-event-room:example.test".to_owned(),
+                root_event_id: "$thread-root:example.test".to_owned(),
+            },
+            AppAction::ThreadAttentionUpdated {
+                room_id: "!thread-event-room:example.test".to_owned(),
+                root_event_id: "$thread-root:example.test".to_owned(),
+                notification_count: 1,
+                highlight_count: 0,
+                live_event_marker_count: 1,
+            },
+            AppAction::ActivityRowsObserved {
+                rows: vec![thread_reply],
+            },
+        ])
+        .await;
+    wait_for_state(&mut conn, |state| {
+        matches!(state.session, SessionState::Ready(_)) && state.rooms.len() == 1
+    })
+    .await;
+
+    let open_request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::OpenActivity {
+        request_id: open_request_id,
+    }))
+    .await
+    .expect("open activity command");
+
+    let snapshot = wait_for_state(&mut conn, |state| {
+        matches!(state.activity, ActivityState::Open { .. })
+    })
+    .await;
+    let ActivityState::Open { unread, .. } = snapshot.activity else {
+        panic!("activity should be open");
+    };
+    assert!(
+        unread.rows.iter().any(|row| {
+            row.kind == ActivityRowKind::Event
+                && row.event_id.as_deref() == Some("$thread-reply:example.test")
+                && row.root_event_id.as_deref() == Some("$thread-root:example.test")
+        }),
+        "known thread reply should remain directly openable from Activity/Unread"
+    );
+    assert!(
+        unread
+            .rows
+            .iter()
+            .all(|row| row.kind != ActivityRowKind::ThreadUnread),
+        "thread placeholder should not duplicate a known thread reply row"
+    );
+
+    let mark_request_id = conn.next_request_id();
+    conn.command(CoreCommand::App(AppCommand::MarkActivityRead {
+        request_id: mark_request_id,
+        target: ActivityMarkReadTarget::All,
+    }))
+    .await
+    .expect("mark activity read command");
+
+    wait_for_state(&mut conn, |state| {
+        matches!(
+            &state.activity,
+            ActivityState::Open { unread, mark_read, .. }
+                if matches!(mark_read, ActivityMarkReadState::Idle)
+                    && unread.rows.iter().all(|row| {
+                        row.event_id.as_deref() != Some("$thread-reply:example.test")
+                            && row.kind != ActivityRowKind::ThreadUnread
+                    })
+        )
+    })
+    .await;
+    let snapshot = conn.snapshot();
+    assert_eq!(
+        snapshot
+            .live_signals
+            .rooms
+            .get("!thread-event-room:example.test")
+            .and_then(|signals| signals.fully_read_event_id.as_deref()),
+        None,
+        "thread reply catch-up must not advance the main room fully-read marker"
+    );
+    assert!(
+        snapshot
+            .rooms
+            .iter()
+            .find(|room| room.room_id == "!thread-event-room:example.test")
+            .is_some_and(|room| room.unread_count == 2),
+        "thread reply catch-up must not clear the room unread aggregate"
+    );
+}
+
+#[tokio::test]
 async fn activity_unread_removes_rooms_when_notification_mode_is_mute() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
@@ -839,8 +1085,13 @@ async fn activity_unread_removes_rooms_when_notification_mode_is_mute() {
                     unread_room_summary("!muted-placeholder:example.test", 1),
                 ],
             },
+            AppAction::FullyReadMarkerUpdated {
+                room_id: "!normal:example.test".to_owned(),
+                event_id: Some("$normal-marker:example.test".to_owned()),
+            },
             AppAction::ActivityRowsObserved {
                 rows: vec![
+                    activity_row("!normal:example.test", "$normal-marker:example.test", 10),
                     activity_row("!normal:example.test", "$normal:example.test", 30),
                     activity_row(
                         "!muted-with-row:example.test",
