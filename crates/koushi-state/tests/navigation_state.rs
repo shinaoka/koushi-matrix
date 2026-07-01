@@ -1907,3 +1907,35 @@ fn main_timeline_anchor_is_guarded_by_session_and_active_room() {
     );
     assert_eq!(state.navigation.main_timeline_anchor, None);
 }
+
+// #161: jump-to-date renders the focused timeline in the main pane; closing the
+// focused context (live-edge return) clears the main-pane anchor.
+#[test]
+fn closing_focused_context_returns_main_pane_to_live() {
+    let mut state = ready_state();
+    reduce(
+        &mut state,
+        AppAction::RoomListUpdated {
+            spaces: spaces(),
+            rooms: rooms(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::OpenFocusedContext {
+            room_id: "room-a".to_owned(),
+            event_id: "$deep-event".to_owned(),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::EnterAnchoredTimeline {
+            room_id: "room-a".to_owned(),
+            event_id: "$deep-event".to_owned(),
+        },
+    );
+    assert!(state.navigation.main_timeline_anchor.is_some());
+
+    reduce(&mut state, AppAction::CloseFocusedContext);
+    assert_eq!(state.navigation.main_timeline_anchor, None);
+}

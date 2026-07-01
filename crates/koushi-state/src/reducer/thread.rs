@@ -280,10 +280,19 @@ pub(crate) fn handle_focused_context_subscribed(
 }
 
 pub(crate) fn handle_close_focused_context(state: &mut AppState) -> Vec<AppEffect> {
-    if !is_session_ready(state) || state.focused_context == FocusedContextState::Closed {
+    if !is_session_ready(state) {
         return Vec::new();
     }
 
+    // #161: jump-to-date renders the focused timeline in the main pane, marked by
+    // `main_timeline_anchor`. Closing the focused context therefore also returns
+    // the main pane to the live timeline (live-edge control), independent of the
+    // right-panel focused-context state.
+    state.navigation.main_timeline_anchor = None;
+
+    if state.focused_context == FocusedContextState::Closed {
+        return Vec::new();
+    }
     state.focused_context = FocusedContextState::Closed;
     Vec::new()
 }

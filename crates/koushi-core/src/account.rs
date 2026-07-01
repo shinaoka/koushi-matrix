@@ -902,12 +902,21 @@ impl AccountActor {
             }
         };
         let event_id = response.event_id.to_string();
+        // #161: jump-to-date renders the focused timeline in the MAIN pane
+        // (marked by `main_timeline_anchor`), reusing the focused-context
+        // subscription lifecycle; it must not open the right panel.
         let _ = self
             .action_tx
-            .send(vec![AppAction::OpenFocusedContext {
-                room_id: room_id.clone(),
-                event_id: event_id.clone(),
-            }])
+            .send(vec![
+                AppAction::OpenFocusedContext {
+                    room_id: room_id.clone(),
+                    event_id: event_id.clone(),
+                },
+                AppAction::EnterAnchoredTimeline {
+                    room_id: room_id.clone(),
+                    event_id: event_id.clone(),
+                },
+            ])
             .await;
         self.route_timeline_command(TimelineCommand::Subscribe {
             request_id,
