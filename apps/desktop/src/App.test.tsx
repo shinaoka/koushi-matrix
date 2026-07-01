@@ -1451,6 +1451,19 @@ describe("Tauri state refresh wiring", () => {
     );
     expect(panesSource).toContain("main_timeline_anchor");
     expect(panesSource).toContain("focusedTimelineKey");
+
+    // #161: the anchored main pane exposes a return-to-live control that closes
+    // the focused context (which clears the anchor in Rust → main pane re-renders
+    // the live timeline).
+    expect(source).toContain("onReturnToLive");
+    expect(source).toContain("api.closeFocusedContext()");
+    expect(panesSource).toContain("isAnchored={Boolean(mainTimelineAnchorEventId)}");
+    expect(panesSource).toContain("onReturnToLive={onReturnToLive}");
+    const timelineViewSource = readFileSync(
+      new URL("./components/TimelineView.tsx", import.meta.url),
+      "utf8"
+    );
+    expect(timelineViewSource).toContain("isAnchored && onReturnToLive");
   });
 
   test("member-panel avatar thumbnail requests respect the global avatar download gate", () => {

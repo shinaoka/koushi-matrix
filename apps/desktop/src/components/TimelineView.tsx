@@ -1800,6 +1800,8 @@ export const TimelineView = memo(function TimelineView({
   currentUserId,
   ignoredUserIds = [],
   suppressPaginationUi = false,
+  isAnchored = false,
+  onReturnToLive,
   autoLoadOlderMessages = false,
   codeBlockWrap = true,
   searchQuery = "",
@@ -1835,6 +1837,10 @@ export const TimelineView = memo(function TimelineView({
   currentUserId?: string;
   ignoredUserIds?: string[];
   suppressPaginationUi?: boolean;
+  // #161: main pane is anchored to a jump-to-date event; the live-edge control
+  // returns to the live timeline instead of scrolling within the focused window.
+  isAnchored?: boolean;
+  onReturnToLive?: () => void;
   autoLoadOlderMessages?: boolean;
   codeBlockWrap?: boolean;
   searchQuery?: string;
@@ -3882,6 +3888,20 @@ export const TimelineView = memo(function TimelineView({
                 </span>
               </button>
             ) : null}
+          </div>
+        </div>
+      ) : null}
+      {isAnchored && onReturnToLive ? (
+        <div className="timeline-navigation-bar">
+          <div className="timeline-navigation-pills">
+            <button
+              className="timeline-navigation-pill"
+              type="button"
+              onClick={onReturnToLive}
+            >
+              <ArrowDown size={14} aria-hidden="true" />
+              <span>{t("shortcut.jumpToLatestMessage")}</span>
+            </button>
           </div>
         </div>
       ) : null}

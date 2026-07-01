@@ -602,6 +602,7 @@ export function TimelinePane({
   onOpenPeople,
   onOpenThreads,
   onToggleRoomInfo,
+  onReturnToLive,
   onTimelineDiagnosticsChange,
   onTimelineDiagnosticLogEntry
 }: {
@@ -641,6 +642,7 @@ export function TimelinePane({
   onOpenPeople: () => void;
   onOpenThreads: () => void;
   onToggleRoomInfo: () => void;
+  onReturnToLive?: () => void;
   onTimelineDiagnosticsChange?: (diagnostics: TimelineDiagnostics) => void;
   onTimelineDiagnosticLogEntry?: (entry: TimelineDiagnosticLogEntry) => void;
 }) {
@@ -932,6 +934,8 @@ export function TimelinePane({
               }
               roomId={timelineRoomId}
               timelineKey={timelineKey!}
+              isAnchored={Boolean(mainTimelineAnchorEventId)}
+              onReturnToLive={onReturnToLive}
               transport={timelineTransport}
               onReply={onReplyStable}
               onOpenThread={onOpenThreadStable}

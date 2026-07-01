@@ -3357,6 +3357,12 @@ export function App() {
             snapshot={snapshot}
             timelineBackfill={timelineDiagnostics.backfill}
             timelineTransport={appTimelineTransport}
+            onReturnToLive={() => {
+              // #161: leave the anchored (jump-to-date) main-pane view. Closing
+              // the focused context clears navigation.main_timeline_anchor in
+              // Rust, so the main pane re-renders the live room timeline.
+              void api.closeFocusedContext().then(setSnapshot);
+            }}
             onCancelReply={() => {
               void cancelComposerReply();
             }}
