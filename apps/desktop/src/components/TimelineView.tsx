@@ -4679,6 +4679,7 @@ export function TimelineItemRow({
     const items = contextMenuItems({
       kind: "message",
       canManage: currentUserId === item.sender,
+      canReply: canShowReply,
       hasThread: item.thread_summary != null,
       senderUserId: item.sender,
       currentUserId: currentUserId ?? "",

@@ -4,6 +4,7 @@ import type { RoomTags } from "./types";
 export type ContextMenuKind = "message" | "room" | "space" | "account";
 
 export type ContextMenuActionId =
+  | "replyToMessage"
   | "openThread"
   | "editMessage"
   | "redactMessage"
@@ -38,6 +39,7 @@ export type ContextMenuRequest =
   | {
       kind: "message";
       canManage: boolean;
+      canReply: boolean;
       hasThread: boolean;
       senderUserId: string;
       currentUserId: string;
@@ -61,6 +63,9 @@ export function contextMenuItems(request: ContextMenuRequest): ContextMenuItem[]
   switch (request.kind) {
     case "message": {
       const items: ContextMenuItem[] = [];
+      if (request.canReply) {
+        items.push({ id: "replyToMessage", labelMessageId: "timeline.replyToMessage" });
+      }
       if (request.hasThread) {
         items.push({ id: "openThread", labelMessageId: "context.openThread" });
       }

@@ -460,6 +460,7 @@ function MessageArticle({
                 contextMenuItems({
                   kind: "message",
                   canManage,
+                  canReply: message.body !== null,
                   hasThread: true,
                   senderUserId: message.sender,
                   currentUserId: currentUserId ?? "",
