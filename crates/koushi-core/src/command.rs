@@ -151,6 +151,7 @@ impl CoreCommand {
             },
             Self::Timeline(command) => match command {
                 TimelineCommand::Subscribe { request_id, .. }
+                | TimelineCommand::EnsureSubscribed { request_id, .. }
                 | TimelineCommand::Unsubscribe { request_id, .. }
                 | TimelineCommand::Paginate { request_id, .. }
                 | TimelineCommand::CancelPagination { request_id, .. }
@@ -1825,6 +1826,11 @@ pub enum TimelineCommand {
         request_id: RequestId,
         key: TimelineKey,
     },
+    EnsureSubscribed {
+        request_id: RequestId,
+        key: TimelineKey,
+        replay_existing: bool,
+    },
     Unsubscribe {
         request_id: RequestId,
         key: TimelineKey,
@@ -1981,6 +1987,16 @@ impl fmt::Debug for TimelineCommand {
                 .debug_struct("Subscribe")
                 .field("request_id", request_id)
                 .field("key", key)
+                .finish(),
+            Self::EnsureSubscribed {
+                request_id,
+                key,
+                replay_existing,
+            } => formatter
+                .debug_struct("EnsureSubscribed")
+                .field("request_id", request_id)
+                .field("key", key)
+                .field("replay_existing", replay_existing)
                 .finish(),
             Self::Unsubscribe { request_id, key } => formatter
                 .debug_struct("Unsubscribe")

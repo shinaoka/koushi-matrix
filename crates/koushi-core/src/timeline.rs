@@ -274,7 +274,16 @@ impl TimelineManagerActor {
         match command {
             TimelineCommand::Subscribe { request_id, key } => {
                 trace_timeline_route("manager_received", "subscribe", request_id, &key);
-                self.handle_subscribe(request_id, key).await;
+                self.handle_subscribe(request_id, key, true).await;
+            }
+            TimelineCommand::EnsureSubscribed {
+                request_id,
+                key,
+                replay_existing,
+            } => {
+                trace_timeline_route("manager_received", "ensure_subscribed", request_id, &key);
+                self.handle_subscribe(request_id, key, replay_existing)
+                    .await;
             }
             TimelineCommand::Unsubscribe { request_id, key } => {
                 trace_timeline_route("manager_received", "unsubscribe", request_id, &key);
@@ -760,7 +769,12 @@ impl TimelineManagerActor {
         }
     }
 
-    async fn handle_subscribe(&mut self, request_id: RequestId, key: TimelineKey) {
+    async fn handle_subscribe(
+        &mut self,
+        request_id: RequestId,
+        key: TimelineKey,
+        replay_existing: bool,
+    ) {
         // Diagnostic-only, private-data-free stage trace (no room/event ids).
         // Enable with KOUSHI_SUBSCRIBE_TRACE=1 to find which `.await` stalls
         // before InitialItems is emitted. Off by default.
@@ -783,21 +797,28 @@ impl TimelineManagerActor {
         // Idempotency: if the identical key is already subscribed, do NOT drop
         // and rebuild the SDK subscription.  The full rebuild was 4-8 expensive
         // `subscribe_to_rooms` / timeline-build cycles per room on snapshot
-        // churn (issue #116).  Instead, ask the existing actor to re-emit its
-        // current navigation_items as InitialItems for this request_id so a
-        // freshly re-mounted TimelineView is still populated.
+        // churn (issue #116).  Callers that need to populate an empty
+        // TimelineView can request an InitialItems replay; room-selection
+        // effects with an already-retained App store can skip that full replay.
         // Confine the `&self.timelines` borrow to the closure so the Err arm
         // can `remove` (a `&mut` borrow) without a conflict.
         let replay_result = self.timelines.get(&key).map(|handle| {
-            handle
-                .tx
-                .try_send(TimelineActorMessage::ReplayInitialItems { request_id })
+            if replay_existing {
+                handle
+                    .tx
+                    .try_send(TimelineActorMessage::ReplayInitialItems { request_id })
+            } else {
+                Ok(())
+            }
         });
         match replay_result {
             Some(Ok(())) => {
                 // Re-emit the subscribed action so the reducer re-confirms
                 // `is_subscribed = true` (idempotent in the reducer).
                 self.emit_timeline_subscribed_action(&key);
+                if !replay_existing {
+                    trace("replay_initial_skipped");
+                }
                 trace("subscribed_done");
                 return;
             }
@@ -8369,6 +8390,38 @@ mod tests {
         assert!(
             new_key_path.contains("koushi_timeline_builder("),
             "a new (not yet subscribed) key must still build an SDK timeline through the project helper"
+        );
+    }
+
+    #[test]
+    fn timeline_ensure_subscribed_can_skip_existing_actor_replay() {
+        let source = include_str!("timeline.rs");
+        let handle_command = source
+            .split("async fn handle_command")
+            .nth(1)
+            .expect("handle_command should exist")
+            .split("async fn handle_subscribe")
+            .next()
+            .expect("handle_subscribe should follow handle_command");
+        let handle_subscribe_source = source
+            .split("async fn handle_subscribe")
+            .nth(1)
+            .expect("handle_subscribe should exist")
+            .split("let client = session.client()")
+            .next()
+            .expect("existing-key branch should precede the SDK subscribe path");
+
+        assert!(
+            handle_command.contains("TimelineCommand::EnsureSubscribed"),
+            "timeline manager should expose an explicit ensure-subscription path for callers that do not need item replay"
+        );
+        assert!(
+            handle_command.contains("replay_existing"),
+            "ensure-subscription routing must pass through whether an existing actor should replay InitialItems"
+        );
+        assert!(
+            handle_subscribe_source.contains("if replay_existing"),
+            "existing actors should only replay InitialItems when the caller explicitly requests replay"
         );
     }
 

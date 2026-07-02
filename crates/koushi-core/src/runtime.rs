@@ -2119,12 +2119,13 @@ impl AppActor {
                 };
                 self.send_timeline_command_or_fail(
                     request_id,
-                    TimelineCommand::Subscribe {
+                    TimelineCommand::EnsureSubscribed {
                         request_id,
                         key: TimelineKey {
                             account_key,
                             kind: TimelineKind::Room { room_id },
                         },
+                        replay_existing: false,
                     },
                 )
                 .await;
@@ -2330,7 +2331,7 @@ impl AppActor {
                 };
                 self.send_timeline_command_or_fail(
                     request_id,
-                    TimelineCommand::Subscribe {
+                    TimelineCommand::EnsureSubscribed {
                         request_id,
                         key: TimelineKey {
                             account_key,
@@ -2338,6 +2339,7 @@ impl AppActor {
                                 room_id: room_id.clone(),
                             },
                         },
+                        replay_existing: false,
                     },
                 )
                 .await;
@@ -3512,6 +3514,24 @@ mod tests {
         assert!(
             effects_helper.contains("TimelineKind::Room"),
             "SubscribeTimeline effects must route the canonical room timeline subscription"
+        );
+    }
+
+    #[test]
+    fn runtime_room_selection_ensures_existing_room_timeline_without_replay() {
+        let source = include_str!("runtime.rs");
+        let effects_helper = source
+            .split("async fn handle_post_projection_effects")
+            .nth(1)
+            .expect("post-projection effects helper should exist");
+
+        assert!(
+            effects_helper.contains("TimelineCommand::EnsureSubscribed"),
+            "room selection should ensure a room timeline exists without forcing an existing actor to replay all items"
+        );
+        assert!(
+            effects_helper.contains("replay_existing: false"),
+            "room selection should skip full InitialItems replay when the room timeline actor is already subscribed"
         );
     }
 
