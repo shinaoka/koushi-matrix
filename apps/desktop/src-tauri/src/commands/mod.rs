@@ -299,6 +299,45 @@ fn snapshot_has_focused_context(snapshot: &koushi_state::AppState, room_id: &str
     }
 }
 
+fn snapshot_has_no_focused_context(snapshot: &koushi_state::AppState) -> bool {
+    snapshot.focused_context == FocusedContextState::Closed
+        && snapshot.navigation.main_timeline_anchor.is_none()
+}
+
+async fn wait_for_focused_context_closed(
+    event_conn: &mut CoreConnection,
+    request_id: RequestId,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        if snapshot_has_no_focused_context(&event_conn.snapshot()) {
+            return Ok(());
+        }
+
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "focused context did not close".to_owned())?;
+        match event {
+            Ok(CoreEvent::StateChanged(snapshot)) if snapshot_has_no_focused_context(&snapshot) => {
+                return Ok(());
+            }
+            Ok(CoreEvent::OperationFailed {
+                request_id: failed_request_id,
+                ..
+            }) if failed_request_id == request_id => {
+                return Err("focused context close failed".to_owned());
+            }
+            Ok(_) => {}
+            Err(_) if snapshot_has_no_focused_context(&event_conn.snapshot()) => {
+                return Ok(());
+            }
+            Err(_) => return Err("focused context close event stream lagged".to_owned()),
+        }
+    }
+}
+
 async fn wait_for_focused_context(
     event_conn: &mut CoreConnection,
     request_id: RequestId,
@@ -5298,6 +5337,43 @@ mod tests {
     }
 
     #[test]
+    fn open_activity_event_waits_for_focused_context_close_before_selecting_room() {
+        let source = commands_source();
+        let fn_name = "pub async fn open_activity_event";
+
+        let fn_offset = source
+            .find(fn_name)
+            .expect("open_activity_event command should exist");
+        let rest = &source[fn_offset..];
+        let end = rest
+            .find("pub async fn select_search_result")
+            .expect("select_search_result command should follow open_activity_event");
+        let command_source = &rest[..end];
+
+        let close_offset = command_source
+            .find("CloseFocusedContext")
+            .expect("activity event navigation should close any focused main timeline first");
+        let wait_close_offset = command_source
+            .find("wait_for_focused_context_closed")
+            .expect(
+                "activity event navigation must wait until focused context/main anchor is closed",
+            );
+        let select_offset = command_source
+            .find("build_select_room_command")
+            .expect("activity event navigation should select the destination room");
+        let anchor_offset = command_source
+            .find("build_update_navigation_scroll_anchor_command")
+            .expect("activity event navigation should save a room scroll anchor");
+
+        assert!(
+            close_offset < wait_close_offset
+                && wait_close_offset < select_offset
+                && select_offset < anchor_offset,
+            "activity event navigation must clear the focused main timeline before selected-room wait can short-circuit on the already-active DM"
+        );
+    }
+
+    #[test]
     fn close_focused_context_command_routes_to_app_close_focused_context() {
         let source = commands_source();
         let fn_name = concat!("pub async fn close", "_focused_context");
@@ -5330,6 +5406,37 @@ mod tests {
         assert!(
             close_source.contains(snapshot_token),
             "close_focused_context should return the current snapshot"
+        );
+    }
+
+    #[test]
+    fn close_focused_context_command_waits_until_main_timeline_is_live() {
+        let source = commands_source();
+        let fn_name = concat!("pub async fn close", "_focused_context");
+        let command_token = concat!("Close", "FocusedContext");
+
+        let fn_offset = source
+            .find(fn_name)
+            .expect("close_focused_context command should exist");
+        let rest = &source[fn_offset..];
+        let end = rest
+            .find("pub async fn paginate_timeline_backwards")
+            .expect("next command should exist");
+        let command_source = &rest[..end];
+
+        let close_offset = command_source
+            .find(command_token)
+            .expect("close_focused_context should submit the close command");
+        let wait_offset = command_source
+            .find("wait_for_focused_context_closed")
+            .expect("close_focused_context must wait before returning its snapshot");
+        let snapshot_offset = command_source
+            .find("current_snapshot")
+            .expect("close_focused_context should return a snapshot");
+
+        assert!(
+            close_offset < wait_offset && wait_offset < snapshot_offset,
+            "close_focused_context must return only after focused_context is closed and main_timeline_anchor is cleared"
         );
     }
 

@@ -74,6 +74,12 @@ pub async fn open_activity_event(
         }))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_focused_context_closed(
+        &mut event_conn,
+        close_request_id,
+        FOCUSED_CONTEXT_EVENT_TIMEOUT,
+    )
+    .await?;
 
     let select_request_id = event_conn.next_request_id();
     event_conn
@@ -170,12 +176,16 @@ pub async fn close_focused_context(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
-    let request_id = next_request_id(state.inner()).await;
-    submit_core_command(
-        state.inner(),
-        CoreCommand::App(AppCommand::CloseFocusedContext { request_id }),
-    )
-    .await?;
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(CoreCommand::App(AppCommand::CloseFocusedContext {
+            request_id,
+        }))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_focused_context_closed(&mut event_conn, request_id, FOCUSED_CONTEXT_EVENT_TIMEOUT)
+        .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }
