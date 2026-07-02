@@ -151,7 +151,7 @@ describe("styles.css token system", () => {
 
   test("timeline message action menus can stack above sticky timeline navigation", () => {
     const block = selectorBlock(
-      ".timeline-scroll:has(.message-action-menu, .message-forward-menu) > .message-list"
+      ".timeline-scroll:has(.message-action-menu, .message-forward-menu, .timeline-reaction-emoji-picker) > .message-list"
     );
     expect(block).toContain("position: relative;");
     expect(block).toContain("z-index: 12;");

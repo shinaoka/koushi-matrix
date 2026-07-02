@@ -59,6 +59,8 @@ export interface ShortcutLabelProfile {
   modLabel: "Cmd" | "Ctrl";
 }
 
+const nativeMenuOnlyActionIds = new Set(["logout"]);
+
 const shortcuts: KeyboardShortcut[] = [
   {
     id: "sendMessage",
@@ -519,6 +521,10 @@ export function shortcutIdForKeyboardEvent(
 export function shortcutActionFromMenuPayload(payload: unknown): string | null {
   if (typeof payload !== "string") {
     return null;
+  }
+
+  if (nativeMenuOnlyActionIds.has(payload)) {
+    return payload;
   }
 
   const shortcut = shortcutById(payload);

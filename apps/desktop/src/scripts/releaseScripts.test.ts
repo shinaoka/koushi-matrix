@@ -804,6 +804,43 @@ describe("desktop release scripts", () => {
     expect(output).not.toContain("KOUSHI_TEST_SECRET");
   });
 
+  test("Tauri cargo metadata uses the shared repository target directory", () => {
+    const metadata = JSON.parse(
+      execFileSync(
+        "cargo",
+        [
+          "metadata",
+          "--manifest-path",
+          "apps/desktop/src-tauri/Cargo.toml",
+          "--no-deps",
+          "--format-version",
+          "1"
+        ],
+        {
+          cwd: repoRoot,
+          encoding: "utf8"
+        }
+      )
+    );
+    const sharedTargetDir = new URL("../../../../target", import.meta.url).pathname;
+
+    expect(metadata.target_directory).toBe(sharedTargetDir);
+  });
+
+  test("local and real homeserver QA preserve shared Cargo target dir", () => {
+    const localQaSource = readFileSync(
+      new URL("../../../../scripts/lib/local-homeserver-qa.mjs", import.meta.url),
+      "utf8"
+    );
+    const realQaSource = readFileSync(
+      new URL("../../../../scripts/desktop-real-homeserver-qa.mjs", import.meta.url),
+      "utf8"
+    );
+
+    expect(localQaSource).toMatch(/"CARGO_TARGET_DIR"/);
+    expect(realQaSource).toMatch(/"CARGO_TARGET_DIR"/);
+  });
+
   test("linux GUI smoke source wires the shared local homeserver helper module", () => {
     const guiSource = readFileSync(
       new URL("../../../../scripts/desktop-linux-gui-qa.mjs", import.meta.url),
@@ -1303,6 +1340,27 @@ describe("desktop release scripts", () => {
     expect(output).not.toContain("KOUSHI_TEST_SECRET");
   });
 
+  test("mac GUI smoke preserves shared Cargo target dir without exposing secrets", () => {
+    const output = execFileSync(
+      process.execPath,
+      ["scripts/desktop-mac-gui-smoke.mjs", "--child-env-keys"],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CARGO_TARGET_DIR: "/tmp/koushi-desktop-shared-target",
+          DEEPSEEK_API_KEY: "synthetic-secret",
+          KOUSHI_TEST_SECRET: "synthetic-secret"
+        }
+      }
+    );
+
+    expect(output).toContain("CARGO_TARGET_DIR");
+    expect(output).not.toContain("DEEPSEEK_API_KEY");
+    expect(output).not.toContain("KOUSHI_TEST_SECRET");
+  });
+
   test("mac GUI smoke can opt into SDK error diagnostics without forwarding secret env values", () => {
     const output = execFileSync(
       process.execPath,
@@ -1543,6 +1601,23 @@ describe("desktop release scripts", () => {
     expect(source).toContain("keychain_persistence_disabled_from_env");
     expect(source).toContain("CoreRuntime::start_with_data_dir(data_dir.clone())");
     expect(source).toContain("CoreRuntime::start_with_data_dir_and_os_backend");
+  });
+
+  test("Tauri production adapter does not depend on the fixture backend crate", () => {
+    const tauriCargo = readFileSync(
+      new URL("../../../../apps/desktop/src-tauri/Cargo.toml", import.meta.url),
+      "utf8"
+    );
+    const tauriLib = readFileSync(
+      new URL("../../../../apps/desktop/src-tauri/src/lib.rs", import.meta.url),
+      "utf8"
+    );
+
+    expect(tauriCargo).not.toContain("koushi-backend");
+    expect(tauriLib).not.toContain("koushi_backend");
+    expect(tauriLib).not.toContain("BackendState");
+    expect(tauriLib).not.toContain("TimelineTaskHandle");
+    expect(tauriLib).not.toContain("TimelinePaginationRequest");
   });
 
   test("desktop package exposes a local DMG build script", () => {

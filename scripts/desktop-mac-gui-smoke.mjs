@@ -273,6 +273,7 @@ function childEnvironment(dataDir, qaLoginPipePath = null, qaControlPipePath = n
   const allowedKeys = [
     "AR",
     "CARGO_HOME",
+    "CARGO_TARGET_DIR",
     "CC",
     "CFLAGS",
     "CPATH",

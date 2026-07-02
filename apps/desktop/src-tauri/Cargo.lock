@@ -2941,18 +2941,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "koushi-backend"
-version = "0.1.0"
-dependencies = [
- "koushi-key",
- "koushi-sdk",
- "koushi-search",
- "koushi-state",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "koushi-core"
 version = "0.1.0"
 dependencies = [
@@ -2981,7 +2969,6 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "keyring",
- "koushi-backend",
  "koushi-core",
  "koushi-key",
  "koushi-state",

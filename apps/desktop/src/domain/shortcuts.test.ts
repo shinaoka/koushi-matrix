@@ -200,6 +200,7 @@ describe("shortcut registry", () => {
       "showKeyboardSettings"
     );
     expect(shortcutActionFromMenuPayload("openUserSettings")).toBe("openUserSettings");
+    expect(shortcutActionFromMenuPayload("logout")).toBe("logout");
     expect(shortcutActionFromMenuPayload("toggleRightPanel")).toBe("toggleRightPanel");
     expect(shortcutActionFromMenuPayload("toggleFullscreen")).toBe("toggleFullscreen");
     expect(shortcutActionFromMenuPayload("uploadFile")).toBeNull();

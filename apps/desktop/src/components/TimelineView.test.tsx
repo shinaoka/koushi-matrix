@@ -253,6 +253,221 @@ describe("TimelineView", () => {
     expect(timelineMediaDisplayBoxForTests(800, null)).toBeNull();
   });
 
+  it("keeps the reaction emoji picker attached to its message row", async () => {
+    const sendReaction = vi.fn(async () => undefined);
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [message("$react", "React here")]
+      }
+    });
+    const transport = baseTransport({ sendReaction });
+
+    render(
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+        />
+      </TimelineStoreContext.Provider>
+    );
+
+    const article = screen.getByText("React here").closest("article");
+    expect(article).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /add reaction/i }));
+
+    const picker = await screen.findByRole("dialog", { name: /emoji/i });
+    expect(article!.contains(picker)).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /grinning face$/i }));
+
+    await waitFor(() => {
+      expect(sendReaction).toHaveBeenCalledWith(
+        "!room:example.invalid",
+        "$react",
+        "😀"
+      );
+    });
+  });
+
+  it("opens the reaction emoji picker above when the composer-side space is insufficient", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement
+    ) {
+      let top = 0;
+      let height = 24;
+      if (this.getAttribute("data-testid") === "timeline-view") {
+        height = 240;
+      } else if (this.classList.contains("reaction-control")) {
+        top = 200;
+      } else if (this.classList.contains("main-pane")) {
+        height = 320;
+      }
+      return {
+        x: 0,
+        y: top,
+        top,
+        left: 0,
+        right: 480,
+        width: 480,
+        height,
+        bottom: top + height,
+        toJSON: () => ({})
+      } as DOMRect;
+    });
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [message("$react-near-composer", "React near composer")]
+      }
+    });
+
+    render(
+      <div className="main-pane">
+        <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+          <TimelineView
+            timelineKey={KEY}
+            roomId="!room:example.invalid"
+            transport={baseTransport({})}
+            onReply={vi.fn()}
+          />
+        </TimelineStoreContext.Provider>
+      </div>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /add reaction/i }));
+
+    const picker = await screen.findByRole("dialog", { name: /emoji/i });
+    expect(picker.classList.contains("is-above")).toBe(true);
+    expect(picker.classList.contains("is-below")).toBe(false);
+  });
+
+  it("shrinks the reaction emoji picker to the visible space instead of clipping it", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement
+    ) {
+      let top = 0;
+      let height = 24;
+      if (this.getAttribute("data-testid") === "timeline-view") {
+        top = 120;
+        height = 260;
+      } else if (this.classList.contains("reaction-control")) {
+        top = 320;
+      } else if (this.classList.contains("main-pane")) {
+        top = 100;
+        height = 500;
+      }
+      return {
+        x: 0,
+        y: top,
+        top,
+        left: 0,
+        right: 480,
+        width: 480,
+        height,
+        bottom: top + height,
+        toJSON: () => ({})
+      } as DOMRect;
+    });
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [message("$react-tight-space", "React with tight space")]
+      }
+    });
+
+    render(
+      <div className="main-pane">
+        <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+          <TimelineView
+            timelineKey={KEY}
+            roomId="!room:example.invalid"
+            transport={baseTransport({})}
+            onReply={vi.fn()}
+          />
+        </TimelineStoreContext.Provider>
+      </div>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /add reaction/i }));
+
+    const picker = await screen.findByRole("dialog", { name: /emoji/i });
+    expect(picker.style.getPropertyValue("--emoji-picker-max-block-size")).toBe("194px");
+  });
+
+  it("updates the reaction emoji picker size when the visible space changes", async () => {
+    let reactionControlTop = 320;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement
+    ) {
+      let top = 0;
+      let height = 24;
+      if (this.getAttribute("data-testid") === "timeline-view") {
+        top = 120;
+        height = 260;
+      } else if (this.classList.contains("reaction-control")) {
+        top = reactionControlTop;
+      } else if (this.classList.contains("main-pane")) {
+        top = 100;
+        height = 500;
+      }
+      return {
+        x: 0,
+        y: top,
+        top,
+        left: 0,
+        right: 480,
+        width: 480,
+        height,
+        bottom: top + height,
+        toJSON: () => ({})
+      } as DOMRect;
+    });
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [message("$react-resized-space", "React after resize")]
+      }
+    });
+
+    render(
+      <div className="main-pane">
+        <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+          <TimelineView
+            timelineKey={KEY}
+            roomId="!room:example.invalid"
+            transport={baseTransport({})}
+            onReply={vi.fn()}
+          />
+        </TimelineStoreContext.Provider>
+      </div>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /add reaction/i }));
+
+    const picker = await screen.findByRole("dialog", { name: /emoji/i });
+    expect(picker.style.getPropertyValue("--emoji-picker-max-block-size")).toBe("194px");
+
+    reactionControlTop = 150;
+    fireEvent(window, new Event("resize"));
+
+    await waitFor(() => {
+      expect(picker.classList.contains("is-below")).toBe(true);
+      expect(picker.style.getPropertyValue("--emoji-picker-max-block-size")).toBe("200px");
+    });
+  });
+
   it("ensures the timeline subscription after registering the CoreEvent listener", async () => {
     const calls: string[] = [];
     let listener: ((payload: CoreEventPayload) => void) | null = null;
