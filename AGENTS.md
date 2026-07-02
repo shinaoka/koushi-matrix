@@ -100,6 +100,11 @@ reverse.
 - Source-text assertions (`source.contains("…")`) are structure guards, not
   behavioral proof. Prefer a test that drives the behavior and asserts on
   emitted events/state.
+- When running focused Rust crate unit tests, add `--lib` unless integration
+  tests are intentionally part of the gate. Example:
+  `cargo test -p koushi-core --lib some_unit_test_name`. Without `--lib`,
+  Cargo still launches every matching integration-test binary after the library
+  test, which is slow even when those binaries run zero tests.
 - Cooperate with the external auditor (codex) for independent root-cause
   verification and diff review (see the recipe below). A subagent's "gates
   passed" claim is not evidence — re-run the gate yourself.
