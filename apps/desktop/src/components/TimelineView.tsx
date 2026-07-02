@@ -1821,6 +1821,72 @@ async function writeClipboardText(value: string): Promise<void> {
   document.body.removeChild(textarea);
 }
 
+type TimelineMediaViewerItem = {
+  sourceUrl: string;
+  filename: string;
+  size: number | null;
+  mimeType: string | null;
+  width: number | null;
+  height: number | null;
+  encrypted: boolean;
+  actions: TimelineMediaViewerActions;
+};
+
+type TimelineMediaViewerActions = {
+  canForward: boolean;
+  forwardDestinations: readonly TimelineForwardDestination[];
+  onForward: (destinationRoomId: string) => void;
+  canViewSource: boolean;
+  onViewSource: () => void;
+  canRedact: boolean;
+  onRedact: () => void;
+};
+
+async function downloadMediaSource(sourceUrl: string, filename: string): Promise<void> {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  const safeFilename = filename.trim() || "download";
+  let downloadUrl: string | null = null;
+  let revokeUrl: string | null = null;
+
+  if (typeof fetch === "function" && typeof URL.createObjectURL === "function") {
+    try {
+      const response = await fetch(sourceUrl);
+      if (response.ok) {
+        const blob = await response.blob();
+        revokeUrl = URL.createObjectURL(blob);
+        downloadUrl = revokeUrl;
+      }
+    } catch {
+      downloadUrl = null;
+    }
+  }
+
+  if (
+    downloadUrl === null &&
+    (/^https?:\/\//.test(sourceUrl) || sourceUrl.startsWith("data:") || sourceUrl.startsWith("blob:"))
+  ) {
+    downloadUrl = sourceUrl;
+  }
+  if (downloadUrl === null) {
+    return;
+  }
+
+  const anchor = document.createElement("a");
+  anchor.href = downloadUrl;
+  anchor.download = safeFilename;
+  anchor.rel = "noreferrer";
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  if (revokeUrl) {
+    window.setTimeout(() => URL.revokeObjectURL(revokeUrl), 0);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -1945,6 +2011,7 @@ export const TimelineView = memo(function TimelineView({
   const setStore = setTimelineStore ?? timelineStoreContext?.setStore ?? localSetStore;
   const isAppLevelStore = timelineStore !== undefined || timelineStoreContext !== null;
   const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
+  const [mediaViewerItem, setMediaViewerItem] = useState<TimelineMediaViewerItem | null>(null);
   const [navigationSnapshot, setNavigationSnapshot] =
     useState<TimelineNavigationSnapshot | null>(null);
   const [avatarThumbnails, setAvatarThumbnails] = useState<Record<string, AvatarThumbnailState>>(
@@ -4082,6 +4149,7 @@ export const TimelineView = memo(function TimelineView({
                 onHideLinkPreview={onHideLinkPreview}
                 onCopyText={onCopyText}
                 onOpenAliasDialog={onSetLocalUserAlias ? openAliasDialog : undefined}
+                onOpenMediaViewer={setMediaViewerItem}
                 forwardDestinations={effectiveForwardDestinations}
                 onRetrySend={onRetrySend}
                 onCancelSend={onCancelSend}
@@ -4126,6 +4194,12 @@ export const TimelineView = memo(function TimelineView({
         <MessageSourceDialog
           source={messageSource}
           onClose={() => setMessageSource(null)}
+        />
+      ) : null}
+      {mediaViewerItem ? (
+        <TimelineMediaViewer
+          item={mediaViewerItem}
+          onClose={() => setMediaViewerItem(null)}
         />
       ) : null}
       {aliasTarget ? (
@@ -4193,6 +4267,7 @@ export function TimelineItemRow({
   onHideLinkPreview = () => undefined,
   onCopyText = () => undefined,
   onOpenAliasDialog,
+  onOpenMediaViewer = () => undefined,
   forwardDestinations = [],
   onRetrySend = ignoreSendQueueAction,
   onCancelSend = ignoreSendQueueAction,
@@ -4232,6 +4307,7 @@ export function TimelineItemRow({
   onHideLinkPreview?: TimelineRowActionHandlers["onHideLinkPreview"];
   onCopyText?: TimelineRowActionHandlers["onCopyText"];
   onOpenAliasDialog?: (target: TimelineAliasTarget) => void;
+  onOpenMediaViewer?: (item: TimelineMediaViewerItem) => void;
   forwardDestinations?: readonly TimelineForwardDestination[];
   onRetrySend?: TimelineRowActionHandlers["onRetrySend"];
   onCancelSend?: TimelineRowActionHandlers["onCancelSend"];
@@ -4797,6 +4873,16 @@ export function TimelineItemRow({
         downloadState={mediaDownload}
         canDownload={Boolean(eventId)}
         onDownload={submitDownloadMedia}
+        onOpenMediaViewer={onOpenMediaViewer}
+        viewerActions={{
+          canForward,
+          forwardDestinations,
+          onForward: submitForward,
+          canViewSource,
+          onViewSource: loadMessageSource,
+          canRedact: Boolean(canShowActionButtons && item.can_redact),
+          onRedact: submitRedaction
+        }}
       />
     ) : null;
   function handleContextMenu(event: MouseEvent<HTMLElement>) {
@@ -5886,13 +5972,17 @@ function TimelineMediaAttachment({
   progress,
   downloadState,
   canDownload,
-  onDownload
+  onDownload,
+  onOpenMediaViewer,
+  viewerActions
 }: {
   media: NonNullable<TimelineItem["media"]>;
   progress: MediaTransferProgress | null;
   downloadState?: TimelineMediaDownloadState;
   canDownload: boolean;
   onDownload: () => void;
+  onOpenMediaViewer: (item: TimelineMediaViewerItem) => void;
+  viewerActions: TimelineMediaViewerActions;
 }) {
   const metadata = [
     media.mimetype,
@@ -5929,6 +6019,19 @@ function TimelineMediaAttachment({
           width: readyImageDownload.width,
           height: readyImageDownload.height
         };
+  const readyImageViewerItem =
+    readyImagePreview === null
+      ? null
+      : {
+          sourceUrl: readyImagePreview.sourceUrl,
+          filename: media.filename,
+          size: media.size,
+          mimeType: readyImageDownload?.mime_type ?? media.mimetype,
+          width: readyImagePreview.width,
+          height: readyImagePreview.height,
+          encrypted: media.source.encrypted,
+          actions: viewerActions
+        };
   const progressPercent =
     uploadProgressPercentValue ?? downloadProgressPercent;
 
@@ -5946,12 +6049,15 @@ function TimelineMediaAttachment({
         data-download-state={downloadState?.kind ?? "notRequested"}
       >
         <div className="message-media-figure" style={mediaFrameStyle}>
-          <a
+          <button
             className="message-media-open"
-            href={readyImagePreview.sourceUrl}
-            target="_blank"
-            rel="noreferrer"
+            type="button"
             aria-label={t("timeline.mediaOpenFile")}
+            onClick={() => {
+              if (readyImageViewerItem) {
+                onOpenMediaViewer(readyImageViewerItem);
+              }
+            }}
           >
             <img
               className="message-media-image"
@@ -5962,20 +6068,23 @@ function TimelineMediaAttachment({
               height={readyImagePreview.height ?? undefined}
               loading="lazy"
             />
-          </a>
+          </button>
           {media.source.encrypted ? (
             <span className="message-media-image-badge">{t("timeline.encryptedMedia")}</span>
           ) : null}
           {canDownload ? (
             <div className="message-media-hover-actions">
-              <a
+              <button
                 className="message-media-hover-action"
-                href={readyImagePreview.sourceUrl}
-                download={media.filename}
+                type="button"
                 aria-label={t("timeline.downloadMedia", { filename: media.filename })}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void downloadMediaSource(readyImagePreview.sourceUrl, media.filename);
+                }}
               >
                 <Download size={16} />
-              </a>
+              </button>
             </div>
           ) : null}
           {progressPercent !== null ? (
@@ -6056,14 +6165,16 @@ function TimelineMediaAttachment({
             <RefreshCw size={15} />
           </button>
         ) : downloadState?.kind === "ready" ? (
-          <a
+          <button
             className="message-media-download"
-            href={mediaSourceUrl(downloadState.source_url)}
+            type="button"
             aria-label={t("timeline.downloadMedia", { filename: media.filename })}
-            download={media.filename}
+            onClick={() => {
+              void downloadMediaSource(mediaSourceUrl(downloadState.source_url), media.filename);
+            }}
           >
             <Download size={15} />
-          </a>
+          </button>
         ) : (
           <button
             className="message-media-download"
@@ -6076,6 +6187,234 @@ function TimelineMediaAttachment({
           </button>
         )
       ) : null}
+    </div>
+  );
+}
+
+function TimelineMediaViewer({
+  item,
+  onClose
+}: {
+  item: TimelineMediaViewerItem;
+  onClose: () => void;
+}) {
+  const [isActionMenuOpen, setActionMenuOpen] = useState(false);
+  const [isForwardMenuOpen, setForwardMenuOpen] = useState(false);
+  const actionMenuControlRef = useRef<HTMLDivElement>(null);
+  const firstActionMenuItemRef = useRef<HTMLButtonElement>(null);
+
+  const closeActionMenu = useCallback(() => {
+    setActionMenuOpen(false);
+    setForwardMenuOpen(false);
+  }, []);
+
+  useEffect(() => {
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") {
+        if (isActionMenuOpen) {
+          closeActionMenu();
+          return;
+        }
+        onClose();
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [closeActionMenu, isActionMenuOpen, onClose]);
+
+  useEffect(() => {
+    if (!isActionMenuOpen) {
+      return;
+    }
+    firstActionMenuItemRef.current?.focus();
+  }, [isActionMenuOpen]);
+
+  useEffect(() => {
+    if (!isActionMenuOpen) {
+      return;
+    }
+    const handlePointerDown = (event: PointerEvent) => {
+      const control = actionMenuControlRef.current;
+      if (!control || control.contains(event.target as Node)) {
+        return;
+      }
+      closeActionMenu();
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [closeActionMenu, isActionMenuOpen]);
+
+  const metadata = [
+    formatBytes(item.size),
+    item.mimeType,
+    formatDimensions(item.width, item.height)
+  ].filter((value): value is string => Boolean(value));
+  const canForward = item.actions.canForward && item.actions.forwardDestinations.length > 0;
+  const hasActionMenu = canForward || item.actions.canViewSource || item.actions.canRedact;
+
+  return (
+    <div
+      className="timeline-media-viewer-overlay"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <section
+        className="timeline-media-viewer"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("timeline.mediaViewer")}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="timeline-media-viewer-toolbar">
+          <div className="timeline-media-viewer-info">
+            <div className="timeline-media-viewer-title" dir="auto">
+              {item.filename}
+            </div>
+            {metadata.length > 0 || item.encrypted ? (
+              <div className="timeline-media-viewer-meta">
+                {metadata.length > 0 ? <span>{metadata.join(" · ")}</span> : null}
+                {item.encrypted ? <span>{t("timeline.encryptedMedia")}</span> : null}
+              </div>
+            ) : null}
+          </div>
+          <div className="timeline-media-viewer-actions">
+            <button
+              className="timeline-media-viewer-action"
+              type="button"
+              aria-label={t("timeline.downloadMedia", { filename: item.filename })}
+              onClick={() => {
+                void downloadMediaSource(item.sourceUrl, item.filename);
+              }}
+            >
+              <Download size={20} />
+            </button>
+            {hasActionMenu ? (
+              <div className="timeline-media-viewer-menu-control" ref={actionMenuControlRef}>
+                <button
+                  className="timeline-media-viewer-action"
+                  type="button"
+                  aria-label={t("timeline.messageActions")}
+                  aria-expanded={isActionMenuOpen}
+                  aria-haspopup="menu"
+                  onClick={() => {
+                    setForwardMenuOpen(false);
+                    setActionMenuOpen((current) => !current);
+                  }}
+                >
+                  <MoreHorizontal size={22} />
+                </button>
+                {isActionMenuOpen ? (
+                  <div
+                    className="timeline-media-viewer-menu"
+                    role="menu"
+                    aria-label={t("timeline.messageActions")}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        closeActionMenu();
+                      }
+                    }}
+                  >
+                    {canForward ? (
+                      <div className="timeline-media-viewer-forward-control">
+                        <button
+                          ref={firstActionMenuItemRef}
+                          className="timeline-media-viewer-menu-item"
+                          type="button"
+                          role="menuitem"
+                          aria-haspopup="menu"
+                          aria-expanded={isForwardMenuOpen}
+                          onClick={() => setForwardMenuOpen((current) => !current)}
+                        >
+                          <Forward size={17} aria-hidden="true" />
+                          <span>{t("timeline.forwardMessage")}</span>
+                        </button>
+                        {isForwardMenuOpen ? (
+                          <div className="timeline-media-viewer-forward-menu" role="menu">
+                            {item.actions.forwardDestinations.map((destination) => (
+                              <button
+                                className="timeline-media-viewer-menu-item"
+                                type="button"
+                                role="menuitem"
+                                key={destination.room_id}
+                                onClick={() => {
+                                  item.actions.onForward(destination.room_id);
+                                  onClose();
+                                }}
+                              >
+                                <MessageCircle size={17} aria-hidden="true" />
+                                <span dir="auto">{destination.display_name}</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {item.actions.canViewSource ? (
+                      <button
+                        ref={!canForward ? firstActionMenuItemRef : undefined}
+                        className="timeline-media-viewer-menu-item"
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          item.actions.onViewSource();
+                          onClose();
+                        }}
+                      >
+                        <FileCode2 size={17} aria-hidden="true" />
+                        <span>{t("timeline.viewSource")}</span>
+                      </button>
+                    ) : null}
+                    {item.actions.canRedact ? (
+                      <button
+                        ref={
+                          !canForward && !item.actions.canViewSource
+                            ? firstActionMenuItemRef
+                            : undefined
+                        }
+                        className="timeline-media-viewer-menu-item is-destructive"
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          item.actions.onRedact();
+                          onClose();
+                        }}
+                      >
+                        <Trash2 size={17} aria-hidden="true" />
+                        <span>{t("timeline.removeMessage")}</span>
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            <button
+              className="timeline-media-viewer-action timeline-media-viewer-close"
+              type="button"
+              aria-label={t("mediaGallery.close")}
+              onClick={onClose}
+            >
+              <XCircle size={24} />
+            </button>
+          </div>
+        </div>
+        <div className="timeline-media-viewer-stage">
+          <img
+            className="timeline-media-viewer-image"
+            src={item.sourceUrl}
+            alt={item.filename}
+            title={item.filename}
+            width={item.width ?? undefined}
+            height={item.height ?? undefined}
+          />
+        </div>
+      </section>
     </div>
   );
 }

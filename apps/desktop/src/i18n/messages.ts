@@ -694,6 +694,7 @@ export type MessageId =
   | "timeline.copyCode"
   | "timeline.copyPermalink"
   | "timeline.viewSource"
+  | "timeline.removeMessage"
   | "timeline.requestRoomKey"
   | "timeline.forwardMessage"
   | "timeline.messageSource"
@@ -727,6 +728,7 @@ export type MessageId =
   | "timeline.mediaDownloadFailed"
   | "timeline.mediaDownloadRetry"
   | "timeline.mediaOpenFile"
+  | "timeline.mediaViewer"
   | "timeline.threadReplyCountOne"
   | "timeline.threadReplyCountMany"
   | "timeline.threadRoot"
@@ -1618,6 +1620,7 @@ const en: Catalog = {
   "timeline.copyCode": "Copy code",
   "timeline.copyPermalink": "Copy permalink",
   "timeline.viewSource": "View source",
+  "timeline.removeMessage": "Remove",
   "timeline.requestRoomKey": "Request keys and retry",
   "timeline.forwardMessage": "Forward",
   "timeline.messageSource": "Message source",
@@ -1651,6 +1654,7 @@ const en: Catalog = {
   "timeline.mediaDownloadFailed": "Download failed",
   "timeline.mediaDownloadRetry": "Retry",
   "timeline.mediaOpenFile": "Open file",
+  "timeline.mediaViewer": "Media viewer",
   "timeline.threadReplyCountOne": "1 reply",
   "timeline.threadReplyCountMany": "{count} replies",
   "timeline.threadRoot": "Thread root {eventId}",
@@ -2428,6 +2432,7 @@ const ja: Catalog = {
   "timeline.copyCode": "コードをコピー",
   "timeline.copyPermalink": "パーマリンクをコピー",
   "timeline.viewSource": "ソースを表示",
+  "timeline.removeMessage": "削除",
   "timeline.requestRoomKey": "鍵を要求して再試行",
   "timeline.forwardMessage": "転送",
   "timeline.messageSource": "メッセージソース",
@@ -2460,6 +2465,7 @@ const ja: Catalog = {
   "timeline.mediaDownloadFailed": "ダウンロードに失敗しました",
   "timeline.mediaDownloadRetry": "再試行",
   "timeline.mediaOpenFile": "ファイルを開く",
+  "timeline.mediaViewer": "メディアビューア",
   "timeline.threadReplyCountOne": "返信 1 件",
   "timeline.threadReplyCountMany": "返信 {count} 件",
   "timeline.threadRoot": "スレッド元 {eventId}",
