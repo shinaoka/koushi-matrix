@@ -3388,7 +3388,6 @@ export function App() {
             searchResults={searchResults}
             showSearchResults={effectiveRightPanelMode !== "search"}
             snapshot={snapshot}
-            timelineBackfill={timelineDiagnostics.backfill}
             timelineTransport={appTimelineTransport}
             onReturnToLive={() => {
               // #161: leave the anchored (jump-to-date) main-pane view. Closing

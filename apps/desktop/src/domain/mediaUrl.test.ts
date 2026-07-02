@@ -30,4 +30,11 @@ describe("mediaSourceUrl", () => {
     );
     expect(convertFileSrc).toHaveBeenCalledWith("/tmp/avatar image.png");
   });
+
+  it("converts local filesystem paths to Tauri asset URLs", () => {
+    expect(mediaSourceUrl("/tmp/media-downloads/report.pdf")).toBe(
+      "asset:///tmp/media-downloads/report.pdf"
+    );
+    expect(convertFileSrc).toHaveBeenLastCalledWith("/tmp/media-downloads/report.pdf");
+  });
 });

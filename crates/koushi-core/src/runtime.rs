@@ -975,6 +975,18 @@ impl AppActor {
                         // AppActor owns AppCommand effects above; replaying
                         // actor-projection effects here would double-execute
                         // login, restore, sync, or recovery work.
+                        let cancel_replaced_room_timeline_pagination =
+                            if let AppAction::SelectRoom { room_id } = &action {
+                                self.cancel_replaced_room_timeline_pagination(room_id)
+                            } else {
+                                None
+                            };
+                        let cancel_replaced_room_timeline_link_previews =
+                            if let AppAction::SelectRoom { room_id } = &action {
+                                self.cancel_replaced_room_timeline_link_previews(room_id)
+                            } else {
+                                None
+                            };
                         let post_projection_effects = self.reduce_app_action(action).await;
                         // After reduce: determine outcome and emit IntentLifecycle
                         // for correlated pending SelectRoom intents.
@@ -1018,6 +1030,36 @@ impl AppActor {
                                 .unwrap_or(false)
                             {
                                 self.pending_select.remove(&room_id);
+                            }
+                            if committed {
+                                if let Some(key) = cancel_replaced_room_timeline_pagination {
+                                    let cancel_request_id = request_id_to_emit.unwrap_or(RequestId {
+                                        connection_id: RuntimeConnectionId(0),
+                                        sequence: 0,
+                                    });
+                                    self.send_timeline_command_or_fail(
+                                        cancel_request_id,
+                                        TimelineCommand::CancelPagination {
+                                            request_id: cancel_request_id,
+                                            key,
+                                        },
+                                    )
+                                    .await;
+                                }
+                                if let Some(key) = cancel_replaced_room_timeline_link_previews {
+                                    let cancel_request_id = request_id_to_emit.unwrap_or(RequestId {
+                                        connection_id: RuntimeConnectionId(0),
+                                        sequence: 0,
+                                    });
+                                    self.send_timeline_command_or_fail(
+                                        cancel_request_id,
+                                        TimelineCommand::CancelLinkPreviews {
+                                            request_id: cancel_request_id,
+                                            key,
+                                        },
+                                    )
+                                    .await;
+                                }
                             }
                             if let Some(request_id) = request_id_to_emit {
                                 self.emit(CoreEvent::IntentLifecycle { request_id, outcome });
@@ -2077,12 +2119,13 @@ impl AppActor {
                 };
                 self.send_timeline_command_or_fail(
                     request_id,
-                    TimelineCommand::Subscribe {
+                    TimelineCommand::EnsureSubscribed {
                         request_id,
                         key: TimelineKey {
                             account_key,
                             kind: TimelineKind::Room { room_id },
                         },
+                        replay_existing: false,
                     },
                 )
                 .await;
@@ -2288,7 +2331,7 @@ impl AppActor {
                 };
                 self.send_timeline_command_or_fail(
                     request_id,
-                    TimelineCommand::Subscribe {
+                    TimelineCommand::EnsureSubscribed {
                         request_id,
                         key: TimelineKey {
                             account_key,
@@ -2296,6 +2339,7 @@ impl AppActor {
                                 room_id: room_id.clone(),
                             },
                         },
+                        replay_existing: false,
                     },
                 )
                 .await;
@@ -2454,6 +2498,23 @@ impl AppActor {
         }
     }
 
+    fn current_room_timeline_key(&self) -> Option<TimelineKey> {
+        let account_key = self.current_account_key()?;
+        let room_id = self.state.navigation.active_room_id.clone()?;
+        Some(TimelineKey {
+            account_key,
+            kind: TimelineKind::Room { room_id },
+        })
+    }
+
+    fn cancel_replaced_room_timeline_pagination(&self, room_id: &str) -> Option<TimelineKey> {
+        cancel_replaced_room_timeline_pagination_key(self.current_room_timeline_key(), room_id)
+    }
+
+    fn cancel_replaced_room_timeline_link_previews(&self, room_id: &str) -> Option<TimelineKey> {
+        cancel_replaced_room_timeline_link_previews_key(self.current_room_timeline_key(), room_id)
+    }
+
     fn unsubscribe_replaced_thread_timeline(
         &self,
         room_id: &str,
@@ -2549,6 +2610,26 @@ fn unsubscribe_replaced_timeline_key(
     replacement_key: TimelineKey,
 ) -> Option<TimelineKey> {
     current_key.filter(|current_key| current_key != &replacement_key)
+}
+
+fn cancel_replaced_room_timeline_pagination_key(
+    current_key: Option<TimelineKey>,
+    replacement_room_id: &str,
+) -> Option<TimelineKey> {
+    current_key.filter(|current_key| match &current_key.kind {
+        TimelineKind::Room { room_id } => room_id != replacement_room_id,
+        TimelineKind::Thread { .. } | TimelineKind::Focused { .. } => false,
+    })
+}
+
+fn cancel_replaced_room_timeline_link_previews_key(
+    current_key: Option<TimelineKey>,
+    replacement_room_id: &str,
+) -> Option<TimelineKey> {
+    current_key.filter(|current_key| match &current_key.kind {
+        TimelineKind::Room { room_id } => room_id != replacement_room_id,
+        TimelineKind::Thread { .. } | TimelineKind::Focused { .. } => false,
+    })
 }
 
 fn is_ready_session_for_commands(session: &SessionState) -> bool {
@@ -3437,6 +3518,24 @@ mod tests {
     }
 
     #[test]
+    fn runtime_room_selection_ensures_existing_room_timeline_without_replay() {
+        let source = include_str!("runtime.rs");
+        let effects_helper = source
+            .split("async fn handle_post_projection_effects")
+            .nth(1)
+            .expect("post-projection effects helper should exist");
+
+        assert!(
+            effects_helper.contains("TimelineCommand::EnsureSubscribed"),
+            "room selection should ensure a room timeline exists without forcing an existing actor to replay all items"
+        );
+        assert!(
+            effects_helper.contains("replay_existing: false"),
+            "room selection should skip full InitialItems replay when the room timeline actor is already subscribed"
+        );
+    }
+
+    #[test]
     fn actor_projection_start_sync_effects_must_not_be_discarded() {
         let source = include_str!("runtime.rs");
         let action_rx_arm = source
@@ -3569,6 +3668,64 @@ mod tests {
         assert!(
             replacement_offset < effects_offset,
             "OpenFocusedContext must unsubscribe a different existing focused timeline before subscribing the replacement"
+        );
+    }
+
+    #[test]
+    fn selecting_a_replacement_room_cancels_previous_room_pagination_before_subscribe() {
+        let source = include_str!("runtime.rs");
+        let action_rx_arm = source
+            .split("actions = self.action_rx.recv()")
+            .nth(1)
+            .expect("action_rx arm should exist")
+            .split("if state_changed")
+            .next()
+            .expect("action_rx arm should include post-reduce effect handling");
+
+        let cancel_offset = action_rx_arm
+            .find("cancel_replaced_room_timeline_pagination")
+            .expect("SelectRoom must cancel in-flight pagination for the previous room timeline");
+        let effects_offset = action_rx_arm
+            .find("handle_post_projection_effects")
+            .expect("SelectRoom must still execute SubscribeTimeline effects");
+
+        assert!(
+            cancel_offset < effects_offset,
+            "room switch pagination cancellation must happen before subscribing/rendering the replacement room"
+        );
+        assert!(
+            source.contains("TimelineCommand::CancelPagination"),
+            "runtime must route room-switch pagination cancellation through the timeline actor"
+        );
+    }
+
+    #[test]
+    fn selecting_a_replacement_room_cancels_previous_room_link_previews_before_subscribe() {
+        let source = include_str!("runtime.rs");
+        let action_rx_arm = source
+            .split("actions = self.action_rx.recv()")
+            .nth(1)
+            .expect("action_rx arm should exist")
+            .split("if state_changed")
+            .next()
+            .expect("action_rx arm should include post-reduce effect handling");
+
+        let cancel_offset = action_rx_arm
+            .find("cancel_replaced_room_timeline_link_previews")
+            .expect(
+                "SelectRoom must cancel in-flight link previews for the previous room timeline",
+            );
+        let effects_offset = action_rx_arm
+            .find("handle_post_projection_effects")
+            .expect("SelectRoom must still execute SubscribeTimeline effects");
+
+        assert!(
+            cancel_offset < effects_offset,
+            "room switch link preview cancellation must happen before subscribing/rendering the replacement room"
+        );
+        assert!(
+            source.contains("TimelineCommand::CancelLinkPreviews"),
+            "runtime must route room-switch link preview cancellation through the timeline actor"
         );
     }
 

@@ -78,7 +78,6 @@ describe("TimelinePane render isolation", () => {
         searchResults: emptySearchResults,
         showSearchResults: false,
         snapshot: currentSnapshot,
-        timelineBackfill: "unknown",
         timelineTransport,
         onCancelReply: noop,
         onCancelScheduledSend: noop,

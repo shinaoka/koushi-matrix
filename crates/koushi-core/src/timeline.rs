@@ -274,7 +274,16 @@ impl TimelineManagerActor {
         match command {
             TimelineCommand::Subscribe { request_id, key } => {
                 trace_timeline_route("manager_received", "subscribe", request_id, &key);
-                self.handle_subscribe(request_id, key).await;
+                self.handle_subscribe(request_id, key, true).await;
+            }
+            TimelineCommand::EnsureSubscribed {
+                request_id,
+                key,
+                replay_existing,
+            } => {
+                trace_timeline_route("manager_received", "ensure_subscribed", request_id, &key);
+                self.handle_subscribe(request_id, key, replay_existing)
+                    .await;
             }
             TimelineCommand::Unsubscribe { request_id, key } => {
                 trace_timeline_route("manager_received", "unsubscribe", request_id, &key);
@@ -299,6 +308,22 @@ impl TimelineManagerActor {
                     },
                 )
                 .await;
+            }
+            TimelineCommand::CancelPagination { request_id, key } => {
+                trace_timeline_route("manager_received", "cancel_pagination", request_id, &key);
+                if let Some(handle) = self.timelines.get(&key) {
+                    let _ = handle
+                        .send(TimelineActorMessage::CancelPagination { request_id })
+                        .await;
+                }
+            }
+            TimelineCommand::CancelLinkPreviews { request_id, key } => {
+                trace_timeline_route("manager_received", "cancel_link_previews", request_id, &key);
+                if let Some(handle) = self.timelines.get(&key) {
+                    let _ = handle
+                        .send(TimelineActorMessage::CancelLinkPreviews { request_id })
+                        .await;
+                }
             }
             TimelineCommand::RestoreTimelineAnchor {
                 request_id,
@@ -744,7 +769,12 @@ impl TimelineManagerActor {
         }
     }
 
-    async fn handle_subscribe(&mut self, request_id: RequestId, key: TimelineKey) {
+    async fn handle_subscribe(
+        &mut self,
+        request_id: RequestId,
+        key: TimelineKey,
+        replay_existing: bool,
+    ) {
         // Diagnostic-only, private-data-free stage trace (no room/event ids).
         // Enable with KOUSHI_SUBSCRIBE_TRACE=1 to find which `.await` stalls
         // before InitialItems is emitted. Off by default.
@@ -767,21 +797,28 @@ impl TimelineManagerActor {
         // Idempotency: if the identical key is already subscribed, do NOT drop
         // and rebuild the SDK subscription.  The full rebuild was 4-8 expensive
         // `subscribe_to_rooms` / timeline-build cycles per room on snapshot
-        // churn (issue #116).  Instead, ask the existing actor to re-emit its
-        // current navigation_items as InitialItems for this request_id so a
-        // freshly re-mounted TimelineView is still populated.
+        // churn (issue #116).  Callers that need to populate an empty
+        // TimelineView can request an InitialItems replay; room-selection
+        // effects with an already-retained App store can skip that full replay.
         // Confine the `&self.timelines` borrow to the closure so the Err arm
         // can `remove` (a `&mut` borrow) without a conflict.
         let replay_result = self.timelines.get(&key).map(|handle| {
-            handle
-                .tx
-                .try_send(TimelineActorMessage::ReplayInitialItems { request_id })
+            if replay_existing {
+                handle
+                    .tx
+                    .try_send(TimelineActorMessage::ReplayInitialItems { request_id })
+            } else {
+                Ok(())
+            }
         });
         match replay_result {
             Some(Ok(())) => {
                 // Re-emit the subscribed action so the reducer re-confirms
                 // `is_subscribed = true` (idempotent in the reducer).
                 self.emit_timeline_subscribed_action(&key);
+                if !replay_existing {
+                    trace("replay_initial_skipped");
+                }
                 trace("subscribed_done");
                 return;
             }
@@ -1245,6 +1282,15 @@ enum TimelineActorMessage {
         direction: PaginationDirection,
         event_count: u16,
     },
+    CancelPagination {
+        request_id: RequestId,
+    },
+    CancelLinkPreviews {
+        request_id: RequestId,
+    },
+    PaginationFinished {
+        serial: u64,
+    },
     RestoreTimelineAnchor {
         request_id: RequestId,
         event_id: String,
@@ -1544,6 +1590,13 @@ struct ReactionTargetState {
     my_reaction_event_id: Option<String>,
 }
 
+struct ActivePaginationTask {
+    serial: u64,
+    direction: PaginationDirection,
+    event_count: u16,
+    task: executor::JoinHandle<()>,
+}
+
 struct TimelineActor {
     key: TimelineKey,
     timeline: Arc<Timeline>,
@@ -1592,6 +1645,8 @@ struct TimelineActor {
     link_preview_policy: LinkPreviewContext,
     /// In-flight URL preview fetch workers keyed by event_id.
     link_preview_fetches: HashMap<String, executor::JoinHandle<()>>,
+    pagination_task: Option<ActivePaginationTask>,
+    next_pagination_serial: u64,
     /// Application data directory for cached preview images.
     data_dir: Option<std::path::PathBuf>,
     messages_backpressure: MessagesBackpressure,
@@ -1639,6 +1694,9 @@ impl Drop for TimelineActor {
     fn drop(&mut self) {
         for task in self.link_preview_fetches.values() {
             task.abort();
+        }
+        if let Some(active) = self.pagination_task.take() {
+            active.task.abort();
         }
     }
 }
@@ -1844,6 +1902,8 @@ impl TimelineActor {
             ignored_user_ids,
             link_preview_policy,
             link_preview_fetches: HashMap::new(),
+            pagination_task: None,
+            next_pagination_serial: 0,
             data_dir,
             messages_backpressure,
             restore_anchor: None,
@@ -1876,6 +1936,21 @@ impl TimelineActor {
             } => {
                 self.handle_paginate(request_id, direction, event_count)
                     .await;
+            }
+            TimelineActorMessage::CancelPagination { request_id } => {
+                self.handle_cancel_pagination(request_id);
+            }
+            TimelineActorMessage::CancelLinkPreviews { request_id } => {
+                self.handle_cancel_link_previews(request_id);
+            }
+            TimelineActorMessage::PaginationFinished { serial } => {
+                if self
+                    .pagination_task
+                    .as_ref()
+                    .is_some_and(|active| active.serial == serial)
+                {
+                    self.pagination_task = None;
+                }
             }
             TimelineActorMessage::RestoreTimelineAnchor {
                 request_id,
@@ -2109,15 +2184,7 @@ impl TimelineActor {
             None,
             None,
         );
-        let _ = self.paginate_once(request_id, direction, event_count).await;
-    }
 
-    async fn paginate_once(
-        &mut self,
-        request_id: RequestId,
-        direction: PaginationDirection,
-        event_count: u16,
-    ) -> Result<bool, TimelineFailureKind> {
         // Enforce direction rule: forward only on Focused (Async rule 5).
         if direction == PaginationDirection::Forward
             && !matches!(self.key.kind, TimelineKind::Focused { .. })
@@ -2128,13 +2195,84 @@ impl TimelineActor {
                     kind: TimelineFailureKind::InvalidDirection,
                 },
             );
-            return Err(TimelineFailureKind::InvalidDirection);
+            return;
         }
 
+        if self.pagination_task.is_some() {
+            trace_timeline_paginate(
+                "actor_paginate_skip",
+                request_id,
+                &self.key,
+                direction,
+                event_count,
+                None,
+                None,
+                Some("in_flight"),
+            );
+            return;
+        }
+
+        let serial = self.next_pagination_serial;
+        self.next_pagination_serial = self.next_pagination_serial.saturating_add(1);
+        let key = self.key.clone();
+        let timeline = self.timeline.clone();
+        let event_tx = self.event_tx.clone();
+        let actor_tx = self.msg_tx.clone();
+        let messages_backpressure = self.messages_backpressure.clone();
+        let task = executor::spawn(async move {
+            let _ = Self::paginate_once_for(
+                request_id,
+                key,
+                timeline,
+                event_tx,
+                messages_backpressure,
+                direction,
+                event_count,
+            )
+            .await;
+            let _ = actor_tx
+                .send(TimelineActorMessage::PaginationFinished { serial })
+                .await;
+        });
+        self.pagination_task = Some(ActivePaginationTask {
+            serial,
+            direction,
+            event_count,
+            task,
+        });
+    }
+
+    async fn paginate_once(
+        &mut self,
+        request_id: RequestId,
+        direction: PaginationDirection,
+        event_count: u16,
+    ) -> Result<bool, TimelineFailureKind> {
+        Self::paginate_once_for(
+            request_id,
+            self.key.clone(),
+            self.timeline.clone(),
+            self.event_tx.clone(),
+            self.messages_backpressure.clone(),
+            direction,
+            event_count,
+        )
+        .await
+    }
+
+    async fn paginate_once_for(
+        request_id: RequestId,
+        key: TimelineKey,
+        timeline: Arc<Timeline>,
+        event_tx: broadcast::Sender<CoreEvent>,
+        messages_backpressure: MessagesBackpressure,
+        direction: PaginationDirection,
+        event_count: u16,
+    ) -> Result<bool, TimelineFailureKind> {
         // Emit Paginating.
-        self.emit(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+        let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
             request_id: Some(request_id),
-            key: self.key.clone(),
+            key: key.clone(),
             direction,
             state: PaginationState::Paginating,
         }));
@@ -2142,13 +2280,13 @@ impl TimelineActor {
         let gate_started =
             (startup_trace::enabled() || timeline_trace_enabled()).then(std::time::Instant::now);
         let result = {
-            let _permit = self.messages_backpressure.acquire_timeline().await;
+            let _permit = messages_backpressure.acquire_timeline().await;
             let gate_wait = gate_started.map(|t| t.elapsed());
             let gate_ms = gate_wait.map(|duration| duration.as_millis());
             trace_timeline_paginate(
                 "gate_acquired",
                 request_id,
-                &self.key,
+                &key,
                 direction,
                 event_count,
                 None,
@@ -2158,10 +2296,8 @@ impl TimelineActor {
             let paginate_started = startup_trace::now_if_enabled();
             let trace_started = timeline_trace_enabled().then(std::time::Instant::now);
             let outcome = match direction {
-                PaginationDirection::Backward => {
-                    self.timeline.paginate_backwards(event_count).await
-                }
-                PaginationDirection::Forward => self.timeline.paginate_forwards(event_count).await,
+                PaginationDirection::Backward => timeline.paginate_backwards(event_count).await,
+                PaginationDirection::Forward => timeline.paginate_forwards(event_count).await,
             };
             let outcome_token = match &outcome {
                 Ok(true) => "end_reached",
@@ -2171,7 +2307,7 @@ impl TimelineActor {
             trace_timeline_paginate(
                 "sdk_finish",
                 request_id,
-                &self.key,
+                &key,
                 direction,
                 event_count,
                 trace_started.map(|started| started.elapsed().as_millis()),
@@ -2196,13 +2332,36 @@ impl TimelineActor {
             PaginationState::Failed { kind } => Some(*kind),
             _ => None,
         };
-        self.emit(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+        let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
             request_id: Some(request_id),
-            key: self.key.clone(),
+            key,
             direction,
             state: next_state,
         }));
         failure_kind.map_or(Ok(end_reached), Err)
+    }
+
+    fn handle_cancel_pagination(&mut self, request_id: RequestId) {
+        let Some(active) = self.pagination_task.take() else {
+            return;
+        };
+        active.task.abort();
+        trace_timeline_paginate(
+            "cancelled",
+            request_id,
+            &self.key,
+            active.direction,
+            active.event_count,
+            None,
+            None,
+            Some("cancelled"),
+        );
+        self.emit(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+            request_id: Some(request_id),
+            key: self.key.clone(),
+            direction: active.direction,
+            state: PaginationState::Idle,
+        }));
     }
 
     async fn handle_restore_timeline_anchor(
@@ -3869,7 +4028,19 @@ impl TimelineActor {
         failed_count: usize,
         elapsed_ms: u128,
     ) {
-        self.link_preview_fetches.remove(&event_id);
+        if self.link_preview_fetches.remove(&event_id).is_none() {
+            trace_timeline_link_preview(
+                "complete",
+                request_id,
+                &self.key,
+                pending_count,
+                ready_count,
+                failed_count,
+                Some(elapsed_ms),
+                Some("discarded"),
+            );
+            return;
+        }
         let Some(index) = self.navigation_items.iter().position(
             |item| matches!(&item.id, TimelineItemId::Event { event_id: id } if id == &event_id),
         ) else {
@@ -3937,6 +4108,51 @@ impl TimelineActor {
             Some(elapsed_ms),
             Some(if changed { "updated" } else { "discarded" }),
         );
+    }
+
+    fn handle_cancel_link_previews(&mut self, request_id: RequestId) {
+        let fetch_count = self.link_preview_fetches.len();
+        if fetch_count == 0 {
+            return;
+        }
+
+        for (_, task) in self.link_preview_fetches.drain() {
+            task.abort();
+        }
+
+        let mut core_diffs = Vec::new();
+        for (index, item) in self.navigation_items.iter_mut().enumerate() {
+            if reset_loading_link_previews_to_pending(item) {
+                core_diffs.push(TimelineDiff::Set {
+                    index,
+                    item: item.clone(),
+                });
+            }
+        }
+
+        trace_timeline_link_preview(
+            "cancelled",
+            request_id,
+            &self.key,
+            fetch_count,
+            0,
+            0,
+            None,
+            Some("cancelled"),
+        );
+
+        if core_diffs.is_empty() {
+            return;
+        }
+
+        let batch_id = self.next_batch_id;
+        self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
+        self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            key: self.key.clone(),
+            generation: self.generation,
+            batch_id,
+            diffs: core_diffs,
+        }));
     }
 
     async fn handle_hide_link_preview(&mut self, _request_id: RequestId, event_id: String) {
@@ -5201,6 +5417,20 @@ async fn apply_link_previews_to_item(
         is_encrypted,
         context,
     );
+}
+
+fn reset_loading_link_previews_to_pending(item: &mut TimelineItem) -> bool {
+    let Some(previews) = item.link_previews.as_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    for preview in previews {
+        if preview.state == LinkPreviewState::Loading {
+            preview.state = LinkPreviewState::Pending;
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn is_unread_navigation_item(item: &TimelineItem, own_user_id: Option<&str>) -> bool {
@@ -8164,6 +8394,38 @@ mod tests {
     }
 
     #[test]
+    fn timeline_ensure_subscribed_can_skip_existing_actor_replay() {
+        let source = include_str!("timeline.rs");
+        let handle_command = source
+            .split("async fn handle_command")
+            .nth(1)
+            .expect("handle_command should exist")
+            .split("async fn handle_subscribe")
+            .next()
+            .expect("handle_subscribe should follow handle_command");
+        let handle_subscribe_source = source
+            .split("async fn handle_subscribe")
+            .nth(1)
+            .expect("handle_subscribe should exist")
+            .split("let client = session.client()")
+            .next()
+            .expect("existing-key branch should precede the SDK subscribe path");
+
+        assert!(
+            handle_command.contains("TimelineCommand::EnsureSubscribed"),
+            "timeline manager should expose an explicit ensure-subscription path for callers that do not need item replay"
+        );
+        assert!(
+            handle_command.contains("replay_existing"),
+            "ensure-subscription routing must pass through whether an existing actor should replay InitialItems"
+        );
+        assert!(
+            handle_subscribe_source.contains("if replay_existing"),
+            "existing actors should only replay InitialItems when the caller explicitly requests replay"
+        );
+    }
+
+    #[test]
     fn timeline_pagination_uses_account_wide_messages_backpressure() {
         let source = include_str!("timeline.rs");
         let pagination_source = source
@@ -8185,6 +8447,49 @@ mod tests {
         assert!(
             acquire_offset < paginate_offset,
             "timeline pagination must acquire account-wide /messages backpressure before SDK pagination"
+        );
+    }
+
+    #[test]
+    fn timeline_pagination_is_abortable_without_dropping_the_actor() {
+        let source = include_str!("timeline.rs");
+        let actor_source = source
+            .split("struct TimelineActor {")
+            .nth(1)
+            .expect("TimelineActor should exist")
+            .split("impl Drop for TimelineActor")
+            .next()
+            .expect("TimelineActor fields should precede Drop impl");
+        let handle_paginate_source = source
+            .split("async fn handle_paginate")
+            .nth(1)
+            .and_then(|section| section.split("async fn paginate_once").next())
+            .expect("handle_paginate should exist");
+        let handle_cancel_source = source
+            .split("fn handle_cancel_pagination")
+            .nth(1)
+            .and_then(|section| {
+                section
+                    .split("async fn handle_restore_timeline_anchor")
+                    .next()
+            })
+            .expect("cancel pagination handler should exist");
+
+        assert!(
+            source.contains("CancelPagination"),
+            "timeline manager must expose a cancellation message for in-flight pagination"
+        );
+        assert!(
+            actor_source.contains("pagination_task"),
+            "TimelineActor must retain the active pagination task handle separately from the subscription"
+        );
+        assert!(
+            handle_paginate_source.contains("executor::spawn"),
+            "pagination must run outside the actor command loop so cancel messages can be received"
+        );
+        assert!(
+            handle_cancel_source.contains(".abort()"),
+            "cancelling pagination must abort only the pagination task, not the timeline actor"
         );
     }
 
@@ -9169,6 +9474,71 @@ mod tests {
             production.contains("LinkPreviewsFetched"),
             "link preview worker results must return to the TimelineActor explicitly"
         );
+    }
+
+    #[test]
+    fn timeline_link_preview_fetches_are_abortable_without_dropping_the_actor() {
+        let source = include_str!("timeline.rs");
+        let production = source.split("\nmod tests").next().unwrap_or(source);
+        let handle_cancel_source = production
+            .split("fn handle_cancel_link_previews")
+            .nth(1)
+            .and_then(|section| section.split("async fn handle_hide_link_preview").next())
+            .expect("cancel link previews handler should exist");
+        let fetched_source = production
+            .split("async fn handle_link_previews_fetched")
+            .nth(1)
+            .and_then(|section| section.split("fn handle_cancel_link_previews").next())
+            .expect("link preview fetched handler should exist");
+
+        assert!(
+            production.contains("CancelLinkPreviews"),
+            "timeline manager must expose a cancellation message for in-flight link previews"
+        );
+        assert!(
+            handle_cancel_source.contains(".abort()"),
+            "cancelling link previews must abort only link preview workers, not the timeline actor"
+        );
+        assert!(
+            handle_cancel_source.contains("reset_loading_link_previews_to_pending"),
+            "cancelled link preview workers must return Loading previews to Pending for future retries"
+        );
+        assert!(
+            fetched_source.contains("remove(&event_id).is_none()"),
+            "late results from cancelled link preview workers must be ignored"
+        );
+    }
+
+    #[test]
+    fn cancelled_link_preview_loads_return_loading_previews_to_pending() {
+        let mut item = timeline_item(
+            "$link:test",
+            Some("https://example.test"),
+            "@bob:test",
+            false,
+        );
+        item.link_previews = Some(vec![
+            LinkPreview {
+                url: "https://example.test/loading".to_owned(),
+                title: None,
+                description: None,
+                image: None,
+                state: LinkPreviewState::Loading,
+            },
+            LinkPreview {
+                url: "https://example.test/ready".to_owned(),
+                title: Some("ready".to_owned()),
+                description: None,
+                image: None,
+                state: LinkPreviewState::Ready,
+            },
+        ]);
+
+        assert!(reset_loading_link_previews_to_pending(&mut item));
+        let previews = item.link_previews.as_ref().expect("link previews");
+        assert_eq!(previews[0].state, LinkPreviewState::Pending);
+        assert_eq!(previews[1].state, LinkPreviewState::Ready);
+        assert!(!reset_loading_link_previews_to_pending(&mut item));
     }
 
     #[test]

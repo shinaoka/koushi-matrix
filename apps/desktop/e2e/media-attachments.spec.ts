@@ -10,8 +10,10 @@
  *  4. Indeterminate state when progress is null (pending with no bytes/total).
  *  5. Dedupe: a second click while pending does NOT dispatch a second
  *     download_media command.
- *  6. Ready image state renders <img> preview from Rust-owned source_url.
- *  7. Ready non-image state renders download link (not img), no active button.
+ *  6. Ready image state renders <img> preview from Rust-owned source_url and
+ *     its overlay download starts a browser download.
+ *  7. Ready non-image state renders a direct download link (not img), no active
+ *     button, and repeated clicks start a browser download.
  *  8. Failed state renders error label and retry button.
  *  9. Retry dispatches download_media again after failure.
  */
@@ -320,6 +322,31 @@ test("ready image state renders img element with Rust-owned source_url", async (
   await expect(article.locator("a.message-media-hover-action")).toBeVisible();
 });
 
+test("ready image overlay download starts a browser download", async ({ page }) => {
+  await gotoReadyShell(page);
+  const eventId = "$media-ready-img-download:example.invalid";
+  await seedTimelineItems(page, [makeImageItem(eventId)]);
+
+  const syntheticUrl = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
+  await pushMediaDownloadState(page, eventId, {
+    kind: "ready",
+    source_url: syntheticUrl,
+    width: 800,
+    height: 600,
+    mime_type: "image/jpeg"
+  });
+
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  const downloadLink = article.locator("a.message-media-hover-action");
+  await expect(downloadLink).toHaveAttribute("download", "photo.jpg");
+  await expect(downloadLink).not.toHaveAttribute("target", "_blank");
+
+  const downloadPromise = page.waitForEvent("download");
+  await downloadLink.click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe("photo.jpg");
+});
+
 // ---------------------------------------------------------------------------
 // 7. Ready file — download link (no img preview for non-image kind)
 // ---------------------------------------------------------------------------
@@ -341,6 +368,36 @@ test("ready file state shows download link, not img element", async ({ page }) =
   const article = page.locator(`[data-event-id="${eventId}"]`);
   await expect(article.locator("img.message-media-image")).toHaveCount(0);
   await expect(article.locator("a.message-media-download")).toBeVisible();
+});
+
+test("ready file download link starts a browser download on repeated clicks", async ({ page }) => {
+  await gotoReadyShell(page);
+  const eventId = "$media-ready-file-download:example.invalid";
+  await seedTimelineItems(page, [makeFileItem(eventId)]);
+
+  const syntheticUrl = "data:application/pdf;base64,JVBERi0=";
+  await pushMediaDownloadState(page, eventId, {
+    kind: "ready",
+    source_url: syntheticUrl,
+    width: null,
+    height: null,
+    mime_type: "application/pdf"
+  });
+
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  const downloadLink = article.locator("a.message-media-download");
+  await expect(downloadLink).toHaveAttribute("download", "document.pdf");
+  await expect(downloadLink).not.toHaveAttribute("target", "_blank");
+
+  const firstDownloadPromise = page.waitForEvent("download");
+  await downloadLink.click();
+  const firstDownload = await firstDownloadPromise;
+  expect(firstDownload.suggestedFilename()).toBe("document.pdf");
+
+  const secondDownloadPromise = page.waitForEvent("download");
+  await downloadLink.click();
+  const secondDownload = await secondDownloadPromise;
+  expect(secondDownload.suggestedFilename()).toBe("document.pdf");
 });
 
 // ---------------------------------------------------------------------------

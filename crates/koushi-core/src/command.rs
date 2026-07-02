@@ -151,8 +151,11 @@ impl CoreCommand {
             },
             Self::Timeline(command) => match command {
                 TimelineCommand::Subscribe { request_id, .. }
+                | TimelineCommand::EnsureSubscribed { request_id, .. }
                 | TimelineCommand::Unsubscribe { request_id, .. }
                 | TimelineCommand::Paginate { request_id, .. }
+                | TimelineCommand::CancelPagination { request_id, .. }
+                | TimelineCommand::CancelLinkPreviews { request_id, .. }
                 | TimelineCommand::RestoreTimelineAnchor { request_id, .. }
                 | TimelineCommand::ObserveViewport { request_id, .. }
                 | TimelineCommand::SendText { request_id, .. }
@@ -1823,6 +1826,11 @@ pub enum TimelineCommand {
         request_id: RequestId,
         key: TimelineKey,
     },
+    EnsureSubscribed {
+        request_id: RequestId,
+        key: TimelineKey,
+        replay_existing: bool,
+    },
     Unsubscribe {
         request_id: RequestId,
         key: TimelineKey,
@@ -1832,6 +1840,14 @@ pub enum TimelineCommand {
         key: TimelineKey,
         direction: crate::event::PaginationDirection,
         event_count: u16,
+    },
+    CancelPagination {
+        request_id: RequestId,
+        key: TimelineKey,
+    },
+    CancelLinkPreviews {
+        request_id: RequestId,
+        key: TimelineKey,
     },
     RestoreTimelineAnchor {
         request_id: RequestId,
@@ -1972,6 +1988,16 @@ impl fmt::Debug for TimelineCommand {
                 .field("request_id", request_id)
                 .field("key", key)
                 .finish(),
+            Self::EnsureSubscribed {
+                request_id,
+                key,
+                replay_existing,
+            } => formatter
+                .debug_struct("EnsureSubscribed")
+                .field("request_id", request_id)
+                .field("key", key)
+                .field("replay_existing", replay_existing)
+                .finish(),
             Self::Unsubscribe { request_id, key } => formatter
                 .debug_struct("Unsubscribe")
                 .field("request_id", request_id)
@@ -1988,6 +2014,16 @@ impl fmt::Debug for TimelineCommand {
                 .field("key", key)
                 .field("direction", direction)
                 .field("event_count", event_count)
+                .finish(),
+            Self::CancelPagination { request_id, key } => formatter
+                .debug_struct("CancelPagination")
+                .field("request_id", request_id)
+                .field("key", key)
+                .finish(),
+            Self::CancelLinkPreviews { request_id, key } => formatter
+                .debug_struct("CancelLinkPreviews")
+                .field("request_id", request_id)
+                .field("key", key)
                 .finish(),
             Self::RestoreTimelineAnchor {
                 request_id,

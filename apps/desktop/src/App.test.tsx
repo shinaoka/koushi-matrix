@@ -1151,24 +1151,16 @@ describe("ContextualRightPanel", () => {
     expect(transportBranch).toContain("rootEventId");
   });
 
-  test("TimelinePane older messages button uses the event-driven timeline transport", () => {
+  test("TimelinePane no longer renders the older messages header control", () => {
     const source = readFileSync(new URL("./components/panes.tsx", import.meta.url), "utf8");
     const roomPaneStart = source.indexOf("export function TimelinePane");
     const roomPane = source.slice(roomPaneStart);
-    const headerNavigationIndex = roomPane.indexOf('className="timeline-header-navigation"');
-    const loadMoreIndex = roomPane.indexOf('className="icon-button timeline-control"');
-    const timelineScrollIndex = roomPane.indexOf("<TimelineView");
 
-    expect(roomPane).toContain("timelineTransport.paginateBackwards");
     expect(roomPane).toContain("roomTimelineKey(currentUserId, timelineRoomId)");
-    expect(roomPane).toContain('timelineBackfill === "Paginating"');
-    expect(roomPane).toContain('timelineBackfill === "EndReached"');
-    expect(headerNavigationIndex).toBeGreaterThanOrEqual(0);
-    expect(loadMoreIndex).toBeGreaterThan(headerNavigationIndex);
-    expect(loadMoreIndex).toBeLessThan(timelineScrollIndex);
-    expect(roomPane).not.toContain('className="timeline-top-controls"');
-    expect(roomPane).not.toContain("onPaginateBackwards");
-    expect(roomPane).not.toContain("is_paginating_backwards");
+    expect(roomPane).not.toContain('aria-label={t("timeline.olderMessages")}');
+    expect(roomPane).not.toContain("timelineTransport.paginateBackwards");
+    expect(roomPane).not.toContain("<ArrowUp");
+    expect(roomPane).not.toContain("canPaginateOlderMessages");
   });
 
   test("Tauri timeline ensure waits for the webview CoreEvent listener registration", () => {
@@ -1497,10 +1489,14 @@ describe("Tauri state refresh wiring", () => {
     expect(headerNavigationStart).toBeGreaterThanOrEqual(0);
     expect(headerNavigationSource).toContain("mainTimelineAnchorEventId");
     expect(headerNavigationSource).toContain("onReturnToLive");
-    expect(headerNavigationSource).toContain("scrollHeight");
+    expect(headerNavigationSource).toContain("jumpToLatestRef.current?.()");
+    expect(headerNavigationSource).not.toContain("closest<HTMLElement>(");
+    expect(headerNavigationSource).not.toContain("scrollTop");
     expect(headerNavigationSource.indexOf("onReturnToLive")).toBeLessThan(
-      headerNavigationSource.indexOf("scrollHeight")
+      headerNavigationSource.indexOf("jumpToLatestRef.current?.()")
     );
+    expect(panesSource).toContain("onRegisterJumpToLatest={registerJumpToLatest}");
+    expect(panesSource).toContain("jumpToLatestRef.current = handler");
   });
 
   test("activity room-unread placeholders open rooms without forcing live edge", () => {

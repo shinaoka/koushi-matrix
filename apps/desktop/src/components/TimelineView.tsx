@@ -1813,7 +1813,8 @@ export const TimelineView = memo(function TimelineView({
   onDiagnosticLogEntry,
   timelineStore,
   setTimelineStore,
-  listRefCallback
+  listRefCallback,
+  onRegisterJumpToLatest
 }: {
   timelineKey: TimelineKey;
   roomId: string;
@@ -1868,9 +1869,14 @@ export const TimelineView = memo(function TimelineView({
   setTimelineStore?: Dispatch<SetStateAction<TimelineStoreState>>;
   /**
    * Optional callback receiving the timeline list element so parent chrome can
-   * drive scroll actions such as "jump to latest".
+   * inspect the committed list node without owning viewport semantics.
    */
   listRefCallback?: (element: HTMLDivElement | null) => void;
+  /**
+   * Optional callback registering the TimelineView-owned live-edge jump action
+   * for parent chrome controls.
+   */
+  onRegisterJumpToLatest?: (handler: (() => void) | null) => void;
 }) {
   // Persisted restart anchors are intentionally ignored for restoration:
   // first entry after app startup goes to live edge, while in-session room
@@ -1968,6 +1974,8 @@ export const TimelineView = memo(function TimelineView({
   /** Set by wheel/touch/keyboard/scrollbar intent; consumed by the next scroll event. */
   const userScrollInputPendingRef = useRef(false);
   const pendingScrollFrameUserInputRef = useRef(false);
+  /** Session-anchor restores can emit layout scroll events; wait for user intent before backfill. */
+  const autoBackfillRequiresUserScrollRef = useRef(false);
   /** Coalesces ResizeObserver-driven live-edge corrections. */
   const viewportIntentResizeFrameRef = useRef<TimelineScheduledFrame | null>(null);
   const scrollFollowUpFramesRef = useRef<Set<TimelineScheduledFrame>>(new Set());
@@ -2361,6 +2369,7 @@ export const TimelineView = memo(function TimelineView({
         roomScrollAnchorRestorePendingRef.current = false;
         viewportIntentRef.current = { kind: "free-scroll" };
         userScrollInputPendingRef.current = false;
+        autoBackfillRequiresUserScrollRef.current = false;
         resetActiveMeasurementDeferral({ clearMountedIds: true });
         lastPersistedViewportAnchorSignatureRef.current = null;
         restoredRoomScrollAnchorSignatureRef.current = null;
@@ -2494,6 +2503,7 @@ export const TimelineView = memo(function TimelineView({
         roomScrollAnchorRestorePendingRef.current = false;
         viewportIntentRef.current = { kind: "free-scroll" };
         userScrollInputPendingRef.current = false;
+        autoBackfillRequiresUserScrollRef.current = false;
         resetActiveMeasurementDeferral({ clearMountedIds: true });
         lastPersistedViewportAnchorSignatureRef.current = null;
         setNavigationSnapshot(null);
@@ -2594,6 +2604,7 @@ export const TimelineView = memo(function TimelineView({
     resetActiveMeasurementDeferral({ clearMountedIds: true });
     userScrollInputPendingRef.current = false;
     pendingScrollFrameUserInputRef.current = false;
+    autoBackfillRequiresUserScrollRef.current = sessionViewport?.mode === "anchor";
     lastPersistedViewportAnchorSignatureRef.current = null;
     avatarRequestRangeRef.current = EMPTY_TIMELINE_ITEM_INDEX_RANGE;
     setAvatarRequestRange(EMPTY_TIMELINE_ITEM_INDEX_RANGE);
@@ -2636,6 +2647,7 @@ export const TimelineView = memo(function TimelineView({
       sessionViewport?.mode === "anchor" ? { kind: "free-scroll" } : { kind: "live-edge" };
     userScrollInputPendingRef.current = false;
     pendingScrollFrameUserInputRef.current = false;
+    autoBackfillRequiresUserScrollRef.current = sessionViewport?.mode === "anchor";
     lastPersistedViewportAnchorSignatureRef.current = null;
     restoredRoomScrollAnchorSignatureRef.current = null;
     if (viewportIntentResizeFrameRef.current !== null) {
@@ -2656,6 +2668,7 @@ export const TimelineView = memo(function TimelineView({
       resetActiveMeasurementDeferral({ clearMountedIds: true });
       userScrollInputPendingRef.current = false;
       pendingScrollFrameUserInputRef.current = false;
+      autoBackfillRequiresUserScrollRef.current = false;
       lastPersistedViewportAnchorSignatureRef.current = null;
       if (viewportIntentResizeFrameRef.current !== null) {
         viewportIntentResizeFrameRef.current.cancel();
@@ -3546,6 +3559,7 @@ export const TimelineView = memo(function TimelineView({
     const skipReasons = [
       anchorRestorePendingRef.current ? "anchor_restore" : null,
       roomScrollAnchorRestorePendingRef.current ? "room_anchor_restore" : null,
+      autoBackfillRequiresUserScrollRef.current ? "await_user_scroll_after_room_restore" : null,
       backfillInFlightRef.current ? "in_flight" : null
     ].filter((reason): reason is string => reason !== null);
     if (skipReasons.length > 0) {
@@ -3600,6 +3614,7 @@ export const TimelineView = memo(function TimelineView({
       if (isUserDrivenScroll) {
         // A genuine user scroll takes viewport control back from any jump.
         jumpViewportControlRef.current = false;
+        autoBackfillRequiresUserScrollRef.current = false;
         if (atBottom) {
           setViewportIntentToLiveEdge();
         } else {
@@ -3822,6 +3837,10 @@ export const TimelineView = memo(function TimelineView({
     scheduleScrollFollowUpFrame,
     updateViewportMetrics
   ]);
+  useEffect(() => {
+    onRegisterJumpToLatest?.(jumpToBottom);
+    return () => onRegisterJumpToLatest?.(null);
+  }, [jumpToBottom, onRegisterJumpToLatest]);
   const canRenderRoomNavigation =
     roomTimelineRoomId === roomId;
   const firstUnreadEventId = navigationSnapshot?.first_unread_event_id ?? null;
@@ -5885,8 +5904,6 @@ function TimelineMediaAttachment({
               <a
                 className="message-media-hover-action"
                 href={readyImagePreview.sourceUrl}
-                target="_blank"
-                rel="noreferrer"
                 download={media.filename}
                 aria-label={t("timeline.downloadMedia", { filename: media.filename })}
               >
@@ -5975,9 +5992,7 @@ function TimelineMediaAttachment({
           <a
             className="message-media-download"
             href={mediaSourceUrl(downloadState.source_url)}
-            target="_blank"
-            rel="noreferrer"
-            aria-label={t("timeline.mediaOpenFile")}
+            aria-label={t("timeline.downloadMedia", { filename: media.filename })}
             download={media.filename}
           >
             <Download size={15} />

@@ -83,6 +83,26 @@ function imageMessage(eventId: string, encrypted = false): TimelineItem {
   };
 }
 
+function fileMessage(eventId: string): TimelineItem {
+  return {
+    ...message(eventId, "File body"),
+    media: {
+      kind: "File",
+      filename: "notes.pdf",
+      source: {
+        mxc_uri: "mxc://example.invalid/notes",
+        encrypted: false,
+        encryption_version: null
+      },
+      mimetype: "application/pdf",
+      size: 12_288,
+      width: null,
+      height: null,
+      thumbnail: null
+    }
+  };
+}
+
 function messages(count: number, prefix = "$item"): TimelineItem[] {
   return Array.from({ length: count }, (_, index) =>
     message(`${prefix}${index}`, `message ${index}`)
@@ -1785,6 +1805,150 @@ describe("TimelineView", () => {
     });
   });
 
+  it("does not auto-backfill after restoring an in-session room anchor until the user scrolls", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const updateScrollAnchor = vi.fn(async () => undefined);
+    const paginateBackwards = vi.fn(async () => undefined);
+    const onDiagnosticLogEntry = vi.fn();
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      paginateBackwards,
+      updateScrollAnchor
+    });
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+
+    mockTimelineRects(
+      {
+        "$anchor:example.invalid": { top: 500, height: 48 },
+        "$after:example.invalid": { top: 560, height: 48 }
+      },
+      { top: 0, height: 600 },
+      scrollContainerRef
+    );
+
+    const { unmount } = render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "scrollHeight", { value: 2000, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [
+            message("$anchor:example.invalid", "Anchor"),
+            message("$after:example.invalid", "After")
+          ]
+        }
+      }
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(1400);
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+    timeline.scrollTop = 48;
+    fireEvent.wheel(timeline, { deltaY: -120 });
+    fireEvent.scroll(timeline);
+
+    await waitFor(() => {
+      expect(updateScrollAnchor).toHaveBeenLastCalledWith(
+        "!room:example.invalid",
+        expect.objectContaining({
+          event_id: "$after:example.invalid",
+          edge: "bottom"
+        })
+      );
+    });
+    expect(paginateBackwards).not.toHaveBeenCalled();
+
+    unmount();
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        autoLoadOlderMessages
+        onReply={vi.fn()}
+        onDiagnosticLogEntry={onDiagnosticLogEntry}
+      />
+    );
+    const restoredTimeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = restoredTimeline;
+    Object.defineProperty(restoredTimeline, "scrollHeight", { value: 2000, configurable: true });
+    Object.defineProperty(restoredTimeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(restoredTimeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [
+            message("$anchor:example.invalid", "Anchor"),
+            message("$after:example.invalid", "After")
+          ]
+        }
+      }
+    });
+
+    await waitFor(() => {
+      expect(restoredTimeline.scrollTop).toBe(48);
+    });
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+
+    fireEvent.scroll(restoredTimeline);
+
+    expect(paginateBackwards).not.toHaveBeenCalled();
+    expect(onDiagnosticLogEntry.mock.calls.map(([entry]) => entry.message)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("reason=await_user_scroll_after_room_restore")
+      ])
+    );
+
+    fireEvent.wheel(restoredTimeline, { deltaY: -120 });
+    fireEvent.scroll(restoredTimeline);
+
+    await waitFor(() => {
+      expect(paginateBackwards).toHaveBeenCalledWith(KEY);
+    });
+    expect(paginateBackwards).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to live edge and clears session anchor when the in-session anchor is missing", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const updateScrollAnchor = vi.fn(async () => undefined);
@@ -3105,11 +3269,67 @@ describe("TimelineView", () => {
       const image = media?.querySelector<HTMLImageElement>(".message-media-image");
       expect(image).not.toBeNull();
       expect(image?.getAttribute("alt")).toBe("photo.png");
-      expect(
-        media?.querySelector(".message-media-hover-actions .message-media-hover-action")
-      ).not.toBeNull();
+      const downloadLink = media?.querySelector<HTMLAnchorElement>(
+        ".message-media-hover-actions .message-media-hover-action"
+      );
+      expect(downloadLink).not.toBeNull();
+      expect(downloadLink?.getAttribute("aria-label")).toBe("Download photo.png");
+      expect(downloadLink?.getAttribute("download")).toBe("photo.png");
+      expect(downloadLink?.hasAttribute("target")).toBe(false);
       expect(media?.textContent).not.toContain("image/png");
       expect(media?.textContent).not.toContain("407 KB");
+    });
+  });
+
+  it("renders ready file downloads as direct download links", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        mediaDownloads={{
+          "$ready-file": {
+            kind: "ready",
+            source_url: "asset://localhost/notes.pdf",
+            width: null,
+            height: null,
+            mime_type: "application/pdf"
+          }
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [fileMessage("$ready-file")]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      const downloadLink = document.querySelector<HTMLAnchorElement>(
+        '[data-event-id="$ready-file"] a.message-media-download'
+      );
+      expect(downloadLink).not.toBeNull();
+      expect(downloadLink?.getAttribute("aria-label")).toBe("Download notes.pdf");
+      expect(downloadLink?.getAttribute("download")).toBe("notes.pdf");
+      expect(downloadLink?.hasAttribute("target")).toBe(false);
     });
   });
 
