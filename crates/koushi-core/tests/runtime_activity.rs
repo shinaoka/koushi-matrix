@@ -222,11 +222,11 @@ async fn activity_context_label_reflects_dm_or_space_room() {
     );
     assert_eq!(
         labels_by_room.get("!room-in-space:example.test"),
-        Some(&"Room · QA Space / QA Room".to_owned())
+        Some(&"QA Space / QA Room".to_owned())
     );
     assert_eq!(
         labels_by_room.get("!room-home:example.test"),
-        Some(&"Room".to_owned())
+        Some(&"QA Room".to_owned())
     );
 }
 
