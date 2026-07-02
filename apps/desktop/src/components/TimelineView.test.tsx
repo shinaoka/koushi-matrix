@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -40,6 +40,7 @@ afterEach(() => {
   setActiveLocaleProfile("en", "none");
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 const KEY = roomTimelineKey("@alice:example.invalid", "!room:example.invalid");
@@ -402,6 +403,62 @@ describe("TimelineView", () => {
 
     const picker = await screen.findByRole("dialog", { name: /emoji/i });
     expect(picker.style.getPropertyValue("--emoji-picker-max-block-size")).toBe("194px");
+  });
+
+  it("lets the reaction emoji picker use extra vertical room when available", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement
+    ) {
+      let top = 0;
+      let height = 24;
+      if (this.getAttribute("data-testid") === "timeline-view") {
+        top = 80;
+        height = 720;
+      } else if (this.classList.contains("reaction-control")) {
+        top = 160;
+      } else if (this.classList.contains("main-pane")) {
+        top = 60;
+        height = 760;
+      }
+      return {
+        x: 0,
+        y: top,
+        top,
+        left: 0,
+        right: 480,
+        width: 480,
+        height,
+        bottom: top + height,
+        toJSON: () => ({})
+      } as DOMRect;
+    });
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [message("$react-roomy-space", "React with roomy space")]
+      }
+    });
+
+    render(
+      <div className="main-pane">
+        <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+          <TimelineView
+            timelineKey={KEY}
+            roomId="!room:example.invalid"
+            transport={baseTransport({})}
+            onReply={vi.fn()}
+          />
+        </TimelineStoreContext.Provider>
+      </div>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /add reaction/i }));
+
+    const picker = await screen.findByRole("dialog", { name: /emoji/i });
+    expect(picker.classList.contains("is-below")).toBe(true);
+    expect(picker.style.getPropertyValue("--emoji-picker-max-block-size")).toBe("610px");
   });
 
   it("updates the reaction emoji picker size when the visible space changes", async () => {
@@ -3484,19 +3541,18 @@ describe("TimelineView", () => {
       const image = media?.querySelector<HTMLImageElement>(".message-media-image");
       expect(image).not.toBeNull();
       expect(image?.getAttribute("alt")).toBe("photo.png");
-      const downloadLink = media?.querySelector<HTMLAnchorElement>(
+      const downloadButton = media?.querySelector<HTMLButtonElement>(
         ".message-media-hover-actions .message-media-hover-action"
       );
-      expect(downloadLink).not.toBeNull();
-      expect(downloadLink?.getAttribute("aria-label")).toBe("Download photo.png");
-      expect(downloadLink?.getAttribute("download")).toBe("photo.png");
-      expect(downloadLink?.hasAttribute("target")).toBe(false);
+      expect(downloadButton).not.toBeNull();
+      expect(downloadButton?.getAttribute("aria-label")).toBe("Download photo.png");
+      expect(downloadButton?.tagName).toBe("BUTTON");
       expect(media?.textContent).not.toContain("image/png");
       expect(media?.textContent).not.toContain("407 KB");
     });
   });
 
-  it("renders ready file downloads as direct download links", async () => {
+  it("renders ready file downloads as navigation-safe buttons", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
@@ -3538,14 +3594,86 @@ describe("TimelineView", () => {
     });
 
     await waitFor(() => {
-      const downloadLink = document.querySelector<HTMLAnchorElement>(
-        '[data-event-id="$ready-file"] a.message-media-download'
+      const downloadButton = document.querySelector<HTMLButtonElement>(
+        '[data-event-id="$ready-file"] button.message-media-download'
       );
-      expect(downloadLink).not.toBeNull();
-      expect(downloadLink?.getAttribute("aria-label")).toBe("Download notes.pdf");
-      expect(downloadLink?.getAttribute("download")).toBe("notes.pdf");
-      expect(downloadLink?.hasAttribute("target")).toBe(false);
+      expect(downloadButton).not.toBeNull();
+      expect(downloadButton?.getAttribute("aria-label")).toBe("Download notes.pdf");
     });
+  });
+
+  it("routes ready image preview downloads through the transport when available", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const fetchMock = vi.fn(async () => new Response(new Blob(["image"], { type: "image/png" })));
+    const createObjectURL = vi.fn(() => "blob:downloaded-image");
+    const revokeObjectURL = vi.fn();
+    const OriginalURL = URL;
+    class MockURL extends OriginalURL {
+      static override createObjectURL = createObjectURL;
+      static override revokeObjectURL = revokeObjectURL;
+    }
+    const clickedAnchors: HTMLAnchorElement[] = [];
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("URL", MockURL);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+      this: HTMLAnchorElement
+    ) {
+      clickedAnchors.push(this);
+    });
+    const saveMediaFile = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      saveMediaFile
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        mediaDownloads={{
+          "$ready-image": {
+            kind: "ready",
+            source_url: "asset://localhost/original-photo.png",
+            width: 2048,
+            height: 1188,
+            mime_type: "image/png"
+          }
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [imageMessage("$ready-image", false)]
+          }
+        }
+      });
+    });
+
+    const downloadButton = await screen.findByRole("button", { name: "Download photo.png" });
+    fireEvent.click(downloadButton);
+
+    await waitFor(() => {
+      expect(saveMediaFile).toHaveBeenCalledWith(
+        "asset://localhost/original-photo.png",
+        "photo.png"
+      );
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(clickedAnchors).toHaveLength(0);
+    expect(screen.queryByRole("dialog", { name: "Media viewer" })).toBeNull();
   });
 
   it("does not request encrypted image previews for off-window initial virtualized items", async () => {
@@ -3601,7 +3729,7 @@ describe("TimelineView", () => {
     expect(downloadMedia).not.toHaveBeenCalled();
   });
 
-  it("renders ready image preview (image-first) and opens the original source", async () => {
+  it("opens ready image previews in an in-app media viewer", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
@@ -3644,10 +3772,8 @@ describe("TimelineView", () => {
 
     await waitFor(() => {
       const image = screen.getByRole("img", { name: "photo.png" });
-      const previewLink = image.closest("a");
-      expect(previewLink?.getAttribute("href")).toBe("asset://localhost/original-photo.png");
-      expect(previewLink?.getAttribute("target")).toBe("_blank");
-      expect(previewLink?.hasAttribute("download")).toBe(false);
+      const previewButton = image.closest("button");
+      expect(previewButton?.getAttribute("aria-label")).toBe("Open file");
       const media = document.querySelector(".message-media");
       // #163: image-first layout. The encrypted badge stays visible as a
       // security signal and the download sits in the hover overlay, but
@@ -3658,6 +3784,119 @@ describe("TimelineView", () => {
       expect(media?.querySelector(".message-media-hover-actions")).not.toBeNull();
       expect(media?.textContent).not.toContain("image/png");
       expect(media?.textContent).not.toContain("407 KB");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Open file" }));
+
+    const viewer = await screen.findByRole("dialog", { name: "Media viewer" });
+    expect(viewer.textContent).toContain("photo.png");
+    expect(viewer.textContent).toContain("407 KB");
+    expect(viewer.querySelector<HTMLImageElement>(".timeline-media-viewer-image")?.src).toContain(
+      "asset://localhost/original-photo.png"
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Close media viewer" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Media viewer" })).toBeNull();
+    });
+  });
+
+  it("routes media viewer message actions through the event transport", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const loadMessageSource = vi.fn(async () => undefined);
+    const redactMessage = vi.fn(async () => undefined);
+    const forwardMessage = vi.fn(async () => undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      loadMessageSource,
+      redactMessage,
+      forwardMessage
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        mediaDownloads={{
+          "$ready-image": {
+            kind: "ready",
+            source_url: "asset://localhost/original-photo.png",
+            width: 2048,
+            height: 1188,
+            mime_type: "image/png"
+          }
+        }}
+        forwardDestinations={[
+          {
+            room_id: "!destination:example.invalid",
+            display_name: "Destination room"
+          }
+        ]}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              {
+                ...imageMessage("$ready-image", false),
+                can_redact: true,
+                actions: {
+                  can_copy: false,
+                  can_forward: true,
+                  can_permalink: false,
+                  can_view_source: true
+                }
+              }
+            ]
+          }
+        }
+      });
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open file" }));
+    let viewer = await screen.findByRole("dialog", { name: "Media viewer" });
+    fireEvent.click(within(viewer).getByRole("button", { name: "Message actions" }));
+    expect(within(viewer).getByRole("menu", { name: "Message actions" })).not.toBeNull();
+    fireEvent.click(within(viewer).getByRole("menuitem", { name: "Forward" }));
+    fireEvent.click(within(viewer).getByRole("menuitem", { name: "Destination room" }));
+    await waitFor(() => {
+      expect(forwardMessage).toHaveBeenCalledWith(
+        "!room:example.invalid",
+        "$ready-image",
+        "!destination:example.invalid"
+      );
+      expect(screen.queryByRole("dialog", { name: "Media viewer" })).toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Open file" }));
+    viewer = await screen.findByRole("dialog", { name: "Media viewer" });
+    fireEvent.click(within(viewer).getByRole("button", { name: "Message actions" }));
+    fireEvent.click(within(viewer).getByRole("menuitem", { name: "View source" }));
+    await waitFor(() => {
+      expect(loadMessageSource).toHaveBeenCalledWith("!room:example.invalid", "$ready-image");
+      expect(screen.queryByRole("dialog", { name: "Media viewer" })).toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Open file" }));
+    viewer = await screen.findByRole("dialog", { name: "Media viewer" });
+    fireEvent.click(within(viewer).getByRole("button", { name: "Message actions" }));
+    fireEvent.click(within(viewer).getByRole("menuitem", { name: "Remove" }));
+
+    await waitFor(() => {
+      expect(redactMessage).toHaveBeenCalledWith("!room:example.invalid", "$ready-image");
+      expect(screen.queryByRole("dialog", { name: "Media viewer" })).toBeNull();
     });
   });
 

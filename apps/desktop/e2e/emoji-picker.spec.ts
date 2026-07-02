@@ -149,6 +149,32 @@ test("send button and emoji picker are simultaneously visible", async ({ page })
   await expect(picker).toBeVisible();
 });
 
+test("picker uses available room without horizontal scrolling", async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 900 });
+  await gotoReadyShell(page);
+  await openEmojiPicker(page);
+
+  const picker = page.getByRole("dialog", { name: t("composer.emoji") });
+  const metrics = await picker.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const tabs = element.querySelector<HTMLElement>(".emoji-picker-tabs");
+    const body = element.querySelector<HTMLElement>(".emoji-picker-body");
+    return {
+      bodyClientWidth: body?.clientWidth ?? 0,
+      bodyScrollWidth: body?.scrollWidth ?? 0,
+      height: rect.height,
+      tabsClientWidth: tabs?.clientWidth ?? 0,
+      tabsScrollWidth: tabs?.scrollWidth ?? 0,
+      width: rect.width
+    };
+  });
+
+  expect(metrics.width).toBeGreaterThanOrEqual(400);
+  expect(metrics.height).toBeGreaterThan(360);
+  expect(metrics.tabsScrollWidth).toBeLessThanOrEqual(metrics.tabsClientWidth + 1);
+  expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.bodyClientWidth + 1);
+});
+
 test("arrow key navigation then Enter inserts the highlighted emoji", async ({ page }) => {
   await gotoReadyShell(page);
   await openEmojiPicker(page);

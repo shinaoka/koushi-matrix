@@ -157,6 +157,21 @@ describe("styles.css token system", () => {
     expect(block).toContain("z-index: 12;");
   });
 
+  test("emoji picker has a roomy fixed-format layout without horizontal body scroll", () => {
+    const pickerBlock = selectorBlock(".emoji-picker");
+    expect(pickerBlock).toContain("inline-size: min(420px, calc(100vw - 32px));");
+    expect(pickerBlock).toContain(
+      "block-size: min(var(--emoji-picker-max-block-size, 520px), calc(100vh - 32px));"
+    );
+
+    const tabsBlock = selectorBlock(".emoji-picker-tabs");
+    expect(tabsBlock).toContain("justify-content: space-between;");
+    expect(tabsBlock).not.toContain("overflow-x");
+
+    const bodyBlock = selectorBlock(".emoji-picker-body");
+    expect(bodyBlock).toContain("overflow-x: hidden;");
+  });
+
   test("timeline uses Koushi-owned event anchoring rather than browser scroll anchoring", () => {
     const timelineBlock = selectorBlock(".timeline-view");
     const spacerBlock = selectorBlock(".timeline-virtual-spacer");
@@ -333,6 +348,25 @@ describe("styles.css token system", () => {
     expect(dialogBlock).toContain("position: fixed");
     expect(dialogBlock).toContain("z-index: 120");
     expect(selectorBlock(".message-source-copy")).toContain("inline-size: auto");
+  });
+
+  test("timeline media viewer uses its own top-level lightbox layer", () => {
+    const overlayBlock = selectorBlock(".timeline-media-viewer-overlay");
+    expect(overlayBlock).toContain("position: fixed");
+    expect(overlayBlock).toContain("z-index: 140");
+    expect(selectorBlock(".timeline-media-viewer-toolbar")).toContain(
+      "grid-template-columns: minmax(0, 1fr) auto;"
+    );
+    expect(
+      groupedSelectorBlock(
+        /\.timeline-media-viewer-menu,\s*\.timeline-media-viewer-forward-menu/,
+        "timeline media viewer menus"
+      )
+    ).toContain("position: absolute");
+    expect(selectorBlock(".timeline-media-viewer-menu-item")).toContain(
+      "grid-template-columns: 22px minmax(0, 1fr);"
+    );
+    expect(css).toContain(".media-viewer-backdrop");
   });
 
   test("app grid exposes separate resize handles for the room list and right panel", () => {

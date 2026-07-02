@@ -325,6 +325,9 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
       async downloadMedia(roomId: string, eventId: string) {
         await invoke("download_media", { roomId, eventId });
       },
+      async saveMediaFile(sourceUrl: string, filename: string) {
+        await saveReadyMediaFile(sourceUrl, filename);
+      },
       async downloadAvatarThumbnail(mxcUri: string) {
         await invoke("download_avatar_thumbnail", { mxcUri });
       },
@@ -585,6 +588,29 @@ function variantInfoForUpload(variant: ImageCompressionVariant): ImageUploadVari
 
 async function bytesFromFile(file: File): Promise<number[]> {
   return Array.from(new Uint8Array(await file.arrayBuffer()));
+}
+
+function safeDownloadFilename(filename: string): string {
+  const trimmed = filename.trim();
+  return (trimmed || "download").replace(/[\\/:*?"<>|]+/g, "_");
+}
+
+async function saveReadyMediaFile(sourceUrl: string, filename: string): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  const safeFilename = safeDownloadFilename(filename);
+  const selected = await saveDialog({
+    title: t("timeline.downloadMedia", { filename: safeFilename }),
+    defaultPath: safeFilename
+  });
+  if (!selected) {
+    return;
+  }
+  await invoke("save_downloaded_media", {
+    sourceUrl,
+    destinationPath: selected
+  });
 }
 
 function isImageCompressionCandidate(file: File): boolean {

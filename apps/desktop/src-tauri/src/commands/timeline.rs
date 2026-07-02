@@ -481,6 +481,64 @@ pub async fn download_media(
 }
 
 #[tauri::command]
+pub async fn save_downloaded_media(
+    source_url: String,
+    destination_path: String,
+) -> Result<(), String> {
+    let source_path = downloaded_media_source_path(&source_url)?;
+    let destination = selected_save_destination_path(&destination_path)?;
+    if let Some(parent) = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|_| "media save destination could not be created".to_owned())?;
+    }
+    std::fs::copy(&source_path, &destination)
+        .map(|_| ())
+        .map_err(|_| "media file could not be saved".to_owned())
+}
+
+fn downloaded_media_source_path(source_url: &str) -> Result<PathBuf, String> {
+    let source_path = local_media_source_path(source_url)?;
+    let source_path = std::fs::canonicalize(&source_path)
+        .map_err(|_| "media file could not be read".to_owned())?;
+    let cache_root = std::fs::canonicalize(crate::app_data_dir()?.join("media_downloads"))
+        .map_err(|_| "media cache is unavailable".to_owned())?;
+    if !source_path.starts_with(&cache_root) {
+        return Err("media file is outside the download cache".to_owned());
+    }
+    Ok(source_path)
+}
+
+fn local_media_source_path(source_url: &str) -> Result<PathBuf, String> {
+    let trimmed = source_url.trim();
+    if trimmed.is_empty() {
+        return Err("media source is empty".to_owned());
+    }
+    if trimmed.contains("://") {
+        return Err("media source must be a local cache path".to_owned());
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.is_absolute() {
+        return Err("media source must be an absolute cache path".to_owned());
+    }
+    Ok(path)
+}
+
+fn selected_save_destination_path(destination_path: &str) -> Result<PathBuf, String> {
+    let trimmed = destination_path.trim();
+    if trimmed.is_empty() {
+        return Err("media save destination is empty".to_owned());
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.is_absolute() {
+        return Err("media save destination must be absolute".to_owned());
+    }
+    Ok(path)
+}
+
+#[tauri::command]
 pub async fn load_message_source(
     room_id: String,
     event_id: String,
@@ -834,4 +892,26 @@ pub async fn send_thread_reply(
     }
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
+}
+
+#[cfg(test)]
+mod save_downloaded_media_tests {
+    use super::*;
+
+    #[test]
+    fn local_media_source_path_rejects_urls() {
+        assert!(local_media_source_path("asset://localhost/file.png").is_err());
+        assert!(local_media_source_path("https://example.invalid/file.png").is_err());
+    }
+
+    #[test]
+    fn local_media_source_path_requires_absolute_path() {
+        assert!(local_media_source_path("media_downloads/file.png").is_err());
+    }
+
+    #[test]
+    fn selected_save_destination_path_rejects_empty_and_relative_paths() {
+        assert!(selected_save_destination_path("").is_err());
+        assert!(selected_save_destination_path("Downloads/file.png").is_err());
+    }
 }
