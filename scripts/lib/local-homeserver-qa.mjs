@@ -17,6 +17,7 @@ export function minimalEnvironment() {
     "SHELL",
     "TMPDIR",
     "CARGO_HOME",
+    "CARGO_TARGET_DIR",
     "RUSTUP_HOME",
     "RUSTC_WRAPPER",
     "RUSTFLAGS",

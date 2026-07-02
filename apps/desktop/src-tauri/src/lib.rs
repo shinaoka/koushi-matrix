@@ -6,10 +6,7 @@ pub mod keyring_backend;
 
 use std::{
     path::{Path, PathBuf},
-    sync::{
-        Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::atomic::{AtomicUsize, Ordering},
 };
 use tokio::sync::Mutex as TokioMutex;
 
@@ -31,13 +28,6 @@ use koushi_core::renderable_thumbnail::{
 use koushi_core::{
     AccountCommand, CoreCommand, CoreConnection, CoreEvent, CoreRuntime, SearchEvent,
     TimelineEvent, event::AppStateSnapshot,
-};
-
-// koushi-backend: fixture/demo preview only; never on a production
-// Matrix path (overview.md: "fixture/demo data only").
-use koushi_backend::{
-    E2eeRecoveryMode, FakeDesktopBackend, FakeDesktopBackendConfig, LoginDiscoveryMode, LoginMode,
-    SyncMode,
 };
 
 const MENU_EVENT_NAME: &str = "koushi-desktop://menu";
@@ -84,7 +74,7 @@ pub(crate) struct DesktopStandardMenuItem {
 }
 
 pub(crate) fn desktop_menu_items() -> Vec<DesktopMenuItem> {
-    let mut items = vec![
+    vec![
         DesktopMenuItem {
             id: MENU_ID_OPEN_USER_SETTINGS,
             label: "User Settings",
@@ -109,17 +99,14 @@ pub(crate) fn desktop_menu_items() -> Vec<DesktopMenuItem> {
             menu: "help",
             accelerator: "CmdOrCtrl+/",
         },
-    ];
-
-    #[cfg(target_os = "macos")]
-    items.push(DesktopMenuItem {
-        id: MENU_ID_TOGGLE_FULLSCREEN,
-        label: "Toggle Fullscreen",
-        menu: "view",
-        accelerator: "Ctrl+Command+F",
-    });
-
-    items
+        #[cfg(target_os = "macos")]
+        DesktopMenuItem {
+            id: MENU_ID_TOGGLE_FULLSCREEN,
+            label: "Toggle Fullscreen",
+            menu: "view",
+            accelerator: "Ctrl+Command+F",
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -178,32 +165,6 @@ pub struct CoreRuntimeState {
     pub(crate) timeline_items_count: AtomicUsize,
 }
 
-/// Fixture backend for browser-only dev/demo preview.
-///
-/// This is the non-Tauri path. It is NEVER constructed on a production Matrix
-/// path; it exists only so the React components can be previewed in a browser
-/// without a running Tauri process.
-#[allow(dead_code)]
-pub struct BackendState {
-    backend: Mutex<FakeDesktopBackend>,
-    sync_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
-    timeline_task: Mutex<Option<TimelineTaskHandle>>,
-}
-
-#[allow(dead_code)]
-pub(crate) struct TimelineTaskHandle {
-    room_id: String,
-    task: tauri::async_runtime::JoinHandle<()>,
-    pagination_sender: tokio::sync::mpsc::Sender<TimelinePaginationRequest>,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TimelinePaginationRequest {
-    pub room_id: String,
-    pub event_count: u16,
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct PersistedWindowState {
     pub x: i32,
@@ -211,27 +172,6 @@ pub(crate) struct PersistedWindowState {
     pub width: u32,
     pub height: u32,
     pub maximized: bool,
-}
-
-impl Default for BackendState {
-    fn default() -> Self {
-        let config = FakeDesktopBackendConfig {
-            restore_session: false,
-            login_discovery: LoginDiscoveryMode::Http,
-            login: LoginMode::Deferred,
-            e2ee_recovery: E2eeRecoveryMode::SdkState,
-            sync: SyncMode::Deferred,
-            ..FakeDesktopBackendConfig::default()
-        };
-        let mut backend = FakeDesktopBackend::new(config);
-        backend.boot();
-
-        Self {
-            backend: Mutex::new(backend),
-            sync_task: Mutex::new(None),
-            timeline_task: Mutex::new(None),
-        }
-    }
 }
 
 fn restore_session_enabled_from_env_value(value: Option<&str>) -> bool {
