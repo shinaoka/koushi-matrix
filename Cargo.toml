@@ -6,11 +6,29 @@ members = [
     "crates/koushi-sdk",
     "crates/koushi-backend",
     "crates/koushi-core",
+    "apps/desktop/src-tauri",
     "spikes/sidebar-composition",
     "spikes/key-management",
+]
+default-members = [
+    "crates/koushi-state",
+    "crates/koushi-search",
+    "crates/koushi-key",
+    "crates/koushi-sdk",
+    "crates/koushi-core",
+    "apps/desktop/src-tauri",
 ]
 resolver = "2"
 exclude = ["vendor/matrix-rust-sdk"]
 
 [workspace.package]
 license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+matrix-sdk = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "18cdc0ceab8aacce1a57953f897d7f7a3e88834e", default-features = false, features = ["automatic-room-key-forwarding", "e2e-encryption", "experimental-search", "sqlite"] }
+matrix-sdk-base = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "18cdc0ceab8aacce1a57953f897d7f7a3e88834e" }
+matrix-sdk-test = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "18cdc0ceab8aacce1a57953f897d7f7a3e88834e" }
+matrix-sdk-ui = { git = "https://github.com/shinaoka/matrix-rust-sdk-work.git", rev = "18cdc0ceab8aacce1a57953f897d7f7a3e88834e", default-features = false }
+
+[profile.dev.package."*"]
+debug = false

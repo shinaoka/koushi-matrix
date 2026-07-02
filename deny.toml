@@ -13,6 +13,34 @@
 # (primarily the vendored Matrix Rust SDK) with no available fix. Each is
 # documented with why it is accepted.
 ignore = [
+    # RUSTSEC-2024-0411/0412/0413/0414/0415/0416/0417/0418/0419/0420:
+    # gtk-rs GTK3 bindings are unmaintained. These enter through Tauri v2's
+    # Linux WebKit/GTK3 stack. They were already present in the separate
+    # src-tauri lockfile; merging Tauri into the root workspace makes cargo-deny
+    # see them. There is no project-local upgrade until Tauri/wry moves this
+    # Linux backend off gtk3-rs.
+    "RUSTSEC-2024-0411",
+    "RUSTSEC-2024-0412",
+    "RUSTSEC-2024-0413",
+    "RUSTSEC-2024-0414",
+    "RUSTSEC-2024-0415",
+    "RUSTSEC-2024-0416",
+    "RUSTSEC-2024-0417",
+    "RUSTSEC-2024-0418",
+    "RUSTSEC-2024-0419",
+    "RUSTSEC-2024-0420",
+    # RUSTSEC-2024-0370: proc-macro-error is unmaintained. Tauri's gtk3 stack
+    # still pulls gtk3-macros, which pulls this compile-time macro helper. No
+    # runtime code path depends on it directly.
+    "RUSTSEC-2024-0370",
+    # RUSTSEC-2025-0075/0080/0081/0098/0100: rust-unic crates are
+    # unmaintained. They enter through Tauri's urlpattern dependency, which is
+    # upstream-owned.
+    "RUSTSEC-2025-0075",
+    "RUSTSEC-2025-0080",
+    "RUSTSEC-2025-0081",
+    "RUSTSEC-2025-0098",
+    "RUSTSEC-2025-0100",
     # RUSTSEC-2026-0173: proc-macro-error2 is unmaintained. This crate is a
     # transitive dependency through aquamarine (used in matrix-sdk docs macros)
     # and matrix-pickle-derive (used by vodozemac). There is no upstream fix
@@ -20,6 +48,11 @@ ignore = [
     # crate that does not run in production — it only affects compile-time
     # macro expansion. Track upstream SDK upgrades to drop it.
     "RUSTSEC-2026-0173",
+    # RUSTSEC-2026-0194/0195: quick-xml issues reached through plist in the
+    # Tauri stack. plist currently pins a quick-xml 0.39-compatible range; the
+    # fix requires an upstream plist/Tauri dependency update.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]
 
 [licenses]
@@ -95,8 +128,9 @@ deny = []
 skip = []
 
 [sources]
-# Only allow crates from crates.io and local path deps (the vendored SDK).
+# Only allow crates from crates.io, local path deps, and the rev-pinned SDK
+# fork. The SDK was moved from submodule path deps to a git dependency in
+# issue #180 so Cargo fingerprints it by rev instead of path mtimes.
 unknown-registry = "deny"
 unknown-git = "deny"
-# The vendored Matrix Rust SDK is a local path and is exempt.
-allow-git = []
+allow-git = ["https://github.com/shinaoka/matrix-rust-sdk-work.git"]

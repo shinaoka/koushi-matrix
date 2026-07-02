@@ -30,6 +30,7 @@ import {
   assertNoMatrixIdentifiers,
   assertNoRawSdkErrors
 } from "./lib/qa-token-contract.mjs";
+import { assertSdkSubmoduleSynced } from "./lib/sdk-submodule-status.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const localSecretsRoot = join(repoRoot, ".local-secrets", "headless-local-qa");
@@ -126,6 +127,8 @@ if (args.has("--run")) {
 printUsage();
 
 async function run() {
+  assertSdkSubmoduleSynced({ repoRoot });
+
   if (
     (e2eeRecipientSecondDeviceOption || e2eePauseSyncBeforeMultiDeviceSendOption) &&
     !runCoreQa

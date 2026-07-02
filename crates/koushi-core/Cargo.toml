@@ -25,8 +25,8 @@ eyeball = "0.8"
 eyeball-im = "0.8"
 futures-util = "0.3"
 regex = "1"
-matrix-sdk = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk", default-features = false, features = ["automatic-room-key-forwarding", "e2e-encryption", "experimental-search", "sqlite"] }
-matrix-sdk-ui = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk-ui", default-features = false }
+matrix-sdk = { workspace = true }
+matrix-sdk-ui = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -46,8 +46,8 @@ qa-bin = []
 # constructors). Unit tests in src/ already have cfg(test), so this is a
 # no-op for them.
 koushi-core = { path = ".", features = ["test-hooks"] }
-matrix-sdk = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk", default-features = false, features = ["automatic-room-key-forwarding", "e2e-encryption", "experimental-search", "sqlite", "testing"] }
-matrix-sdk-base = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk-base" }
-matrix-sdk-test = { path = "../../vendor/matrix-rust-sdk/testing/matrix-sdk-test" }
+matrix-sdk = { workspace = true, features = ["testing"] }
+matrix-sdk-base = { workspace = true }
+matrix-sdk-test = { workspace = true }
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "rt", "sync", "time", "macros"] }

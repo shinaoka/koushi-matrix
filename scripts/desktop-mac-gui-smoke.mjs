@@ -5,6 +5,8 @@ import { open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { assertSdkSubmoduleSynced } from "./lib/sdk-submodule-status.mjs";
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopDir = join(repoRoot, "apps", "desktop");
 const appProcessNames = ["koushi-desktop"];
@@ -134,6 +136,8 @@ if (args.has("--run")) {
 printUsage();
 
 async function run() {
+  assertSdkSubmoduleSynced({ repoRoot });
+
   checkMacTools();
   const realLogin = realLoginFromStdin ? await readRealLoginCredentials() : null;
 

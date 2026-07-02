@@ -1,4 +1,5 @@
 #!/bin/sh
 # Repo pre-commit hook. Enable once per clone:
 #   git config core.hooksPath .githooks
+node scripts/check-sdk-submodule.mjs || exit 1
 node scripts/desktop-secret-scan.mjs --staged || exit 1
