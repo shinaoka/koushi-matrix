@@ -3602,7 +3602,7 @@ describe("TimelineView", () => {
     });
   });
 
-  it("downloads ready image previews through a blob URL instead of navigating", async () => {
+  it("routes ready image preview downloads through the transport when available", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const fetchMock = vi.fn(async () => new Response(new Blob(["image"], { type: "image/png" })));
     const createObjectURL = vi.fn(() => "blob:downloaded-image");
@@ -3620,11 +3620,13 @@ describe("TimelineView", () => {
     ) {
       clickedAnchors.push(this);
     });
+    const saveMediaFile = vi.fn(async () => undefined);
     const transport = baseTransport({
       listenCoreEvents(nextListener) {
         emit = nextListener;
         return () => undefined;
-      }
+      },
+      saveMediaFile
     });
 
     render(
@@ -3663,12 +3665,14 @@ describe("TimelineView", () => {
     fireEvent.click(downloadButton);
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith("asset://localhost/original-photo.png");
-      expect(createObjectURL).toHaveBeenCalled();
-      expect(clickedAnchors).toHaveLength(1);
+      expect(saveMediaFile).toHaveBeenCalledWith(
+        "asset://localhost/original-photo.png",
+        "photo.png"
+      );
     });
-    expect(clickedAnchors[0].download).toBe("photo.png");
-    expect(clickedAnchors[0].href).toBe("blob:downloaded-image");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(clickedAnchors).toHaveLength(0);
     expect(screen.queryByRole("dialog", { name: "Media viewer" })).toBeNull();
   });
 

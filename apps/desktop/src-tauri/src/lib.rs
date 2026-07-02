@@ -1055,6 +1055,7 @@ pub fn run() {
             commands::timeline::cancel_send,
             commands::timeline::upload_media,
             commands::timeline::download_media,
+            commands::timeline::save_downloaded_media,
             commands::timeline::load_message_source,
             commands::timeline::request_room_key,
             commands::timeline::load_link_previews,

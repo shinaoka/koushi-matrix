@@ -191,6 +191,8 @@ export interface TimelineTransport {
   unpinEvent(roomId: string, eventId: string): Promise<void>;
   /** Download an event-backed media attachment. */
   downloadMedia(roomId: string, eventId: string): Promise<void>;
+  /** Save an already downloaded media file through the host desktop shell. */
+  saveMediaFile?(sourceUrl: string, filename: string): Promise<void>;
   /** Download a Matrix avatar thumbnail for a visible sender avatar MXC. */
   downloadAvatarThumbnail?(mxcUri: string): Promise<void>;
   /** Request a Rust-owned safe source DTO for an event-backed item. */
@@ -1823,6 +1825,7 @@ async function writeClipboardText(value: string): Promise<void> {
 
 type TimelineMediaViewerItem = {
   sourceUrl: string;
+  downloadSourceUrl: string;
   filename: string;
   size: number | null;
   mimeType: string | null;
@@ -1830,6 +1833,7 @@ type TimelineMediaViewerItem = {
   height: number | null;
   encrypted: boolean;
   actions: TimelineMediaViewerActions;
+  saveMediaFile?: TimelineTransport["saveMediaFile"];
 };
 
 type TimelineMediaViewerActions = {
@@ -1885,6 +1889,19 @@ async function downloadMediaSource(sourceUrl: string, filename: string): Promise
   if (revokeUrl) {
     window.setTimeout(() => URL.revokeObjectURL(revokeUrl), 0);
   }
+}
+
+async function saveMediaSource(
+  sourceUrl: string,
+  displayUrl: string,
+  filename: string,
+  saveMediaFile?: TimelineTransport["saveMediaFile"]
+): Promise<void> {
+  if (saveMediaFile) {
+    await saveMediaFile(sourceUrl, filename);
+    return;
+  }
+  await downloadMediaSource(displayUrl, filename);
 }
 
 // ---------------------------------------------------------------------------
@@ -4150,6 +4167,7 @@ export const TimelineView = memo(function TimelineView({
                 onCopyText={onCopyText}
                 onOpenAliasDialog={onSetLocalUserAlias ? openAliasDialog : undefined}
                 onOpenMediaViewer={setMediaViewerItem}
+                onSaveMediaFile={transport.saveMediaFile}
                 forwardDestinations={effectiveForwardDestinations}
                 onRetrySend={onRetrySend}
                 onCancelSend={onCancelSend}
@@ -4268,6 +4286,7 @@ export function TimelineItemRow({
   onCopyText = () => undefined,
   onOpenAliasDialog,
   onOpenMediaViewer = () => undefined,
+  onSaveMediaFile,
   forwardDestinations = [],
   onRetrySend = ignoreSendQueueAction,
   onCancelSend = ignoreSendQueueAction,
@@ -4308,6 +4327,7 @@ export function TimelineItemRow({
   onCopyText?: TimelineRowActionHandlers["onCopyText"];
   onOpenAliasDialog?: (target: TimelineAliasTarget) => void;
   onOpenMediaViewer?: (item: TimelineMediaViewerItem) => void;
+  onSaveMediaFile?: TimelineTransport["saveMediaFile"];
   forwardDestinations?: readonly TimelineForwardDestination[];
   onRetrySend?: TimelineRowActionHandlers["onRetrySend"];
   onCancelSend?: TimelineRowActionHandlers["onCancelSend"];
@@ -4874,6 +4894,7 @@ export function TimelineItemRow({
         canDownload={Boolean(eventId)}
         onDownload={submitDownloadMedia}
         onOpenMediaViewer={onOpenMediaViewer}
+        onSaveMediaFile={onSaveMediaFile}
         viewerActions={{
           canForward,
           forwardDestinations,
@@ -5974,6 +5995,7 @@ function TimelineMediaAttachment({
   canDownload,
   onDownload,
   onOpenMediaViewer,
+  onSaveMediaFile,
   viewerActions
 }: {
   media: NonNullable<TimelineItem["media"]>;
@@ -5982,6 +6004,7 @@ function TimelineMediaAttachment({
   canDownload: boolean;
   onDownload: () => void;
   onOpenMediaViewer: (item: TimelineMediaViewerItem) => void;
+  onSaveMediaFile?: TimelineTransport["saveMediaFile"];
   viewerActions: TimelineMediaViewerActions;
 }) {
   const metadata = [
@@ -6020,17 +6043,19 @@ function TimelineMediaAttachment({
           height: readyImageDownload.height
         };
   const readyImageViewerItem =
-    readyImagePreview === null
+    readyImageDownload === null || readyImagePreview === null
       ? null
       : {
           sourceUrl: readyImagePreview.sourceUrl,
+          downloadSourceUrl: readyImageDownload.source_url,
           filename: media.filename,
           size: media.size,
           mimeType: readyImageDownload?.mime_type ?? media.mimetype,
           width: readyImagePreview.width,
           height: readyImagePreview.height,
           encrypted: media.source.encrypted,
-          actions: viewerActions
+          actions: viewerActions,
+          saveMediaFile: onSaveMediaFile
         };
   const progressPercent =
     uploadProgressPercentValue ?? downloadProgressPercent;
@@ -6038,9 +6063,8 @@ function TimelineMediaAttachment({
   // #163: a ready image is rendered image-first. The preview is the primary
   // block; filename/metadata are not laid out over it, and actions appear on
   // hover/focus as an overlay. The encrypted badge stays visible as a security
-  // signal. (Clicking to open the full-size viewer is wired in a follow-up; the
-  // preview link opens the image for now.)
-  if (readyImagePreview) {
+  // signal.
+  if (readyImagePreview && readyImageDownload) {
     return (
       <div
         className="message-media message-media-image-ready"
@@ -6080,7 +6104,12 @@ function TimelineMediaAttachment({
                 aria-label={t("timeline.downloadMedia", { filename: media.filename })}
                 onClick={(event) => {
                   event.stopPropagation();
-                  void downloadMediaSource(readyImagePreview.sourceUrl, media.filename);
+                  void saveMediaSource(
+                    readyImageDownload.source_url,
+                    readyImagePreview.sourceUrl,
+                    media.filename,
+                    onSaveMediaFile
+                  );
                 }}
               >
                 <Download size={16} />
@@ -6170,7 +6199,12 @@ function TimelineMediaAttachment({
             type="button"
             aria-label={t("timeline.downloadMedia", { filename: media.filename })}
             onClick={() => {
-              void downloadMediaSource(mediaSourceUrl(downloadState.source_url), media.filename);
+              void saveMediaSource(
+                downloadState.source_url,
+                mediaSourceUrl(downloadState.source_url),
+                media.filename,
+                onSaveMediaFile
+              );
             }}
           >
             <Download size={15} />
@@ -6289,7 +6323,12 @@ function TimelineMediaViewer({
               type="button"
               aria-label={t("timeline.downloadMedia", { filename: item.filename })}
               onClick={() => {
-                void downloadMediaSource(item.sourceUrl, item.filename);
+                void saveMediaSource(
+                  item.downloadSourceUrl,
+                  item.sourceUrl,
+                  item.filename,
+                  item.saveMediaFile
+                );
               }}
             >
               <Download size={20} />
