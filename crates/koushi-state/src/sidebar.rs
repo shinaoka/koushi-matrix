@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{
     AvatarImage, RoomNotificationMode, RoomNotificationSettings, RoomSummary, RoomTags,
-    SpaceSummary,
+    SpaceSummary, room_activity_unread_count,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -84,7 +84,7 @@ pub fn compose_sidebar_with_room_notification_settings(
         unread_count: rooms
             .iter()
             .filter(|room| !room_is_muted(&room.room_id, room_notification_settings))
-            .map(|room| room.unread_count)
+            .map(room_activity_unread_count)
             .sum(),
         highlight_count: rooms
             .iter()
@@ -150,7 +150,7 @@ fn space_unread_count(
         .filter_map(|room_id| rooms_by_id.get(room_id.as_str()).copied())
         .filter(|room| !room.is_dm)
         .filter(|room| !room_is_muted(&room.room_id, room_notification_settings))
-        .map(|room| room.unread_count)
+        .map(room_activity_unread_count)
         .sum()
 }
 
@@ -175,7 +175,7 @@ fn room_list_item(room: &RoomSummary) -> RoomListItem {
         display_name: room.display_label.clone(),
         avatar: room.avatar.clone(),
         tags: room.tags.clone(),
-        unread_count: room.unread_count,
+        unread_count: room_activity_unread_count(room),
         highlight_count: room.highlight_count,
     }
 }

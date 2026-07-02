@@ -768,9 +768,9 @@ describe("BrowserFakeApi settings preview", () => {
       "$false-positive"
     ]);
     expect(opened.state.domain.activity.recent.rows.slice(0, 3).map((row) => row.context_label)).toEqual([
-      "Room · Synthetic Lab / matrix-sdk-search",
-      "Room · Synthetic Workspace / planning-room",
-      "Room · Synthetic Workspace / synthetic-room"
+      "Synthetic Lab / matrix-sdk-search",
+      "Synthetic Workspace / planning-room",
+      "Synthetic Workspace / synthetic-room"
     ]);
     expect(
       opened.state.domain.activity.recent.rows.filter((row) => row.kind === "event").every((row) =>
@@ -855,6 +855,25 @@ describe("BrowserFakeApi settings preview", () => {
     expect(
       muted.state.domain.activity.unread.rows.some(
         (row) => row.room_id === "!room-alpha:example.invalid"
+      )
+    ).toBe(false);
+  });
+
+  test("removes notification-only rooms from activity recent unless highlighted", async () => {
+    const api = createBrowserFakeApi();
+
+    await api.openActivity();
+    const updated = await api.setRoomNotificationMode("!room-alpha:example.invalid", {
+      kind: "mentions"
+    });
+
+    expect(updated.state.domain.activity.kind).toBe("open");
+    if (updated.state.domain.activity.kind !== "open") {
+      throw new Error("activity should open after notification mode change");
+    }
+    expect(
+      updated.state.domain.activity.recent.rows.some(
+        (row) => row.room_id === "!room-alpha:example.invalid" && !row.highlight
       )
     ).toBe(false);
   });

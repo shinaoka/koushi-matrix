@@ -2226,7 +2226,8 @@ class BrowserFakeApi implements DesktopApi {
       backwardTimelineMessages,
       new Set(),
       this.snapshot.state.domain.profile.users,
-      spacesById
+      spacesById,
+      this.snapshot.state.domain.room_notification_settings
     )
       .filter((row) => !existingEventIds.has(row.event_id))
       .map((row) => ({ ...row, unread: false, highlight: false }));
@@ -3499,7 +3500,11 @@ function createActivityStreams(
   );
   const unreadRoomIds = new Set(
     rooms
-      .filter((room) => room.unread_count > 0 && !mutedRoomIds.has(room.room_id))
+      .filter(
+        (room) =>
+          roomActivityUnreadCountForMode(room, roomNotificationSettings) > 0 &&
+          !mutedRoomIds.has(room.room_id)
+      )
       .map((room) => room.room_id)
   );
   const messages = includeBackfill
@@ -3509,14 +3514,13 @@ function createActivityStreams(
     messages.filter((message) => !mutedRoomIds.has(message.room_id)),
     unreadRoomIds,
     profileUsers,
-    spacesById
+    spacesById,
+    roomNotificationSettings
   );
   const unreadPlaceholderRows: ActivityRow[] = rooms
     .filter(
       (room) =>
-        (room.unread_count > 0 ||
-          (room.highlight_count ?? 0) > 0 ||
-          Boolean(room.marked_unread)) &&
+        roomActivityUnreadCountForMode(room, roomNotificationSettings) > 0 &&
         !mutedRoomIds.has(room.room_id)
     )
     .map((room) => ({
@@ -3545,30 +3549,62 @@ function createActivityStreams(
   };
 }
 
+function roomActivityUnreadCount(room: RoomSummary): number {
+  const notificationCount = room.notification_count ?? room.unread_count;
+  const highlightCount = room.highlight_count ?? 0;
+  const count = Math.max(notificationCount, highlightCount);
+  if (count > 0) {
+    return count;
+  }
+  return room.marked_unread ? 1 : 0;
+}
+
+function roomActivityUnreadCountForMode(
+  room: RoomSummary,
+  roomNotificationSettings: Record<string, RoomNotificationSettings>
+): number {
+  const mode = roomNotificationSettings[room.room_id]?.mode.kind;
+  if (mode === "mentions" && (room.highlight_count ?? 0) === 0) {
+    return 0;
+  }
+  return roomActivityUnreadCount(room);
+}
+
 function activityRows(
   messages: TimelineMessage[],
   unreadRoomIds: Set<string>,
   profileUsers: Record<string, UserProfile>,
-  spacesById: Map<string, SpaceSummary>
+  spacesById: Map<string, SpaceSummary>,
+  roomNotificationSettings: Record<string, RoomNotificationSettings>
 ): ActivityRow[] {
   return messages
-    .map((message) => {
+    .flatMap((message) => {
       const room = rooms.find((candidate) => candidate.room_id === message.room_id);
       const sender = profileUsers[message.sender];
-      return {
-        kind: "event" as const,
-        room_id: message.room_id,
-        event_id: message.event_id,
-        sender_id: message.sender,
-        room_label: room?.display_label ?? room?.display_name ?? "Unknown room",
-        sender_label: sender?.display_label ?? message.sender,
-        sender_avatar: sender?.avatar ?? null,
-        preview: message.body,
-        timestamp_ms: message.timestamp_ms,
-        unread: unreadRoomIds.has(message.room_id),
-        highlight: message.event_id === "$alpha-update",
-        context_label: activityRowContextLabel(room ?? null, spacesById)
-      };
+      const highlight = message.event_id === "$alpha-update";
+      const mode = room ? roomNotificationSettings[room.room_id]?.mode.kind : undefined;
+      const roomActivityUnread = room
+        ? roomActivityUnreadCountForMode(room, roomNotificationSettings) > 0
+        : false;
+      if (mode === "mentions" && !highlight && !roomActivityUnread) {
+        return [];
+      }
+      return [
+        {
+          kind: "event" as const,
+          room_id: message.room_id,
+          event_id: message.event_id,
+          sender_id: message.sender,
+          room_label: room?.display_label ?? room?.display_name ?? "Unknown room",
+          sender_label: sender?.display_label ?? message.sender,
+          sender_avatar: sender?.avatar ?? null,
+          preview: message.body,
+          timestamp_ms: message.timestamp_ms,
+          unread: unreadRoomIds.has(message.room_id),
+          highlight,
+          context_label: activityRowContextLabel(room ?? null, spacesById)
+        }
+      ];
     })
     .sort(compareActivityRows);
 }
@@ -3586,9 +3622,9 @@ function activityRowContextLabel(
   const spaceId = room.parent_space_ids[0];
   const space = spaceId ? spacesById.get(spaceId) : undefined;
   if (space) {
-    return `Room · ${space.display_name} / ${room.display_label}`;
+    return `${space.display_name} / ${room.display_label}`;
   }
-  return "Room";
+  return room.display_label;
 }
 
 function sortActivityRows(rows: ActivityRow[]): ActivityRow[] {

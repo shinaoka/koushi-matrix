@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use crate::locale_profile::DisplayPlatform;
 
 use super::errors::OperationFailureKind;
-use super::room::{RoomAttentionKind, RoomSummary, room_attention_summary};
+use super::room::{
+    RoomAttentionKind, RoomSummary, room_activity_unread_count, room_attention_summary,
+};
 use super::settings::RoomNotificationMode;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -109,11 +111,13 @@ pub fn native_attention_state_from_rooms(
             continue;
         }
 
-        let effective_unread_count = if mode == RoomNotificationMode::Mentions {
-            0
-        } else {
-            room.unread_count
-        };
+        let activity_unread_count = room_activity_unread_count(room);
+        let effective_unread_count =
+            if mode == RoomNotificationMode::Mentions && room.highlight_count == 0 {
+                0
+            } else {
+                activity_unread_count
+            };
         let effective_notification_count = if mode == RoomNotificationMode::Mentions {
             0
         } else {

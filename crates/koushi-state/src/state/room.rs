@@ -199,6 +199,17 @@ pub fn room_attention_kind(
     }
 }
 
+pub fn room_activity_unread_count(room: &RoomSummary) -> u64 {
+    let count = room.notification_count.max(room.highlight_count);
+    if count > 0 {
+        count
+    } else if room.marked_unread {
+        1
+    } else {
+        0
+    }
+}
+
 pub fn room_attention_summary(
     room_display_name: String,
     is_dm: bool,

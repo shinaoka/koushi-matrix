@@ -235,7 +235,7 @@ export function composeSidebar(
     active_space_id: activeSpaceId,
     account_home: {
       display_name: "Home",
-      unread_count: aggregateRooms.reduce((sum, room) => sum + room.unread_count, 0),
+      unread_count: aggregateRooms.reduce((sum, room) => sum + roomActivityUnreadCount(room), 0),
       highlight_count: aggregateRooms.reduce(
         (sum, room) => sum + (room.highlight_count ?? 0),
         0
@@ -250,7 +250,7 @@ export function composeSidebar(
         .map((roomId) => rooms.find((room) => room.room_id === roomId))
         .filter(roomExists)
         .filter((room) => !roomIsMuted(room.room_id))
-        .reduce((sum, room) => sum + room.unread_count, 0),
+        .reduce((sum, room) => sum + roomActivityUnreadCount(room), 0),
       highlight_count: space.child_room_ids
         .map((roomId) => rooms.find((room) => room.room_id === roomId))
         .filter(roomExists)
@@ -318,9 +318,19 @@ function roomListItem(room: RoomSummary): RoomListItem {
     display_name: room.display_label ?? room.display_name,
     avatar: room.avatar,
     tags: room.tags,
-    unread_count: room.unread_count,
+    unread_count: roomActivityUnreadCount(room),
     highlight_count: room.highlight_count ?? 0
   };
+}
+
+function roomActivityUnreadCount(room: RoomSummary): number {
+  const notificationCount = room.notification_count ?? room.unread_count;
+  const highlightCount = room.highlight_count ?? 0;
+  const count = Math.max(notificationCount, highlightCount);
+  if (count > 0) {
+    return count;
+  }
+  return room.marked_unread ? 1 : 0;
 }
 
 function utf16Length(value: string): number {

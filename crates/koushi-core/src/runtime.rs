@@ -18,7 +18,7 @@ use koushi_state::{
     ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState, ComposerDraftStore,
     MentionIntent, ProfileUpdateRequest, RoomNotificationMode, RoomSummary,
     ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchScope as AppSearchScope,
-    SessionState, SpaceSummary, ThreadPaneState, UiEvent, reduce,
+    SessionState, SpaceSummary, ThreadPaneState, UiEvent, reduce, room_activity_unread_count,
 };
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -633,11 +633,6 @@ impl ActivityProjection {
             .iter()
             .map(|room| (room.room_id.as_str(), room))
             .collect();
-        let spaces_by_id: HashMap<&str, &SpaceSummary> = state
-            .spaces
-            .iter()
-            .map(|space| (space.space_id.as_str(), space))
-            .collect();
         let excluded_room_ids = state
             .rooms
             .iter()
@@ -667,7 +662,11 @@ impl ActivityProjection {
                 .rooms
                 .get(row.room_id.as_str())
                 .and_then(|signals| signals.fully_read_event_id.as_deref());
-            let room_activity_unread = room_has_activity_unread(room);
+            let mode = state
+                .room_notification_settings
+                .get(&room.room_id)
+                .map(|settings| settings.mode);
+            let room_activity_unread = room_has_activity_unread(room, mode);
             let unread_by_marker = room_activity_unread
                 && match fully_read_event_id {
                     Some(event_id) => match row.event_id.as_deref() {
@@ -685,13 +684,16 @@ impl ActivityProjection {
                 && !self
                     .cleared_event_ids
                     .contains(row.event_id.as_deref().unwrap_or(""));
+            if !activity_recent_row_visible(mode, row.highlight, room_activity_unread) {
+                continue;
+            }
             let sender_avatar = row
                 .sender_id
                 .as_ref()
                 .and_then(|user_id| state.profile.users.get(user_id))
                 .and_then(|profile| profile.avatar.clone())
                 .or_else(|| row.sender_avatar.clone());
-            let context_label = activity_row_context_label(room, &spaces_by_id);
+            let context_label = activity_row_context_label(room, &state.spaces);
             let row = ActivityRow {
                 room_label: room.display_label.clone(),
                 sender_avatar,
@@ -721,7 +723,11 @@ impl ActivityProjection {
                 .rooms
                 .get(room.room_id.as_str())
                 .and_then(|signals| signals.fully_read_event_id.as_deref());
-            let room_activity_unread = room_has_activity_unread(room);
+            let mode = state
+                .room_notification_settings
+                .get(&room.room_id)
+                .map(|settings| settings.mode);
+            let room_activity_unread = room_has_activity_unread(room, mode);
             let has_room_metrics = room.unread_count > 0 || room_activity_unread;
             let unread_row = room_activity_unread
                 && fully_read_event_id != Some(latest_event.event_id.as_str())
@@ -743,7 +749,11 @@ impl ActivityProjection {
                     reason,
                 );
             }
-            let context_label = activity_row_context_label(room, &spaces_by_id);
+            let latest_event_highlight = unread_row && room.highlight_count > 0;
+            if !activity_recent_row_visible(mode, latest_event_highlight, room_activity_unread) {
+                continue;
+            }
+            let context_label = activity_row_context_label(room, &state.spaces);
             let mut row = ActivityRow::event(
                 room.room_id.clone(),
                 latest_event.event_id.clone(),
@@ -753,7 +763,7 @@ impl ActivityProjection {
                 latest_event.preview.clone(),
                 latest_event.timestamp_ms,
                 unread_row,
-                unread_row && room.highlight_count > 0,
+                latest_event_highlight,
             );
             row.sender_avatar = latest_event.sender_avatar.clone();
             row.context_label = context_label;
@@ -764,11 +774,15 @@ impl ActivityProjection {
             if excluded.contains(room.room_id.as_str()) {
                 continue;
             }
-            let has_room_metrics = room.unread_count > 0 || room_has_activity_unread(room);
+            let mode = state
+                .room_notification_settings
+                .get(&room.room_id)
+                .map(|settings| settings.mode);
+            let has_room_metrics = room.unread_count > 0 || room_has_activity_unread(room, mode);
             if !has_room_metrics {
                 continue;
             }
-            if !room_has_activity_unread(room) {
+            if !room_has_activity_unread(room, mode) {
                 unread_trace::trace_activity_room(
                     "activity_placeholder",
                     room,
@@ -788,7 +802,7 @@ impl ActivityProjection {
             }
             let highlight = room.highlight_count > 0;
             let timestamp_ms = room.last_activity_ms;
-            let context_label = activity_row_context_label(room, &spaces_by_id);
+            let context_label = activity_row_context_label(room, &state.spaces);
             let placeholder = ActivityRow::room_unread_placeholder(
                 room.room_id.clone(),
                 room.display_label.clone(),
@@ -806,7 +820,13 @@ impl ActivityProjection {
         self.cleared_placeholder_room_ids.retain(|room_id| {
             rooms_by_id
                 .get(room_id.as_str())
-                .map(|room| room_has_activity_unread(room))
+                .map(|room| {
+                    let mode = state
+                        .room_notification_settings
+                        .get(&room.room_id)
+                        .map(|settings| settings.mode);
+                    room_has_activity_unread(room, mode)
+                })
                 .unwrap_or(false)
         });
 
@@ -827,23 +847,50 @@ impl ActivityProjection {
     }
 }
 
-fn room_has_activity_unread(room: &RoomSummary) -> bool {
-    room.notification_count > 0 || room.highlight_count > 0 || room.marked_unread
+fn room_has_activity_unread(room: &RoomSummary, mode: Option<RoomNotificationMode>) -> bool {
+    room_activity_unread_count_for_mode(room, mode) > 0
 }
 
-fn activity_row_context_label(
+fn room_activity_unread_count_for_mode(
     room: &RoomSummary,
-    spaces_by_id: &HashMap<&str, &SpaceSummary>,
-) -> String {
+    mode: Option<RoomNotificationMode>,
+) -> u64 {
+    if matches!(mode, Some(RoomNotificationMode::Mentions)) && room.highlight_count == 0 {
+        0
+    } else {
+        room_activity_unread_count(room)
+    }
+}
+
+fn activity_recent_row_visible(
+    mode: Option<RoomNotificationMode>,
+    row_highlight: bool,
+    room_activity_unread: bool,
+) -> bool {
+    !matches!(mode, Some(RoomNotificationMode::Mentions)) || row_highlight || room_activity_unread
+}
+
+fn activity_row_context_label(room: &RoomSummary, spaces: &[SpaceSummary]) -> String {
     if room.is_dm {
         return "DM".to_owned();
     }
-    if let Some(space_id) = room.parent_space_ids.first() {
-        if let Some(space) = spaces_by_id.get(space_id.as_str()) {
-            return format!("Room · {} / {}", space.display_name, room.display_label);
-        }
+    let parent_space = room
+        .parent_space_ids
+        .iter()
+        .filter_map(|space_id| spaces.iter().find(|space| space.space_id == *space_id))
+        .next()
+        .or_else(|| {
+            spaces.iter().find(|space| {
+                space
+                    .child_room_ids
+                    .iter()
+                    .any(|room_id| room_id == &room.room_id)
+            })
+        });
+    if let Some(space) = parent_space {
+        return format!("{} / {}", space.display_name, room.display_label);
     }
-    "Room".to_owned()
+    room.display_label.clone()
 }
 
 fn sort_activity_rows(rows: &mut [ActivityRow]) {
@@ -2918,8 +2965,8 @@ mod tests {
     };
     use koushi_state::{
         DisplaySettings, LocalUserAliasUpdateState, OwnProfile, ProfileState,
-        RoomLatestEventSummary, RoomSummary, RoomTags, SessionInfo, SettingsPatch, UserProfile,
-        reduce,
+        RoomLatestEventSummary, RoomNotificationModeOperation, RoomNotificationSettings,
+        RoomSummary, RoomTags, SessionInfo, SettingsPatch, UserProfile, reduce,
     };
 
     #[test]
@@ -3047,6 +3094,105 @@ mod tests {
             !recent.rows[0].unread,
             "ingested event rows must not inherit plain unread-only state"
         );
+    }
+
+    #[test]
+    fn activity_projection_skips_recent_rows_for_mentions_mode_without_highlight() {
+        let mut state = AppState::default();
+        state.rooms = vec![RoomSummary {
+            room_id: "!room:example.invalid".to_owned(),
+            display_name: "Room".to_owned(),
+            display_label: "Room".to_owned(),
+            original_display_label: "Room".to_owned(),
+            avatar: None,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: RoomTags::default(),
+            unread_count: 1,
+            notification_count: 1,
+            highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 42,
+            latest_event: Some(RoomLatestEventSummary {
+                event_id: "$latest:example.invalid".to_owned(),
+                sender_id: Some("@sender:example.invalid".to_owned()),
+                sender_label: Some("Sender".to_owned()),
+                sender_avatar: None,
+                preview: Some("body".to_owned()),
+                timestamp_ms: 42,
+            }),
+            parent_space_ids: Vec::new(),
+            dm_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 2,
+        }];
+        state.room_notification_settings.insert(
+            "!room:example.invalid".to_owned(),
+            RoomNotificationSettings {
+                mode: RoomNotificationMode::Mentions,
+                operation: RoomNotificationModeOperation::Idle,
+            },
+        );
+
+        let mut projection = ActivityProjection::default();
+        projection.ingest(vec![ActivityRow::event(
+            "!room:example.invalid".to_owned(),
+            "$event:example.invalid".to_owned(),
+            Some("@sender:example.invalid".to_owned()),
+            "Room".to_owned(),
+            Some("Sender".to_owned()),
+            Some("body".to_owned()),
+            41,
+            true,
+            false,
+        )]);
+        let (recent, unread, _excluded_room_ids) = projection.snapshot(&state);
+
+        assert!(recent.rows.is_empty());
+        assert!(unread.rows.is_empty());
+    }
+
+    #[test]
+    fn activity_projection_context_label_uses_space_and_room_names() {
+        let mut state = AppState::default();
+        state.spaces = vec![SpaceSummary {
+            space_id: "!space:example.invalid".to_owned(),
+            display_name: "Science".to_owned(),
+            avatar: None,
+            child_room_ids: vec!["!room:example.invalid".to_owned()],
+        }];
+        state.rooms = vec![RoomSummary {
+            room_id: "!room:example.invalid".to_owned(),
+            display_name: "Room".to_owned(),
+            display_label: "Papers".to_owned(),
+            original_display_label: "Room".to_owned(),
+            avatar: None,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: RoomTags::default(),
+            unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 42,
+            latest_event: Some(RoomLatestEventSummary {
+                event_id: "$latest:example.invalid".to_owned(),
+                sender_id: Some("@sender:example.invalid".to_owned()),
+                sender_label: Some("Sender".to_owned()),
+                sender_avatar: None,
+                preview: Some("body".to_owned()),
+                timestamp_ms: 42,
+            }),
+            parent_space_ids: vec!["!space:example.invalid".to_owned()],
+            dm_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 2,
+        }];
+
+        let mut projection = ActivityProjection::default();
+        let (recent, _unread, _excluded_room_ids) = projection.snapshot(&state);
+
+        assert_eq!(recent.rows[0].context_label, "Science / Papers");
     }
 
     #[tokio::test]
