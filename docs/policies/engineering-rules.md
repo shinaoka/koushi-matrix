@@ -499,8 +499,11 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    in `koushi-core`, is exercised via `CoreCommand`/`CoreEvent`
    against local Conduit/Tuwunel homeserver QA, and only then is wired into
    Tauri/React. GUI-first Matrix behavior is prohibited.
-1. The vendored `matrix-rust-sdk` is consumed via path/`[patch]`
-   dependencies, preserving upstream structure for upstreaming patches.
+1. The vendored `matrix-rust-sdk` is consumed from one rev-pinned git
+   dependency in the root workspace, preserving a reproducible dependency graph
+   across branch switches. The local `vendor/matrix-rust-sdk` submodule remains
+   the editable upstream-shaped checkout for preparing and reviewing SDK
+   patches, but app crates must not depend on it by local path.
    Direct ports from Element X code preserve upstream license and copyright
    notices.
    Patches to the vendored SDK are limited to what is indispensable: a
@@ -509,11 +512,11 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    (prefer additive accessors over behavioral changes), recorded in
    `docs/upstream/matrix-rust-sdk-feedback.md` with rationale and
    upstreaming intent, and reviewed at phase exit. In this repo the actual
-   deltas live on the `github.com/shinaoka/matrix-rust-sdk-work`
-   submodule branch (`shinaoka/search-ngram`), and local comments should
-   point at the patch surface.
+   deltas live in pinned revisions of `github.com/shinaoka/matrix-rust-sdk-work`,
+   and local comments should point at the patch surface.
    Convenience patches are rejected; every patch increases the cost of
-   tracking upstream.
+   tracking upstream. Every SDK rev bump must update the root `Cargo.lock` and
+   keep the guarded submodule pointer in sync with the pinned git revision.
 2. Local homeserver toolchain caveats (Conduit/Tuwunel install flags such as
    `RUMA_UNSTABLE_EXHAUSTIVE_TYPES=1`, macOS `--no-default-features`) are
    tracked in `AGENTS.md` and the QA scripts, not hand-run.

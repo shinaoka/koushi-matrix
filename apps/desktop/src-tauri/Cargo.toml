@@ -4,8 +4,6 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
-[workspace]
-
 [lib]
 name = "koushi_desktop"
 crate-type = ["staticlib", "cdylib", "rlib"]

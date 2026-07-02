@@ -1371,7 +1371,7 @@ mod tests {
     ///
     /// The golden artifact lives at `tests/golden/frontend_app_state.json`.
     ///
-    /// To regenerate: `UPDATE_GOLDEN=1 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml frontend_app_state_golden_matches_maximally_populated_state`
+    /// To regenerate: `UPDATE_GOLDEN=1 cargo test -p koushi-desktop frontend_app_state_golden_matches_maximally_populated_state`
     ///
     /// When to regenerate: ONLY after an intentional, reviewed DTO change (Phase 4 etc.).
     /// A failing golden test with no intentional change signals an accidental field loss —

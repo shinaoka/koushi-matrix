@@ -21,8 +21,8 @@ required-features = ["smoke"]
 eyeball-im = "0.8"
 futures-util = "0.3"
 koushi-state = { path = "../koushi-state" }
-matrix-sdk = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk", default-features = false, features = ["automatic-room-key-forwarding", "e2e-encryption", "experimental-search", "sqlite"] }
-matrix-sdk-ui = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk-ui", default-features = false }
+matrix-sdk = { workspace = true }
+matrix-sdk-ui = { workspace = true }
 mime = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
 rpassword = { version = "7", optional = true }
@@ -35,7 +35,7 @@ url = "2"
 zeroize = "1"
 
 [dev-dependencies]
-matrix-sdk-base = { path = "../../vendor/matrix-rust-sdk/crates/matrix-sdk-base" }
+matrix-sdk-base = { workspace = true }
 tempfile = "3"
 
 # cargo-machete ignore list: ruma types are accessed through matrix_sdk::ruma

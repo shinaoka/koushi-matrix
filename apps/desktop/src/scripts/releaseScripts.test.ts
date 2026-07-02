@@ -804,27 +804,21 @@ describe("desktop release scripts", () => {
     expect(output).not.toContain("KOUSHI_TEST_SECRET");
   });
 
-  test("Tauri cargo metadata uses the shared repository target directory", () => {
-    const metadata = JSON.parse(
-      execFileSync(
-        "cargo",
-        [
-          "metadata",
-          "--manifest-path",
-          "apps/desktop/src-tauri/Cargo.toml",
-          "--no-deps",
-          "--format-version",
-          "1"
-        ],
-        {
-          cwd: repoRoot,
-          encoding: "utf8"
-        }
-      )
+  test("Tauri crate is owned by the root Cargo workspace", () => {
+    const rootCargo = readFileSync(new URL("../../../../Cargo.toml", import.meta.url), "utf8");
+    const tauriCargo = readFileSync(
+      new URL("../../../../apps/desktop/src-tauri/Cargo.toml", import.meta.url),
+      "utf8"
     );
-    const sharedTargetDir = new URL("../../../../target", import.meta.url).pathname;
+    const releaseGate = readFileSync(
+      new URL("../../../../scripts/desktop-release-gate-check.mjs", import.meta.url),
+      "utf8"
+    );
 
-    expect(metadata.target_directory).toBe(sharedTargetDir);
+    expect(rootCargo).toContain('"apps/desktop/src-tauri"');
+    expect(tauriCargo).not.toMatch(/^\[workspace\]$/m);
+    expect(releaseGate).toContain('"koushi-desktop"');
+    expect(releaseGate).not.toContain('"apps", "desktop", "src-tauri"');
   });
 
   test("local and real homeserver QA preserve shared Cargo target dir", () => {

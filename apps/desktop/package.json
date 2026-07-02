@@ -26,7 +26,7 @@
     "lint:tauri-boundary": "node ../../scripts/check-tauri-adapter-boundary.mjs",
     "lint:domain-deps": "node ../../scripts/check-domain-crate-platform-deps.mjs",
     "test": "vitest run",
-    "test:ipc-contract": "cargo test --manifest-path src-tauri/Cargo.toml core_event_wire_format_matches_checked_in_contract_artifact",
+    "test:ipc-contract": "cargo test -p koushi-desktop core_event_wire_format_matches_checked_in_contract_artifact",
     "test:ui-headless": "vitest run --reporter=verbose src/domain/timelineStore.test.ts && playwright test",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",

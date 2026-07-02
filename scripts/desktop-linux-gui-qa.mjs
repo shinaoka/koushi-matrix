@@ -26,6 +26,7 @@ import {
   tuwunelConfig,
   waitForHomeserver
 } from "./lib/local-homeserver-qa.mjs";
+import { assertSdkSubmoduleSynced } from "./lib/sdk-submodule-status.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const desktopDir = join(repoRoot, "apps", "desktop");
@@ -198,6 +199,8 @@ if (args.has("--run")) {
 printUsage();
 
 async function run() {
+  assertSdkSubmoduleSynced({ repoRoot });
+
   if (guiScenario === "signed-out") {
     await runSignedOutScenario();
     return;

@@ -18,8 +18,12 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
+import { assertSdkSubmoduleSynced } from "./lib/sdk-submodule-status.mjs";
+
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const noCompile = process.argv.includes("--no-compile");
+
+assertSdkSubmoduleSynced({ repoRoot });
 
 // Credential-bearing env vars: these inject or redirect credentials and MUST
 // be compiled out of release builds (engineering-rules: Secrets rule 2).
@@ -68,9 +72,8 @@ if (!noCompile) {
     cwd: repoRoot,
     stdio: "inherit",
   });
-  // The Tauri app crate lives outside the workspace.
-  execFileSync("cargo", ["check", "--release", "--quiet"], {
-    cwd: path.join(repoRoot, "apps", "desktop", "src-tauri"),
+  execFileSync("cargo", ["check", "--release", "--quiet", "-p", "koushi-desktop"], {
+    cwd: repoRoot,
     stdio: "inherit",
   });
   console.log("release gate check: compile ok");

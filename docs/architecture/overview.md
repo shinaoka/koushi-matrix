@@ -148,15 +148,16 @@ Crate responsibilities:
 - `apps/desktop` — view and interaction code only, including viewport state,
   DOM measurement, and scroll anchoring.
 
-Upstream SDK deltas are carried in the
-`github.com/shinaoka/matrix-rust-sdk-work` submodule branch
-(`shinaoka/search-ngram`). Local comments document the patch surfaces, and
-`docs/upstream/matrix-rust-sdk-feedback.md` remains the ledger for PR
-candidate material. The vendored fork already contains the behavior/API deltas
-needed for the current search and runtime work; Phase 9 added explanatory
-comments and management docs, not new runtime behavior. The Phase 9 cleanup
-follow-up completed the SDK adapter rename, room lifecycle commands, runtime
-IPC contract drift check, and optional AppCommand decision.
+Upstream SDK deltas are consumed from a single rev-pinned git dependency on
+`github.com/shinaoka/matrix-rust-sdk-work`, with the local
+`vendor/matrix-rust-sdk` submodule kept as the editable SDK checkout for
+preparing and reviewing upstreamable patches. Local comments document the patch
+surfaces, and `docs/upstream/matrix-rust-sdk-feedback.md` remains the ledger for
+PR candidate material. The vendored fork already contains the behavior/API
+deltas needed for the current search and runtime work; Phase 9 added
+explanatory comments and management docs, not new runtime behavior. The Phase 9
+cleanup follow-up completed the SDK adapter rename, room lifecycle commands,
+runtime IPC contract drift check, and optional AppCommand decision.
 
 GUI, Tauri, CLI, and QA all use the same command/event boundary. There is no
 standalone daemon; the runtime is in-process.

@@ -45,6 +45,7 @@ import {
   assertNoRawSdkErrors,
   assertRequiredTokens
 } from "./lib/qa-token-contract.mjs";
+import { assertSdkSubmoduleSynced } from "./lib/sdk-submodule-status.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const realAccountDir = join(repoRoot, ".local-secrets", "real-account-qa");
@@ -65,6 +66,8 @@ if (args.includes("--run")) {
 }
 
 async function run() {
+  assertSdkSubmoduleSynced({ repoRoot });
+
   if (scenarioOption === "startup_latency") {
     await runStartupLatency();
     return;

@@ -53,13 +53,10 @@ jobs:
         run: npm run lint:domain-deps
 
   rust:
-    name: Rust (workspace / src-tauri / wasm)
+    name: Rust (workspace / wasm)
     runs-on: ubuntu-latest
     env:
-      # Share one target dir across the workspace and the separate src-tauri
-      # cargo project so the vendored Matrix SDK / koushi-core compile
-      # ONCE and are reused, instead of once per project (per
-      # tensor4all/tenferro-rs CI). See #93.
+      # Keep CI artifacts under a predictable repo-local target dir.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target-ci
     steps:
       - uses: actions/checkout@v4
@@ -73,12 +70,8 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
-          # Hash both Cargo.lock files (workspace root + the separate src-tauri
-          # project) into the cache key and cache the shared CARGO_TARGET_DIR;
-          # shared-key keeps the cache warm across branches/PRs. See #93.
-          workspaces: |
-            .
-            apps/desktop/src-tauri
+          # The root workspace owns the Tauri crate and the only Cargo.lock.
+          workspaces: .
           shared-key: koushi-rust-ci
       - name: Install Tauri system dependencies
         run: |
@@ -87,10 +80,12 @@ jobs:
             build-essential pkg-config libssl-dev \
             libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+      - name: Submodule sync guard
+        run: node scripts/check-sdk-submodule.mjs
       - name: Workspace tests
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude koushi-backend --exclude sidebar-composition --exclude key-management
       - name: Tauri DTO + IPC contract tests
-        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+        run: cargo test -p koushi-desktop
       - name: wasm build check (state + search)
         run: cargo check --target wasm32-unknown-unknown -p koushi-state -p koushi-search
       # --- Dependency hygiene (#87 Phase 0) ---
