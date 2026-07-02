@@ -4,7 +4,7 @@
       "display_name": "Home",
       "highlight_count": 1,
       "is_active": false,
-      "unread_count": 3
+      "unread_count": 2
     },
     "active_space_id": "!space:example.invalid",
     "dm_highlight_count": 0,
@@ -18,7 +18,7 @@
         "highlight_count": 1,
         "is_active": true,
         "space_id": "!space:example.invalid",
-        "unread_count": 3
+        "unread_count": 2
       }
     ],
     "space_rooms": [
@@ -40,10 +40,10 @@
           "favourite": null,
           "low_priority": null
         },
-        "unread_count": 3
+        "unread_count": 2
       }
     ],
-    "space_unread_count": 3
+    "space_unread_count": 2
   },
   "state": {
     "domain": {
@@ -197,9 +197,6 @@
       ],
       "link_preview_settings": {
         "room_overrides": {}
-      },
-      "room_preferences": {
-        "rooms": {}
       },
       "live_signals": {
         "presence": {
@@ -363,6 +360,9 @@
             "kind": "idle"
           }
         }
+      },
+      "room_preferences": {
+        "rooms": {}
       },
       "rooms": [
         {
