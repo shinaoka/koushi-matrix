@@ -525,16 +525,16 @@ function reactionPickerLayoutForControl(control: HTMLElement): ReactionPickerLay
     boundaryBottom - controlRect.bottom - REACTION_PICKER_GAP_PX
   );
 
-  if (availableBelow >= REACTION_PICKER_BLOCK_SIZE_PX) {
+  if (availableBelow >= REACTION_PICKER_COMFORTABLE_BLOCK_SIZE_PX) {
     return {
       placement: "below",
-      maxBlockSize: REACTION_PICKER_BLOCK_SIZE_PX
+      maxBlockSize: Math.floor(availableBelow)
     };
   }
-  if (availableAbove >= REACTION_PICKER_BLOCK_SIZE_PX) {
+  if (availableAbove >= REACTION_PICKER_COMFORTABLE_BLOCK_SIZE_PX) {
     return {
       placement: "above",
-      maxBlockSize: REACTION_PICKER_BLOCK_SIZE_PX
+      maxBlockSize: Math.floor(availableAbove)
     };
   }
   const placement = availableAbove >= availableBelow ? "above" : "below";
@@ -561,7 +561,7 @@ const TIMELINE_MAX_ITEM_HEIGHT_PX = 480;
 const TIMELINE_SCROLL_IDLE_FLUSH_MS = 100;
 const TIMELINE_SCROLL_MAX_DEFER_MS = 500;
 const TIMELINE_SUBSCRIBE_FALLBACK_DELAY_MS = 120;
-const REACTION_PICKER_BLOCK_SIZE_PX = 360;
+const REACTION_PICKER_COMFORTABLE_BLOCK_SIZE_PX = 360;
 const REACTION_PICKER_GAP_PX = 6;
 
 const ignoreComposerKeyAction: ResolveComposerKeyAction = async () => "noop";
@@ -4278,7 +4278,7 @@ export function TimelineItemRow({
   const [isReactionPickerOpen, setReactionPickerOpen] = useState(false);
   const [reactionPickerLayout, setReactionPickerLayout] = useState<ReactionPickerLayout>({
     placement: "above",
-    maxBlockSize: REACTION_PICKER_BLOCK_SIZE_PX
+    maxBlockSize: REACTION_PICKER_COMFORTABLE_BLOCK_SIZE_PX
   });
   const [isActionMenuOpen, setActionMenuOpen] = useState(false);
   const [isForwardMenuOpen, setForwardMenuOpen] = useState(false);

@@ -3632,8 +3632,8 @@ mark {
   z-index: 80;
   display: grid;
   grid-template-rows: auto auto 1fr;
-  width: 320px;
-  block-size: min(360px, var(--emoji-picker-max-block-size, 360px));
+  inline-size: min(420px, calc(100vw - 32px));
+  block-size: min(var(--emoji-picker-max-block-size, 520px), calc(100vh - 32px));
   min-block-size: 0;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -3694,14 +3694,16 @@ mark {
 .emoji-picker-tabs {
   display: flex;
   gap: 2px;
+  justify-content: space-between;
   padding: 6px 8px;
-  overflow-x: auto;
+  overflow: hidden;
   border-bottom: 1px solid var(--line);
 }
 
 .emoji-picker-tab {
-  flex: 0 0 auto;
-  padding: 4px 8px;
+  flex: 1 1 0;
+  min-inline-size: 0;
+  padding: 4px;
   border: 0;
   border-radius: 6px;
   color: var(--text-muted);
@@ -3717,6 +3719,9 @@ mark {
 }
 
 .emoji-picker-body {
+  min-inline-size: 0;
+  min-block-size: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 8px;
 }
@@ -3739,7 +3744,7 @@ mark {
 
 .emoji-picker-grid {
   display: grid;
-  grid-template-columns: repeat(8, 1fr);
+  grid-template-columns: repeat(8, minmax(0, 1fr));
   gap: 2px;
 }
 

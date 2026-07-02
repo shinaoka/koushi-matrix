@@ -157,6 +157,21 @@ describe("styles.css token system", () => {
     expect(block).toContain("z-index: 12;");
   });
 
+  test("emoji picker has a roomy fixed-format layout without horizontal body scroll", () => {
+    const pickerBlock = selectorBlock(".emoji-picker");
+    expect(pickerBlock).toContain("inline-size: min(420px, calc(100vw - 32px));");
+    expect(pickerBlock).toContain(
+      "block-size: min(var(--emoji-picker-max-block-size, 520px), calc(100vh - 32px));"
+    );
+
+    const tabsBlock = selectorBlock(".emoji-picker-tabs");
+    expect(tabsBlock).toContain("justify-content: space-between;");
+    expect(tabsBlock).not.toContain("overflow-x");
+
+    const bodyBlock = selectorBlock(".emoji-picker-body");
+    expect(bodyBlock).toContain("overflow-x: hidden;");
+  });
+
   test("timeline uses Koushi-owned event anchoring rather than browser scroll anchoring", () => {
     const timelineBlock = selectorBlock(".timeline-view");
     const spacerBlock = selectorBlock(".timeline-virtual-spacer");
