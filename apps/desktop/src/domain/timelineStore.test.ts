@@ -282,6 +282,58 @@ describe("timeline store — diff application", () => {
     expect(itemId(items[1])).toBe("$b");
   });
 
+  test("Set diff for a collapsed duplicate scrollback item updates the canonical row without moving the latest item", () => {
+    let store = createTimelineStore();
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          makeMsgAt("$old", "older copy", 1_797_460_000_000),
+          makeMsgAt("$second", "second from bottom", 1_797_720_000_000),
+          makeMsgAt("$latest", "latest message", 1_798_000_000_000)
+        ]
+      }
+    });
+
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 1,
+        batch_id: 2,
+        diffs: [
+          {
+            Insert: {
+              index: 2,
+              item: makeMsgAt("$old", "overlapping duplicate", 1_797_460_000_000)
+            }
+          }
+        ]
+      }
+    });
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 1,
+        batch_id: 3,
+        diffs: [
+          {
+            Set: {
+              index: 2,
+              item: makeMsgAt("$old", "older copy updated", 1_797_460_000_000)
+            }
+          }
+        ]
+      }
+    });
+
+    const items = getItems(store, KEY);
+    expect(items.map((item) => itemId(item))).toEqual(["$old", "$second", "$latest"]);
+    expect(items[0].body).toBe("older copy updated");
+    expect(items[2].body).toBe("latest message");
+  });
+
   test("reaction groups survive InitialItems and Set diff application", () => {
     let store = createTimelineStore();
     store = applyTimelineEvent(store, {

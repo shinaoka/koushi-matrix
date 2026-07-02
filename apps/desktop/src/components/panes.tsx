@@ -8,7 +8,6 @@ import {
 } from "react";
 import {
   ArrowDown,
-  ArrowUp,
   Bell,
   CalendarDays,
   Check,
@@ -578,7 +577,6 @@ export function TimelinePane({
   searchResults,
   showSearchResults,
   snapshot,
-  timelineBackfill,
   timelineTransport,
   onCancelReply,
   onCancelScheduledSend,
@@ -615,7 +613,6 @@ export function TimelinePane({
   searchResults: SearchResult[];
   showSearchResults: boolean;
   snapshot: DesktopSnapshot;
-  timelineBackfill: TimelineDiagnostics["backfill"];
   timelineTransport: TimelineTransport | null;
   onCancelReply: () => void;
   onCancelScheduledSend: (scheduledId: string) => void;
@@ -648,8 +645,6 @@ export function TimelinePane({
 }) {
   const timelineRoomId = snapshot.state.ui.timeline.room_id;
   const currentUserId = snapshot.state.domain.session.user_id ?? null;
-  const timelineBackfillBusy = timelineBackfill === "Paginating";
-  const timelineBackfillEnded = timelineBackfill === "EndReached";
   const activeRoom = timelineRoomId
     ? snapshot.state.domain.rooms.find((room) => room.room_id === timelineRoomId) ?? null
     : null;
@@ -726,7 +721,7 @@ export function TimelinePane({
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [dateJumpDialogOpen, setDateJumpDialogOpen] = useState(false);
-  const timelineListRef = useRef<HTMLDivElement | null>(null);
+  const jumpToLatestRef = useRef<(() => void) | null>(null);
   const [jumpDateValue, setJumpDateValue] = useState("");
 
   function submitJumpDate(event: FormEvent<HTMLFormElement>) {
@@ -747,14 +742,10 @@ export function TimelinePane({
     void timelineTransport.openAtTimestamp(timelineRoomId, timestampMs).catch(() => undefined);
     setDateJumpDialogOpen(false);
   }
-  const canPaginateOlderMessages = Boolean(timelineRoomId && currentUserId && timelineTransport);
   const canJumpToTimelineDate = Boolean(timelineTransport?.openAtTimestamp && timelineRoomId);
-  const listRefCallback = useCallback(
-    (element: HTMLDivElement | null) => {
-      timelineListRef.current = element;
-    },
-    []
-  );
+  const registerJumpToLatest = useCallback((handler: (() => void) | null) => {
+    jumpToLatestRef.current = handler;
+  }, []);
 
   return (
     <main className="main-pane" aria-label={t("timeline.conversation")}>
@@ -769,22 +760,6 @@ export function TimelinePane({
         </div>
         <div className="channel-actions">
           <nav className="timeline-header-navigation" aria-label={t("timeline.navigation")}>
-            {canPaginateOlderMessages ? (
-              <button
-                className="icon-button timeline-control"
-                type="button"
-                disabled={timelineBackfillBusy || timelineBackfillEnded}
-                aria-label={t("timeline.olderMessages")}
-                title={t("timeline.olderMessages")}
-                onClick={() => {
-                  if (timelineKey && timelineTransport) {
-                    void timelineTransport.paginateBackwards(timelineKey);
-                  }
-                }}
-              >
-                <ArrowUp size={ICON_SIZE.control} aria-hidden="true" />
-              </button>
-            ) : null}
             {canJumpToTimelineDate ? (
               <button
                 className="icon-button timeline-control"
@@ -806,10 +781,7 @@ export function TimelinePane({
                   onReturnToLive();
                   return;
                 }
-                const list = timelineListRef.current;
-                if (list) {
-                  list.scrollTop = list.scrollHeight;
-                }
+                jumpToLatestRef.current?.();
               }}
             >
               <ArrowDown size={ICON_SIZE.control} aria-hidden="true" />
@@ -963,7 +935,7 @@ export function TimelinePane({
               }
               onDiagnosticsChange={onTimelineDiagnosticsChangeStable}
               onDiagnosticLogEntry={onTimelineDiagnosticLogEntryStable}
-              listRefCallback={listRefCallback}
+              onRegisterJumpToLatest={registerJumpToLatest}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).

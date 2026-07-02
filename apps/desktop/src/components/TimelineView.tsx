@@ -1813,7 +1813,8 @@ export const TimelineView = memo(function TimelineView({
   onDiagnosticLogEntry,
   timelineStore,
   setTimelineStore,
-  listRefCallback
+  listRefCallback,
+  onRegisterJumpToLatest
 }: {
   timelineKey: TimelineKey;
   roomId: string;
@@ -1868,9 +1869,14 @@ export const TimelineView = memo(function TimelineView({
   setTimelineStore?: Dispatch<SetStateAction<TimelineStoreState>>;
   /**
    * Optional callback receiving the timeline list element so parent chrome can
-   * drive scroll actions such as "jump to latest".
+   * inspect the committed list node without owning viewport semantics.
    */
   listRefCallback?: (element: HTMLDivElement | null) => void;
+  /**
+   * Optional callback registering the TimelineView-owned live-edge jump action
+   * for parent chrome controls.
+   */
+  onRegisterJumpToLatest?: (handler: (() => void) | null) => void;
 }) {
   // Persisted restart anchors are intentionally ignored for restoration:
   // first entry after app startup goes to live edge, while in-session room
@@ -3822,6 +3828,10 @@ export const TimelineView = memo(function TimelineView({
     scheduleScrollFollowUpFrame,
     updateViewportMetrics
   ]);
+  useEffect(() => {
+    onRegisterJumpToLatest?.(jumpToBottom);
+    return () => onRegisterJumpToLatest?.(null);
+  }, [jumpToBottom, onRegisterJumpToLatest]);
   const canRenderRoomNavigation =
     roomTimelineRoomId === roomId;
   const firstUnreadEventId = navigationSnapshot?.first_unread_event_id ?? null;
@@ -5885,8 +5895,6 @@ function TimelineMediaAttachment({
               <a
                 className="message-media-hover-action"
                 href={readyImagePreview.sourceUrl}
-                target="_blank"
-                rel="noreferrer"
                 download={media.filename}
                 aria-label={t("timeline.downloadMedia", { filename: media.filename })}
               >
@@ -5975,9 +5983,7 @@ function TimelineMediaAttachment({
           <a
             className="message-media-download"
             href={mediaSourceUrl(downloadState.source_url)}
-            target="_blank"
-            rel="noreferrer"
-            aria-label={t("timeline.mediaOpenFile")}
+            aria-label={t("timeline.downloadMedia", { filename: media.filename })}
             download={media.filename}
           >
             <Download size={15} />

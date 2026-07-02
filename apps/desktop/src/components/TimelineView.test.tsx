@@ -83,6 +83,26 @@ function imageMessage(eventId: string, encrypted = false): TimelineItem {
   };
 }
 
+function fileMessage(eventId: string): TimelineItem {
+  return {
+    ...message(eventId, "File body"),
+    media: {
+      kind: "File",
+      filename: "notes.pdf",
+      source: {
+        mxc_uri: "mxc://example.invalid/notes",
+        encrypted: false,
+        encryption_version: null
+      },
+      mimetype: "application/pdf",
+      size: 12_288,
+      width: null,
+      height: null,
+      thumbnail: null
+    }
+  };
+}
+
 function messages(count: number, prefix = "$item"): TimelineItem[] {
   return Array.from({ length: count }, (_, index) =>
     message(`${prefix}${index}`, `message ${index}`)
@@ -3105,11 +3125,67 @@ describe("TimelineView", () => {
       const image = media?.querySelector<HTMLImageElement>(".message-media-image");
       expect(image).not.toBeNull();
       expect(image?.getAttribute("alt")).toBe("photo.png");
-      expect(
-        media?.querySelector(".message-media-hover-actions .message-media-hover-action")
-      ).not.toBeNull();
+      const downloadLink = media?.querySelector<HTMLAnchorElement>(
+        ".message-media-hover-actions .message-media-hover-action"
+      );
+      expect(downloadLink).not.toBeNull();
+      expect(downloadLink?.getAttribute("aria-label")).toBe("Download photo.png");
+      expect(downloadLink?.getAttribute("download")).toBe("photo.png");
+      expect(downloadLink?.hasAttribute("target")).toBe(false);
       expect(media?.textContent).not.toContain("image/png");
       expect(media?.textContent).not.toContain("407 KB");
+    });
+  });
+
+  it("renders ready file downloads as direct download links", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        mediaDownloads={{
+          "$ready-file": {
+            kind: "ready",
+            source_url: "asset://localhost/notes.pdf",
+            width: null,
+            height: null,
+            mime_type: "application/pdf"
+          }
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [fileMessage("$ready-file")]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      const downloadLink = document.querySelector<HTMLAnchorElement>(
+        '[data-event-id="$ready-file"] a.message-media-download'
+      );
+      expect(downloadLink).not.toBeNull();
+      expect(downloadLink?.getAttribute("aria-label")).toBe("Download notes.pdf");
+      expect(downloadLink?.getAttribute("download")).toBe("notes.pdf");
+      expect(downloadLink?.hasAttribute("target")).toBe(false);
     });
   });
 

@@ -668,16 +668,24 @@ function setTimelineItem(
   }
   const id = timelineItemDomId(item.id);
   const existingIndex = itemIndexById.get(id);
-  let targetIndex = index;
   if (existingIndex !== undefined && existingIndex !== index) {
-    removeTimelineItemAt(items, itemIndexById, itemIdsByTimestamp, existingIndex);
-    if (existingIndex < targetIndex) {
-      targetIndex -= 1;
-    }
+    // Overlapping scrollback can produce a diff index for a duplicate Core slot
+    // that this render store already collapsed. Update the canonical row without
+    // shifting or replacing later slots such as the live-edge item.
+    removeTimestampIndex(itemIdsByTimestamp, items[existingIndex]);
+    items[existingIndex] = item;
+    itemIndexById.set(id, existingIndex);
+    addTimestampIndex(itemIdsByTimestamp, item);
+    return;
   }
-  removeTimestampIndex(itemIdsByTimestamp, items[targetIndex]);
-  items[targetIndex] = item;
-  itemIndexById.set(id, targetIndex);
+  const previous = items[index];
+  removeTimestampIndex(itemIdsByTimestamp, previous);
+  const previousId = timelineItemDomId(previous.id);
+  if (previousId !== id) {
+    itemIndexById.delete(previousId);
+  }
+  items[index] = item;
+  itemIndexById.set(id, index);
   addTimestampIndex(itemIdsByTimestamp, item);
 }
 
