@@ -308,6 +308,14 @@ impl TimelineManagerActor {
                         .await;
                 }
             }
+            TimelineCommand::CancelLinkPreviews { request_id, key } => {
+                trace_timeline_route("manager_received", "cancel_link_previews", request_id, &key);
+                if let Some(handle) = self.timelines.get(&key) {
+                    let _ = handle
+                        .send(TimelineActorMessage::CancelLinkPreviews { request_id })
+                        .await;
+                }
+            }
             TimelineCommand::RestoreTimelineAnchor {
                 request_id,
                 key,
@@ -1256,6 +1264,9 @@ enum TimelineActorMessage {
     CancelPagination {
         request_id: RequestId,
     },
+    CancelLinkPreviews {
+        request_id: RequestId,
+    },
     PaginationFinished {
         serial: u64,
     },
@@ -1907,6 +1918,9 @@ impl TimelineActor {
             }
             TimelineActorMessage::CancelPagination { request_id } => {
                 self.handle_cancel_pagination(request_id);
+            }
+            TimelineActorMessage::CancelLinkPreviews { request_id } => {
+                self.handle_cancel_link_previews(request_id);
             }
             TimelineActorMessage::PaginationFinished { serial } => {
                 if self
@@ -3993,7 +4007,19 @@ impl TimelineActor {
         failed_count: usize,
         elapsed_ms: u128,
     ) {
-        self.link_preview_fetches.remove(&event_id);
+        if self.link_preview_fetches.remove(&event_id).is_none() {
+            trace_timeline_link_preview(
+                "complete",
+                request_id,
+                &self.key,
+                pending_count,
+                ready_count,
+                failed_count,
+                Some(elapsed_ms),
+                Some("discarded"),
+            );
+            return;
+        }
         let Some(index) = self.navigation_items.iter().position(
             |item| matches!(&item.id, TimelineItemId::Event { event_id: id } if id == &event_id),
         ) else {
@@ -4061,6 +4087,51 @@ impl TimelineActor {
             Some(elapsed_ms),
             Some(if changed { "updated" } else { "discarded" }),
         );
+    }
+
+    fn handle_cancel_link_previews(&mut self, request_id: RequestId) {
+        let fetch_count = self.link_preview_fetches.len();
+        if fetch_count == 0 {
+            return;
+        }
+
+        for (_, task) in self.link_preview_fetches.drain() {
+            task.abort();
+        }
+
+        let mut core_diffs = Vec::new();
+        for (index, item) in self.navigation_items.iter_mut().enumerate() {
+            if reset_loading_link_previews_to_pending(item) {
+                core_diffs.push(TimelineDiff::Set {
+                    index,
+                    item: item.clone(),
+                });
+            }
+        }
+
+        trace_timeline_link_preview(
+            "cancelled",
+            request_id,
+            &self.key,
+            fetch_count,
+            0,
+            0,
+            None,
+            Some("cancelled"),
+        );
+
+        if core_diffs.is_empty() {
+            return;
+        }
+
+        let batch_id = self.next_batch_id;
+        self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
+        self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+            key: self.key.clone(),
+            generation: self.generation,
+            batch_id,
+            diffs: core_diffs,
+        }));
     }
 
     async fn handle_hide_link_preview(&mut self, _request_id: RequestId, event_id: String) {
@@ -5325,6 +5396,20 @@ async fn apply_link_previews_to_item(
         is_encrypted,
         context,
     );
+}
+
+fn reset_loading_link_previews_to_pending(item: &mut TimelineItem) -> bool {
+    let Some(previews) = item.link_previews.as_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    for preview in previews {
+        if preview.state == LinkPreviewState::Loading {
+            preview.state = LinkPreviewState::Pending;
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn is_unread_navigation_item(item: &TimelineItem, own_user_id: Option<&str>) -> bool {
@@ -9336,6 +9421,71 @@ mod tests {
             production.contains("LinkPreviewsFetched"),
             "link preview worker results must return to the TimelineActor explicitly"
         );
+    }
+
+    #[test]
+    fn timeline_link_preview_fetches_are_abortable_without_dropping_the_actor() {
+        let source = include_str!("timeline.rs");
+        let production = source.split("\nmod tests").next().unwrap_or(source);
+        let handle_cancel_source = production
+            .split("fn handle_cancel_link_previews")
+            .nth(1)
+            .and_then(|section| section.split("async fn handle_hide_link_preview").next())
+            .expect("cancel link previews handler should exist");
+        let fetched_source = production
+            .split("async fn handle_link_previews_fetched")
+            .nth(1)
+            .and_then(|section| section.split("fn handle_cancel_link_previews").next())
+            .expect("link preview fetched handler should exist");
+
+        assert!(
+            production.contains("CancelLinkPreviews"),
+            "timeline manager must expose a cancellation message for in-flight link previews"
+        );
+        assert!(
+            handle_cancel_source.contains(".abort()"),
+            "cancelling link previews must abort only link preview workers, not the timeline actor"
+        );
+        assert!(
+            handle_cancel_source.contains("reset_loading_link_previews_to_pending"),
+            "cancelled link preview workers must return Loading previews to Pending for future retries"
+        );
+        assert!(
+            fetched_source.contains("remove(&event_id).is_none()"),
+            "late results from cancelled link preview workers must be ignored"
+        );
+    }
+
+    #[test]
+    fn cancelled_link_preview_loads_return_loading_previews_to_pending() {
+        let mut item = timeline_item(
+            "$link:test",
+            Some("https://example.test"),
+            "@bob:test",
+            false,
+        );
+        item.link_previews = Some(vec![
+            LinkPreview {
+                url: "https://example.test/loading".to_owned(),
+                title: None,
+                description: None,
+                image: None,
+                state: LinkPreviewState::Loading,
+            },
+            LinkPreview {
+                url: "https://example.test/ready".to_owned(),
+                title: Some("ready".to_owned()),
+                description: None,
+                image: None,
+                state: LinkPreviewState::Ready,
+            },
+        ]);
+
+        assert!(reset_loading_link_previews_to_pending(&mut item));
+        let previews = item.link_previews.as_ref().expect("link previews");
+        assert_eq!(previews[0].state, LinkPreviewState::Pending);
+        assert_eq!(previews[1].state, LinkPreviewState::Ready);
+        assert!(!reset_loading_link_previews_to_pending(&mut item));
     }
 
     #[test]

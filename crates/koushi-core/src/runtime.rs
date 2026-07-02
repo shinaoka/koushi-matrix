@@ -981,6 +981,12 @@ impl AppActor {
                             } else {
                                 None
                             };
+                        let cancel_replaced_room_timeline_link_previews =
+                            if let AppAction::SelectRoom { room_id } = &action {
+                                self.cancel_replaced_room_timeline_link_previews(room_id)
+                            } else {
+                                None
+                            };
                         let post_projection_effects = self.reduce_app_action(action).await;
                         // After reduce: determine outcome and emit IntentLifecycle
                         // for correlated pending SelectRoom intents.
@@ -1034,6 +1040,20 @@ impl AppActor {
                                     self.send_timeline_command_or_fail(
                                         cancel_request_id,
                                         TimelineCommand::CancelPagination {
+                                            request_id: cancel_request_id,
+                                            key,
+                                        },
+                                    )
+                                    .await;
+                                }
+                                if let Some(key) = cancel_replaced_room_timeline_link_previews {
+                                    let cancel_request_id = request_id_to_emit.unwrap_or(RequestId {
+                                        connection_id: RuntimeConnectionId(0),
+                                        sequence: 0,
+                                    });
+                                    self.send_timeline_command_or_fail(
+                                        cancel_request_id,
+                                        TimelineCommand::CancelLinkPreviews {
                                             request_id: cancel_request_id,
                                             key,
                                         },
@@ -2489,6 +2509,10 @@ impl AppActor {
         cancel_replaced_room_timeline_pagination_key(self.current_room_timeline_key(), room_id)
     }
 
+    fn cancel_replaced_room_timeline_link_previews(&self, room_id: &str) -> Option<TimelineKey> {
+        cancel_replaced_room_timeline_link_previews_key(self.current_room_timeline_key(), room_id)
+    }
+
     fn unsubscribe_replaced_thread_timeline(
         &self,
         room_id: &str,
@@ -2587,6 +2611,16 @@ fn unsubscribe_replaced_timeline_key(
 }
 
 fn cancel_replaced_room_timeline_pagination_key(
+    current_key: Option<TimelineKey>,
+    replacement_room_id: &str,
+) -> Option<TimelineKey> {
+    current_key.filter(|current_key| match &current_key.kind {
+        TimelineKind::Room { room_id } => room_id != replacement_room_id,
+        TimelineKind::Thread { .. } | TimelineKind::Focused { .. } => false,
+    })
+}
+
+fn cancel_replaced_room_timeline_link_previews_key(
     current_key: Option<TimelineKey>,
     replacement_room_id: &str,
 ) -> Option<TimelineKey> {
@@ -3642,6 +3676,36 @@ mod tests {
         assert!(
             source.contains("TimelineCommand::CancelPagination"),
             "runtime must route room-switch pagination cancellation through the timeline actor"
+        );
+    }
+
+    #[test]
+    fn selecting_a_replacement_room_cancels_previous_room_link_previews_before_subscribe() {
+        let source = include_str!("runtime.rs");
+        let action_rx_arm = source
+            .split("actions = self.action_rx.recv()")
+            .nth(1)
+            .expect("action_rx arm should exist")
+            .split("if state_changed")
+            .next()
+            .expect("action_rx arm should include post-reduce effect handling");
+
+        let cancel_offset = action_rx_arm
+            .find("cancel_replaced_room_timeline_link_previews")
+            .expect(
+                "SelectRoom must cancel in-flight link previews for the previous room timeline",
+            );
+        let effects_offset = action_rx_arm
+            .find("handle_post_projection_effects")
+            .expect("SelectRoom must still execute SubscribeTimeline effects");
+
+        assert!(
+            cancel_offset < effects_offset,
+            "room switch link preview cancellation must happen before subscribing/rendering the replacement room"
+        );
+        assert!(
+            source.contains("TimelineCommand::CancelLinkPreviews"),
+            "runtime must route room-switch link preview cancellation through the timeline actor"
         );
     }
 

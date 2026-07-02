@@ -154,6 +154,7 @@ impl CoreCommand {
                 | TimelineCommand::Unsubscribe { request_id, .. }
                 | TimelineCommand::Paginate { request_id, .. }
                 | TimelineCommand::CancelPagination { request_id, .. }
+                | TimelineCommand::CancelLinkPreviews { request_id, .. }
                 | TimelineCommand::RestoreTimelineAnchor { request_id, .. }
                 | TimelineCommand::ObserveViewport { request_id, .. }
                 | TimelineCommand::SendText { request_id, .. }
@@ -1838,6 +1839,10 @@ pub enum TimelineCommand {
         request_id: RequestId,
         key: TimelineKey,
     },
+    CancelLinkPreviews {
+        request_id: RequestId,
+        key: TimelineKey,
+    },
     RestoreTimelineAnchor {
         request_id: RequestId,
         key: TimelineKey,
@@ -1996,6 +2001,11 @@ impl fmt::Debug for TimelineCommand {
                 .finish(),
             Self::CancelPagination { request_id, key } => formatter
                 .debug_struct("CancelPagination")
+                .field("request_id", request_id)
+                .field("key", key)
+                .finish(),
+            Self::CancelLinkPreviews { request_id, key } => formatter
+                .debug_struct("CancelLinkPreviews")
                 .field("request_id", request_id)
                 .field("key", key)
                 .finish(),
