@@ -150,6 +150,38 @@ fn native_attention_candidate_prioritizes_mentions_dm_then_messages_and_badges()
 }
 
 #[test]
+fn native_attention_ignores_plain_unread_counts_absent_from_activity_unread() {
+    let rooms = vec![
+        room("!plain:example.invalid", "Plain", false, 1, 0, 0),
+        room("!notified:example.invalid", "Notified", false, 4, 2, 0),
+    ];
+
+    let state = native_attention_state_from_rooms(NativeAttentionProjectionInput {
+        rooms: &rooms,
+        active_room_id: None,
+        muted_room_ids: &[],
+        room_notification_modes: &std::collections::HashMap::new(),
+        ignored_user_ids: &std::collections::BTreeSet::new(),
+        window_focused: false,
+        observation: NativeAttentionObservationKind::Live,
+        previous_candidate: None,
+        capabilities: available_capabilities(),
+    });
+
+    assert_eq!(state.summary.unread_count, 2);
+    assert_eq!(state.summary.badge_count, 2);
+    assert_eq!(
+        state.summary.candidate,
+        Some(NativeAttentionCandidate {
+            room_display_name: "Notified".to_owned(),
+            kind: RoomAttentionKind::Message,
+            unread_count: 2,
+            highlight_count: 0,
+        })
+    );
+}
+
+#[test]
 fn native_attention_candidate_uses_projected_room_display_label() {
     let mut dm = room("!dm:example.invalid", "Alice Upstream", true, 3, 3, 0);
     dm.display_label = "Alice Local".to_owned();

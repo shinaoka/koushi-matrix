@@ -79,8 +79,8 @@ pub use state::{
     VerificationFlowState, VerificationTarget, compute_room_list_projection, is_ignored_user,
     native_attention_capabilities_for_platform, native_attention_state_from_rooms,
     refresh_profile_user_display_projection, refresh_room_settings_member_display_projection,
-    refresh_room_summary_display_projection, resolve_user_display_name, room_attention_kind,
-    room_attention_summary, sort_threads_list_items,
+    refresh_room_summary_display_projection, resolve_user_display_name, room_activity_unread_count,
+    room_attention_kind, room_attention_summary, sort_threads_list_items,
 };
 // Composer-draft persistence limits consumed by koushi-core's store and the
 // state-crate integration tests; root-re-exported so `state` can stay crate-internal.

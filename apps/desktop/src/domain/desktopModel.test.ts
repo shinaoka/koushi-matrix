@@ -77,6 +77,60 @@ describe("desktop model", () => {
     expect(sidebar.dm_unread_count).toBe(3);
   });
 
+  test("sidebar badges ignore plain unread counts that are absent from activity unread", () => {
+    const spaces: SpaceSummary[] = [
+      {
+        space_id: "!space-a:example.invalid",
+        display_name: "Alpha",
+        avatar: null,
+        child_room_ids: ["!plain:example.invalid", "!notified:example.invalid"]
+      }
+    ];
+    const plainUnread = {
+      ...roomSummary("!plain:example.invalid", "Plain unread", false, undefined, [
+        "!space-a:example.invalid"
+      ]),
+      unread_count: 1,
+      notification_count: 0,
+      highlight_count: 0,
+      marked_unread: false
+    };
+    const notified = {
+      ...roomSummary("!notified:example.invalid", "Notified", false, undefined, [
+        "!space-a:example.invalid"
+      ]),
+      unread_count: 4,
+      notification_count: 2,
+      highlight_count: 0,
+      marked_unread: false
+    };
+    const markedDm = {
+      ...roomSummaryWithDmSpaces("!marked-dm:example.invalid", "Marked DM", [
+        "!space-a:example.invalid"
+      ]),
+      unread_count: 0,
+      notification_count: 0,
+      highlight_count: 0,
+      marked_unread: true
+    };
+
+    const sidebar = composeSidebar(null, spaces, [plainUnread, notified, markedDm]);
+    const activeSpaceSidebar = composeSidebar("!space-a:example.invalid", spaces, [
+      plainUnread,
+      notified,
+      markedDm
+    ]);
+
+    expect(sidebar.account_home.unread_count).toBe(3);
+    expect(sidebar.space_rail[0]?.unread_count).toBe(2);
+    expect(activeSpaceSidebar.space_unread_count).toBe(2);
+    expect(sidebar.dm_unread_count).toBe(1);
+    expect(
+      activeSpaceSidebar.space_rooms.find((room) => room.room_id === plainUnread.room_id)
+        ?.unread_count
+    ).toBe(0);
+  });
+
   test("active space global_dms shows only DMs whose dm_space_ids includes that space", () => {
     const spaces: SpaceSummary[] = [
       {

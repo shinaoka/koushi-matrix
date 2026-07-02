@@ -75,7 +75,8 @@ pub use profile::{
 // ── Re-exports: room ────────────────────────────────────────────────────────
 pub use room::{
     InvitePreview, RoomAttentionKind, RoomAttentionSummary, RoomLatestEventSummary, RoomSummary,
-    RoomTagInfo, RoomTagKind, RoomTags, SpaceSummary, room_attention_kind, room_attention_summary,
+    RoomTagInfo, RoomTagKind, RoomTags, SpaceSummary, room_activity_unread_count,
+    room_attention_kind, room_attention_summary,
 };
 
 // ── Re-exports: room_interactions ──────────────────────────────────────────
