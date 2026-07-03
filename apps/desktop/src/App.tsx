@@ -2069,6 +2069,10 @@ export function App() {
     setSnapshot(await api.setRoomUrlPreviewOverride(roomId, enabled));
   }
 
+  async function resetRoomTimelineCache(roomId: string) {
+    setSnapshot(await api.resetRoomTimelineCache(roomId));
+  }
+
   async function queryDevices() {
     setSnapshot(await api.queryDevices());
   }
@@ -3771,6 +3775,9 @@ export function App() {
           }
           onSetRoomNotificationMode={(roomId, mode) => {
             void setRoomNotificationMode(roomId, mode);
+          }}
+          onResetRoomTimelineCache={(roomId) => {
+            void resetRoomTimelineCache(roomId);
           }}
           onStartDirectMessage={(userId) => {
             void startDirectMessage(userId);

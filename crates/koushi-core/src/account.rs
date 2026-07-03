@@ -47,6 +47,7 @@ use koushi_state::{
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
 use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
 use matrix_sdk::ruma::{MxcUri, OwnedMxcUri};
+use matrix_sdk_base::event_cache::store::EventCacheStoreLockState;
 use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
 
 use crate::command::{
@@ -116,6 +117,18 @@ pub enum AccountMessage {
         request_id: RequestId,
         room_id: String,
         timestamp_ms: u64,
+    },
+    EnsureRoomEventCached {
+        request_id: RequestId,
+        room_id: String,
+        event_id: String,
+        response_tx: oneshot::Sender<()>,
+    },
+    ResetRoomTimelineCache {
+        request_id: RequestId,
+        account_key: AccountKey,
+        room_id: String,
+        resubscribe: bool,
     },
     SearchCommand(SearchCommand),
     /// Record `AppEffect::NotifySearchCrawlerRoomsAvailable` as a latest-wins
@@ -444,6 +457,30 @@ impl AccountActor {
                 } => {
                     self.handle_open_timeline_at_timestamp(request_id, room_id, timestamp_ms)
                         .await;
+                }
+                AccountMessage::EnsureRoomEventCached {
+                    request_id,
+                    room_id,
+                    event_id,
+                    response_tx,
+                } => {
+                    self.handle_ensure_room_event_cached(request_id, room_id, event_id)
+                        .await;
+                    let _ = response_tx.send(());
+                }
+                AccountMessage::ResetRoomTimelineCache {
+                    request_id,
+                    account_key,
+                    room_id,
+                    resubscribe,
+                } => {
+                    self.handle_reset_room_timeline_cache(
+                        request_id,
+                        account_key,
+                        room_id,
+                        resubscribe,
+                    )
+                    .await;
                 }
                 AccountMessage::SearchCommand(search_command) => {
                     self.route_search_command(search_command).await;
@@ -859,6 +896,112 @@ impl AccountActor {
                 failure_kind: OperationFailureKind::Network,
             }])
             .await;
+    }
+
+    async fn handle_ensure_room_event_cached(
+        &self,
+        _request_id: RequestId,
+        room_id: String,
+        event_id: String,
+    ) {
+        let trace = std::env::var_os("KOUSHI_TIMELINE_ITEM_TRACE").is_some()
+            || std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some();
+        let Some(session) = &self.session else {
+            if trace {
+                eprintln!("koushi.event_cache_repair stage=skip reason=no_session");
+            }
+            return;
+        };
+        let Ok(parsed_room_id) = matrix_sdk::ruma::RoomId::parse(room_id.as_str()) else {
+            if trace {
+                eprintln!("koushi.event_cache_repair stage=skip reason=invalid_room");
+            }
+            return;
+        };
+        let Ok(parsed_event_id) = matrix_sdk::ruma::EventId::parse(event_id.as_str()) else {
+            if trace {
+                eprintln!("koushi.event_cache_repair stage=skip reason=invalid_event");
+            }
+            return;
+        };
+        let Some(room) = session.client().get_room(&parsed_room_id) else {
+            if trace {
+                eprintln!("koushi.event_cache_repair stage=skip reason=room_missing");
+            }
+            return;
+        };
+
+        match room.load_or_fetch_event(&parsed_event_id, None).await {
+            Ok(_) => {
+                if trace {
+                    eprintln!("koushi.event_cache_repair stage=done");
+                }
+            }
+            Err(_) => {
+                if trace {
+                    eprintln!("koushi.event_cache_repair stage=failed");
+                }
+            }
+        }
+    }
+
+    async fn handle_reset_room_timeline_cache(
+        &mut self,
+        request_id: RequestId,
+        account_key: AccountKey,
+        room_id: String,
+        resubscribe: bool,
+    ) {
+        let Some(session) = self.session.clone() else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        let parsed_room_id = match matrix_sdk::ruma::RoomId::parse(room_id.as_str()) {
+            Ok(room_id) => room_id,
+            Err(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+                return;
+            }
+        };
+        let key = TimelineKey {
+            account_key,
+            kind: TimelineKind::Room {
+                room_id: room_id.clone(),
+            },
+        };
+
+        self.route_timeline_command(TimelineCommand::Unsubscribe {
+            request_id,
+            key: key.clone(),
+        })
+        .await;
+
+        let reset_result = match session.client().event_cache_store().lock().await {
+            Ok(EventCacheStoreLockState::Clean(store))
+            | Ok(EventCacheStoreLockState::Dirty(store)) => {
+                store.remove_room(&parsed_room_id).await.map_err(|_| ())
+            }
+            Err(_) => Err(()),
+        };
+        if reset_result.is_err() {
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+            );
+            return;
+        }
+
+        if resubscribe {
+            self.route_timeline_command(TimelineCommand::Subscribe { request_id, key })
+                .await;
+        }
     }
 
     async fn handle_open_timeline_at_timestamp(

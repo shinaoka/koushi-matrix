@@ -275,6 +275,7 @@ describe("TauriDesktopApi", () => {
 
     const api = createDesktopApi();
     await api.loadRoomSettings("!room:example.invalid");
+    await api.resetRoomTimelineCache("!room:example.invalid");
     await api.updateRoomSetting("!room:example.invalid", {
       topic: "Private topic"
     });
@@ -287,6 +288,9 @@ describe("TauriDesktopApi", () => {
     await api.updateRoomMemberRole("!room:example.invalid", "@target:example.invalid", 50);
 
     expect(invoke).toHaveBeenCalledWith("load_room_settings", {
+      roomId: "!room:example.invalid"
+    });
+    expect(invoke).toHaveBeenCalledWith("reset_room_timeline_cache", {
       roomId: "!room:example.invalid"
     });
     expect(invoke).toHaveBeenCalledWith("update_room_setting", {

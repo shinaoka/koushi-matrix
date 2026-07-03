@@ -195,6 +195,7 @@ export interface DesktopApi {
   joinDirectoryRoom(alias: string, viaServer?: string | null): Promise<DesktopSnapshot>;
   joinRoom(roomId: string): Promise<DesktopSnapshot>;
   loadRoomSettings(roomId: string): Promise<DesktopSnapshot>;
+  resetRoomTimelineCache(roomId: string): Promise<DesktopSnapshot>;
   updateRoomSetting(roomId: string, change: RoomSettingChange): Promise<DesktopSnapshot>;
   moderateRoomMember(
     roomId: string,
@@ -1730,6 +1731,10 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async reshareRoomKey(_roomId: string): Promise<DesktopSnapshot> {
+    return this.getSnapshot();
+  }
+
+  async resetRoomTimelineCache(_roomId: string): Promise<DesktopSnapshot> {
     return this.getSnapshot();
   }
 

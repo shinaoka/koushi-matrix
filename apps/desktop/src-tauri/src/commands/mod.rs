@@ -1983,6 +1983,16 @@ pub(crate) fn build_load_room_settings_command(
     })
 }
 
+pub(crate) fn build_reset_room_timeline_cache_command(
+    request_id: koushi_core::RequestId,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::ResetRoomTimelineCache {
+        request_id,
+        room_id,
+    })
+}
+
 pub(crate) fn build_reshare_room_key_command(
     request_id: koushi_core::RequestId,
     room_id: String,
@@ -2665,12 +2675,12 @@ mod tests {
         build_export_room_keys_command, build_forget_room_command, build_forward_message_command,
         build_hide_link_preview_command, build_ignore_user_command, build_import_room_keys_command,
         build_invite_user_command, build_join_directory_room_command, build_join_room_command,
-        build_leave_room_command, build_load_link_previews_command, build_load_message_source_command,
-        build_load_room_settings_command, build_logout_command, build_mark_activity_read_command,
-        build_moderate_room_member_command, build_observe_timeline_viewport_command,
-        build_open_activity_command, build_open_files_view_command,
-        build_open_timeline_at_timestamp_command, build_paginate_activity_command,
-        build_paginate_thread_timeline_backwards_command,
+        build_leave_room_command, build_load_link_previews_command,
+        build_load_message_source_command, build_load_room_settings_command, build_logout_command,
+        build_mark_activity_read_command, build_moderate_room_member_command,
+        build_observe_timeline_viewport_command, build_open_activity_command,
+        build_open_files_view_command, build_open_timeline_at_timestamp_command,
+        build_paginate_activity_command, build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_pin_event_command,
         build_probe_local_encryption_health_command, build_query_directory_command,
         build_redact_message_command, build_redact_reaction_command, build_remove_room_tag_command,
@@ -4107,11 +4117,17 @@ mod tests {
                 assert!(!options.encrypted);
                 assert_eq!(options.visibility, CreateRoomVisibility::Public);
                 assert_eq!(
-                    options.parent_space.as_ref().map(|parent| parent.space_id.as_str()),
+                    options
+                        .parent_space
+                        .as_ref()
+                        .map(|parent| parent.space_id.as_str()),
                     Some("!space:example.org")
                 );
                 assert_eq!(
-                    options.parent_space.as_ref().map(|parent| parent.via_server.as_str()),
+                    options
+                        .parent_space
+                        .as_ref()
+                        .map(|parent| parent.via_server.as_str()),
                     Some("example.org")
                 );
             }
