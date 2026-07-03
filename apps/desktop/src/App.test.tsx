@@ -1487,35 +1487,26 @@ describe("Tauri state refresh wiring", () => {
     expect(submitRecoverySource).toContain("api.submitRecovery(secret)");
   });
 
-  test("timeline date jump navigates the main timeline without opening the right panel", () => {
+  test("timeline header omits date jump while keeping anchored return-to-live", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
-    const transportStart = source.indexOf("const appTimelineTransport");
-    const transportEnd = source.indexOf("const attentionSummary", transportStart);
-    const transportSource = source.slice(transportStart, transportEnd);
-
-    expect(transportStart).toBeGreaterThanOrEqual(0);
-    expect(transportSource).toContain("api.openTimelineAtTimestamp(roomId, timestampMs)");
-    expect(transportSource).toContain("setSnapshot(nextSnapshot)");
-    expect(transportSource).toContain('setPrimaryView("timeline")');
-    // #161: jump-to-date must NOT open the right panel — it explicitly closes it
-    // so an already-open focused-context/search panel does not linger over the
-    // anchored main timeline. The focused timeline renders in the MAIN pane,
-    // marked by navigation.main_timeline_anchor.
-    expect(transportSource).not.toContain('setRightPanelMode("focusedContext")');
-    expect(transportSource).toContain('setRightPanelMode("closed")');
-    expect(source).toContain("timelineTransport={appTimelineTransport}");
-
-    // The main pane switches to the focused timeline key when anchored.
     const panesSource = readFileSync(
       new URL("./components/panes.tsx", import.meta.url),
       "utf8"
     );
+    const messagesSource = readFileSync(new URL("./i18n/messages.ts", import.meta.url), "utf8");
+    const stylesSource = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+
+    expect(panesSource).not.toContain("timeline.jumpToDate");
+    expect(panesSource).not.toContain("timeline-date-jump");
+    expect(panesSource).not.toContain("openAtTimestamp(");
+    expect(panesSource).not.toContain("CalendarDays");
+    expect(messagesSource).not.toContain("jumpToDate");
+    expect(messagesSource).not.toContain("openDateInTimeline");
+    expect(stylesSource).not.toContain("timeline-date-jump");
+
+    expect(source).toContain("timelineTransport={appTimelineTransport}");
     expect(panesSource).toContain("main_timeline_anchor");
     expect(panesSource).toContain("focusedTimelineKey");
-
-    // #161: the anchored main pane exposes a return-to-live control that closes
-    // the focused context (which clears the anchor in Rust → main pane re-renders
-    // the live timeline).
     expect(source).toContain("onReturnToLive");
     expect(source).toContain("api.closeFocusedContext()");
     expect(panesSource).toContain("isAnchored={Boolean(mainTimelineAnchorEventId)}");

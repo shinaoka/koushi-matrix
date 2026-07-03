@@ -1688,9 +1688,7 @@ button:disabled {
   min-width: 0;
 }
 
-.timeline-navigation-pill,
-.timeline-date-jump-trigger,
-.timeline-date-jump-button {
+.timeline-navigation-pill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1706,97 +1704,9 @@ button:disabled {
 }
 
 .timeline-navigation-pill:hover,
-.timeline-navigation-pill:focus-visible,
-.timeline-date-jump-trigger:hover,
-.timeline-date-jump-trigger:focus-visible,
-.timeline-date-jump-button:hover,
-.timeline-date-jump-button:focus-visible {
+.timeline-navigation-pill:focus-visible {
   color: var(--brand-contrast);
   background: var(--brand);
-}
-
-.timeline-date-jump-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: grid;
-  place-items: start center;
-  padding: 84px 16px 16px;
-  background: rgba(15, 27, 45, 0.18);
-}
-
-.timeline-date-jump-dialog {
-  display: grid;
-  gap: 14px;
-  inline-size: min(380px, calc(100vw - 32px));
-  padding: 16px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--surface);
-  box-shadow: 0 18px 48px rgba(15, 27, 45, 0.2);
-}
-
-.timeline-date-jump-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.timeline-date-jump-header h3 {
-  margin: 0;
-  color: var(--text);
-  font-size: 15px;
-}
-
-.timeline-date-jump-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  inline-size: 32px;
-  block-size: 32px;
-  border: 0;
-  border-radius: var(--r-sm);
-  color: var(--text-muted);
-  background: transparent;
-}
-
-.timeline-date-jump-close:hover,
-.timeline-date-jump-close:focus-visible {
-  color: var(--text);
-  background: var(--surface-hover);
-}
-
-.timeline-date-jump-label {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 7px;
-  min-width: 0;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.timeline-date-jump-input {
-  inline-size: min(var(--timeline-navigation-date-input-inline-size), 48vw);
-  min-inline-size: 0;
-  min-height: var(--timeline-navigation-control-block-size);
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  color: var(--text);
-  background: var(--surface);
-  font: inherit;
-}
-
-.timeline-date-jump-label .timeline-date-jump-input {
-  grid-column: 1 / -1;
-  inline-size: 100%;
-}
-
-.timeline-date-jump-actions {
-  display: flex;
-  justify-content: flex-end;
 }
 
 .pinned-events {
