@@ -222,6 +222,12 @@ describe("Sidebar", () => {
     ).map((button) => button.getAttribute("aria-label"));
     expect(activityOrder).toEqual(["synthetic-room", "planning-room"]);
 
+    const sortGroup = screen.getByRole("group", { name: "Room list sort" });
+    expect(sortGroup.querySelector(".room-list-sort-label")?.textContent).toBe("Sort");
+    expect(
+      screen.getByRole("group", { name: "Room list category" }).querySelector(".room-list-sort-label")
+    ).toBeNull();
+
     fireEvent.click(screen.getByRole("button", { name: "Name" }));
     const nameOrder = Array.from(
       document.querySelectorAll('[data-room-section="rooms"] [data-testid="room-item"]')

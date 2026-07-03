@@ -5253,6 +5253,53 @@ describe("TimelineView", () => {
     expect(screen.getByRole("button", { name: "Copy code" })).toBeTruthy();
   });
 
+  it("preserves compact formatted list structure inside message bodies", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const item: TimelineItem = {
+      ...message("$formatted-list:example.invalid", "Paper\nEvent and announcement\nAI"),
+      formatted: {
+        html: "<ul><li>Paper</li><li>Event and announcement</li><li>AI</li></ul>",
+        plain_text: "Paper\nEvent and announcement\nAI",
+        code_blocks: []
+      }
+    };
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [item]
+        }
+      }
+    });
+
+    const list = await screen.findByRole("list");
+    const items = within(list).getAllByRole("listitem");
+    expect(items.map((listItem) => listItem.textContent)).toEqual([
+      "Paper",
+      "Event and announcement",
+      "AI"
+    ]);
+  });
+
   it("renders link preview cards as clickable anchors", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const hideLinkPreview = vi.fn(async () => undefined);

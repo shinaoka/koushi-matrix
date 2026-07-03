@@ -351,6 +351,7 @@ export type MessageId =
   | "roomList.filterFavourites"
   | "roomList.filterInvites"
   | "roomList.sort"
+  | "roomList.sortLabel"
   | "roomList.sortActive"
   | "roomList.sortName"
   | "room.markAsRead"
@@ -1291,6 +1292,7 @@ const en: Catalog = {
   "roomList.filterFavourites": "Favourites",
   "roomList.filterInvites": "Invites",
   "roomList.sort": "Room list sort",
+  "roomList.sortLabel": "Sort",
   "roomList.sortActive": "Active",
   "roomList.sortName": "Name",
   "room.markAsRead": "Mark as read",
@@ -2129,6 +2131,7 @@ const ja: Catalog = {
   "roomList.filterFavourites": "お気に入り",
   "roomList.filterInvites": "招待",
   "roomList.sort": "ルームリストの並び順",
+  "roomList.sortLabel": "並び順",
   "roomList.sortActive": "アクティブ",
   "roomList.sortName": "名前",
   "room.markAsRead": "既読にする",
