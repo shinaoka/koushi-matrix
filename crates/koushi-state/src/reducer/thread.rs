@@ -433,18 +433,23 @@ pub(crate) fn handle_paginate_threads_list(
     if !is_session_ready(state) {
         return Vec::new();
     }
-    if state.threads_list.request_id() != Some(request_id) {
-        return Vec::new();
-    }
-    match &state.threads_list {
+    match &mut state.threads_list {
         ThreadsListState::Open {
+            room_id: open_room_id,
+            request_id: open_request_id,
             is_paginating,
             end_reached,
             ..
-        } if !is_paginating && !end_reached => {}
+        } if open_room_id == &room_id
+            && request_id > *open_request_id
+            && !*is_paginating
+            && !*end_reached =>
+        {
+            *open_request_id = request_id;
+            *is_paginating = true;
+        }
         _ => return Vec::new(),
     }
-    state.threads_list.set_paginating(true);
     vec![
         AppEffect::PaginateThreadsList {
             request_id,

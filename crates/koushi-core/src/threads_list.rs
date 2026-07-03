@@ -132,6 +132,12 @@ impl ThreadsListActor {
         };
 
         let service = Arc::new(ThreadListService::new(room));
+        let (_, items_subscriber) = service.subscribe_to_items_updates();
+        if let Err(_) = service.paginate().await {
+            self.emit_failed(request_id, OperationFailureKind::Sdk)
+                .await;
+            return None;
+        }
         let items = service.items();
         let projected: Vec<ThreadsListItem> = items.iter().map(project_item).collect();
         let end_reached = matches!(
@@ -144,10 +150,11 @@ impl ThreadsListActor {
 
         let (items_tx, mut items_rx) = mpsc::channel(64);
         let (pagination_tx, mut pagination_rx) = mpsc::channel(16);
+        let (pagination_request_tx, mut pagination_request_rx) = mpsc::channel(16);
 
         let items_relay_handle = {
             let service = Arc::clone(&service);
-            let mut subscriber = service.subscribe_to_items_updates().1;
+            let mut subscriber = items_subscriber;
             executor::spawn(async move {
                 loop {
                     match subscriber.next().await {
@@ -180,20 +187,24 @@ impl ThreadsListActor {
         let room_id = self.room_id.clone();
         let update_service = Arc::clone(&service);
         let update_task = executor::spawn(async move {
+            let mut current_request_id = request_id;
             loop {
                 tokio::select! {
                     biased;
+                    Some(next_request_id) = pagination_request_rx.recv() => {
+                        current_request_id = next_request_id;
+                    }
                     Some(items) = items_rx.recv() => {
                         let projected: Vec<ThreadsListItem> = items.iter().map(project_item).collect();
                         let _ = action_tx.send(vec![AppAction::ThreadsListUpdated {
-                            request_id: request_id.sequence,
+                            request_id: current_request_id.sequence,
                             room_id: room_id.clone(),
                             items: projected.clone(),
                             is_paginating: false,
                             end_reached: false,
                         }]).await;
                         let _ = event_tx.send(CoreEvent::ThreadsList(ThreadsListEvent::Updated {
-                            request_id,
+                            request_id: current_request_id,
                             room_id: room_id.clone(),
                             items: projected,
                             is_paginating: false,
@@ -207,7 +218,7 @@ impl ThreadsListActor {
                         let is_paginating = matches!(state, ThreadListPaginationState::Loading);
                         let action = if is_paginating {
                             AppAction::ThreadsListUpdated {
-                                request_id: request_id.sequence,
+                                request_id: current_request_id.sequence,
                                 room_id: room_id.clone(),
                                 items: projected.clone(),
                                 is_paginating: true,
@@ -215,7 +226,7 @@ impl ThreadsListActor {
                             }
                         } else {
                             AppAction::ThreadsListPaginationCompleted {
-                                request_id: request_id.sequence,
+                                request_id: current_request_id.sequence,
                                 room_id: room_id.clone(),
                                 items: projected.clone(),
                                 end_reached,
@@ -224,7 +235,7 @@ impl ThreadsListActor {
                         let _ = action_tx.send(vec![action]).await;
                         let event = if is_paginating {
                             CoreEvent::ThreadsList(ThreadsListEvent::Updated {
-                                request_id,
+                                request_id: current_request_id,
                                 room_id: room_id.clone(),
                                 items: projected.clone(),
                                 is_paginating: true,
@@ -232,7 +243,7 @@ impl ThreadsListActor {
                             })
                         } else {
                             CoreEvent::ThreadsList(ThreadsListEvent::PaginationCompleted {
-                                request_id,
+                                request_id: current_request_id,
                                 room_id: room_id.clone(),
                                 items: projected,
                                 end_reached,
@@ -247,6 +258,7 @@ impl ThreadsListActor {
 
         Some(ActiveSubscription {
             service,
+            pagination_request_tx,
             _items_relay: items_relay_handle,
             _pagination_relay: pagination_relay_handle,
             _update_task: update_task,
@@ -301,6 +313,7 @@ impl ThreadsListActor {
 
 struct ActiveSubscription {
     service: Arc<ThreadListService>,
+    pagination_request_tx: mpsc::Sender<RequestId>,
     _items_relay: executor::JoinHandle<()>,
     _pagination_relay: executor::JoinHandle<()>,
     _update_task: executor::JoinHandle<()>,
@@ -308,10 +321,12 @@ struct ActiveSubscription {
 
 impl ActiveSubscription {
     async fn paginate(&self, request_id: RequestId) {
+        if self.pagination_request_tx.send(request_id).await.is_err() {
+            return;
+        }
         if let Err(_) = self.service.paginate().await {
             // Failure is surfaced through the pagination-state subscriber, which
             // transitions back to Idle and emits a Failed action.
-            let _ = request_id;
         }
     }
 }
@@ -353,4 +368,69 @@ fn body_preview(content: Option<&matrix_sdk_ui::timeline::TimelineItemContent>) 
         return Some(sticker.content().body.clone());
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn open_subscription_loads_initial_page_before_emitting_opened() {
+        let source = include_str!("threads_list.rs");
+        let open_subscription = source
+            .split("async fn open_subscription")
+            .nth(1)
+            .expect("open_subscription body")
+            .split("async fn emit_opened")
+            .next()
+            .expect("open_subscription section");
+        let paginate_index = open_subscription
+            .find("service.paginate().await")
+            .expect("open_subscription must load the first thread page");
+        let emit_index = open_subscription
+            .find("self.emit_opened")
+            .expect("open_subscription must emit opened");
+
+        assert!(
+            paginate_index < emit_index,
+            "ThreadListService::new() starts empty; paginate before emitting Opened"
+        );
+    }
+
+    #[test]
+    fn paginate_updates_are_correlated_to_paginate_request_id() {
+        let source = include_str!("threads_list.rs");
+        let active_paginate = source
+            .split("impl ActiveSubscription")
+            .nth(1)
+            .expect("ActiveSubscription impl")
+            .split("async fn paginate(&self, request_id: RequestId)")
+            .nth(1)
+            .expect("ActiveSubscription::paginate body")
+            .split("fn project_item")
+            .next()
+            .expect("ActiveSubscription section");
+        assert!(
+            active_paginate.contains("send(request_id)"),
+            "pagination must hand the fresh paginate request id to the update task"
+        );
+        assert!(
+            !active_paginate.contains("let _ = request_id"),
+            "pagination must not discard the fresh request id"
+        );
+
+        let pagination_updates = source
+            .split("Some(state) = pagination_rx.recv()")
+            .nth(1)
+            .expect("pagination update branch")
+            .split("else => break")
+            .next()
+            .expect("pagination update section");
+        assert!(
+            pagination_updates.contains("current_request_id.sequence"),
+            "pagination state actions must use the current paginate request id"
+        );
+        assert!(
+            !pagination_updates.contains("request_id: request_id.sequence"),
+            "pagination state actions must not keep using the open request id"
+        );
+    }
 }

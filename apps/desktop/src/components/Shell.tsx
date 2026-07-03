@@ -597,6 +597,7 @@ function RoomListControls({
         </button>
       </div>
       <div className="room-list-sort" role="group" aria-label={t("roomList.sort")}>
+        <span className="room-list-sort-label">{t("roomList.sortLabel")}</span>
         <button
           className={`room-list-sort-button ${selectedSort === "active" ? "is-selected" : ""}`}
           type="button"

@@ -268,6 +268,50 @@ describe("styles.css token system", () => {
     ]);
   });
 
+  test("sidebar sort controls read as a compact secondary control row", () => {
+    const categoryBlock = selectorBlock(".room-list-category");
+    const sortBlock = selectorBlock(".room-list-sort");
+    const sortLabelBlock = selectorBlock(".room-list-sort-label");
+    const sortButtonBlock = selectorBlock(".room-list-sort-button");
+    const selectedSortButtonBlock = selectorBlock(".room-list-sort-button.is-selected");
+
+    expect(categoryBlock).toContain("grid-template-columns: repeat(2, minmax(0, 1fr));");
+    expect(categoryBlock).toContain("padding: 3px;");
+    expect(sortBlock).toContain("grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);");
+    expect(sortBlock).toContain("padding: 2px;");
+    expect(sortBlock).toContain("background: transparent;");
+    expect(sortLabelBlock).toContain("font-size: 11px;");
+    expect(sortLabelBlock).toContain("font-weight: 800;");
+    expect(sortButtonBlock).toContain("min-height: 24px;");
+    expect(sortButtonBlock).toContain("font-size: 11px;");
+    expect(sortButtonBlock).toContain("font-weight: 700;");
+    expect(selectedSortButtonBlock).toContain("color: var(--brand);");
+    expect(selectedSortButtonBlock).toContain("background: var(--brand-weak);");
+    expect(selectedSortButtonBlock).not.toContain("var(--brand-contrast)");
+  });
+
+  test("formatted message lists use compact chat-message spacing", () => {
+    const listBlock = groupedSelectorBlock(
+      /\.message-body\.message-formatted-body > ul,\s*\.message-body\.message-formatted-body > ol/,
+      "formatted list block"
+    );
+    const listItemBlock = selectorBlock(".message-body.message-formatted-body li");
+
+    expect(listBlock).toContain("margin-block: 2px;");
+    expect(listBlock).toContain("padding-inline-start: 18px;");
+    expect(listItemBlock).toContain("margin-block: 1px;");
+    expect(listItemBlock).toContain("line-height: 1.42;");
+  });
+
+  test("read marker stays a compact timeline divider", () => {
+    const markerBlock = selectorBlock(".read-marker");
+
+    expect(markerBlock).toContain("min-height: 18px;");
+    expect(markerBlock).toContain("margin: 4px 0;");
+    expect(markerBlock).toContain("gap: 8px;");
+    expect(markerBlock).toContain("font-size: 11px;");
+  });
+
   test("avatar and receipt fixed geometry use named tokens", () => {
     expectBlockUses(selectorBlock(".room-avatar"), ["--room-avatar-size", "--room-avatar-font-size"]);
     const activityAvatarImageBlock = selectorBlock(".activity-row-avatar img");
