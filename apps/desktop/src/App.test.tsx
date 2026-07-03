@@ -1381,6 +1381,21 @@ describe("Tauri state refresh wiring", () => {
     expect(selectSearchResultSource).not.toContain("cssEscape");
   });
 
+  test("message context menu normal reply targets the room composer", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const actionStart = source.indexOf("function runContextMenuAction");
+    const actionEnd = source.indexOf("async function runSearch", actionStart);
+    const actionSource = source.slice(actionStart, actionEnd);
+    const replyIndex = actionSource.indexOf('case "replyToMessage"');
+    const threadIndex = actionSource.indexOf('case "openThread"');
+
+    expect(replyIndex).toBeGreaterThanOrEqual(0);
+    expect(threadIndex).toBeGreaterThan(replyIndex);
+    expect(actionSource).toContain(
+      "void setComposerReplyTarget(target.message.room_id, target.message.event_id);"
+    );
+  });
+
   test("search close clears Rust search state instead of promoting inline results", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const closeSearchStart = source.indexOf("async function closeSearchPanel");

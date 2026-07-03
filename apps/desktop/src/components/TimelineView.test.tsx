@@ -350,6 +350,47 @@ describe("TimelineView", () => {
     expect(picker.classList.contains("is-below")).toBe(false);
   });
 
+  it("offers normal reply from the message action menu", async () => {
+    const onReply = vi.fn();
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [
+          {
+            ...message("$reply-menu", "Reply from menu"),
+            actions: {
+              can_copy: true,
+              can_forward: false,
+              can_permalink: false,
+              can_view_source: false
+            }
+          }
+        ]
+      }
+    });
+
+    render(
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={baseTransport({})}
+          onReply={onReply}
+        />
+      </TimelineStoreContext.Provider>
+    );
+
+    const row = screen.getByText("Reply from menu").closest("article");
+    expect(row).not.toBeNull();
+
+    fireEvent.click(within(row!).getByRole("button", { name: "Message actions" }));
+    fireEvent.click(within(row!).getByRole("menuitem", { name: "Reply to message" }));
+
+    expect(onReply).toHaveBeenCalledWith("!room:example.invalid", "$reply-menu");
+  });
+
   it("shrinks the reaction emoji picker to the visible space instead of clipping it", async () => {
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
       this: HTMLElement

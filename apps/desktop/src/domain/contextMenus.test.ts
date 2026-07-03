@@ -7,6 +7,7 @@ describe("context menu registry", () => {
     const ownerItems = contextMenuItems({
       kind: "message",
       canManage: true,
+      canReply: true,
       hasThread: true,
       senderUserId: "@owner:example.invalid",
       currentUserId: "@owner:example.invalid",
@@ -17,6 +18,7 @@ describe("context menu registry", () => {
     const guestItems = contextMenuItems({
       kind: "message",
       canManage: false,
+      canReply: true,
       hasThread: true,
       senderUserId: "@other:example.invalid",
       currentUserId: "@me:example.invalid",
@@ -26,6 +28,7 @@ describe("context menu registry", () => {
     });
 
     expect(ownerItems.map((item) => item.id)).toEqual([
+      "replyToMessage",
       "openThread",
       "editMessage",
       "redactMessage"
@@ -34,6 +37,7 @@ describe("context menu registry", () => {
       destructive: true
     });
     expect(guestItems.map((item) => item.id)).toEqual([
+      "replyToMessage",
       "openThread",
       "ignoreUser",
       "reportUser",
@@ -41,10 +45,40 @@ describe("context menu registry", () => {
     ]);
   });
 
+  test("message menu exposes normal reply only when the row can be replied to", () => {
+    const replyableItems = contextMenuItems({
+      kind: "message",
+      canManage: false,
+      canReply: true,
+      hasThread: true,
+      senderUserId: "@other:example.invalid",
+      currentUserId: "@me:example.invalid",
+      roomId: "!room:example.invalid",
+      eventId: "$event:example.invalid",
+      isIgnored: false
+    }).map((item) => item.id);
+    const nonReplyableItems = contextMenuItems({
+      kind: "message",
+      canManage: false,
+      canReply: false,
+      hasThread: true,
+      senderUserId: "@other:example.invalid",
+      currentUserId: "@me:example.invalid",
+      roomId: "!room:example.invalid",
+      eventId: "$event:example.invalid",
+      isIgnored: false
+    }).map((item) => item.id);
+
+    expect(replyableItems[0]).toBe("replyToMessage");
+    expect(nonReplyableItems).not.toContain("replyToMessage");
+    expect(nonReplyableItems).toContain("openThread");
+  });
+
   test("message menu shows unignore when sender is already ignored", () => {
     const items = contextMenuItems({
       kind: "message",
       canManage: false,
+      canReply: true,
       hasThread: false,
       senderUserId: "@other:example.invalid",
       currentUserId: "@me:example.invalid",
