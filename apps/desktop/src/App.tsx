@@ -600,9 +600,12 @@ async function saveReadyMediaFile(sourceUrl: string, filename: string): Promise<
     return;
   }
   const safeFilename = safeDownloadFilename(filename);
+  const defaultPath = await invoke<string>("default_media_save_path", {
+    filename: safeFilename
+  }).catch(() => safeFilename);
   const selected = await saveDialog({
     title: t("timeline.downloadMedia", { filename: safeFilename }),
-    defaultPath: safeFilename
+    defaultPath
   });
   if (!selected) {
     return;
@@ -2269,6 +2272,16 @@ export function App() {
     setSnapshot(nextSnapshot);
   }
 
+  async function openDmUserInfo(roomId: string, userId: string) {
+    await selectRoom(roomId);
+    roomSettingsLoadRef.current = null;
+    const next = await api.loadRoomSettings(roomId);
+    setSnapshot(next);
+    setPeoplePanelScope({ kind: "room", roomId });
+    setSelectedProfileUserId(userId);
+    await setRightPanelModeClosingFocusedContext("profile");
+  }
+
   async function openHomeActivityView() {
     setHomeSelection({ kind: "activity" });
     await openHomeSelection({ kind: "activity" });
@@ -3057,6 +3070,11 @@ export function App() {
 
     if (target.kind === "room") {
       switch (actionId) {
+        case "openUserInfo":
+          if (target.dmUserId) {
+            void openDmUserInfo(target.roomId, target.dmUserId);
+          }
+          return;
         case "setRoomFavourite":
           void api.setRoomTag(target.roomId, "favourite").then(setSnapshot);
           return;

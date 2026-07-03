@@ -110,6 +110,7 @@ export type MessageId =
   | "context.openRoomInfo"
   | "context.openSpaceInfo"
   | "context.openThread"
+  | "context.openUserInfo"
   | "context.openUserSettings"
   | "context.redactMessage"
   | "context.removeFromFavourites"
@@ -1019,6 +1020,7 @@ const en: Catalog = {
   "context.openRoomInfo": "Room info",
   "context.openSpaceInfo": "Space info",
   "context.openThread": "Reply in thread",
+  "context.openUserInfo": "User info",
   "context.openUserSettings": "User settings",
   "context.redactMessage": "Redact",
   "context.removeFromFavourites": "Remove from Favourites",
@@ -1831,6 +1833,7 @@ const ja: Catalog = {
   "context.openRoomInfo": "ルーム情報",
   "context.openSpaceInfo": "スペース情報",
   "context.openThread": "スレッドで返信",
+  "context.openUserInfo": "ユーザー情報",
   "context.openUserSettings": "ユーザー設定",
   "context.redactMessage": "削除",
   "context.removeFromFavourites": "お気に入りから削除",

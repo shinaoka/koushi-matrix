@@ -456,12 +456,6 @@ export function ProfilePanel({
                 label={t("room.banMember", { name: displayLabel })}
                 onClick={() => onModerateMember?.(roomId!, userId, "ban", null)}
               />
-              <ModerationButton
-                action="unban"
-                disabled={!permissions?.can_unban || moderationPending || !onModerateMember}
-                label={t("room.unbanMember", { name: displayLabel })}
-                onClick={() => onModerateMember?.(roomId!, userId, "unban", null)}
-              />
             </div>
           ) : null}
         </div>

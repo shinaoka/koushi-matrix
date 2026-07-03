@@ -251,6 +251,47 @@ describe("Sidebar", () => {
     const dmRow = screen.getByRole("button", { name: dm.display_name });
     expect(dmRow.querySelector(".room-presence-dot")).toBeTruthy();
   });
+
+  it("passes one-to-one DM user info through the room context menu", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.selectSpace(null);
+    const dm = snapshot.sidebar.global_dms[0];
+    const dmRoom = snapshot.state.domain.rooms.find((room) => room.room_id === dm?.room_id);
+    const dmUserId = dmRoom?.dm_user_ids[0];
+    if (!dm || !dmUserId) {
+      throw new Error("expected fake account home to include a direct message");
+    }
+    const onOpenContextMenu = vi.fn();
+
+    render(
+      <Sidebar
+        activeRoomId={snapshot.state.ui.navigation.active_room_id}
+        activeView="timeline"
+        snapshot={snapshot}
+        onCreateRoom={() => undefined}
+        onNewDm={() => undefined}
+        onOpenContextMenu={onOpenContextMenu}
+        onOpenActivity={() => undefined}
+        onOpenExplore={() => undefined}
+        onOpenHome={() => undefined}
+        onOpenInvites={() => undefined}
+        onOpenSpaceInfo={() => undefined}
+        onOpenThreads={() => undefined}
+        onSelectRoom={() => undefined}
+      />
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: dm.display_name }));
+
+    expect(onOpenContextMenu).toHaveBeenCalledTimes(1);
+    expect(onOpenContextMenu.mock.calls[0][1]).toEqual({
+      kind: "room",
+      roomId: dm.room_id,
+      dmUserId
+    });
+    const items = onOpenContextMenu.mock.calls[0][2] as Array<{ id: string }>;
+    expect(items.map((item) => item.id)).toContain("openUserInfo");
+  });
 });
 
 describe("WorkspaceRail", () => {

@@ -697,11 +697,12 @@ function RoomButton({
         }
         onOpenContextMenu(
           event,
-          { kind: "room", roomId: room.room_id },
+          { kind: "room", roomId: room.room_id, dmUserId },
           contextMenuItems({
             kind: "room",
             roomId: room.room_id,
-            tags: room.tags ?? EMPTY_ROOM_TAGS
+            tags: room.tags ?? EMPTY_ROOM_TAGS,
+            dmUserIds: dmUserId ? [dmUserId] : []
           })
         );
       }}
