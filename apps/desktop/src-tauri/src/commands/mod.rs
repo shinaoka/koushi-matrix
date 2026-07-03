@@ -802,7 +802,7 @@ async fn wait_for_room_joined(
     loop {
         let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
             .await
-            .map_err(|_| "directory room join did not complete".to_owned())?;
+            .map_err(|_| "room join did not complete".to_owned())?;
         match event {
             Ok(CoreEvent::Room(RoomEvent::RoomJoined {
                 request_id,
@@ -813,7 +813,7 @@ async fn wait_for_room_joined(
             Ok(CoreEvent::OperationFailed { request_id, .. })
                 if request_id == operation_request_id =>
             {
-                return Err("directory room join failed".to_owned());
+                return Err("room join failed".to_owned());
             }
             Ok(_) => {}
             Err(_) => return Err("room operation event stream lagged".to_owned()),
@@ -2102,6 +2102,20 @@ pub(crate) fn build_join_directory_room_command(
     }))
 }
 
+pub(crate) fn build_join_room_command(
+    request_id: koushi_core::RequestId,
+    room_id: String,
+) -> Option<CoreCommand> {
+    let room_id = room_id.trim().to_owned();
+    if room_id.is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Room(RoomCommand::JoinRoom {
+        request_id,
+        room_id,
+    }))
+}
+
 fn optional_non_blank(value: Option<String>) -> Option<String> {
     value.and_then(|value| {
         let trimmed = value.trim();
@@ -2586,8 +2600,8 @@ mod tests {
         build_download_media_command, build_edit_message_command, build_enable_key_backup_command,
         build_export_room_keys_command, build_forget_room_command, build_forward_message_command,
         build_hide_link_preview_command, build_ignore_user_command, build_import_room_keys_command,
-        build_invite_user_command, build_join_directory_room_command, build_leave_room_command,
-        build_load_link_previews_command, build_load_message_source_command,
+        build_invite_user_command, build_join_directory_room_command, build_join_room_command,
+        build_leave_room_command, build_load_link_previews_command, build_load_message_source_command,
         build_load_room_settings_command, build_logout_command, build_mark_activity_read_command,
         build_moderate_room_member_command, build_observe_timeline_viewport_command,
         build_open_activity_command, build_open_files_view_command,
@@ -4232,6 +4246,21 @@ mod tests {
             build_join_directory_room_command(fake_request_id(29), "   ".to_owned(), None,)
                 .is_none()
         );
+
+        match build_join_room_command(fake_request_id(290), " !child:example.org ".to_owned())
+            .expect("room join should build a command")
+        {
+            CoreCommand::Room(RoomCommand::JoinRoom {
+                request_id,
+                room_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(290));
+                assert_eq!(room_id, "!child:example.org");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        assert!(build_join_room_command(fake_request_id(291), "   ".to_owned()).is_none());
 
         match build_load_room_settings_command(fake_request_id(30), "!room:example.org".to_owned())
         {

@@ -946,6 +946,38 @@ fn selecting_space_filters_rooms_and_keeps_dms_global() {
 }
 
 #[test]
+fn active_space_lists_child_rooms_that_are_not_joined() {
+    let mut spaces = spaces();
+    spaces[0]
+        .child_room_ids
+        .push("room-not-joined".to_owned());
+    let sidebar = compose_sidebar(Some("space-a"), &spaces, &rooms());
+    let home_sidebar = compose_sidebar(None, &spaces, &rooms());
+
+    assert_eq!(
+        sidebar
+            .space_rooms
+            .iter()
+            .map(|room| room.room_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["room-a"]
+    );
+    assert_eq!(
+        sidebar
+            .not_joined_space_rooms
+            .iter()
+            .map(|room| room.room_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["room-not-joined"]
+    );
+    assert_eq!(
+        sidebar.not_joined_space_rooms[0].display_name,
+        "room-not-joined"
+    );
+    assert!(home_sidebar.not_joined_space_rooms.is_empty());
+}
+
+#[test]
 fn room_list_update_keeps_empty_selected_space_empty() {
     let mut state = AppState {
         session: SessionState::Ready(session_info()),

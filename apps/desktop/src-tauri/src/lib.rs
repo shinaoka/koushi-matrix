@@ -1109,6 +1109,7 @@ pub fn run() {
             commands::room::create_space,
             commands::directory::join_directory_room,
             commands::room::set_space_child,
+            commands::room::join_room,
             commands::room::accept_invite,
             commands::room::decline_invite,
             commands::room::start_direct_message,

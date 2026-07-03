@@ -742,6 +742,7 @@ function makeSnapshot(): DesktopSnapshot {
           highlight_count: 0
         }
       ],
+      not_joined_space_rooms: [],
       global_dms: [
         {
           room_id: "!room-beta:example.invalid",

@@ -13,6 +13,8 @@ pub struct SidebarModel {
     pub account_home: AccountHomeItem,
     pub space_rail: Vec<SpaceRailItem>,
     pub space_rooms: Vec<RoomListItem>,
+    #[serde(default)]
+    pub not_joined_space_rooms: Vec<RoomListItem>,
     pub global_dms: Vec<RoomListItem>,
     pub space_unread_count: u64,
     pub dm_unread_count: u64,
@@ -113,6 +115,18 @@ pub fn compose_sidebar_with_room_notification_settings(
                 .collect()
         });
 
+    let not_joined_space_rooms: Vec<_> = active_space_id
+        .and_then(|space_id| spaces.iter().find(|space| space.space_id == space_id))
+        .map(|space| {
+            space
+                .child_room_ids
+                .iter()
+                .filter(|room_id| !rooms_by_id.contains_key(room_id.as_str()))
+                .map(|room_id| not_joined_room_list_item(room_id))
+                .collect()
+        })
+        .unwrap_or_default();
+
     let global_dms: Vec<_> = rooms
         .iter()
         .filter(|room| {
@@ -135,6 +149,7 @@ pub fn compose_sidebar_with_room_notification_settings(
         dm_highlight_count: highlight_count(&global_dms, room_notification_settings),
         space_rail,
         space_rooms,
+        not_joined_space_rooms,
         global_dms,
     }
 }
@@ -177,6 +192,17 @@ fn room_list_item(room: &RoomSummary) -> RoomListItem {
         tags: room.tags.clone(),
         unread_count: room_activity_unread_count(room),
         highlight_count: room.highlight_count,
+    }
+}
+
+fn not_joined_room_list_item(room_id: &str) -> RoomListItem {
+    RoomListItem {
+        room_id: room_id.to_owned(),
+        display_name: room_id.to_owned(),
+        avatar: None,
+        tags: RoomTags::default(),
+        unread_count: 0,
+        highlight_count: 0,
     }
 }
 

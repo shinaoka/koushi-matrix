@@ -367,6 +367,7 @@ export function Sidebar({
   onOpenInvites,
   onOpenSpaceInfo,
   onOpenThreads,
+  onJoinRoom,
   onSelectRoom
 }: {
   activeRoomId: string | null;
@@ -382,6 +383,7 @@ export function Sidebar({
   onOpenInvites: () => void;
   onOpenSpaceInfo: () => void;
   onOpenThreads: () => void;
+  onJoinRoom?: (roomId: string) => void;
   onSelectRoom: (roomId: string) => void;
 }) {
   const sections = roomListSections(
@@ -409,6 +411,10 @@ export function Sidebar({
   const [roomSort, setRoomSort] = useState<SidebarRoomSort>(readSidebarRoomSort);
   const roomCategoryRooms = roomCategory === "dms" ? sections.people : sections.rooms;
   const visibleCategoryRooms = sortedSidebarRooms(roomCategoryRooms, roomSort);
+  const visibleNotJoinedRooms =
+    accountHomeActive || roomCategory !== "rooms"
+      ? []
+      : sortedSidebarRooms(sections.notJoined, roomSort);
   const visibleCategoryLabel =
     roomCategory === "dms" ? t("workspace.people") : t("workspace.rooms");
   const visibleCategoryKind = roomCategory === "dms" ? "dm" : "room";
@@ -510,6 +516,22 @@ export function Sidebar({
           onSelectCategory={selectRoomCategory}
           onSelectSort={selectRoomSort}
         />
+        {visibleNotJoinedRooms.length > 0 ? (
+          <RoomSection
+            activeRoomId={activeRoomId}
+            collapsed={Boolean(collapsedSections["not-joined"])}
+            id="not-joined"
+            kind="notJoined"
+            label={t("workspace.notJoined")}
+            presence={presence}
+            roomById={roomById}
+            rooms={visibleNotJoinedRooms}
+            onJoinRoom={onJoinRoom}
+            onOpenContextMenu={onOpenContextMenu}
+            onSelectRoom={onSelectRoom}
+            onToggleCollapsed={() => toggleSection("not-joined")}
+          />
+        ) : null}
         <RoomSection
           activeRoomId={activeRoomId}
           collapsed={false}
@@ -631,6 +653,7 @@ function RoomSection({
   showHeader = true,
   showWhenEmpty = false,
   onOpenContextMenu,
+  onJoinRoom,
   onSelectInvite,
   onSelectRoom,
   onToggleCollapsed
@@ -638,7 +661,7 @@ function RoomSection({
   activeRoomId: string | null;
   collapsed: boolean;
   id: string;
-  kind: "room" | "dm" | "invite";
+  kind: "room" | "dm" | "invite" | "notJoined";
   label: string;
   presence: DesktopSnapshot["state"]["domain"]["live_signals"]["presence"];
   roomById: Map<string, RoomSummary>;
@@ -646,6 +669,7 @@ function RoomSection({
   showHeader?: boolean;
   showWhenEmpty?: boolean;
   onOpenContextMenu: OpenContextMenu;
+  onJoinRoom?: (roomId: string) => void;
   onSelectInvite?: () => void;
   onSelectRoom: (roomId: string) => void;
   onToggleCollapsed?: () => void;
@@ -673,6 +697,7 @@ function RoomSection({
               roomById={roomById}
               key={room.room_id}
               room={room}
+              onJoinRoom={onJoinRoom}
               onOpenContextMenu={onOpenContextMenu}
               onSelectInvite={onSelectInvite}
               onSelectRoom={onSelectRoom}
@@ -749,15 +774,17 @@ function RoomButton({
   presence,
   roomById,
   room,
+  onJoinRoom,
   onOpenContextMenu,
   onSelectInvite,
   onSelectRoom
 }: {
   activeRoomId: string | null;
-  kind: "room" | "dm" | "invite";
+  kind: "room" | "dm" | "invite" | "notJoined";
   presence: DesktopSnapshot["state"]["domain"]["live_signals"]["presence"];
   roomById: Map<string, RoomSummary>;
   room: RoomListItem;
+  onJoinRoom?: (roomId: string) => void;
   onOpenContextMenu: OpenContextMenu;
   onSelectInvite?: () => void;
   onSelectRoom: (roomId: string) => void;
@@ -783,10 +810,14 @@ function RoomButton({
           onSelectInvite?.();
           return;
         }
+        if (kind === "notJoined") {
+          onJoinRoom?.(room.room_id);
+          return;
+        }
         onSelectRoom(room.room_id);
       }}
       onContextMenu={(event) => {
-        if (kind === "invite") {
+        if (kind === "invite" || kind === "notJoined") {
           event.preventDefault();
           return;
         }

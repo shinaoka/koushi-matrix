@@ -329,6 +329,7 @@ function defaultSnapshotResponse() {
       account_home: { display_name: "Home", unread_count: 0, highlight_count: 0, is_active: true },
       space_rail: [],
       space_rooms: [],
+      not_joined_space_rooms: [],
       global_dms: [],
       space_unread_count: 0,
       dm_unread_count: 0,

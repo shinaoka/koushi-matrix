@@ -193,6 +193,40 @@ describe("Sidebar", () => {
     expect(screen.queryByRole("region", { name: "Rooms" })).toBeNull();
   });
 
+  it("renders not joined child rooms in the active space and joins on click", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.selectSpace("!space-alpha:example.invalid");
+    const activeSpace = snapshot.state.domain.spaces.find(
+      (space) => space.space_id === snapshot.state.ui.navigation.active_space_id
+    );
+    activeSpace?.child_room_ids.push("!not-joined:example.invalid");
+    const onJoinRoom = vi.fn();
+
+    render(
+      <Sidebar
+        activeRoomId={snapshot.state.ui.navigation.active_room_id}
+        activeView="timeline"
+        snapshot={snapshot}
+        onCreateRoom={() => undefined}
+        onJoinRoom={onJoinRoom}
+        onNewDm={() => undefined}
+        onOpenContextMenu={() => undefined}
+        onOpenActivity={() => undefined}
+        onOpenExplore={() => undefined}
+        onOpenHome={() => undefined}
+        onOpenInvites={() => undefined}
+        onOpenSpaceInfo={() => undefined}
+        onOpenThreads={() => undefined}
+        onSelectRoom={() => undefined}
+      />
+    );
+
+    expect(screen.getByRole("region", { name: "Not joined" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "!not-joined:example.invalid" }));
+
+    expect(onJoinRoom).toHaveBeenCalledWith("!not-joined:example.invalid");
+  });
+
   it("sorts the selected category by active order or display name and persists the sort", async () => {
     const api = createBrowserFakeApi();
     let snapshot = await api.selectSpace("!space-alpha:example.invalid");

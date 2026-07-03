@@ -2477,6 +2477,24 @@ export function App() {
     }
   }
 
+  async function joinRoom(roomId: string) {
+    const trimmedRoomId = roomId.trim();
+    if (!trimmedRoomId || isBusy) {
+      return;
+    }
+    setIsBusy(true);
+    try {
+      let nextSnapshot = await api.joinRoom(trimmedRoomId);
+      if (nextSnapshot.state.domain.rooms.some((room) => room.room_id === trimmedRoomId)) {
+        nextSnapshot = await api.selectRoom(trimmedRoomId);
+      }
+      setPrimaryView("timeline");
+      setSnapshot(nextSnapshot);
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function submitNewDmDialog() {
     const userId = newDmDraftUserId.trim();
     if (!userId || isBusy) {
@@ -2546,17 +2564,8 @@ export function App() {
         kind === "room"
           ? createRoomRequestFromDraft(name, createRoomDraftOptions, activeSpaceIdForCreatedRoom)
           : null;
-      let nextSnapshot =
+      const nextSnapshot =
         kind === "space" ? await api.createSpace(name) : await api.createRoom(createRoomRequest!);
-      const createdRoomId = nextSnapshot.state.ui.navigation.active_room_id;
-      const viaServer = createdRoomId ? serverNameFromRoomId(createdRoomId) : null;
-      if (kind === "room" && activeSpaceIdForCreatedRoom && createdRoomId && viaServer) {
-        nextSnapshot = await api.setSpaceChild(
-          activeSpaceIdForCreatedRoom,
-          createdRoomId,
-          viaServer
-        );
-      }
       setSnapshot(nextSnapshot);
       closeCreateDialog();
     } finally {
@@ -3433,6 +3442,9 @@ export function App() {
             if (roomId) {
               void openThreadsListPanel(roomId);
             }
+          }}
+          onJoinRoom={(roomId) => {
+            void joinRoom(roomId);
           }}
           onSelectRoom={selectRoom}
         />

@@ -6,7 +6,7 @@ glue. Vendored upstream code must keep its original license and copyright
 notices; local changes to vendored code must remain easy to upstream or
 revert.
 
-Last amended: 2026-06-20.
+Last amended: 2026-07-03.
 
 ## Read Order And Authority
 
@@ -71,6 +71,13 @@ conflict is being resolved.
   `CoreCommand` / `CoreEvent` against disposable local Conduit/Tuwunel QA,
   and only then is wired to Tauri/React. GUI-first Matrix behavior is
   prohibited.
+- Before designing or implementing new user-visible Matrix functionality,
+  inspect the corresponding Element Web and Element X Android/iOS behavior
+  when those clients have an equivalent flow. Record the observed upstream
+  command/state shape and UX flow in the issue, plan, or PR notes, and call out
+  any intentional divergence before code lands. If Element and Element X differ,
+  prefer the behavior that matches Matrix semantics and desktop user
+  expectations, with the tradeoff documented.
 - This headless-first rule is operationalized as two phases per work item.
   **Phase A (headless contract):** model the feature as serializable
   `AppState` / reducers and `CoreCommand` / `CoreEvent` in

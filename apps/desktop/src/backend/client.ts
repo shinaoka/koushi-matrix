@@ -619,6 +619,10 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("join_directory_room", { alias, viaServer });
   }
 
+  async joinRoom(roomId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("join_room", { roomId });
+  }
+
   async createRoom(request: CreateRoomRequest): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("create_room", { options: request });
   }
