@@ -1395,6 +1395,7 @@ export interface SidebarModel {
   account_home: AccountHomeItem;
   space_rail: SpaceRailItem[];
   space_rooms: RoomListItem[];
+  not_joined_space_rooms: RoomListItem[];
   global_dms: RoomListItem[];
   space_unread_count: number;
   dm_unread_count: number;
@@ -1462,6 +1463,7 @@ export interface VisibleRooms {
 export interface RoomListSections {
   favourites: RoomListItem[];
   invites: RoomListItem[];
+  notJoined: RoomListItem[];
   rooms: RoomListItem[];
   people: RoomListItem[];
   lowPriority: RoomListItem[];

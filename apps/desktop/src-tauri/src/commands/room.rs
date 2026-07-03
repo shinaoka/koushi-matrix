@@ -390,6 +390,28 @@ pub async fn set_space_child(
 }
 
 #[tauri::command]
+pub async fn join_room(
+    room_id: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    let Some(command) = build_join_room_command(request_id, room_id) else {
+        update_qa_window_title_from_state(&app, state.inner()).await;
+        return current_snapshot(state.inner()).await;
+    };
+
+    event_conn
+        .command(command)
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_room_joined(&mut event_conn, request_id, ROOM_OPERATION_EVENT_TIMEOUT).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn accept_invite(
     room_id: String,
     app: AppHandle,

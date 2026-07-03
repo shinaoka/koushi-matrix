@@ -775,6 +775,7 @@ export type MessageId =
   | "workspace.favourites"
   | "workspace.lowPriority"
   | "workspace.newDm"
+  | "workspace.notJoined"
   | "workspace.people"
   | "workspace.rooms"
   | "workspace.resizeRoomList"
@@ -1728,6 +1729,7 @@ const en: Catalog = {
   "workspace.favourites": "Favourites",
   "workspace.lowPriority": "Low priority",
   "workspace.newDm": "New DM",
+  "workspace.notJoined": "Not joined",
   "workspace.people": "Direct Messages",
   "workspace.rooms": "Rooms",
   "workspace.resizeRoomList": "Resize room list",
@@ -2566,6 +2568,7 @@ const ja: Catalog = {
   "workspace.favourites": "お気に入り",
   "workspace.lowPriority": "低優先度",
   "workspace.newDm": "新しいDM",
+  "workspace.notJoined": "未参加",
   "workspace.people": "Direct Messages",
   "workspace.rooms": "ルーム",
   "workspace.resizeRoomList": "ルームリストの幅を変更",

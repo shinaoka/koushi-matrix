@@ -224,6 +224,7 @@ describe("TauriDesktopApi", () => {
     const api = createDesktopApi();
     await api.acceptInvite("!invite:example.invalid");
     await api.declineInvite("!decline:example.invalid");
+    await api.joinRoom("!child:example.invalid");
     await api.startDirectMessage("@target:example.invalid");
     await api.inviteUser("!room:example.invalid", "@target:example.invalid");
 
@@ -232,6 +233,9 @@ describe("TauriDesktopApi", () => {
     });
     expect(invoke).toHaveBeenCalledWith("decline_invite", {
       roomId: "!decline:example.invalid"
+    });
+    expect(invoke).toHaveBeenCalledWith("join_room", {
+      roomId: "!child:example.invalid"
     });
     expect(invoke).toHaveBeenCalledWith("start_direct_message", {
       userId: "@target:example.invalid"

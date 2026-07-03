@@ -94,6 +94,7 @@ function roomListSectionsFromSidebar(
   return {
     favourites: sidebar.space_rooms.filter((room) => room.tags.favourite !== null),
     invites: [],
+    notJoined: sidebar.not_joined_space_rooms,
     rooms: sidebar.space_rooms.filter(
       (room) => room.tags.favourite === null && room.tags.low_priority === null
     ),
@@ -117,6 +118,7 @@ function roomListSectionsFromProjection(
 
   const favourites: RoomListItem[] = [];
   const invitesSection: RoomListItem[] = [];
+  const notJoined: RoomListItem[] = [];
   const roomsSection: RoomListItem[] = [];
   const people: RoomListItem[] = [];
   const lowPriority: RoomListItem[] = [];
@@ -163,6 +165,7 @@ function roomListSectionsFromProjection(
   return {
     favourites,
     invites: invitesSection,
+    notJoined,
     rooms: roomsSection,
     people,
     lowPriority
@@ -224,6 +227,12 @@ export function composeSidebar(
         .filter((room) => !room.is_dm && room.parent_space_ids.length === 0)
         .map(roomListItem);
 
+  const notJoinedSpaceRooms = activeSpaceId
+    ? activeSpace?.child_room_ids
+        .filter((roomId) => !roomById.has(roomId))
+        .map(notJoinedRoomListItem) ?? []
+    : [];
+
   const globalDms = rooms
     .filter(
       (room) =>
@@ -259,6 +268,7 @@ export function composeSidebar(
       is_active: space.space_id === activeSpaceId
     })),
     space_rooms: spaceRooms,
+    not_joined_space_rooms: notJoinedSpaceRooms,
     global_dms: globalDms,
     space_unread_count: aggregateRoomItems(spaceRooms).reduce(
       (sum, room) => sum + room.unread_count,
@@ -320,6 +330,17 @@ function roomListItem(room: RoomSummary): RoomListItem {
     tags: room.tags,
     unread_count: roomActivityUnreadCount(room),
     highlight_count: room.highlight_count ?? 0
+  };
+}
+
+function notJoinedRoomListItem(roomId: string): RoomListItem {
+  return {
+    room_id: roomId,
+    display_name: roomId,
+    avatar: null,
+    tags: { favourite: null, low_priority: null },
+    unread_count: 0,
+    highlight_count: 0
   };
 }
 

@@ -3532,6 +3532,7 @@ fn create_room_request(
         );
 
         if !is_public {
+            request.room_version = Some(matrix_sdk::ruma::RoomVersionId::V9);
             request.initial_state.push(
                 matrix_sdk::ruma::events::InitialStateEvent::with_empty_state_key(
                     matrix_sdk::ruma::events::room::join_rules::RoomJoinRulesEventContent::restricted(
@@ -3547,7 +3548,7 @@ fn create_room_request(
             request.initial_state.push(
                 matrix_sdk::ruma::events::InitialStateEvent::with_empty_state_key(
                     matrix_sdk::ruma::events::room::history_visibility::RoomHistoryVisibilityEventContent::new(
-                        matrix_sdk::ruma::events::room::history_visibility::HistoryVisibility::Shared,
+                        matrix_sdk::ruma::events::room::history_visibility::HistoryVisibility::Invited,
                     ),
                 )
                 .to_raw_any(),
@@ -3728,6 +3729,15 @@ pub async fn set_space_child(
         .await
         .map(|_| ())
         .map_err(MatrixRoomOperationError::from_sdk_error)
+}
+
+pub fn room_id_server_name(room_id: &str) -> Result<String, MatrixRoomOperationError> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(room_id)
+        .map_err(|_| MatrixRoomOperationError::InvalidRoomId)?;
+    room_id
+        .server_name()
+        .map(ToString::to_string)
+        .ok_or(MatrixRoomOperationError::InvalidRoomId)
 }
 
 pub async fn set_room_tag(
@@ -5926,6 +5936,10 @@ mod tests {
 
         assert_eq!(request.name.as_deref(), Some("Synthetic Ops"));
         assert_eq!(request.topic.as_deref(), Some("Deployment notes"));
+        assert_eq!(
+            request.room_version.as_ref().map(|version| version.as_str()),
+            Some("9")
+        );
         let initial_state = initial_state_json(&request);
         assert!(
             initial_state
@@ -5954,6 +5968,20 @@ mod tests {
                 .and_then(|content| content.get("join_rule"))
                 .and_then(serde_json::Value::as_str),
             Some("restricted")
+        );
+        let history_visibility = initial_state
+            .iter()
+            .find(|event| {
+                event.get("type").and_then(serde_json::Value::as_str)
+                    == Some("m.room.history_visibility")
+            })
+            .expect("history visibility");
+        assert_eq!(
+            history_visibility
+                .get("content")
+                .and_then(|content| content.get("history_visibility"))
+                .and_then(serde_json::Value::as_str),
+            Some("invited")
         );
     }
 

@@ -190,6 +190,7 @@ export interface DesktopApi {
   submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot>;
   queryDirectory(query: DirectoryQuery): Promise<DesktopSnapshot>;
   joinDirectoryRoom(alias: string, viaServer?: string | null): Promise<DesktopSnapshot>;
+  joinRoom(roomId: string): Promise<DesktopSnapshot>;
   loadRoomSettings(roomId: string): Promise<DesktopSnapshot>;
   updateRoomSetting(roomId: string, change: RoomSettingChange): Promise<DesktopSnapshot>;
   moderateRoomMember(
@@ -1668,6 +1669,45 @@ class BrowserFakeApi implements DesktopApi {
     this.refreshRoomListProjection();
     this.refreshSidebar();
     return this.selectRoom(roomId);
+  }
+
+  async joinRoom(roomId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || roomId.trim().length === 0) {
+      return this.getSnapshot();
+    }
+
+    const normalizedRoomId = roomId.trim();
+    if (this.snapshot.state.domain.rooms.some((room) => room.room_id === normalizedRoomId)) {
+      return this.selectRoom(normalizedRoomId);
+    }
+
+    const activeSpaceId = this.snapshot.state.ui.navigation.active_space_id;
+    const joinedRoom: RoomSummary = {
+      room_id: normalizedRoomId,
+      display_name: normalizedRoomId,
+      display_label: normalizedRoomId,
+      original_display_label: normalizedRoomId,
+      avatar: null,
+      is_dm: false,
+      dm_user_ids: [],
+      tags: emptyRoomTags(),
+      unread_count: 0,
+      parent_space_ids: activeSpaceId ? [activeSpaceId] : [],
+      dm_space_ids: [],
+      is_encrypted: false
+    };
+
+    this.snapshot.state.domain.rooms = [...this.snapshot.state.domain.rooms, joinedRoom];
+    if (activeSpaceId) {
+      this.snapshot.state.domain.spaces = this.snapshot.state.domain.spaces.map((space) =>
+        space.space_id === activeSpaceId && !space.child_room_ids.includes(normalizedRoomId)
+          ? { ...space, child_room_ids: [...space.child_room_ids, normalizedRoomId] }
+          : space
+      );
+    }
+    this.refreshRoomListProjection();
+    this.refreshSidebar();
+    return this.selectRoom(normalizedRoomId);
   }
 
   async loadRoomSettings(roomId: string): Promise<DesktopSnapshot> {
@@ -3369,6 +3409,7 @@ function emptySidebar() {
     },
     space_rail: [],
     space_rooms: [],
+    not_joined_space_rooms: [],
     global_dms: [],
     space_unread_count: 0,
     dm_unread_count: 0,

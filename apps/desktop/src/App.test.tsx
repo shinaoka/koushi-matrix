@@ -1302,7 +1302,7 @@ describe("Tauri state refresh wiring", () => {
     expect(paneSource).toContain("onOpenThreadsStable");
   });
 
-  test("room creation links the new room into the active space", () => {
+  test("room creation leaves space-child linking to the backend-created room id", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const createStart = source.indexOf("async function submitCreateDialog");
     const createEnd = source.indexOf("async function setComposerReplyTarget", createStart);
@@ -1311,8 +1311,8 @@ describe("Tauri state refresh wiring", () => {
     expect(createSource).toContain("activeSpaceIdForCreatedRoom");
     expect(createSource).toContain("createRoomRequestFromDraft");
     expect(createSource).toContain("api.createRoom(createRoomRequest");
-    expect(createSource).toContain("serverNameFromRoomId(createdRoomId)");
-    expect(createSource).toContain("api.setSpaceChild(");
+    expect(createSource).not.toContain("active_room_id");
+    expect(createSource).not.toContain("api.setSpaceChild(");
   });
 
   test("accepting an invite returns to the timeline view", () => {

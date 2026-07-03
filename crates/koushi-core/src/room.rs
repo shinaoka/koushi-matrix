@@ -60,10 +60,10 @@ use std::{
 use koushi_sdk::{
     MatrixClientSession, MatrixCreateRoomOptions, MatrixCreateRoomParentSpace,
     MatrixCreateRoomVisibility, MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom,
-    MatrixRoomHistoryVisibility, MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomMemberSummary,
-    MatrixRoomModerationAction, MatrixRoomOperationError, MatrixRoomPermissionFacts,
-    MatrixRoomSettingChange, MatrixRoomSettingsSnapshot, MatrixRoomTagKind, MatrixRoomTags,
-    MatrixUserTrustState,
+    MatrixRoomHistoryVisibility, MatrixRoomJoinRule, MatrixRoomListRoom, MatrixRoomListSnapshot,
+    MatrixRoomListSpace, MatrixRoomMemberRole, MatrixRoomMemberSummary, MatrixRoomModerationAction,
+    MatrixRoomOperationError, MatrixRoomPermissionFacts, MatrixRoomSettingChange,
+    MatrixRoomSettingsSnapshot, MatrixRoomTagKind, MatrixRoomTags, MatrixUserTrustState,
 };
 use koushi_state::{
     AppAction, AvatarImage, AvatarThumbnailState, BasicOperationRequest, DirectoryQuery,
@@ -87,6 +87,15 @@ use crate::unread_trace;
 const CREATE_ROOM_FAILED_MESSAGE: &str = "Room creation failed";
 const CREATE_SPACE_FAILED_MESSAGE: &str = "Space creation failed";
 const LINK_SPACE_CHILD_FAILED_MESSAGE: &str = "Linking the room to the space failed";
+
+type SpaceChildLinkKey = (String, String);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MissingSpaceChildLink {
+    space_id: String,
+    child_room_id: String,
+    via_server: String,
+}
 
 /// Messages sent to the RoomActor from AccountActor / SyncActor.
 pub enum RoomMessage {
@@ -154,6 +163,7 @@ pub struct RoomActor {
     session: Option<Arc<MatrixClientSession>>,
     observation: Option<RoomListObservation>,
     known_room_ids: Arc<RwLock<BTreeSet<String>>>,
+    attempted_space_child_repairs: Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     command_rx: mpsc::Receiver<RoomMessage>,
@@ -169,6 +179,7 @@ impl RoomActor {
             session: None,
             observation: None,
             known_room_ids: Arc::new(RwLock::new(BTreeSet::new())),
+            attempted_space_child_repairs: Arc::new(RwLock::new(BTreeSet::new())),
             action_tx,
             event_tx,
             command_rx,
@@ -192,6 +203,7 @@ impl RoomActor {
                     // later on SyncStarted (backend then known).
                     self.session = Some(session);
                     self.clear_known_rooms();
+                    self.clear_space_child_repair_attempts();
                 }
                 RoomMessage::SyncStarted {
                     session,
@@ -203,6 +215,7 @@ impl RoomActor {
                     self.stop_observation().await;
                     self.session = Some(session.clone());
                     self.clear_known_rooms();
+                    self.clear_space_child_repair_attempts();
                     match room_list_service {
                         Some(service) => {
                             // SyncService backend: relay the live service's
@@ -225,11 +238,13 @@ impl RoomActor {
                 RoomMessage::SyncStopped => {
                     self.stop_observation().await;
                     self.clear_known_rooms();
+                    self.clear_space_child_repair_attempts();
                 }
                 RoomMessage::SessionCleared => {
                     self.stop_observation().await;
                     self.session = None;
                     self.clear_known_rooms();
+                    self.clear_space_child_repair_attempts();
                 }
             }
         }
@@ -249,6 +264,7 @@ impl RoomActor {
             session,
             service,
             self.known_room_ids.clone(),
+            self.attempted_space_child_repairs.clone(),
             self.action_tx.clone(),
             self.event_tx.clone(),
             refresh_rx,
@@ -272,6 +288,7 @@ impl RoomActor {
         let task = executor::spawn(run_legacy_room_list_observation(
             session.clone(),
             self.known_room_ids.clone(),
+            self.attempted_space_child_repairs.clone(),
             self.action_tx.clone(),
             self.event_tx.clone(),
             refresh_rx,
@@ -535,6 +552,7 @@ impl RoomActor {
             return;
         };
         let name = options.name.clone();
+        let parent_space = options.parent_space.clone();
         // Drive the basic-operation state machine: Idle -> CreatingRoom. The
         // reducer guards re-entry; `request_id.sequence` is the correlation id
         // the settle action below must match.
@@ -545,6 +563,13 @@ impl RoomActor {
         match koushi_sdk::create_room(session, matrix_create_room_options(options)).await {
             Ok(room_id) => {
                 trace_room_operation("create_room", "succeeded", request_id);
+                self.link_created_room_to_parent_space(
+                    session,
+                    parent_space.as_ref(),
+                    &room_id,
+                    request_id,
+                )
+                .await;
                 self.emit(CoreEvent::Room(RoomEvent::RoomCreated {
                     request_id,
                     room_id,
@@ -565,6 +590,35 @@ impl RoomActor {
                     message: CREATE_ROOM_FAILED_MESSAGE.to_owned(),
                 }]);
             }
+        }
+    }
+
+    async fn link_created_room_to_parent_space(
+        &self,
+        session: &MatrixClientSession,
+        parent_space: Option<&crate::command::CreateRoomParentSpace>,
+        room_id: &str,
+        request_id: RequestId,
+    ) {
+        let Some(parent_space) = parent_space else {
+            return;
+        };
+        let Ok(via_server) = koushi_sdk::room_id_server_name(room_id) else {
+            return;
+        };
+
+        match koushi_sdk::set_space_child(session, &parent_space.space_id, room_id, &via_server)
+            .await
+        {
+            Ok(()) => {
+                self.mark_space_child_link_attempted(&parent_space.space_id, room_id);
+                self.emit(CoreEvent::Room(RoomEvent::SpaceChildSet {
+                    request_id,
+                    space_id: parent_space.space_id.clone(),
+                    child_room_id: room_id.to_owned(),
+                }));
+            }
+            Err(_) => {}
         }
     }
 
@@ -1420,12 +1474,14 @@ impl RoomActor {
         }
         if let Some(session) = self.session.clone() {
             let known_room_ids = self.known_room_ids.clone();
+            let attempted_space_child_repairs = self.attempted_space_child_repairs.clone();
             let action_tx = self.action_tx.clone();
             let event_tx = self.event_tx.clone();
             let _ = executor::spawn(async move {
                 refresh_room_list_from_joined_rooms(
                     &session,
                     &known_room_ids,
+                    &attempted_space_child_repairs,
                     &action_tx,
                     &event_tx,
                 )
@@ -1645,6 +1701,18 @@ impl RoomActor {
         }
     }
 
+    fn clear_space_child_repair_attempts(&self) {
+        if let Ok(mut attempts) = self.attempted_space_child_repairs.write() {
+            attempts.clear();
+        }
+    }
+
+    fn mark_space_child_link_attempted(&self, space_id: &str, child_room_id: &str) {
+        if let Ok(mut attempts) = self.attempted_space_child_repairs.write() {
+            attempts.insert((space_id.to_owned(), child_room_id.to_owned()));
+        }
+    }
+
     fn ensure_known_room_for_message_interaction(
         &self,
         request_id: RequestId,
@@ -1741,6 +1809,7 @@ fn project_room_list_snapshot(
 async fn refresh_room_list_from_joined_rooms(
     session: &MatrixClientSession,
     known_room_ids: &Arc<RwLock<BTreeSet<String>>>,
+    attempted_space_child_repairs: &Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     event_tx: &broadcast::Sender<CoreEvent>,
 ) {
@@ -1749,6 +1818,7 @@ async fn refresh_room_list_from_joined_rooms(
         session.client().joined_rooms(),
     )
     .await;
+    repair_missing_space_child_links(session, &snapshot, attempted_space_child_repairs).await;
     project_room_list_snapshot(&snapshot, known_room_ids, action_tx, event_tx);
 }
 
@@ -1768,6 +1838,7 @@ async fn run_live_room_list_observation(
     session: Arc<MatrixClientSession>,
     service: Arc<matrix_sdk_ui::room_list_service::RoomListService>,
     known_room_ids: Arc<RwLock<BTreeSet<String>>>,
+    attempted_space_child_repairs: Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     mut refresh_rx: mpsc::Receiver<()>,
@@ -1803,6 +1874,7 @@ async fn run_live_room_list_observation(
                     &session,
                     &current,
                     &known_room_ids,
+                    &attempted_space_child_repairs,
                     &action_tx,
                     &event_tx,
                 ).await;
@@ -1817,6 +1889,7 @@ async fn run_live_room_list_observation(
                         &session,
                         &current,
                         &known_room_ids,
+                        &attempted_space_child_repairs,
                         &action_tx,
                         &event_tx,
                     ).await;
@@ -1831,6 +1904,7 @@ async fn normalize_and_project_entries(
     session: &MatrixClientSession,
     current: &eyeball_im::Vector<matrix_sdk_ui::room_list_service::RoomListItem>,
     known_room_ids: &Arc<RwLock<BTreeSet<String>>>,
+    attempted_space_child_repairs: &Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     event_tx: &broadcast::Sender<CoreEvent>,
 ) {
@@ -1841,7 +1915,72 @@ async fn normalize_and_project_entries(
         rooms.push(item.clone().into_inner());
     }
     let snapshot = koushi_sdk::room_list_snapshot_from_sdk_rooms_with_invites(session, rooms).await;
+    repair_missing_space_child_links(session, &snapshot, attempted_space_child_repairs).await;
     project_room_list_snapshot(&snapshot, known_room_ids, action_tx, event_tx);
+}
+
+async fn repair_missing_space_child_links(
+    session: &MatrixClientSession,
+    snapshot: &MatrixRoomListSnapshot,
+    attempted_space_child_repairs: &Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
+) {
+    for link in missing_space_child_links(snapshot) {
+        let key = (link.space_id.clone(), link.child_room_id.clone());
+        let should_attempt = attempted_space_child_repairs
+            .write()
+            .map(|mut attempts| attempts.insert(key))
+            .unwrap_or(false);
+        if !should_attempt {
+            continue;
+        }
+
+        let _ = koushi_sdk::set_space_child(
+            session,
+            &link.space_id,
+            &link.child_room_id,
+            &link.via_server,
+        )
+        .await;
+    }
+}
+
+fn missing_space_child_links(snapshot: &MatrixRoomListSnapshot) -> Vec<MissingSpaceChildLink> {
+    let mut links = Vec::new();
+    for room in &snapshot.rooms {
+        for space in &snapshot.spaces {
+            if room_has_parent_without_space_child(room, space)
+                && let Ok(via_server) = koushi_sdk::room_id_server_name(&room.room_id)
+            {
+                links.push(MissingSpaceChildLink {
+                    space_id: space.space_id.clone(),
+                    child_room_id: room.room_id.clone(),
+                    via_server,
+                });
+            }
+        }
+    }
+    links.sort_by(|left, right| {
+        left.space_id
+            .cmp(&right.space_id)
+            .then_with(|| left.child_room_id.cmp(&right.child_room_id))
+    });
+    links.dedup_by(|left, right| {
+        left.space_id == right.space_id && left.child_room_id == right.child_room_id
+    });
+    links
+}
+
+fn room_has_parent_without_space_child(
+    room: &MatrixRoomListRoom,
+    space: &MatrixRoomListSpace,
+) -> bool {
+    room.parent_space_ids
+        .iter()
+        .any(|space_id| space_id == &space.space_id)
+        && !space
+            .child_room_ids
+            .iter()
+            .any(|child_room_id| child_room_id == &room.room_id)
 }
 
 /// LegacySync-path observation loop (Async rule 1: relay the SDK's observable
@@ -1854,6 +1993,7 @@ async fn normalize_and_project_entries(
 async fn run_legacy_room_list_observation(
     session: Arc<MatrixClientSession>,
     known_room_ids: Arc<RwLock<BTreeSet<String>>>,
+    attempted_space_child_repairs: Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     mut refresh_rx: mpsc::Receiver<()>,
@@ -1875,6 +2015,7 @@ async fn run_legacy_room_list_observation(
                 refresh_room_list_from_joined_rooms(
                     &session,
                     &known_room_ids,
+                    &attempted_space_child_repairs,
                     &action_tx,
                     &event_tx,
                 ).await;
@@ -1887,6 +2028,7 @@ async fn run_legacy_room_list_observation(
                     refresh_room_list_from_joined_rooms(
                         &session,
                         &known_room_ids,
+                        &attempted_space_child_repairs,
                         &action_tx,
                         &event_tx,
                     ).await;
@@ -1896,6 +2038,7 @@ async fn run_legacy_room_list_observation(
                     refresh_room_list_from_joined_rooms(
                         &session,
                         &known_room_ids,
+                        &attempted_space_child_repairs,
                         &action_tx,
                         &event_tx,
                     ).await;
@@ -2594,6 +2737,79 @@ pub mod tests {
         assert_eq!(spaces.len(), 1);
         assert_eq!(spaces[0].space_id, "!space1:example.test");
         assert_eq!(spaces[0].child_room_ids, vec!["!room1:example.test"]);
+    }
+
+    #[test]
+    fn missing_space_child_links_detects_parent_only_relationship() {
+        let snapshot = MatrixRoomListSnapshot {
+            spaces: vec![MatrixRoomListSpace {
+                space_id: "!space:example.test".to_owned(),
+                display_name: "My Space".to_owned(),
+                avatar_mxc_uri: None,
+                child_room_ids: Vec::new(),
+                member_user_ids: Vec::new(),
+            }],
+            rooms: vec![MatrixRoomListRoom {
+                room_id: "!room:example.test".to_owned(),
+                display_name: "Room".to_owned(),
+                avatar_mxc_uri: None,
+                is_dm: false,
+                dm_user_ids: Vec::new(),
+                tags: MatrixRoomTags::default(),
+                unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
+                latest_event: None,
+                parent_space_ids: vec!["!space:example.test".to_owned()],
+                is_encrypted: true,
+                joined_members: 1,
+            }],
+            ..MatrixRoomListSnapshot::default()
+        };
+
+        assert_eq!(
+            missing_space_child_links(&snapshot),
+            vec![MissingSpaceChildLink {
+                space_id: "!space:example.test".to_owned(),
+                child_room_id: "!room:example.test".to_owned(),
+                via_server: "example.test".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn missing_space_child_links_skips_reciprocal_relationship() {
+        let snapshot = MatrixRoomListSnapshot {
+            spaces: vec![MatrixRoomListSpace {
+                space_id: "!space:example.test".to_owned(),
+                display_name: "My Space".to_owned(),
+                avatar_mxc_uri: None,
+                child_room_ids: vec!["!room:example.test".to_owned()],
+                member_user_ids: Vec::new(),
+            }],
+            rooms: vec![MatrixRoomListRoom {
+                room_id: "!room:example.test".to_owned(),
+                display_name: "Room".to_owned(),
+                avatar_mxc_uri: None,
+                is_dm: false,
+                dm_user_ids: Vec::new(),
+                tags: MatrixRoomTags::default(),
+                unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
+                latest_event: None,
+                parent_space_ids: vec!["!space:example.test".to_owned()],
+                is_encrypted: true,
+                joined_members: 1,
+            }],
+            ..MatrixRoomListSnapshot::default()
+        };
+
+        assert!(missing_space_child_links(&snapshot).is_empty());
     }
 
     #[test]
@@ -3394,6 +3610,74 @@ pub mod tests {
             start < refresh,
             "Legacy refresh must be requested through the observation loop after it starts"
         );
+    }
+
+    #[test]
+    fn create_room_links_parent_space_child_with_created_room_id_before_completion_event() {
+        let source = include_str!("room.rs");
+        let create_body = source
+            .split("async fn handle_create_room")
+            .nth(1)
+            .expect("create room handler")
+            .split("async fn handle_create_public_directory_room")
+            .next()
+            .expect("create room body");
+
+        let link = create_body
+            .find("link_created_room_to_parent_space")
+            .expect("create room should link parent space with the newly created room id");
+        let completion_event = create_body
+            .find("RoomEvent::RoomCreated")
+            .expect("create room completion event");
+
+        assert!(
+            link < completion_event,
+            "m.space.child must be sent using the SDK-created room id before Tauri observes RoomCreated"
+        );
+
+        let link_helper = source
+            .split("async fn link_created_room_to_parent_space")
+            .nth(1)
+            .expect("created-room space link helper")
+            .split("async fn handle_create_public_directory_room")
+            .next()
+            .expect("created-room space link helper body");
+        assert!(
+            !link_helper.contains("emit_failure"),
+            "linking a created room into a parent space is best-effort; the room already exists, so it must not turn RoomCreated into a Tauri-visible failure"
+        );
+    }
+
+    #[test]
+    fn room_list_observation_repairs_parent_only_space_links_before_projection() {
+        let source = include_str!("room.rs");
+        let live_body = source
+            .split("async fn normalize_and_project_entries")
+            .nth(1)
+            .expect("live normalize helper")
+            .split("async fn run_legacy_room_list_observation")
+            .next()
+            .expect("live normalize body");
+        let legacy_body = source
+            .split("async fn refresh_room_list_from_joined_rooms")
+            .nth(1)
+            .expect("legacy refresh helper")
+            .split("async fn run_live_room_list_observation")
+            .next()
+            .expect("legacy refresh body");
+
+        for body in [live_body, legacy_body] {
+            let repair = body
+                .find("repair_missing_space_child_links")
+                .expect("room-list snapshots should repair missing m.space.child state");
+            let projection = body
+                .find("project_room_list_snapshot")
+                .expect("room-list snapshot projection");
+            assert!(
+                repair < projection,
+                "repair should run before projection so other clients receive the Matrix state fix promptly"
+            );
+        }
     }
 
     #[test]

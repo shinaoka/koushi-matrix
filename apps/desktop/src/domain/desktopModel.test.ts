@@ -158,6 +158,36 @@ describe("desktop model", () => {
     ]);
   });
 
+  test("active space exposes child rooms that are not joined", () => {
+    const spaces: SpaceSummary[] = [
+      {
+        space_id: "!space-a:example.invalid",
+        display_name: "Alpha",
+        avatar: null,
+        child_room_ids: ["!joined:example.invalid", "!not-joined:example.invalid"]
+      }
+    ];
+    const rooms: RoomSummary[] = [
+      roomSummary("!joined:example.invalid", "Joined child", false, undefined, [
+        "!space-a:example.invalid"
+      ])
+    ];
+
+    const activeSidebar = composeSidebar("!space-a:example.invalid", spaces, rooms);
+    const homeSidebar = composeSidebar(null, spaces, rooms);
+
+    expect(activeSidebar.space_rooms.map((room) => room.room_id)).toEqual([
+      "!joined:example.invalid"
+    ]);
+    expect(activeSidebar.not_joined_space_rooms.map((room) => room.room_id)).toEqual([
+      "!not-joined:example.invalid"
+    ]);
+    expect(activeSidebar.not_joined_space_rooms[0]?.display_name).toBe(
+      "!not-joined:example.invalid"
+    );
+    expect(homeSidebar.not_joined_space_rooms).toEqual([]);
+  });
+
   test("DM with multiple dm_space_ids appears under each matching space", () => {
     const spaces: SpaceSummary[] = [
       {
