@@ -107,7 +107,12 @@ describe("styles.css token system", () => {
       "--muted:",
       "--faint:"
     ]) {
-      expect(css).not.toContain(legacy);
+      if (legacy.startsWith("--") && !legacy.endsWith(":")) {
+        const escapedLegacy = legacy.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        expect(css).not.toMatch(new RegExp(`${escapedLegacy}(?=\\s*[:),])`));
+      } else {
+        expect(css).not.toContain(legacy);
+      }
     }
   });
 

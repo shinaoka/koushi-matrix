@@ -4909,8 +4909,8 @@ mark {
 
 .room-share-link-button:hover,
 .room-share-link-button:focus-visible {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--brand);
+  color: var(--brand);
 }
 
 .settings-summary-tile {
