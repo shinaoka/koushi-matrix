@@ -626,12 +626,14 @@ populate `input.files`, waits for `timeline_room=true`, confirms staging does
 not create a media timeline row before Send, fills the Rust-owned staging
 caption field, waits for a Rust-owned `TimelineItem.media` row plus caption to
 render in the real Tauri WebView, then clicks Download, opens the room media
-gallery, opens the uploaded item in Media viewer, and checks the QA title stays
-error-free. It prints only `gui_local_media_stage=ok`, `gui_local_media=ok`,
-`gui_local_media_caption=ok`, and `gui_local_media_viewer=ok`; it must not open
-native file dialogs, use real/private filenames or captions, print MXC URIs,
-expose downloaded bytes, monkeypatch Tauri internals from WebDriver, or
-synthesize upload/download lifecycle state in React.
+gallery, opens the uploaded item in Media viewer, uploads a synthetic inline
+image, checks the image hover details action, and opens the inline image
+viewer. It prints only `gui_local_media_stage=ok`, `gui_local_media=ok`,
+`gui_local_media_caption=ok`, `gui_local_media_viewer=ok`, and
+`gui_local_media_inline_image=ok`; it must not open native file dialogs, use
+real/private filenames or captions, print MXC URIs, expose downloaded bytes,
+monkeypatch Tauri internals from WebDriver, or synthesize upload/download
+lifecycle state in React.
 
 `local-room-tags` opens the seeded synthetic room row's real context menu in the
 Linux Tauri WebView, clicks `Add to Favourites`, waits for the row to move from
@@ -795,6 +797,7 @@ gui_local_media_stage=ok
 gui_local_media=ok
 gui_local_media_caption=ok
 gui_local_media_viewer=ok
+gui_local_media_inline_image=ok
 gui_local_room_tag_set=ok
 gui_local_room_tag_removed=ok
 gui_local_room_topic=ok

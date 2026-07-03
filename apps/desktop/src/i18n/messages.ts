@@ -751,6 +751,9 @@ export type MessageId =
   | "timeline.mediaDownloadFailed"
   | "timeline.mediaDownloadRetry"
   | "timeline.mediaOpenFile"
+  | "timeline.mediaDetails"
+  | "timeline.mediaDetailsTitle"
+  | "timeline.closeMediaDetails"
   | "timeline.mediaViewer"
   | "timeline.threadReplyCountOne"
   | "timeline.threadReplyCountMany"
@@ -1700,6 +1703,9 @@ const en: Catalog = {
   "timeline.mediaDownloadFailed": "Download failed",
   "timeline.mediaDownloadRetry": "Retry",
   "timeline.mediaOpenFile": "Open file",
+  "timeline.mediaDetails": "Show media details for {filename}",
+  "timeline.mediaDetailsTitle": "Media details",
+  "timeline.closeMediaDetails": "Close media details",
   "timeline.mediaViewer": "Media viewer",
   "timeline.threadReplyCountOne": "1 reply",
   "timeline.threadReplyCountMany": "{count} replies",
@@ -2534,6 +2540,9 @@ const ja: Catalog = {
   "timeline.mediaDownloadFailed": "ダウンロードに失敗しました",
   "timeline.mediaDownloadRetry": "再試行",
   "timeline.mediaOpenFile": "ファイルを開く",
+  "timeline.mediaDetails": "{filename}のメディア詳細を表示",
+  "timeline.mediaDetailsTitle": "メディア詳細",
+  "timeline.closeMediaDetails": "メディア詳細を閉じる",
   "timeline.mediaViewer": "メディアビューア",
   "timeline.threadReplyCountOne": "返信 1 件",
   "timeline.threadReplyCountMany": "返信 {count} 件",
