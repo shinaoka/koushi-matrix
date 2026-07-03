@@ -595,6 +595,10 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("close_focused_context");
   }
 
+  async closeSearch(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("close_search");
+  }
+
   async submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("submit_search", { query, scope });
   }

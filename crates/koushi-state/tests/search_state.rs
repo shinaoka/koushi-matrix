@@ -1,6 +1,6 @@
 use koushi_state::{
-    AppAction, AppEffect, AppState, SearchMatchField, SearchMatchKind, SearchResult, SearchScope,
-    SearchState, SessionInfo, SessionState, TextRange, UiEvent, reduce,
+    AppAction, AppEffect, AppState, RoomSummary, RoomTags, SearchMatchField, SearchMatchKind,
+    SearchResult, SearchScope, SearchState, SessionInfo, SessionState, TextRange, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -36,6 +36,29 @@ fn result(event_id: &str) -> SearchResult {
             end_utf16: 6,
         }],
         match_kind: SearchMatchKind::Exact,
+    }
+}
+
+fn room_summary(room_id: &str) -> RoomSummary {
+    RoomSummary {
+        room_id: room_id.to_owned(),
+        display_name: room_id.to_owned(),
+        display_label: room_id.to_owned(),
+        original_display_label: room_id.to_owned(),
+        avatar: None,
+        is_dm: false,
+        dm_user_ids: Vec::new(),
+        tags: RoomTags::default(),
+        unread_count: 0,
+        notification_count: 0,
+        highlight_count: 0,
+        marked_unread: false,
+        last_activity_ms: 0,
+        latest_event: None,
+        parent_space_ids: Vec::new(),
+        dm_space_ids: Vec::new(),
+        is_encrypted: false,
+        joined_members: 0,
     }
 }
 
@@ -357,6 +380,51 @@ fn matching_search_failure_updates_failed_state() {
         effects,
         vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
     );
+}
+
+#[test]
+fn closing_search_clears_state_and_emits_event() {
+    let mut state = ready_state();
+    state.search = SearchState::Results {
+        request_id: 21,
+        query: "若手".to_owned(),
+        scope: scope(),
+        results: vec![result("$event")],
+    };
+
+    let effects = reduce(&mut state, AppAction::SearchClosed);
+
+    assert_eq!(state.search, SearchState::Closed);
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
+    );
+}
+
+#[test]
+fn selecting_another_room_closes_current_room_search() {
+    let mut state = ready_state();
+    state.rooms = vec![room_summary("room-a"), room_summary("room-b")];
+    state.navigation.active_room_id = Some("room-a".to_owned());
+    state.timeline.room_id = Some("room-a".to_owned());
+    state.search = SearchState::Results {
+        request_id: 22,
+        query: "若手".to_owned(),
+        scope: SearchScope::CurrentRoom {
+            room_id: "room-a".to_owned(),
+        },
+        results: vec![result("$event")],
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SelectRoom {
+            room_id: "room-b".to_owned(),
+        },
+    );
+
+    assert_eq!(state.search, SearchState::Closed);
+    assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::SearchChanged)));
 }
 
 #[test]

@@ -1696,6 +1696,17 @@ impl AppActor {
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
+                AppCommand::EnterAnchoredTimeline {
+                    request_id,
+                    room_id,
+                    event_id,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::EnterAnchoredTimeline { room_id, event_id })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
                 AppCommand::OpenTimelineAtTimestamp {
                     request_id,
                     room_id,
@@ -1768,6 +1779,11 @@ impl AppActor {
                         )
                         .await;
                     }
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::CloseSearch { request_id } => {
+                    let effects = self.reduce_app_action(AppAction::SearchClosed).await;
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }

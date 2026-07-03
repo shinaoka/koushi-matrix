@@ -1,6 +1,6 @@
 use crate::{
     effect::{AppEffect, UiEvent},
-    state::{AppState, NavigationState, RoomListFilter},
+    state::{AppState, NavigationState, RoomListFilter, SearchScope, SearchState},
 };
 
 use super::{
@@ -153,6 +153,28 @@ fn prune_room_scroll_anchors(
     }
 }
 
+fn close_current_room_search_for_room_change(
+    state: &mut AppState,
+    next_room_id: Option<&str>,
+    effects: &mut Vec<AppEffect>,
+) {
+    let should_close = match &state.search {
+        SearchState::Editing { scope, .. }
+        | SearchState::Searching { scope, .. }
+        | SearchState::Results { scope, .. }
+        | SearchState::Failed { scope, .. } => match scope {
+            SearchScope::CurrentRoom { room_id } => next_room_id != Some(room_id.as_str()),
+            SearchScope::CurrentSpace { .. } | SearchScope::Dms | SearchScope::AllRooms => false,
+        },
+        SearchState::Closed => false,
+    };
+
+    if should_close {
+        state.search = SearchState::Closed;
+        effects.push(AppEffect::EmitUiEvent(UiEvent::SearchChanged));
+    }
+}
+
 pub(crate) fn handle_select_space(
     state: &mut AppState,
     space_id: Option<String>,
@@ -174,9 +196,15 @@ pub(crate) fn handle_select_space(
     if target_room_id != state.navigation.active_room_id {
         match target_room_id {
             Some(room_id) => {
+                close_current_room_search_for_room_change(
+                    state,
+                    Some(room_id.as_str()),
+                    &mut effects,
+                );
                 select_active_room_for_navigation(state, &mut effects, room_id);
             }
             None => {
+                close_current_room_search_for_room_change(state, None, &mut effects);
                 if let Some(previous_room_id) = previous_room_id {
                     clear_active_room_for_navigation(state, &mut effects, previous_room_id);
                 }
@@ -235,6 +263,7 @@ pub(crate) fn handle_select_room(state: &mut AppState, room_id: String) -> Vec<A
         recompute_room_list_projection(state);
         effects.push(AppEffect::EmitUiEvent(UiEvent::RoomListChanged));
     }
+    close_current_room_search_for_room_change(state, Some(room_id.as_str()), &mut effects);
     if state.navigation.active_room_id.as_deref() == Some(room_id.as_str())
         && state.timeline.room_id.as_deref() == Some(room_id.as_str())
     {

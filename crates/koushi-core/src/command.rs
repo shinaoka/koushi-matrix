@@ -47,9 +47,11 @@ impl CoreCommand {
                 | AppCommand::OpenThread { request_id, .. }
                 | AppCommand::CloseThread { request_id }
                 | AppCommand::OpenFocusedContext { request_id, .. }
+                | AppCommand::EnterAnchoredTimeline { request_id, .. }
                 | AppCommand::OpenTimelineAtTimestamp { request_id, .. }
                 | AppCommand::TimelineScrollAnchorUpdated { request_id, .. }
                 | AppCommand::CloseFocusedContext { request_id }
+                | AppCommand::CloseSearch { request_id }
                 | AppCommand::UpdateSettings { request_id, .. }
                 | AppCommand::RebuildSearchIndex { request_id }
                 | AppCommand::SetRoomUrlPreviewOverride { request_id, .. }
@@ -209,6 +211,7 @@ impl CoreCommand {
                 self,
                 Self::App(
                     AppCommand::OpenTimelineAtTimestamp { .. }
+                        | AppCommand::EnterAnchoredTimeline { .. }
                         | AppCommand::ScheduleSend { .. }
                         | AppCommand::CancelScheduledSend { .. }
                         | AppCommand::RescheduleScheduledSend { .. }
@@ -298,6 +301,11 @@ pub enum AppCommand {
         room_id: String,
         event_id: String,
     },
+    EnterAnchoredTimeline {
+        request_id: RequestId,
+        room_id: String,
+        event_id: String,
+    },
     OpenTimelineAtTimestamp {
         request_id: RequestId,
         room_id: String,
@@ -309,6 +317,9 @@ pub enum AppCommand {
         anchor: TimelineScrollAnchor,
     },
     CloseFocusedContext {
+        request_id: RequestId,
+    },
+    CloseSearch {
         request_id: RequestId,
     },
     UpdateSettings {
@@ -504,6 +515,16 @@ impl fmt::Debug for AppCommand {
                 .field("room_id", room_id)
                 .field("event_id", &"EventId(..)")
                 .finish(),
+            Self::EnterAnchoredTimeline {
+                request_id,
+                room_id,
+                ..
+            } => formatter
+                .debug_struct("EnterAnchoredTimeline")
+                .field("request_id", request_id)
+                .field("room_id", room_id)
+                .field("event_id", &"EventId(..)")
+                .finish(),
             Self::OpenTimelineAtTimestamp { request_id, .. } => formatter
                 .debug_struct("OpenTimelineAtTimestamp")
                 .field("request_id", request_id)
@@ -522,6 +543,10 @@ impl fmt::Debug for AppCommand {
                 .finish(),
             Self::CloseFocusedContext { request_id } => formatter
                 .debug_struct("CloseFocusedContext")
+                .field("request_id", request_id)
+                .finish(),
+            Self::CloseSearch { request_id } => formatter
+                .debug_struct("CloseSearch")
                 .field("request_id", request_id)
                 .finish(),
             Self::UpdateSettings { request_id, patch } => formatter

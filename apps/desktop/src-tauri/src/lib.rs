@@ -1101,6 +1101,7 @@ pub fn run() {
             commands::views::open_thread,
             commands::views::close_thread,
             commands::search::submit_search,
+            commands::search::close_search,
             commands::search::start_room_crawl,
             commands::search::stop_room_crawl,
             commands::directory::query_directory,

@@ -856,6 +856,17 @@ function initialSearchQuery(): string {
   return new URLSearchParams(window.location.search).get("q") ?? "";
 }
 
+function correlatedSearchState(
+  search: DesktopSnapshot["state"]["domain"]["search"],
+  query: string,
+  scope: SearchScopeKind
+): DesktopSnapshot["state"]["domain"]["search"] | null {
+  if (search.kind === "closed" || !query.trim()) {
+    return null;
+  }
+  return search.query === query.trim() && search.scope === scope ? search : null;
+}
+
 function isTauriRuntime(): boolean {
   return "__TAURI_INTERNALS__" in window;
 }
@@ -1083,16 +1094,13 @@ export function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [primaryView, setPrimaryView] = useState<PrimaryView>("timeline");
   // #161: while the main pane is anchored to a jump-to-date event, the focused
-  // timeline renders in the MAIN pane, so a focused-context/search right panel
-  // must be closed. This backstops the Tauri command path, where
-  // openAtTimestamp cannot set React panel state directly.
+  // timeline renders in the MAIN pane, so a focused-context right panel must be
+  // closed. Search keeps its results panel open while the main pane anchors the
+  // selected hit.
   const mainTimelineAnchorEventId =
     snapshot?.state.ui.navigation.main_timeline_anchor?.event_id ?? null;
   useEffect(() => {
-    if (
-      mainTimelineAnchorEventId &&
-      (rightPanelMode === "focusedContext" || rightPanelMode === "search")
-    ) {
+    if (mainTimelineAnchorEventId && rightPanelMode === "focusedContext") {
       setRightPanelMode("closed");
     }
   }, [mainTimelineAnchorEventId, rightPanelMode]);
@@ -3038,8 +3046,22 @@ export function App() {
       await closeThreadsListPanel();
       return;
     }
+    if (rightPanelMode === "search") {
+      await closeSearchPanel();
+      return;
+    }
     setSelectedProfileUserId(null);
     await setRightPanelModeClosingFocusedContext("closed");
+  }
+
+  async function closeSearchPanel() {
+    if (searchTimer.current) {
+      window.clearTimeout(searchTimer.current);
+      searchTimer.current = null;
+    }
+    setSnapshot(await api.closeSearch());
+    setSearchQuery("");
+    setRightPanelMode("closed");
   }
 
   function openActivityRow(roomId: string, eventId: string) {
@@ -3205,10 +3227,9 @@ export function App() {
     const trimmed = query.trim();
     const searchMode = rightPanelModeForSearchQuery(trimmed);
     if (!trimmed) {
-      if (focusedContextVisibleForMode(rightPanelMode)) {
-        await setRightPanelModeClosingFocusedContext("closed");
-      } else {
-        setSnapshot(await api.getSnapshot());
+      setSnapshot(await api.closeSearch());
+      if (rightPanelMode === "search") {
+        setRightPanelMode("closed");
       }
       return;
     }
@@ -3281,7 +3302,14 @@ export function App() {
   const activeSpaceName = activeSpace
     ? spaceDisplayName(activeSpace.space_id, activeSpace.display_name, spaceLocalOverrides)
     : snapshot.sidebar.account_home.display_name;
-  const searchResults = snapshot.state.domain.search.kind === "results" ? snapshot.state.domain.search.results : [];
+  const activeSearchState = correlatedSearchState(
+    snapshot.state.domain.search,
+    searchQuery,
+    searchScope
+  );
+  const searchResults = activeSearchState?.kind === "results" ? activeSearchState.results : [];
+  const searchResultsQuery = activeSearchState?.kind === "results" ? activeSearchState.query : "";
+  const searchHighlightQuery = searchResultsQuery;
   const effectiveRightPanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
   const rightPanelOpen = effectiveRightPanelMode !== "closed";
   const appGridStyle = {
@@ -3474,9 +3502,9 @@ export function App() {
             composerMode={composerModeProp(snapshot.state.ui.timeline.composer.mode)}
             mentionIntent={composerMentions}
             resolveComposerKeyAction={resolveComposerKeyAction}
-            searchQuery={searchQuery}
+            searchQuery={searchHighlightQuery}
             searchResults={searchResults}
-            showSearchResults={effectiveRightPanelMode !== "search"}
+            showSearchResults={false}
             snapshot={snapshot}
             timelineTransport={appTimelineTransport}
             onReturnToLive={() => {
@@ -3573,7 +3601,7 @@ export function App() {
           recoverySecretInputRef={recoverySecretRef}
           snapshot={snapshot}
           timelineTransport={appTimelineTransport}
-          searchQuery={searchQuery}
+          searchQuery={searchResultsQuery}
           searchResults={searchResults}
           savedSessions={savedSessions}
           onCloseThread={() => {

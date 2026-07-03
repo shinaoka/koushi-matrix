@@ -803,6 +803,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             request_id,
             message,
         } => search::handle_search_failed(state, request_id, message),
+        AppAction::SearchClosed => search::handle_search_closed(state),
         AppAction::SearchIndexRebuildRequested { request_id: _ } => {
             search::handle_search_index_rebuild_requested(state)
         }

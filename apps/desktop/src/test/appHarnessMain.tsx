@@ -1686,7 +1686,8 @@ mock.setCommandResponse(
           ...currentSnapshot.state.ui,
           navigation: {
             ...currentSnapshot.state.ui.navigation,
-            active_room_id: roomId
+            active_room_id: roomId,
+            main_timeline_anchor: { event_id: eventId }
           },
           timeline: {
             ...currentSnapshot.state.ui.timeline,
@@ -1694,11 +1695,7 @@ mock.setCommandResponse(
             is_subscribed: true
           },
           thread: { kind: "closed" },
-          focused_context: {
-            kind: "opening",
-            room_id: roomId,
-            event_id: eventId
-          }
+          focused_context: { kind: "closed" }
         },
         domain: {
           ...currentSnapshot.state.domain,
@@ -1709,6 +1706,19 @@ mock.setCommandResponse(
     return setCurrentSnapshot(next);
   }
 );
+mock.setCommandResponse("close_search", () => {
+  const next: DesktopSnapshot = {
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
+        search: { kind: "closed" }
+      }
+    }
+  };
+  return setCurrentSnapshot(next);
+});
 mock.setCommandResponse(
   "open_activity_event",
   ({ roomId, eventId }: { roomId: string; eventId: string }) => {
