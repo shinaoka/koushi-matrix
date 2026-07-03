@@ -940,7 +940,7 @@ impl TimelineManagerActor {
 
         let focus = match &key.kind {
             TimelineKind::Room { .. } => TimelineFocus::Live {
-                hide_threaded_events: true,
+                hide_threaded_events: false,
             },
             TimelineKind::Thread { root_event_id, .. } => {
                 match matrix_sdk::ruma::EventId::parse(root_event_id.as_str()) {
@@ -5814,13 +5814,12 @@ fn timeline_item_should_be_hidden(has_renderable_content: bool, is_redacted: boo
 }
 
 fn timeline_item_should_be_hidden_for_key(
-    key: &TimelineKey,
+    _key: &TimelineKey,
     has_renderable_content: bool,
     is_redacted: bool,
-    thread_root: Option<&str>,
+    _thread_root: Option<&str>,
 ) -> bool {
     timeline_item_should_be_hidden(has_renderable_content, is_redacted)
-        || (matches!(key.kind, TimelineKind::Room { .. }) && thread_root.is_some())
 }
 
 fn reply_enforce_thread_for_key(key: &TimelineKey) -> EnforceThread {
@@ -8748,7 +8747,7 @@ mod tests {
     }
 
     #[test]
-    fn room_live_timeline_focus_hides_threaded_events() {
+    fn room_live_timeline_focus_includes_threaded_events() {
         let source = include_str!("timeline.rs");
         let focus_source = source
             .split("let focus = match &key.kind")
@@ -8766,8 +8765,8 @@ mod tests {
             .expect("thread timeline focus arm should follow room arm");
 
         assert!(
-            room_focus.contains("hide_threaded_events: true"),
-            "room live timelines must hide threaded replies"
+            room_focus.contains("hide_threaded_events: false"),
+            "room live timelines must include threaded events so DM messages are not missing from the main timeline"
         );
     }
 
@@ -9087,10 +9086,10 @@ mod tests {
     }
 
     #[test]
-    fn room_timeline_hides_thread_reply_placeholders_even_when_renderable() {
+    fn room_timeline_keeps_renderable_thread_messages_visible() {
         let key = room_key();
 
-        assert!(timeline_item_should_be_hidden_for_key(
+        assert!(!timeline_item_should_be_hidden_for_key(
             &key,
             true,
             false,
