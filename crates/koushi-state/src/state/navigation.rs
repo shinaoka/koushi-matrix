@@ -148,7 +148,7 @@ pub fn compute_room_list_projection(
         RoomListSort::Activity => {
             let activity_by_id: std::collections::HashMap<&str, u64> = rooms
                 .iter()
-                .map(|room| (room.room_id.as_str(), room.last_activity_ms))
+                .map(|room| (room.room_id.as_str(), room_active_sort_timestamp(room)))
                 .collect();
             items.sort_by(|left, right| {
                 let left_ts = activity_by_id
@@ -167,7 +167,7 @@ pub fn compute_room_list_projection(
         RoomListSort::RecentFirst => {
             let activity_by_id: std::collections::HashMap<&str, u64> = rooms
                 .iter()
-                .map(|room| (room.room_id.as_str(), room.last_activity_ms))
+                .map(|room| (room.room_id.as_str(), room_active_sort_timestamp(room)))
                 .collect();
             items.sort_by(|left, right| {
                 let left_ts = activity_by_id
@@ -211,6 +211,13 @@ pub fn compute_room_list_projection(
         sort,
         items,
     }
+}
+
+fn room_active_sort_timestamp(room: &super::room::RoomSummary) -> u64 {
+    room.latest_event
+        .as_ref()
+        .map(|event| event.timestamp_ms)
+        .unwrap_or(room.last_activity_ms)
 }
 
 fn room_visible_in_active_space(

@@ -276,6 +276,72 @@ describe("Sidebar", () => {
     expect(persistedOrder).toEqual(["planning-room", "synthetic-room"]);
   });
 
+  it("sorts Direct Messages by latest message timestamp for Active sort", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.selectSpace(null);
+    const dmRooms = snapshot.state.domain.rooms.filter((room) => room.is_dm).slice(0, 2);
+    if (dmRooms.length < 2) {
+      throw new Error("expected at least two fake direct messages");
+    }
+    const [statusNewer, messageNewer] = dmRooms;
+    statusNewer.last_activity_ms = 300;
+    statusNewer.latest_event = {
+      event_id: "$status-newer:example.invalid",
+      sender_id: "@sender:example.invalid",
+      sender_label: "Sender",
+      sender_avatar: null,
+      preview: "older latest message",
+      timestamp_ms: 100
+    };
+    messageNewer.last_activity_ms = 200;
+    messageNewer.latest_event = {
+      event_id: "$message-newer:example.invalid",
+      sender_id: "@sender:example.invalid",
+      sender_label: "Sender",
+      sender_avatar: null,
+      preview: "newer latest message",
+      timestamp_ms: 250
+    };
+    snapshot.sidebar.global_dms = snapshot.state.domain.rooms
+      .filter((room) => room.is_dm)
+      .map((room) => ({
+        room_id: room.room_id,
+        display_name: room.display_label,
+        avatar: room.avatar,
+        tags: room.tags,
+        unread_count: room.notification_count ?? room.unread_count,
+        highlight_count: room.highlight_count ?? 0
+      }));
+
+    render(
+      <Sidebar
+        activeRoomId={snapshot.state.ui.navigation.active_room_id}
+        activeView="activity"
+        snapshot={snapshot}
+        onCreateRoom={() => undefined}
+        onNewDm={() => undefined}
+        onOpenContextMenu={() => undefined}
+        onOpenActivity={() => undefined}
+        onOpenExplore={() => undefined}
+        onOpenHome={() => undefined}
+        onOpenInvites={() => undefined}
+        onOpenSpaceInfo={() => undefined}
+        onOpenThreads={() => undefined}
+        onSelectRoom={() => undefined}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /DMs/ }));
+    const dmOrder = Array.from(
+      document.querySelectorAll('[data-room-section="people"] [data-testid="room-item"]')
+    ).map((button) => button.getAttribute("aria-label"));
+
+    expect(dmOrder.slice(0, 2)).toEqual([
+      messageNewer.display_label,
+      statusNewer.display_label
+    ]);
+  });
+
   it("keeps Rooms and Direct Messages separate inside a normal space", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.selectSpace("!space-alpha:example.invalid");
