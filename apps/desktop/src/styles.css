@@ -3670,6 +3670,8 @@ button:disabled {
   inset: 0;
   z-index: 140;
   display: grid;
+  block-size: 100dvh;
+  overflow: hidden;
   background: rgb(0 0 0 / 82%);
 }
 
@@ -3677,8 +3679,12 @@ button:disabled {
   position: relative;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  inline-size: 100%;
+  block-size: 100%;
+  max-block-size: 100dvh;
   min-inline-size: 0;
   min-block-size: 0;
+  overflow: hidden;
   color: #f8fafc;
 }
 
@@ -3815,12 +3821,14 @@ button:disabled {
   place-items: center;
   min-inline-size: 0;
   min-block-size: 0;
+  overflow: hidden;
   padding: 18px;
 }
 
 .timeline-media-viewer-image {
-  max-inline-size: 100%;
-  max-block-size: 100%;
+  display: block;
+  max-inline-size: calc(100vw - 36px);
+  max-block-size: calc(100dvh - 94px);
   object-fit: contain;
 }
 
