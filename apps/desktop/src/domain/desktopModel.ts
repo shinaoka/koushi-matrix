@@ -227,11 +227,7 @@ export function composeSidebar(
         .filter((room) => !room.is_dm && room.parent_space_ids.length === 0)
         .map(roomListItem);
 
-  const notJoinedSpaceRooms = activeSpaceId
-    ? activeSpace?.child_room_ids
-        .filter((roomId) => !roomById.has(roomId))
-        .map(notJoinedRoomListItem) ?? []
-    : [];
+  const notJoinedSpaceRooms: RoomListItem[] = [];
 
   const globalDms = rooms
     .filter(
@@ -330,17 +326,6 @@ function roomListItem(room: RoomSummary): RoomListItem {
     tags: room.tags,
     unread_count: roomActivityUnreadCount(room),
     highlight_count: room.highlight_count ?? 0
-  };
-}
-
-function notJoinedRoomListItem(roomId: string): RoomListItem {
-  return {
-    room_id: roomId,
-    display_name: roomId,
-    avatar: null,
-    tags: { favourite: null, low_priority: null },
-    unread_count: 0,
-    highlight_count: 0
   };
 }
 

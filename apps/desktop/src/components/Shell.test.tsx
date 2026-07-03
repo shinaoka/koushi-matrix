@@ -193,7 +193,7 @@ describe("Sidebar", () => {
     expect(screen.queryByRole("region", { name: "Rooms" })).toBeNull();
   });
 
-  it("renders not joined child rooms in the active space and joins on click", async () => {
+  it("does not render unresolved child room ids as not joined rooms", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.selectSpace("!space-alpha:example.invalid");
     const activeSpace = snapshot.state.domain.spaces.find(
@@ -221,10 +221,9 @@ describe("Sidebar", () => {
       />
     );
 
-    expect(screen.getByRole("region", { name: "Not joined" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "!not-joined:example.invalid" }));
-
-    expect(onJoinRoom).toHaveBeenCalledWith("!not-joined:example.invalid");
+    expect(screen.queryByRole("region", { name: "Not joined" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "!not-joined:example.invalid" })).toBeNull();
+    expect(onJoinRoom).not.toHaveBeenCalled();
   });
 
   it("sorts the selected category by active order or display name and persists the sort", async () => {

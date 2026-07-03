@@ -946,11 +946,9 @@ fn selecting_space_filters_rooms_and_keeps_dms_global() {
 }
 
 #[test]
-fn active_space_lists_child_rooms_that_are_not_joined() {
+fn active_space_hides_child_room_ids_without_joined_room_summaries() {
     let mut spaces = spaces();
-    spaces[0]
-        .child_room_ids
-        .push("room-not-joined".to_owned());
+    spaces[0].child_room_ids.push("room-not-joined".to_owned());
     let sidebar = compose_sidebar(Some("space-a"), &spaces, &rooms());
     let home_sidebar = compose_sidebar(None, &spaces, &rooms());
 
@@ -962,18 +960,7 @@ fn active_space_lists_child_rooms_that_are_not_joined() {
             .collect::<Vec<_>>(),
         vec!["room-a"]
     );
-    assert_eq!(
-        sidebar
-            .not_joined_space_rooms
-            .iter()
-            .map(|room| room.room_id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["room-not-joined"]
-    );
-    assert_eq!(
-        sidebar.not_joined_space_rooms[0].display_name,
-        "room-not-joined"
-    );
+    assert!(sidebar.not_joined_space_rooms.is_empty());
     assert!(home_sidebar.not_joined_space_rooms.is_empty());
 }
 
