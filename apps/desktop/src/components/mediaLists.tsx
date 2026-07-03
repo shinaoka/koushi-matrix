@@ -485,6 +485,7 @@ function MessageArticle({
                 contextMenuItems({
                   kind: "message",
                   canManage,
+                  canReply: false,
                   hasThread: true,
                   senderUserId: message.sender,
                   currentUserId: currentUserId ?? "",

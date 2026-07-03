@@ -3106,6 +3106,9 @@ export function App() {
     const { target } = activeMenu;
     if (target.kind === "message") {
       switch (actionId) {
+        case "replyToMessage":
+          void setComposerReplyTarget(target.message.room_id, target.message.event_id);
+          return;
         case "openThread":
           void openThread(target.message.room_id, target.message.event_id);
           return;

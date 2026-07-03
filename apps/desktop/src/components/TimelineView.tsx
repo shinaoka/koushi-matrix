@@ -4669,6 +4669,13 @@ export function TimelineItemRow({
     }
     onReply(roomId, eventId);
   }, [eventId, onReply, roomId]);
+  const submitReplyFromActionMenu = useCallback(() => {
+    if (!eventId) {
+      return;
+    }
+    onReply(roomId, eventId);
+    closeActionMenu();
+  }, [closeActionMenu, eventId, onReply, roomId]);
   const submitOpenThread = useCallback(() => {
     if (!eventId) {
       return;
@@ -4773,7 +4780,12 @@ export function TimelineItemRow({
   const canForward = Boolean(eventId && item.actions?.can_forward);
   const canSetSenderAlias = Boolean(eventId && item.sender && onOpenAliasDialog);
   const canShowMessageActionMenu =
-    canSetSenderAlias || canCopyMessage || canCopyPermalink || canViewSource || canForward;
+    canShowReply ||
+    canSetSenderAlias ||
+    canCopyMessage ||
+    canCopyPermalink ||
+    canViewSource ||
+    canForward;
   const canShowThreadSummary = Boolean(eventId && item.thread_summary);
   const canShowReactions = !isRedacted && !isEditing && item.reactions.length > 0;
   const senderAvatar = item.sender_avatar ?? profile?.avatar ?? null;
@@ -4929,6 +4941,7 @@ export function TimelineItemRow({
     const items = contextMenuItems({
       kind: "message",
       canManage: currentUserId === item.sender,
+      canReply: canShowReply,
       hasThread: item.thread_summary != null,
       senderUserId: item.sender,
       currentUserId: currentUserId ?? "",
@@ -5276,9 +5289,21 @@ export function TimelineItemRow({
                   }
                 }}
               >
-                {senderAliasTarget ? (
+                {canShowReply ? (
                   <button
                     ref={firstActionMenuItemRef}
+                    className="message-action-menu-item"
+                    type="button"
+                    role="menuitem"
+                    onClick={submitReplyFromActionMenu}
+                  >
+                    <MessageCircle size={14} aria-hidden="true" />
+                    <span>{t("timeline.replyToMessage")}</span>
+                  </button>
+                ) : null}
+                {senderAliasTarget ? (
+                  <button
+                    ref={!canShowReply ? firstActionMenuItemRef : undefined}
                     className="message-action-menu-item"
                     type="button"
                     role="menuitem"
@@ -5300,7 +5325,7 @@ export function TimelineItemRow({
                 ) : null}
                 {canCopyMessage ? (
                   <button
-                    ref={!senderAliasTarget ? firstActionMenuItemRef : undefined}
+                    ref={!canShowReply && !senderAliasTarget ? firstActionMenuItemRef : undefined}
                     className="message-action-menu-item"
                     type="button"
                     role="menuitem"
@@ -5312,7 +5337,11 @@ export function TimelineItemRow({
                 ) : null}
                 {canCopyPermalink ? (
                   <button
-                    ref={!senderAliasTarget && !canCopyMessage ? firstActionMenuItemRef : undefined}
+                    ref={
+                      !canShowReply && !senderAliasTarget && !canCopyMessage
+                        ? firstActionMenuItemRef
+                        : undefined
+                    }
                     className="message-action-menu-item"
                     type="button"
                     role="menuitem"
@@ -5325,7 +5354,7 @@ export function TimelineItemRow({
                 {canViewSource ? (
                   <button
                     ref={
-                      !senderAliasTarget && !canCopyMessage && !canCopyPermalink
+                      !canShowReply && !senderAliasTarget && !canCopyMessage && !canCopyPermalink
                         ? firstActionMenuItemRef
                         : undefined
                     }
@@ -5341,13 +5370,14 @@ export function TimelineItemRow({
                 {canForward ? (
                   <div className="message-forward-menu-control">
                     <button
-	                      ref={
-	                        !senderAliasTarget &&
-	                        !canCopyMessage &&
-	                        !canCopyPermalink &&
-	                        !canViewSource
-	                          ? firstActionMenuItemRef
-	                          : undefined
+                      ref={
+                        !canShowReply &&
+                        !senderAliasTarget &&
+                        !canCopyMessage &&
+                        !canCopyPermalink &&
+                        !canViewSource
+                          ? firstActionMenuItemRef
+                          : undefined
                       }
                       className="message-action-menu-item"
                       type="button"
