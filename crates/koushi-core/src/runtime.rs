@@ -2477,7 +2477,7 @@ impl AppActor {
                                 room_id: room_id.clone(),
                             },
                         },
-                        replay_existing: false,
+                        replay_existing: true,
                     },
                 )
                 .await;
@@ -3772,7 +3772,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_room_selection_ensures_existing_room_timeline_without_replay() {
+    fn runtime_room_selection_replays_existing_room_timeline_for_empty_renderer_store() {
         let source = include_str!("runtime.rs");
         let effects_helper = source
             .split("async fn handle_post_projection_effects")
@@ -3781,11 +3781,11 @@ mod tests {
 
         assert!(
             effects_helper.contains("TimelineCommand::EnsureSubscribed"),
-            "room selection should ensure a room timeline exists without forcing an existing actor to replay all items"
+            "room selection should ensure a room timeline exists"
         );
         assert!(
-            effects_helper.contains("replay_existing: false"),
-            "room selection should skip full InitialItems replay when the room timeline actor is already subscribed"
+            effects_helper.contains("replay_existing: true"),
+            "room selection must replay InitialItems from an existing actor so a rebuilt or reloaded renderer can populate an empty timeline store"
         );
     }
 
