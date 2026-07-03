@@ -324,7 +324,9 @@
         },
         "selected_room_id": "!room:example.invalid",
         "settings": {
+          "alternate_aliases": [],
           "avatar_url": "mxc://example.invalid/room-avatar",
+          "canonical_alias": null,
           "history_visibility": "shared",
           "join_rule": "invite",
           "members": [
@@ -348,6 +350,7 @@
             "can_unban": true
           },
           "room_id": "!room:example.invalid",
+          "share_link": null,
           "topic": "Fixture room topic"
         }
       },
