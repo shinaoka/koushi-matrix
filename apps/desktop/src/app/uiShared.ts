@@ -31,7 +31,7 @@ export type ContextMenuTarget =
       kind: "message";
       message: Pick<TimelineMessage, "sender" | "room_id" | "event_id" | "body">;
     }
-  | { kind: "room"; roomId: string }
+  | { kind: "room"; roomId: string; dmUserId?: string | null }
   | { kind: "space"; spaceId: string }
   | { kind: "account" };
 

@@ -86,6 +86,24 @@ describe("context menu registry", () => {
     ]);
   });
 
+  test("one-to-one DM room menu exposes User info without adding it to group rooms", () => {
+    const dmItems = contextMenuItems({
+      kind: "room",
+      roomId: "!dm:example.invalid",
+      tags: { favourite: null, low_priority: null },
+      dmUserIds: ["@ada:example.invalid"]
+    }).map((item) => item.id);
+    const groupItems = contextMenuItems({
+      kind: "room",
+      roomId: "!group:example.invalid",
+      tags: { favourite: null, low_priority: null },
+      dmUserIds: []
+    }).map((item) => item.id);
+
+    expect(dmItems).toContain("openUserInfo");
+    expect(groupItems).not.toContain("openUserInfo");
+  });
+
   test("room tag menu actions reflect Rust-owned tag state", () => {
     expect(
       contextMenuItems({

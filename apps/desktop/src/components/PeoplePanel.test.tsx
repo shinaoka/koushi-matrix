@@ -533,6 +533,28 @@ describe("ProfilePanel", () => {
     );
   });
 
+  test("does not expose Unban for an active room member", () => {
+    const activeMemberManagement = roomManagement(members);
+    activeMemberManagement.settings!.permissions.can_unban = true;
+
+    render(
+      <ProfilePanel
+        userId="@ada:example.invalid"
+        currentUserId="@current:example.invalid"
+        ignoredUserIds={[]}
+        roomOrSpace={baseRoom}
+        roomManagement={activeMemberManagement}
+        profileUsers={{}}
+        onBack={() => undefined}
+        onModerateMember={() => undefined}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "Kick Ada Lovelace" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Ban Ada Lovelace" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Unban Ada Lovelace" })).toBeNull();
+  });
+
   test("routes unignore for ignored profile users", () => {
     const onUnignoreUser = vi.fn();
     render(

@@ -1,4 +1,17 @@
-import { Bell, ChevronRight, FileText, KeyRound, Link, Settings, Users } from "lucide-react";
+import {
+  Bell,
+  ChevronRight,
+  Copy,
+  FileText,
+  Globe2,
+  History,
+  KeyRound,
+  Link,
+  Lock,
+  LockOpen,
+  Settings,
+  Users
+} from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { t } from "../i18n/messages";
@@ -58,6 +71,7 @@ export function RoomInfoPanel({
   const managementForRoom =
     roomManagement?.selected_room_id === roomId ? roomManagement : null;
   const settings = managementForRoom?.settings ?? null;
+  const shareLink = settings?.share_link?.trim() || null;
   const operation = managementForRoom?.operation ?? { kind: "idle" as const };
   const settingsPending = operation.kind === "pending" && operation.operation === "settings";
   const permissions = settings?.permissions ?? null;
@@ -100,6 +114,14 @@ export function RoomInfoPanel({
     Boolean(settings?.permissions.can_edit_settings) &&
     Boolean(onUpdateRoomSetting) &&
     !settingsPending;
+  const statusBadges = roomStatusBadges(isEncrypted, Boolean(room?.is_dm), settings);
+
+  function copyShareLink() {
+    if (!shareLink) {
+      return;
+    }
+    void navigator.clipboard?.writeText(shareLink).catch(() => undefined);
+  }
 
   if (!room) {
     return (
@@ -122,6 +144,23 @@ export function RoomInfoPanel({
           <p dir="auto">{room.room_id}</p>
         </div>
       </header>
+
+      <div className="room-status-bar" aria-label={t("room.status")}>
+        <div className="room-status-badges">
+          {statusBadges.map((badge) => (
+            <span className="room-status-badge" key={badge.label}>
+              {badge.icon}
+              <span>{badge.label}</span>
+            </span>
+          ))}
+        </div>
+        {shareLink ? (
+          <button className="room-share-link-button" type="button" onClick={copyShareLink}>
+            <Copy size={14} aria-hidden="true" />
+            <span>{t("room.copyShareLink")}</span>
+          </button>
+        ) : null}
+      </div>
 
       <div className="settings-summary-grid" aria-label={t("room.summary")}>
         <SummaryTile label={t("room.type")} value={room.is_dm ? t("room.directMessage") : t("search.scopeRoom")} />
@@ -458,6 +497,51 @@ export function RoomInfoPanel({
       />
     </section>
   );
+}
+
+function roomStatusBadges(
+  isEncrypted: boolean,
+  isDm: boolean,
+  settings: RoomManagementState["settings"]
+): Array<{ label: string; icon: ReactNode }> {
+  const badges: Array<{ label: string; icon: ReactNode }> = [
+    {
+      label: isEncrypted ? t("room.statusEncrypted") : t("room.statusNotEncrypted"),
+      icon: isEncrypted ? (
+        <Lock size={14} aria-hidden="true" />
+      ) : (
+        <LockOpen size={14} aria-hidden="true" />
+      )
+    }
+  ];
+
+  if (settings && !isDm) {
+    badges.push({
+      label:
+        settings.join_rule === "public"
+          ? t("room.statusPublic")
+          : t("room.statusPrivate"),
+      icon: <Globe2 size={14} aria-hidden="true" />
+    });
+    badges.push({
+      label: roomHistoryStatusLabel(settings.history_visibility),
+      icon: <History size={14} aria-hidden="true" />
+    });
+  }
+
+  return badges;
+}
+
+function roomHistoryStatusLabel(visibility: RoomHistoryVisibility): string {
+  switch (visibility) {
+    case "worldReadable":
+      return t("room.statusHistoryWorldReadable");
+    case "shared":
+      return t("room.statusHistoryShared");
+    case "invited":
+    case "joined":
+      return t("room.statusHistoryLimited");
+  }
 }
 
 function roomJoinRuleLabel(rule: RoomJoinRule): string {

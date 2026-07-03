@@ -110,6 +110,7 @@ export type MessageId =
   | "context.openRoomInfo"
   | "context.openSpaceInfo"
   | "context.openThread"
+  | "context.openUserInfo"
   | "context.openUserSettings"
   | "context.redactMessage"
   | "context.removeFromFavourites"
@@ -126,12 +127,19 @@ export type MessageId =
   | "dialog.cancelCreate"
   | "dialog.createRoomTitle"
   | "dialog.createSpaceTitle"
+  | "dialog.encryptedRoom"
   | "dialog.invitePeopleTitle"
   | "dialog.matrixUserId"
   | "dialog.newDmTitle"
+  | "dialog.privateRoom"
+  | "dialog.publicRoom"
+  | "dialog.roomAddress"
+  | "dialog.roomTopic"
+  | "dialog.roomVisibility"
   | "dialog.sendInvite"
   | "dialog.roomName"
   | "dialog.spaceName"
+  | "dialog.standardRoomInSpace"
   | "dialog.startDm"
   | "dialog.reportReasonLabel"
   | "dialog.reportReasonPlaceholder"
@@ -248,6 +256,7 @@ export type MessageId =
   | "room.avatarUrl"
   | "room.currentAvatar"
   | "room.currentTopic"
+  | "room.copyShareLink"
   | "room.directMessage"
   | "room.dmList"
   | "room.editRoles"
@@ -302,6 +311,14 @@ export type MessageId =
   | "room.roomInfo"
   | "room.roomScoped"
   | "room.roomSettings"
+  | "room.status"
+  | "room.statusEncrypted"
+  | "room.statusHistoryLimited"
+  | "room.statusHistoryShared"
+  | "room.statusHistoryWorldReadable"
+  | "room.statusNotEncrypted"
+  | "room.statusPrivate"
+  | "room.statusPublic"
   | "room.reshareRoomKeys"
   | "room.reshareRoomKeysHint"
   | "room.reshareRoomKeysPending"
@@ -325,11 +342,17 @@ export type MessageId =
   | "room.unbanMember"
   | "room.unread"
   | "room.unreadCount"
+  | "roomList.category"
+  | "roomList.categoryDms"
+  | "roomList.categoryRooms"
   | "roomList.filterRooms"
   | "roomList.filterUnread"
   | "roomList.filterPeople"
   | "roomList.filterFavourites"
   | "roomList.filterInvites"
+  | "roomList.sort"
+  | "roomList.sortActive"
+  | "roomList.sortName"
   | "room.markAsRead"
   | "room.markAsUnread"
   | "search.noExactMatches"
@@ -1019,6 +1042,7 @@ const en: Catalog = {
   "context.openRoomInfo": "Room info",
   "context.openSpaceInfo": "Space info",
   "context.openThread": "Reply in thread",
+  "context.openUserInfo": "User info",
   "context.openUserSettings": "User settings",
   "context.redactMessage": "Redact",
   "context.removeFromFavourites": "Remove from Favourites",
@@ -1035,12 +1059,19 @@ const en: Catalog = {
   "dialog.cancelCreate": "Cancel create",
   "dialog.createRoomTitle": "Create room",
   "dialog.createSpaceTitle": "Create space",
+  "dialog.encryptedRoom": "Encrypted room",
   "dialog.invitePeopleTitle": "Invite people to {name}",
   "dialog.matrixUserId": "Matrix user ID",
   "dialog.newDmTitle": "New DM",
+  "dialog.privateRoom": "Private room",
+  "dialog.publicRoom": "Public room",
+  "dialog.roomAddress": "Room address",
+  "dialog.roomTopic": "Topic",
+  "dialog.roomVisibility": "Room visibility",
   "dialog.sendInvite": "Send invite",
   "dialog.roomName": "Room name",
   "dialog.spaceName": "Space name",
+  "dialog.standardRoomInSpace": "Standard room in {spaceName}",
   "dialog.startDm": "Start DM",
   "dialog.reportReasonLabel": "Reason",
   "dialog.reportReasonPlaceholder": "Why are you reporting this?",
@@ -1161,6 +1192,7 @@ const en: Catalog = {
   "room.banMember": "Ban {name}",
   "room.currentAvatar": "Current avatar",
   "room.currentTopic": "Current topic",
+  "room.copyShareLink": "Copy room link",
   "room.members": "Members",
   "room.directMessage": "Direct message",
   "room.dmList": "DM list",
@@ -1216,6 +1248,14 @@ const en: Catalog = {
   "room.roomInfo": "Room info",
   "room.roomScoped": "Room scoped",
   "room.roomSettings": "Room settings",
+  "room.status": "Room status",
+  "room.statusEncrypted": "Encrypted",
+  "room.statusHistoryLimited": "New members do not see history",
+  "room.statusHistoryShared": "New members see history",
+  "room.statusHistoryWorldReadable": "Anyone can see history",
+  "room.statusNotEncrypted": "Not encrypted",
+  "room.statusPrivate": "Private",
+  "room.statusPublic": "Public",
   "room.reshareRoomKeys": "Reshare room keys",
   "room.reshareRoomKeysHint": "Send this room's known decryption keys again to eligible, unblocked devices.",
   "room.reshareRoomKeysPending": "Resharing keys…",
@@ -1239,11 +1279,17 @@ const en: Catalog = {
   "room.unbanMember": "Unban {name}",
   "room.unread": "Unread",
   "room.unreadCount": "{count} unread",
+  "roomList.category": "Room list category",
+  "roomList.categoryDms": "DMs",
+  "roomList.categoryRooms": "Rooms",
   "roomList.filterRooms": "Rooms",
   "roomList.filterUnread": "Unread",
   "roomList.filterPeople": "Direct Messages",
   "roomList.filterFavourites": "Favourites",
   "roomList.filterInvites": "Invites",
+  "roomList.sort": "Room list sort",
+  "roomList.sortActive": "Active",
+  "roomList.sortName": "Name",
   "room.markAsRead": "Mark as read",
   "room.markAsUnread": "Mark as unread",
   "search.noExactMatches": "No exact matches",
@@ -1831,6 +1877,7 @@ const ja: Catalog = {
   "context.openRoomInfo": "ルーム情報",
   "context.openSpaceInfo": "スペース情報",
   "context.openThread": "スレッドで返信",
+  "context.openUserInfo": "ユーザー情報",
   "context.openUserSettings": "ユーザー設定",
   "context.redactMessage": "削除",
   "context.removeFromFavourites": "お気に入りから削除",
@@ -1847,12 +1894,19 @@ const ja: Catalog = {
   "dialog.cancelCreate": "作成をキャンセル",
   "dialog.createRoomTitle": "ルームを作成",
   "dialog.createSpaceTitle": "スペースを作成",
+  "dialog.encryptedRoom": "暗号化ルーム",
   "dialog.invitePeopleTitle": "{name}に招待",
   "dialog.matrixUserId": "MatrixユーザーID",
   "dialog.newDmTitle": "新しいDM",
+  "dialog.privateRoom": "非公開ルーム",
+  "dialog.publicRoom": "公開ルーム",
+  "dialog.roomAddress": "ルームアドレス",
+  "dialog.roomTopic": "トピック",
+  "dialog.roomVisibility": "ルーム公開範囲",
   "dialog.sendInvite": "招待を送信",
   "dialog.roomName": "ルーム名",
   "dialog.spaceName": "スペース名",
+  "dialog.standardRoomInSpace": "{spaceName}内の標準ルーム",
   "dialog.startDm": "DMを開始",
   "dialog.reportReasonLabel": "理由",
   "dialog.reportReasonPlaceholder": "報告理由を入力してください",
@@ -1973,6 +2027,7 @@ const ja: Catalog = {
   "room.banMember": "{name}をBAN",
   "room.currentAvatar": "現在のアバター",
   "room.currentTopic": "現在のトピック",
+  "room.copyShareLink": "ルームリンクをコピー",
   "room.members": "メンバー",
   "room.directMessage": "ダイレクトメッセージ",
   "room.dmList": "DM一覧",
@@ -2028,6 +2083,14 @@ const ja: Catalog = {
   "room.roomInfo": "ルーム情報",
   "room.roomScoped": "ルーム内",
   "room.roomSettings": "ルーム設定",
+  "room.status": "ルーム状態",
+  "room.statusEncrypted": "暗号化済み",
+  "room.statusHistoryLimited": "新規メンバーは履歴を閲覧不可",
+  "room.statusHistoryShared": "新規メンバーも履歴を閲覧可",
+  "room.statusHistoryWorldReadable": "誰でも履歴を閲覧可",
+  "room.statusNotEncrypted": "未暗号化",
+  "room.statusPrivate": "非公開",
+  "room.statusPublic": "公開",
   "room.reshareRoomKeys": "ルーム鍵を再共有",
   "room.reshareRoomKeysHint": "このルームで保持している復号鍵を、対象となるブロックされていないデバイスへ再送します。",
   "room.reshareRoomKeysPending": "鍵を再共有中…",
@@ -2051,11 +2114,17 @@ const ja: Catalog = {
   "room.unbanMember": "{name}のBANを解除",
   "room.unread": "未読",
   "room.unreadCount": "未読 {count} 件",
+  "roomList.category": "ルームリストのカテゴリ",
+  "roomList.categoryDms": "DM",
+  "roomList.categoryRooms": "ルーム",
   "roomList.filterRooms": "ルーム",
   "roomList.filterUnread": "未読",
   "roomList.filterPeople": "Direct Messages",
   "roomList.filterFavourites": "お気に入り",
   "roomList.filterInvites": "招待",
+  "roomList.sort": "ルームリストの並び順",
+  "roomList.sortActive": "アクティブ",
+  "roomList.sortName": "名前",
   "room.markAsRead": "既読にする",
   "room.markAsUnread": "未読にする",
   "search.noExactMatches": "完全一致はありません",

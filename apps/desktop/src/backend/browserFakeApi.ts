@@ -16,6 +16,7 @@ import type {
   ActivityStream,
   ActivityTab,
   AttachmentResult,
+  CreateRoomRequest,
   DesktopSnapshot,
   ComposerKeyEvent,
   ComposerResolvedAction,
@@ -120,6 +121,7 @@ export interface DesktopApi {
   selectSearchResult(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   openTimelineAtTimestamp(roomId: string, timestampMs: number): Promise<DesktopSnapshot>;
   closeFocusedContext(): Promise<DesktopSnapshot>;
+  closeSearch(): Promise<DesktopSnapshot>;
   sendText(roomId: string, body: string, mentions?: MentionIntent): Promise<DesktopSnapshot>;
   scheduleSend(roomId: string, body: string, sendAtMs: number): Promise<DesktopSnapshot>;
   stageUploads(roomId: string, items: UploadStagingRequestItem[]): Promise<DesktopSnapshot>;
@@ -201,7 +203,7 @@ export interface DesktopApi {
     targetUserId: string,
     powerLevel: number
   ): Promise<DesktopSnapshot>;
-  createRoom(name: string): Promise<DesktopSnapshot>;
+  createRoom(request: CreateRoomRequest): Promise<DesktopSnapshot>;
   createSpace(name: string): Promise<DesktopSnapshot>;
   setSpaceChild(spaceId: string, childRoomId: string, viaServer: string): Promise<DesktopSnapshot>;
   acceptInvite(roomId: string): Promise<DesktopSnapshot>;
@@ -881,6 +883,7 @@ class BrowserFakeApi implements DesktopApi {
       }
     }
     this.snapshot.state.ui.navigation.active_room_id = roomId;
+    this.snapshot.state.ui.navigation.main_timeline_anchor = null;
     this.snapshot.state.ui.timeline.room_id = roomId;
     this.snapshot.state.ui.timeline.is_subscribed = true;
     this.snapshot.state.ui.timeline.composer = {
@@ -904,20 +907,8 @@ class BrowserFakeApi implements DesktopApi {
     }
 
     await this.selectRoom(roomId);
-    this.snapshot.state.ui.navigation.room_scroll_anchors = {
-      ...(this.snapshot.state.ui.navigation.room_scroll_anchors ?? {}),
-      [roomId]: {
-        event_id: eventId,
-        edge: "top",
-        offset_px: 0,
-        updated_at_ms: Date.now()
-      }
-    };
-    this.snapshot.state.ui.focused_context = {
-      kind: "opening",
-      room_id: roomId,
-      event_id: eventId
-    };
+    this.snapshot.state.ui.navigation.main_timeline_anchor = { event_id: eventId };
+    this.snapshot.state.ui.focused_context = { kind: "closed" };
     return this.getSnapshot();
   }
 
@@ -1591,6 +1582,11 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
+  async closeSearch(): Promise<DesktopSnapshot> {
+    this.snapshot.state.domain.search = { kind: "closed" };
+    return this.getSnapshot();
+  }
+
   async queryDirectory(query: DirectoryQuery): Promise<DesktopSnapshot> {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
@@ -1881,13 +1877,15 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
-  async createRoom(name: string): Promise<DesktopSnapshot> {
+  async createRoom(request: CreateRoomRequest): Promise<DesktopSnapshot> {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
 
     const count = this.snapshot.state.domain.rooms.length + 1;
     const newRoomId = `!local-room-${count}:fake.local`;
+    const name = request.name.trim();
+    const parentSpaceId = request.parentSpace?.spaceId ?? null;
     const newRoom: RoomSummary = {
       room_id: newRoomId,
       display_name: name,
@@ -1898,9 +1896,9 @@ class BrowserFakeApi implements DesktopApi {
       dm_user_ids: [],
       tags: emptyRoomTags(),
       unread_count: 0,
-      parent_space_ids: [],
+      parent_space_ids: parentSpaceId ? [parentSpaceId] : [],
       dm_space_ids: [],
-      is_encrypted: false
+      is_encrypted: request.visibility === "public" ? false : request.encrypted
     };
     this.snapshot.state.domain.rooms = [...this.snapshot.state.domain.rooms, newRoom];
     this.refreshRoomListProjection();

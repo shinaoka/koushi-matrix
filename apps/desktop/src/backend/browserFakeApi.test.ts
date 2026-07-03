@@ -533,20 +533,16 @@ describe("BrowserFakeApi settings preview", () => {
     });
   });
 
-  test("selectRoom closes focused context after search navigation", async () => {
+  test("selectSearchResult anchors the main timeline without using the right-panel context", async () => {
     const api = createBrowserFakeApi();
 
     const focused = await api.selectSearchResult(
       "!room-alpha:example.invalid",
       "$alpha-update"
     );
-    expect(focused.state.ui.focused_context.kind).toBe("opening");
-    expect(
-      focused.state.ui.navigation.room_scroll_anchors?.["!room-alpha:example.invalid"]
-    ).toMatchObject({
-      event_id: "$alpha-update",
-      edge: "top",
-      offset_px: 0
+    expect(focused.state.ui.focused_context.kind).toBe("closed");
+    expect(focused.state.ui.navigation.main_timeline_anchor).toEqual({
+      event_id: "$alpha-update"
     });
 
     const selected = await api.selectRoom("!room-planning:example.invalid");

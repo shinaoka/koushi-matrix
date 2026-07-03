@@ -112,6 +112,45 @@ describe("RoomInfoPanel", () => {
     expect(screen.getByText("Synthetic Workspace")).toBeTruthy();
   });
 
+  test("renders status badges and Rust-projected share link", () => {
+    render(
+      <RoomInfoPanel
+        room={{ ...baseRoom, is_encrypted: true }}
+        roomNotificationSettings={idleSettings}
+        spaces={[]}
+        roomManagement={{
+          selected_room_id: "!room-alpha:example.invalid",
+          settings: {
+            room_id: "!room-alpha:example.invalid",
+            name: "Alpha Room",
+            topic: null,
+            avatar_url: null,
+            join_rule: "public",
+            history_visibility: "worldReadable",
+            permissions: {
+              can_edit_settings: true,
+              can_edit_roles: true,
+              can_kick: true,
+              can_ban: true,
+              can_unban: false
+            },
+            canonical_alias: "#alpha:example.invalid",
+            alternate_aliases: [],
+            share_link: "https://matrix.to/#/%23alpha%3Aexample.invalid",
+            members: []
+          },
+          operation: { kind: "idle" }
+        }}
+      />
+    );
+
+    const status = screen.getByLabelText("Room status");
+    expect(status.textContent).toContain("Encrypted");
+    expect(status.textContent).toContain("Public");
+    expect(status.textContent).toContain("Anyone can see history");
+    expect(screen.getByRole("button", { name: "Copy room link" })).toBeTruthy();
+  });
+
   test("labels direct messages distinctly from rooms", () => {
     render(
       <RoomInfoPanel

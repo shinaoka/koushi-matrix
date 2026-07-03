@@ -92,6 +92,12 @@ pub struct RoomSettingsSnapshot {
     pub name: Option<String>,
     pub topic: Option<String>,
     pub avatar_url: Option<String>,
+    #[serde(default)]
+    pub canonical_alias: Option<String>,
+    #[serde(default)]
+    pub alternate_aliases: Vec<String>,
+    #[serde(default)]
+    pub share_link: Option<String>,
     pub join_rule: RoomJoinRule,
     pub history_visibility: RoomHistoryVisibility,
     pub permissions: RoomPermissionFacts,
@@ -109,11 +115,64 @@ impl fmt::Debug for RoomSettingsSnapshot {
                 "avatar_url",
                 &self.avatar_url.as_ref().map(|_| "MxcUri(..)"),
             )
+            .field(
+                "canonical_alias",
+                &self.canonical_alias.as_ref().map(|_| "RoomAlias(..)"),
+            )
+            .field("alternate_aliases", &self.alternate_aliases.len())
+            .field(
+                "share_link",
+                &self.share_link.as_ref().map(|_| "MatrixToLink(..)"),
+            )
             .field("join_rule", &self.join_rule)
             .field("history_visibility", &self.history_visibility)
             .field("permissions", &self.permissions)
             .field("members", &self.members.len())
             .finish()
+    }
+}
+
+pub fn room_settings_share_link(
+    room_id: &str,
+    canonical_alias: Option<&str>,
+    alternate_aliases: &[String],
+) -> Option<String> {
+    canonical_alias
+        .and_then(non_empty_trimmed)
+        .or_else(|| alternate_aliases.iter().find_map(|alias| non_empty_trimmed(alias)))
+        .or_else(|| non_empty_trimmed(room_id))
+        .map(|identifier| {
+            format!(
+                "https://matrix.to/#/{}",
+                percent_encode_matrix_to_component(identifier)
+            )
+        })
+}
+
+fn non_empty_trimmed(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn percent_encode_matrix_to_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'!') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(hex_digit(byte >> 4));
+            encoded.push(hex_digit(byte & 0x0f));
+        }
+    }
+    encoded
+}
+
+fn hex_digit(value: u8) -> char {
+    match value {
+        0..=9 => (b'0' + value) as char,
+        10..=15 => (b'A' + (value - 10)) as char,
+        _ => unreachable!("hex digit nibble is <= 15"),
     }
 }
 

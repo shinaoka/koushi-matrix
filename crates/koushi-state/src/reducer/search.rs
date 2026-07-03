@@ -109,6 +109,15 @@ pub(crate) fn handle_search_failed(
     vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
 }
 
+pub(crate) fn handle_search_closed(state: &mut AppState) -> Vec<AppEffect> {
+    if !is_session_ready(state) || state.search == SearchState::Closed {
+        return Vec::new();
+    }
+
+    state.search = SearchState::Closed;
+    vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
+}
+
 pub(crate) fn handle_search_index_rebuild_requested(state: &mut AppState) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();

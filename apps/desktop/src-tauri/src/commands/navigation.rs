@@ -133,6 +133,12 @@ pub async fn select_search_result(
         }))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_focused_context_closed(
+        &mut event_conn,
+        close_request_id,
+        FOCUSED_CONTEXT_EVENT_TIMEOUT,
+    )
+    .await?;
 
     let select_request_id = event_conn.next_request_id();
     event_conn
@@ -154,11 +160,36 @@ pub async fn select_search_result(
     event_conn
         .command(CoreCommand::App(AppCommand::OpenFocusedContext {
             request_id: open_request_id,
-            room_id,
-            event_id,
+            room_id: room_id.clone(),
+            event_id: event_id.clone(),
         }))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_focused_context(
+        &mut event_conn,
+        open_request_id,
+        &selected_room_id,
+        FOCUSED_CONTEXT_EVENT_TIMEOUT,
+    )
+    .await?;
+
+    let anchor_request_id = event_conn.next_request_id();
+    event_conn
+        .command(CoreCommand::App(AppCommand::EnterAnchoredTimeline {
+            request_id: anchor_request_id,
+            room_id: room_id.clone(),
+            event_id: event_id.clone(),
+        }))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_main_timeline_anchor(
+        &mut event_conn,
+        anchor_request_id,
+        &room_id,
+        &event_id,
+        FOCUSED_CONTEXT_EVENT_TIMEOUT,
+    )
+    .await?;
 
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await

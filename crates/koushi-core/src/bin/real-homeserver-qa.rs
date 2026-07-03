@@ -57,8 +57,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use koushi_core::command::{
-    AccountCommand, CoreCommand, RoomCommand, SearchCommand, SearchScope, SyncCommand,
-    TimelineCommand,
+    AccountCommand, CoreCommand, CreateRoomOptions, CreateRoomVisibility, RoomCommand,
+    SearchCommand, SearchScope, SyncCommand, TimelineCommand,
 };
 use koushi_core::event::{
     AccountEvent, CoreEvent, PaginationDirection, PaginationState, RoomEvent, SearchEvent,
@@ -144,6 +144,17 @@ const SEARCH_TIMEOUT: Duration = Duration::from_secs(90);
 const EDIT_REDACT_TIMEOUT: Duration = Duration::from_secs(90);
 /// Timeout for paginate-to-EndReached.
 const PAGINATE_TIMEOUT: Duration = Duration::from_secs(90);
+
+fn private_room_options(name: impl Into<String>, encrypted: bool) -> CreateRoomOptions {
+    CreateRoomOptions {
+        name: name.into(),
+        topic: None,
+        alias_localpart: None,
+        encrypted,
+        visibility: CreateRoomVisibility::Private,
+        parent_space: None,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Credentials (only loaded in debug/test builds)
@@ -578,8 +589,7 @@ async fn run_async_inner(
     let create_room_id = conn.next_request_id();
     conn.command(CoreCommand::Room(RoomCommand::CreateRoom {
         request_id: create_room_id,
-        name: qa_room_name.clone(),
-        encrypted: false,
+        options: private_room_options(qa_room_name.clone(), false),
     }))
     .await
     .map_err(|e| format!("create QA room command submit failed: {e}"))?;

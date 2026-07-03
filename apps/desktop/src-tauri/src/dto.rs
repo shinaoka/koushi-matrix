@@ -1522,6 +1522,9 @@ mod tests {
                 name: Some("Fixture Room".to_owned()),
                 topic: Some("Fixture room topic".to_owned()),
                 avatar_url: Some("mxc://example.invalid/room-avatar".to_owned()),
+                canonical_alias: None,
+                alternate_aliases: Vec::new(),
+                share_link: None,
                 join_rule: RoomJoinRule::Invite,
                 history_visibility: RoomHistoryVisibility::Shared,
                 permissions: RoomPermissionFacts {

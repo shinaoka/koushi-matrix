@@ -1060,6 +1060,78 @@ button:disabled {
   background: var(--unread);
 }
 
+.room-list-controls {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  margin-bottom: 6px;
+}
+
+.room-list-category,
+.room-list-sort {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.room-list-chip,
+.room-list-sort-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.room-list-chip:hover,
+.room-list-sort-button:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.room-list-chip.is-selected,
+.room-list-sort-button.is-selected {
+  color: var(--brand-contrast);
+  background: var(--brand);
+}
+
+.room-list-chip span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-list-chip-count {
+  display: inline-grid;
+  place-items: center;
+  min-inline-size: 18px;
+  block-size: 18px;
+  padding-inline: 5px;
+  border-radius: var(--r-pill);
+  color: var(--text);
+  background: var(--surface-raised);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.room-list-chip.is-selected .room-list-chip-count {
+  color: var(--brand);
+  background: var(--brand-contrast);
+}
+
 .nav-label,
 .room-name {
   overflow: hidden;
@@ -4282,6 +4354,42 @@ mark {
   border-color: var(--brand);
 }
 
+.create-room-options {
+  display: grid;
+  gap: 10px;
+}
+
+.create-room-visibility {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.create-room-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.create-room-option:has(input:checked) {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.create-room-space-note {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
@@ -4760,6 +4868,49 @@ mark {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   padding-top: 16px;
+}
+
+.room-status-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 12px;
+}
+
+.room-status-badges {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.room-status-badge,
+.room-share-link-button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.room-share-link-button {
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.room-share-link-button:hover,
+.room-share-link-button:focus-visible {
+  border-color: var(--brand);
+  color: var(--brand);
 }
 
 .settings-summary-tile {

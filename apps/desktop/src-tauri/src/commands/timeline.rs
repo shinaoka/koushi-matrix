@@ -499,6 +499,40 @@ pub async fn save_downloaded_media(
         .map_err(|_| "media file could not be saved".to_owned())
 }
 
+#[tauri::command]
+pub async fn default_media_save_path(filename: String, app: AppHandle) -> Result<String, String> {
+    let downloads_dir = app.path().download_dir().ok();
+    Ok(default_media_save_path_for(&filename, downloads_dir.as_deref())
+        .to_string_lossy()
+        .into_owned())
+}
+
+fn default_media_save_path_for(
+    filename: &str,
+    downloads_dir: Option<&std::path::Path>,
+) -> PathBuf {
+    let safe_filename = safe_media_save_filename(filename);
+    downloads_dir
+        .map(|directory| directory.join(&safe_filename))
+        .unwrap_or_else(|| PathBuf::from(safe_filename))
+}
+
+fn safe_media_save_filename(filename: &str) -> String {
+    let trimmed = filename.trim();
+    let candidate = if trimmed.is_empty() {
+        "download"
+    } else {
+        trimmed
+    };
+    candidate
+        .chars()
+        .map(|character| match character {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            other => other,
+        })
+        .collect()
+}
+
 fn downloaded_media_source_path(source_url: &str) -> Result<PathBuf, String> {
     let source_path = local_media_source_path(source_url)?;
     let source_path = std::fs::canonicalize(&source_path)
@@ -897,6 +931,28 @@ pub async fn send_thread_reply(
 #[cfg(test)]
 mod save_downloaded_media_tests {
     use super::*;
+
+    #[test]
+    fn default_media_save_path_prefers_downloads_directory() {
+        let downloads = PathBuf::from("/tmp/koushi-downloads");
+
+        assert_eq!(
+            default_media_save_path_for(" report:name?.png ", Some(downloads.as_path())),
+            downloads.join("report_name_.png")
+        );
+    }
+
+    #[test]
+    fn default_media_save_path_falls_back_to_safe_filename() {
+        assert_eq!(
+            default_media_save_path_for("   ", None),
+            PathBuf::from("download")
+        );
+        assert_eq!(
+            default_media_save_path_for("bad/path:name.txt", None),
+            PathBuf::from("bad_path_name.txt")
+        );
+    }
 
     #[test]
     fn local_media_source_path_rejects_urls() {

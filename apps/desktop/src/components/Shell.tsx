@@ -43,9 +43,31 @@ import {
   EMPTY_ROOM_TAGS
 } from "../app/uiShared";
 import { roomListSections } from "../domain/desktopModel";
-import { type SpaceLocalOverrides, spaceDisplayName } from "../app/localPresentation";
+import {
+  readSidebarRoomCategory,
+  readSidebarRoomSort,
+  type SidebarRoomCategory,
+  type SidebarRoomSort,
+  type SpaceLocalOverrides,
+  spaceDisplayName,
+  writeSidebarRoomCategory,
+  writeSidebarRoomSort
+} from "../app/localPresentation";
 
 const ROOM_SECTION_COLLAPSE_KEY = "koushi.roomSectionCollapsed.v1";
+
+function sortedSidebarRooms(rooms: RoomListItem[], sort: SidebarRoomSort): RoomListItem[] {
+  if (sort === "active") {
+    return rooms;
+  }
+  return [...rooms].sort((left, right) => {
+    const nameOrder = left.display_name.localeCompare(right.display_name, undefined, {
+      numeric: true,
+      sensitivity: "base"
+    });
+    return nameOrder || left.room_id.localeCompare(right.room_id);
+  });
+}
 
 function shouldStartTitlebarDrag(event: MouseEvent<HTMLElement>): boolean {
   if (event.buttons !== 1 || !(event.target instanceof Element)) {
@@ -383,7 +405,24 @@ export function Sidebar({
   const accountHomeActive = snapshot.sidebar.account_home.is_active && !activeSpace;
   const roomById = new Map(snapshot.state.domain.rooms.map((room) => [room.room_id, room]));
   const presence = snapshot.state.domain.live_signals.presence;
-  const dms = sections.people;
+  const [roomCategory, setRoomCategory] = useState<SidebarRoomCategory>(readSidebarRoomCategory);
+  const [roomSort, setRoomSort] = useState<SidebarRoomSort>(readSidebarRoomSort);
+  const roomCategoryRooms = roomCategory === "dms" ? sections.people : sections.rooms;
+  const visibleCategoryRooms = sortedSidebarRooms(roomCategoryRooms, roomSort);
+  const visibleCategoryLabel =
+    roomCategory === "dms" ? t("workspace.people") : t("workspace.rooms");
+  const visibleCategoryKind = roomCategory === "dms" ? "dm" : "room";
+  const visibleCategoryId = roomCategory === "dms" ? "people" : "rooms";
+
+  function selectRoomCategory(category: SidebarRoomCategory) {
+    setRoomCategory(category);
+    writeSidebarRoomCategory(category);
+  }
+
+  function selectRoomSort(sort: SidebarRoomSort) {
+    setRoomSort(sort);
+    writeSidebarRoomSort(sort);
+  }
 
   function toggleSection(sectionId: string) {
     setCollapsedSections((current) => {
@@ -463,6 +502,28 @@ export function Sidebar({
           label={t("workspace.invites")}
           onClick={onOpenInvites}
         />
+        <RoomListControls
+          dmCount={sections.people.length}
+          roomCount={sections.rooms.length}
+          selectedCategory={roomCategory}
+          selectedSort={roomSort}
+          onSelectCategory={selectRoomCategory}
+          onSelectSort={selectRoomSort}
+        />
+        <RoomSection
+          activeRoomId={activeRoomId}
+          collapsed={false}
+          id={visibleCategoryId}
+          kind={visibleCategoryKind}
+          label={visibleCategoryLabel}
+          presence={presence}
+          roomById={roomById}
+          rooms={visibleCategoryRooms}
+          showHeader={false}
+          showWhenEmpty={true}
+          onOpenContextMenu={onOpenContextMenu}
+          onSelectRoom={onSelectRoom}
+        />
         {!accountHomeActive ? (
           <RoomSection
             activeRoomId={activeRoomId}
@@ -476,36 +537,6 @@ export function Sidebar({
             onOpenContextMenu={onOpenContextMenu}
             onSelectRoom={onSelectRoom}
             onToggleCollapsed={() => toggleSection("favourites")}
-          />
-        ) : null}
-        <RoomSection
-          activeRoomId={activeRoomId}
-          collapsed={Boolean(collapsedSections.people)}
-          id="people"
-          kind="dm"
-          label={t("workspace.people")}
-          presence={presence}
-          roomById={roomById}
-          rooms={dms}
-          showWhenEmpty={true}
-          onOpenContextMenu={onOpenContextMenu}
-          onSelectRoom={onSelectRoom}
-          onToggleCollapsed={() => toggleSection("people")}
-        />
-        {!accountHomeActive || sections.rooms.length > 0 ? (
-          <RoomSection
-            activeRoomId={activeRoomId}
-            collapsed={Boolean(collapsedSections.rooms)}
-            id="rooms"
-            kind="room"
-            label={t("workspace.rooms")}
-            presence={presence}
-            roomById={roomById}
-            rooms={sections.rooms}
-            showWhenEmpty={!accountHomeActive}
-            onOpenContextMenu={onOpenContextMenu}
-            onSelectRoom={onSelectRoom}
-            onToggleCollapsed={() => toggleSection("rooms")}
           />
         ) : null}
         {!accountHomeActive ? (
@@ -528,6 +559,65 @@ export function Sidebar({
   );
 }
 
+function RoomListControls({
+  dmCount,
+  roomCount,
+  selectedCategory,
+  selectedSort,
+  onSelectCategory,
+  onSelectSort
+}: {
+  dmCount: number;
+  roomCount: number;
+  selectedCategory: SidebarRoomCategory;
+  selectedSort: SidebarRoomSort;
+  onSelectCategory: (category: SidebarRoomCategory) => void;
+  onSelectSort: (sort: SidebarRoomSort) => void;
+}) {
+  return (
+    <div className="room-list-controls">
+      <div className="room-list-category" role="group" aria-label={t("roomList.category")}>
+        <button
+          className={`room-list-chip ${selectedCategory === "dms" ? "is-selected" : ""}`}
+          type="button"
+          aria-pressed={selectedCategory === "dms"}
+          onClick={() => onSelectCategory("dms")}
+        >
+          <span>{t("roomList.categoryDms")}</span>
+          <span className="room-list-chip-count">{dmCount}</span>
+        </button>
+        <button
+          className={`room-list-chip ${selectedCategory === "rooms" ? "is-selected" : ""}`}
+          type="button"
+          aria-pressed={selectedCategory === "rooms"}
+          onClick={() => onSelectCategory("rooms")}
+        >
+          <span>{t("roomList.categoryRooms")}</span>
+          <span className="room-list-chip-count">{roomCount}</span>
+        </button>
+      </div>
+      <div className="room-list-sort" role="group" aria-label={t("roomList.sort")}>
+        <button
+          className={`room-list-sort-button ${selectedSort === "active" ? "is-selected" : ""}`}
+          type="button"
+          aria-pressed={selectedSort === "active"}
+          onClick={() => onSelectSort("active")}
+        >
+          {t("roomList.sortActive")}
+        </button>
+        <button
+          className={`room-list-sort-button ${selectedSort === "name" ? "is-selected" : ""}`}
+          type="button"
+          aria-pressed={selectedSort === "name"}
+          onClick={() => onSelectSort("name")}
+        >
+          {t("roomList.sortName")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function RoomSection({
   activeRoomId,
   collapsed,
@@ -537,6 +627,7 @@ function RoomSection({
   presence,
   roomById,
   rooms,
+  showHeader = true,
   showWhenEmpty = false,
   onOpenContextMenu,
   onSelectInvite,
@@ -551,11 +642,12 @@ function RoomSection({
   presence: DesktopSnapshot["state"]["domain"]["live_signals"]["presence"];
   roomById: Map<string, RoomSummary>;
   rooms: RoomListItem[];
+  showHeader?: boolean;
   showWhenEmpty?: boolean;
   onOpenContextMenu: OpenContextMenu;
   onSelectInvite?: () => void;
   onSelectRoom: (roomId: string) => void;
-  onToggleCollapsed: () => void;
+  onToggleCollapsed?: () => void;
 }) {
   if (!showWhenEmpty && rooms.length === 0) {
     return null;
@@ -563,12 +655,14 @@ function RoomSection({
 
   return (
     <section className="room-section" data-room-section={id} aria-label={label}>
-      <SectionTitle
-        collapsed={collapsed}
-        count={rooms.length}
-        label={label}
-        onToggle={onToggleCollapsed}
-      />
+      {showHeader ? (
+        <SectionTitle
+          collapsed={collapsed}
+          count={rooms.length}
+          label={label}
+          onToggle={onToggleCollapsed ?? (() => undefined)}
+        />
+      ) : null}
       {!collapsed
         ? rooms.map((room) => (
             <RoomButton
@@ -697,11 +791,12 @@ function RoomButton({
         }
         onOpenContextMenu(
           event,
-          { kind: "room", roomId: room.room_id },
+          { kind: "room", roomId: room.room_id, dmUserId },
           contextMenuItems({
             kind: "room",
             roomId: room.room_id,
-            tags: room.tags ?? EMPTY_ROOM_TAGS
+            tags: room.tags ?? EMPTY_ROOM_TAGS,
+            dmUserIds: dmUserId ? [dmUserId] : []
           })
         );
       }}

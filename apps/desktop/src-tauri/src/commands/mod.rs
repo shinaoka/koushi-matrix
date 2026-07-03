@@ -16,10 +16,10 @@ use std::{
 
 use koushi_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
-    ImageUploadCompressionPolicy, ImageUploadCompressionState, ImageUploadDimensions,
-    ImageUploadVariantKind, IntentNoOpReason, IntentOutcome, MediaDownloadSelection,
-    PaginationDirection, RequestId, RoomCommand, RoomEvent, RoomKeyExportRequest,
-    RoomKeyImportRequest, SearchCommand, SearchScope, SecureBackupPassphraseChangeRequest,
+    CreateRoomOptions, ImageUploadCompressionPolicy, ImageUploadCompressionState,
+    ImageUploadDimensions, ImageUploadVariantKind, IntentNoOpReason, IntentOutcome,
+    MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent, RoomKeyExportRequest,
+    RoomKeyImportRequest, SearchCommand, SearchEvent, SearchScope, SecureBackupPassphraseChangeRequest,
     SecureBackupSetupRequest, SetAvatarRequest, SyncCommand, TimelineCommand, TimelineKey,
     TimelineKind, TimelineViewportObservation, UploadMediaKind, UploadMediaRequest,
     UploadMediaThumbnail,
@@ -195,6 +195,7 @@ pub(crate) async fn submit_login_request(
 const LOGIN_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const SELECT_ROOM_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const FOCUSED_CONTEXT_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const SEARCH_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const ROOM_OPERATION_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const UPLOAD_STAGING_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -304,6 +305,19 @@ fn snapshot_has_no_focused_context(snapshot: &koushi_state::AppState) -> bool {
         && snapshot.navigation.main_timeline_anchor.is_none()
 }
 
+fn snapshot_has_main_timeline_anchor(
+    snapshot: &koushi_state::AppState,
+    room_id: &str,
+    event_id: &str,
+) -> bool {
+    snapshot.navigation.active_room_id.as_deref() == Some(room_id)
+        && snapshot
+            .navigation
+            .main_timeline_anchor
+            .as_ref()
+            .is_some_and(|anchor| anchor.event_id == event_id)
+}
+
 async fn wait_for_focused_context_closed(
     event_conn: &mut CoreConnection,
     request_id: RequestId,
@@ -371,6 +385,46 @@ async fn wait_for_focused_context(
                 return Ok(());
             }
             Err(_) => return Err("focused context event stream lagged".to_owned()),
+        }
+    }
+}
+
+async fn wait_for_main_timeline_anchor(
+    event_conn: &mut CoreConnection,
+    request_id: RequestId,
+    room_id: &str,
+    event_id: &str,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        if snapshot_has_main_timeline_anchor(&event_conn.snapshot(), room_id, event_id) {
+            return Ok(());
+        }
+
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "main timeline anchor did not open".to_owned())?;
+        match event {
+            Ok(CoreEvent::StateChanged(snapshot))
+                if snapshot_has_main_timeline_anchor(&snapshot, room_id, event_id) =>
+            {
+                return Ok(());
+            }
+            Ok(CoreEvent::OperationFailed {
+                request_id: failed_request_id,
+                ..
+            }) if failed_request_id == request_id => {
+                return Err("main timeline anchor open failed".to_owned());
+            }
+            Ok(_) => {}
+            Err(_)
+                if snapshot_has_main_timeline_anchor(&event_conn.snapshot(), room_id, event_id) =>
+            {
+                return Ok(());
+            }
+            Err(_) => return Err("main timeline anchor event stream lagged".to_owned()),
         }
     }
 }
@@ -496,6 +550,92 @@ async fn wait_for_selected_room(
 
 fn snapshot_has_active_room(snapshot: &koushi_state::AppState, room_id: &str) -> bool {
     snapshot.navigation.active_room_id.as_deref() == Some(room_id)
+}
+
+fn snapshot_has_completed_search(snapshot: &koushi_state::AppState, request_id: RequestId) -> bool {
+    match &snapshot.search {
+        koushi_state::SearchState::Results {
+            request_id: state_request_id,
+            ..
+        }
+        | koushi_state::SearchState::Failed {
+            request_id: state_request_id,
+            ..
+        } => *state_request_id == request_id.sequence,
+        _ => false,
+    }
+}
+
+fn snapshot_has_closed_search(snapshot: &koushi_state::AppState) -> bool {
+    snapshot.search == koushi_state::SearchState::Closed
+}
+
+async fn wait_for_search_completed(
+    event_conn: &mut CoreConnection,
+    request_id: RequestId,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        if snapshot_has_completed_search(&event_conn.snapshot(), request_id) {
+            return Ok(());
+        }
+
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "search did not complete".to_owned())?;
+        match event {
+            Ok(CoreEvent::Search(SearchEvent::Results {
+                request_id: result_request_id,
+                ..
+            })) if result_request_id == request_id => {}
+            Ok(CoreEvent::OperationFailed {
+                request_id: failed_request_id,
+                ..
+            }) if failed_request_id == request_id => return Err("search failed".to_owned()),
+            Ok(CoreEvent::StateChanged(snapshot))
+                if snapshot_has_completed_search(&snapshot, request_id) =>
+            {
+                return Ok(());
+            }
+            Ok(_) => {}
+            Err(_) if snapshot_has_completed_search(&event_conn.snapshot(), request_id) => {
+                return Ok(());
+            }
+            Err(_) => return Err("search event stream lagged".to_owned()),
+        }
+    }
+}
+
+async fn wait_for_search_closed(
+    event_conn: &mut CoreConnection,
+    request_id: RequestId,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        if snapshot_has_closed_search(&event_conn.snapshot()) {
+            return Ok(());
+        }
+
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "search did not close".to_owned())?;
+        match event {
+            Ok(CoreEvent::StateChanged(snapshot)) if snapshot_has_closed_search(&snapshot) => {
+                return Ok(());
+            }
+            Ok(CoreEvent::OperationFailed {
+                request_id: failed_request_id,
+                ..
+            }) if failed_request_id == request_id => return Err("search close failed".to_owned()),
+            Ok(_) => {}
+            Err(_) if snapshot_has_closed_search(&event_conn.snapshot()) => return Ok(()),
+            Err(_) => return Err("search close event stream lagged".to_owned()),
+        }
+    }
 }
 
 fn select_active_room_trace_label(
@@ -1907,14 +2047,17 @@ pub(crate) fn build_submit_search_command(
     })
 }
 
+pub(crate) fn build_close_search_command(request_id: koushi_core::RequestId) -> CoreCommand {
+    CoreCommand::App(AppCommand::CloseSearch { request_id })
+}
+
 pub(crate) fn build_create_room_command(
     request_id: koushi_core::RequestId,
-    name: String,
+    options: CreateRoomOptions,
 ) -> CoreCommand {
     CoreCommand::Room(RoomCommand::CreateRoom {
         request_id,
-        name,
-        encrypted: false,
+        options,
     })
 }
 
@@ -2415,11 +2558,11 @@ mod tests {
     };
     use koushi_core::AccountKey;
     use koushi_core::{
-        AccountCommand, AppCommand, CoreCommand, ImageUploadCompressionPolicy,
-        ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantInfo,
-        ImageUploadVariantKind, MediaDownloadSelection, PaginationDirection, RoomCommand,
-        SearchCommand, SearchScope, SyncCommand, TimelineCommand, UploadMediaKind,
-        UploadMediaThumbnail,
+        AccountCommand, AppCommand, CoreCommand, CreateRoomOptions, CreateRoomParentSpace,
+        CreateRoomVisibility, ImageUploadCompressionPolicy, ImageUploadCompressionState,
+        ImageUploadDimensions, ImageUploadVariantInfo, ImageUploadVariantKind,
+        MediaDownloadSelection, PaginationDirection, RoomCommand, SearchCommand, SearchScope,
+        SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaThumbnail,
     };
     use koushi_state::{
         ActivityMarkReadTarget, ActivityTab, AppearanceSettings, ImageUploadCompressionMode,
@@ -2437,7 +2580,7 @@ mod tests {
         build_bootstrap_cross_signing_command, build_bootstrap_secure_backup_command,
         build_cancel_scheduled_send_command, build_cancel_send_command,
         build_cancel_verification_command, build_change_secure_backup_passphrase_command,
-        build_close_activity_command, build_close_files_view_command,
+        build_close_activity_command, build_close_files_view_command, build_close_search_command,
         build_confirm_sas_verification_command, build_create_room_command,
         build_create_space_command, build_decline_invite_command, build_discover_login_command,
         build_download_media_command, build_edit_message_command, build_enable_key_backup_command,
@@ -3854,15 +3997,45 @@ mod tests {
             SearchScope::Global
         );
 
-        match build_create_room_command(fake_request_id(16), "Local QA Room".to_owned()) {
+        match build_close_search_command(fake_request_id(16)) {
+            CoreCommand::App(AppCommand::CloseSearch { request_id }) => {
+                assert_eq!(request_id, fake_request_id(16));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_create_room_command(
+            fake_request_id(17),
+            CreateRoomOptions {
+                name: "Local QA Room".to_owned(),
+                topic: Some("Local topic".to_owned()),
+                alias_localpart: Some("local-qa-room".to_owned()),
+                encrypted: false,
+                visibility: CreateRoomVisibility::Public,
+                parent_space: Some(CreateRoomParentSpace {
+                    space_id: "!space:example.org".to_owned(),
+                    via_server: "example.org".to_owned(),
+                }),
+            },
+        ) {
             CoreCommand::Room(RoomCommand::CreateRoom {
                 request_id,
-                name,
-                encrypted,
+                options,
             }) => {
-                assert_eq!(request_id, fake_request_id(16));
-                assert_eq!(name, "Local QA Room");
-                assert!(!encrypted);
+                assert_eq!(request_id, fake_request_id(17));
+                assert_eq!(options.name, "Local QA Room");
+                assert_eq!(options.topic.as_deref(), Some("Local topic"));
+                assert_eq!(options.alias_localpart.as_deref(), Some("local-qa-room"));
+                assert!(!options.encrypted);
+                assert_eq!(options.visibility, CreateRoomVisibility::Public);
+                assert_eq!(
+                    options.parent_space.as_ref().map(|parent| parent.space_id.as_str()),
+                    Some("!space:example.org")
+                );
+                assert_eq!(
+                    options.parent_space.as_ref().map(|parent| parent.via_server.as_str()),
+                    Some("example.org")
+                );
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -5238,12 +5411,13 @@ mod tests {
     }
 
     #[test]
-    fn select_search_result_selects_room_then_opens_focused_context_without_room_resubscribe() {
+    fn select_search_result_selects_room_then_enters_anchored_timeline_without_room_resubscribe() {
         let source = commands_source();
         let fn_name = "pub async fn select_search_result";
         let select_token = "select_search_result";
         let close_token = "CloseFocusedContext";
         let open_token = "OpenFocusedContext";
+        let anchor_token = "EnterAnchoredTimeline";
         let select_room_token = concat!("build_select", "_room_command");
         let subscribe_room_token = "build_subscribe_timeline_command";
 
@@ -5266,7 +5440,11 @@ mod tests {
         );
         assert!(
             select_source.contains(open_token),
-            "select_search_result should open the new focused context through AppCommand"
+            "select_search_result should subscribe the focused event timeline"
+        );
+        assert!(
+            select_source.contains(anchor_token),
+            "select_search_result should route the selected result into the main anchored timeline"
         );
         assert!(
             select_source.contains(select_room_token),
@@ -5294,9 +5472,41 @@ mod tests {
         let open_offset = select_source
             .find(open_token)
             .expect("search result command should open focused context");
+        let anchor_offset = select_source
+            .find(anchor_token)
+            .expect("search result command should enter anchored timeline");
         assert!(
-            select_offset < wait_offset && wait_offset < open_offset,
-            "focused context should open only after the selected room state is observed"
+            select_offset < wait_offset && wait_offset < open_offset && open_offset < anchor_offset,
+            "focused event timeline should open and become the main anchored timeline only after the selected room state is observed"
+        );
+    }
+
+    #[test]
+    fn submit_search_waits_for_correlated_result_before_returning_snapshot() {
+        let source = commands_source();
+        let fn_name = "pub async fn submit_search";
+
+        let fn_offset = source
+            .find(fn_name)
+            .expect("submit_search command should exist");
+        let rest = &source[fn_offset..];
+        let end = rest
+            .find("pub async fn start_room_crawl")
+            .expect("start_room_crawl command should follow submit_search");
+        let command_source = &rest[..end];
+
+        let submit_offset = command_source
+            .find("build_submit_search_command")
+            .expect("submit_search should submit the query command");
+        let wait_offset = command_source
+            .find("wait_for_search_completed")
+            .expect("submit_search must wait for the correlated search result");
+        let snapshot_offset = command_source
+            .find("current_snapshot")
+            .expect("submit_search should return a snapshot");
+        assert!(
+            submit_offset < wait_offset && wait_offset < snapshot_offset,
+            "submit_search must not return a pre-result searching snapshot"
         );
     }
 

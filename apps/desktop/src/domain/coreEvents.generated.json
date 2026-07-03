@@ -417,7 +417,11 @@
           "sequence": 7
         },
         "settings": {
+          "alternate_aliases": [
+            "#private-alt:example.test"
+          ],
           "avatar_url": "mxc://example.test/avatar",
+          "canonical_alias": "#private:example.test",
           "history_visibility": "shared",
           "join_rule": "invite",
           "members": [
@@ -443,6 +447,7 @@
             "can_unban": true
           },
           "room_id": "!r:example.test",
+          "share_link": "https://matrix.to/#/%23private%3Aexample.test",
           "topic": "Private topic sample"
         }
       }
@@ -457,7 +462,11 @@
           "sequence": 7
         },
         "settings": {
+          "alternate_aliases": [
+            "#private-alt:example.test"
+          ],
           "avatar_url": "mxc://example.test/avatar",
+          "canonical_alias": "#private:example.test",
           "history_visibility": "shared",
           "join_rule": "invite",
           "members": [
@@ -483,6 +492,7 @@
             "can_unban": true
           },
           "room_id": "!r:example.test",
+          "share_link": "https://matrix.to/#/%23private%3Aexample.test",
           "topic": "Private topic sample"
         }
       }

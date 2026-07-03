@@ -12,6 +12,7 @@ export type ContextMenuActionId =
   | "reportUser"
   | "reportContent"
   | "selectRoom"
+  | "openUserInfo"
   | "openRoomInfo"
   | "searchInRoom"
   | "reportRoom"
@@ -49,6 +50,7 @@ export type ContextMenuRequest =
       kind: "room";
       roomId: string;
       tags?: RoomTags;
+      dmUserIds?: string[];
     }
   | {
       kind: "space";
@@ -91,9 +93,14 @@ export function contextMenuItems(request: ContextMenuRequest): ContextMenuItem[]
       }
       return items;
     }
-    case "room":
+    case "room": {
+      const userInfoItem =
+        request.dmUserIds?.length === 1
+          ? [{ id: "openUserInfo" as const, labelMessageId: "context.openUserInfo" as const }]
+          : [];
       return [
         { id: "selectRoom", labelMessageId: "context.selectRoom" },
+        ...userInfoItem,
         { id: "openRoomInfo", labelMessageId: "context.openRoomInfo" },
         { id: "searchInRoom", labelMessageId: "context.searchInRoom" },
         {
@@ -110,6 +117,7 @@ export function contextMenuItems(request: ContextMenuRequest): ContextMenuItem[]
         { id: "markRoomAsRead", labelMessageId: "room.markAsRead" },
         { id: "markRoomAsUnread", labelMessageId: "room.markAsUnread" }
       ];
+    }
     case "space":
       return [
         { id: "selectSpace", labelMessageId: "context.selectSpace" },

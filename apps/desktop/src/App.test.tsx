@@ -1309,7 +1309,8 @@ describe("Tauri state refresh wiring", () => {
     const createSource = source.slice(createStart, createEnd);
 
     expect(createSource).toContain("activeSpaceIdForCreatedRoom");
-    expect(createSource).toContain("api.createRoom(name)");
+    expect(createSource).toContain("createRoomRequestFromDraft");
+    expect(createSource).toContain("api.createRoom(createRoomRequest");
     expect(createSource).toContain("serverNameFromRoomId(createdRoomId)");
     expect(createSource).toContain("api.setSpaceChild(");
   });
@@ -1372,11 +1373,26 @@ describe("Tauri state refresh wiring", () => {
 
     expect(selectSearchResultSource).toContain("api.selectSearchResult(roomId, eventId)");
     expect(selectSearchResultSource).toContain('setRightPanelMode("search")');
+    expect(selectSearchResultSource).toContain('setPrimaryView("timeline")');
     expect(selectSearchResultSource).not.toContain("selectRoom(");
     expect(selectSearchResultSource).not.toContain('setSearchQuery("")');
     expect(selectSearchResultSource).not.toContain("document.querySelector");
     expect(selectSearchResultSource).not.toContain("scrollIntoView");
     expect(selectSearchResultSource).not.toContain("cssEscape");
+  });
+
+  test("search close clears Rust search state instead of promoting inline results", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const closeSearchStart = source.indexOf("async function closeSearchPanel");
+    const closeSearchEnd = source.indexOf("function openActivityRow", closeSearchStart);
+    const closeSearchSource = source.slice(closeSearchStart, closeSearchEnd);
+
+    expect(closeSearchStart).toBeGreaterThanOrEqual(0);
+    expect(closeSearchSource).toContain("api.closeSearch()");
+    expect(closeSearchSource).toContain('setSearchQuery("")');
+    expect(closeSearchSource).toContain('setRightPanelMode("closed")');
+    expect(source).not.toContain('showSearchResults={effectiveRightPanelMode !== "search"}');
+    expect(source).toContain("showSearchResults={false}");
   });
 
   test("activity row selection navigates to the event without opening focused context", () => {

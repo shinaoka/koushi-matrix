@@ -742,6 +742,7 @@ pub enum AppAction {
         event_id: String,
     },
     CloseFocusedContext,
+    SearchClosed,
     SearchEdited {
         query: String,
         scope: SearchScope,

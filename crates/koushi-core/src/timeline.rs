@@ -1912,6 +1912,7 @@ impl TimelineActor {
             diff_batch_seq: 0,
         };
 
+        actor.forward_initial_items_to_search(initial_sdk_items.iter().cloned());
         let task = executor::spawn(actor.run());
 
         TimelineActorHandle {
@@ -4444,6 +4445,17 @@ impl TimelineActor {
                 attachment_filename,
                 attachment,
             });
+        }
+    }
+
+    fn forward_initial_items_to_search(
+        &self,
+        items: impl IntoIterator<Item = Arc<SdkTimelineItem>>,
+    ) {
+        use eyeball_im::VectorDiff;
+
+        for item in items {
+            self.forward_diff_to_search(&VectorDiff::PushBack { value: item });
         }
     }
 
@@ -9605,6 +9617,29 @@ mod tests {
     /// receives a single settled `ItemsUpdated` per restore — no O(chunks)
     /// render churn — while internal state (`timeline_contains_event_id`) stays
     /// up-to-date every batch so the anchor can be found mid-walk.
+    #[test]
+    fn initial_timeline_items_are_forwarded_to_search_index() {
+        let source = include_str!("timeline.rs");
+        let production = source.split("\nmod tests").next().unwrap_or(source);
+        let spawn_src = production
+            .split("async fn spawn(")
+            .nth(1)
+            .expect("TimelineActor::spawn must exist")
+            .split("async fn run(")
+            .next()
+            .expect("spawn should end before run");
+
+        assert!(
+            spawn_src.contains("forward_initial_items_to_search"),
+            "visible initial timeline items must enter the same search-index path as live diffs"
+        );
+        assert!(
+            spawn_src.find("forward_initial_items_to_search")
+                < spawn_src.find("actor.run()"),
+            "initial items must be forwarded before the actor starts processing later diffs"
+        );
+    }
+
     #[test]
     fn restore_walk_coalesces_items_updated_to_single_flush() {
         let source = include_str!("timeline.rs");

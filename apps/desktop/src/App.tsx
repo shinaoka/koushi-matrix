@@ -113,6 +113,7 @@ import type {
   AttachmentFilter,
   AttachmentScope,
   AttachmentSort,
+  CreateRoomRequest,
   DesktopSnapshot,
   DirectoryRoomSummary,
   FilesViewScope,
@@ -181,6 +182,7 @@ import {
 import { AuthScreen } from "./components/auth";
 import {
   CreateEntityDialog,
+  type CreateRoomDialogOptions,
   DiagnosticDialog,
   ImageCompressionDialog,
   ReportReasonDialog,
@@ -378,6 +380,12 @@ type ReportDialogState =
   | { kind: "user"; userId: string }
   | { kind: "content"; roomId: string; eventId: string }
   | { kind: "room"; roomId: string };
+const DEFAULT_CREATE_ROOM_OPTIONS: CreateRoomDialogOptions = {
+  aliasLocalpart: "",
+  encrypted: true,
+  topic: "",
+  visibility: "private"
+};
 const DEFAULT_SIDEBAR_WIDTH = 318;
 const MIN_SIDEBAR_WIDTH = 260;
 const MAX_SIDEBAR_WIDTH = 440;
@@ -424,6 +432,33 @@ function writeHomeSelection(selection: HomeSelection): void {
     return;
   }
   window.localStorage.setItem(HOME_SELECTION_KEY, JSON.stringify(selection));
+}
+
+function defaultCreateRoomDialogOptions(): CreateRoomDialogOptions {
+  return { ...DEFAULT_CREATE_ROOM_OPTIONS };
+}
+
+function createRoomRequestFromDraft(
+  name: string,
+  options: CreateRoomDialogOptions,
+  activeSpaceId: string | null
+): CreateRoomRequest {
+  const visibility = options.visibility;
+  const parentViaServer = activeSpaceId ? serverNameFromRoomId(activeSpaceId) : null;
+  return {
+    name,
+    topic: options.topic.trim() || null,
+    aliasLocalpart: visibility === "public" ? options.aliasLocalpart.trim() || null : null,
+    encrypted: visibility === "private" ? options.encrypted : false,
+    visibility,
+    parentSpace:
+      activeSpaceId && parentViaServer
+        ? {
+            spaceId: activeSpaceId,
+            viaServer: parentViaServer
+          }
+        : null
+  };
 }
 
 function clampSidebarWidth(width: number, viewportWidth = window.innerWidth): number {
@@ -600,9 +635,12 @@ async function saveReadyMediaFile(sourceUrl: string, filename: string): Promise<
     return;
   }
   const safeFilename = safeDownloadFilename(filename);
+  const defaultPath = await invoke<string>("default_media_save_path", {
+    filename: safeFilename
+  }).catch(() => safeFilename);
   const selected = await saveDialog({
     title: t("timeline.downloadMedia", { filename: safeFilename }),
-    defaultPath: safeFilename
+    defaultPath
   });
   if (!selected) {
     return;
@@ -816,6 +854,17 @@ function rightPanelTargetFromContextMenuTarget(
 
 function initialSearchQuery(): string {
   return new URLSearchParams(window.location.search).get("q") ?? "";
+}
+
+function correlatedSearchState(
+  search: DesktopSnapshot["state"]["domain"]["search"],
+  query: string,
+  scope: SearchScopeKind
+): DesktopSnapshot["state"]["domain"]["search"] | null {
+  if (search.kind === "closed" || !query.trim()) {
+    return null;
+  }
+  return search.query === query.trim() && search.scope === scope ? search : null;
 }
 
 function isTauriRuntime(): boolean {
@@ -1045,16 +1094,13 @@ export function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [primaryView, setPrimaryView] = useState<PrimaryView>("timeline");
   // #161: while the main pane is anchored to a jump-to-date event, the focused
-  // timeline renders in the MAIN pane, so a focused-context/search right panel
-  // must be closed. This backstops the Tauri command path, where
-  // openAtTimestamp cannot set React panel state directly.
+  // timeline renders in the MAIN pane, so a focused-context right panel must be
+  // closed. Search keeps its results panel open while the main pane anchors the
+  // selected hit.
   const mainTimelineAnchorEventId =
     snapshot?.state.ui.navigation.main_timeline_anchor?.event_id ?? null;
   useEffect(() => {
-    if (
-      mainTimelineAnchorEventId &&
-      (rightPanelMode === "focusedContext" || rightPanelMode === "search")
-    ) {
+    if (mainTimelineAnchorEventId && rightPanelMode === "focusedContext") {
       setRightPanelMode("closed");
     }
   }, [mainTimelineAnchorEventId, rightPanelMode]);
@@ -1075,6 +1121,8 @@ export function App() {
   // (basic_operation); the created room/space identity comes from the API.
   const [createDialog, setCreateDialog] = useState<"room" | "space" | null>(null);
   const [createDraftName, setCreateDraftName] = useState("");
+  const [createRoomDraftOptions, setCreateRoomDraftOptions] =
+    useState<CreateRoomDialogOptions>(defaultCreateRoomDialogOptions);
   const [reportDialog, setReportDialog] = useState<ReportDialogState | null>(null);
   const [reportReasonDraft, setReportReasonDraft] = useState("");
   const [timelineStore, setTimelineStore] = useState<TimelineStoreState>(createTimelineStore);
@@ -2269,6 +2317,16 @@ export function App() {
     setSnapshot(nextSnapshot);
   }
 
+  async function openDmUserInfo(roomId: string, userId: string) {
+    await selectRoom(roomId);
+    roomSettingsLoadRef.current = null;
+    const next = await api.loadRoomSettings(roomId);
+    setSnapshot(next);
+    setPeoplePanelScope({ kind: "room", roomId });
+    setSelectedProfileUserId(userId);
+    await setRightPanelModeClosingFocusedContext("profile");
+  }
+
   async function openHomeActivityView() {
     setHomeSelection({ kind: "activity" });
     await openHomeSelection({ kind: "activity" });
@@ -2360,12 +2418,14 @@ export function App() {
 
   function openCreateDialog(kind: "room" | "space") {
     setCreateDraftName("");
+    setCreateRoomDraftOptions(defaultCreateRoomDialogOptions());
     setCreateDialog(kind);
   }
 
   function closeCreateDialog() {
     setCreateDialog(null);
     setCreateDraftName("");
+    setCreateRoomDraftOptions(defaultCreateRoomDialogOptions());
   }
 
   function openNewDmDialog() {
@@ -2472,6 +2532,9 @@ export function App() {
     if (
       !kind ||
       !name ||
+      (kind === "room" &&
+        createRoomDraftOptions.visibility === "public" &&
+        !createRoomDraftOptions.aliasLocalpart.trim()) ||
       isBusy ||
       (snapshot && snapshot.state.ui.basic_operation.kind !== "idle")
     ) {
@@ -2479,8 +2542,12 @@ export function App() {
     }
     setIsBusy(true);
     try {
+      const createRoomRequest =
+        kind === "room"
+          ? createRoomRequestFromDraft(name, createRoomDraftOptions, activeSpaceIdForCreatedRoom)
+          : null;
       let nextSnapshot =
-        kind === "space" ? await api.createSpace(name) : await api.createRoom(name);
+        kind === "space" ? await api.createSpace(name) : await api.createRoom(createRoomRequest!);
       const createdRoomId = nextSnapshot.state.ui.navigation.active_room_id;
       const viaServer = createdRoomId ? serverNameFromRoomId(createdRoomId) : null;
       if (kind === "room" && activeSpaceIdForCreatedRoom && createdRoomId && viaServer) {
@@ -2979,8 +3046,22 @@ export function App() {
       await closeThreadsListPanel();
       return;
     }
+    if (rightPanelMode === "search") {
+      await closeSearchPanel();
+      return;
+    }
     setSelectedProfileUserId(null);
     await setRightPanelModeClosingFocusedContext("closed");
+  }
+
+  async function closeSearchPanel() {
+    if (searchTimer.current) {
+      window.clearTimeout(searchTimer.current);
+      searchTimer.current = null;
+    }
+    setSnapshot(await api.closeSearch());
+    setSearchQuery("");
+    setRightPanelMode("closed");
   }
 
   function openActivityRow(roomId: string, eventId: string) {
@@ -3057,6 +3138,11 @@ export function App() {
 
     if (target.kind === "room") {
       switch (actionId) {
+        case "openUserInfo":
+          if (target.dmUserId) {
+            void openDmUserInfo(target.roomId, target.dmUserId);
+          }
+          return;
         case "setRoomFavourite":
           void api.setRoomTag(target.roomId, "favourite").then(setSnapshot);
           return;
@@ -3141,10 +3227,9 @@ export function App() {
     const trimmed = query.trim();
     const searchMode = rightPanelModeForSearchQuery(trimmed);
     if (!trimmed) {
-      if (focusedContextVisibleForMode(rightPanelMode)) {
-        await setRightPanelModeClosingFocusedContext("closed");
-      } else {
-        setSnapshot(await api.getSnapshot());
+      setSnapshot(await api.closeSearch());
+      if (rightPanelMode === "search") {
+        setRightPanelMode("closed");
       }
       return;
     }
@@ -3217,7 +3302,14 @@ export function App() {
   const activeSpaceName = activeSpace
     ? spaceDisplayName(activeSpace.space_id, activeSpace.display_name, spaceLocalOverrides)
     : snapshot.sidebar.account_home.display_name;
-  const searchResults = snapshot.state.domain.search.kind === "results" ? snapshot.state.domain.search.results : [];
+  const activeSearchState = correlatedSearchState(
+    snapshot.state.domain.search,
+    searchQuery,
+    searchScope
+  );
+  const searchResults = activeSearchState?.kind === "results" ? activeSearchState.results : [];
+  const searchResultsQuery = activeSearchState?.kind === "results" ? activeSearchState.query : "";
+  const searchHighlightQuery = searchResultsQuery;
   const effectiveRightPanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
   const rightPanelOpen = effectiveRightPanelMode !== "closed";
   const appGridStyle = {
@@ -3410,9 +3502,9 @@ export function App() {
             composerMode={composerModeProp(snapshot.state.ui.timeline.composer.mode)}
             mentionIntent={composerMentions}
             resolveComposerKeyAction={resolveComposerKeyAction}
-            searchQuery={searchQuery}
+            searchQuery={searchHighlightQuery}
             searchResults={searchResults}
-            showSearchResults={effectiveRightPanelMode !== "search"}
+            showSearchResults={false}
             snapshot={snapshot}
             timelineTransport={appTimelineTransport}
             onReturnToLive={() => {
@@ -3509,7 +3601,7 @@ export function App() {
           recoverySecretInputRef={recoverySecretRef}
           snapshot={snapshot}
           timelineTransport={appTimelineTransport}
-          searchQuery={searchQuery}
+          searchQuery={searchResultsQuery}
           searchResults={searchResults}
           savedSessions={savedSessions}
           onCloseThread={() => {
@@ -3735,10 +3827,13 @@ export function App() {
       ) : null}
       {createDialog ? (
         <CreateEntityDialog
+          activeSpaceName={activeSpaceName}
           isBusy={isBusy || snapshot.state.ui.basic_operation.kind !== "idle"}
           kind={createDialog}
+          roomOptions={createRoomDraftOptions}
           value={createDraftName}
           onCancel={closeCreateDialog}
+          onRoomOptionsChange={setCreateRoomDraftOptions}
           onSubmit={() => {
             void submitCreateDialog();
           }}

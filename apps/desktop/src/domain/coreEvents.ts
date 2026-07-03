@@ -551,6 +551,9 @@ export interface RoomSettingsSnapshot {
   name: string | null;
   topic: string | null;
   avatar_url: string | null;
+  canonical_alias?: string | null;
+  alternate_aliases?: string[];
+  share_link?: string | null;
   join_rule: RoomJoinRule;
   history_visibility: RoomHistoryVisibility;
   permissions: RoomPermissionFacts;
