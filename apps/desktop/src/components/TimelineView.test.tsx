@@ -350,7 +350,7 @@ describe("TimelineView", () => {
     expect(picker.classList.contains("is-below")).toBe(false);
   });
 
-  it("offers normal reply from the message action menu", async () => {
+  it("offers normal reply as an inline action next to reactions", async () => {
     const onReply = vi.fn();
     const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
       InitialItems: {
@@ -359,7 +359,7 @@ describe("TimelineView", () => {
         generation: 1,
         items: [
           {
-            ...message("$reply-menu", "Reply from menu"),
+            ...message("$reply-inline", "Reply inline"),
             actions: {
               can_copy: true,
               can_forward: false,
@@ -382,13 +382,25 @@ describe("TimelineView", () => {
       </TimelineStoreContext.Provider>
     );
 
-    const row = screen.getByText("Reply from menu").closest("article");
+    const row = screen.getByText("Reply inline").closest("article");
     expect(row).not.toBeNull();
 
-    fireEvent.click(within(row!).getByRole("button", { name: "Message actions" }));
-    fireEvent.click(within(row!).getByRole("menuitem", { name: "Reply to message" }));
+    const actionButtons = Array.from(
+      row!.querySelectorAll<HTMLButtonElement>(".message-actions .message-action")
+    );
+    expect(actionButtons.map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Add reaction",
+      "Reply to message",
+      "Pin message",
+      "Message actions"
+    ]);
 
-    expect(onReply).toHaveBeenCalledWith("!room:example.invalid", "$reply-menu");
+    fireEvent.click(within(row!).getByRole("button", { name: "Reply to message" }));
+    expect(onReply).toHaveBeenCalledWith("!room:example.invalid", "$reply-inline");
+
+    fireEvent.click(within(row!).getByRole("button", { name: "Message actions" }));
+    const menu = within(row!).getByRole("menu", { name: "Message actions" });
+    expect(within(menu).queryByRole("menuitem", { name: "Reply to message" })).toBeNull();
   });
 
   it("shrinks the reaction emoji picker to the visible space instead of clipping it", async () => {
