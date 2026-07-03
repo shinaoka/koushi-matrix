@@ -512,7 +512,7 @@ export function InviteTargetsDialog({
                 aria-label={t("dialog.removeInviteTarget")}
                 onClick={() => onRemoveTarget(target.user_id)}
               >
-                <X size={14} aria-hidden="true" />
+                <X size={ICON_SIZE.micro} aria-hidden="true" />
               </button>
             </span>
           ))}

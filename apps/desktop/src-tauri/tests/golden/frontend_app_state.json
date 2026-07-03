@@ -185,6 +185,19 @@
           "kind": "idle"
         }
       },
+      "invite_workflow": {
+        "operation": {
+          "kind": "idle"
+        },
+        "query": {
+          "candidates": [],
+          "explicit_user_id": null,
+          "query": "",
+          "room_id": null
+        },
+        "scope_plan": null,
+        "selected_targets": []
+      },
       "invites": [
         {
           "avatar": null,

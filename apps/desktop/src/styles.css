@@ -4537,7 +4537,7 @@ mark {
   grid-template-columns: minmax(0, 1fr);
   justify-items: start;
   padding: 6px 10px;
-  text-align: left;
+  text-align: start;
 }
 
 .invite-target-candidate span {
