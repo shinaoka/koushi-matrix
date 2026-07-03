@@ -113,6 +113,7 @@ use crate::unread_trace;
 
 /// Bounded diff queue capacity per subscribed timeline (overview.md, Async rule 10).
 pub const TIMELINE_DIFF_QUEUE_CAPACITY: usize = 128;
+const INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT: u16 = 100;
 const ROOM_REPLAY_INITIAL_ITEMS_MAX: usize = 120;
 const REPLY_QUOTE_PREVIEW_MAX_CHARS: usize = 160;
 /// Backstop tick count for the anchor-relay wait. After the SDK signals
@@ -2267,12 +2268,67 @@ impl TimelineActor {
 
         // Subscribe to the SDK timeline to get initial items + diff stream.
         let subscribe_started = startup_trace::now_if_enabled();
-        let (initial_sdk_items, diff_stream) = timeline.subscribe().await;
+        let (mut initial_sdk_items, mut diff_stream) = timeline.subscribe().await;
         startup_trace::trace_phase_items(
             StartupPhase::TimelineSubscribe,
             subscribe_started,
             initial_sdk_items.len(),
         );
+        if should_hydrate_empty_initial_room_timeline(&key.kind, initial_sdk_items.len()) {
+            let gate_started = (startup_trace::enabled() || timeline_trace_enabled())
+                .then(std::time::Instant::now);
+            let hydrate_result = {
+                let _permit = messages_backpressure.acquire_timeline().await;
+                let gate_wait = gate_started.map(|started| started.elapsed());
+                trace_timeline_paginate(
+                    "initial_hydrate_gate_acquired",
+                    subscribe_request_id,
+                    &key,
+                    PaginationDirection::Backward,
+                    INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT,
+                    None,
+                    gate_wait.map(|duration| duration.as_millis()),
+                    None,
+                );
+                let paginate_started = startup_trace::now_if_enabled();
+                let trace_started = timeline_trace_enabled().then(std::time::Instant::now);
+                let outcome = timeline
+                    .paginate_backwards(INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT)
+                    .await;
+                let outcome_token = match &outcome {
+                    Ok(true) => "end_reached",
+                    Ok(false) => "idle",
+                    Err(_) => "failed",
+                };
+                trace_timeline_paginate(
+                    "initial_hydrate_sdk_finish",
+                    subscribe_request_id,
+                    &key,
+                    PaginationDirection::Backward,
+                    INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT,
+                    trace_started.map(|started| started.elapsed().as_millis()),
+                    gate_wait.map(|duration| duration.as_millis()),
+                    Some(outcome_token),
+                );
+                startup_trace::trace_paginate(
+                    paginate_started,
+                    gate_wait,
+                    matches!(outcome, Ok(true)),
+                );
+                outcome
+            };
+            if hydrate_result.is_ok() {
+                let resubscribe_started = startup_trace::now_if_enabled();
+                let (hydrated_items, hydrated_stream) = timeline.subscribe().await;
+                startup_trace::trace_phase_items(
+                    StartupPhase::TimelineSubscribe,
+                    resubscribe_started,
+                    hydrated_items.len(),
+                );
+                initial_sdk_items = hydrated_items;
+                diff_stream = hydrated_stream;
+            }
+        }
         let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
         let room_id = key.room_id().to_owned();
 
@@ -5591,6 +5647,10 @@ fn replay_initial_items_window(
     }
 }
 
+fn should_hydrate_empty_initial_room_timeline(kind: &TimelineKind, item_count: usize) -> bool {
+    matches!(kind, TimelineKind::Room { .. }) && item_count == 0
+}
+
 fn activity_rows_from_timeline_items(
     key: &TimelineKey,
     items: &[TimelineItem],
@@ -7803,6 +7863,29 @@ mod tests {
             replay.first().and_then(timeline_item_event_id),
             Some("$event-0:test")
         );
+    }
+
+    #[test]
+    fn empty_room_initial_snapshot_needs_initial_backfill() {
+        let key = room_key();
+
+        assert!(should_hydrate_empty_initial_room_timeline(&key.kind, 0));
+        assert!(!should_hydrate_empty_initial_room_timeline(&key.kind, 1));
+    }
+
+    #[test]
+    fn non_room_empty_initial_snapshots_do_not_use_room_live_backfill() {
+        let thread = TimelineKind::Thread {
+            room_id: "!r:test".to_owned(),
+            root_event_id: "$root:test".to_owned(),
+        };
+        let focused = TimelineKind::Focused {
+            room_id: "!r:test".to_owned(),
+            event_id: "$event:test".to_owned(),
+        };
+
+        assert!(!should_hydrate_empty_initial_room_timeline(&thread, 0));
+        assert!(!should_hydrate_empty_initial_room_timeline(&focused, 0));
     }
 
     #[test]
