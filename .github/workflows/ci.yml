@@ -53,7 +53,7 @@ jobs:
         run: npm run lint:domain-deps
 
   rust:
-    name: Rust (workspace / wasm)
+    name: Rust (workspace / src-tauri / wasm)
     runs-on: ubuntu-latest
     env:
       # Keep CI artifacts under a predictable repo-local target dir.
