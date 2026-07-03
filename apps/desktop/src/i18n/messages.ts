@@ -701,10 +701,6 @@ export type MessageId =
   | "timeline.unreadMarker"
   | "timeline.jumpToFirstUnread"
   | "timeline.jumpToBottom"
-  | "timeline.jumpToDate"
-  | "timeline.jumpToDateDialogTitle"
-  | "timeline.closeJumpToDate"
-  | "timeline.openDateInTimeline"
   | "timeline.olderMessages"
   | "timeline.latest"
   | "timeline.navigation"
@@ -1665,10 +1661,6 @@ const en: Catalog = {
   "timeline.unreadMarker": "Unread messages",
   "timeline.jumpToFirstUnread": "Jump to first unread, {count} unread",
   "timeline.jumpToBottom": "Jump to bottom, {count} new messages",
-  "timeline.jumpToDate": "Jump to date",
-  "timeline.jumpToDateDialogTitle": "Jump to date",
-  "timeline.closeJumpToDate": "Close jump to date",
-  "timeline.openDateInTimeline": "Open date in timeline",
   "timeline.olderMessages": "Older messages",
   "timeline.latest": "Latest",
   "timeline.navigation": "Timeline navigation",
@@ -2515,10 +2507,6 @@ const ja: Catalog = {
   "timeline.unreadMarker": "未読メッセージ",
   "timeline.jumpToFirstUnread": "最初の未読へ移動、未読 {count} 件",
   "timeline.jumpToBottom": "最新へ移動、新着 {count} 件",
-  "timeline.jumpToDate": "日時へ移動",
-  "timeline.jumpToDateDialogTitle": "日時へ移動",
-  "timeline.closeJumpToDate": "日時移動を閉じる",
-  "timeline.openDateInTimeline": "タイムラインで開く",
   "timeline.olderMessages": "古いメッセージ",
   "timeline.latest": "最新",
   "timeline.navigation": "タイムライン操作",

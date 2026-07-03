@@ -9,7 +9,6 @@ import {
 import {
   ArrowDown,
   Bell,
-  CalendarDays,
   Check,
   Clock3,
   Compass,
@@ -720,29 +719,7 @@ export function TimelinePane({
   );
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
-  const [dateJumpDialogOpen, setDateJumpDialogOpen] = useState(false);
   const jumpToLatestRef = useRef<(() => void) | null>(null);
-  const [jumpDateValue, setJumpDateValue] = useState("");
-
-  function submitJumpDate(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!timelineTransport?.openAtTimestamp || !timelineRoomId) {
-      return;
-    }
-    const dateControl = event.currentTarget.elements.namedItem("timeline-jump-date");
-    const submittedDateValue =
-      dateControl instanceof HTMLInputElement ? dateControl.value : jumpDateValue;
-    if (submittedDateValue !== jumpDateValue) {
-      setJumpDateValue(submittedDateValue);
-    }
-    const timestampMs = new Date(submittedDateValue).getTime();
-    if (!Number.isFinite(timestampMs)) {
-      return;
-    }
-    void timelineTransport.openAtTimestamp(timelineRoomId, timestampMs).catch(() => undefined);
-    setDateJumpDialogOpen(false);
-  }
-  const canJumpToTimelineDate = Boolean(timelineTransport?.openAtTimestamp && timelineRoomId);
   const registerJumpToLatest = useCallback((handler: (() => void) | null) => {
     jumpToLatestRef.current = handler;
   }, []);
@@ -760,17 +737,6 @@ export function TimelinePane({
         </div>
         <div className="channel-actions">
           <nav className="timeline-header-navigation" aria-label={t("timeline.navigation")}>
-            {canJumpToTimelineDate ? (
-              <button
-                className="icon-button timeline-control"
-                type="button"
-                aria-label={t("timeline.jumpToDate")}
-                title={t("timeline.jumpToDate")}
-                onClick={() => setDateJumpDialogOpen(true)}
-              >
-                <CalendarDays size={ICON_SIZE.control} aria-hidden="true" />
-              </button>
-            ) : null}
             <button
               className="icon-button timeline-control"
               type="button"
@@ -827,54 +793,6 @@ export function TimelinePane({
           </button>
         </div>
       </header>
-      {timelineTransport?.openAtTimestamp && timelineRoomId && dateJumpDialogOpen ? (
-        <div
-          className="timeline-date-jump-overlay"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              setDateJumpDialogOpen(false);
-            }
-          }}
-        >
-          <form
-            className="timeline-date-jump-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="timeline-date-jump-title"
-            onSubmit={submitJumpDate}
-          >
-            <div className="timeline-date-jump-header">
-              <h3 id="timeline-date-jump-title">{t("timeline.jumpToDateDialogTitle")}</h3>
-              <button
-                className="timeline-date-jump-close"
-                type="button"
-                aria-label={t("timeline.closeJumpToDate")}
-                onClick={() => setDateJumpDialogOpen(false)}
-              >
-                <X size={ICON_SIZE.control} aria-hidden="true" />
-              </button>
-            </div>
-            <label className="timeline-date-jump-label">
-              <CalendarDays size={ICON_SIZE.micro} aria-hidden="true" />
-              <span>{t("timeline.jumpToDate")}</span>
-              <input
-                className="timeline-date-jump-input"
-                type="datetime-local"
-                name="timeline-jump-date"
-                aria-label={t("timeline.jumpToDate")}
-                value={jumpDateValue}
-                onChange={(event) => setJumpDateValue(event.currentTarget.value)}
-              />
-            </label>
-            <div className="timeline-date-jump-actions">
-              <button className="timeline-date-jump-button" type="submit">
-                {t("timeline.openDateInTimeline")}
-              </button>
-            </div>
-          </form>
-        </div>
-      ) : null}
       {galleryOpen ? (
         <RoomMediaGallery
           items={mediaGallery}
