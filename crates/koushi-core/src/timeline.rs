@@ -102,7 +102,9 @@ use crate::event::{
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
-use crate::ids::{RequestId, TimelineBatchId, TimelineGeneration, TimelineKey, TimelineKind};
+use crate::ids::{
+    RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration, TimelineKey, TimelineKind,
+};
 use crate::link_preview::{LinkPreviewContext, extract_link_ranges};
 use crate::messages_backpressure::MessagesBackpressure;
 use crate::search::SearchIndexMessage;
@@ -271,6 +273,8 @@ impl TimelineManagerActor {
         };
 
         self.subscribe_existing_timeline_rooms(&service).await;
+        self.rebuild_existing_room_timelines_after_sync_started()
+            .await;
     }
 
     async fn subscribe_existing_timeline_rooms(
@@ -303,6 +307,20 @@ impl TimelineManagerActor {
             );
         }
         service.subscribe_to_rooms(&room_refs).await;
+    }
+
+    async fn rebuild_existing_room_timelines_after_sync_started(&mut self) {
+        let keys = self
+            .timelines
+            .keys()
+            .filter(|key| matches!(key.kind, TimelineKind::Room { .. }))
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in keys {
+            self.timelines.remove(&key);
+            self.handle_subscribe(internal_timeline_request_id(), key, true)
+                .await;
+        }
     }
 
     async fn handle_ignored_users_updated(&mut self, user_ids: std::collections::BTreeSet<String>) {
@@ -1054,6 +1072,13 @@ impl TimelineManagerActor {
             },
         };
         let _ = self.action_tx.try_send(vec![action]);
+    }
+}
+
+fn internal_timeline_request_id() -> RequestId {
+    RequestId {
+        connection_id: RuntimeConnectionId(0),
+        sequence: 0,
     }
 }
 
@@ -8653,12 +8678,39 @@ mod tests {
             "already-open timeline actors must have their rooms subscribed when SyncStarted arrives after actor creation"
         );
         assert!(
+            sync_started_handler.contains("rebuild_existing_room_timelines_after_sync_started")
+                && sync_started_handler.contains(".await"),
+            "late SyncStarted must rebuild already-open room live timelines so fresh InitialItems repair events missed before the live RoomListService handoff"
+        );
+        assert!(
             sync_started_handler.contains("self.timelines.keys()"),
             "existing timeline room subscriptions must be derived from the active timeline keys"
         );
         assert!(
             sync_started_handler.contains("service.subscribe_to_rooms"),
             "existing timeline rooms must be handed to the live RoomListService"
+        );
+
+        let rebuild_handler = source
+            .split("async fn rebuild_existing_room_timelines_after_sync_started")
+            .nth(1)
+            .expect("TimelineManagerActor should rebuild existing room timelines after SyncStarted")
+            .split("async fn handle_ignored_users_updated")
+            .next()
+            .expect("ignored-users handler should follow sync-start rebuild handler");
+
+        assert!(
+            rebuild_handler.contains("matches!(key.kind, TimelineKind::Room { .. })"),
+            "only room live timelines should be rebuilt on SyncStarted; focused/thread contexts should not be reset"
+        );
+        assert!(
+            rebuild_handler.contains("self.timelines.remove(&key);"),
+            "existing room timeline handles must be dropped before full resubscribe so the SDK timeline is rebuilt"
+        );
+        assert!(
+            rebuild_handler
+                .contains("self.handle_subscribe(internal_timeline_request_id(), key, true)"),
+            "rebuild must take the full subscribe path and emit a fresh InitialItems batch"
         );
     }
 
