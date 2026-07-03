@@ -11,6 +11,7 @@ import { EntityAvatar, Sidebar, TopBar, WorkspaceRail } from "./Shell";
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  window.localStorage.clear();
 });
 
 describe("EntityAvatar", () => {
@@ -146,13 +147,53 @@ describe("Sidebar", () => {
     expect(screen.getByRole("button", { name: "Explore" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Invites" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Threads" })).toBeNull();
+    expect(screen.getByRole("button", { name: /Rooms/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /DMs/ })).toBeTruthy();
     expect(screen.getByRole("region", { name: "Rooms" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "unspaced-room" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "synthetic-room" })).toBeNull();
-    expect(screen.getByRole("region", { name: "Direct Messages" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Direct Messages" })).toBeNull();
   });
 
-  it("renders rooms in Rust-projected sort order after settings update", async () => {
+  it("switches between DMs and Rooms and persists the selected category", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.selectSpace(null);
+
+    const renderSidebar = () =>
+      render(
+        <Sidebar
+          activeRoomId={snapshot.state.ui.navigation.active_room_id}
+          activeView="activity"
+          snapshot={snapshot}
+          onCreateRoom={() => undefined}
+          onNewDm={() => undefined}
+          onOpenContextMenu={() => undefined}
+          onOpenActivity={() => undefined}
+          onOpenExplore={() => undefined}
+          onOpenHome={() => undefined}
+          onOpenInvites={() => undefined}
+          onOpenSpaceInfo={() => undefined}
+          onOpenThreads={() => undefined}
+          onSelectRoom={() => undefined}
+        />
+      );
+
+    renderSidebar();
+    expect(screen.getByRole("region", { name: "Rooms" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Direct Messages" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /DMs/ }));
+    expect(screen.getByRole("region", { name: "Direct Messages" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Rooms" })).toBeNull();
+    expect(window.localStorage.getItem("koushi.sidebarRoomCategory.v1")).toBe("dms");
+
+    cleanup();
+    renderSidebar();
+    expect(screen.getByRole("region", { name: "Direct Messages" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Rooms" })).toBeNull();
+  });
+
+  it("sorts the selected category by active order or display name and persists the sort", async () => {
     const api = createBrowserFakeApi();
     let snapshot = await api.selectSpace("!space-alpha:example.invalid");
 
@@ -181,13 +222,19 @@ describe("Sidebar", () => {
     ).map((button) => button.getAttribute("aria-label"));
     expect(activityOrder).toEqual(["synthetic-room", "planning-room"]);
 
-    cleanup();
-    snapshot = await api.updateSettings({ room_list_sort: { kind: "normalLocale" } });
-    renderSidebar();
-    const localeOrder = Array.from(
+    fireEvent.click(screen.getByRole("button", { name: "Name" }));
+    const nameOrder = Array.from(
       document.querySelectorAll('[data-room-section="rooms"] [data-testid="room-item"]')
     ).map((button) => button.getAttribute("aria-label"));
-    expect(localeOrder).toEqual(["planning-room", "synthetic-room"]);
+    expect(nameOrder).toEqual(["planning-room", "synthetic-room"]);
+    expect(window.localStorage.getItem("koushi.sidebarRoomSort.v1")).toBe("name");
+
+    cleanup();
+    renderSidebar();
+    const persistedOrder = Array.from(
+      document.querySelectorAll('[data-room-section="rooms"] [data-testid="room-item"]')
+    ).map((button) => button.getAttribute("aria-label"));
+    expect(persistedOrder).toEqual(["planning-room", "synthetic-room"]);
   });
 
   it("keeps Rooms and Direct Messages separate inside a normal space", async () => {
@@ -215,7 +262,7 @@ describe("Sidebar", () => {
     expect(screen.getByRole("button", { name: "Home" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Threads" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "Rooms" })).toBeTruthy();
-    expect(screen.getByRole("region", { name: "Direct Messages" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Direct Messages" })).toBeNull();
   });
 
   it("shows online presence only on Direct Messages rows", async () => {
@@ -248,6 +295,7 @@ describe("Sidebar", () => {
       />
     );
 
+    fireEvent.click(screen.getByRole("button", { name: /DMs/ }));
     const dmRow = screen.getByRole("button", { name: dm.display_name });
     expect(dmRow.querySelector(".room-presence-dot")).toBeTruthy();
   });
@@ -281,6 +329,7 @@ describe("Sidebar", () => {
       />
     );
 
+    fireEvent.click(screen.getByRole("button", { name: /DMs/ }));
     fireEvent.contextMenu(screen.getByRole("button", { name: dm.display_name }));
 
     expect(onOpenContextMenu).toHaveBeenCalledTimes(1);

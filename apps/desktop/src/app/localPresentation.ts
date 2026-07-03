@@ -1,4 +1,6 @@
 export type DisplayDensity = "compact" | "default" | "comfortable";
+export type SidebarRoomCategory = "dms" | "rooms";
+export type SidebarRoomSort = "active" | "name";
 
 export interface SpaceLocalOverride {
   name?: string;
@@ -9,6 +11,8 @@ export type SpaceLocalOverrides = Record<string, SpaceLocalOverride>;
 
 const SPACE_OVERRIDES_STORAGE_KEY = "koushi.spaceLocalOverrides.v1";
 const DISPLAY_DENSITY_STORAGE_KEY = "koushi.displayDensity.v1";
+const SIDEBAR_ROOM_CATEGORY_STORAGE_KEY = "koushi.sidebarRoomCategory.v1";
+const SIDEBAR_ROOM_SORT_STORAGE_KEY = "koushi.sidebarRoomSort.v1";
 
 export const SPACE_OVERRIDES_CHANGED_EVENT = "koushi-space-local-overrides-changed";
 
@@ -80,4 +84,22 @@ export function readDisplayDensity(): DisplayDensity {
 
 export function writeDisplayDensity(density: DisplayDensity): void {
   browserStorage()?.setItem(DISPLAY_DENSITY_STORAGE_KEY, density);
+}
+
+export function readSidebarRoomCategory(): SidebarRoomCategory {
+  const value = browserStorage()?.getItem(SIDEBAR_ROOM_CATEGORY_STORAGE_KEY);
+  return value === "dms" || value === "rooms" ? value : "rooms";
+}
+
+export function writeSidebarRoomCategory(category: SidebarRoomCategory): void {
+  browserStorage()?.setItem(SIDEBAR_ROOM_CATEGORY_STORAGE_KEY, category);
+}
+
+export function readSidebarRoomSort(): SidebarRoomSort {
+  const value = browserStorage()?.getItem(SIDEBAR_ROOM_SORT_STORAGE_KEY);
+  return value === "active" || value === "name" ? value : "active";
+}
+
+export function writeSidebarRoomSort(sort: SidebarRoomSort): void {
+  browserStorage()?.setItem(SIDEBAR_ROOM_SORT_STORAGE_KEY, sort);
 }

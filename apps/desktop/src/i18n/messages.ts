@@ -342,11 +342,17 @@ export type MessageId =
   | "room.unbanMember"
   | "room.unread"
   | "room.unreadCount"
+  | "roomList.category"
+  | "roomList.categoryDms"
+  | "roomList.categoryRooms"
   | "roomList.filterRooms"
   | "roomList.filterUnread"
   | "roomList.filterPeople"
   | "roomList.filterFavourites"
   | "roomList.filterInvites"
+  | "roomList.sort"
+  | "roomList.sortActive"
+  | "roomList.sortName"
   | "room.markAsRead"
   | "room.markAsUnread"
   | "search.noExactMatches"
@@ -1273,11 +1279,17 @@ const en: Catalog = {
   "room.unbanMember": "Unban {name}",
   "room.unread": "Unread",
   "room.unreadCount": "{count} unread",
+  "roomList.category": "Room list category",
+  "roomList.categoryDms": "DMs",
+  "roomList.categoryRooms": "Rooms",
   "roomList.filterRooms": "Rooms",
   "roomList.filterUnread": "Unread",
   "roomList.filterPeople": "Direct Messages",
   "roomList.filterFavourites": "Favourites",
   "roomList.filterInvites": "Invites",
+  "roomList.sort": "Room list sort",
+  "roomList.sortActive": "Active",
+  "roomList.sortName": "Name",
   "room.markAsRead": "Mark as read",
   "room.markAsUnread": "Mark as unread",
   "search.noExactMatches": "No exact matches",
@@ -2102,11 +2114,17 @@ const ja: Catalog = {
   "room.unbanMember": "{name}のBANを解除",
   "room.unread": "未読",
   "room.unreadCount": "未読 {count} 件",
+  "roomList.category": "ルームリストのカテゴリ",
+  "roomList.categoryDms": "DM",
+  "roomList.categoryRooms": "ルーム",
   "roomList.filterRooms": "ルーム",
   "roomList.filterUnread": "未読",
   "roomList.filterPeople": "Direct Messages",
   "roomList.filterFavourites": "お気に入り",
   "roomList.filterInvites": "招待",
+  "roomList.sort": "ルームリストの並び順",
+  "roomList.sortActive": "アクティブ",
+  "roomList.sortName": "名前",
   "room.markAsRead": "既読にする",
   "room.markAsUnread": "未読にする",
   "search.noExactMatches": "完全一致はありません",
