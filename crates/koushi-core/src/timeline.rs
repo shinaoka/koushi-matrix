@@ -1683,6 +1683,237 @@ fn trace_timeline_diffs(stage: &str, key: &TimelineKey, diffs: &[TimelineDiff]) 
     }
 }
 
+#[derive(Default)]
+struct EventCacheRelationTrace {
+    relates_to_present: bool,
+    rel_type: &'static str,
+    relation_event_id: Option<String>,
+    reply_event_id: Option<String>,
+    thread_root_event_id: Option<String>,
+}
+
+fn event_cache_relation_trace(
+    event: &matrix_sdk_base::event_cache::Event,
+) -> EventCacheRelationTrace {
+    let content = event
+        .raw()
+        .get_field::<serde_json::Value>("content")
+        .ok()
+        .flatten();
+    let Some(relates_to) = content
+        .as_ref()
+        .and_then(|content| content.get("m.relates_to"))
+    else {
+        return EventCacheRelationTrace {
+            rel_type: "none",
+            ..EventCacheRelationTrace::default()
+        };
+    };
+
+    let rel_type_raw = relates_to
+        .get("rel_type")
+        .and_then(serde_json::Value::as_str);
+    let relation_event_id = relates_to
+        .get("event_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let reply_event_id = relates_to
+        .get("m.in_reply_to")
+        .and_then(|reply| reply.get("event_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let thread_root_event_id = matches!(rel_type_raw, Some("m.thread"))
+        .then(|| relation_event_id.clone())
+        .flatten();
+
+    EventCacheRelationTrace {
+        relates_to_present: true,
+        rel_type: relation_type_trace_token(rel_type_raw),
+        relation_event_id,
+        reply_event_id,
+        thread_root_event_id,
+    }
+}
+
+fn relation_type_trace_token(rel_type: Option<&str>) -> &'static str {
+    match rel_type {
+        Some("m.thread") => "m.thread",
+        Some("m.replace") => "m.replace",
+        Some("m.annotation") => "m.annotation",
+        Some("m.reference") => "m.reference",
+        Some(_) => "other",
+        None => "none",
+    }
+}
+
+fn event_cache_trace_line(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    event_id: Option<&str>,
+    sender: Option<&str>,
+    timestamp_ms: Option<u64>,
+    relation: &EventCacheRelationTrace,
+) -> String {
+    let relation_event_present = relation
+        .relation_event_id
+        .as_deref()
+        .is_some_and(|event_id| !event_id.trim().is_empty());
+    let reply_present = relation
+        .reply_event_id
+        .as_deref()
+        .is_some_and(|event_id| !event_id.trim().is_empty());
+    let thread_root_present = relation
+        .thread_root_event_id
+        .as_deref()
+        .is_some_and(|event_id| !event_id.trim().is_empty());
+
+    format!(
+        "koushi.event_cache_item stage={stage} timeline={} op={op} index={} id={} sender={} ts_min={} relates_to_present={} rel_type={} relation_event_present={} relation_event={} reply_present={} reply={} thread_root_present={} thread_root={}",
+        timeline_key_trace_kind(key),
+        timeline_trace_index(index),
+        timeline_private_token(event_id),
+        timeline_private_token(sender),
+        timeline_trace_timestamp_min(timestamp_ms),
+        relation.relates_to_present,
+        relation.rel_type,
+        relation_event_present,
+        timeline_private_token(relation.relation_event_id.as_deref()),
+        reply_present,
+        timeline_private_token(relation.reply_event_id.as_deref()),
+        thread_root_present,
+        timeline_private_token(relation.thread_root_event_id.as_deref())
+    )
+}
+
+fn trace_event_cache_items(
+    stage: &str,
+    key: &TimelineKey,
+    items: &[matrix_sdk_base::event_cache::Event],
+) {
+    if !timeline_item_trace_enabled() {
+        return;
+    }
+    eprintln!(
+        "koushi.event_cache_items stage={stage} timeline={} count={}",
+        timeline_key_trace_kind(key),
+        items.len()
+    );
+    for (index, item) in items.iter().enumerate() {
+        trace_event_cache_item(stage, key, "item", Some(index), item);
+    }
+}
+
+fn trace_event_cache_item(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    item: &matrix_sdk_base::event_cache::Event,
+) {
+    let event_id = item.event_id().map(|event_id| event_id.to_string());
+    let sender = item.sender().map(|sender| sender.to_string());
+    let timestamp_ms = item.timestamp().map(|timestamp| timestamp.0.into());
+    let relation = event_cache_relation_trace(item);
+    eprintln!(
+        "{}",
+        event_cache_trace_line(
+            stage,
+            key,
+            op,
+            index,
+            event_id.as_deref(),
+            sender.as_deref(),
+            timestamp_ms,
+            &relation,
+        )
+    );
+}
+
+fn trace_event_cache_diff_without_item(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    length: Option<usize>,
+) {
+    eprintln!(
+        "koushi.event_cache_diff stage={stage} timeline={} op={op} index={} length={}",
+        timeline_key_trace_kind(key),
+        timeline_trace_index(index),
+        timeline_trace_index(length)
+    );
+}
+
+fn event_cache_origin_trace_token(origin: &matrix_sdk::event_cache::EventsOrigin) -> &'static str {
+    match origin {
+        matrix_sdk::event_cache::EventsOrigin::Sync => "sync",
+        matrix_sdk::event_cache::EventsOrigin::Pagination => "network",
+        matrix_sdk::event_cache::EventsOrigin::Cache => "cache",
+    }
+}
+
+fn trace_event_cache_diffs(
+    stage: &str,
+    key: &TimelineKey,
+    origin: &matrix_sdk::event_cache::EventsOrigin,
+    diffs: &[eyeball_im::VectorDiff<matrix_sdk_base::event_cache::Event>],
+) {
+    if !timeline_item_trace_enabled() {
+        return;
+    }
+    eprintln!(
+        "koushi.event_cache_diffs stage={stage} timeline={} origin={} count={}",
+        timeline_key_trace_kind(key),
+        event_cache_origin_trace_token(origin),
+        diffs.len()
+    );
+    for diff in diffs {
+        match diff {
+            eyeball_im::VectorDiff::PushFront { value } => {
+                trace_event_cache_item(stage, key, "push_front", Some(0), value);
+            }
+            eyeball_im::VectorDiff::PushBack { value } => {
+                trace_event_cache_item(stage, key, "push_back", None, value);
+            }
+            eyeball_im::VectorDiff::Insert { index, value } => {
+                trace_event_cache_item(stage, key, "insert", Some(*index), value);
+            }
+            eyeball_im::VectorDiff::Set { index, value } => {
+                trace_event_cache_item(stage, key, "set", Some(*index), value);
+            }
+            eyeball_im::VectorDiff::Append { values } => {
+                trace_event_cache_diff_without_item(stage, key, "append", None, Some(values.len()));
+                for (index, item) in values.iter().enumerate() {
+                    trace_event_cache_item(stage, key, "append_item", Some(index), item);
+                }
+            }
+            eyeball_im::VectorDiff::Reset { values } => {
+                trace_event_cache_diff_without_item(stage, key, "reset", None, Some(values.len()));
+                for (index, item) in values.iter().enumerate() {
+                    trace_event_cache_item(stage, key, "reset_item", Some(index), item);
+                }
+            }
+            eyeball_im::VectorDiff::Remove { index } => {
+                trace_event_cache_diff_without_item(stage, key, "remove", Some(*index), None);
+            }
+            eyeball_im::VectorDiff::Truncate { length } => {
+                trace_event_cache_diff_without_item(stage, key, "truncate", None, Some(*length));
+            }
+            eyeball_im::VectorDiff::Clear => {
+                trace_event_cache_diff_without_item(stage, key, "clear", None, None);
+            }
+            eyeball_im::VectorDiff::PopFront => {
+                trace_event_cache_diff_without_item(stage, key, "pop_front", Some(0), None);
+            }
+            eyeball_im::VectorDiff::PopBack => {
+                trace_event_cache_diff_without_item(stage, key, "pop_back", None, None);
+            }
+        }
+    }
+}
+
 fn pagination_direction_trace_token(direction: PaginationDirection) -> &'static str {
     match direction {
         PaginationDirection::Backward => "backward",
@@ -1987,31 +2218,40 @@ impl TimelineActor {
     ) -> TimelineActorHandle {
         let mut auxiliary_tasks: Vec<executor::JoinHandle<()>> = Vec::new();
 
-        // Env-gated origin observer. Subscribe the event cache BEFORE the
+        // Env-gated event-cache observer. Subscribe the event cache BEFORE the
         // timeline load so the initial load's provenance (store=cache vs
-        // network) is observed via the updates stream. Zero cost when
-        // KOUSHI_STARTUP_TRACE is unset.
-        if startup_trace::enabled() {
+        // network) is observed via the updates stream. Zero cost unless
+        // KOUSHI_STARTUP_TRACE or KOUSHI_TIMELINE_ITEM_TRACE is set.
+        let startup_origin_trace = startup_trace::enabled();
+        let event_cache_item_trace = timeline_item_trace_enabled();
+        if startup_origin_trace || event_cache_item_trace {
             if let Ok(parsed_room_id) = matrix_sdk::ruma::RoomId::parse(key.room_id()) {
                 if let Some(observer_room) = session.client().get_room(&parsed_room_id) {
                     if let Ok((cache, drop_guards)) = observer_room.event_cache().await {
                         if let Ok((initial, mut updates)) = cache.subscribe().await {
-                            if !initial.is_empty() {
-                                // Cache already had events at restore — warm initial state.
+                            if startup_origin_trace && !initial.is_empty() {
+                                // Cache already had events at restore: warm initial state.
                                 startup_trace::trace_origin("cache");
                             }
+                            trace_event_cache_items("cache_initial", &key, &initial);
+                            let trace_key = key.clone();
                             auxiliary_tasks.push(executor::spawn(async move {
                                 let _event_cache_drop_guards = drop_guards;
-                                use matrix_sdk::event_cache::{EventsOrigin, RoomEventCacheUpdate};
+                                use matrix_sdk::event_cache::RoomEventCacheUpdate;
                                 loop {
                                     match updates.recv().await {
                                         Ok(RoomEventCacheUpdate::UpdateTimelineEvents(diffs)) => {
-                                            let origin = match diffs.origin {
-                                                EventsOrigin::Cache => "cache",
-                                                EventsOrigin::Pagination => "network",
-                                                EventsOrigin::Sync => "sync",
-                                            };
-                                            startup_trace::trace_origin(origin);
+                                            if startup_origin_trace {
+                                                startup_trace::trace_origin(
+                                                    event_cache_origin_trace_token(&diffs.origin),
+                                                );
+                                            }
+                                            trace_event_cache_diffs(
+                                                "cache_update",
+                                                &trace_key,
+                                                &diffs.origin,
+                                                &diffs.diffs,
+                                            );
                                         }
                                         Ok(_) => {}
                                         // Broadcast lagged or channel closed — stop the observer.
@@ -8489,6 +8729,58 @@ mod tests {
             "private body",
             "$private-thread-root:test",
             "$private-reply:test",
+        ] {
+            assert!(
+                !line.contains(private_value),
+                "trace leaked {private_value}: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn event_cache_trace_line_is_private_data_free() {
+        let key = TimelineKey {
+            account_key: AccountKey("@account:test".to_owned()),
+            kind: TimelineKind::Room {
+                room_id: "!private-room:test".to_owned(),
+            },
+        };
+        let relation = EventCacheRelationTrace {
+            relates_to_present: true,
+            rel_type: "m.thread",
+            relation_event_id: Some("$private-relation:test".to_owned()),
+            reply_event_id: Some("$private-reply:test".to_owned()),
+            thread_root_event_id: Some("$private-thread-root:test".to_owned()),
+        };
+
+        let line = event_cache_trace_line(
+            "cache_initial",
+            &key,
+            "item",
+            Some(4),
+            Some("$private-event:test"),
+            Some("@private-sender:test"),
+            Some(1_783_076_820_000),
+            &relation,
+        );
+
+        assert!(line.contains("koushi.event_cache_item stage=cache_initial"));
+        assert!(line.contains("timeline=room"));
+        assert!(line.contains("op=item"));
+        assert!(line.contains("index=4"));
+        assert!(line.contains("relates_to_present=true"));
+        assert!(line.contains("rel_type=m.thread"));
+        assert!(line.contains("relation_event_present=true"));
+        assert!(line.contains("reply_present=true"));
+        assert!(line.contains("thread_root_present=true"));
+        for private_value in [
+            "@account:test",
+            "!private-room:test",
+            "$private-event:test",
+            "@private-sender:test",
+            "$private-relation:test",
+            "$private-reply:test",
+            "$private-thread-root:test",
         ] {
             assert!(
                 !line.contains(private_value),
