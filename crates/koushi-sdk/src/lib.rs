@@ -3602,6 +3602,23 @@ pub async fn invite_user_to_room(
         .map_err(MatrixRoomOperationError::from_sdk_error)
 }
 
+pub async fn room_has_active_member_no_sync(
+    session: &MatrixClientSession,
+    room_id: &str,
+    user_id: &str,
+) -> Result<bool, MatrixRoomOperationError> {
+    let room = matrix_room(session, room_id)?;
+    let user_id = matrix_sdk::ruma::UserId::parse(user_id)
+        .map_err(|_| MatrixRoomOperationError::InvalidUserId)?;
+    let members = room
+        .members_no_sync(matrix_sdk::RoomMemberships::ACTIVE)
+        .await
+        .map_err(MatrixRoomOperationError::from_sdk_error)?;
+    Ok(members
+        .iter()
+        .any(|member| member.user_id().as_str() == user_id.as_str()))
+}
+
 pub async fn start_direct_message(
     session: &MatrixClientSession,
     user_id: &str,

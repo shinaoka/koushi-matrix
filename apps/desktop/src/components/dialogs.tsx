@@ -14,6 +14,8 @@ import {
 import { t } from "../i18n/messages";
 import type {
   CreateRoomVisibility,
+  InviteScopeSelection,
+  InviteWorkflowState,
   StagedUploadCompressionChoice,
   StagedUploadItem
 } from "../domain/types";
@@ -439,6 +441,154 @@ export function UserIdDialog({
       </form>
     </div>
   );
+}
+
+// ===== InviteTargetsDialog =====
+
+export function InviteTargetsDialog({
+  isBusy,
+  query,
+  scope,
+  title,
+  workflow,
+  onCancel,
+  onQueryChange,
+  onRemoveTarget,
+  onScopeChange,
+  onSelectCandidate,
+  onSubmit
+}: {
+  isBusy: boolean;
+  query: string;
+  scope: InviteScopeSelection;
+  title: string;
+  workflow: InviteWorkflowState;
+  onCancel: () => void;
+  onQueryChange: (value: string) => void;
+  onRemoveTarget: (userId: string) => void;
+  onScopeChange: (scope: InviteScopeSelection) => void;
+  onSelectCandidate: (userId: string) => void;
+  onSubmit: () => void;
+}) {
+  const isPending = workflow.operation.kind === "pending";
+  const canSubmit = workflow.selected_targets.length > 0 && !isBusy && !isPending;
+
+  function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+    }
+  }
+
+  return (
+    <div
+      className="dialog-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onKeyDown={onDialogKeyDown}
+    >
+      <form
+        className="dialog-box invite-target-dialog"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canSubmit) {
+            onSubmit();
+          }
+        }}
+      >
+        <div className="dialog-title">{title}</div>
+        {workflow.operation.kind === "completed" && workflow.operation.notice ? (
+          <div className="invite-target-notice" role="status">
+            {workflow.operation.notice}
+          </div>
+        ) : null}
+        <div className="invite-selected-targets" aria-label={t("dialog.inviteSelectedTargets")}>
+          {workflow.selected_targets.map((target) => (
+            <span className="invite-selected-target" key={target.user_id}>
+              <span>{target.display_label}</span>
+              <button
+                type="button"
+                aria-label={t("dialog.removeInviteTarget")}
+                onClick={() => onRemoveTarget(target.user_id)}
+              >
+                <X size={14} aria-hidden="true" />
+              </button>
+            </span>
+          ))}
+        </div>
+        <input
+          className="dialog-input"
+          type="text"
+          autoFocus
+          aria-label={t("dialog.inviteSearch")}
+          placeholder={t("dialog.inviteSearch")}
+          spellCheck={false}
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+        />
+        <div className="invite-target-candidates" aria-label={t("dialog.inviteCandidates")}>
+          {workflow.query.candidates.map((candidate) => (
+            <button
+              type="button"
+              key={candidate.user_id}
+              className="invite-target-candidate"
+              disabled={candidate.status !== "selectable"}
+              onClick={() => onSelectCandidate(candidate.user_id)}
+            >
+              <span>{candidate.display_label}</span>
+              <span>{candidate.user_id}</span>
+            </button>
+          ))}
+          {workflow.query.explicit_user_id ? (
+            <button
+              type="button"
+              className="invite-target-candidate"
+              disabled={workflow.query.explicit_user_id.status !== "selectable"}
+              onClick={() => onSelectCandidate(workflow.query.explicit_user_id!.user_id)}
+            >
+              <span>{workflow.query.explicit_user_id.display_label}</span>
+              <span>
+                {workflow.query.explicit_user_id.status === "invalidMatrixId"
+                  ? t("dialog.inviteInvalidMatrixId")
+                  : workflow.query.explicit_user_id.user_id}
+              </span>
+            </button>
+          ) : null}
+        </div>
+        {workflow.scope_plan ? (
+          <div className="invite-scope-options" aria-label={t("dialog.inviteScope")}>
+            {workflow.scope_plan.options.map((option) => {
+              const checked = inviteScopeKey(option.scope) === inviteScopeKey(scope);
+              return (
+                <label className="invite-scope-option" key={inviteScopeKey(option.scope)}>
+                  <input
+                    type="radio"
+                    name="invite-scope"
+                    checked={checked}
+                    onChange={() => onScopeChange(option.scope)}
+                  />
+                  <span>{option.label}</span>
+                </label>
+              );
+            })}
+          </div>
+        ) : null}
+        <div className="dialog-actions">
+          <button className="dialog-button" type="button" aria-label={t("action.cancel")} onClick={onCancel}>
+            {t("action.cancel")}
+          </button>
+          <button className="dialog-button is-primary" type="submit" disabled={!canSubmit}>
+            {t("dialog.sendInvite")}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function inviteScopeKey(scope: InviteScopeSelection): string {
+  return scope.kind === "roomOnly" ? "roomOnly" : `parent:${scope.space_id}`;
 }
 
 // ===== ReportReasonDialog =====

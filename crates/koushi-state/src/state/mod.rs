@@ -14,6 +14,7 @@ mod directory;
 mod e2ee;
 mod errors;
 mod files_view;
+mod invite_workflow;
 mod live_signals;
 mod local_encryption;
 mod native_attention;
@@ -77,6 +78,16 @@ pub use room::{
     InvitePreview, RoomAttentionKind, RoomAttentionSummary, RoomLatestEventSummary, RoomSummary,
     RoomTagInfo, RoomTagKind, RoomTags, SpaceSummary, room_activity_unread_count,
     room_attention_kind, room_attention_summary,
+};
+
+// ── Re-exports: invite_workflow ─────────────────────────────────────────────
+pub use invite_workflow::{
+    INVITE_ALREADY_IN_SPACE_MESSAGE, InviteDestination, InviteDestinationKind,
+    InviteDestinationResult, InviteDestinationResultKind, InviteOperationState, InviteScopeOption,
+    InviteScopePlan, InviteScopeSelection, InviteSelectedTarget, InviteTargetCandidate,
+    InviteTargetCandidateSource, InviteTargetCandidateStatus, InviteTargetQueryState,
+    InviteWorkflowState, build_invite_scope_plan, build_invite_target_query_state,
+    invite_notice_from_results, selected_target_from_query,
 };
 
 // ── Re-exports: room_interactions ──────────────────────────────────────────
@@ -206,6 +217,8 @@ pub struct AppState {
     pub rooms: Vec<RoomSummary>,
     pub invites: Vec<InvitePreview>,
     #[serde(default)]
+    pub invite_workflow: InviteWorkflowState,
+    #[serde(default)]
     pub room_list: RoomListProjection,
     #[serde(default)]
     pub room_notification_settings: HashMap<String, RoomNotificationSettings>,
@@ -259,6 +272,7 @@ impl Default for AppState {
             spaces: Vec::new(),
             rooms: Vec::new(),
             invites: Vec::new(),
+            invite_workflow: InviteWorkflowState::default(),
             room_list: RoomListProjection::default(),
             room_notification_settings: HashMap::new(),
             room_interactions: BTreeMap::new(),

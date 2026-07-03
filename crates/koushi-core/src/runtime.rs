@@ -1787,6 +1787,55 @@ impl AppActor {
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
+                AppCommand::OpenInviteWorkflow {
+                    request_id,
+                    room_id,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::InviteWorkflowOpened { room_id })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::CloseInviteWorkflow { request_id } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::InviteWorkflowClosed)
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::SearchInviteTargets {
+                    request_id,
+                    room_id,
+                    query,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::InviteTargetQueryChanged { room_id, query })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::SelectInviteTarget {
+                    request_id,
+                    room_id,
+                    user_id,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::InviteTargetSelected { room_id, user_id })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::RemoveInviteTarget {
+                    request_id,
+                    user_id,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::InviteTargetRemoved { user_id })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
                 AppCommand::UpdateSettings { request_id, patch } => {
                     let effects = self
                         .reduce_app_action(AppAction::SettingsUpdateRequested {

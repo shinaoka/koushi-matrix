@@ -4457,6 +4457,117 @@ mark {
   border-color: var(--brand);
 }
 
+.invite-target-dialog {
+  width: min(460px, calc(100vw - 48px));
+}
+
+.invite-target-notice {
+  padding: 8px 10px;
+  border: 1px solid var(--success);
+  border-radius: 6px;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 10%, var(--surface));
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.invite-selected-targets {
+  display: flex;
+  min-height: 28px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.invite-selected-target {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  gap: 6px;
+  padding: 4px 6px 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.invite-selected-target span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.invite-selected-target button {
+  display: grid;
+  place-items: center;
+  inline-size: 20px;
+  block-size: 20px;
+  border: 0;
+  border-radius: 50%;
+  color: var(--text-muted);
+  background: transparent;
+}
+
+.invite-target-candidates,
+.invite-scope-options {
+  display: grid;
+  gap: 6px;
+}
+
+.invite-target-candidates {
+  min-height: 42px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.invite-target-candidate,
+.invite-scope-option {
+  display: grid;
+  min-width: 0;
+  min-height: 38px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.invite-target-candidate {
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: start;
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.invite-target-candidate span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.invite-target-candidate span + span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.invite-target-candidate:disabled {
+  opacity: 0.55;
+}
+
+.invite-scope-option {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.invite-scope-option:has(input:checked) {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+}
+
 .create-room-options {
   display: grid;
   gap: 10px;

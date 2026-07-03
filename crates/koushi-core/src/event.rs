@@ -6,10 +6,10 @@ use std::fmt;
 use koushi_state::{
     ActivityStream, ActivityTab, AppState, AttachmentResult, AvatarImage, AvatarThumbnailState,
     CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, IdentityResetState,
-    JapaneseCatalogProfile, KeyBackupStatus, LocalEncryptionHealth, MediaTransferProgress,
-    NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind, ProfileState,
-    ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind, SessionState, SyncMode,
-    ThreadsListItem, VerificationFlowState, resolve_user_display_name,
+    InviteDestinationResult, JapaneseCatalogProfile, KeyBackupStatus, LocalEncryptionHealth,
+    MediaTransferProgress, NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind,
+    ProfileState, ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind,
+    SessionState, SyncMode, ThreadsListItem, VerificationFlowState, resolve_user_display_name,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -609,6 +609,11 @@ pub enum RoomEvent {
         room_id: String,
         user_id: String,
     },
+    InviteBatchCompleted {
+        request_id: RequestId,
+        room_id: String,
+        results: Vec<InviteDestinationResult>,
+    },
     InviteAccepted {
         request_id: RequestId,
         room_id: String,
@@ -725,6 +730,16 @@ impl fmt::Debug for RoomEvent {
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
                 .field("user_id", &"UserId(..)")
+                .finish(),
+            Self::InviteBatchCompleted {
+                request_id,
+                results,
+                ..
+            } => formatter
+                .debug_struct("InviteBatchCompleted")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("result_count", &results.len())
                 .finish(),
             Self::InviteAccepted { request_id, .. } => formatter
                 .debug_struct("InviteAccepted")
@@ -1769,6 +1784,7 @@ pub fn project_room_event_display_labels(event: &mut RoomEvent, state: &AppState
         | RoomEvent::RoomLeft { .. }
         | RoomEvent::RoomForgotten { .. }
         | RoomEvent::UserInvited { .. }
+        | RoomEvent::InviteBatchCompleted { .. }
         | RoomEvent::InviteAccepted { .. }
         | RoomEvent::InviteDeclined { .. }
         | RoomEvent::DirectMessageStarted { .. }

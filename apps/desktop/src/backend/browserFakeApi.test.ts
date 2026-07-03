@@ -613,6 +613,52 @@ describe("BrowserFakeApi settings preview", () => {
     ).toBe(false);
   });
 
+  test("builds invite workflow candidates and active-space scope plan", async () => {
+    const api = createBrowserFakeApi();
+    const roomId = "!room-alpha:example.invalid";
+
+    const opened = await api.openInviteWorkflow(roomId);
+    expect(opened.state.domain.invite_workflow?.scope_plan?.default_scope).toEqual({
+      kind: "parentSpaceAndRoom",
+      space_id: "!space-alpha:example.invalid"
+    });
+
+    const searched = await api.searchInviteTargets(roomId, "@new:example.invalid");
+    expect(searched.state.domain.invite_workflow?.query.explicit_user_id).toMatchObject({
+      user_id: "@new:example.invalid",
+      status: "selectable"
+    });
+
+    const selected = await api.selectInviteTarget(roomId, "@new:example.invalid");
+    expect(selected.state.domain.invite_workflow?.selected_targets).toEqual([
+      {
+        user_id: "@new:example.invalid",
+        display_label: "@new:example.invalid",
+        avatar: null
+      }
+    ]);
+  });
+
+  test("records already-in-space notice while continuing room invite", async () => {
+    const api = createBrowserFakeApi();
+    await api.loadRoomSettings("!space-alpha:example.invalid");
+
+    const invited = await api.inviteTargets(
+      "!room-alpha:example.invalid",
+      ["@browser-member:browser.fake"],
+      { kind: "parentSpaceAndRoom", space_id: "!space-alpha:example.invalid" }
+    );
+
+    expect(invited.state.domain.invite_workflow?.operation).toMatchObject({
+      kind: "completed",
+      notice: "既にスペースにいます",
+      results: [
+        { kind: "alreadyInSpace", destination: { kind: "space" } },
+        { kind: "invited", destination: { kind: "room" } }
+      ]
+    });
+  });
+
   test("models public directory query and join pending substates", async () => {
     const api = createBrowserFakeApi();
 

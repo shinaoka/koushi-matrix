@@ -18,20 +18,20 @@ use koushi_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
     CreateRoomOptions, ImageUploadCompressionPolicy, ImageUploadCompressionState,
     ImageUploadDimensions, ImageUploadVariantKind, IntentNoOpReason, IntentOutcome,
-    MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent, RoomKeyExportRequest,
-    RoomKeyImportRequest, SearchCommand, SearchEvent, SearchScope, SecureBackupPassphraseChangeRequest,
-    SecureBackupSetupRequest, SetAvatarRequest, SyncCommand, TimelineCommand, TimelineKey,
-    TimelineKind, TimelineViewportObservation, UploadMediaKind, UploadMediaRequest,
-    UploadMediaThumbnail,
+    MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent,
+    RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand, SearchEvent, SearchScope,
+    SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SetAvatarRequest, SyncCommand,
+    TimelineCommand, TimelineKey, TimelineKind, TimelineViewportObservation, UploadMediaKind,
+    UploadMediaRequest, UploadMediaThumbnail,
 };
 use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentSort, AuthSecret,
     ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
     DirectoryQuery, FilesViewScope, FocusedContextState, IdentityResetAuthRequest,
-    ImageUploadCompressionMode, LoginRequest, MentionIntent, PresenceKind, RecoveryRequest,
-    RoomListFilter, RoomModerationAction, RoomNotificationMode, RoomSettingChange, RoomTagKind,
-    SessionInfo, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
-    TimelineScrollAnchor, TimelineScrollAnchorEdge, VerificationCancelReason,
+    ImageUploadCompressionMode, InviteScopeSelection, LoginRequest, MentionIntent, PresenceKind,
+    RecoveryRequest, RoomListFilter, RoomModerationAction, RoomNotificationMode, RoomSettingChange,
+    RoomTagKind, SessionInfo, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem,
+    StagedUploadKind, TimelineScrollAnchor, TimelineScrollAnchorEdge, VerificationCancelReason,
     build_formatted_message_draft,
 };
 use serde::Deserialize;
@@ -2176,6 +2176,70 @@ pub(crate) fn build_invite_user_command(
         request_id,
         room_id,
         user_id,
+    })
+}
+
+pub(crate) fn build_open_invite_workflow_command(
+    request_id: koushi_core::RequestId,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::OpenInviteWorkflow {
+        request_id,
+        room_id,
+    })
+}
+
+pub(crate) fn build_close_invite_workflow_command(
+    request_id: koushi_core::RequestId,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::CloseInviteWorkflow { request_id })
+}
+
+pub(crate) fn build_search_invite_targets_command(
+    request_id: koushi_core::RequestId,
+    room_id: String,
+    query: String,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::SearchInviteTargets {
+        request_id,
+        room_id,
+        query,
+    })
+}
+
+pub(crate) fn build_select_invite_target_command(
+    request_id: koushi_core::RequestId,
+    room_id: String,
+    user_id: String,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::SelectInviteTarget {
+        request_id,
+        room_id,
+        user_id,
+    })
+}
+
+pub(crate) fn build_remove_invite_target_command(
+    request_id: koushi_core::RequestId,
+    user_id: String,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::RemoveInviteTarget {
+        request_id,
+        user_id,
+    })
+}
+
+pub(crate) fn build_invite_targets_command(
+    request_id: koushi_core::RequestId,
+    room_id: String,
+    user_ids: Vec<String>,
+    scope: InviteScopeSelection,
+) -> CoreCommand {
+    CoreCommand::Room(RoomCommand::InviteTargets {
+        request_id,
+        room_id,
+        user_ids,
+        scope,
     })
 }
 

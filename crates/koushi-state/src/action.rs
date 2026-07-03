@@ -5,16 +5,16 @@ use crate::state::{
     AttachmentFilter, AttachmentResult, AttachmentScope, AttachmentSort, AuthFailureKind,
     AvatarThumbnailState, BasicOperationRequest, CrossSigningStatus, DelegatedAuthLinks,
     DeviceSessionSummary, DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState, FilesViewScope,
-    IdentityResetAuthType, JapaneseCatalogProfile, LiveEventReceipts, LocalEncryptionHealth,
-    LoginFlow, NativeAttentionState, NavigationState, OperationFailureKind, OwnProfile,
-    PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryKeyDeliveryState, RecoveryMethod,
-    RoomListFilter, RoomListProjection, RoomModerationAction, RoomPreferencesState,
-    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
-    SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult,
-    SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
-    StagedUploadCompressionChoice, StagedUploadItem, SyncMode, TimelineMediaDownloadState,
-    TimelineMediaGalleryItem, TimelineScrollAnchor, TrustOperationFailureKind, UserProfile,
-    VerificationCancelReason, VerificationTarget,
+    IdentityResetAuthType, InviteDestinationResult, InviteScopeSelection, JapaneseCatalogProfile,
+    LiveEventReceipts, LocalEncryptionHealth, LoginFlow, NativeAttentionState, NavigationState,
+    OperationFailureKind, OwnProfile, PinnedEvent, PresenceKind, ProfileUpdateRequest,
+    RecoveryKeyDeliveryState, RecoveryMethod, RoomListFilter, RoomListProjection,
+    RoomModerationAction, RoomPreferencesState, RoomSettingChange, RoomSettingsSnapshot,
+    RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability,
+    ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope, SessionInfo, SettingsPatch,
+    SettingsValues, SpaceSummary, StagedUploadCompressionChoice, StagedUploadItem, SyncMode,
+    TimelineMediaDownloadState, TimelineMediaGalleryItem, TimelineScrollAnchor,
+    TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
@@ -590,6 +590,37 @@ pub enum AppAction {
     },
     InviteListUpdated {
         invites: Vec<crate::state::InvitePreview>,
+    },
+    InviteWorkflowOpened {
+        room_id: String,
+    },
+    InviteWorkflowClosed,
+    InviteTargetQueryChanged {
+        room_id: String,
+        query: String,
+    },
+    InviteTargetSelected {
+        room_id: String,
+        user_id: String,
+    },
+    InviteTargetRemoved {
+        user_id: String,
+    },
+    InviteBatchRequested {
+        request_id: u64,
+        room_id: String,
+        user_ids: Vec<String>,
+        scope: InviteScopeSelection,
+    },
+    InviteBatchCompleted {
+        request_id: u64,
+        room_id: String,
+        results: Vec<InviteDestinationResult>,
+    },
+    InviteBatchFailed {
+        request_id: u64,
+        room_id: String,
+        kind: OperationFailureKind,
     },
     NavigationLoaded {
         navigation: NavigationState,

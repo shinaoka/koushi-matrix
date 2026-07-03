@@ -16,16 +16,16 @@ use koushi_state::{
     AccountManagementCapabilities, AccountManagementState, ActivityState, AppError, AppState,
     AuthDiscoveryState, BasicOperationState, CjkTextPolicyState, ComposerState,
     DeviceSessionListState, DirectoryState, DisplayPlatform, E2eeTrustState, FilesViewState,
-    FocusedContextState, InvitePreview, LinkPreviewSettingsState, LiveSignalsState,
-    LocalEncryptionState, LocaleDisplayProfile, NativeAttentionCapabilities, NativeAttentionState,
-    NavigationState, ProfileState, QrLoginState, RecoveryMethod, RoomInteractionState,
-    RoomListProjection, RoomManagementState, RoomNotificationSettings, RoomPreferencesState,
-    RoomSummary,
-    SearchCrawlerState, SearchMatchField, SearchMatchKind, SearchResult, SearchScope, SearchState,
-    SessionState, SettingsState, SidebarModel, SoftLogoutReauthState, SpaceSummary, SyncMode,
-    SyncState, ThreadAttentionState, ThreadPaneState, ThreadsListState, TimelinePaneState,
-    TypographyDisplayProfile, native_attention_capabilities_for_platform,
-    resolve_locale_display_profile, resolve_typography_display_profile,
+    FocusedContextState, InvitePreview, InviteWorkflowState, LinkPreviewSettingsState,
+    LiveSignalsState, LocalEncryptionState, LocaleDisplayProfile, NativeAttentionCapabilities,
+    NativeAttentionState, NavigationState, ProfileState, QrLoginState, RecoveryMethod,
+    RoomInteractionState, RoomListProjection, RoomManagementState, RoomNotificationSettings,
+    RoomPreferencesState, RoomSummary, SearchCrawlerState, SearchMatchField, SearchMatchKind,
+    SearchResult, SearchScope, SearchState, SessionState, SettingsState, SidebarModel,
+    SoftLogoutReauthState, SpaceSummary, SyncMode, SyncState, ThreadAttentionState,
+    ThreadPaneState, ThreadsListState, TimelinePaneState, TypographyDisplayProfile,
+    native_attention_capabilities_for_platform, resolve_locale_display_profile,
+    resolve_typography_display_profile,
 };
 use serde::{Deserialize, Serialize};
 
@@ -137,6 +137,8 @@ pub struct FrontendDomainStateChangedSlices {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invites: Option<Vec<InvitePreview>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub invite_workflow: Option<InviteWorkflowState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub room_notification_settings:
         Option<std::collections::HashMap<String, RoomNotificationSettings>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -185,6 +187,7 @@ impl FrontendDomainStateChangedSlices {
             && self.spaces.is_none()
             && self.rooms.is_none()
             && self.invites.is_none()
+            && self.invite_workflow.is_none()
             && self.room_notification_settings.is_none()
             && self.room_interactions.is_none()
             && self.directory.is_none()
@@ -270,6 +273,7 @@ impl From<StateDelta> for FrontendDesktopSnapshotDelta {
         domain.spaces = changed.spaces;
         domain.rooms = changed.rooms;
         domain.invites = changed.invites;
+        domain.invite_workflow = changed.invite_workflow;
         domain.room_notification_settings = changed.room_notification_settings;
         domain.room_interactions = changed.room_interactions;
         domain.directory = changed.directory;
@@ -353,6 +357,7 @@ pub struct FrontendDomainState {
     pub spaces: Vec<SpaceSummary>,
     pub rooms: Vec<RoomSummary>,
     pub invites: Vec<InvitePreview>,
+    pub invite_workflow: InviteWorkflowState,
     pub room_notification_settings: std::collections::HashMap<String, RoomNotificationSettings>,
     pub room_interactions: BTreeMap<String, RoomInteractionState>,
     pub directory: DirectoryState,
@@ -418,6 +423,7 @@ fn frontend_app_state_for_platform(state: AppState, platform: DisplayPlatform) -
             spaces: state.spaces,
             rooms: state.rooms,
             invites: state.invites,
+            invite_workflow: state.invite_workflow,
             room_notification_settings: state.room_notification_settings,
             room_interactions: state.room_interactions,
             directory: state.directory,

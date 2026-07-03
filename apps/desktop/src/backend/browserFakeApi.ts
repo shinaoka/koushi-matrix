@@ -28,6 +28,9 @@ import type {
   RoomModerationAction,
   RoomNotificationMode,
   RoomNotificationSettings,
+  InviteTargetCandidate,
+  InviteScopeSelection,
+  InviteWorkflowState,
   InvitePreview,
   RoomPermissionFacts,
   RoomSummary,
@@ -211,6 +214,16 @@ export interface DesktopApi {
   declineInvite(roomId: string): Promise<DesktopSnapshot>;
   startDirectMessage(userId: string): Promise<DesktopSnapshot>;
   inviteUser(roomId: string, userId: string): Promise<DesktopSnapshot>;
+  openInviteWorkflow(roomId: string): Promise<DesktopSnapshot>;
+  closeInviteWorkflow(): Promise<DesktopSnapshot>;
+  searchInviteTargets(roomId: string, query: string): Promise<DesktopSnapshot>;
+  selectInviteTarget(roomId: string, userId: string): Promise<DesktopSnapshot>;
+  removeInviteTarget(userId: string): Promise<DesktopSnapshot>;
+  inviteTargets(
+    roomId: string,
+    userIds: string[],
+    scope: InviteScopeSelection
+  ): Promise<DesktopSnapshot>;
   setComposerReplyTarget(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   cancelComposerReply(): Promise<DesktopSnapshot>;
   sendReply(
@@ -2083,6 +2096,129 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
+  async openInviteWorkflow(roomId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !roomId.trim()) {
+      return this.getSnapshot();
+    }
+    const workflow = this.snapshot.state.domain.invite_workflow ?? defaultInviteWorkflowState();
+    this.snapshot.state.domain.invite_workflow = {
+      ...workflow,
+      query: {
+        ...workflow.query,
+        room_id: roomId
+      },
+      scope_plan: buildFakeInviteScopePlan(this.snapshot, roomId)
+    };
+    return this.getSnapshot();
+  }
+
+  async closeInviteWorkflow(): Promise<DesktopSnapshot> {
+    this.snapshot.state.domain.invite_workflow = defaultInviteWorkflowState();
+    return this.getSnapshot();
+  }
+
+  async searchInviteTargets(roomId: string, query: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !roomId.trim()) {
+      return this.getSnapshot();
+    }
+    const workflow = this.snapshot.state.domain.invite_workflow ?? defaultInviteWorkflowState();
+    this.snapshot.state.domain.invite_workflow = {
+      ...workflow,
+      query: buildFakeInviteTargetQuery(this.snapshot, roomId, query),
+      scope_plan: buildFakeInviteScopePlan(this.snapshot, roomId)
+    };
+    return this.getSnapshot();
+  }
+
+  async selectInviteTarget(roomId: string, userId: string): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !roomId.trim() || !userId.trim()) {
+      return this.getSnapshot();
+    }
+    const workflow = this.snapshot.state.domain.invite_workflow ?? defaultInviteWorkflowState();
+    const candidate = [
+      ...workflow.query.candidates,
+      ...(workflow.query.explicit_user_id ? [workflow.query.explicit_user_id] : [])
+    ].find((entry) => entry.user_id === userId && entry.status === "selectable");
+    if (!candidate || workflow.selected_targets.some((target) => target.user_id === userId)) {
+      return this.getSnapshot();
+    }
+    this.snapshot.state.domain.invite_workflow = {
+      ...workflow,
+      selected_targets: [
+        ...workflow.selected_targets,
+        {
+          user_id: candidate.user_id,
+          display_label: candidate.display_label,
+          avatar: candidate.avatar
+        }
+      ],
+      query: buildFakeInviteTargetQuery(this.snapshot, roomId, workflow.query.query)
+    };
+    return this.getSnapshot();
+  }
+
+  async removeInviteTarget(userId: string): Promise<DesktopSnapshot> {
+    const workflow = this.snapshot.state.domain.invite_workflow ?? defaultInviteWorkflowState();
+    const roomId = workflow.query.room_id;
+    this.snapshot.state.domain.invite_workflow = {
+      ...workflow,
+      selected_targets: workflow.selected_targets.filter((target) => target.user_id !== userId)
+    };
+    if (roomId) {
+      this.snapshot.state.domain.invite_workflow.query = buildFakeInviteTargetQuery(
+        this.snapshot,
+        roomId,
+        workflow.query.query
+      );
+    }
+    return this.getSnapshot();
+  }
+
+  async inviteTargets(
+    roomId: string,
+    userIds: string[],
+    scope: InviteScopeSelection
+  ): Promise<DesktopSnapshot> {
+    if (!this.canUseSyncedViews() || !roomId.trim() || userIds.length === 0) {
+      return this.getSnapshot();
+    }
+    const requestId = this.nextRequestId();
+    const workflow = this.snapshot.state.domain.invite_workflow ?? defaultInviteWorkflowState();
+    const results = userIds.flatMap((userId) => {
+      const scopedResults = [];
+      if (scope.kind === "parentSpaceAndRoom") {
+        const alreadyInSpace = fakeRoomHasMember(this.snapshot, scope.space_id, userId);
+        scopedResults.push({
+          user_id: userId,
+          destination: { kind: "space" as const, space_id: scope.space_id },
+          kind: alreadyInSpace ? ("alreadyInSpace" as const) : ("invited" as const),
+          message: alreadyInSpace ? INVITE_ALREADY_IN_SPACE_MESSAGE : null
+        });
+      }
+      scopedResults.push({
+        user_id: userId,
+        destination: { kind: "room" as const, room_id: roomId },
+        kind: "invited" as const,
+        message: null
+      });
+      return scopedResults;
+    });
+    this.snapshot.state.domain.invite_workflow = {
+      ...workflow,
+      selected_targets: [],
+      operation: {
+        kind: "completed",
+        request_id: requestId,
+        room_id: roomId,
+        results,
+        notice: results.some((result) => result.kind === "alreadyInSpace")
+          ? INVITE_ALREADY_IN_SPACE_MESSAGE
+          : null
+      }
+    };
+    return this.getSnapshot();
+  }
+
   async setRoomTag(
     roomId: string,
     tag: RoomTagKind,
@@ -2857,6 +2993,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
         spaces,
         rooms,
         invites,
+        invite_workflow: defaultInviteWorkflowState(),
         room_notification_settings: {},
         room_interactions: {},
         directory: defaultDirectoryState(),
@@ -2965,6 +3102,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
         spaces: [],
         rooms: [],
         invites: [],
+        invite_workflow: defaultInviteWorkflowState(),
         room_notification_settings: {},
         room_interactions: {},
         directory: defaultDirectoryState(),
@@ -3235,6 +3373,210 @@ function defaultProfileState(userId: string | null | undefined): DesktopSnapshot
     ignored_user_update: { kind: "idle" },
     update: { kind: "idle" }
   };
+}
+
+const INVITE_ALREADY_IN_SPACE_MESSAGE = "既にスペースにいます";
+
+function defaultInviteWorkflowState(): InviteWorkflowState {
+  return {
+    query: {
+      room_id: null,
+      query: "",
+      candidates: [],
+      explicit_user_id: null
+    },
+    selected_targets: [],
+    scope_plan: null,
+    operation: { kind: "idle" }
+  };
+}
+
+function buildFakeInviteScopePlan(
+  snapshot: DesktopSnapshot,
+  roomId: string
+): InviteWorkflowState["scope_plan"] {
+  if (snapshot.state.domain.spaces.some((space) => space.space_id === roomId)) {
+    return {
+      room_id: roomId,
+      destination_kind: "space",
+      default_scope: { kind: "roomOnly" },
+      options: [{ scope: { kind: "roomOnly" }, label: "Space only", detail: null }]
+    };
+  }
+  const room = snapshot.state.domain.rooms.find((candidate) => candidate.room_id === roomId);
+  const activeSpaceId = snapshot.state.ui.navigation.active_space_id;
+  const parentSpaceIds = room?.parent_space_ids ?? [];
+  const orderedParentSpaceIds = [
+    ...(activeSpaceId && parentSpaceIds.includes(activeSpaceId) ? [activeSpaceId] : []),
+    ...parentSpaceIds.filter((spaceId) => spaceId !== activeSpaceId)
+  ];
+  const options: NonNullable<InviteWorkflowState["scope_plan"]>["options"] =
+    orderedParentSpaceIds.map((spaceId) => {
+    const space = snapshot.state.domain.spaces.find((candidate) => candidate.space_id === spaceId);
+    return {
+      scope: { kind: "parentSpaceAndRoom" as const, space_id: spaceId },
+      label: `${space?.display_name ?? "Parent space"} and room`,
+      detail: "Invite to the parent space before inviting to this room"
+    };
+  });
+  options.push({ scope: { kind: "roomOnly" }, label: "Room only", detail: null });
+  return {
+    room_id: roomId,
+    destination_kind: "room",
+    default_scope: options[0]?.scope ?? { kind: "roomOnly" },
+    options
+  };
+}
+
+function buildFakeInviteTargetQuery(
+  snapshot: DesktopSnapshot,
+  roomId: string,
+  query: string
+): InviteWorkflowState["query"] {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    return { room_id: roomId, query, candidates: [], explicit_user_id: null };
+  }
+  const lowered = trimmed.toLocaleLowerCase();
+  const workflow = snapshot.state.domain.invite_workflow ?? defaultInviteWorkflowState();
+  const selectedUserIds = new Set(
+    workflow.selected_targets.map((target) => target.user_id)
+  );
+  const members = snapshot.state.domain.room_management.settings?.room_id === roomId
+    ? snapshot.state.domain.room_management.settings.members
+    : [];
+  const destinationMembers = new Set(members.map((member) => member.user_id));
+  const candidates = new Map<string, InviteTargetCandidate>();
+
+  for (const [userId, profile] of Object.entries(snapshot.state.domain.profile.users)) {
+    const alias = snapshot.state.domain.profile.local_aliases[userId] ?? null;
+    if (
+      fakeInviteTextMatches(userId, lowered) ||
+      fakeInviteTextMatches(alias, lowered) ||
+      fakeInviteTextMatches(profile.display_name, lowered) ||
+      fakeInviteTextMatches(profile.display_label, lowered) ||
+      profile.mention_search_terms.some((term) => fakeInviteTextMatches(term, lowered))
+    ) {
+      candidates.set(
+        userId,
+        fakeInviteCandidate(
+          userId,
+          (alias ?? profile.display_label) || userId,
+          profile.original_display_label || profile.display_label || userId,
+          profile.avatar,
+          alias ? "localAlias" : "profile",
+          selectedUserIds,
+          destinationMembers
+        )
+      );
+    }
+  }
+
+  for (const [userId, alias] of Object.entries(snapshot.state.domain.profile.local_aliases)) {
+    if (!candidates.has(userId) && (fakeInviteTextMatches(userId, lowered) || fakeInviteTextMatches(alias, lowered))) {
+      candidates.set(
+        userId,
+        fakeInviteCandidate(
+          userId,
+          alias,
+          alias,
+          null,
+          "localAlias",
+          selectedUserIds,
+          destinationMembers
+        )
+      );
+    }
+  }
+
+  for (const member of members) {
+    const alias = snapshot.state.domain.profile.local_aliases[member.user_id] ?? null;
+    if (
+      !candidates.has(member.user_id) &&
+      (fakeInviteTextMatches(member.user_id, lowered) ||
+        fakeInviteTextMatches(alias, lowered) ||
+        fakeInviteTextMatches(member.display_name, lowered) ||
+        fakeInviteTextMatches(member.display_label, lowered))
+    ) {
+      candidates.set(
+        member.user_id,
+        fakeInviteCandidate(
+          member.user_id,
+          alias ?? member.display_label,
+          member.original_display_label || member.display_label,
+          null,
+          "roomMember",
+          selectedUserIds,
+          destinationMembers
+        )
+      );
+    }
+  }
+
+  const sortedCandidates = [...candidates.values()].sort((left, right) =>
+    left.display_label.localeCompare(right.display_label) || left.user_id.localeCompare(right.user_id)
+  );
+  const explicit_user_id = trimmed.startsWith("@")
+    ? fakeInviteCandidate(
+        trimmed,
+        trimmed,
+        trimmed,
+        null,
+        "matrixId",
+        new Set(),
+        new Set(),
+        fakeValidMatrixUserId(trimmed) ? "selectable" : "invalidMatrixId"
+      )
+    : null;
+  return {
+    room_id: roomId,
+    query,
+    candidates: sortedCandidates.slice(0, 8),
+    explicit_user_id
+  };
+}
+
+function fakeInviteCandidate(
+  userId: string,
+  displayLabel: string,
+  originalDisplayLabel: string,
+  avatar: InviteTargetCandidate["avatar"],
+  source: InviteTargetCandidate["source"],
+  selectedUserIds: Set<string>,
+  destinationMembers: Set<string>,
+  forcedStatus?: InviteTargetCandidate["status"]
+): InviteTargetCandidate {
+  return {
+    user_id: userId,
+    display_label: displayLabel,
+    original_display_label: originalDisplayLabel,
+    avatar,
+    source,
+    status:
+      forcedStatus ??
+      (selectedUserIds.has(userId)
+        ? "alreadySelected"
+        : destinationMembers.has(userId)
+          ? "alreadyInDestination"
+          : "selectable"),
+    status_message: null
+  };
+}
+
+function fakeInviteTextMatches(value: string | null | undefined, loweredQuery: string): boolean {
+  return value?.toLocaleLowerCase().includes(loweredQuery) ?? false;
+}
+
+function fakeValidMatrixUserId(value: string): boolean {
+  const match = value.match(/^@[^:\s]+:[^:\s]+$/);
+  return match !== null;
+}
+
+function fakeRoomHasMember(snapshot: DesktopSnapshot, roomId: string, userId: string): boolean {
+  return (
+    snapshot.state.domain.room_management.settings?.room_id === roomId &&
+    snapshot.state.domain.room_management.settings.members.some((member) => member.user_id === userId)
+  );
 }
 
 function ensureRoomLiveSignals(

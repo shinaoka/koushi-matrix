@@ -67,10 +67,12 @@ use koushi_sdk::{
 };
 use koushi_state::{
     AppAction, AvatarImage, AvatarThumbnailState, BasicOperationRequest, DirectoryQuery,
-    DirectoryRoomSummary, InvitePreview, OperationFailureKind, PinnedEvent, RoomHistoryVisibility,
-    RoomJoinRule, RoomMemberRole, RoomMemberSummary, RoomModerationAction, RoomNotificationMode,
-    RoomPermissionFacts, RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo,
-    RoomTagKind, RoomTags, SpaceSummary, UserProfile, UserTrustState,
+    DirectoryRoomSummary, INVITE_ALREADY_IN_SPACE_MESSAGE, InviteDestination,
+    InviteDestinationResult, InviteDestinationResultKind, InvitePreview, InviteScopeSelection,
+    OperationFailureKind, PinnedEvent, RoomHistoryVisibility, RoomJoinRule, RoomMemberRole,
+    RoomMemberSummary, RoomModerationAction, RoomNotificationMode, RoomPermissionFacts,
+    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
+    SpaceSummary, UserProfile, UserTrustState,
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -343,6 +345,15 @@ impl RoomActor {
                 user_id,
             } => {
                 self.handle_invite_user(request_id, room_id, user_id).await;
+            }
+            RoomCommand::InviteTargets {
+                request_id,
+                room_id,
+                user_ids,
+                scope,
+            } => {
+                self.handle_invite_targets(request_id, room_id, user_ids, scope)
+                    .await;
             }
             RoomCommand::AcceptInvite {
                 request_id,
@@ -746,6 +757,110 @@ impl RoomActor {
                 let kind = classify_room_error(&error);
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
+        }
+    }
+
+    async fn handle_invite_targets(
+        &self,
+        request_id: RequestId,
+        room_id: String,
+        user_ids: Vec<String>,
+        scope: InviteScopeSelection,
+    ) {
+        self.reduce(vec![AppAction::InviteBatchRequested {
+            request_id: request_id.sequence,
+            room_id: room_id.clone(),
+            user_ids: user_ids.clone(),
+            scope: scope.clone(),
+        }]);
+
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            self.reduce(vec![AppAction::InviteBatchFailed {
+                request_id: request_id.sequence,
+                room_id,
+                kind: OperationFailureKind::Sdk,
+            }]);
+            return;
+        };
+
+        let mut results = Vec::new();
+        let mut any_invited = false;
+
+        for user_id in user_ids {
+            if let InviteScopeSelection::ParentSpaceAndRoom { space_id } = &scope {
+                match invite_target_to_space_if_needed(session, space_id, &user_id).await {
+                    InviteTargetOutcome::Invited => {
+                        any_invited = true;
+                        results.push(InviteDestinationResult {
+                            user_id: user_id.clone(),
+                            destination: InviteDestination::Space {
+                                space_id: space_id.clone(),
+                            },
+                            kind: InviteDestinationResultKind::Invited,
+                            message: None,
+                        });
+                    }
+                    InviteTargetOutcome::AlreadyInSpace => {
+                        results.push(InviteDestinationResult {
+                            user_id: user_id.clone(),
+                            destination: InviteDestination::Space {
+                                space_id: space_id.clone(),
+                            },
+                            kind: InviteDestinationResultKind::AlreadyInSpace,
+                            message: Some(INVITE_ALREADY_IN_SPACE_MESSAGE.to_owned()),
+                        });
+                    }
+                    InviteTargetOutcome::Failed => {
+                        results.push(InviteDestinationResult {
+                            user_id: user_id.clone(),
+                            destination: InviteDestination::Space {
+                                space_id: space_id.clone(),
+                            },
+                            kind: InviteDestinationResultKind::Failed,
+                            message: None,
+                        });
+                    }
+                }
+            }
+
+            match koushi_sdk::invite_user_to_room(session, &room_id, &user_id).await {
+                Ok(()) => {
+                    any_invited = true;
+                    results.push(InviteDestinationResult {
+                        user_id: user_id.clone(),
+                        destination: InviteDestination::Room {
+                            room_id: room_id.clone(),
+                        },
+                        kind: InviteDestinationResultKind::Invited,
+                        message: None,
+                    });
+                }
+                Err(_error) => {
+                    results.push(InviteDestinationResult {
+                        user_id,
+                        destination: InviteDestination::Room {
+                            room_id: room_id.clone(),
+                        },
+                        kind: InviteDestinationResultKind::Failed,
+                        message: None,
+                    });
+                }
+            }
+        }
+
+        self.reduce(vec![AppAction::InviteBatchCompleted {
+            request_id: request_id.sequence,
+            room_id: room_id.clone(),
+            results: results.clone(),
+        }]);
+        self.emit(CoreEvent::Room(RoomEvent::InviteBatchCompleted {
+            request_id,
+            room_id,
+            results,
+        }));
+        if any_invited {
+            self.refresh_room_list();
         }
     }
 
@@ -2481,6 +2596,29 @@ fn operation_failure_kind(kind: RoomFailureKind) -> OperationFailureKind {
         RoomFailureKind::Network => OperationFailureKind::Network,
         RoomFailureKind::NotFound => OperationFailureKind::NotFound,
         RoomFailureKind::Sdk => OperationFailureKind::Sdk,
+    }
+}
+
+enum InviteTargetOutcome {
+    Invited,
+    AlreadyInSpace,
+    Failed,
+}
+
+async fn invite_target_to_space_if_needed(
+    session: &MatrixClientSession,
+    space_id: &str,
+    user_id: &str,
+) -> InviteTargetOutcome {
+    match koushi_sdk::room_has_active_member_no_sync(session, space_id, user_id).await {
+        Ok(true) => return InviteTargetOutcome::AlreadyInSpace,
+        Ok(false) => {}
+        Err(_error) => return InviteTargetOutcome::Failed,
+    }
+
+    match koushi_sdk::invite_user_to_room(session, space_id, user_id).await {
+        Ok(()) => InviteTargetOutcome::Invited,
+        Err(_error) => InviteTargetOutcome::Failed,
     }
 }
 
