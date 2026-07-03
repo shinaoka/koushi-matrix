@@ -18,6 +18,7 @@ mod avatar;
 mod basic_operation;
 mod directory;
 mod e2ee;
+mod invite_workflow;
 mod live_signals;
 mod local_encryption;
 mod native_attention;
@@ -632,6 +633,37 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::InviteListUpdated { invites } => {
             navigation::handle_invite_list_updated(state, invites)
         }
+        AppAction::InviteWorkflowOpened { room_id } => {
+            invite_workflow::handle_invite_workflow_opened(state, room_id)
+        }
+        AppAction::InviteWorkflowClosed => invite_workflow::handle_invite_workflow_closed(state),
+        AppAction::InviteTargetQueryChanged { room_id, query } => {
+            invite_workflow::handle_invite_target_query_changed(state, room_id, query)
+        }
+        AppAction::InviteTargetSelected { room_id, user_id } => {
+            invite_workflow::handle_invite_target_selected(state, room_id, user_id)
+        }
+        AppAction::InviteTargetRemoved { user_id } => {
+            invite_workflow::handle_invite_target_removed(state, user_id)
+        }
+        AppAction::InviteBatchRequested {
+            request_id,
+            room_id,
+            user_ids,
+            scope,
+        } => invite_workflow::handle_invite_batch_requested(
+            state, request_id, room_id, user_ids, scope,
+        ),
+        AppAction::InviteBatchCompleted {
+            request_id,
+            room_id,
+            results,
+        } => invite_workflow::handle_invite_batch_completed(state, request_id, room_id, results),
+        AppAction::InviteBatchFailed {
+            request_id,
+            room_id,
+            kind,
+        } => invite_workflow::handle_invite_batch_failed(state, request_id, room_id, kind),
         AppAction::NavigationLoaded { navigation } => {
             navigation::handle_navigation_loaded(state, navigation)
         }

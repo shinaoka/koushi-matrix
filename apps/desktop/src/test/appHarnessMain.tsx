@@ -161,6 +161,12 @@ function readySnapshot(
           sync: "running",
           sync_mode: { kind: "unsupported" },
           spaces, rooms, invites: [],
+          invite_workflow: {
+            query: { room_id: null, query: "", candidates: [], explicit_user_id: null },
+            selected_targets: [],
+            scope_plan: null,
+            operation: { kind: "idle" }
+          },
           room_notification_settings: {}, room_interactions: {},
           device_sessions: { kind: "idle" },
           account_management: { kind: "idle" },
@@ -1501,6 +1507,12 @@ mock.setCommandResponse("accept_invite", () => currentSnapshot);
 mock.setCommandResponse("decline_invite", () => currentSnapshot);
 mock.setCommandResponse("start_direct_message", () => currentSnapshot);
 mock.setCommandResponse("invite_user", () => currentSnapshot);
+mock.setCommandResponse("open_invite_workflow", () => currentSnapshot);
+mock.setCommandResponse("close_invite_workflow", () => currentSnapshot);
+mock.setCommandResponse("search_invite_targets", () => currentSnapshot);
+mock.setCommandResponse("select_invite_target", () => currentSnapshot);
+mock.setCommandResponse("remove_invite_target", () => currentSnapshot);
+mock.setCommandResponse("invite_targets", () => currentSnapshot);
 mock.setCommandResponse("set_composer_draft", ({ roomId, draft }: { roomId: string; draft: string }) => {
   if (currentSnapshot.state.ui.timeline.room_id !== roomId) {
     return currentSnapshot;

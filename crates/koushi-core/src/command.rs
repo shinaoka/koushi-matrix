@@ -6,10 +6,10 @@ use std::{fmt, path::PathBuf};
 use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentScope, AttachmentSort,
     DirectoryQuery, FilesViewScope, FormattedMessageDraft, IdentityResetAuthRequest,
-    ImageUploadCompressionMode, JapaneseCatalogProfile, LocalEncryptionHealth, LoginRequest,
-    MentionIntent, NativeAttentionState, PresenceKind, RecoveryRequest, RoomListFilter,
-    RoomModerationAction, RoomSettingChange, RoomTagKind, SettingsPatch,
-    StagedUploadCompressionChoice, StagedUploadItem, TimelineScrollAnchor,
+    ImageUploadCompressionMode, InviteScopeSelection, JapaneseCatalogProfile,
+    LocalEncryptionHealth, LoginRequest, MentionIntent, NativeAttentionState, PresenceKind,
+    RecoveryRequest, RoomListFilter, RoomModerationAction, RoomSettingChange, RoomTagKind,
+    SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem, TimelineScrollAnchor,
     VerificationCancelReason, VerificationTarget,
 };
 use serde::{Deserialize, Serialize};
@@ -52,6 +52,11 @@ impl CoreCommand {
                 | AppCommand::TimelineScrollAnchorUpdated { request_id, .. }
                 | AppCommand::CloseFocusedContext { request_id }
                 | AppCommand::CloseSearch { request_id }
+                | AppCommand::OpenInviteWorkflow { request_id, .. }
+                | AppCommand::CloseInviteWorkflow { request_id }
+                | AppCommand::SearchInviteTargets { request_id, .. }
+                | AppCommand::SelectInviteTarget { request_id, .. }
+                | AppCommand::RemoveInviteTarget { request_id, .. }
                 | AppCommand::UpdateSettings { request_id, .. }
                 | AppCommand::RebuildSearchIndex { request_id }
                 | AppCommand::SetRoomUrlPreviewOverride { request_id, .. }
@@ -125,6 +130,7 @@ impl CoreCommand {
                 | RoomCommand::CreateSpace { request_id, .. }
                 | RoomCommand::SetSpaceChild { request_id, .. }
                 | RoomCommand::InviteUser { request_id, .. }
+                | RoomCommand::InviteTargets { request_id, .. }
                 | RoomCommand::AcceptInvite { request_id, .. }
                 | RoomCommand::DeclineInvite { request_id, .. }
                 | RoomCommand::StartDirectMessage { request_id, .. }
@@ -321,6 +327,27 @@ pub enum AppCommand {
     },
     CloseSearch {
         request_id: RequestId,
+    },
+    OpenInviteWorkflow {
+        request_id: RequestId,
+        room_id: String,
+    },
+    CloseInviteWorkflow {
+        request_id: RequestId,
+    },
+    SearchInviteTargets {
+        request_id: RequestId,
+        room_id: String,
+        query: String,
+    },
+    SelectInviteTarget {
+        request_id: RequestId,
+        room_id: String,
+        user_id: String,
+    },
+    RemoveInviteTarget {
+        request_id: RequestId,
+        user_id: String,
     },
     UpdateSettings {
         request_id: RequestId,
@@ -548,6 +575,34 @@ impl fmt::Debug for AppCommand {
             Self::CloseSearch { request_id } => formatter
                 .debug_struct("CloseSearch")
                 .field("request_id", request_id)
+                .finish(),
+            Self::OpenInviteWorkflow { request_id, .. } => formatter
+                .debug_struct("OpenInviteWorkflow")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .finish(),
+            Self::CloseInviteWorkflow { request_id } => formatter
+                .debug_struct("CloseInviteWorkflow")
+                .field("request_id", request_id)
+                .finish(),
+            Self::SearchInviteTargets {
+                request_id, query, ..
+            } => formatter
+                .debug_struct("SearchInviteTargets")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("query_len", &query.len())
+                .finish(),
+            Self::SelectInviteTarget { request_id, .. } => formatter
+                .debug_struct("SelectInviteTarget")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("user_id", &"UserId(..)")
+                .finish(),
+            Self::RemoveInviteTarget { request_id, .. } => formatter
+                .debug_struct("RemoveInviteTarget")
+                .field("request_id", request_id)
+                .field("user_id", &"UserId(..)")
                 .finish(),
             Self::UpdateSettings { request_id, patch } => formatter
                 .debug_struct("UpdateSettings")
@@ -1308,7 +1363,10 @@ impl fmt::Debug for CreateRoomOptions {
             .field("topic", &self.topic.as_ref().map(|_| "RoomTopic(..)"))
             .field(
                 "alias_localpart",
-                &self.alias_localpart.as_ref().map(|_| "RoomAliasLocalpart(..)"),
+                &self
+                    .alias_localpart
+                    .as_ref()
+                    .map(|_| "RoomAliasLocalpart(..)"),
             )
             .field("encrypted", &self.encrypted)
             .field("visibility", &self.visibility)
@@ -1366,6 +1424,12 @@ pub enum RoomCommand {
         request_id: RequestId,
         room_id: String,
         user_id: String,
+    },
+    InviteTargets {
+        request_id: RequestId,
+        room_id: String,
+        user_ids: Vec<String>,
+        scope: InviteScopeSelection,
     },
     AcceptInvite {
         request_id: RequestId,
@@ -1530,6 +1594,18 @@ impl fmt::Debug for RoomCommand {
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
                 .field("user_id", &"UserId(..)")
+                .finish(),
+            Self::InviteTargets {
+                request_id,
+                user_ids,
+                scope,
+                ..
+            } => formatter
+                .debug_struct("InviteTargets")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
+                .field("user_count", &user_ids.len())
+                .field("scope", scope)
                 .finish(),
             Self::AcceptInvite { request_id, .. } => formatter
                 .debug_struct("AcceptInvite")

@@ -377,6 +377,57 @@ test("ready image details action exposes metadata and click opens viewer without
     .toBe(beforeScrollTop);
 });
 
+test("timeline media viewer keeps image inside the visible stage", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 520 });
+  await gotoReadyShell(page);
+  const eventId = "$media-ready-img-centered-viewer:example.invalid";
+  await seedTimelineItems(page, [makeImageItem(eventId)]);
+
+  const syntheticUrl = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
+  await pushMediaDownloadState(page, eventId, {
+    kind: "ready",
+    source_url: syntheticUrl,
+    width: 4800,
+    height: 3600,
+    mime_type: "image/jpeg"
+  });
+
+  const article = page.locator(`[data-event-id="${eventId}"]`);
+  await article.getByRole("button", { name: t("timeline.mediaOpenFile") }).click({ force: true });
+
+  const viewer = page.getByRole("dialog", { name: t("timeline.mediaViewer") });
+  await expect(viewer).toBeVisible();
+  const stage = page.locator(".timeline-media-viewer-stage");
+  const image = page.locator(".timeline-media-viewer-image");
+  await expect(stage).toBeVisible();
+  await expect(image).toBeVisible();
+
+  const [stageBox, imageBox, viewport] = await Promise.all([
+    stage.boundingBox(),
+    image.boundingBox(),
+    page.viewportSize()
+  ]);
+  expect(stageBox).not.toBeNull();
+  expect(imageBox).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  if (!stageBox || !imageBox || !viewport) {
+    return;
+  }
+
+  expect(imageBox.x).toBeGreaterThanOrEqual(stageBox.x - 0.5);
+  expect(imageBox.y).toBeGreaterThanOrEqual(stageBox.y - 0.5);
+  expect(imageBox.x + imageBox.width).toBeLessThanOrEqual(stageBox.x + stageBox.width + 0.5);
+  expect(imageBox.y + imageBox.height).toBeLessThanOrEqual(stageBox.y + stageBox.height + 0.5);
+  expect(imageBox.y + imageBox.height).toBeLessThanOrEqual(viewport.height + 0.5);
+
+  const stageCenterX = stageBox.x + stageBox.width / 2;
+  const stageCenterY = stageBox.y + stageBox.height / 2;
+  const imageCenterX = imageBox.x + imageBox.width / 2;
+  const imageCenterY = imageBox.y + imageBox.height / 2;
+  expect(Math.abs(imageCenterX - stageCenterX)).toBeLessThanOrEqual(2);
+  expect(Math.abs(imageCenterY - stageCenterY)).toBeLessThanOrEqual(2);
+});
+
 // ---------------------------------------------------------------------------
 // 7. Ready file — download button (no img preview for non-image kind)
 // ---------------------------------------------------------------------------

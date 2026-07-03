@@ -128,7 +128,12 @@ export type MessageId =
   | "dialog.createRoomTitle"
   | "dialog.createSpaceTitle"
   | "dialog.encryptedRoom"
+  | "dialog.inviteCandidates"
+  | "dialog.inviteInvalidMatrixId"
   | "dialog.invitePeopleTitle"
+  | "dialog.inviteScope"
+  | "dialog.inviteSearch"
+  | "dialog.inviteSelectedTargets"
   | "dialog.matrixUserId"
   | "dialog.newDmTitle"
   | "dialog.privateRoom"
@@ -137,6 +142,7 @@ export type MessageId =
   | "dialog.roomTopic"
   | "dialog.roomVisibility"
   | "dialog.sendInvite"
+  | "dialog.removeInviteTarget"
   | "dialog.roomName"
   | "dialog.spaceName"
   | "dialog.standardRoomInSpace"
@@ -1065,7 +1071,12 @@ const en: Catalog = {
   "dialog.createRoomTitle": "Create room",
   "dialog.createSpaceTitle": "Create space",
   "dialog.encryptedRoom": "Encrypted room",
+  "dialog.inviteCandidates": "Invite candidates",
+  "dialog.inviteInvalidMatrixId": "Invalid Matrix ID",
   "dialog.invitePeopleTitle": "Invite people to {name}",
+  "dialog.inviteScope": "Invite scope",
+  "dialog.inviteSearch": "Name, alias, or Matrix ID",
+  "dialog.inviteSelectedTargets": "Selected invite targets",
   "dialog.matrixUserId": "Matrix user ID",
   "dialog.newDmTitle": "New DM",
   "dialog.privateRoom": "Private room",
@@ -1074,6 +1085,7 @@ const en: Catalog = {
   "dialog.roomTopic": "Topic",
   "dialog.roomVisibility": "Room visibility",
   "dialog.sendInvite": "Send invite",
+  "dialog.removeInviteTarget": "Remove invite target",
   "dialog.roomName": "Room name",
   "dialog.spaceName": "Space name",
   "dialog.standardRoomInSpace": "Standard room in {spaceName}",
@@ -1905,7 +1917,12 @@ const ja: Catalog = {
   "dialog.createRoomTitle": "ルームを作成",
   "dialog.createSpaceTitle": "スペースを作成",
   "dialog.encryptedRoom": "暗号化ルーム",
+  "dialog.inviteCandidates": "招待候補",
+  "dialog.inviteInvalidMatrixId": "Matrix IDが正しくありません",
   "dialog.invitePeopleTitle": "{name}に招待",
+  "dialog.inviteScope": "招待範囲",
+  "dialog.inviteSearch": "名前、別名、Matrix ID",
+  "dialog.inviteSelectedTargets": "選択中の招待先",
   "dialog.matrixUserId": "MatrixユーザーID",
   "dialog.newDmTitle": "新しいDM",
   "dialog.privateRoom": "非公開ルーム",
@@ -1914,6 +1931,7 @@ const ja: Catalog = {
   "dialog.roomTopic": "トピック",
   "dialog.roomVisibility": "ルーム公開範囲",
   "dialog.sendInvite": "招待を送信",
+  "dialog.removeInviteTarget": "招待先を削除",
   "dialog.roomName": "ルーム名",
   "dialog.spaceName": "スペース名",
   "dialog.standardRoomInSpace": "{spaceName}内の標準ルーム",

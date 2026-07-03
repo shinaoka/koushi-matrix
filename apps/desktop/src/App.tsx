@@ -119,6 +119,8 @@ import type {
   FilesViewScope,
   ImageUploadCompressionMode,
   ImageUploadCompressionPolicy,
+  InviteScopeSelection,
+  InviteWorkflowState,
   MentionIntent,
   ResolveComposerKeyAction,
   RoomModerationAction,
@@ -185,6 +187,7 @@ import {
   type CreateRoomDialogOptions,
   DiagnosticDialog,
   ImageCompressionDialog,
+  InviteTargetsDialog,
   ReportReasonDialog,
   UserIdDialog
 } from "./components/dialogs";
@@ -498,6 +501,27 @@ type InviteUserDialogState = {
   roomId: string;
   title: string;
 } | null;
+
+const DEFAULT_INVITE_SCOPE: InviteScopeSelection = { kind: "roomOnly" };
+const DEFAULT_INVITE_WORKFLOW: InviteWorkflowState = {
+  query: {
+    room_id: null,
+    query: "",
+    candidates: [],
+    explicit_user_id: null
+  },
+  selected_targets: [],
+  scope_plan: null,
+  operation: { kind: "idle" }
+};
+
+function inviteScopeKey(scope: InviteScopeSelection): string {
+  return scope.kind === "roomOnly" ? "roomOnly" : `parent:${scope.space_id}`;
+}
+
+function inviteScopeFromWorkflow(workflow: InviteWorkflowState): InviteScopeSelection {
+  return workflow.scope_plan?.default_scope ?? DEFAULT_INVITE_SCOPE;
+}
 
 async function prepareMediaUpload(
   file: File,
@@ -1115,7 +1139,9 @@ export function App() {
     useState<SpaceLocalOverrides>(readSpaceLocalOverrides);
   const [newDmDraftUserId, setNewDmDraftUserId] = useState("");
   const [inviteUserDialog, setInviteUserDialog] = useState<InviteUserDialogState>(null);
-  const [inviteUserDraftUserId, setInviteUserDraftUserId] = useState("");
+  const [inviteUserDraftQuery, setInviteUserDraftQuery] = useState("");
+  const [inviteScopeSelection, setInviteScopeSelection] =
+    useState<InviteScopeSelection>(DEFAULT_INVITE_SCOPE);
   // React-local ephemeral state only: which create dialog is open and the
   // unsent name draft. The pending op status comes from the snapshot
   // (basic_operation); the created room/space identity comes from the API.
@@ -2438,14 +2464,52 @@ export function App() {
     setNewDmDraftUserId("");
   }
 
-  function openInviteUserDialog(roomId: string, title: string) {
-    setInviteUserDraftUserId("");
+  async function openInviteUserDialog(roomId: string, title: string) {
+    setInviteUserDraftQuery("");
+    setInviteScopeSelection(DEFAULT_INVITE_SCOPE);
     setInviteUserDialog({ roomId, title });
+    const nextSnapshot = await api.openInviteWorkflow(roomId);
+    const workflow = nextSnapshot.state.domain.invite_workflow ?? DEFAULT_INVITE_WORKFLOW;
+    setInviteScopeSelection(inviteScopeFromWorkflow(workflow));
+    setSnapshot(nextSnapshot);
   }
 
-  function closeInviteUserDialog() {
+  async function closeInviteUserDialog() {
     setInviteUserDialog(null);
-    setInviteUserDraftUserId("");
+    setInviteUserDraftQuery("");
+    setInviteScopeSelection(DEFAULT_INVITE_SCOPE);
+    setSnapshot(await api.closeInviteWorkflow());
+  }
+
+  async function updateInviteUserQuery(value: string) {
+    const dialog = inviteUserDialog;
+    setInviteUserDraftQuery(value);
+    if (!dialog) {
+      return;
+    }
+    const nextSnapshot = await api.searchInviteTargets(dialog.roomId, value);
+    const workflow = nextSnapshot.state.domain.invite_workflow ?? DEFAULT_INVITE_WORKFLOW;
+    if (
+      workflow.scope_plan &&
+      !workflow.scope_plan.options.some(
+        (option) => inviteScopeKey(option.scope) === inviteScopeKey(inviteScopeSelection)
+      )
+    ) {
+      setInviteScopeSelection(inviteScopeFromWorkflow(workflow));
+    }
+    setSnapshot(nextSnapshot);
+  }
+
+  async function selectInviteTarget(userId: string) {
+    const dialog = inviteUserDialog;
+    if (!dialog) {
+      return;
+    }
+    setSnapshot(await api.selectInviteTarget(dialog.roomId, userId));
+  }
+
+  async function removeInviteTarget(userId: string) {
+    setSnapshot(await api.removeInviteTarget(userId));
   }
 
   async function acceptInvite(roomId: string) {
@@ -2527,14 +2591,23 @@ export function App() {
 
   async function submitInviteUserDialog() {
     const dialog = inviteUserDialog;
-    const userId = inviteUserDraftUserId.trim();
-    if (!dialog || !userId || isBusy) {
+    const workflow = snapshot?.state.domain.invite_workflow ?? DEFAULT_INVITE_WORKFLOW;
+    const userIds = workflow.selected_targets.map((target) => target.user_id);
+    if (!dialog || userIds.length === 0 || isBusy) {
       return;
     }
     setIsBusy(true);
     try {
-      setSnapshot(await api.inviteUser(dialog.roomId, userId));
-      closeInviteUserDialog();
+      const nextSnapshot = await api.inviteTargets(dialog.roomId, userIds, inviteScopeSelection);
+      setSnapshot(nextSnapshot);
+      const operation = nextSnapshot.state.domain.invite_workflow?.operation;
+      const hasNotice = operation?.kind === "completed" && operation.notice;
+      const hasFailedResult =
+        operation?.kind === "completed" &&
+        operation.results.some((result) => result.kind === "failed");
+      if (!hasNotice && !hasFailedResult) {
+        await closeInviteUserDialog();
+      }
     } finally {
       setIsBusy(false);
     }
@@ -3870,17 +3943,28 @@ export function App() {
         />
       ) : null}
       {inviteUserDialog ? (
-        <UserIdDialog
+        <InviteTargetsDialog
           isBusy={isBusy}
-          inputLabel={t("dialog.matrixUserId")}
-          submitLabel={t("dialog.sendInvite")}
+          query={inviteUserDraftQuery}
+          scope={inviteScopeSelection}
           title={inviteUserDialog.title}
-          value={inviteUserDraftUserId}
-          onCancel={closeInviteUserDialog}
+          workflow={snapshot?.state.domain.invite_workflow ?? DEFAULT_INVITE_WORKFLOW}
+          onCancel={() => {
+            void closeInviteUserDialog();
+          }}
+          onQueryChange={(value) => {
+            void updateInviteUserQuery(value);
+          }}
+          onRemoveTarget={(userId) => {
+            void removeInviteTarget(userId);
+          }}
+          onScopeChange={setInviteScopeSelection}
+          onSelectCandidate={(userId) => {
+            void selectInviteTarget(userId);
+          }}
           onSubmit={() => {
             void submitInviteUserDialog();
           }}
-          onValueChange={setInviteUserDraftUserId}
         />
       ) : null}
       {reportDialog ? (

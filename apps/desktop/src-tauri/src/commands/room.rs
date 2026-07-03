@@ -1,6 +1,77 @@
 use super::*;
 
 #[tauri::command]
+pub async fn open_invite_workflow(
+    room_id: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_open_invite_workflow_command(request_id, room_id),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn close_invite_workflow(
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_close_invite_workflow_command(request_id),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn search_invite_targets(
+    room_id: String,
+    query: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_search_invite_targets_command(request_id, room_id, query),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn select_invite_target(
+    room_id: String,
+    user_id: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_select_invite_target_command(request_id, room_id, user_id),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn remove_invite_target(
+    user_id: String,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_remove_invite_target_command(request_id, user_id),
+    )
+    .await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn select_room_list_filter(
     filter: RoomListFilter,
     state: State<'_, CoreRuntimeState>,
@@ -530,4 +601,51 @@ pub async fn invite_user(
     .await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn invite_targets(
+    room_id: String,
+    user_ids: Vec<String>,
+    scope: InviteScopeSelection,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_invite_targets_command(
+            request_id, room_id, user_ids, scope,
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_invite_batch_completed(&mut event_conn, request_id).await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+async fn wait_for_invite_batch_completed(
+    event_conn: &mut CoreConnection,
+    operation_request_id: RequestId,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + ROOM_OPERATION_EVENT_TIMEOUT;
+    loop {
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "invite batch did not complete".to_owned())?;
+        match event {
+            Ok(CoreEvent::Room(RoomEvent::InviteBatchCompleted { request_id, .. }))
+                if request_id == operation_request_id =>
+            {
+                return Ok(());
+            }
+            Ok(CoreEvent::OperationFailed { request_id, .. })
+                if request_id == operation_request_id =>
+            {
+                return Err("invite batch failed".to_owned());
+            }
+            Ok(_) => {}
+            Err(_) => return Err("room operation event stream lagged".to_owned()),
+        }
+    }
 }

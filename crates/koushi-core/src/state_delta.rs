@@ -6,10 +6,10 @@ use koushi_state::{
     AccountManagementCapabilities, AccountManagementState, ActivityState, AppError, AppState,
     AuthDiscoveryState, BasicOperationState, CjkTextPolicyState, DeviceSessionListState,
     DirectoryState, E2eeTrustState, FilesViewState, FocusedContextState, InvitePreview,
-    LinkPreviewSettingsState, LiveSignalsState, LocalEncryptionState, NativeAttentionState,
-    NavigationState, ProfileState, QrLoginState, RoomInteractionState, RoomListProjection,
-    RoomManagementState, RoomNotificationSettings, RoomPreferencesState, RoomSummary,
-    SearchCrawlerState, SearchState, SessionState, SettingsState, SidebarModel,
+    InviteWorkflowState, LinkPreviewSettingsState, LiveSignalsState, LocalEncryptionState,
+    NativeAttentionState, NavigationState, ProfileState, QrLoginState, RoomInteractionState,
+    RoomListProjection, RoomManagementState, RoomNotificationSettings, RoomPreferencesState,
+    RoomSummary, SearchCrawlerState, SearchState, SessionState, SettingsState, SidebarModel,
     SoftLogoutReauthState, SpaceSummary, SyncMode, SyncState, ThreadAttentionState,
     ThreadPaneState, ThreadsListState, TimelinePaneState,
     compose_sidebar_with_room_notification_settings,
@@ -41,6 +41,7 @@ pub struct StateDeltaChangedSlices {
     pub spaces: Option<Vec<SpaceSummary>>,
     pub rooms: Option<Vec<RoomSummary>>,
     pub invites: Option<Vec<InvitePreview>>,
+    pub invite_workflow: Option<InviteWorkflowState>,
     pub room_list: Option<RoomListProjection>,
     pub room_notification_settings: Option<HashMap<String, RoomNotificationSettings>>,
     pub room_interactions: Option<BTreeMap<String, RoomInteractionState>>,
@@ -106,6 +107,7 @@ pub fn build_state_delta(
     changed_slice!(spaces);
     changed_slice!(rooms);
     changed_slice!(invites);
+    changed_slice!(invite_workflow);
     changed_slice!(room_list);
     changed_slice!(room_notification_settings);
     changed_slice!(room_interactions);
@@ -179,6 +181,7 @@ fn audit_app_state_delta_slices(state: &AppState) {
         spaces: _,
         rooms: _,
         invites: _,
+        invite_workflow: _,
         room_list: _,
         room_notification_settings: _,
         room_interactions: _,

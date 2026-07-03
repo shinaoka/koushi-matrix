@@ -13,6 +13,7 @@ import type {
   MentionIntent,
   OidcAuthorization,
   PresenceKind,
+  InviteScopeSelection,
   RoomListFilter,
   RoomModerationAction,
   RoomNotificationMode,
@@ -649,6 +650,34 @@ class TauriDesktopApi implements DesktopApi {
 
   async inviteUser(roomId: string, userId: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("invite_user", { roomId, userId });
+  }
+
+  async openInviteWorkflow(roomId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("open_invite_workflow", { roomId });
+  }
+
+  async closeInviteWorkflow(): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("close_invite_workflow");
+  }
+
+  async searchInviteTargets(roomId: string, query: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("search_invite_targets", { roomId, query });
+  }
+
+  async selectInviteTarget(roomId: string, userId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("select_invite_target", { roomId, userId });
+  }
+
+  async removeInviteTarget(userId: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("remove_invite_target", { userId });
+  }
+
+  async inviteTargets(
+    roomId: string,
+    userIds: string[],
+    scope: InviteScopeSelection
+  ): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("invite_targets", { roomId, userIds, scope });
   }
 
   async setComposerReplyTarget(roomId: string, eventId: string): Promise<DesktopSnapshot> {

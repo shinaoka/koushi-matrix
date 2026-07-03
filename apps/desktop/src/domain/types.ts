@@ -69,6 +69,7 @@ export interface AppDomainState {
   spaces: SpaceSummary[];
   rooms: RoomSummary[];
   invites: InvitePreview[];
+  invite_workflow?: InviteWorkflowState;
   room_notification_settings: Record<string, RoomNotificationSettings>;
   room_interactions: Record<string, RoomInteractionState>;
   directory: DirectoryState;
@@ -601,6 +602,104 @@ export interface InvitePreview {
   inviter_user_id: string | null;
   is_dm: boolean;
 }
+
+export interface InviteWorkflowState {
+  query: InviteTargetQueryState;
+  selected_targets: InviteSelectedTarget[];
+  scope_plan: InviteScopePlan | null;
+  operation: InviteOperationState;
+}
+
+export interface InviteTargetQueryState {
+  room_id: string | null;
+  query: string;
+  candidates: InviteTargetCandidate[];
+  explicit_user_id: InviteTargetCandidate | null;
+}
+
+export interface InviteTargetCandidate {
+  user_id: string;
+  display_label: string;
+  original_display_label: string;
+  avatar: AvatarImage | null;
+  source: InviteTargetCandidateSource;
+  status: InviteTargetCandidateStatus;
+  status_message: string | null;
+}
+
+export type InviteTargetCandidateSource =
+  | "profile"
+  | "localAlias"
+  | "roomMember"
+  | "directMessage"
+  | "matrixId";
+
+export type InviteTargetCandidateStatus =
+  | "selectable"
+  | "alreadySelected"
+  | "alreadyInDestination"
+  | "invalidMatrixId";
+
+export interface InviteSelectedTarget {
+  user_id: string;
+  display_label: string;
+  avatar: AvatarImage | null;
+}
+
+export interface InviteScopePlan {
+  room_id: string;
+  destination_kind: InviteDestinationKind;
+  default_scope: InviteScopeSelection;
+  options: InviteScopeOption[];
+}
+
+export type InviteDestinationKind = "room" | "space";
+
+export type InviteScopeSelection =
+  | { kind: "roomOnly" }
+  | { kind: "parentSpaceAndRoom"; space_id: string };
+
+export interface InviteScopeOption {
+  scope: InviteScopeSelection;
+  label: string;
+  detail: string | null;
+}
+
+export type InviteOperationState =
+  | { kind: "idle" }
+  | {
+      kind: "pending";
+      request_id: number;
+      room_id: string;
+      user_ids: string[];
+      scope: InviteScopeSelection;
+    }
+  | {
+      kind: "completed";
+      request_id: number;
+      room_id: string;
+      results: InviteDestinationResult[];
+      notice: string | null;
+    }
+  | {
+      kind: "failed";
+      request_id: number;
+      room_id: string;
+      failureKind: OperationFailureKind;
+    };
+
+export interface InviteDestinationResult {
+  user_id: string;
+  destination: InviteDestination;
+  kind: InviteDestinationResultKind;
+  message: string | null;
+}
+
+export type InviteDestination =
+  | { kind: "room"; room_id: string }
+  | { kind: "space"; space_id: string };
+
+export type InviteDestinationResultKind = "invited" | "alreadyInSpace" | "failed";
 
 export interface RoomInteractionState {
   pinned_events: PinnedEvent[];

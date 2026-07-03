@@ -220,6 +220,12 @@ function defaultSnapshotResponse() {
       spaces: [],
       rooms: [],
       invites: [],
+      invite_workflow: {
+        query: { room_id: null, query: "", candidates: [], explicit_user_id: null },
+        selected_targets: [],
+        scope_plan: null,
+        operation: { kind: "idle" }
+      },
       room_list: {
         active_filter: { kind: "rooms" },
         sort: { kind: "activity" },
@@ -311,7 +317,7 @@ function defaultSnapshotResponse() {
     "session", "auth", "device_sessions", "account_management",
     "account_management_capabilities", "soft_logout_reauth", "qr_login", "settings",
     "link_preview_settings", "room_preferences", "locale_profile", "typography_profile", "profile", "sync",
-    "sync_mode", "spaces", "rooms", "invites", "room_notification_settings",
+    "sync_mode", "spaces", "rooms", "invites", "invite_workflow", "room_notification_settings",
     "room_interactions", "directory", "room_management", "activity", "thread_attention",
     "search", "search_crawler", "live_signals", "e2ee_trust", "local_encryption",
     "native_attention", "cjk_text_policy"
