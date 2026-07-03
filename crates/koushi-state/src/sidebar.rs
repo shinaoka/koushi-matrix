@@ -115,17 +115,7 @@ pub fn compose_sidebar_with_room_notification_settings(
                 .collect()
         });
 
-    let not_joined_space_rooms: Vec<_> = active_space_id
-        .and_then(|space_id| spaces.iter().find(|space| space.space_id == space_id))
-        .map(|space| {
-            space
-                .child_room_ids
-                .iter()
-                .filter(|room_id| !rooms_by_id.contains_key(room_id.as_str()))
-                .map(|room_id| not_joined_room_list_item(room_id))
-                .collect()
-        })
-        .unwrap_or_default();
+    let not_joined_space_rooms = Vec::new();
 
     let global_dms: Vec<_> = rooms
         .iter()
@@ -192,17 +182,6 @@ fn room_list_item(room: &RoomSummary) -> RoomListItem {
         tags: room.tags.clone(),
         unread_count: room_activity_unread_count(room),
         highlight_count: room.highlight_count,
-    }
-}
-
-fn not_joined_room_list_item(room_id: &str) -> RoomListItem {
-    RoomListItem {
-        room_id: room_id.to_owned(),
-        display_name: room_id.to_owned(),
-        avatar: None,
-        tags: RoomTags::default(),
-        unread_count: 0,
-        highlight_count: 0,
     }
 }
 

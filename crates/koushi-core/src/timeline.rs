@@ -102,7 +102,9 @@ use crate::event::{
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
-use crate::ids::{RequestId, TimelineBatchId, TimelineGeneration, TimelineKey, TimelineKind};
+use crate::ids::{
+    RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration, TimelineKey, TimelineKind,
+};
 use crate::link_preview::{LinkPreviewContext, extract_link_ranges};
 use crate::messages_backpressure::MessagesBackpressure;
 use crate::search::SearchIndexMessage;
@@ -111,6 +113,7 @@ use crate::unread_trace;
 
 /// Bounded diff queue capacity per subscribed timeline (overview.md, Async rule 10).
 pub const TIMELINE_DIFF_QUEUE_CAPACITY: usize = 128;
+const INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT: u16 = 100;
 const ROOM_REPLAY_INITIAL_ITEMS_MAX: usize = 120;
 const REPLY_QUOTE_PREVIEW_MAX_CHARS: usize = 160;
 /// Backstop tick count for the anchor-relay wait. After the SDK signals
@@ -247,7 +250,7 @@ impl TimelineManagerActor {
             match msg {
                 TimelineMessage::Shutdown => break,
                 TimelineMessage::SyncStarted { room_list_service } => {
-                    self.room_list_service = room_list_service;
+                    self.handle_sync_started(room_list_service).await;
                 }
                 TimelineMessage::IgnoredUsersUpdated { user_ids } => {
                     self.handle_ignored_users_updated(user_ids).await;
@@ -259,6 +262,66 @@ impl TimelineManagerActor {
         }
         // Drop all timeline handles — this cancels relay tasks and drops SDK handles.
         self.timelines.clear();
+    }
+
+    async fn handle_sync_started(
+        &mut self,
+        room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
+    ) {
+        self.room_list_service = room_list_service.clone();
+        let Some(service) = room_list_service else {
+            return;
+        };
+
+        self.subscribe_existing_timeline_rooms(&service).await;
+        self.rebuild_existing_room_timelines_after_sync_started()
+            .await;
+    }
+
+    async fn subscribe_existing_timeline_rooms(
+        &self,
+        service: &Arc<matrix_sdk_ui::room_list_service::RoomListService>,
+    ) {
+        let mut seen_room_ids = HashSet::new();
+        let mut room_ids = Vec::new();
+        for key in self.timelines.keys() {
+            let room_id = key.room_id().to_owned();
+            if !seen_room_ids.insert(room_id.clone()) {
+                continue;
+            }
+            if let Ok(parsed_room_id) = matrix_sdk::ruma::RoomId::parse(room_id.as_str()) {
+                room_ids.push(parsed_room_id);
+            }
+        }
+        if room_ids.is_empty() {
+            return;
+        }
+
+        let room_refs = room_ids
+            .iter()
+            .map(|room_id| room_id.as_ref())
+            .collect::<Vec<_>>();
+        if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+            eprintln!(
+                "koushi.subscribe stage=sync_started_existing_rooms count={}",
+                room_refs.len()
+            );
+        }
+        service.subscribe_to_rooms(&room_refs).await;
+    }
+
+    async fn rebuild_existing_room_timelines_after_sync_started(&mut self) {
+        let keys = self
+            .timelines
+            .keys()
+            .filter(|key| matches!(key.kind, TimelineKind::Room { .. }))
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in keys {
+            self.timelines.remove(&key);
+            self.handle_subscribe(internal_timeline_request_id(), key, true)
+                .await;
+        }
     }
 
     async fn handle_ignored_users_updated(&mut self, user_ids: std::collections::BTreeSet<String>) {
@@ -878,7 +941,7 @@ impl TimelineManagerActor {
 
         let focus = match &key.kind {
             TimelineKind::Room { .. } => TimelineFocus::Live {
-                hide_threaded_events: true,
+                hide_threaded_events: false,
             },
             TimelineKind::Thread { root_event_id, .. } => {
                 match matrix_sdk::ruma::EventId::parse(root_event_id.as_str()) {
@@ -1010,6 +1073,13 @@ impl TimelineManagerActor {
             },
         };
         let _ = self.action_tx.try_send(vec![action]);
+    }
+}
+
+fn internal_timeline_request_id() -> RequestId {
+    RequestId {
+        connection_id: RuntimeConnectionId(0),
+        sequence: 0,
     }
 }
 
@@ -1440,6 +1510,411 @@ fn timeline_key_trace_kind(key: &TimelineKey) -> &'static str {
     }
 }
 
+fn timeline_item_trace_enabled() -> bool {
+    std::env::var_os("KOUSHI_TIMELINE_ITEM_TRACE").is_some()
+}
+
+fn timeline_private_token(value: Option<&str>) -> String {
+    let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
+        return "none".to_owned();
+    };
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn timeline_item_id_for_trace(item: &TimelineItem) -> (&'static str, Option<&str>) {
+    match &item.id {
+        TimelineItemId::Event { event_id } => ("event", Some(event_id.as_str())),
+        TimelineItemId::Transaction { transaction_id } => {
+            ("transaction", Some(transaction_id.as_str()))
+        }
+        TimelineItemId::Synthetic { synthetic_id } => ("synthetic", Some(synthetic_id.as_str())),
+    }
+}
+
+fn timeline_trace_index(index: Option<usize>) -> String {
+    index
+        .map(|index| index.to_string())
+        .unwrap_or_else(|| "none".to_owned())
+}
+
+fn timeline_trace_timestamp_min(timestamp_ms: Option<u64>) -> String {
+    timestamp_ms
+        .map(|timestamp_ms| (timestamp_ms / 60_000).to_string())
+        .unwrap_or_else(|| "none".to_owned())
+}
+
+fn timeline_item_trace_line(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    item: &TimelineItem,
+) -> String {
+    let (id_kind, id_value) = timeline_item_id_for_trace(item);
+    let body_present = item
+        .body
+        .as_deref()
+        .is_some_and(|body| !body.trim().is_empty());
+    let formatted_present = item
+        .formatted
+        .as_ref()
+        .is_some_and(timeline_formatted_body_is_renderable);
+    let thread_root_present = item
+        .thread_root
+        .as_deref()
+        .is_some_and(|thread_root| !thread_root.trim().is_empty());
+    let reply_present = item
+        .in_reply_to_event_id
+        .as_deref()
+        .is_some_and(|event_id| !event_id.trim().is_empty());
+
+    format!(
+        "koushi.timeline_item stage={stage} timeline={} op={op} index={} id_kind={id_kind} id={} sender={} ts_min={} hidden={} thread_root_present={} thread_root={} reply_present={} reply={} body_present={} formatted_present={} media_present={} redacted={} utd_present={} send_state_present={}",
+        timeline_key_trace_kind(key),
+        timeline_trace_index(index),
+        timeline_private_token(id_value),
+        timeline_private_token(item.sender.as_deref()),
+        timeline_trace_timestamp_min(item.timestamp_ms),
+        item.is_hidden,
+        thread_root_present,
+        timeline_private_token(item.thread_root.as_deref()),
+        reply_present,
+        timeline_private_token(item.in_reply_to_event_id.as_deref()),
+        body_present,
+        formatted_present,
+        item.media.is_some(),
+        item.is_redacted,
+        item.unable_to_decrypt.is_some(),
+        item.send_state.is_some()
+    )
+}
+
+fn trace_timeline_items(stage: &str, key: &TimelineKey, items: &[TimelineItem]) {
+    if !timeline_item_trace_enabled() {
+        return;
+    }
+    let hidden = items.iter().filter(|item| item.is_hidden).count();
+    eprintln!(
+        "koushi.timeline_items stage={stage} timeline={} count={} visible={} hidden={}",
+        timeline_key_trace_kind(key),
+        items.len(),
+        items.len().saturating_sub(hidden),
+        hidden
+    );
+    for (index, item) in items.iter().enumerate() {
+        eprintln!(
+            "{}",
+            timeline_item_trace_line(stage, key, "item", Some(index), item)
+        );
+    }
+}
+
+fn trace_timeline_diff_without_item(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    length: Option<usize>,
+) {
+    eprintln!(
+        "koushi.timeline_diff stage={stage} timeline={} op={op} index={} length={}",
+        timeline_key_trace_kind(key),
+        timeline_trace_index(index),
+        timeline_trace_index(length)
+    );
+}
+
+fn trace_timeline_diffs(stage: &str, key: &TimelineKey, diffs: &[TimelineDiff]) {
+    if !timeline_item_trace_enabled() {
+        return;
+    }
+    eprintln!(
+        "koushi.timeline_diffs stage={stage} timeline={} count={}",
+        timeline_key_trace_kind(key),
+        diffs.len()
+    );
+    for diff in diffs {
+        match diff {
+            TimelineDiff::PushFront { item } => {
+                eprintln!(
+                    "{}",
+                    timeline_item_trace_line(stage, key, "push_front", Some(0), item)
+                );
+            }
+            TimelineDiff::PushBack { item } => {
+                eprintln!(
+                    "{}",
+                    timeline_item_trace_line(stage, key, "push_back", None, item)
+                );
+            }
+            TimelineDiff::Insert { index, item } => {
+                eprintln!(
+                    "{}",
+                    timeline_item_trace_line(stage, key, "insert", Some(*index), item)
+                );
+            }
+            TimelineDiff::Set { index, item } => {
+                eprintln!(
+                    "{}",
+                    timeline_item_trace_line(stage, key, "set", Some(*index), item)
+                );
+            }
+            TimelineDiff::Remove { index } => {
+                trace_timeline_diff_without_item(stage, key, "remove", Some(*index), None);
+            }
+            TimelineDiff::Truncate { length } => {
+                trace_timeline_diff_without_item(stage, key, "truncate", None, Some(*length));
+            }
+            TimelineDiff::Clear => {
+                trace_timeline_diff_without_item(stage, key, "clear", None, None);
+            }
+            TimelineDiff::Reset { items } => {
+                trace_timeline_diff_without_item(stage, key, "reset", None, Some(items.len()));
+                for (index, item) in items.iter().enumerate() {
+                    eprintln!(
+                        "{}",
+                        timeline_item_trace_line(stage, key, "reset_item", Some(index), item)
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct EventCacheRelationTrace {
+    relates_to_present: bool,
+    rel_type: &'static str,
+    relation_event_id: Option<String>,
+    reply_event_id: Option<String>,
+    thread_root_event_id: Option<String>,
+}
+
+fn event_cache_relation_trace(
+    event: &matrix_sdk_base::event_cache::Event,
+) -> EventCacheRelationTrace {
+    let content = event
+        .raw()
+        .get_field::<serde_json::Value>("content")
+        .ok()
+        .flatten();
+    let Some(relates_to) = content
+        .as_ref()
+        .and_then(|content| content.get("m.relates_to"))
+    else {
+        return EventCacheRelationTrace {
+            rel_type: "none",
+            ..EventCacheRelationTrace::default()
+        };
+    };
+
+    let rel_type_raw = relates_to
+        .get("rel_type")
+        .and_then(serde_json::Value::as_str);
+    let relation_event_id = relates_to
+        .get("event_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let reply_event_id = relates_to
+        .get("m.in_reply_to")
+        .and_then(|reply| reply.get("event_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let thread_root_event_id = matches!(rel_type_raw, Some("m.thread"))
+        .then(|| relation_event_id.clone())
+        .flatten();
+
+    EventCacheRelationTrace {
+        relates_to_present: true,
+        rel_type: relation_type_trace_token(rel_type_raw),
+        relation_event_id,
+        reply_event_id,
+        thread_root_event_id,
+    }
+}
+
+fn relation_type_trace_token(rel_type: Option<&str>) -> &'static str {
+    match rel_type {
+        Some("m.thread") => "m.thread",
+        Some("m.replace") => "m.replace",
+        Some("m.annotation") => "m.annotation",
+        Some("m.reference") => "m.reference",
+        Some(_) => "other",
+        None => "none",
+    }
+}
+
+fn event_cache_trace_line(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    event_id: Option<&str>,
+    sender: Option<&str>,
+    timestamp_ms: Option<u64>,
+    relation: &EventCacheRelationTrace,
+) -> String {
+    let relation_event_present = relation
+        .relation_event_id
+        .as_deref()
+        .is_some_and(|event_id| !event_id.trim().is_empty());
+    let reply_present = relation
+        .reply_event_id
+        .as_deref()
+        .is_some_and(|event_id| !event_id.trim().is_empty());
+    let thread_root_present = relation
+        .thread_root_event_id
+        .as_deref()
+        .is_some_and(|event_id| !event_id.trim().is_empty());
+
+    format!(
+        "koushi.event_cache_item stage={stage} timeline={} op={op} index={} id={} sender={} ts_min={} relates_to_present={} rel_type={} relation_event_present={} relation_event={} reply_present={} reply={} thread_root_present={} thread_root={}",
+        timeline_key_trace_kind(key),
+        timeline_trace_index(index),
+        timeline_private_token(event_id),
+        timeline_private_token(sender),
+        timeline_trace_timestamp_min(timestamp_ms),
+        relation.relates_to_present,
+        relation.rel_type,
+        relation_event_present,
+        timeline_private_token(relation.relation_event_id.as_deref()),
+        reply_present,
+        timeline_private_token(relation.reply_event_id.as_deref()),
+        thread_root_present,
+        timeline_private_token(relation.thread_root_event_id.as_deref())
+    )
+}
+
+fn trace_event_cache_items(
+    stage: &str,
+    key: &TimelineKey,
+    items: &[matrix_sdk_base::event_cache::Event],
+) {
+    if !timeline_item_trace_enabled() {
+        return;
+    }
+    eprintln!(
+        "koushi.event_cache_items stage={stage} timeline={} count={}",
+        timeline_key_trace_kind(key),
+        items.len()
+    );
+    for (index, item) in items.iter().enumerate() {
+        trace_event_cache_item(stage, key, "item", Some(index), item);
+    }
+}
+
+fn trace_event_cache_item(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    item: &matrix_sdk_base::event_cache::Event,
+) {
+    let event_id = item.event_id().map(|event_id| event_id.to_string());
+    let sender = item.sender().map(|sender| sender.to_string());
+    let timestamp_ms = item.timestamp().map(|timestamp| timestamp.0.into());
+    let relation = event_cache_relation_trace(item);
+    eprintln!(
+        "{}",
+        event_cache_trace_line(
+            stage,
+            key,
+            op,
+            index,
+            event_id.as_deref(),
+            sender.as_deref(),
+            timestamp_ms,
+            &relation,
+        )
+    );
+}
+
+fn trace_event_cache_diff_without_item(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    length: Option<usize>,
+) {
+    eprintln!(
+        "koushi.event_cache_diff stage={stage} timeline={} op={op} index={} length={}",
+        timeline_key_trace_kind(key),
+        timeline_trace_index(index),
+        timeline_trace_index(length)
+    );
+}
+
+fn event_cache_origin_trace_token(origin: &matrix_sdk::event_cache::EventsOrigin) -> &'static str {
+    match origin {
+        matrix_sdk::event_cache::EventsOrigin::Sync => "sync",
+        matrix_sdk::event_cache::EventsOrigin::Pagination => "network",
+        matrix_sdk::event_cache::EventsOrigin::Cache => "cache",
+    }
+}
+
+fn trace_event_cache_diffs(
+    stage: &str,
+    key: &TimelineKey,
+    origin: &matrix_sdk::event_cache::EventsOrigin,
+    diffs: &[eyeball_im::VectorDiff<matrix_sdk_base::event_cache::Event>],
+) {
+    if !timeline_item_trace_enabled() {
+        return;
+    }
+    eprintln!(
+        "koushi.event_cache_diffs stage={stage} timeline={} origin={} count={}",
+        timeline_key_trace_kind(key),
+        event_cache_origin_trace_token(origin),
+        diffs.len()
+    );
+    for diff in diffs {
+        match diff {
+            eyeball_im::VectorDiff::PushFront { value } => {
+                trace_event_cache_item(stage, key, "push_front", Some(0), value);
+            }
+            eyeball_im::VectorDiff::PushBack { value } => {
+                trace_event_cache_item(stage, key, "push_back", None, value);
+            }
+            eyeball_im::VectorDiff::Insert { index, value } => {
+                trace_event_cache_item(stage, key, "insert", Some(*index), value);
+            }
+            eyeball_im::VectorDiff::Set { index, value } => {
+                trace_event_cache_item(stage, key, "set", Some(*index), value);
+            }
+            eyeball_im::VectorDiff::Append { values } => {
+                trace_event_cache_diff_without_item(stage, key, "append", None, Some(values.len()));
+                for (index, item) in values.iter().enumerate() {
+                    trace_event_cache_item(stage, key, "append_item", Some(index), item);
+                }
+            }
+            eyeball_im::VectorDiff::Reset { values } => {
+                trace_event_cache_diff_without_item(stage, key, "reset", None, Some(values.len()));
+                for (index, item) in values.iter().enumerate() {
+                    trace_event_cache_item(stage, key, "reset_item", Some(index), item);
+                }
+            }
+            eyeball_im::VectorDiff::Remove { index } => {
+                trace_event_cache_diff_without_item(stage, key, "remove", Some(*index), None);
+            }
+            eyeball_im::VectorDiff::Truncate { length } => {
+                trace_event_cache_diff_without_item(stage, key, "truncate", None, Some(*length));
+            }
+            eyeball_im::VectorDiff::Clear => {
+                trace_event_cache_diff_without_item(stage, key, "clear", None, None);
+            }
+            eyeball_im::VectorDiff::PopFront => {
+                trace_event_cache_diff_without_item(stage, key, "pop_front", Some(0), None);
+            }
+            eyeball_im::VectorDiff::PopBack => {
+                trace_event_cache_diff_without_item(stage, key, "pop_back", None, None);
+            }
+        }
+    }
+}
+
 fn pagination_direction_trace_token(direction: PaginationDirection) -> &'static str {
     match direction {
         PaginationDirection::Backward => "backward",
@@ -1744,31 +2219,40 @@ impl TimelineActor {
     ) -> TimelineActorHandle {
         let mut auxiliary_tasks: Vec<executor::JoinHandle<()>> = Vec::new();
 
-        // Env-gated origin observer. Subscribe the event cache BEFORE the
+        // Env-gated event-cache observer. Subscribe the event cache BEFORE the
         // timeline load so the initial load's provenance (store=cache vs
-        // network) is observed via the updates stream. Zero cost when
-        // KOUSHI_STARTUP_TRACE is unset.
-        if startup_trace::enabled() {
+        // network) is observed via the updates stream. Zero cost unless
+        // KOUSHI_STARTUP_TRACE or KOUSHI_TIMELINE_ITEM_TRACE is set.
+        let startup_origin_trace = startup_trace::enabled();
+        let event_cache_item_trace = timeline_item_trace_enabled();
+        if startup_origin_trace || event_cache_item_trace {
             if let Ok(parsed_room_id) = matrix_sdk::ruma::RoomId::parse(key.room_id()) {
                 if let Some(observer_room) = session.client().get_room(&parsed_room_id) {
                     if let Ok((cache, drop_guards)) = observer_room.event_cache().await {
                         if let Ok((initial, mut updates)) = cache.subscribe().await {
-                            if !initial.is_empty() {
-                                // Cache already had events at restore — warm initial state.
+                            if startup_origin_trace && !initial.is_empty() {
+                                // Cache already had events at restore: warm initial state.
                                 startup_trace::trace_origin("cache");
                             }
+                            trace_event_cache_items("cache_initial", &key, &initial);
+                            let trace_key = key.clone();
                             auxiliary_tasks.push(executor::spawn(async move {
                                 let _event_cache_drop_guards = drop_guards;
-                                use matrix_sdk::event_cache::{EventsOrigin, RoomEventCacheUpdate};
+                                use matrix_sdk::event_cache::RoomEventCacheUpdate;
                                 loop {
                                     match updates.recv().await {
                                         Ok(RoomEventCacheUpdate::UpdateTimelineEvents(diffs)) => {
-                                            let origin = match diffs.origin {
-                                                EventsOrigin::Cache => "cache",
-                                                EventsOrigin::Pagination => "network",
-                                                EventsOrigin::Sync => "sync",
-                                            };
-                                            startup_trace::trace_origin(origin);
+                                            if startup_origin_trace {
+                                                startup_trace::trace_origin(
+                                                    event_cache_origin_trace_token(&diffs.origin),
+                                                );
+                                            }
+                                            trace_event_cache_diffs(
+                                                "cache_update",
+                                                &trace_key,
+                                                &diffs.origin,
+                                                &diffs.diffs,
+                                            );
                                         }
                                         Ok(_) => {}
                                         // Broadcast lagged or channel closed — stop the observer.
@@ -1784,12 +2268,67 @@ impl TimelineActor {
 
         // Subscribe to the SDK timeline to get initial items + diff stream.
         let subscribe_started = startup_trace::now_if_enabled();
-        let (initial_sdk_items, diff_stream) = timeline.subscribe().await;
+        let (mut initial_sdk_items, mut diff_stream) = timeline.subscribe().await;
         startup_trace::trace_phase_items(
             StartupPhase::TimelineSubscribe,
             subscribe_started,
             initial_sdk_items.len(),
         );
+        if should_hydrate_empty_initial_room_timeline(&key.kind, initial_sdk_items.len()) {
+            let gate_started = (startup_trace::enabled() || timeline_trace_enabled())
+                .then(std::time::Instant::now);
+            let hydrate_result = {
+                let _permit = messages_backpressure.acquire_timeline().await;
+                let gate_wait = gate_started.map(|started| started.elapsed());
+                trace_timeline_paginate(
+                    "initial_hydrate_gate_acquired",
+                    subscribe_request_id,
+                    &key,
+                    PaginationDirection::Backward,
+                    INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT,
+                    None,
+                    gate_wait.map(|duration| duration.as_millis()),
+                    None,
+                );
+                let paginate_started = startup_trace::now_if_enabled();
+                let trace_started = timeline_trace_enabled().then(std::time::Instant::now);
+                let outcome = timeline
+                    .paginate_backwards(INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT)
+                    .await;
+                let outcome_token = match &outcome {
+                    Ok(true) => "end_reached",
+                    Ok(false) => "idle",
+                    Err(_) => "failed",
+                };
+                trace_timeline_paginate(
+                    "initial_hydrate_sdk_finish",
+                    subscribe_request_id,
+                    &key,
+                    PaginationDirection::Backward,
+                    INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT,
+                    trace_started.map(|started| started.elapsed().as_millis()),
+                    gate_wait.map(|duration| duration.as_millis()),
+                    Some(outcome_token),
+                );
+                startup_trace::trace_paginate(
+                    paginate_started,
+                    gate_wait,
+                    matches!(outcome, Ok(true)),
+                );
+                outcome
+            };
+            if hydrate_result.is_ok() {
+                let resubscribe_started = startup_trace::now_if_enabled();
+                let (hydrated_items, hydrated_stream) = timeline.subscribe().await;
+                startup_trace::trace_phase_items(
+                    StartupPhase::TimelineSubscribe,
+                    resubscribe_started,
+                    hydrated_items.len(),
+                );
+                initial_sdk_items = hydrated_items;
+                diff_stream = hydrated_stream;
+            }
+        }
         let own_user_id = session.client().user_id().map(|user_id| user_id.to_owned());
         let room_id = key.room_id().to_owned();
 
@@ -1810,6 +2349,7 @@ impl TimelineActor {
         for item in &mut initial_items {
             apply_link_previews_to_item(&mut *item, &room_id, &link_preview_policy, &session).await;
         }
+        trace_timeline_items("initial", &key, &initial_items);
         let navigation_items = initial_items.clone();
         let initial_activity_rows = activity_rows_from_timeline_items(&key, &initial_items);
         let initial_media_gallery_items =
@@ -3775,6 +4315,7 @@ impl TimelineActor {
                 items.len()
             );
         }
+        trace_timeline_items("replay_initial", &self.key, &items);
         self.emit(CoreEvent::Timeline(TimelineEvent::InitialItems {
             request_id: Some(request_id),
             key: self.key.clone(),
@@ -3849,6 +4390,7 @@ impl TimelineActor {
                 _ => {}
             }
         }
+        trace_timeline_diffs("diff_batch", &self.key, &core_diffs);
         if let Some(action) = thread_attention_action_from_timeline_diffs(
             &mut self.thread_attention_counts,
             &self.key,
@@ -4828,6 +5370,7 @@ impl TimelineActor {
             )
             .await;
         }
+        trace_timeline_items("overflow_initial", &self.key, &items);
 
         self.emit(CoreEvent::Timeline(TimelineEvent::InitialItems {
             request_id: None,
@@ -5102,6 +5645,10 @@ fn replay_initial_items_window(
     } else {
         items.to_vec()
     }
+}
+
+fn should_hydrate_empty_initial_room_timeline(kind: &TimelineKind, item_count: usize) -> bool {
+    matches!(kind, TimelineKind::Room { .. }) && item_count == 0
 }
 
 fn activity_rows_from_timeline_items(
@@ -5567,13 +6114,12 @@ fn timeline_item_should_be_hidden(has_renderable_content: bool, is_redacted: boo
 }
 
 fn timeline_item_should_be_hidden_for_key(
-    key: &TimelineKey,
+    _key: &TimelineKey,
     has_renderable_content: bool,
     is_redacted: bool,
-    thread_root: Option<&str>,
+    _thread_root: Option<&str>,
 ) -> bool {
     timeline_item_should_be_hidden(has_renderable_content, is_redacted)
-        || (matches!(key.kind, TimelineKind::Room { .. }) && thread_root.is_some())
 }
 
 fn reply_enforce_thread_for_key(key: &TimelineKey) -> EnforceThread {
@@ -7320,6 +7866,29 @@ mod tests {
     }
 
     #[test]
+    fn empty_room_initial_snapshot_needs_initial_backfill() {
+        let key = room_key();
+
+        assert!(should_hydrate_empty_initial_room_timeline(&key.kind, 0));
+        assert!(!should_hydrate_empty_initial_room_timeline(&key.kind, 1));
+    }
+
+    #[test]
+    fn non_room_empty_initial_snapshots_do_not_use_room_live_backfill() {
+        let thread = TimelineKind::Thread {
+            room_id: "!r:test".to_owned(),
+            root_event_id: "$root:test".to_owned(),
+        };
+        let focused = TimelineKind::Focused {
+            room_id: "!r:test".to_owned(),
+            event_id: "$event:test".to_owned(),
+        };
+
+        assert!(!should_hydrate_empty_initial_room_timeline(&thread, 0));
+        assert!(!should_hydrate_empty_initial_room_timeline(&focused, 0));
+    }
+
+    #[test]
     fn visible_missing_reply_detail_event_ids_only_returns_visible_unrequested_missing_replies() {
         let mut before = timeline_item("$before:test", Some("before"), "@alice:test", false);
         before.reply_quote = Some(ReplyQuote {
@@ -8209,6 +8778,101 @@ mod tests {
     }
 
     #[test]
+    fn timeline_item_trace_line_is_private_data_free() {
+        let key = TimelineKey {
+            account_key: AccountKey("@account:test".to_owned()),
+            kind: TimelineKind::Room {
+                room_id: "!private-room:test".to_owned(),
+            },
+        };
+        let mut item = timeline_item(
+            "$private-event:test",
+            Some("private body"),
+            "@private-sender:test",
+            true,
+        );
+        item.thread_root = Some("$private-thread-root:test".to_owned());
+        item.in_reply_to_event_id = Some("$private-reply:test".to_owned());
+
+        let line = timeline_item_trace_line("initial", &key, "item", Some(7), &item);
+
+        assert!(line.contains("koushi.timeline_item stage=initial"));
+        assert!(line.contains("timeline=room"));
+        assert!(line.contains("op=item"));
+        assert!(line.contains("index=7"));
+        assert!(line.contains("hidden=true"));
+        assert!(line.contains("thread_root_present=true"));
+        assert!(line.contains("reply_present=true"));
+        assert!(line.contains("body_present=true"));
+        for private_value in [
+            "@account:test",
+            "!private-room:test",
+            "$private-event:test",
+            "@private-sender:test",
+            "private body",
+            "$private-thread-root:test",
+            "$private-reply:test",
+        ] {
+            assert!(
+                !line.contains(private_value),
+                "trace leaked {private_value}: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn event_cache_trace_line_is_private_data_free() {
+        let key = TimelineKey {
+            account_key: AccountKey("@account:test".to_owned()),
+            kind: TimelineKind::Room {
+                room_id: "!private-room:test".to_owned(),
+            },
+        };
+        let relation = EventCacheRelationTrace {
+            relates_to_present: true,
+            rel_type: "m.thread",
+            relation_event_id: Some("$private-relation:test".to_owned()),
+            reply_event_id: Some("$private-reply:test".to_owned()),
+            thread_root_event_id: Some("$private-thread-root:test".to_owned()),
+        };
+
+        let line = event_cache_trace_line(
+            "cache_initial",
+            &key,
+            "item",
+            Some(4),
+            Some("$private-event:test"),
+            Some("@private-sender:test"),
+            Some(1_783_076_820_000),
+            &relation,
+        );
+
+        assert!(line.contains("koushi.event_cache_item stage=cache_initial"));
+        assert!(line.contains("timeline=room"));
+        assert!(line.contains("op=item"));
+        assert!(line.contains("index=4"));
+        assert!(line.contains("relates_to_present=true"));
+        assert!(line.contains("rel_type=m.thread"));
+        assert!(line.contains("relation_event_present=true"));
+        assert!(line.contains("reply_present=true"));
+        assert!(line.contains("thread_root_present=true"));
+        for private_value in [
+            "@account:test",
+            "!private-room:test",
+            "$private-event:test",
+            "@private-sender:test",
+            "$private-relation:test",
+            "$private-reply:test",
+            "$private-thread-root:test",
+        ] {
+            assert!(
+                !line.contains(private_value),
+                "trace leaked {private_value}: {line}"
+            );
+        }
+    }
+
+    #[test]
     fn sender_profile_projects_display_name_and_avatar_mxc() {
         let profile = TimelineDetails::Ready(Profile {
             display_name: Some("kamohara".to_owned()),
@@ -8458,7 +9122,7 @@ mod tests {
     }
 
     #[test]
-    fn room_live_timeline_focus_hides_threaded_events() {
+    fn room_live_timeline_focus_includes_threaded_events() {
         let source = include_str!("timeline.rs");
         let focus_source = source
             .split("let focus = match &key.kind")
@@ -8476,8 +9140,8 @@ mod tests {
             .expect("thread timeline focus arm should follow room arm");
 
         assert!(
-            room_focus.contains("hide_threaded_events: true"),
-            "room live timelines must hide threaded replies"
+            room_focus.contains("hide_threaded_events: false"),
+            "room live timelines must include threaded events so DM messages are not missing from the main timeline"
         );
     }
 
@@ -8565,6 +9229,83 @@ mod tests {
         assert!(
             new_key_path.contains("koushi_timeline_builder("),
             "a new (not yet subscribed) key must still build an SDK timeline through the project helper"
+        );
+    }
+
+    #[test]
+    fn sync_started_subscribes_existing_timeline_rooms_with_live_room_list_service() {
+        let source = include_str!("timeline.rs");
+        let run_source = source
+            .split("async fn run")
+            .nth(1)
+            .expect("TimelineManagerActor::run should exist")
+            .split("async fn handle_sync_started")
+            .next()
+            .expect("sync-start handler should follow run");
+        let sync_started_arm = run_source
+            .split("TimelineMessage::SyncStarted { room_list_service } => {")
+            .nth(1)
+            .expect("run should handle TimelineMessage::SyncStarted")
+            .split("TimelineMessage::IgnoredUsersUpdated")
+            .next()
+            .expect("ignored-users arm should follow SyncStarted");
+
+        assert!(
+            sync_started_arm.contains("self.handle_sync_started(room_list_service).await"),
+            "SyncStarted must subscribe already-open timeline rooms with the live RoomListService; otherwise room summaries can update while existing timeline actors miss remote events"
+        );
+
+        let sync_started_handler = source
+            .split("async fn handle_sync_started")
+            .nth(1)
+            .expect("TimelineManagerActor should have a SyncStarted handler")
+            .split("async fn handle_ignored_users_updated")
+            .next()
+            .expect("ignored-users handler should follow SyncStarted handler");
+
+        assert!(
+            sync_started_handler.contains("self.room_list_service = room_list_service.clone();"),
+            "the live RoomListService handle must still be retained for future timeline subscriptions"
+        );
+        assert!(
+            sync_started_handler
+                .contains("self.subscribe_existing_timeline_rooms(&service).await;"),
+            "already-open timeline actors must have their rooms subscribed when SyncStarted arrives after actor creation"
+        );
+        assert!(
+            sync_started_handler.contains("rebuild_existing_room_timelines_after_sync_started")
+                && sync_started_handler.contains(".await"),
+            "late SyncStarted must rebuild already-open room live timelines so fresh InitialItems repair events missed before the live RoomListService handoff"
+        );
+        assert!(
+            sync_started_handler.contains("self.timelines.keys()"),
+            "existing timeline room subscriptions must be derived from the active timeline keys"
+        );
+        assert!(
+            sync_started_handler.contains("service.subscribe_to_rooms"),
+            "existing timeline rooms must be handed to the live RoomListService"
+        );
+
+        let rebuild_handler = source
+            .split("async fn rebuild_existing_room_timelines_after_sync_started")
+            .nth(1)
+            .expect("TimelineManagerActor should rebuild existing room timelines after SyncStarted")
+            .split("async fn handle_ignored_users_updated")
+            .next()
+            .expect("ignored-users handler should follow sync-start rebuild handler");
+
+        assert!(
+            rebuild_handler.contains("matches!(key.kind, TimelineKind::Room { .. })"),
+            "only room live timelines should be rebuilt on SyncStarted; focused/thread contexts should not be reset"
+        );
+        assert!(
+            rebuild_handler.contains("self.timelines.remove(&key);"),
+            "existing room timeline handles must be dropped before full resubscribe so the SDK timeline is rebuilt"
+        );
+        assert!(
+            rebuild_handler
+                .contains("self.handle_subscribe(internal_timeline_request_id(), key, true)"),
+            "rebuild must take the full subscribe path and emit a fresh InitialItems batch"
         );
     }
 
@@ -8720,10 +9461,10 @@ mod tests {
     }
 
     #[test]
-    fn room_timeline_hides_thread_reply_placeholders_even_when_renderable() {
+    fn room_timeline_keeps_renderable_thread_messages_visible() {
         let key = room_key();
 
-        assert!(timeline_item_should_be_hidden_for_key(
+        assert!(!timeline_item_should_be_hidden_for_key(
             &key,
             true,
             false,
@@ -9797,8 +10538,7 @@ mod tests {
             "visible initial timeline items must enter the same search-index path as live diffs"
         );
         assert!(
-            spawn_src.find("forward_initial_items_to_search")
-                < spawn_src.find("actor.run()"),
+            spawn_src.find("forward_initial_items_to_search") < spawn_src.find("actor.run()"),
             "initial items must be forwarded before the actor starts processing later diffs"
         );
     }

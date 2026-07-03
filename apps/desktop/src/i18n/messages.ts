@@ -317,6 +317,10 @@ export type MessageId =
   | "room.roomInfo"
   | "room.roomScoped"
   | "room.roomSettings"
+  | "room.repair"
+  | "room.resetTimelineCache"
+  | "room.resetTimelineCacheConfirm"
+  | "room.resetTimelineCacheHint"
   | "room.status"
   | "room.statusEncrypted"
   | "room.statusHistoryLimited"
@@ -1265,6 +1269,10 @@ const en: Catalog = {
   "room.roomInfo": "Room info",
   "room.roomScoped": "Room scoped",
   "room.roomSettings": "Room settings",
+  "room.repair": "Repair",
+  "room.resetTimelineCache": "Reset room timeline cache",
+  "room.resetTimelineCacheConfirm": "Reset this room's local timeline cache? Messages, keys, drafts, and room settings will not be deleted.",
+  "room.resetTimelineCacheHint": "Last-resort repair for a local timeline cache gap. This only clears this room's local timeline event cache.",
   "room.status": "Room status",
   "room.statusEncrypted": "Encrypted",
   "room.statusHistoryLimited": "New members do not see history",
@@ -2111,6 +2119,10 @@ const ja: Catalog = {
   "room.roomInfo": "ルーム情報",
   "room.roomScoped": "ルーム内",
   "room.roomSettings": "ルーム設定",
+  "room.repair": "修復",
+  "room.resetTimelineCache": "ルームのタイムラインキャッシュをリセット",
+  "room.resetTimelineCacheConfirm": "このルームのローカルタイムラインキャッシュをリセットしますか？メッセージ、鍵、下書き、ルーム設定は削除されません。",
+  "room.resetTimelineCacheHint": "ローカルのタイムラインキャッシュに穴がある場合の最後の手動修復です。このルームのローカルタイムラインイベントキャッシュだけを消します。",
   "room.status": "ルーム状態",
   "room.statusEncrypted": "暗号化済み",
   "room.statusHistoryLimited": "新規メンバーは履歴を閲覧不可",

@@ -49,6 +49,7 @@ impl CoreCommand {
                 | AppCommand::OpenFocusedContext { request_id, .. }
                 | AppCommand::EnterAnchoredTimeline { request_id, .. }
                 | AppCommand::OpenTimelineAtTimestamp { request_id, .. }
+                | AppCommand::ResetRoomTimelineCache { request_id, .. }
                 | AppCommand::TimelineScrollAnchorUpdated { request_id, .. }
                 | AppCommand::CloseFocusedContext { request_id }
                 | AppCommand::CloseSearch { request_id }
@@ -217,6 +218,7 @@ impl CoreCommand {
                 self,
                 Self::App(
                     AppCommand::OpenTimelineAtTimestamp { .. }
+                        | AppCommand::ResetRoomTimelineCache { .. }
                         | AppCommand::EnterAnchoredTimeline { .. }
                         | AppCommand::ScheduleSend { .. }
                         | AppCommand::CancelScheduledSend { .. }
@@ -316,6 +318,10 @@ pub enum AppCommand {
         request_id: RequestId,
         room_id: String,
         timestamp_ms: u64,
+    },
+    ResetRoomTimelineCache {
+        request_id: RequestId,
+        room_id: String,
     },
     TimelineScrollAnchorUpdated {
         request_id: RequestId,
@@ -557,6 +563,11 @@ impl fmt::Debug for AppCommand {
                 .field("request_id", request_id)
                 .field("room_id", &"RoomId(..)")
                 .field("timestamp_ms", &"Timestamp(..)")
+                .finish(),
+            Self::ResetRoomTimelineCache { request_id, .. } => formatter
+                .debug_struct("ResetRoomTimelineCache")
+                .field("request_id", request_id)
+                .field("room_id", &"RoomId(..)")
                 .finish(),
             Self::TimelineScrollAnchorUpdated {
                 request_id, anchor, ..

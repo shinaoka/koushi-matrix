@@ -1,10 +1,11 @@
 use koushi_state::{
     AppAction, AppEffect, AppState, AvatarImage, AvatarThumbnailState, MainTimelineAnchor,
-    NativeAttentionObservationKind, NativeAttentionProjectionInput, RoomListFilter, RoomListSort,
-    RoomNotificationMode, RoomNotificationSettings, RoomSummary, RoomTags, SearchCrawlerSettings,
-    SessionInfo, SessionState, SpaceSummary, ThreadPaneState, TimelinePaneState,
-    TimelineScrollAnchorEdge, UiEvent, UserProfile, compose_sidebar,
-    compose_sidebar_with_room_notification_settings, native_attention_state_from_rooms, reduce,
+    NativeAttentionObservationKind, NativeAttentionProjectionInput, RoomLatestEventSummary,
+    RoomListFilter, RoomListSort, RoomNotificationMode, RoomNotificationSettings, RoomSummary,
+    RoomTags, SearchCrawlerSettings, SessionInfo, SessionState, SpaceSummary, ThreadPaneState,
+    TimelinePaneState, TimelineScrollAnchorEdge, UiEvent, UserProfile, compose_sidebar,
+    compose_sidebar_with_room_notification_settings, compute_room_list_projection,
+    native_attention_state_from_rooms, reduce,
 };
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
@@ -946,11 +947,9 @@ fn selecting_space_filters_rooms_and_keeps_dms_global() {
 }
 
 #[test]
-fn active_space_lists_child_rooms_that_are_not_joined() {
+fn active_space_hides_child_room_ids_without_joined_room_summaries() {
     let mut spaces = spaces();
-    spaces[0]
-        .child_room_ids
-        .push("room-not-joined".to_owned());
+    spaces[0].child_room_ids.push("room-not-joined".to_owned());
     let sidebar = compose_sidebar(Some("space-a"), &spaces, &rooms());
     let home_sidebar = compose_sidebar(None, &spaces, &rooms());
 
@@ -962,18 +961,7 @@ fn active_space_lists_child_rooms_that_are_not_joined() {
             .collect::<Vec<_>>(),
         vec!["room-a"]
     );
-    assert_eq!(
-        sidebar
-            .not_joined_space_rooms
-            .iter()
-            .map(|room| room.room_id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["room-not-joined"]
-    );
-    assert_eq!(
-        sidebar.not_joined_space_rooms[0].display_name,
-        "room-not-joined"
-    );
+    assert!(sidebar.not_joined_space_rooms.is_empty());
     assert!(home_sidebar.not_joined_space_rooms.is_empty());
 }
 
@@ -1931,6 +1919,80 @@ fn room_list_sort_supports_recent_and_locale_modes() {
             .collect::<Vec<_>>(),
         vec!["room-b", "room-a"]
     );
+}
+
+#[test]
+fn room_list_activity_sort_uses_latest_message_timestamp_before_status_activity() {
+    let rooms = vec![
+        RoomSummary {
+            room_id: "status-newer".to_owned(),
+            display_name: "Status Newer".to_owned(),
+            display_label: "Status Newer".to_owned(),
+            original_display_label: "Status Newer".to_owned(),
+            avatar: None,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: RoomTags::default(),
+            unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 300,
+            latest_event: Some(latest_message("$status-newer", 100)),
+            parent_space_ids: Vec::new(),
+            dm_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 0,
+        },
+        RoomSummary {
+            room_id: "message-newer".to_owned(),
+            display_name: "Message Newer".to_owned(),
+            display_label: "Message Newer".to_owned(),
+            original_display_label: "Message Newer".to_owned(),
+            avatar: None,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: RoomTags::default(),
+            unread_count: 0,
+            notification_count: 0,
+            highlight_count: 0,
+            marked_unread: false,
+            last_activity_ms: 200,
+            latest_event: Some(latest_message("$message-newer", 250)),
+            parent_space_ids: Vec::new(),
+            dm_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 0,
+        },
+    ];
+    let projection = compute_room_list_projection(
+        RoomListFilter::Rooms,
+        RoomListSort::Activity,
+        None,
+        &[],
+        &rooms,
+        &[],
+    );
+
+    assert_eq!(
+        projection
+            .items
+            .iter()
+            .map(|item| item.room_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["message-newer", "status-newer"]
+    );
+}
+
+fn latest_message(event_id: &str, timestamp_ms: u64) -> RoomLatestEventSummary {
+    RoomLatestEventSummary {
+        event_id: event_id.to_owned(),
+        sender_id: Some("@sender:example.invalid".to_owned()),
+        sender_label: Some("Sender".to_owned()),
+        sender_avatar: None,
+        preview: Some("latest message".to_owned()),
+        timestamp_ms,
+    }
 }
 
 // #161: main-pane timeline mode is a guarded Live <-> Anchored state machine.

@@ -20,7 +20,7 @@ use koushi_state::{
     ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchScope as AppSearchScope,
     SessionState, SpaceSummary, ThreadPaneState, UiEvent, reduce, room_activity_unread_count,
 };
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::account::{AccountActorHandle, AccountMessage};
 use crate::command::{
@@ -1679,6 +1679,8 @@ impl AppActor {
                     room_id,
                     event_id,
                 } => {
+                    self.ensure_room_event_cached(request_id, &room_id, &event_id)
+                        .await;
                     let replaced_focused_key =
                         self.unsubscribe_replaced_focused_context_timeline(&room_id, &event_id);
                     let effects = self
@@ -1705,6 +1707,30 @@ impl AppActor {
                         .reduce_app_action(AppAction::EnterAnchoredTimeline { room_id, event_id })
                         .await;
                     self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::ResetRoomTimelineCache {
+                    request_id,
+                    room_id,
+                } => {
+                    let Some(account_key) = self.current_account_key() else {
+                        self.emit(CoreEvent::OperationFailed {
+                            request_id,
+                            failure: CoreFailure::SessionRequired,
+                        });
+                        return true;
+                    };
+                    let resubscribe =
+                        self.state.navigation.active_room_id.as_deref() == Some(room_id.as_str());
+                    let _ = self
+                        .account_actor
+                        .send(AccountMessage::ResetRoomTimelineCache {
+                            request_id,
+                            account_key,
+                            room_id,
+                            resubscribe,
+                        })
+                        .await;
                     true
                 }
                 AppCommand::OpenTimelineAtTimestamp {
@@ -2451,7 +2477,7 @@ impl AppActor {
                                 room_id: room_id.clone(),
                             },
                         },
-                        replay_existing: false,
+                        replay_existing: true,
                     },
                 )
                 .await;
@@ -2572,6 +2598,23 @@ impl AppActor {
                 },
             });
         }
+    }
+
+    async fn ensure_room_event_cached(&self, request_id: RequestId, room_id: &str, event_id: &str) {
+        let (response_tx, response_rx) = oneshot::channel();
+        if !self
+            .account_actor
+            .send(AccountMessage::EnsureRoomEventCached {
+                request_id,
+                room_id: room_id.to_owned(),
+                event_id: event_id.to_owned(),
+                response_tx,
+            })
+            .await
+        {
+            return;
+        }
+        let _ = response_rx.await;
     }
 
     fn current_account_key(&self) -> Option<AccountKey> {
@@ -3729,7 +3772,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_room_selection_ensures_existing_room_timeline_without_replay() {
+    fn runtime_room_selection_replays_existing_room_timeline_for_empty_renderer_store() {
         let source = include_str!("runtime.rs");
         let effects_helper = source
             .split("async fn handle_post_projection_effects")
@@ -3738,11 +3781,11 @@ mod tests {
 
         assert!(
             effects_helper.contains("TimelineCommand::EnsureSubscribed"),
-            "room selection should ensure a room timeline exists without forcing an existing actor to replay all items"
+            "room selection should ensure a room timeline exists"
         );
         assert!(
-            effects_helper.contains("replay_existing: false"),
-            "room selection should skip full InitialItems replay when the room timeline actor is already subscribed"
+            effects_helper.contains("replay_existing: true"),
+            "room selection must replay InitialItems from an existing actor so a rebuilt or reloaded renderer can populate an empty timeline store"
         );
     }
 
@@ -3879,6 +3922,30 @@ mod tests {
         assert!(
             replacement_offset < effects_offset,
             "OpenFocusedContext must unsubscribe a different existing focused timeline before subscribing the replacement"
+        );
+    }
+
+    #[test]
+    fn opening_focused_context_repairs_target_event_cache_before_subscribe() {
+        let source = include_str!("runtime.rs");
+        let open_focused_arm = source
+            .split("AppCommand::OpenFocusedContext")
+            .nth(1)
+            .expect("OpenFocusedContext arm should exist")
+            .split("AppCommand::CloseFocusedContext")
+            .next()
+            .expect("CloseFocusedContext arm should follow OpenFocusedContext");
+
+        let repair_offset = open_focused_arm
+            .find("ensure_room_event_cached")
+            .expect("OpenFocusedContext must repair the target event cache before subscribing");
+        let effects_offset = open_focused_arm
+            .find("handle_app_effects")
+            .expect("OpenFocusedContext must execute the new focused subscribe effect");
+
+        assert!(
+            repair_offset < effects_offset,
+            "target event cache repair must run before focused timeline subscription effects"
         );
     }
 

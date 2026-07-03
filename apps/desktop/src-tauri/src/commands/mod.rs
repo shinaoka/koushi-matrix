@@ -31,7 +31,7 @@ use koushi_state::{
     ImageUploadCompressionMode, InviteScopeSelection, LoginRequest, MentionIntent, PresenceKind,
     RecoveryRequest, RoomListFilter, RoomModerationAction, RoomNotificationMode, RoomSettingChange,
     RoomTagKind, SessionInfo, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem,
-    StagedUploadKind, TimelineScrollAnchor, TimelineScrollAnchorEdge, VerificationCancelReason,
+    StagedUploadKind, TimelineScrollAnchor, VerificationCancelReason,
     build_formatted_message_draft,
 };
 use serde::Deserialize;
@@ -1983,6 +1983,16 @@ pub(crate) fn build_load_room_settings_command(
     })
 }
 
+pub(crate) fn build_reset_room_timeline_cache_command(
+    request_id: koushi_core::RequestId,
+    room_id: String,
+) -> CoreCommand {
+    CoreCommand::App(AppCommand::ResetRoomTimelineCache {
+        request_id,
+        room_id,
+    })
+}
+
 pub(crate) fn build_reshare_room_key_command(
     request_id: koushi_core::RequestId,
     room_id: String,
@@ -2665,12 +2675,12 @@ mod tests {
         build_export_room_keys_command, build_forget_room_command, build_forward_message_command,
         build_hide_link_preview_command, build_ignore_user_command, build_import_room_keys_command,
         build_invite_user_command, build_join_directory_room_command, build_join_room_command,
-        build_leave_room_command, build_load_link_previews_command, build_load_message_source_command,
-        build_load_room_settings_command, build_logout_command, build_mark_activity_read_command,
-        build_moderate_room_member_command, build_observe_timeline_viewport_command,
-        build_open_activity_command, build_open_files_view_command,
-        build_open_timeline_at_timestamp_command, build_paginate_activity_command,
-        build_paginate_thread_timeline_backwards_command,
+        build_leave_room_command, build_load_link_previews_command,
+        build_load_message_source_command, build_load_room_settings_command, build_logout_command,
+        build_mark_activity_read_command, build_moderate_room_member_command,
+        build_observe_timeline_viewport_command, build_open_activity_command,
+        build_open_files_view_command, build_open_timeline_at_timestamp_command,
+        build_paginate_activity_command, build_paginate_thread_timeline_backwards_command,
         build_paginate_timeline_backwards_command, build_pin_event_command,
         build_probe_local_encryption_health_command, build_query_directory_command,
         build_redact_message_command, build_redact_reaction_command, build_remove_room_tag_command,
@@ -4107,11 +4117,17 @@ mod tests {
                 assert!(!options.encrypted);
                 assert_eq!(options.visibility, CreateRoomVisibility::Public);
                 assert_eq!(
-                    options.parent_space.as_ref().map(|parent| parent.space_id.as_str()),
+                    options
+                        .parent_space
+                        .as_ref()
+                        .map(|parent| parent.space_id.as_str()),
                     Some("!space:example.org")
                 );
                 assert_eq!(
-                    options.parent_space.as_ref().map(|parent| parent.via_server.as_str()),
+                    options
+                        .parent_space
+                        .as_ref()
+                        .map(|parent| parent.via_server.as_str()),
                     Some("example.org")
                 );
             }
@@ -5604,9 +5620,11 @@ mod tests {
     }
 
     #[test]
-    fn open_activity_event_sets_bottom_scroll_anchor_without_opening_focused_context() {
+    fn open_activity_event_opens_anchored_main_timeline_without_room_resubscribe() {
         let source = commands_source();
         let fn_name = "pub async fn open_activity_event";
+        let open_token = "OpenFocusedContext";
+        let anchor_token = "EnterAnchoredTimeline";
 
         let fn_offset = source
             .find(fn_name)
@@ -5626,23 +5644,33 @@ mod tests {
             "activity event navigation should rely on room selection reducers for timeline subscription"
         );
         assert!(
-            command_source.contains("build_update_navigation_scroll_anchor_command"),
-            "activity event navigation should save a room scroll anchor"
+            command_source.contains(open_token),
+            "activity event navigation should subscribe the focused event timeline"
         );
         assert!(
-            command_source.contains("TimelineScrollAnchorEdge::Bottom"),
-            "activity event navigation should align the event bottom to the viewport bottom"
+            command_source.contains(anchor_token),
+            "activity event navigation should route the activity event into the main anchored timeline"
         );
         assert!(
-            !command_source.contains("OpenFocusedContext"),
-            "activity event navigation should not open the focused context panel"
+            command_source.contains("wait_for_focused_context"),
+            "activity event navigation should wait for the focused event timeline"
+        );
+        assert!(
+            command_source.contains("wait_for_main_timeline_anchor"),
+            "activity event navigation should wait for the main anchored timeline"
+        );
+        assert!(
+            !command_source.contains("build_update_navigation_scroll_anchor_command"),
+            "activity event navigation must not anchor an event that may be absent from the live timeline"
         );
     }
 
     #[test]
-    fn open_activity_event_waits_for_focused_context_close_before_selecting_room() {
+    fn open_activity_event_waits_before_opening_anchored_event_timeline() {
         let source = commands_source();
         let fn_name = "pub async fn open_activity_event";
+        let open_token = "OpenFocusedContext";
+        let anchor_token = "EnterAnchoredTimeline";
 
         let fn_offset = source
             .find(fn_name)
@@ -5664,15 +5692,28 @@ mod tests {
         let select_offset = command_source
             .find("build_select_room_command")
             .expect("activity event navigation should select the destination room");
+        let wait_select_offset = command_source
+            .find("wait_for_selected_room")
+            .expect("activity event navigation should wait for the selected room state");
+        let open_offset = command_source
+            .find(open_token)
+            .expect("activity event navigation should open the focused event timeline");
+        let wait_open_offset = command_source[open_offset..]
+            .find("wait_for_focused_context(")
+            .map(|offset| open_offset + offset)
+            .expect("activity event navigation should wait for focused event timeline state");
         let anchor_offset = command_source
-            .find("build_update_navigation_scroll_anchor_command")
-            .expect("activity event navigation should save a room scroll anchor");
+            .find(anchor_token)
+            .expect("activity event navigation should enter the main anchored timeline");
 
         assert!(
             close_offset < wait_close_offset
                 && wait_close_offset < select_offset
-                && select_offset < anchor_offset,
-            "activity event navigation must clear the focused main timeline before selected-room wait can short-circuit on the already-active DM"
+                && select_offset < wait_select_offset
+                && wait_select_offset < open_offset
+                && open_offset < wait_open_offset
+                && wait_open_offset < anchor_offset,
+            "activity event navigation must clear the previous anchor, select the room, open the focused event timeline, then enter the main anchored timeline"
         );
     }
 

@@ -1084,6 +1084,7 @@ pub fn run() {
             commands::room::pin_event,
             commands::room::unpin_event,
             commands::room::load_room_settings,
+            commands::room::reset_room_timeline_cache,
             commands::room::reshare_room_key,
             commands::room::update_room_setting,
             commands::room::moderate_room_member,

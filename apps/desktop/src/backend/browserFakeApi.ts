@@ -195,6 +195,7 @@ export interface DesktopApi {
   joinDirectoryRoom(alias: string, viaServer?: string | null): Promise<DesktopSnapshot>;
   joinRoom(roomId: string): Promise<DesktopSnapshot>;
   loadRoomSettings(roomId: string): Promise<DesktopSnapshot>;
+  resetRoomTimelineCache(roomId: string): Promise<DesktopSnapshot>;
   updateRoomSetting(roomId: string, change: RoomSettingChange): Promise<DesktopSnapshot>;
   moderateRoomMember(
     roomId: string,
@@ -932,15 +933,7 @@ class BrowserFakeApi implements DesktopApi {
     }
 
     await this.selectRoom(roomId);
-    this.snapshot.state.ui.navigation.room_scroll_anchors = {
-      ...(this.snapshot.state.ui.navigation.room_scroll_anchors ?? {}),
-      [roomId]: {
-        event_id: eventId,
-        edge: "bottom",
-        offset_px: 0,
-        updated_at_ms: Date.now()
-      }
-    };
+    this.snapshot.state.ui.navigation.main_timeline_anchor = { event_id: eventId };
     this.snapshot.state.ui.focused_context = { kind: "closed" };
     return this.getSnapshot();
   }
@@ -1738,6 +1731,10 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async reshareRoomKey(_roomId: string): Promise<DesktopSnapshot> {
+    return this.getSnapshot();
+  }
+
+  async resetRoomTimelineCache(_roomId: string): Promise<DesktopSnapshot> {
     return this.getSnapshot();
   }
 

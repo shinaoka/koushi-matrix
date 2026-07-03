@@ -34,7 +34,7 @@ export function computeBrowserRoomListProjection(
           }));
 
   const activityByRoomId = new Map(
-    rooms.map((room) => [room.room_id, room.last_activity_ms ?? 0])
+    rooms.map((room) => [room.room_id, roomActiveSortTimestamp(room)])
   );
   items.sort((left, right) => {
     switch (sort.kind) {
@@ -60,6 +60,10 @@ export function computeBrowserRoomListProjection(
     sort,
     items
   };
+}
+
+function roomActiveSortTimestamp(room: RoomSummary): number {
+  return room.latest_event?.timestamp_ms ?? room.last_activity_ms ?? 0;
 }
 
 function roomVisibleInActiveSpace(

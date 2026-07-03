@@ -158,7 +158,7 @@ describe("desktop model", () => {
     ]);
   });
 
-  test("active space exposes child rooms that are not joined", () => {
+  test("active space hides child room ids without joined room summaries", () => {
     const spaces: SpaceSummary[] = [
       {
         space_id: "!space-a:example.invalid",
@@ -179,12 +179,7 @@ describe("desktop model", () => {
     expect(activeSidebar.space_rooms.map((room) => room.room_id)).toEqual([
       "!joined:example.invalid"
     ]);
-    expect(activeSidebar.not_joined_space_rooms.map((room) => room.room_id)).toEqual([
-      "!not-joined:example.invalid"
-    ]);
-    expect(activeSidebar.not_joined_space_rooms[0]?.display_name).toBe(
-      "!not-joined:example.invalid"
-    );
+    expect(activeSidebar.not_joined_space_rooms).toEqual([]);
     expect(homeSidebar.not_joined_space_rooms).toEqual([]);
   });
 
@@ -444,6 +439,33 @@ describe("desktop model", () => {
     expect(projection.items?.map((item) => item.room_id)).toEqual([
       "!b:example.invalid",
       "!a:example.invalid"
+    ]);
+  });
+
+  test("room list projection sorts active rooms by latest message timestamp before status activity", () => {
+    const rooms: RoomSummary[] = [
+      roomSummaryWithLatestMessage("!status-newer:example.invalid", "Status newer", false, {
+        lastActivityMs: 300,
+        latestMessageTimestampMs: 100
+      }),
+      roomSummaryWithLatestMessage("!message-newer:example.invalid", "Message newer", false, {
+        lastActivityMs: 200,
+        latestMessageTimestampMs: 250
+      })
+    ];
+
+    const projection = computeBrowserRoomListProjection(
+      { kind: "rooms" },
+      { kind: "activity" },
+      null,
+      [],
+      rooms,
+      []
+    );
+
+    expect(projection.items?.map((item) => item.room_id)).toEqual([
+      "!message-newer:example.invalid",
+      "!status-newer:example.invalid"
     ]);
   });
 
@@ -1012,6 +1034,28 @@ function roomSummaryWithActivity(
   lastActivityMs: number
 ): RoomSummary {
   return roomSummary(roomId, displayName, isDm, undefined, undefined, lastActivityMs);
+}
+
+function roomSummaryWithLatestMessage(
+  roomId: string,
+  displayName: string,
+  isDm: boolean,
+  {
+    lastActivityMs,
+    latestMessageTimestampMs
+  }: { lastActivityMs: number; latestMessageTimestampMs: number }
+): RoomSummary {
+  return {
+    ...roomSummary(roomId, displayName, isDm, undefined, undefined, lastActivityMs),
+    latest_event: {
+      event_id: `$${roomId.replace(/^!/, "")}`,
+      sender_id: "@sender:example.invalid",
+      sender_label: "Sender",
+      sender_avatar: null,
+      preview: "latest message",
+      timestamp_ms: latestMessageTimestampMs
+    }
+  };
 }
 
 function roomSummaryWithDmSpaces(
