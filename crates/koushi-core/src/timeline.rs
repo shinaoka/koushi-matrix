@@ -247,7 +247,7 @@ impl TimelineManagerActor {
             match msg {
                 TimelineMessage::Shutdown => break,
                 TimelineMessage::SyncStarted { room_list_service } => {
-                    self.room_list_service = room_list_service;
+                    self.handle_sync_started(room_list_service).await;
                 }
                 TimelineMessage::IgnoredUsersUpdated { user_ids } => {
                     self.handle_ignored_users_updated(user_ids).await;
@@ -259,6 +259,50 @@ impl TimelineManagerActor {
         }
         // Drop all timeline handles — this cancels relay tasks and drops SDK handles.
         self.timelines.clear();
+    }
+
+    async fn handle_sync_started(
+        &mut self,
+        room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
+    ) {
+        self.room_list_service = room_list_service.clone();
+        let Some(service) = room_list_service else {
+            return;
+        };
+
+        self.subscribe_existing_timeline_rooms(&service).await;
+    }
+
+    async fn subscribe_existing_timeline_rooms(
+        &self,
+        service: &Arc<matrix_sdk_ui::room_list_service::RoomListService>,
+    ) {
+        let mut seen_room_ids = HashSet::new();
+        let mut room_ids = Vec::new();
+        for key in self.timelines.keys() {
+            let room_id = key.room_id().to_owned();
+            if !seen_room_ids.insert(room_id.clone()) {
+                continue;
+            }
+            if let Ok(parsed_room_id) = matrix_sdk::ruma::RoomId::parse(room_id.as_str()) {
+                room_ids.push(parsed_room_id);
+            }
+        }
+        if room_ids.is_empty() {
+            return;
+        }
+
+        let room_refs = room_ids
+            .iter()
+            .map(|room_id| room_id.as_ref())
+            .collect::<Vec<_>>();
+        if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+            eprintln!(
+                "koushi.subscribe stage=sync_started_existing_rooms count={}",
+                room_refs.len()
+            );
+        }
+        service.subscribe_to_rooms(&room_refs).await;
     }
 
     async fn handle_ignored_users_updated(&mut self, user_ids: std::collections::BTreeSet<String>) {
@@ -8569,6 +8613,56 @@ mod tests {
     }
 
     #[test]
+    fn sync_started_subscribes_existing_timeline_rooms_with_live_room_list_service() {
+        let source = include_str!("timeline.rs");
+        let run_source = source
+            .split("async fn run")
+            .nth(1)
+            .expect("TimelineManagerActor::run should exist")
+            .split("async fn handle_sync_started")
+            .next()
+            .expect("sync-start handler should follow run");
+        let sync_started_arm = run_source
+            .split("TimelineMessage::SyncStarted { room_list_service } => {")
+            .nth(1)
+            .expect("run should handle TimelineMessage::SyncStarted")
+            .split("TimelineMessage::IgnoredUsersUpdated")
+            .next()
+            .expect("ignored-users arm should follow SyncStarted");
+
+        assert!(
+            sync_started_arm.contains("self.handle_sync_started(room_list_service).await"),
+            "SyncStarted must subscribe already-open timeline rooms with the live RoomListService; otherwise room summaries can update while existing timeline actors miss remote events"
+        );
+
+        let sync_started_handler = source
+            .split("async fn handle_sync_started")
+            .nth(1)
+            .expect("TimelineManagerActor should have a SyncStarted handler")
+            .split("async fn handle_ignored_users_updated")
+            .next()
+            .expect("ignored-users handler should follow SyncStarted handler");
+
+        assert!(
+            sync_started_handler.contains("self.room_list_service = room_list_service.clone();"),
+            "the live RoomListService handle must still be retained for future timeline subscriptions"
+        );
+        assert!(
+            sync_started_handler
+                .contains("self.subscribe_existing_timeline_rooms(&service).await;"),
+            "already-open timeline actors must have their rooms subscribed when SyncStarted arrives after actor creation"
+        );
+        assert!(
+            sync_started_handler.contains("self.timelines.keys()"),
+            "existing timeline room subscriptions must be derived from the active timeline keys"
+        );
+        assert!(
+            sync_started_handler.contains("service.subscribe_to_rooms"),
+            "existing timeline rooms must be handed to the live RoomListService"
+        );
+    }
+
+    #[test]
     fn timeline_ensure_subscribed_can_skip_existing_actor_replay() {
         let source = include_str!("timeline.rs");
         let handle_command = source
@@ -9797,8 +9891,7 @@ mod tests {
             "visible initial timeline items must enter the same search-index path as live diffs"
         );
         assert!(
-            spawn_src.find("forward_initial_items_to_search")
-                < spawn_src.find("actor.run()"),
+            spawn_src.find("forward_initial_items_to_search") < spawn_src.find("actor.run()"),
             "initial items must be forwarded before the actor starts processing later diffs"
         );
     }
