@@ -32,6 +32,7 @@ import {
   FileText,
   Forward,
   ImageIcon,
+  Info,
   KeyRound,
   MessageCircle,
   MoreHorizontal,
@@ -2029,6 +2030,7 @@ export const TimelineView = memo(function TimelineView({
   const isAppLevelStore = timelineStore !== undefined || timelineStoreContext !== null;
   const [messageSource, setMessageSource] = useState<TimelineMessageSource | null>(null);
   const [mediaViewerItem, setMediaViewerItem] = useState<TimelineMediaViewerItem | null>(null);
+  const mediaViewerReturnFocusRef = useRef<HTMLElement | null>(null);
   const [navigationSnapshot, setNavigationSnapshot] =
     useState<TimelineNavigationSnapshot | null>(null);
   const [avatarThumbnails, setAvatarThumbnails] = useState<Record<string, AvatarThumbnailState>>(
@@ -2063,6 +2065,20 @@ export const TimelineView = memo(function TimelineView({
   const containerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const itemHeightByDomIdRef = useRef<Map<string, number>>(new Map());
+  const openMediaViewer = useCallback((item: TimelineMediaViewerItem) => {
+    const activeElement =
+      typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    mediaViewerReturnFocusRef.current = activeElement;
+    setMediaViewerItem(item);
+  }, []);
+  const closeMediaViewer = useCallback(() => {
+    const returnFocusTarget = mediaViewerReturnFocusRef.current;
+    setMediaViewerItem(null);
+    mediaViewerReturnFocusRef.current = null;
+    window.setTimeout(() => returnFocusTarget?.focus(), 0);
+  }, []);
   /** Anchor captured before the latest prepend batch was applied. */
   const pendingAnchorRef = useRef<ScrollAnchor | null>(null);
   /** True from prepend-apply until anchor restoration completed. */
@@ -4166,7 +4182,7 @@ export const TimelineView = memo(function TimelineView({
                 onHideLinkPreview={onHideLinkPreview}
                 onCopyText={onCopyText}
                 onOpenAliasDialog={onSetLocalUserAlias ? openAliasDialog : undefined}
-                onOpenMediaViewer={setMediaViewerItem}
+                onOpenMediaViewer={openMediaViewer}
                 onSaveMediaFile={transport.saveMediaFile}
                 forwardDestinations={effectiveForwardDestinations}
                 onRetrySend={onRetrySend}
@@ -4217,7 +4233,7 @@ export const TimelineView = memo(function TimelineView({
       {mediaViewerItem ? (
         <TimelineMediaViewer
           item={mediaViewerItem}
-          onClose={() => setMediaViewerItem(null)}
+          onClose={closeMediaViewer}
         />
       ) : null}
       {aliasTarget ? (
@@ -6007,6 +6023,7 @@ function TimelineMediaAttachment({
   onSaveMediaFile?: TimelineTransport["saveMediaFile"];
   viewerActions: TimelineMediaViewerActions;
 }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const metadata = [
     media.mimetype,
     formatBytes(media.size),
@@ -6059,6 +6076,19 @@ function TimelineMediaAttachment({
         };
   const progressPercent =
     uploadProgressPercentValue ?? downloadProgressPercent;
+  useEffect(() => {
+    if (!detailsOpen) {
+      return;
+    }
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setDetailsOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [detailsOpen]);
 
   // #163: a ready image is rendered image-first. The preview is the primary
   // block; filename/metadata are not laid out over it, and actions appear on
@@ -6096,8 +6126,21 @@ function TimelineMediaAttachment({
           {media.source.encrypted ? (
             <span className="message-media-image-badge">{t("timeline.encryptedMedia")}</span>
           ) : null}
-          {canDownload ? (
-            <div className="message-media-hover-actions">
+          <div className="message-media-hover-actions">
+            <button
+              className="message-media-hover-action"
+              type="button"
+              aria-label={t("timeline.mediaDetails", { filename: media.filename })}
+              aria-expanded={detailsOpen}
+              aria-haspopup="dialog"
+              onClick={(event) => {
+                event.stopPropagation();
+                setDetailsOpen((current) => !current);
+              }}
+            >
+              <Info size={16} />
+            </button>
+            {canDownload ? (
               <button
                 className="message-media-hover-action"
                 type="button"
@@ -6113,6 +6156,31 @@ function TimelineMediaAttachment({
                 }}
               >
                 <Download size={16} />
+              </button>
+            ) : null}
+          </div>
+          {detailsOpen ? (
+            <div
+              className="message-media-details-popover"
+              role="dialog"
+              aria-label={t("timeline.mediaDetailsTitle")}
+            >
+              <div className="message-media-details-title" dir="auto">
+                {media.filename}
+              </div>
+              <div className="message-media-details-list">
+                {metadata.map((value) => (
+                  <span key={value}>{value}</span>
+                ))}
+                {media.source.encrypted ? <span>{t("timeline.encryptedMedia")}</span> : null}
+              </div>
+              <button
+                className="message-media-details-close"
+                type="button"
+                aria-label={t("timeline.closeMediaDetails")}
+                onClick={() => setDetailsOpen(false)}
+              >
+                <XCircle size={16} />
               </button>
             </div>
           ) : null}
@@ -6234,12 +6302,18 @@ function TimelineMediaViewer({
 }) {
   const [isActionMenuOpen, setActionMenuOpen] = useState(false);
   const [isForwardMenuOpen, setForwardMenuOpen] = useState(false);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const actionMenuControlRef = useRef<HTMLDivElement>(null);
   const firstActionMenuItemRef = useRef<HTMLButtonElement>(null);
 
   const closeActionMenu = useCallback(() => {
     setActionMenuOpen(false);
     setForwardMenuOpen(false);
+  }, []);
+
+  useEffect(() => {
+    closeButtonRef.current?.focus();
   }, []);
 
   useEffect(() => {
@@ -6250,6 +6324,31 @@ function TimelineMediaViewer({
           return;
         }
         onClose();
+      }
+      if (event.key === "Tab") {
+        const dialog = dialogRef.current;
+        if (!dialog) {
+          return;
+        }
+        const focusable = Array.from(
+          dialog.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          )
+        ).filter((element) => !element.hasAttribute("aria-hidden"));
+        if (focusable.length === 0) {
+          event.preventDefault();
+          dialog.focus();
+          return;
+        }
+        const first = focusable[0]!;
+        const last = focusable[focusable.length - 1]!;
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
       }
     }
     document.addEventListener("keydown", onKeyDown);
@@ -6299,10 +6398,12 @@ function TimelineMediaViewer({
       }}
     >
       <section
+        ref={dialogRef}
         className="timeline-media-viewer"
         role="dialog"
         aria-modal="true"
         aria-label={t("timeline.mediaViewer")}
+        tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="timeline-media-viewer-toolbar">
@@ -6434,6 +6535,7 @@ function TimelineMediaViewer({
               </div>
             ) : null}
             <button
+              ref={closeButtonRef}
               className="timeline-media-viewer-action timeline-media-viewer-close"
               type="button"
               aria-label={t("mediaGallery.close")}

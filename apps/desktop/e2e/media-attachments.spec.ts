@@ -10,10 +10,10 @@
  *  4. Indeterminate state when progress is null (pending with no bytes/total).
  *  5. Dedupe: a second click while pending does NOT dispatch a second
  *     download_media command.
- *  6. Ready image state renders <img> preview from Rust-owned source_url and
- *     its overlay download starts a browser download.
- *  7. Ready non-image state renders a direct download link (not img), no active
- *     button, and repeated clicks start a browser download.
+ *  6. Ready image state renders <img> preview from Rust-owned source_url;
+ *     hover/focus reveals image-scoped details + download controls.
+ *  7. Ready non-image state renders a transport-safe download button (not img),
+ *     and repeated clicks keep ready state without re-dispatching download_media.
  *  8. Failed state renders error label and retry button.
  *  9. Retry dispatches download_media again after failure.
  */
@@ -317,14 +317,29 @@ test("ready image state renders img element with Rust-owned source_url", async (
   // The ready+Image variant renders an <img>.
   const img = article.locator("img.message-media-image");
   await expect(img).toBeVisible();
-  // #163: image-first layout — the download is a hover/focus overlay action (an
-  // <a>) over the image, not a persistent row control.
-  await expect(article.locator("a.message-media-hover-action")).toBeVisible();
+  // #163: image-first layout — filename/mimetype/size are not persistent row
+  // text, and hover/focus reveals image-scoped controls over the image.
+  await expect(article.getByText("photo.jpg")).toHaveCount(0);
+  await expect(article.getByText("image/jpeg")).toHaveCount(0);
+  const hoverActions = article.locator(".message-media-hover-actions");
+  await expect(hoverActions).toHaveCSS("opacity", "0");
+  await img.hover();
+  await expect(hoverActions).toHaveCSS("opacity", "1");
+  await page.keyboard.press("Tab");
+  await expect(hoverActions).toHaveCSS("opacity", "1");
+  await expect(
+    article.getByRole("button", { name: "Show media details for photo.jpg" })
+  ).toBeVisible();
+  await expect(
+    article.getByRole("button", { name: t("timeline.downloadMedia", { filename: "photo.jpg" }) })
+  ).toBeVisible();
 });
 
-test("ready image overlay download starts a browser download", async ({ page }) => {
+test("ready image details action exposes metadata and click opens viewer without scroll loss", async ({
+  page
+}) => {
   await gotoReadyShell(page);
-  const eventId = "$media-ready-img-download:example.invalid";
+  const eventId = "$media-ready-img-viewer:example.invalid";
   await seedTimelineItems(page, [makeImageItem(eventId)]);
 
   const syntheticUrl = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
@@ -337,21 +352,36 @@ test("ready image overlay download starts a browser download", async ({ page }) 
   });
 
   const article = page.locator(`[data-event-id="${eventId}"]`);
-  const downloadLink = article.locator("a.message-media-hover-action");
-  await expect(downloadLink).toHaveAttribute("download", "photo.jpg");
-  await expect(downloadLink).not.toHaveAttribute("target", "_blank");
+  await article.locator("img.message-media-image").hover();
+  await article.getByRole("button", { name: "Show media details for photo.jpg" }).click();
+  const details = page.getByRole("dialog", { name: "Media details" });
+  await expect(details).toBeVisible();
+  await expect(details.getByText("photo.jpg")).toBeVisible();
+  await expect(details.getByText("image/jpeg")).toBeVisible();
+  await expect(details.getByText("100 KB")).toBeVisible();
+  await expect(details.getByText("800x600")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(details).toHaveCount(0);
 
-  const downloadPromise = page.waitForEvent("download");
-  await downloadLink.click();
-  const download = await downloadPromise;
-  expect(download.suggestedFilename()).toBe("photo.jpg");
+  const timeline = page.getByTestId("timeline-view");
+  const beforeScrollTop = await timeline.evaluate((element) => element.scrollTop);
+  await article.getByRole("button", { name: t("timeline.mediaOpenFile") }).click();
+  const viewer = page.getByRole("dialog", { name: t("timeline.mediaViewer") });
+  await expect(viewer).toBeVisible();
+  await expect(viewer.getByRole("img", { name: "photo.jpg" })).toBeVisible();
+  await expect(viewer.getByRole("button", { name: "Close media viewer" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(viewer).toHaveCount(0);
+  await expect
+    .poll(() => timeline.evaluate((element) => element.scrollTop))
+    .toBe(beforeScrollTop);
 });
 
 // ---------------------------------------------------------------------------
-// 7. Ready file — download link (no img preview for non-image kind)
+// 7. Ready file — download button (no img preview for non-image kind)
 // ---------------------------------------------------------------------------
 
-test("ready file state shows download link, not img element", async ({ page }) => {
+test("ready file state shows download button, not img element", async ({ page }) => {
   await gotoReadyShell(page);
   const eventId = "$media-ready-file:example.invalid";
   await seedTimelineItems(page, [makeFileItem(eventId)]);
@@ -367,10 +397,15 @@ test("ready file state shows download link, not img element", async ({ page }) =
 
   const article = page.locator(`[data-event-id="${eventId}"]`);
   await expect(article.locator("img.message-media-image")).toHaveCount(0);
-  await expect(article.locator("a.message-media-download")).toBeVisible();
+  await expect(
+    article.getByRole("button", { name: t("timeline.downloadMedia", { filename: "document.pdf" }) })
+  ).toBeVisible();
+  await expect(article.locator("a.message-media-download")).toHaveCount(0);
 });
 
-test("ready file download link starts a browser download on repeated clicks", async ({ page }) => {
+test("ready file download button is repeatable without redispatching download_media", async ({
+  page
+}) => {
   await gotoReadyShell(page);
   const eventId = "$media-ready-file-download:example.invalid";
   await seedTimelineItems(page, [makeFileItem(eventId)]);
@@ -383,21 +418,24 @@ test("ready file download link starts a browser download on repeated clicks", as
     height: null,
     mime_type: "application/pdf"
   });
+  await page.evaluate(() => window.__harness.clearInvocations());
 
   const article = page.locator(`[data-event-id="${eventId}"]`);
-  const downloadLink = article.locator("a.message-media-download");
-  await expect(downloadLink).toHaveAttribute("download", "document.pdf");
-  await expect(downloadLink).not.toHaveAttribute("target", "_blank");
+  const mediaCard = article.locator(".message-media");
+  const downloadButton = article.getByRole("button", {
+    name: t("timeline.downloadMedia", { filename: "document.pdf" })
+  });
+  await expect(downloadButton).toBeVisible();
+  await expect(downloadButton).toHaveClass(/message-media-download/);
+  await expect(mediaCard).toHaveAttribute("data-download-state", "ready");
 
-  const firstDownloadPromise = page.waitForEvent("download");
-  await downloadLink.click();
-  const firstDownload = await firstDownloadPromise;
-  expect(firstDownload.suggestedFilename()).toBe("document.pdf");
-
-  const secondDownloadPromise = page.waitForEvent("download");
-  await downloadLink.click();
-  const secondDownload = await secondDownloadPromise;
-  expect(secondDownload.suggestedFilename()).toBe("document.pdf");
+  await downloadButton.click();
+  await downloadButton.click();
+  await expect(mediaCard).toHaveAttribute("data-download-state", "ready");
+  await expect(downloadButton).toBeVisible();
+  expect(
+    await page.evaluate(() => window.__harness.invocationsOf("download_media").length)
+  ).toBe(0);
 });
 
 // ---------------------------------------------------------------------------

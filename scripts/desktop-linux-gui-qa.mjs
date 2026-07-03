@@ -730,12 +730,15 @@ async function runLocalMediaScenario() {
     await waitForAuthScreen(session.browser, timeoutMs);
     await writeLocalLoginPipe(session.qaLoginPipePath, session.credentials);
     await waitForLocalLoginReady(session.browser, timeoutMs);
+    await selectRoomByName(session.browser, "QA Seed Room", timeoutMs);
+    await waitForActiveRoomName(session.browser, "QA Seed Room", timeoutMs);
     await waitForQaTitle(
       session.browser,
-      (status) => status.timeline_room === true,
+      (status) => status.timeline_room === true && status.timeline_subscribed === true,
       timeoutMs,
       "local GUI media timeline room"
     );
+    await waitForTimelineViewMounted(session.browser, timeoutMs);
 
     const baselineMediaRows = await elementCount(session.browser, ".message-media");
     const filename = `qa-media-${safeTimestamp()}.txt`;
@@ -777,9 +780,16 @@ async function runLocalMediaScenario() {
       );
     }
     console.log("gui_local_media_stage=ok");
-    const sendButton = await session.browser.$('button[aria-label="Send"]');
-    await sendButton.waitForDisplayed({ timeout: timeoutMs });
-    await sendButton.click();
+    await clickReadyComposerSendButton(
+      session.browser,
+      timeoutMs,
+      "local GUI media send"
+    );
+    await waitForStagedUploadsCleared(
+      session.browser,
+      timeoutMs,
+      "local GUI media staging clear"
+    );
     await waitForElementCountGreaterThan(
       session.browser,
       ".message-media",
@@ -827,11 +837,121 @@ async function runLocalMediaScenario() {
     const closeViewer = await session.browser.$('button[aria-label="Close media viewer"]');
     await closeViewer.waitForDisplayed({ timeout: timeoutMs });
     await closeViewer.click();
+    await waitForElementCount(
+      session.browser,
+      '[role="dialog"][aria-label="Media viewer"]',
+      0,
+      timeoutMs,
+      "local GUI media gallery viewer close"
+    );
+    await galleryButton.click();
+    await waitForElementCount(
+      session.browser,
+      '[role="region"][aria-label="Room media gallery"]',
+      0,
+      timeoutMs,
+      "local GUI media gallery close"
+    );
+
+    const imageBaselineMediaRows = await elementCount(session.browser, ".message-media");
+    const imageFilename = `qa-inline-image-${safeTimestamp()}.png`;
+    const imageFixturePath = join(session.runDir, imageFilename);
+    writePngFixture(imageFixturePath, 320, 180);
+    await setSyntheticFileInput(
+      session.browser,
+      fileInputSelector,
+      imageFixturePath,
+      imageFilename,
+      "image/png",
+      { base64: readFileSync(imageFixturePath).toString("base64") }
+    );
+    await waitForStagedUpload(
+      session.browser,
+      imageFilename,
+      timeoutMs,
+      "local GUI inline image staged preview"
+    );
+    const stagedImageMediaRows = await elementCount(session.browser, ".message-media");
+    if (stagedImageMediaRows !== imageBaselineMediaRows) {
+      throw new Error(
+        `local GUI inline image sent before Send: baseline=${imageBaselineMediaRows} observed=${stagedImageMediaRows}`
+      );
+    }
+    await clickReadyComposerSendButton(
+      session.browser,
+      timeoutMs,
+      "local GUI inline image send"
+    );
+    await waitForStagedUploadsCleared(
+      session.browser,
+      timeoutMs,
+      "local GUI inline image staging clear"
+    );
+    await waitForElementCountGreaterThan(
+      session.browser,
+      ".message-media",
+      imageBaselineMediaRows,
+      timeoutMs,
+      "local GUI inline image render"
+    );
+    await ensureReadyImageMedia(session.browser, imageFilename, timeoutMs);
+    const readyImage = await session.browser.$(readyImageMediaXpath(imageFilename));
+    await readyImage.waitForDisplayed({ timeout: timeoutMs });
+    await readyImage.moveTo();
+    await waitForReadyImageHoverActions(session.browser, imageFilename, timeoutMs);
+    await clickVisibleButtonByAriaLabel(
+      session.browser,
+      `Show media details for ${imageFilename}`,
+      timeoutMs,
+      "local GUI inline image details"
+    );
+    const detailsDialog = await session.browser.$('[role="dialog"][aria-label="Media details"]');
+    await detailsDialog.waitForDisplayed({ timeout: timeoutMs });
+    await waitForDocumentText(
+      session.browser,
+      [imageFilename, "image/png", "320x180"],
+      timeoutMs,
+      "local GUI inline image details"
+    );
+    await session.browser.keys("Escape");
+    await waitForElementCount(
+      session.browser,
+      '[role="dialog"][aria-label="Media details"]',
+      0,
+      timeoutMs,
+      "local GUI inline image details close"
+    );
+    const imageOpenButton = await session.browser.$(readyImageOpenButtonXpath(imageFilename));
+    await imageOpenButton.waitForDisplayed({ timeout: timeoutMs });
+    await imageOpenButton.click();
+    const inlineImageViewer = await session.browser.$('[role="dialog"][aria-label="Media viewer"]');
+    await inlineImageViewer.waitForDisplayed({ timeout: timeoutMs });
+    const viewerFocusState = await session.browser.execute(
+      () => document.activeElement?.getAttribute("aria-label") ?? ""
+    );
+    if (viewerFocusState !== "Close media viewer") {
+      throw new Error(`local GUI inline image viewer did not focus close control: ${viewerFocusState}`);
+    }
+    await waitForDocumentText(
+      session.browser,
+      [imageFilename, "image/png", "320x180"],
+      timeoutMs,
+      "local GUI inline image viewer"
+    );
+    await session.browser.keys("Escape");
+    await waitForElementCount(
+      session.browser,
+      '[role="dialog"][aria-label="Media viewer"]',
+      0,
+      timeoutMs,
+      "local GUI inline image viewer close"
+    );
 
     await recordLocalGuiEvidence(session);
     console.log("gui_local_media=ok");
     console.log("gui_local_media_caption=ok");
     console.log("gui_local_media_viewer=ok");
+    console.log("gui_local_media_inline_image=ok");
   } finally {
     await cleanupLocalGuiScenario(session);
   }
@@ -2415,6 +2535,253 @@ async function waitForCompressedImageMedia(browser, expected, timeout) {
   );
 }
 
+async function clickReadyComposerSendButton(browser, timeout, description) {
+  const startedAt = Date.now();
+  let lastState = null;
+  while (Date.now() - startedAt < timeout) {
+    lastState = await browser.execute(() => {
+      const labelFor = (element) =>
+        element?.getAttribute("aria-label") ??
+        element?.textContent?.replace(/\s+/g, " ").trim() ??
+        "";
+      const button = document.querySelector("button.send-button");
+      if (!(button instanceof HTMLButtonElement)) {
+        return { clicked: false, reason: "missing" };
+      }
+      const style = window.getComputedStyle(button);
+      const rect = button.getBoundingClientRect();
+      const visible =
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        Number(style.opacity) !== 0 &&
+        rect.width > 0 &&
+        rect.height > 0;
+      const topElement = visible
+        ? document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
+        : null;
+      const covered = Boolean(topElement && topElement !== button && !button.contains(topElement));
+      const state = {
+        clicked: false,
+        reason: "not-ready",
+        ariaLabel: button.getAttribute("aria-label") ?? "",
+        className: button.className,
+        disabled: button.disabled,
+        visible,
+        covered,
+        topLabel: labelFor(topElement),
+        topTag: topElement?.tagName ?? null,
+        stagedItems: document.querySelectorAll(".upload-staging-item").length,
+        title: document.title
+      };
+      if (button.disabled || !visible || covered || !button.classList.contains("ready")) {
+        return state;
+      }
+      button.click();
+      return { ...state, clicked: true, reason: "clicked" };
+    });
+    if (lastState?.clicked) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`${description} send button was not clickable. Last state: ${JSON.stringify(lastState)}`);
+}
+
+async function waitForStagedUploadsCleared(browser, timeout, description) {
+  const startedAt = Date.now();
+  let lastState = null;
+  while (Date.now() - startedAt < timeout) {
+    lastState = await browser.execute(() => ({
+      count: document.querySelectorAll(".upload-staging-item").length,
+      dialogs: Array.from(document.querySelectorAll('[role="dialog"]')).map((dialog) => ({
+        ariaLabel: dialog.getAttribute("aria-label") ?? "",
+        text: dialog.textContent?.replace(/\s+/g, " ").trim().slice(0, 180) ?? ""
+      })),
+      title: document.title
+    }));
+    if (lastState?.count === 0) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`${description} did not clear staged uploads. Last state: ${JSON.stringify(lastState)}`);
+}
+
+async function waitForStagedUpload(browser, filename, timeout, description) {
+  const startedAt = Date.now();
+  let lastState = null;
+  while (Date.now() - startedAt < timeout) {
+    lastState = await browser.execute((expectedFilename) => {
+      const stagedItems = Array.from(document.querySelectorAll(".upload-staging-item")).map(
+        (item) => ({
+          name: item.querySelector(".upload-staging-name")?.textContent?.trim() ?? "",
+          text: item.textContent?.replace(/\s+/g, " ").trim() ?? "",
+          buttons: Array.from(item.querySelectorAll("button"))
+            .map((button) => button.textContent?.replace(/\s+/g, " ").trim() || button.getAttribute("aria-label") || "")
+            .filter(Boolean)
+        })
+      );
+      const fileInputs = Array.from(document.querySelectorAll('input[type="file"]')).map(
+        (input) => ({
+          ariaLabel: input.getAttribute("aria-label") ?? "",
+          files: input instanceof HTMLInputElement ? Array.from(input.files ?? []).map((file) => file.name) : []
+        })
+      );
+      const dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).map((dialog) => ({
+        ariaLabel: dialog.getAttribute("aria-label") ?? "",
+        text: dialog.textContent?.replace(/\s+/g, " ").trim().slice(0, 180) ?? ""
+      }));
+      return {
+        found: stagedItems.some((item) => item.name === expectedFilename || item.text.includes(expectedFilename)),
+        stagedItems,
+        fileInputs,
+        dialogs,
+        title: document.title
+      };
+    }, filename);
+    if (lastState?.found) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`${description} missing staged upload ${filename}. Last state: ${JSON.stringify(lastState)}`);
+}
+
+async function ensureReadyImageMedia(browser, filename, timeout) {
+  const startedAt = Date.now();
+  let lastState = null;
+  while (Date.now() - startedAt < timeout) {
+    lastState = await browser.execute((expectedFilename) => {
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity) !== 0 &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      const image = Array.from(document.querySelectorAll("img.message-media-image")).find(
+        (candidate) => candidate.getAttribute("alt") === expectedFilename
+      );
+      const readyRow = image?.closest(".message-media");
+      if (readyRow?.classList.contains("message-media-image-ready")) {
+        return { ready: true, clickedDownload: false };
+      }
+      const buttons = Array.from(document.querySelectorAll("button"));
+      const downloadButton = buttons.find(
+        (button) =>
+          button.getAttribute("aria-label") === `Download ${expectedFilename}` &&
+          visible(button)
+      );
+      const diagnostics = Array.from(document.querySelectorAll(".message-media")).map((row) => ({
+        kind: row.getAttribute("data-media-kind"),
+        downloadState: row.getAttribute("data-download-state"),
+        title: row.querySelector(".message-media-title")?.textContent?.trim() ?? "",
+        imageAlt: row.querySelector("img.message-media-image")?.getAttribute("alt") ?? "",
+        labels: Array.from(row.querySelectorAll("button"))
+          .map((button) => button.getAttribute("aria-label") ?? "")
+          .filter(Boolean)
+      }));
+      if (downloadButton instanceof HTMLButtonElement) {
+        downloadButton.click();
+        return { ready: false, clickedDownload: true, diagnostics };
+      }
+      return { ready: false, clickedDownload: false, diagnostics };
+    }, filename);
+    if (lastState?.ready) {
+      return;
+    }
+    if (lastState?.clickedDownload) {
+      await waitForReadyImageMedia(browser, filename, Math.max(1000, timeout - (Date.now() - startedAt)));
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`ready inline image media unavailable ${filename}. Last state: ${JSON.stringify(lastState)}`);
+}
+
+async function waitForReadyImageMedia(browser, filename, timeout) {
+  const startedAt = Date.now();
+  let lastState = null;
+  while (Date.now() - startedAt < timeout) {
+    lastState = await browser.execute((expectedFilename) => {
+      const rows = Array.from(document.querySelectorAll(".message-media"));
+      const diagnostics = rows.map((row) => ({
+        kind: row.getAttribute("data-media-kind"),
+        downloadState: row.getAttribute("data-download-state"),
+        title: row.querySelector(".message-media-title")?.textContent?.trim() ?? "",
+        imageAlt: row.querySelector("img.message-media-image")?.getAttribute("alt") ?? "",
+        labels: Array.from(row.querySelectorAll("button"))
+          .map((button) => button.getAttribute("aria-label") ?? "")
+          .filter(Boolean)
+      }));
+      const image = Array.from(document.querySelectorAll("img.message-media-image")).find(
+        (candidate) => candidate.getAttribute("alt") === expectedFilename
+      );
+      const row = image?.closest(".message-media");
+      const labels = row
+        ? Array.from(row.querySelectorAll("button"))
+            .map((button) => button.getAttribute("aria-label") ?? "")
+            .filter(Boolean)
+        : [];
+      return {
+        ready:
+          Boolean(image) &&
+          row?.classList.contains("message-media-image-ready") === true &&
+          labels.includes(`Show media details for ${expectedFilename}`) &&
+          labels.includes(`Download ${expectedFilename}`),
+        diagnostics
+      };
+    }, filename);
+    if (lastState?.ready) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `ready inline image media row missing ${filename}. Last state: ${JSON.stringify(lastState)}`
+  );
+}
+
+async function waitForReadyImageHoverActions(browser, filename, timeout) {
+  const startedAt = Date.now();
+  let lastState = null;
+  while (Date.now() - startedAt < timeout) {
+    lastState = await browser.execute((expectedFilename) => {
+      const image = Array.from(document.querySelectorAll("img.message-media-image")).find(
+        (candidate) => candidate.getAttribute("alt") === expectedFilename
+      );
+      const row = image?.closest(".message-media");
+      const actions = row?.querySelector(".message-media-hover-actions");
+      const labels = row
+        ? Array.from(row.querySelectorAll("button"))
+            .map((button) => button.getAttribute("aria-label") ?? "")
+            .filter(Boolean)
+        : [];
+      const opacity = actions ? Number(window.getComputedStyle(actions).opacity) : null;
+      return {
+        visible:
+          opacity !== null &&
+          opacity > 0.5 &&
+          labels.includes(`Show media details for ${expectedFilename}`) &&
+          labels.includes(`Download ${expectedFilename}`),
+        opacity,
+        labels
+      };
+    }, filename);
+    if (lastState?.visible) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    `ready inline image hover actions missing ${filename}. Last state: ${JSON.stringify(lastState)}`
+  );
+}
+
 async function waitForRichFormattedTimeline(browser, expected, expectedWhiteSpace, timeout) {
   const startedAt = Date.now();
   let lastDiagnostics = null;
@@ -3405,6 +3772,14 @@ function keyManagementFormInputXpath(formLabel, fieldLabel) {
   return `//form[@aria-label=${xpathLiteral(formLabel)}]//label[.//span[normalize-space()=${xpathLiteral(fieldLabel)}]]//input`;
 }
 
+function readyImageMediaXpath(filename) {
+  return `//img[contains(concat(" ", normalize-space(@class), " "), " message-media-image ") and @alt=${xpathLiteral(filename)}]`;
+}
+
+function readyImageOpenButtonXpath(filename) {
+  return `${readyImageMediaXpath(filename)}/ancestor::button[contains(concat(" ", normalize-space(@class), " "), " message-media-open ")][1]`;
+}
+
 function xpathLiteral(value) {
   if (!value.includes("'")) {
     return `'${value}'`;
@@ -3473,8 +3848,8 @@ async function setSyntheticFileInput(browser, selector, fixturePath, filename, m
   try {
     await input.waitForDisplayed({ timeout: timeoutMs });
     await input.setValue(fixturePath);
-    const hasNativeFiles = await fileInputHasFiles(browser, selector);
-    if (!hasNativeFiles) {
+    const nativeFileNames = await fileInputFileNames(browser, selector);
+    if (!nativeFileNames.includes(filename)) {
       await setSyntheticFileList(browser, selector, filename, mimeType, contents);
     }
     await dispatchFileInputChange(browser, selector);
@@ -3483,10 +3858,12 @@ async function setSyntheticFileInput(browser, selector, fixturePath, filename, m
   }
 }
 
-async function fileInputHasFiles(browser, selector) {
+async function fileInputFileNames(browser, selector) {
   return browser.execute((cssSelector) => {
     const input = document.querySelector(cssSelector);
-    return input instanceof HTMLInputElement && (input.files?.length ?? 0) > 0;
+    return input instanceof HTMLInputElement
+      ? Array.from(input.files ?? []).map((file) => file.name)
+      : [];
   }, selector);
 }
 

@@ -3552,6 +3552,57 @@ button:disabled {
   background: rgb(15 27 45 / 62%);
 }
 
+.message-media-details-popover {
+  position: absolute;
+  inset-block-end: 8px;
+  inset-inline-start: 8px;
+  z-index: 1;
+  display: grid;
+  max-inline-size: min(260px, calc(100% - 16px));
+  gap: 4px;
+  padding: 8px 34px 8px 9px;
+  border: 1px solid rgb(255 255 255 / 24%);
+  border-radius: var(--r-md);
+  color: var(--brand-contrast);
+  background: rgb(15 27 45 / 82%);
+  box-shadow: 0 12px 30px rgb(15 27 45 / 24%);
+  font-size: 12px;
+}
+
+.message-media-details-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 800;
+}
+
+.message-media-details-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: rgb(255 255 255 / 82%);
+}
+
+.message-media-details-close {
+  position: absolute;
+  inset-block-start: 5px;
+  inset-inline-end: 5px;
+  display: inline-grid;
+  place-items: center;
+  inline-size: 24px;
+  block-size: 24px;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--brand-contrast);
+  background: transparent;
+  cursor: pointer;
+}
+
+.message-media-details-close:hover,
+.message-media-details-close:focus-visible {
+  background: rgb(255 255 255 / 18%);
+}
+
 .message-media-progress-overlay {
   position: absolute;
   inset-block-end: 0;

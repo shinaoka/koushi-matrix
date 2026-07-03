@@ -3541,11 +3541,17 @@ describe("TimelineView", () => {
       const image = media?.querySelector<HTMLImageElement>(".message-media-image");
       expect(image).not.toBeNull();
       expect(image?.getAttribute("alt")).toBe("photo.png");
-      const downloadButton = media?.querySelector<HTMLButtonElement>(
-        ".message-media-hover-actions .message-media-hover-action"
+      const actionButtons = Array.from(
+        media?.querySelectorAll<HTMLButtonElement>(
+          ".message-media-hover-actions .message-media-hover-action"
+        ) ?? []
+      );
+      const actionLabels = actionButtons.map((button) => button.getAttribute("aria-label"));
+      expect(actionLabels).toEqual(["Show media details for photo.png", "Download photo.png"]);
+      const downloadButton = actionButtons.find(
+        (button) => button.getAttribute("aria-label") === "Download photo.png"
       );
       expect(downloadButton).not.toBeNull();
-      expect(downloadButton?.getAttribute("aria-label")).toBe("Download photo.png");
       expect(downloadButton?.tagName).toBe("BUTTON");
       expect(media?.textContent).not.toContain("image/png");
       expect(media?.textContent).not.toContain("407 KB");
@@ -3799,6 +3805,131 @@ describe("TimelineView", () => {
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: "Media viewer" })).toBeNull();
     });
+  });
+
+  it("keeps ready image metadata behind an inline details action", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        mediaDownloads={{
+          "$ready-image": {
+            kind: "ready",
+            source_url: "asset://localhost/original-photo.png",
+            width: 2048,
+            height: 1188,
+            mime_type: "image/png"
+          }
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [imageMessage("$ready-image", true)]
+          }
+        }
+      });
+    });
+
+    const detailsButton = await screen.findByRole("button", {
+      name: "Show media details for photo.png"
+    });
+    const media = document.querySelector(".message-media");
+    expect(media?.textContent).not.toContain("image/png");
+    expect(media?.textContent).not.toContain("407 KB");
+
+    fireEvent.click(detailsButton);
+
+    const details = await screen.findByRole("dialog", { name: "Media details" });
+    expect(details.textContent).toContain("photo.png");
+    expect(details.textContent).toContain("image/png");
+    expect(details.textContent).toContain("407 KB");
+    expect(details.textContent).toContain("2048x1188");
+    expect(details.textContent).toContain("Encrypted");
+  });
+
+  it("focuses the media viewer close control and returns focus to the clicked image", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        mediaDownloads={{
+          "$ready-image": {
+            kind: "ready",
+            source_url: "asset://localhost/original-photo.png",
+            width: 2048,
+            height: 1188,
+            mime_type: "image/png"
+          }
+        }}
+        onReply={vi.fn()}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [imageMessage("$ready-image", false)]
+          }
+        }
+      });
+    });
+
+    const openButton = await screen.findByRole("button", { name: "Open file" });
+    openButton.focus();
+    fireEvent.click(openButton);
+
+    const viewer = await screen.findByRole("dialog", { name: "Media viewer" });
+    const closeButton = within(viewer).getByRole("button", { name: "Close media viewer" });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(closeButton);
+    });
+
+    const tabEvent = new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+      cancelable: true
+    });
+    document.dispatchEvent(tabEvent);
+    expect(tabEvent.defaultPrevented).toBe(true);
+    expect(viewer.contains(document.activeElement)).toBe(true);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Media viewer" })).toBeNull();
+    });
+    expect(document.activeElement).toBe(openButton);
   });
 
   it("routes media viewer message actions through the event transport", async () => {
