@@ -97,20 +97,40 @@ pub async fn open_activity_event(
     )
     .await?;
 
-    let anchor_request_id = event_conn.next_request_id();
+    let open_request_id = event_conn.next_request_id();
     event_conn
-        .command(build_update_navigation_scroll_anchor_command(
-            anchor_request_id,
-            room_id,
-            TimelineScrollAnchor {
-                event_id,
-                edge: TimelineScrollAnchorEdge::Bottom,
-                offset_px: 0,
-                updated_at_ms: current_unix_epoch_millis(),
-            },
-        ))
+        .command(CoreCommand::App(AppCommand::OpenFocusedContext {
+            request_id: open_request_id,
+            room_id: room_id.clone(),
+            event_id: event_id.clone(),
+        }))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_focused_context(
+        &mut event_conn,
+        open_request_id,
+        &selected_room_id,
+        FOCUSED_CONTEXT_EVENT_TIMEOUT,
+    )
+    .await?;
+
+    let anchor_request_id = event_conn.next_request_id();
+    event_conn
+        .command(CoreCommand::App(AppCommand::EnterAnchoredTimeline {
+            request_id: anchor_request_id,
+            room_id: room_id.clone(),
+            event_id: event_id.clone(),
+        }))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+    wait_for_main_timeline_anchor(
+        &mut event_conn,
+        anchor_request_id,
+        &room_id,
+        &event_id,
+        FOCUSED_CONTEXT_EVENT_TIMEOUT,
+    )
+    .await?;
 
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
@@ -193,13 +213,6 @@ pub async fn select_search_result(
 
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
-}
-
-fn current_unix_epoch_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
-        .unwrap_or(0)
 }
 
 #[tauri::command]

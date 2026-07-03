@@ -550,20 +550,19 @@ describe("BrowserFakeApi settings preview", () => {
     expect(selected.state.ui.focused_context).toEqual({ kind: "closed" });
   });
 
-  test("openActivityEvent anchors the activity event to the timeline bottom", async () => {
+  test("openActivityEvent anchors the activity event in the main timeline", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await (api as unknown as {
       openActivityEvent(roomId: string, eventId: string): Promise<DesktopSnapshot>;
     }).openActivityEvent("!room-alpha:example.invalid", "$alpha-update");
 
     expect(snapshot.state.ui.focused_context).toEqual({ kind: "closed" });
+    expect(snapshot.state.ui.navigation.main_timeline_anchor).toEqual({
+      event_id: "$alpha-update"
+    });
     expect(
       snapshot.state.ui.navigation.room_scroll_anchors?.["!room-alpha:example.invalid"]
-    ).toMatchObject({
-      event_id: "$alpha-update",
-      edge: "bottom",
-      offset_px: 0
-    });
+    ).toBeUndefined();
   });
 
   test("initial browser fake snapshot starts with thread panel closed", async () => {
