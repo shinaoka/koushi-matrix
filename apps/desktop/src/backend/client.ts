@@ -25,6 +25,7 @@ import type {
   UploadStagingRequestItem,
   AttachmentFilter,
   AttachmentSort,
+  CreateRoomRequest,
   FilesViewScope
 } from "../domain/types";
 
@@ -614,8 +615,8 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("join_directory_room", { alias, viaServer });
   }
 
-  async createRoom(name: string): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("create_room", { name });
+  async createRoom(request: CreateRoomRequest): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("create_room", { options: request });
   }
 
   async createSpace(name: string): Promise<DesktopSnapshot> {

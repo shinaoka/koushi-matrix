@@ -16,6 +16,7 @@ import type {
   ActivityStream,
   ActivityTab,
   AttachmentResult,
+  CreateRoomRequest,
   DesktopSnapshot,
   ComposerKeyEvent,
   ComposerResolvedAction,
@@ -201,7 +202,7 @@ export interface DesktopApi {
     targetUserId: string,
     powerLevel: number
   ): Promise<DesktopSnapshot>;
-  createRoom(name: string): Promise<DesktopSnapshot>;
+  createRoom(request: CreateRoomRequest): Promise<DesktopSnapshot>;
   createSpace(name: string): Promise<DesktopSnapshot>;
   setSpaceChild(spaceId: string, childRoomId: string, viaServer: string): Promise<DesktopSnapshot>;
   acceptInvite(roomId: string): Promise<DesktopSnapshot>;
@@ -1881,13 +1882,15 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
-  async createRoom(name: string): Promise<DesktopSnapshot> {
+  async createRoom(request: CreateRoomRequest): Promise<DesktopSnapshot> {
     if (!this.canUseSyncedViews()) {
       return this.getSnapshot();
     }
 
     const count = this.snapshot.state.domain.rooms.length + 1;
     const newRoomId = `!local-room-${count}:fake.local`;
+    const name = request.name.trim();
+    const parentSpaceId = request.parentSpace?.spaceId ?? null;
     const newRoom: RoomSummary = {
       room_id: newRoomId,
       display_name: name,
@@ -1898,9 +1901,9 @@ class BrowserFakeApi implements DesktopApi {
       dm_user_ids: [],
       tags: emptyRoomTags(),
       unread_count: 0,
-      parent_space_ids: [],
+      parent_space_ids: parentSpaceId ? [parentSpaceId] : [],
       dm_space_ids: [],
-      is_encrypted: false
+      is_encrypted: request.visibility === "public" ? false : request.encrypted
     };
     this.snapshot.state.domain.rooms = [...this.snapshot.state.domain.rooms, newRoom];
     this.refreshRoomListProjection();

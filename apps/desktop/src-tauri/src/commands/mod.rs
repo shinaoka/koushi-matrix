@@ -16,9 +16,9 @@ use std::{
 
 use koushi_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
-    ImageUploadCompressionPolicy, ImageUploadCompressionState, ImageUploadDimensions,
-    ImageUploadVariantKind, IntentNoOpReason, IntentOutcome, MediaDownloadSelection,
-    PaginationDirection, RequestId, RoomCommand, RoomEvent, RoomKeyExportRequest,
+    CreateRoomOptions, ImageUploadCompressionPolicy, ImageUploadCompressionState,
+    ImageUploadDimensions, ImageUploadVariantKind, IntentNoOpReason, IntentOutcome,
+    MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent, RoomKeyExportRequest,
     RoomKeyImportRequest, SearchCommand, SearchScope, SecureBackupPassphraseChangeRequest,
     SecureBackupSetupRequest, SetAvatarRequest, SyncCommand, TimelineCommand, TimelineKey,
     TimelineKind, TimelineViewportObservation, UploadMediaKind, UploadMediaRequest,
@@ -1909,12 +1909,11 @@ pub(crate) fn build_submit_search_command(
 
 pub(crate) fn build_create_room_command(
     request_id: koushi_core::RequestId,
-    name: String,
+    options: CreateRoomOptions,
 ) -> CoreCommand {
     CoreCommand::Room(RoomCommand::CreateRoom {
         request_id,
-        name,
-        encrypted: false,
+        options,
     })
 }
 
@@ -2415,11 +2414,11 @@ mod tests {
     };
     use koushi_core::AccountKey;
     use koushi_core::{
-        AccountCommand, AppCommand, CoreCommand, ImageUploadCompressionPolicy,
-        ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantInfo,
-        ImageUploadVariantKind, MediaDownloadSelection, PaginationDirection, RoomCommand,
-        SearchCommand, SearchScope, SyncCommand, TimelineCommand, UploadMediaKind,
-        UploadMediaThumbnail,
+        AccountCommand, AppCommand, CoreCommand, CreateRoomOptions, CreateRoomParentSpace,
+        CreateRoomVisibility, ImageUploadCompressionPolicy, ImageUploadCompressionState,
+        ImageUploadDimensions, ImageUploadVariantInfo, ImageUploadVariantKind,
+        MediaDownloadSelection, PaginationDirection, RoomCommand, SearchCommand, SearchScope,
+        SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaThumbnail,
     };
     use koushi_state::{
         ActivityMarkReadTarget, ActivityTab, AppearanceSettings, ImageUploadCompressionMode,
@@ -3854,15 +3853,38 @@ mod tests {
             SearchScope::Global
         );
 
-        match build_create_room_command(fake_request_id(16), "Local QA Room".to_owned()) {
+        match build_create_room_command(
+            fake_request_id(16),
+            CreateRoomOptions {
+                name: "Local QA Room".to_owned(),
+                topic: Some("Local topic".to_owned()),
+                alias_localpart: Some("local-qa-room".to_owned()),
+                encrypted: false,
+                visibility: CreateRoomVisibility::Public,
+                parent_space: Some(CreateRoomParentSpace {
+                    space_id: "!space:example.org".to_owned(),
+                    via_server: "example.org".to_owned(),
+                }),
+            },
+        ) {
             CoreCommand::Room(RoomCommand::CreateRoom {
                 request_id,
-                name,
-                encrypted,
+                options,
             }) => {
                 assert_eq!(request_id, fake_request_id(16));
-                assert_eq!(name, "Local QA Room");
-                assert!(!encrypted);
+                assert_eq!(options.name, "Local QA Room");
+                assert_eq!(options.topic.as_deref(), Some("Local topic"));
+                assert_eq!(options.alias_localpart.as_deref(), Some("local-qa-room"));
+                assert!(!options.encrypted);
+                assert_eq!(options.visibility, CreateRoomVisibility::Public);
+                assert_eq!(
+                    options.parent_space.as_ref().map(|parent| parent.space_id.as_str()),
+                    Some("!space:example.org")
+                );
+                assert_eq!(
+                    options.parent_space.as_ref().map(|parent| parent.via_server.as_str()),
+                    Some("example.org")
+                );
             }
             other => panic!("unexpected command: {other:?}"),
         }

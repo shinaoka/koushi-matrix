@@ -2441,6 +2441,9 @@ mod tests {
             name: Some("Room Settings Sample".to_owned()),
             topic: Some("Private topic sample".to_owned()),
             avatar_url: Some("mxc://example.test/avatar".to_owned()),
+            canonical_alias: Some("#private:example.test".to_owned()),
+            alternate_aliases: vec!["#private-alt:example.test".to_owned()],
+            share_link: Some("https://matrix.to/#/%23private%3Aexample.test".to_owned()),
             join_rule: RoomJoinRule::Invite,
             history_visibility: RoomHistoryVisibility::Shared,
             permissions: RoomPermissionFacts {

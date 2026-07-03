@@ -28,6 +28,9 @@ fn editable_settings(room_id: &str) -> RoomSettingsSnapshot {
         name: Some("Synthetic Room".to_owned()),
         topic: Some("Synthetic topic".to_owned()),
         avatar_url: Some("mxc://example.invalid/avatar".to_owned()),
+        canonical_alias: None,
+        alternate_aliases: Vec::new(),
+        share_link: None,
         join_rule: RoomJoinRule::Invite,
         history_visibility: RoomHistoryVisibility::Shared,
         permissions: RoomPermissionFacts {
@@ -91,6 +94,33 @@ fn serialized_member_original_display_label(state: &AppState, user_id: &str) -> 
         .find(|member| member["user_id"] == user_id)
         .and_then(|member| member["original_display_label"].as_str())
         .map(str::to_owned)
+}
+
+#[test]
+fn room_settings_share_link_prefers_aliases_then_room_id() {
+    assert_eq!(
+        koushi_state::room_settings_share_link(
+            "!fallback:example.invalid",
+            Some("#canonical:example.invalid"),
+            &["#alternate:example.invalid".to_owned()]
+        )
+        .as_deref(),
+        Some("https://matrix.to/#/%23canonical%3Aexample.invalid")
+    );
+    assert_eq!(
+        koushi_state::room_settings_share_link(
+            "!fallback:example.invalid",
+            Some("   "),
+            &["  ".to_owned(), "#alternate:example.invalid".to_owned()]
+        )
+        .as_deref(),
+        Some("https://matrix.to/#/%23alternate%3Aexample.invalid")
+    );
+    assert_eq!(
+        koushi_state::room_settings_share_link("!fallback:example.invalid", None, &[])
+            .as_deref(),
+        Some("https://matrix.to/#/!fallback%3Aexample.invalid")
+    );
 }
 
 #[test]
@@ -721,6 +751,9 @@ fn avatar_metadata_debug_redacts_mxc_and_user_room_associations() {
         name: Some("Synthetic Room".to_owned()),
         topic: Some("Synthetic topic".to_owned()),
         avatar_url: Some("mxc://example.invalid/room-avatar".to_owned()),
+        canonical_alias: None,
+        alternate_aliases: Vec::new(),
+        share_link: None,
         join_rule: RoomJoinRule::Invite,
         history_visibility: RoomHistoryVisibility::Shared,
         permissions: RoomPermissionFacts::default(),

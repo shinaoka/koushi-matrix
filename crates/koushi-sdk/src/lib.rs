@@ -2364,11 +2364,35 @@ pub struct MatrixPublicRoomDirectoryRoom {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatrixCreateRoomOptions {
+    pub name: String,
+    pub topic: Option<String>,
+    pub alias_localpart: Option<String>,
+    pub encrypted: bool,
+    pub visibility: MatrixCreateRoomVisibility,
+    pub parent_space: Option<MatrixCreateRoomParentSpace>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MatrixCreateRoomVisibility {
+    Private,
+    Public,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatrixCreateRoomParentSpace {
+    pub space_id: String,
+    pub via_server: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MatrixRoomSettingsSnapshot {
     pub room_id: String,
     pub name: Option<String>,
     pub topic: Option<String>,
     pub avatar_url: Option<String>,
+    pub canonical_alias: Option<String>,
+    pub alternate_aliases: Vec<String>,
     pub join_rule: MatrixRoomJoinRule,
     pub history_visibility: MatrixRoomHistoryVisibility,
     pub permissions: MatrixRoomPermissionFacts,
@@ -3420,19 +3444,9 @@ pub async fn update_room_member_power_level(
 
 pub async fn create_room(
     session: &MatrixClientSession,
-    name: &str,
-    encrypted: bool,
+    options: MatrixCreateRoomOptions,
 ) -> Result<String, MatrixRoomOperationError> {
-    let mut request = matrix_sdk::ruma::api::client::room::create_room::v3::Request::new();
-    request.name = non_empty_name(name);
-    if encrypted {
-        request.initial_state.push(
-            matrix_sdk::ruma::events::InitialStateEvent::with_empty_state_key(
-                matrix_sdk::ruma::events::room::encryption::RoomEncryptionEventContent::with_recommended_defaults(),
-            )
-            .to_raw_any(),
-        );
-    }
+    let request = create_room_request(options)?;
     let room = session
         .client()
         .create_room(request)
@@ -3446,27 +3460,109 @@ pub async fn create_public_directory_room(
     name: &str,
     alias_localpart: &str,
 ) -> Result<String, MatrixRoomOperationError> {
-    let alias_localpart = alias_localpart.trim();
-    if alias_localpart.is_empty()
-        || alias_localpart.starts_with('#')
-        || alias_localpart.contains(':')
-    {
-        return Err(MatrixRoomOperationError::InvalidRoomAlias);
+    create_room(
+        session,
+        MatrixCreateRoomOptions {
+            name: name.to_owned(),
+            topic: None,
+            alias_localpart: Some(alias_localpart.to_owned()),
+            encrypted: false,
+            visibility: MatrixCreateRoomVisibility::Public,
+            parent_space: None,
+        },
+    )
+    .await
+}
+
+fn create_room_request(
+    options: MatrixCreateRoomOptions,
+) -> Result<
+    matrix_sdk::ruma::api::client::room::create_room::v3::Request,
+    MatrixRoomOperationError,
+> {
+    let mut request = matrix_sdk::ruma::api::client::room::create_room::v3::Request::new();
+    request.name = non_empty_name(&options.name);
+    request.topic = options
+        .topic
+        .as_deref()
+        .map(str::trim)
+        .filter(|topic| !topic.is_empty())
+        .map(ToOwned::to_owned);
+
+    let is_public = matches!(options.visibility, MatrixCreateRoomVisibility::Public);
+    if is_public {
+        let alias_localpart = options
+            .alias_localpart
+            .as_deref()
+            .map(str::trim)
+            .filter(|alias| !alias.is_empty())
+            .ok_or(MatrixRoomOperationError::InvalidRoomAlias)?;
+        validate_alias_localpart(alias_localpart)?;
+        request.room_alias_name = Some(alias_localpart.to_owned());
+        request.visibility = matrix_sdk::ruma::api::client::room::Visibility::Public;
+        request.preset =
+            Some(matrix_sdk::ruma::api::client::room::create_room::v3::RoomPreset::PublicChat);
     }
 
-    let mut request = matrix_sdk::ruma::api::client::room::create_room::v3::Request::new();
-    request.name = non_empty_name(name);
-    request.room_alias_name = Some(alias_localpart.to_owned());
-    request.visibility = matrix_sdk::ruma::api::client::room::Visibility::Public;
-    request.preset =
-        Some(matrix_sdk::ruma::api::client::room::create_room::v3::RoomPreset::PublicChat);
+    if options.encrypted && !is_public {
+        request.initial_state.push(
+            matrix_sdk::ruma::events::InitialStateEvent::with_empty_state_key(
+                matrix_sdk::ruma::events::room::encryption::RoomEncryptionEventContent::with_recommended_defaults(),
+            )
+            .to_raw_any(),
+        );
+    }
 
-    let room = session
-        .client()
-        .create_room(request)
-        .await
-        .map_err(MatrixRoomOperationError::from_sdk_error)?;
-    Ok(room.room_id().to_string())
+    if let Some(parent_space) = options.parent_space {
+        let parent_space_id = matrix_sdk::ruma::OwnedRoomId::try_from(parent_space.space_id)
+            .map_err(|_| MatrixRoomOperationError::InvalidRoomId)?;
+        let via_server = matrix_sdk::ruma::OwnedServerName::try_from(parent_space.via_server)
+            .map_err(|_| MatrixRoomOperationError::InvalidServerName)?;
+        let mut parent_content =
+            matrix_sdk::ruma::events::space::parent::SpaceParentEventContent::new(vec![
+                via_server,
+            ]);
+        parent_content.canonical = true;
+        request.initial_state.push(
+            matrix_sdk::ruma::events::InitialStateEvent::new(
+                parent_space_id.clone(),
+                parent_content,
+            )
+            .to_raw_any(),
+        );
+
+        if !is_public {
+            request.initial_state.push(
+                matrix_sdk::ruma::events::InitialStateEvent::with_empty_state_key(
+                    matrix_sdk::ruma::events::room::join_rules::RoomJoinRulesEventContent::restricted(
+                        vec![
+                            matrix_sdk::ruma::events::room::join_rules::AllowRule::room_membership(
+                                parent_space_id,
+                            ),
+                        ],
+                    ),
+                )
+                .to_raw_any(),
+            );
+            request.initial_state.push(
+                matrix_sdk::ruma::events::InitialStateEvent::with_empty_state_key(
+                    matrix_sdk::ruma::events::room::history_visibility::RoomHistoryVisibilityEventContent::new(
+                        matrix_sdk::ruma::events::room::history_visibility::HistoryVisibility::Shared,
+                    ),
+                )
+                .to_raw_any(),
+            );
+        }
+    }
+
+    Ok(request)
+}
+
+fn validate_alias_localpart(alias_localpart: &str) -> Result<(), MatrixRoomOperationError> {
+    if alias_localpart.starts_with('#') || alias_localpart.contains(':') {
+        return Err(MatrixRoomOperationError::InvalidRoomAlias);
+    }
+    Ok(())
 }
 
 pub async fn create_space(
@@ -4211,6 +4307,12 @@ async fn matrix_room_settings_snapshot(room: &matrix_sdk::Room) -> MatrixRoomSet
         name: room.name(),
         topic: room.topic(),
         avatar_url: room.avatar_url().map(|url| url.to_string()),
+        canonical_alias: room.canonical_alias().map(|alias| alias.to_string()),
+        alternate_aliases: room
+            .alt_aliases()
+            .into_iter()
+            .map(|alias| alias.to_string())
+            .collect(),
         join_rule: room
             .join_rule()
             .as_ref()
@@ -5331,12 +5433,13 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use super::{
-        LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE, MatrixEventCacheError, MatrixLocalUserAliases,
-        MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom, MatrixRoomHistoryVisibility,
-        MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomModerationAction,
+        LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE, MatrixCreateRoomOptions,
+        MatrixCreateRoomParentSpace, MatrixCreateRoomVisibility, MatrixEventCacheError,
+        MatrixLocalUserAliases, MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom,
+        MatrixRoomHistoryVisibility, MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomModerationAction,
         MatrixRoomPermissionFacts, MatrixRoomSettingChange, MatrixRoomSettingsSnapshot,
         MatrixRoomTagInfo, MatrixRoomTags, MatrixSearchIndexKey, MatrixSearchIndexStoreConfig,
-        create_public_directory_room, get_room_settings_snapshot, join_room_by_alias,
+        create_public_directory_room, create_room_request, get_room_settings_snapshot, join_room_by_alias,
         matrix_room_list_room_from_counts, matrix_room_member_role, moderate_room_member,
         normalized_local_user_aliases, query_public_room_directory,
         room_settings_snapshot_with_change, room_settings_snapshot_with_member_power_level,
@@ -5807,6 +5910,93 @@ mod tests {
     }
 
     #[test]
+    fn create_room_request_projects_space_room_options() {
+        let request = create_room_request(MatrixCreateRoomOptions {
+            name: "Synthetic Ops".to_owned(),
+            topic: Some("Deployment notes".to_owned()),
+            alias_localpart: None,
+            encrypted: true,
+            visibility: MatrixCreateRoomVisibility::Private,
+            parent_space: Some(MatrixCreateRoomParentSpace {
+                space_id: "!space:example.invalid".to_owned(),
+                via_server: "example.invalid".to_owned(),
+            }),
+        })
+        .expect("request should build");
+
+        assert_eq!(request.name.as_deref(), Some("Synthetic Ops"));
+        assert_eq!(request.topic.as_deref(), Some("Deployment notes"));
+        let initial_state = initial_state_json(&request);
+        assert!(
+            initial_state
+                .iter()
+                .any(|event| event.get("type").and_then(serde_json::Value::as_str)
+                    == Some("m.room.encryption"))
+        );
+        assert!(
+            initial_state
+                .iter()
+                .any(|event| event.get("type").and_then(serde_json::Value::as_str)
+                    == Some("m.space.parent")
+                    && event.get("state_key").and_then(serde_json::Value::as_str)
+                        == Some("!space:example.invalid"))
+        );
+        let join_rules = initial_state
+            .iter()
+            .find(|event| {
+                event.get("type").and_then(serde_json::Value::as_str)
+                    == Some("m.room.join_rules")
+            })
+            .expect("join rules");
+        assert_eq!(
+            join_rules
+                .get("content")
+                .and_then(|content| content.get("join_rule"))
+                .and_then(serde_json::Value::as_str),
+            Some("restricted")
+        );
+    }
+
+    #[test]
+    fn create_room_request_projects_public_alias_without_encryption() {
+        let request = create_room_request(MatrixCreateRoomOptions {
+            name: "Synthetic Public".to_owned(),
+            topic: None,
+            alias_localpart: Some("synthetic-public".to_owned()),
+            encrypted: true,
+            visibility: MatrixCreateRoomVisibility::Public,
+            parent_space: None,
+        })
+        .expect("request should build");
+
+        assert_eq!(request.room_alias_name.as_deref(), Some("synthetic-public"));
+        assert_eq!(
+            request.visibility,
+            matrix_sdk::ruma::api::client::room::Visibility::Public
+        );
+        let initial_state = initial_state_json(&request);
+        assert!(
+            !initial_state
+                .iter()
+                .any(|event| event.get("type").and_then(serde_json::Value::as_str)
+                    == Some("m.room.encryption"))
+        );
+    }
+
+    fn initial_state_json(
+        request: &matrix_sdk::ruma::api::client::room::create_room::v3::Request,
+    ) -> Vec<serde_json::Value> {
+        request
+            .initial_state
+            .iter()
+            .map(|event| {
+                serde_json::from_str::<serde_json::Value>(event.json().get())
+                    .expect("initial state event JSON")
+            })
+            .collect()
+    }
+
+    #[test]
     fn room_tag_operations_use_sdk_tag_methods() {
         let source = include_str!("lib.rs");
 
@@ -5868,6 +6058,8 @@ mod tests {
             name: Some("Synthetic Room".to_owned()),
             topic: Some("Synthetic topic".to_owned()),
             avatar_url: None,
+            canonical_alias: None,
+            alternate_aliases: Vec::new(),
             join_rule: MatrixRoomJoinRule::Invite,
             history_visibility: MatrixRoomHistoryVisibility::Shared,
             permissions: MatrixRoomPermissionFacts {
@@ -5914,6 +6106,8 @@ mod tests {
             name: Some("Original Room".to_owned()),
             topic: Some("Original topic".to_owned()),
             avatar_url: Some("mxc://example.invalid/original".to_owned()),
+            canonical_alias: None,
+            alternate_aliases: Vec::new(),
             join_rule: MatrixRoomJoinRule::Invite,
             history_visibility: MatrixRoomHistoryVisibility::Shared,
             permissions: MatrixRoomPermissionFacts {
@@ -5976,6 +6170,8 @@ mod tests {
             name: Some("Original Room".to_owned()),
             topic: Some("Original topic".to_owned()),
             avatar_url: None,
+            canonical_alias: None,
+            alternate_aliases: Vec::new(),
             join_rule: MatrixRoomJoinRule::Invite,
             history_visibility: MatrixRoomHistoryVisibility::Shared,
             permissions: MatrixRoomPermissionFacts {

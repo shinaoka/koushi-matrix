@@ -864,12 +864,20 @@ describe("desktop model", () => {
     const before = await api.getSnapshot();
     const beforeRoomCount = before.state.domain.rooms.length;
 
-    const snapshot = await api.createRoom("New Test Room");
+    const snapshot = await api.createRoom({
+      name: "New Test Room",
+      topic: null,
+      aliasLocalpart: null,
+      encrypted: true,
+      visibility: "private",
+      parentSpace: null
+    });
 
     expect(snapshot.state.domain.rooms).toHaveLength(beforeRoomCount + 1);
     const newRoom = snapshot.state.domain.rooms[snapshot.state.domain.rooms.length - 1];
     expect(newRoom?.display_name).toBe("New Test Room");
     expect(newRoom?.is_dm).toBe(false);
+    expect(newRoom?.is_encrypted).toBe(true);
     expect(snapshot.state.ui.navigation.active_room_id).toBe(newRoom?.room_id);
   });
 

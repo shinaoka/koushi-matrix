@@ -127,12 +127,19 @@ export type MessageId =
   | "dialog.cancelCreate"
   | "dialog.createRoomTitle"
   | "dialog.createSpaceTitle"
+  | "dialog.encryptedRoom"
   | "dialog.invitePeopleTitle"
   | "dialog.matrixUserId"
   | "dialog.newDmTitle"
+  | "dialog.privateRoom"
+  | "dialog.publicRoom"
+  | "dialog.roomAddress"
+  | "dialog.roomTopic"
+  | "dialog.roomVisibility"
   | "dialog.sendInvite"
   | "dialog.roomName"
   | "dialog.spaceName"
+  | "dialog.standardRoomInSpace"
   | "dialog.startDm"
   | "dialog.reportReasonLabel"
   | "dialog.reportReasonPlaceholder"
@@ -249,6 +256,7 @@ export type MessageId =
   | "room.avatarUrl"
   | "room.currentAvatar"
   | "room.currentTopic"
+  | "room.copyShareLink"
   | "room.directMessage"
   | "room.dmList"
   | "room.editRoles"
@@ -303,6 +311,14 @@ export type MessageId =
   | "room.roomInfo"
   | "room.roomScoped"
   | "room.roomSettings"
+  | "room.status"
+  | "room.statusEncrypted"
+  | "room.statusHistoryLimited"
+  | "room.statusHistoryShared"
+  | "room.statusHistoryWorldReadable"
+  | "room.statusNotEncrypted"
+  | "room.statusPrivate"
+  | "room.statusPublic"
   | "room.reshareRoomKeys"
   | "room.reshareRoomKeysHint"
   | "room.reshareRoomKeysPending"
@@ -1037,12 +1053,19 @@ const en: Catalog = {
   "dialog.cancelCreate": "Cancel create",
   "dialog.createRoomTitle": "Create room",
   "dialog.createSpaceTitle": "Create space",
+  "dialog.encryptedRoom": "Encrypted room",
   "dialog.invitePeopleTitle": "Invite people to {name}",
   "dialog.matrixUserId": "Matrix user ID",
   "dialog.newDmTitle": "New DM",
+  "dialog.privateRoom": "Private room",
+  "dialog.publicRoom": "Public room",
+  "dialog.roomAddress": "Room address",
+  "dialog.roomTopic": "Topic",
+  "dialog.roomVisibility": "Room visibility",
   "dialog.sendInvite": "Send invite",
   "dialog.roomName": "Room name",
   "dialog.spaceName": "Space name",
+  "dialog.standardRoomInSpace": "Standard room in {spaceName}",
   "dialog.startDm": "Start DM",
   "dialog.reportReasonLabel": "Reason",
   "dialog.reportReasonPlaceholder": "Why are you reporting this?",
@@ -1163,6 +1186,7 @@ const en: Catalog = {
   "room.banMember": "Ban {name}",
   "room.currentAvatar": "Current avatar",
   "room.currentTopic": "Current topic",
+  "room.copyShareLink": "Copy room link",
   "room.members": "Members",
   "room.directMessage": "Direct message",
   "room.dmList": "DM list",
@@ -1218,6 +1242,14 @@ const en: Catalog = {
   "room.roomInfo": "Room info",
   "room.roomScoped": "Room scoped",
   "room.roomSettings": "Room settings",
+  "room.status": "Room status",
+  "room.statusEncrypted": "Encrypted",
+  "room.statusHistoryLimited": "New members do not see history",
+  "room.statusHistoryShared": "New members see history",
+  "room.statusHistoryWorldReadable": "Anyone can see history",
+  "room.statusNotEncrypted": "Not encrypted",
+  "room.statusPrivate": "Private",
+  "room.statusPublic": "Public",
   "room.reshareRoomKeys": "Reshare room keys",
   "room.reshareRoomKeysHint": "Send this room's known decryption keys again to eligible, unblocked devices.",
   "room.reshareRoomKeysPending": "Resharing keys…",
@@ -1850,12 +1882,19 @@ const ja: Catalog = {
   "dialog.cancelCreate": "作成をキャンセル",
   "dialog.createRoomTitle": "ルームを作成",
   "dialog.createSpaceTitle": "スペースを作成",
+  "dialog.encryptedRoom": "暗号化ルーム",
   "dialog.invitePeopleTitle": "{name}に招待",
   "dialog.matrixUserId": "MatrixユーザーID",
   "dialog.newDmTitle": "新しいDM",
+  "dialog.privateRoom": "非公開ルーム",
+  "dialog.publicRoom": "公開ルーム",
+  "dialog.roomAddress": "ルームアドレス",
+  "dialog.roomTopic": "トピック",
+  "dialog.roomVisibility": "ルーム公開範囲",
   "dialog.sendInvite": "招待を送信",
   "dialog.roomName": "ルーム名",
   "dialog.spaceName": "スペース名",
+  "dialog.standardRoomInSpace": "{spaceName}内の標準ルーム",
   "dialog.startDm": "DMを開始",
   "dialog.reportReasonLabel": "理由",
   "dialog.reportReasonPlaceholder": "報告理由を入力してください",
@@ -1976,6 +2015,7 @@ const ja: Catalog = {
   "room.banMember": "{name}をBAN",
   "room.currentAvatar": "現在のアバター",
   "room.currentTopic": "現在のトピック",
+  "room.copyShareLink": "ルームリンクをコピー",
   "room.members": "メンバー",
   "room.directMessage": "ダイレクトメッセージ",
   "room.dmList": "DM一覧",
@@ -2031,6 +2071,14 @@ const ja: Catalog = {
   "room.roomInfo": "ルーム情報",
   "room.roomScoped": "ルーム内",
   "room.roomSettings": "ルーム設定",
+  "room.status": "ルーム状態",
+  "room.statusEncrypted": "暗号化済み",
+  "room.statusHistoryLimited": "新規メンバーは履歴を閲覧不可",
+  "room.statusHistoryShared": "新規メンバーも履歴を閲覧可",
+  "room.statusHistoryWorldReadable": "誰でも履歴を閲覧可",
+  "room.statusNotEncrypted": "未暗号化",
+  "room.statusPrivate": "非公開",
+  "room.statusPublic": "公開",
   "room.reshareRoomKeys": "ルーム鍵を再共有",
   "room.reshareRoomKeysHint": "このルームで保持している復号鍵を、対象となるブロックされていないデバイスへ再送します。",
   "room.reshareRoomKeysPending": "鍵を再共有中…",

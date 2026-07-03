@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use koushi_core::{
-    AccountKey, AppCommand, CoreCommand, CoreEvent, CoreFailure, CoreRuntime, PaginationDirection,
-    RoomCommand, TimelineCommand, TimelineKey, executor,
+    AccountKey, AppCommand, CoreCommand, CoreEvent, CoreFailure, CoreRuntime, CreateRoomOptions,
+    CreateRoomVisibility, PaginationDirection, RoomCommand, TimelineCommand, TimelineKey, executor,
 };
 use koushi_state::{
     AppAction, AuthSecret, RecoveryMethod, RecoveryRequest, SessionState,
@@ -23,8 +23,14 @@ async fn unauthenticated_session_commands_are_rejected() {
     connection
         .command(CoreCommand::Room(RoomCommand::CreateRoom {
             request_id,
-            name: "qa room".to_owned(),
-            encrypted: false,
+            options: CreateRoomOptions {
+                name: "qa room".to_owned(),
+                topic: None,
+                alias_localpart: None,
+                encrypted: false,
+                visibility: CreateRoomVisibility::Private,
+                parent_space: None,
+            },
         }))
         .await
         .expect("submit");

@@ -339,14 +339,14 @@ pub async fn update_room_member_role(
 
 #[tauri::command]
 pub async fn create_room(
-    name: String,
+    options: koushi_core::CreateRoomOptions,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
     let mut event_conn = state.runtime.attach();
     let request_id = event_conn.next_request_id();
     event_conn
-        .command(build_create_room_command(request_id, name))
+        .command(build_create_room_command(request_id, options))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
     wait_for_room_created(&mut event_conn, request_id, CREATE_EVENT_TIMEOUT).await?;

@@ -1309,7 +1309,8 @@ describe("Tauri state refresh wiring", () => {
     const createSource = source.slice(createStart, createEnd);
 
     expect(createSource).toContain("activeSpaceIdForCreatedRoom");
-    expect(createSource).toContain("api.createRoom(name)");
+    expect(createSource).toContain("createRoomRequestFromDraft");
+    expect(createSource).toContain("api.createRoom(createRoomRequest");
     expect(createSource).toContain("serverNameFromRoomId(createdRoomId)");
     expect(createSource).toContain("api.setSpaceChild(");
   });

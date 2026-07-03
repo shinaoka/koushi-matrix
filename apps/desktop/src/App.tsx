@@ -113,6 +113,7 @@ import type {
   AttachmentFilter,
   AttachmentScope,
   AttachmentSort,
+  CreateRoomRequest,
   DesktopSnapshot,
   DirectoryRoomSummary,
   FilesViewScope,
@@ -181,6 +182,7 @@ import {
 import { AuthScreen } from "./components/auth";
 import {
   CreateEntityDialog,
+  type CreateRoomDialogOptions,
   DiagnosticDialog,
   ImageCompressionDialog,
   ReportReasonDialog,
@@ -378,6 +380,12 @@ type ReportDialogState =
   | { kind: "user"; userId: string }
   | { kind: "content"; roomId: string; eventId: string }
   | { kind: "room"; roomId: string };
+const DEFAULT_CREATE_ROOM_OPTIONS: CreateRoomDialogOptions = {
+  aliasLocalpart: "",
+  encrypted: true,
+  topic: "",
+  visibility: "private"
+};
 const DEFAULT_SIDEBAR_WIDTH = 318;
 const MIN_SIDEBAR_WIDTH = 260;
 const MAX_SIDEBAR_WIDTH = 440;
@@ -424,6 +432,33 @@ function writeHomeSelection(selection: HomeSelection): void {
     return;
   }
   window.localStorage.setItem(HOME_SELECTION_KEY, JSON.stringify(selection));
+}
+
+function defaultCreateRoomDialogOptions(): CreateRoomDialogOptions {
+  return { ...DEFAULT_CREATE_ROOM_OPTIONS };
+}
+
+function createRoomRequestFromDraft(
+  name: string,
+  options: CreateRoomDialogOptions,
+  activeSpaceId: string | null
+): CreateRoomRequest {
+  const visibility = options.visibility;
+  const parentViaServer = activeSpaceId ? serverNameFromRoomId(activeSpaceId) : null;
+  return {
+    name,
+    topic: options.topic.trim() || null,
+    aliasLocalpart: visibility === "public" ? options.aliasLocalpart.trim() || null : null,
+    encrypted: visibility === "private" ? options.encrypted : false,
+    visibility,
+    parentSpace:
+      activeSpaceId && parentViaServer
+        ? {
+            spaceId: activeSpaceId,
+            viaServer: parentViaServer
+          }
+        : null
+  };
 }
 
 function clampSidebarWidth(width: number, viewportWidth = window.innerWidth): number {
@@ -1078,6 +1113,8 @@ export function App() {
   // (basic_operation); the created room/space identity comes from the API.
   const [createDialog, setCreateDialog] = useState<"room" | "space" | null>(null);
   const [createDraftName, setCreateDraftName] = useState("");
+  const [createRoomDraftOptions, setCreateRoomDraftOptions] =
+    useState<CreateRoomDialogOptions>(defaultCreateRoomDialogOptions);
   const [reportDialog, setReportDialog] = useState<ReportDialogState | null>(null);
   const [reportReasonDraft, setReportReasonDraft] = useState("");
   const [timelineStore, setTimelineStore] = useState<TimelineStoreState>(createTimelineStore);
@@ -2373,12 +2410,14 @@ export function App() {
 
   function openCreateDialog(kind: "room" | "space") {
     setCreateDraftName("");
+    setCreateRoomDraftOptions(defaultCreateRoomDialogOptions());
     setCreateDialog(kind);
   }
 
   function closeCreateDialog() {
     setCreateDialog(null);
     setCreateDraftName("");
+    setCreateRoomDraftOptions(defaultCreateRoomDialogOptions());
   }
 
   function openNewDmDialog() {
@@ -2485,6 +2524,9 @@ export function App() {
     if (
       !kind ||
       !name ||
+      (kind === "room" &&
+        createRoomDraftOptions.visibility === "public" &&
+        !createRoomDraftOptions.aliasLocalpart.trim()) ||
       isBusy ||
       (snapshot && snapshot.state.ui.basic_operation.kind !== "idle")
     ) {
@@ -2492,8 +2534,12 @@ export function App() {
     }
     setIsBusy(true);
     try {
+      const createRoomRequest =
+        kind === "room"
+          ? createRoomRequestFromDraft(name, createRoomDraftOptions, activeSpaceIdForCreatedRoom)
+          : null;
       let nextSnapshot =
-        kind === "space" ? await api.createSpace(name) : await api.createRoom(name);
+        kind === "space" ? await api.createSpace(name) : await api.createRoom(createRoomRequest!);
       const createdRoomId = nextSnapshot.state.ui.navigation.active_room_id;
       const viaServer = createdRoomId ? serverNameFromRoomId(createdRoomId) : null;
       if (kind === "room" && activeSpaceIdForCreatedRoom && createdRoomId && viaServer) {
@@ -3753,10 +3799,13 @@ export function App() {
       ) : null}
       {createDialog ? (
         <CreateEntityDialog
+          activeSpaceName={activeSpaceName}
           isBusy={isBusy || snapshot.state.ui.basic_operation.kind !== "idle"}
           kind={createDialog}
+          roomOptions={createRoomDraftOptions}
           value={createDraftName}
           onCancel={closeCreateDialog}
+          onRoomOptionsChange={setCreateRoomDraftOptions}
           onSubmit={() => {
             void submitCreateDialog();
           }}

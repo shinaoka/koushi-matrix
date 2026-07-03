@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { t } from "../i18n/messages";
 import type {
+  CreateRoomVisibility,
   StagedUploadCompressionChoice,
   StagedUploadItem
 } from "../domain/types";
@@ -33,34 +34,71 @@ async function writeClipboardText(value: string): Promise<void> {
 
 // ===== CreateEntityDialog =====
 
+export interface CreateRoomDialogOptions {
+  aliasLocalpart: string;
+  encrypted: boolean;
+  topic: string;
+  visibility: CreateRoomVisibility;
+}
+
 export function CreateEntityDialog({
+  activeSpaceName = null,
   isBusy,
   kind,
+  roomOptions,
   value,
   onCancel,
+  onRoomOptionsChange,
   onSubmit,
   onValueChange
 }: {
+  activeSpaceName?: string | null;
   isBusy: boolean;
   kind: "room" | "space";
+  roomOptions?: CreateRoomDialogOptions;
   value: string;
   onCancel: () => void;
+  onRoomOptionsChange?: (options: CreateRoomDialogOptions) => void;
   onSubmit: () => void;
   onValueChange: (value: string) => void;
 }) {
   const isSpace = kind === "space";
+  const effectiveRoomOptions =
+    roomOptions ??
+    ({
+      aliasLocalpart: "",
+      encrypted: true,
+      topic: "",
+      visibility: "private"
+    } satisfies CreateRoomDialogOptions);
   const title = isSpace ? t("dialog.createSpaceTitle") : t("dialog.createRoomTitle");
   const inputLabel = isSpace ? t("dialog.spaceName") : t("dialog.roomName");
   const submitLabel = isSpace
     ? t("dialog.submitCreateSpace")
     : t("dialog.submitCreateRoom");
-  const canSubmit = value.trim().length > 0 && !isBusy;
+  const canSubmit =
+    value.trim().length > 0 &&
+    (isSpace ||
+      effectiveRoomOptions.visibility === "private" ||
+      effectiveRoomOptions.aliasLocalpart.trim().length > 0) &&
+    !isBusy;
 
   function onDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
       onCancel();
     }
+  }
+
+  function updateRoomOptions(patch: Partial<CreateRoomDialogOptions>) {
+    const next = {
+      ...effectiveRoomOptions,
+      ...patch
+    };
+    if (next.visibility === "public") {
+      next.encrypted = false;
+    }
+    onRoomOptionsChange?.(next);
   }
 
   return (
@@ -90,6 +128,86 @@ export function CreateEntityDialog({
           value={value}
           onChange={(event) => onValueChange(event.target.value)}
         />
+        {!isSpace ? (
+          <div className="create-room-options">
+            <div className="create-room-visibility" role="radiogroup" aria-label={t("dialog.roomVisibility")}>
+              <label className="create-room-option">
+                <input
+                  type="radio"
+                  name="create-room-visibility"
+                  checked={effectiveRoomOptions.visibility === "private"}
+                  onChange={() =>
+                    updateRoomOptions({
+                      aliasLocalpart: "",
+                      visibility: "private"
+                    })
+                  }
+                />
+                <span>{t("dialog.privateRoom")}</span>
+              </label>
+              <label className="create-room-option">
+                <input
+                  type="radio"
+                  name="create-room-visibility"
+                  checked={effectiveRoomOptions.visibility === "public"}
+                  onChange={() =>
+                    updateRoomOptions({
+                      encrypted: false,
+                      visibility: "public"
+                    })
+                  }
+                />
+                <span>{t("dialog.publicRoom")}</span>
+              </label>
+            </div>
+            {activeSpaceName && effectiveRoomOptions.visibility === "private" ? (
+              <div className="create-room-space-note">
+                {t("dialog.standardRoomInSpace", { spaceName: activeSpaceName })}
+              </div>
+            ) : null}
+            {effectiveRoomOptions.visibility === "private" ? (
+              <label className="dialog-checkbox">
+                <input
+                  type="checkbox"
+                  checked={effectiveRoomOptions.encrypted}
+                  aria-label={t("dialog.encryptedRoom")}
+                  onChange={(event) =>
+                    updateRoomOptions({
+                      encrypted: event.currentTarget.checked
+                    })
+                  }
+                />
+                <span>{t("dialog.encryptedRoom")}</span>
+              </label>
+            ) : null}
+            <input
+              className="dialog-input"
+              type="text"
+              aria-label={t("dialog.roomTopic")}
+              placeholder={t("dialog.roomTopic")}
+              value={effectiveRoomOptions.topic}
+              onChange={(event) =>
+                updateRoomOptions({
+                  topic: event.target.value
+                })
+              }
+            />
+            {effectiveRoomOptions.visibility === "public" ? (
+              <input
+                className="dialog-input"
+                type="text"
+                aria-label={t("dialog.roomAddress")}
+                placeholder={t("dialog.roomAddress")}
+                value={effectiveRoomOptions.aliasLocalpart}
+                onChange={(event) =>
+                  updateRoomOptions({
+                    aliasLocalpart: event.target.value
+                  })
+                }
+              />
+            ) : null}
+          </div>
+        ) : null}
         <div className="dialog-actions">
           <button
             className="dialog-button"

@@ -1259,11 +1259,68 @@ pub enum SyncCommand {
     SyncOnce { request_id: RequestId },
 }
 
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateRoomOptions {
+    pub name: String,
+    #[serde(default)]
+    pub topic: Option<String>,
+    #[serde(default)]
+    pub alias_localpart: Option<String>,
+    #[serde(default)]
+    pub encrypted: bool,
+    #[serde(default)]
+    pub visibility: CreateRoomVisibility,
+    #[serde(default)]
+    pub parent_space: Option<CreateRoomParentSpace>,
+}
+
+impl fmt::Debug for CreateRoomOptions {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CreateRoomOptions")
+            .field("name", &"RoomName(..)")
+            .field("topic", &self.topic.as_ref().map(|_| "RoomTopic(..)"))
+            .field(
+                "alias_localpart",
+                &self.alias_localpart.as_ref().map(|_| "RoomAliasLocalpart(..)"),
+            )
+            .field("encrypted", &self.encrypted)
+            .field("visibility", &self.visibility)
+            .field("parent_space", &self.parent_space)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CreateRoomVisibility {
+    #[default]
+    Private,
+    Public,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateRoomParentSpace {
+    pub space_id: String,
+    pub via_server: String,
+}
+
+impl fmt::Debug for CreateRoomParentSpace {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CreateRoomParentSpace")
+            .field("space_id", &"RoomId(..)")
+            .field("via_server", &"ServerName(..)")
+            .finish()
+    }
+}
+
 pub enum RoomCommand {
     CreateRoom {
         request_id: RequestId,
-        name: String,
-        encrypted: bool,
+        options: CreateRoomOptions,
     },
     CreatePublicDirectoryRoom {
         request_id: RequestId,
@@ -1413,13 +1470,17 @@ impl fmt::Debug for RoomCommand {
         match self {
             Self::CreateRoom {
                 request_id,
-                encrypted,
+                options,
                 ..
             } => formatter
                 .debug_struct("CreateRoom")
                 .field("request_id", request_id)
                 .field("name", &"RoomName(..)")
-                .field("encrypted", encrypted)
+                .field("encrypted", &options.encrypted)
+                .field("visibility", &options.visibility)
+                .field("has_topic", &options.topic.is_some())
+                .field("has_alias_localpart", &options.alias_localpart.is_some())
+                .field("has_parent_space", &options.parent_space.is_some())
                 .finish(),
             Self::CreatePublicDirectoryRoom { request_id, .. } => formatter
                 .debug_struct("CreatePublicDirectoryRoom")

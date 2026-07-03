@@ -44,7 +44,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{collections::BTreeSet, io};
 
 use koushi_core::command::{
-    AccountCommand, AppCommand, CoreCommand, ImageUploadCompressionPolicy,
+    AccountCommand, AppCommand, CoreCommand, CreateRoomOptions, CreateRoomVisibility,
+    ImageUploadCompressionPolicy,
     ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantInfo,
     ImageUploadVariantKind, MediaDownloadSelection, RoomCommand, SearchCommand, SearchScope,
     SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaRequest, UploadMediaThumbnail,
@@ -3624,8 +3625,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     conn_a
         .command(CoreCommand::Room(RoomCommand::CreateRoom {
             request_id: create_room_id,
-            name: "QA Room".to_owned(),
-            encrypted: false,
+            options: private_room_options("QA Room", false),
         }))
         .await
         .map_err(|e| format!("submit create room: {e}"))?;
@@ -4664,6 +4664,17 @@ fn room_list_summary(snapshot: &AppState) -> String {
     format!("rooms={rooms} spaces={spaces} dms={dms} unread_rooms={unread}")
 }
 
+fn private_room_options(name: impl Into<String>, encrypted: bool) -> CreateRoomOptions {
+    CreateRoomOptions {
+        name: name.into(),
+        topic: None,
+        alias_localpart: None,
+        encrypted,
+        visibility: CreateRoomVisibility::Private,
+        parent_space: None,
+    }
+}
+
 async fn create_room_for_qa(
     conn: &mut CoreConnection,
     name: &str,
@@ -4673,8 +4684,7 @@ async fn create_room_for_qa(
     let request_id = conn.next_request_id();
     conn.command(CoreCommand::Room(RoomCommand::CreateRoom {
         request_id,
-        name: name.to_owned(),
-        encrypted,
+        options: private_room_options(name, encrypted),
     }))
     .await
     .map_err(|e| format!("{label}: submit room create failed: {e}"))?;
@@ -7066,8 +7076,7 @@ async fn seed_encrypted_room_key_for_qa(
     let create_room_id = conn.next_request_id();
     conn.command(CoreCommand::Room(RoomCommand::CreateRoom {
         request_id: create_room_id,
-        name: "QA E2EE Backup Room".to_owned(),
-        encrypted: true,
+        options: private_room_options("QA E2EE Backup Room", true),
     }))
     .await
     .map_err(|e| format!("{label}: submit encrypted room create failed: {e}"))?;

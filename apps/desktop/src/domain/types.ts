@@ -2,6 +2,22 @@ import type { LinkPreview } from "./linkPreview";
 
 export type SearchScopeKind = "currentRoom" | "currentSpace" | "dms" | "allRooms";
 
+export interface CreateRoomRequest {
+  name: string;
+  topic?: string | null;
+  aliasLocalpart?: string | null;
+  encrypted: boolean;
+  visibility: CreateRoomVisibility;
+  parentSpace?: CreateRoomParentSpace | null;
+}
+
+export type CreateRoomVisibility = "private" | "public";
+
+export interface CreateRoomParentSpace {
+  spaceId: string;
+  viaServer: string;
+}
+
 export interface DesktopSnapshot {
   state_generation?: number;
   state: AppState;
@@ -793,6 +809,9 @@ export interface RoomSettingsSnapshot {
   name: string | null;
   topic: string | null;
   avatar_url: string | null;
+  canonical_alias?: string | null;
+  alternate_aliases?: string[];
+  share_link?: string | null;
   join_rule: RoomJoinRule;
   history_visibility: RoomHistoryVisibility;
   permissions: RoomPermissionFacts;

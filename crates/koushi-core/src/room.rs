@@ -58,7 +58,8 @@ use std::{
 };
 
 use koushi_sdk::{
-    MatrixClientSession, MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom,
+    MatrixClientSession, MatrixCreateRoomOptions, MatrixCreateRoomParentSpace,
+    MatrixCreateRoomVisibility, MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom,
     MatrixRoomHistoryVisibility, MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomMemberSummary,
     MatrixRoomModerationAction, MatrixRoomOperationError, MatrixRoomPermissionFacts,
     MatrixRoomSettingChange, MatrixRoomSettingsSnapshot, MatrixRoomTagKind, MatrixRoomTags,
@@ -73,7 +74,7 @@ use koushi_state::{
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use crate::command::RoomCommand;
+use crate::command::{CreateRoomOptions, CreateRoomVisibility, RoomCommand};
 use crate::event::{CoreEvent, ReportKind, RoomEvent};
 use crate::executor;
 use crate::failure::{CoreFailure, RoomFailureKind};
@@ -295,10 +296,9 @@ impl RoomActor {
         match command {
             RoomCommand::CreateRoom {
                 request_id,
-                name,
-                encrypted,
+                options,
             } => {
-                self.handle_create_room(request_id, name, encrypted).await;
+                self.handle_create_room(request_id, options).await;
             }
             RoomCommand::CreatePublicDirectoryRoom {
                 request_id,
@@ -527,13 +527,14 @@ impl RoomActor {
         }
     }
 
-    async fn handle_create_room(&self, request_id: RequestId, name: String, encrypted: bool) {
+    async fn handle_create_room(&self, request_id: RequestId, options: CreateRoomOptions) {
         trace_room_operation("create_room", "start", request_id);
         let Some(session) = &self.session else {
             trace_room_operation("create_room", "session_required", request_id);
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
+        let name = options.name.clone();
         // Drive the basic-operation state machine: Idle -> CreatingRoom. The
         // reducer guards re-entry; `request_id.sequence` is the correlation id
         // the settle action below must match.
@@ -541,7 +542,7 @@ impl RoomActor {
             request_id: request_id.sequence,
             request: BasicOperationRequest::CreateRoom { name: name.clone() },
         }]);
-        match koushi_sdk::create_room(session, &name, encrypted).await {
+        match koushi_sdk::create_room(session, matrix_create_room_options(options)).await {
             Ok(room_id) => {
                 trace_room_operation("create_room", "succeeded", request_id);
                 self.emit(CoreEvent::Room(RoomEvent::RoomCreated {
@@ -2143,12 +2144,39 @@ fn directory_room_summary_from_sdk(room: MatrixPublicRoomDirectoryRoom) -> Direc
     }
 }
 
+fn matrix_create_room_options(options: CreateRoomOptions) -> MatrixCreateRoomOptions {
+    MatrixCreateRoomOptions {
+        name: options.name,
+        topic: options.topic,
+        alias_localpart: options.alias_localpart,
+        encrypted: options.encrypted,
+        visibility: match options.visibility {
+            CreateRoomVisibility::Private => MatrixCreateRoomVisibility::Private,
+            CreateRoomVisibility::Public => MatrixCreateRoomVisibility::Public,
+        },
+        parent_space: options
+            .parent_space
+            .map(|parent| MatrixCreateRoomParentSpace {
+                space_id: parent.space_id,
+                via_server: parent.via_server,
+            }),
+    }
+}
+
 fn room_settings_snapshot_from_sdk(settings: MatrixRoomSettingsSnapshot) -> RoomSettingsSnapshot {
+    let share_link = koushi_state::room_settings_share_link(
+        &settings.room_id,
+        settings.canonical_alias.as_deref(),
+        &settings.alternate_aliases,
+    );
     RoomSettingsSnapshot {
         room_id: settings.room_id,
         name: settings.name,
         topic: settings.topic,
         avatar_url: settings.avatar_url,
+        canonical_alias: settings.canonical_alias,
+        alternate_aliases: settings.alternate_aliases,
+        share_link,
         join_rule: room_join_rule_from_sdk(settings.join_rule),
         history_visibility: room_history_visibility_from_sdk(settings.history_visibility),
         permissions: room_permission_facts_from_sdk(settings.permissions),
@@ -2474,6 +2502,8 @@ pub mod tests {
             name: Some("Private room".to_owned()),
             topic: Some("Private topic".to_owned()),
             avatar_url: Some("mxc://example.invalid/avatar".to_owned()),
+            canonical_alias: Some("#private:example.invalid".to_owned()),
+            alternate_aliases: vec!["#alternate:example.invalid".to_owned()],
             join_rule: MatrixRoomJoinRule::Invite,
             history_visibility: MatrixRoomHistoryVisibility::Shared,
             permissions: MatrixRoomPermissionFacts {
@@ -2496,6 +2526,10 @@ pub mod tests {
         let mapped = room_settings_snapshot_from_sdk(settings);
 
         assert!(mapped.permissions.can_edit_roles);
+        assert_eq!(
+            mapped.share_link.as_deref(),
+            Some("https://matrix.to/#/%23private%3Aexample.invalid")
+        );
         let member = mapped.members.first().expect("member summary");
         assert_eq!(member.power_level, Some(50));
         assert_eq!(member.role, RoomMemberRole::Moderator);
@@ -3067,8 +3101,14 @@ pub mod tests {
         handle
             .send(RoomMessage::Command(RoomCommand::CreateRoom {
                 request_id,
-                name: "test room".to_owned(),
-                encrypted: false,
+                options: CreateRoomOptions {
+                    name: "test room".to_owned(),
+                    topic: None,
+                    alias_localpart: None,
+                    encrypted: false,
+                    visibility: CreateRoomVisibility::Private,
+                    parent_space: None,
+                },
             }))
             .await;
 
