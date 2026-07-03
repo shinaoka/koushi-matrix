@@ -1509,6 +1509,180 @@ fn timeline_key_trace_kind(key: &TimelineKey) -> &'static str {
     }
 }
 
+fn timeline_item_trace_enabled() -> bool {
+    std::env::var_os("KOUSHI_TIMELINE_ITEM_TRACE").is_some()
+}
+
+fn timeline_private_token(value: Option<&str>) -> String {
+    let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
+        return "none".to_owned();
+    };
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn timeline_item_id_for_trace(item: &TimelineItem) -> (&'static str, Option<&str>) {
+    match &item.id {
+        TimelineItemId::Event { event_id } => ("event", Some(event_id.as_str())),
+        TimelineItemId::Transaction { transaction_id } => {
+            ("transaction", Some(transaction_id.as_str()))
+        }
+        TimelineItemId::Synthetic { synthetic_id } => ("synthetic", Some(synthetic_id.as_str())),
+    }
+}
+
+fn timeline_trace_index(index: Option<usize>) -> String {
+    index
+        .map(|index| index.to_string())
+        .unwrap_or_else(|| "none".to_owned())
+}
+
+fn timeline_trace_timestamp_min(timestamp_ms: Option<u64>) -> String {
+    timestamp_ms
+        .map(|timestamp_ms| (timestamp_ms / 60_000).to_string())
+        .unwrap_or_else(|| "none".to_owned())
+}
+
+fn timeline_item_trace_line(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    item: &TimelineItem,
+) -> String {
+    let (id_kind, id_value) = timeline_item_id_for_trace(item);
+    let body_present = item
+        .body
+        .as_deref()
+        .is_some_and(|body| !body.trim().is_empty());
+    let formatted_present = item
+        .formatted
+        .as_ref()
+        .is_some_and(timeline_formatted_body_is_renderable);
+    let thread_root_present = item
+        .thread_root
+        .as_deref()
+        .is_some_and(|thread_root| !thread_root.trim().is_empty());
+    let reply_present = item
+        .in_reply_to_event_id
+        .as_deref()
+        .is_some_and(|event_id| !event_id.trim().is_empty());
+
+    format!(
+        "koushi.timeline_item stage={stage} timeline={} op={op} index={} id_kind={id_kind} id={} sender={} ts_min={} hidden={} thread_root_present={} thread_root={} reply_present={} reply={} body_present={} formatted_present={} media_present={} redacted={} utd_present={} send_state_present={}",
+        timeline_key_trace_kind(key),
+        timeline_trace_index(index),
+        timeline_private_token(id_value),
+        timeline_private_token(item.sender.as_deref()),
+        timeline_trace_timestamp_min(item.timestamp_ms),
+        item.is_hidden,
+        thread_root_present,
+        timeline_private_token(item.thread_root.as_deref()),
+        reply_present,
+        timeline_private_token(item.in_reply_to_event_id.as_deref()),
+        body_present,
+        formatted_present,
+        item.media.is_some(),
+        item.is_redacted,
+        item.unable_to_decrypt.is_some(),
+        item.send_state.is_some()
+    )
+}
+
+fn trace_timeline_items(stage: &str, key: &TimelineKey, items: &[TimelineItem]) {
+    if !timeline_item_trace_enabled() {
+        return;
+    }
+    let hidden = items.iter().filter(|item| item.is_hidden).count();
+    eprintln!(
+        "koushi.timeline_items stage={stage} timeline={} count={} visible={} hidden={}",
+        timeline_key_trace_kind(key),
+        items.len(),
+        items.len().saturating_sub(hidden),
+        hidden
+    );
+    for (index, item) in items.iter().enumerate() {
+        eprintln!(
+            "{}",
+            timeline_item_trace_line(stage, key, "item", Some(index), item)
+        );
+    }
+}
+
+fn trace_timeline_diff_without_item(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    length: Option<usize>,
+) {
+    eprintln!(
+        "koushi.timeline_diff stage={stage} timeline={} op={op} index={} length={}",
+        timeline_key_trace_kind(key),
+        timeline_trace_index(index),
+        timeline_trace_index(length)
+    );
+}
+
+fn trace_timeline_diffs(stage: &str, key: &TimelineKey, diffs: &[TimelineDiff]) {
+    if !timeline_item_trace_enabled() {
+        return;
+    }
+    eprintln!(
+        "koushi.timeline_diffs stage={stage} timeline={} count={}",
+        timeline_key_trace_kind(key),
+        diffs.len()
+    );
+    for diff in diffs {
+        match diff {
+            TimelineDiff::PushFront { item } => {
+                eprintln!(
+                    "{}",
+                    timeline_item_trace_line(stage, key, "push_front", Some(0), item)
+                );
+            }
+            TimelineDiff::PushBack { item } => {
+                eprintln!(
+                    "{}",
+                    timeline_item_trace_line(stage, key, "push_back", None, item)
+                );
+            }
+            TimelineDiff::Insert { index, item } => {
+                eprintln!(
+                    "{}",
+                    timeline_item_trace_line(stage, key, "insert", Some(*index), item)
+                );
+            }
+            TimelineDiff::Set { index, item } => {
+                eprintln!(
+                    "{}",
+                    timeline_item_trace_line(stage, key, "set", Some(*index), item)
+                );
+            }
+            TimelineDiff::Remove { index } => {
+                trace_timeline_diff_without_item(stage, key, "remove", Some(*index), None);
+            }
+            TimelineDiff::Truncate { length } => {
+                trace_timeline_diff_without_item(stage, key, "truncate", None, Some(*length));
+            }
+            TimelineDiff::Clear => {
+                trace_timeline_diff_without_item(stage, key, "clear", None, None);
+            }
+            TimelineDiff::Reset { items } => {
+                trace_timeline_diff_without_item(stage, key, "reset", None, Some(items.len()));
+                for (index, item) in items.iter().enumerate() {
+                    eprintln!(
+                        "{}",
+                        timeline_item_trace_line(stage, key, "reset_item", Some(index), item)
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn pagination_direction_trace_token(direction: PaginationDirection) -> &'static str {
     match direction {
         PaginationDirection::Backward => "backward",
@@ -1879,6 +2053,7 @@ impl TimelineActor {
         for item in &mut initial_items {
             apply_link_previews_to_item(&mut *item, &room_id, &link_preview_policy, &session).await;
         }
+        trace_timeline_items("initial", &key, &initial_items);
         let navigation_items = initial_items.clone();
         let initial_activity_rows = activity_rows_from_timeline_items(&key, &initial_items);
         let initial_media_gallery_items =
@@ -3844,6 +4019,7 @@ impl TimelineActor {
                 items.len()
             );
         }
+        trace_timeline_items("replay_initial", &self.key, &items);
         self.emit(CoreEvent::Timeline(TimelineEvent::InitialItems {
             request_id: Some(request_id),
             key: self.key.clone(),
@@ -3918,6 +4094,7 @@ impl TimelineActor {
                 _ => {}
             }
         }
+        trace_timeline_diffs("diff_batch", &self.key, &core_diffs);
         if let Some(action) = thread_attention_action_from_timeline_diffs(
             &mut self.thread_attention_counts,
             &self.key,
@@ -4897,6 +5074,7 @@ impl TimelineActor {
             )
             .await;
         }
+        trace_timeline_items("overflow_initial", &self.key, &items);
 
         self.emit(CoreEvent::Timeline(TimelineEvent::InitialItems {
             request_id: None,
@@ -8275,6 +8453,49 @@ mod tests {
         assert!(timeline_item_should_be_hidden(false, false));
         assert!(!timeline_item_should_be_hidden(true, false));
         assert!(!timeline_item_should_be_hidden(false, true));
+    }
+
+    #[test]
+    fn timeline_item_trace_line_is_private_data_free() {
+        let key = TimelineKey {
+            account_key: AccountKey("@account:test".to_owned()),
+            kind: TimelineKind::Room {
+                room_id: "!private-room:test".to_owned(),
+            },
+        };
+        let mut item = timeline_item(
+            "$private-event:test",
+            Some("private body"),
+            "@private-sender:test",
+            true,
+        );
+        item.thread_root = Some("$private-thread-root:test".to_owned());
+        item.in_reply_to_event_id = Some("$private-reply:test".to_owned());
+
+        let line = timeline_item_trace_line("initial", &key, "item", Some(7), &item);
+
+        assert!(line.contains("koushi.timeline_item stage=initial"));
+        assert!(line.contains("timeline=room"));
+        assert!(line.contains("op=item"));
+        assert!(line.contains("index=7"));
+        assert!(line.contains("hidden=true"));
+        assert!(line.contains("thread_root_present=true"));
+        assert!(line.contains("reply_present=true"));
+        assert!(line.contains("body_present=true"));
+        for private_value in [
+            "@account:test",
+            "!private-room:test",
+            "$private-event:test",
+            "@private-sender:test",
+            "private body",
+            "$private-thread-root:test",
+            "$private-reply:test",
+        ] {
+            assert!(
+                !line.contains(private_value),
+                "trace leaked {private_value}: {line}"
+            );
+        }
     }
 
     #[test]
