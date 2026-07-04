@@ -607,6 +607,12 @@ export type MessageId =
   | "space.summary"
   | "sync.failed"
   | "sync.failedWithReason"
+  | "sync.reasonAuth"
+  | "sync.reasonHttp"
+  | "sync.reasonInternal"
+  | "sync.reasonNetworkError"
+  | "sync.reasonNetworkOffline"
+  | "sync.reasonStore"
   | "sync.reconnecting"
   | "sync.reconnectingWithReason"
   | "sync.running"
@@ -1567,6 +1573,12 @@ const en: Catalog = {
   "space.summary": "Space summary",
   "sync.failed": "Failed",
   "sync.failedWithReason": "Sync failed: {reason}",
+  "sync.reasonAuth": "Sign-in required",
+  "sync.reasonHttp": "Network issue",
+  "sync.reasonInternal": "Internal error",
+  "sync.reasonNetworkError": "Network issue",
+  "sync.reasonNetworkOffline": "Network offline",
+  "sync.reasonStore": "Local store issue",
   "sync.reconnecting": "Reconnecting",
   "sync.reconnectingWithReason": "Sync reconnecting: {reason}",
   "sync.running": "Running",
@@ -2413,6 +2425,12 @@ const ja: Catalog = {
   "space.summary": "スペース概要",
   "sync.failed": "失敗",
   "sync.failedWithReason": "同期失敗: {reason}",
+  "sync.reasonAuth": "再ログインが必要",
+  "sync.reasonHttp": "ネットワーク問題",
+  "sync.reasonInternal": "内部エラー",
+  "sync.reasonNetworkError": "ネットワーク問題",
+  "sync.reasonNetworkOffline": "ネットワーク未接続",
+  "sync.reasonStore": "ローカル保存に問題",
   "sync.reconnecting": "再接続中",
   "sync.reconnectingWithReason": "同期を再接続中: {reason}",
   "sync.running": "実行中",

@@ -215,24 +215,49 @@ export function syncStatePresentation(
   }
 
   if ("reconnecting" in sync) {
+    const detail = syncReasonLabel(sync.reconnecting);
     return {
       state: "reconnecting",
       label: t("sync.reconnecting"),
-      detail: sync.reconnecting,
-      ariaLabel: sync.reconnecting
-        ? t("sync.reconnectingWithReason", { reason: sync.reconnecting })
+      detail,
+      ariaLabel: detail
+        ? t("sync.reconnectingWithReason", { reason: detail })
         : t("sync.reconnecting"),
       restartable: true
     };
   }
 
+  const detail = syncReasonLabel(sync.failed);
   return {
     state: "failed",
     label: t("sync.failed"),
-    detail: sync.failed,
-    ariaLabel: sync.failed ? t("sync.failedWithReason", { reason: sync.failed }) : t("sync.failed"),
+    detail,
+    ariaLabel: detail ? t("sync.failedWithReason", { reason: detail }) : t("sync.failed"),
     restartable: true
   };
+}
+
+function syncReasonLabel(reason: string | null | undefined): string | null {
+  switch (reason) {
+    case "network_offline":
+      return t("sync.reasonNetworkOffline");
+    case "network_error":
+      return t("sync.reasonNetworkError");
+    case "sync_failed_http":
+      return t("sync.reasonHttp");
+    case "sync_failed_auth":
+      return t("sync.reasonAuth");
+    case "sync_failed_store":
+      return t("sync.reasonStore");
+    case "sync_failed_internal":
+      return t("sync.reasonInternal");
+    case "":
+    case null:
+    case undefined:
+      return null;
+    default:
+      return reason;
+  }
 }
 
 export function initials(value: string): string {

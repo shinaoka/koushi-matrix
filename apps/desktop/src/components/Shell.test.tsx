@@ -551,3 +551,55 @@ describe("TopBar window dragging", () => {
     expect(onStartWindowDrag).not.toHaveBeenCalled();
   });
 });
+
+describe("TopBar Matrix connection status", () => {
+  it("shows the Matrix server while reconnecting", () => {
+    render(
+      <TopBar
+        activeSpaceName="Matrix"
+        homeserver="https://matrix.org"
+        isBusy={false}
+        searchInputRef={{ current: null }}
+        searchQuery=""
+        searchScope="allRooms"
+        sync={{ reconnecting: "network_offline" }}
+        onOpenKeyboardSettings={() => undefined}
+        onRestartSync={() => undefined}
+        onSearchQueryChange={() => undefined}
+        onSearchScopeChange={() => undefined}
+      />
+    );
+
+    const status = screen.getByRole("status", { name: /Sync reconnecting/ });
+    expect(status.textContent).toContain("matrix.org");
+    expect(status.textContent).toContain("Reconnecting");
+    expect(status.getAttribute("data-sync-state")).toBe("reconnecting");
+  });
+
+  it("shows restart control when Matrix connection failed", () => {
+    const onRestartSync = vi.fn();
+
+    render(
+      <TopBar
+        activeSpaceName="Matrix"
+        homeserver="https://matrix.org"
+        isBusy={false}
+        searchInputRef={{ current: null }}
+        searchQuery=""
+        searchScope="allRooms"
+        sync={{ failed: "sync_failed_http" }}
+        onOpenKeyboardSettings={() => undefined}
+        onRestartSync={onRestartSync}
+        onSearchQueryChange={() => undefined}
+        onSearchScopeChange={() => undefined}
+      />
+    );
+
+    expect(screen.getByRole("status", { name: /Sync failed/ }).textContent).toContain(
+      "matrix.org"
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Restart sync" }));
+
+    expect(onRestartSync).toHaveBeenCalledTimes(1);
+  });
+});
