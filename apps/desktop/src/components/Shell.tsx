@@ -90,6 +90,7 @@ function shouldStartTitlebarDrag(event: MouseEvent<HTMLElement>): boolean {
 
 export function TopBar({
   activeSpaceName,
+  homeserver,
   isBusy,
   platform = "linux",
   searchInputRef,
@@ -104,6 +105,7 @@ export function TopBar({
   onStartWindowDrag = () => undefined
 }: {
   activeSpaceName: string;
+  homeserver?: string | null;
   isBusy: boolean;
   platform?: DisplayPlatform;
   searchInputRef: RefObject<HTMLInputElement | null>;
@@ -118,6 +120,10 @@ export function TopBar({
   onStartWindowDrag?: () => void;
 }) {
   const syncStatus = syncStatePresentation(sync);
+  const serverLabel = matrixServerLabel(homeserver);
+  const syncAriaLabel = serverLabel
+    ? `${serverLabel} · ${syncStatus.ariaLabel}`
+    : syncStatus.ariaLabel;
   return (
     <header
       className="titlebar"
@@ -170,9 +176,10 @@ export function TopBar({
           data-sync-state={syncStatus.state}
           role="status"
           aria-live="polite"
-          aria-label={syncStatus.ariaLabel}
+          aria-label={syncAriaLabel}
         >
           <span className={`sync-dot ${isBusy ? "busy" : ""}`} />
+          {serverLabel ? <span className="sync-status-server">{serverLabel}</span> : null}
           <span className="sync-status-label">{syncStatus.label}</span>
           {syncStatus.detail ? (
             <span className="sync-status-detail">{syncStatus.detail}</span>
@@ -208,6 +215,18 @@ export function TopBar({
       </div>
     </header>
   );
+}
+
+function matrixServerLabel(homeserver: string | null | undefined): string | null {
+  const trimmed = homeserver?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    return new URL(trimmed).host || trimmed;
+  } catch {
+    return trimmed.replace(/^https?:\/\//i, "").replace(/\/.*$/, "") || trimmed;
+  }
 }
 
 export function WorkspaceRail({

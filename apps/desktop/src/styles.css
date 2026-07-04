@@ -598,18 +598,28 @@ button:disabled {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  max-width: 220px;
+  max-width: 280px;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
   color: var(--brand-contrast);
   font-size: 12px;
   font-weight: 800;
 }
 
+.sync-status-server,
 .sync-status-label,
 .sync-status-detail {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sync-status-server {
+  color: var(--brand-contrast);
+  font-weight: 900;
 }
 
 .sync-status-detail {
@@ -633,8 +643,18 @@ button:disabled {
   background: var(--warning);
 }
 
+.sync-status[data-sync-state="reconnecting"] {
+  border-color: rgb(255 255 255 / 26%);
+  background: rgb(201 138 27 / 24%);
+}
+
 .sync-status[data-sync-state="failed"] .sync-dot {
   background: var(--danger);
+}
+
+.sync-status[data-sync-state="failed"] {
+  border-color: rgb(255 255 255 / 28%);
+  background: rgb(229 72 77 / 25%);
 }
 
 .app-grid {

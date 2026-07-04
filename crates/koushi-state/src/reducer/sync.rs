@@ -38,7 +38,7 @@ pub(crate) fn handle_sync_failed(state: &mut AppState, reason: String) -> Vec<Ap
 }
 
 pub(crate) fn handle_sync_reconnecting(state: &mut AppState, reason: String) -> Vec<AppEffect> {
-    if !is_session_ready(state) || matches!(state.sync, SyncState::Stopped | SyncState::Running) {
+    if !is_session_ready(state) || matches!(state.sync, SyncState::Stopped) {
         return Vec::new();
     }
 

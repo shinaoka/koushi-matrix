@@ -447,7 +447,7 @@ impl SyncActor {
         let service = Arc::new(service);
 
         // Start observing before the SDK service starts so short-lived
-        // Running/Error/Terminated transitions cannot be missed.
+        // Running/Offline/Error/Terminated transitions cannot be missed.
         let state_sub = service.state();
         let event_tx = self.event_tx.clone();
         let action_tx = self.action_tx.clone();
@@ -594,6 +594,7 @@ async fn observe_sync_service_states(
     // Track whether we've seen Running at least once so we emit SyncStarted
     // (Running) on first success and SyncRecovered on subsequent recoveries.
     let mut ever_ran = false;
+    let mut reconnecting = false;
 
     let mut pending_state = Some(state_sub.get());
     loop {
@@ -608,23 +609,24 @@ async fn observe_sync_service_states(
             matrix_sdk_ui::sync_service::State::Running => {
                 if !ever_ran {
                     ever_ran = true;
+                    reconnecting = false;
                     let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
                     let _ = action_tx.try_send(vec![AppAction::SyncStarted]);
-                } else {
+                } else if reconnecting {
                     // Recovered from Offline/Reconnecting.
+                    reconnecting = false;
                     let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
                     let _ = action_tx.try_send(vec![AppAction::SyncRecovered]);
                 }
             }
             matrix_sdk_ui::sync_service::State::Offline => {
-                let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Reconnecting));
-                let _ = action_tx.try_send(vec![AppAction::SyncReconnecting {
-                    reason: "network_offline".to_owned(),
-                }]);
-                return SyncTaskOutcome::Failed {
-                    kind: SyncFailureKind::Http,
-                    ever_ran,
-                };
+                if !reconnecting {
+                    reconnecting = true;
+                    let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Reconnecting));
+                    let _ = action_tx.try_send(vec![AppAction::SyncReconnecting {
+                        reason: "network_offline".to_owned(),
+                    }]);
+                }
             }
             matrix_sdk_ui::sync_service::State::Terminated => {
                 return SyncTaskOutcome::Failed {
@@ -634,10 +636,13 @@ async fn observe_sync_service_states(
             }
             matrix_sdk_ui::sync_service::State::Error(_) => {
                 // Error is opaque — never expose SDK error text.
-                return SyncTaskOutcome::Failed {
-                    kind: SyncFailureKind::Http,
-                    ever_ran,
-                };
+                if !reconnecting {
+                    reconnecting = true;
+                    let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Reconnecting));
+                    let _ = action_tx.try_send(vec![AppAction::SyncReconnecting {
+                        reason: "network_error".to_owned(),
+                    }]);
+                }
             }
             matrix_sdk_ui::sync_service::State::Idle => {
                 // Initial state and state after stop — not a terminal failure.
@@ -1120,7 +1125,7 @@ pub mod tests {
     }
 
     #[test]
-    fn sync_service_offline_state_exits_observer_for_backend_fallback() {
+    fn sync_service_offline_state_keeps_observer_alive_for_recovery() {
         let source = include_str!("sync.rs");
         let offline_arm = source
             .split("matrix_sdk_ui::sync_service::State::Offline =>")
@@ -1132,12 +1137,42 @@ pub mod tests {
             .expect("SyncService Offline arm");
 
         assert!(
-            offline_arm.contains("SyncTaskOutcome::Failed"),
-            "SyncService Offline must leave the observer so SyncActor can fall back to LegacySync"
+            offline_arm.contains("SyncEvent::Reconnecting"),
+            "SyncService Offline must surface reconnecting state"
         );
         assert!(
-            offline_arm.contains("kind: SyncFailureKind::Http"),
-            "Offline fallback must use the stable HTTP failure kind, not raw SDK text"
+            offline_arm.contains("network_offline"),
+            "Offline reconnecting must use a stable reason, not raw SDK text"
+        );
+        assert!(
+            !offline_arm.contains("return SyncTaskOutcome::Failed"),
+            "transient Offline must keep the observer alive so SyncService can recover"
+        );
+    }
+
+    #[test]
+    fn sync_service_error_state_keeps_observer_alive_for_recovery() {
+        let source = include_str!("sync.rs");
+        let error_arm = source
+            .split("matrix_sdk_ui::sync_service::State::Error(_)")
+            .nth(1)
+            .and_then(|rest| {
+                rest.split("matrix_sdk_ui::sync_service::State::Idle")
+                    .next()
+            })
+            .expect("SyncService Error arm");
+
+        assert!(
+            error_arm.contains("SyncEvent::Reconnecting"),
+            "SyncService Error must surface reconnecting state"
+        );
+        assert!(
+            error_arm.contains("network_error"),
+            "Error reconnecting must use a stable reason, not raw SDK text"
+        );
+        assert!(
+            !error_arm.contains("return SyncTaskOutcome::Failed"),
+            "transient Error must keep the observer alive so SyncService can recover"
         );
     }
 

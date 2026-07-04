@@ -3459,6 +3459,7 @@ export function App() {
       >
         <TopBar
           activeSpaceName={activeSpaceName}
+          homeserver={snapshot.state.domain.session.homeserver ?? null}
           isBusy={isBusy}
           platform={snapshot.state.domain.locale_profile.platform}
           searchInputRef={searchInputRef}
