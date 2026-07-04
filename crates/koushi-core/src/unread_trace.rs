@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
+    sync::{Mutex, OnceLock},
 };
 
 use koushi_state::RoomSummary;
@@ -88,13 +89,49 @@ pub(crate) fn trace_room_list_applied(raw_rooms: &[RoomSummary], applied_rooms: 
     }
 }
 
-pub(crate) fn trace_activity_room(stage: &str, room: &RoomSummary, emitted: bool, reason: &str) {
-    if enabled() && room_has_unread_metrics(room) {
-        eprintln!(
+fn activity_trace_seen_lines() -> &'static Mutex<BTreeSet<String>> {
+    static SEEN: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    SEEN.get_or_init(|| Mutex::new(BTreeSet::new()))
+}
+
+fn activity_room_line(
+    stage: &str,
+    room: &RoomSummary,
+    emitted: bool,
+    reason: &str,
+) -> Option<String> {
+    if room_has_unread_metrics(room) {
+        Some(format!(
             "{} emitted={} reason={reason}",
             room_metrics(stage, room),
             emitted
-        );
+        ))
+    } else {
+        None
+    }
+}
+
+fn dedupe_activity_trace_line(seen: &mut BTreeSet<String>, line: String) -> Option<String> {
+    if seen.insert(line.clone()) {
+        Some(line)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn trace_activity_room(stage: &str, room: &RoomSummary, emitted: bool, reason: &str) {
+    if !enabled() {
+        return;
+    }
+    let Some(line) = activity_room_line(stage, room, emitted, reason) else {
+        return;
+    };
+    let Ok(mut seen) = activity_trace_seen_lines().lock() else {
+        eprintln!("{line}");
+        return;
+    };
+    if let Some(line) = dedupe_activity_trace_line(&mut seen, line) {
+        eprintln!("{line}");
     }
 }
 
@@ -203,5 +240,28 @@ mod tests {
         assert!(lines[0].contains("notification_count=0"));
         assert!(lines[0].contains("highlight_count=0"));
         assert!(lines[0].contains("marked_unread=false"));
+    }
+
+    #[test]
+    fn activity_trace_lines_are_deduped_by_full_line() {
+        let room = private_room();
+        let first = activity_room_line("activity_recent_event", &room, false, "plain_unread_only")
+            .expect("unread room should produce an activity line");
+        let repeated =
+            activity_room_line("activity_recent_event", &room, false, "plain_unread_only")
+                .expect("same unread room should produce same candidate line");
+        let different_reason = activity_room_line("activity_recent_event", &room, true, "unread")
+            .expect("different outcome should produce a candidate line");
+        let mut seen = BTreeSet::new();
+
+        assert_eq!(
+            dedupe_activity_trace_line(&mut seen, first.clone()).as_deref(),
+            Some(first.as_str())
+        );
+        assert_eq!(dedupe_activity_trace_line(&mut seen, repeated), None);
+        assert_eq!(
+            dedupe_activity_trace_line(&mut seen, different_reason.clone()).as_deref(),
+            Some(different_reason.as_str())
+        );
     }
 }
