@@ -24,8 +24,9 @@
 //!
 //! ## Fail-closed
 //! If the search index key cannot be derived (credential store unreachable),
-//! `Query` commands emit `SearchFailed { kind: IndexUnavailable }`. The actor
-//! never falls back to a plaintext index (Security Model).
+//! `Query` commands emit `SearchFailed { kind: IndexUnavailable }`. Query
+//! parser and internal SDK failures keep separate coarse kinds. The actor never
+//! falls back to a plaintext index (Security Model).
 //!
 //! ## Document-level mutations (overview.md Async rule 4, Security Model Search)
 //! - **Upsert**: a new or updated visible message is indexed into the document
@@ -545,15 +546,11 @@ impl SearchActor {
 
             let candidates = match candidates {
                 Ok(c) => c,
-                Err(_) => {
-                    self.emit_search_failed(request_id, SEARCH_UNAVAILABLE_MESSAGE)
+                Err(error) => {
+                    let kind = classify_matrix_search_error(&error);
+                    self.emit_search_failed(request_id, search_failure_message(kind))
                         .await;
-                    self.emit_failure(
-                        request_id,
-                        CoreFailure::SearchFailed {
-                            kind: SearchFailureKind::IndexUnavailable,
-                        },
-                    );
+                    self.emit_failure(request_id, CoreFailure::SearchFailed { kind });
                     return;
                 }
             };
@@ -1067,6 +1064,22 @@ impl SearchActor {
     }
 }
 
+fn classify_matrix_search_error(error: &koushi_sdk::MatrixSearchError) -> SearchFailureKind {
+    match error {
+        koushi_sdk::MatrixSearchError::IndexUnavailable => SearchFailureKind::IndexUnavailable,
+        koushi_sdk::MatrixSearchError::Query => SearchFailureKind::Query,
+        koushi_sdk::MatrixSearchError::Internal => SearchFailureKind::Internal,
+    }
+}
+
+fn search_failure_message(kind: SearchFailureKind) -> &'static str {
+    match kind {
+        SearchFailureKind::IndexUnavailable => SEARCH_UNAVAILABLE_MESSAGE,
+        SearchFailureKind::Query => "search query failed",
+        SearchFailureKind::Internal => "search internal failure",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests (network-free)
 // ---------------------------------------------------------------------------
@@ -1312,6 +1325,31 @@ mod tests {
         assert_eq!(k1, k2);
         let _ = SearchFailureKind::Query;
         let _ = SearchFailureKind::Internal;
+    }
+
+    #[test]
+    fn search_query_failures_are_classified_from_sdk_error() {
+        let source = include_str!("search.rs");
+        let query_handler = source
+            .split("async fn handle_query")
+            .nth(1)
+            .expect("query handler should exist")
+            .split("async fn handle_index_message")
+            .next()
+            .expect("index handler should follow query handler");
+
+        assert!(
+            source.contains("fn classify_matrix_search_error"),
+            "search failures must have a boundary classifier"
+        );
+        assert!(
+            query_handler.contains("classify_matrix_search_error(&error)"),
+            "query failures must classify the SDK search error before emitting CoreFailure"
+        );
+        assert!(
+            !query_handler.contains("kind: SearchFailureKind::IndexUnavailable"),
+            "query failures must not hardcode every SDK error as IndexUnavailable"
+        );
     }
 
     // --- Debug redaction ---

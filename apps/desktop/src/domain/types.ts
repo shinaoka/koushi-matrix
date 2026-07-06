@@ -1220,6 +1220,7 @@ export type DeviceTrustLevel = "unknown" | "unverified" | "verified" | "blocked"
 export type TrustOperationFailureKind =
   | "cancelled"
   | "mismatch"
+  | "invalidPassphrase"
   | "network"
   | "forbidden"
   | "timeout"

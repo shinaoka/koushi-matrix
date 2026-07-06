@@ -2628,6 +2628,8 @@ function failureKindLabel(kind: TrustOperationFailureKind): string {
       return t("trust.failureCancelled");
     case "mismatch":
       return t("trust.failureMismatch");
+    case "invalidPassphrase":
+      return t("trust.failureInvalidPassphrase");
     case "network":
       return t("trust.failureNetwork");
     case "forbidden":

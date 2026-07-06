@@ -3014,16 +3014,17 @@ impl AccountActor {
                 }])
                 .await;
             }
-            Err(_) => {
+            Err(error) => {
+                let kind = classify_e2ee_trust_error(&error);
                 self.send_actions(vec![AppAction::RoomKeyExportFailed {
                     request_id: request_id.sequence,
-                    kind: TrustOperationFailureKind::Sdk,
+                    kind,
                 }])
                 .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::AccountOperationFailed {
-                        kind: AuthFailureKind::Sdk,
+                        kind: classify_e2ee_trust_auth_failure(&error),
                     },
                 );
             }
@@ -3060,16 +3061,17 @@ impl AccountActor {
                 }])
                 .await;
             }
-            Err(_) => {
+            Err(error) => {
+                let kind = classify_e2ee_trust_error(&error);
                 self.send_actions(vec![AppAction::RoomKeyImportFailed {
                     request_id: request_id.sequence,
-                    kind: TrustOperationFailureKind::Sdk,
+                    kind,
                 }])
                 .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::AccountOperationFailed {
-                        kind: AuthFailureKind::Sdk,
+                        kind: classify_e2ee_trust_auth_failure(&error),
                     },
                 );
             }
@@ -3123,16 +3125,17 @@ impl AccountActor {
                 ])
                 .await;
             }
-            Err(_) => {
+            Err(error) => {
+                let kind = classify_e2ee_trust_error(&error);
                 self.send_actions(vec![AppAction::SecureBackupSetupFailed {
                     request_id: request_id.sequence,
-                    kind: TrustOperationFailureKind::Sdk,
+                    kind,
                 }])
                 .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::AccountOperationFailed {
-                        kind: AuthFailureKind::Sdk,
+                        kind: classify_e2ee_trust_auth_failure(&error),
                     },
                 );
             }
@@ -3184,16 +3187,17 @@ impl AccountActor {
                 }])
                 .await;
             }
-            Err(_) => {
+            Err(error) => {
+                let kind = classify_e2ee_trust_error(&error);
                 self.send_actions(vec![AppAction::SecureBackupPassphraseChangeFailed {
                     request_id: request_id.sequence,
-                    kind: TrustOperationFailureKind::Sdk,
+                    kind,
                 }])
                 .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::AccountOperationFailed {
-                        kind: AuthFailureKind::Sdk,
+                        kind: classify_e2ee_trust_auth_failure(&error),
                     },
                 );
             }
@@ -3605,13 +3609,14 @@ impl AccountActor {
                 }])
                 .await;
             }
-            Err(_) => {
+            Err(error) => {
+                let kind = classify_e2ee_trust_auth_failure(&error);
                 self.send_actions(vec![AppAction::DeviceSessionsLoadFailed {
                     request_id: request_id.sequence,
-                    kind: AuthFailureKind::Sdk,
+                    kind,
                 }])
                 .await;
-                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
+                self.emit_failure(request_id, CoreFailure::AccountOperationFailed { kind });
             }
         }
     }
@@ -4936,7 +4941,14 @@ fn classify_e2ee_trust_error(error: &koushi_sdk::E2eeTrustError) -> TrustOperati
         koushi_sdk::E2eeTrustError::NoOlmMachine => TrustOperationFailureKind::Sdk,
         koushi_sdk::E2eeTrustError::Sdk(message) => {
             let lower = message.to_ascii_lowercase();
-            if lower.contains("timeout") {
+            if lower.contains("passphrase")
+                || lower.contains("mac")
+                || lower.contains("decrypt")
+                || lower.contains("recovery key")
+                || lower.contains("invalid key")
+            {
+                TrustOperationFailureKind::InvalidPassphrase
+            } else if lower.contains("timeout") {
                 TrustOperationFailureKind::Timeout
             } else if lower.contains("forbidden")
                 || lower.contains("m_forbidden")
@@ -4953,6 +4965,18 @@ fn classify_e2ee_trust_error(error: &koushi_sdk::E2eeTrustError) -> TrustOperati
                 TrustOperationFailureKind::Sdk
             }
         }
+    }
+}
+
+fn classify_e2ee_trust_auth_failure(error: &koushi_sdk::E2eeTrustError) -> AuthFailureKind {
+    match classify_e2ee_trust_error(error) {
+        TrustOperationFailureKind::Network => AuthFailureKind::Network,
+        TrustOperationFailureKind::Forbidden => AuthFailureKind::Forbidden,
+        TrustOperationFailureKind::Timeout => AuthFailureKind::Timeout,
+        TrustOperationFailureKind::Cancelled
+        | TrustOperationFailureKind::Mismatch
+        | TrustOperationFailureKind::InvalidPassphrase
+        | TrustOperationFailureKind::Sdk => AuthFailureKind::Sdk,
     }
 }
 
@@ -6349,6 +6373,90 @@ mod tests {
         assert_eq!(
             classify_e2ee_trust_error(&koushi_sdk::E2eeTrustError::Sdk("M_FORBIDDEN".to_owned())),
             koushi_state::TrustOperationFailureKind::Forbidden
+        );
+        let invalid_passphrase =
+            koushi_sdk::E2eeTrustError::Sdk("invalid passphrase MAC".to_owned());
+        assert_eq!(
+            classify_e2ee_trust_error(&invalid_passphrase),
+            koushi_state::TrustOperationFailureKind::InvalidPassphrase
+        );
+        assert_eq!(
+            classify_e2ee_trust_auth_failure(&invalid_passphrase),
+            AuthFailureKind::Sdk
+        );
+    }
+
+    #[test]
+    fn e2ee_key_management_failures_use_typed_classification() {
+        let source = include_str!("account.rs");
+        let export_handler = source
+            .split("async fn handle_export_room_keys")
+            .nth(1)
+            .expect("export handler should exist")
+            .split("async fn handle_import_room_keys")
+            .next()
+            .expect("import handler should follow export handler");
+        let import_handler = source
+            .split("async fn handle_import_room_keys")
+            .nth(1)
+            .expect("import handler should exist")
+            .split("async fn handle_bootstrap_secure_backup")
+            .next()
+            .expect("secure-backup handler should follow import handler");
+        let setup_handler = source
+            .split("async fn handle_bootstrap_secure_backup")
+            .nth(1)
+            .expect("secure-backup handler should exist")
+            .split("async fn handle_change_secure_backup_passphrase")
+            .next()
+            .expect("passphrase-change handler should follow setup handler");
+        let passphrase_handler = source
+            .split("async fn handle_change_secure_backup_passphrase")
+            .nth(1)
+            .expect("passphrase-change handler should exist")
+            .split("async fn handle_reset_identity")
+            .next()
+            .expect("identity-reset handler should follow passphrase-change handler");
+
+        for handler in [
+            export_handler,
+            import_handler,
+            setup_handler,
+            passphrase_handler,
+        ] {
+            assert!(
+                handler.contains("classify_e2ee_trust_error(&error)"),
+                "E2EE key-management failures must preserve coarse typed failure kinds"
+            );
+            assert!(
+                !handler.contains("Err(_)"),
+                "E2EE key-management handlers must not erase typed errors before classification"
+            );
+        }
+        assert!(
+            source.contains("InvalidPassphrase"),
+            "trust failure kinds must distinguish invalid room-key/backup passphrases"
+        );
+    }
+
+    #[test]
+    fn device_list_failures_are_not_reported_as_store_unavailable() {
+        let source = include_str!("account.rs");
+        let handler = source
+            .split("async fn handle_query_devices")
+            .nth(1)
+            .expect("device query handler should exist")
+            .split("async fn handle_load_account_management_capabilities")
+            .next()
+            .expect("capabilities handler should follow device query");
+
+        assert!(
+            handler.contains("classify_e2ee_trust_auth_failure(&error)"),
+            "device list failures must classify SDK/network channel errors"
+        );
+        assert!(
+            !handler.contains("CoreFailure::StoreUnavailable"),
+            "device list failures must not masquerade as credential-store failures"
         );
     }
 

@@ -16,6 +16,7 @@ use matrix_sdk::{
     },
     deserialized_responses::SyncOrStrippedState,
     encryption::{BackupDownloadStrategy, EncryptionSettings},
+    message_search::SearchError,
     room::ParentSpace,
     ruma::{
         events::{
@@ -30,6 +31,7 @@ use matrix_sdk::{
     },
     utils::UrlOrQuery,
 };
+use matrix_sdk_search::error::IndexError;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -2157,8 +2159,12 @@ pub struct MatrixSearchCandidate {
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum MatrixSearchError {
-    #[error("Matrix search failed")]
-    Sdk,
+    #[error("Matrix search index unavailable")]
+    IndexUnavailable,
+    #[error("Matrix search query failed")]
+    Query,
+    #[error("Matrix search internal failure")]
+    Internal,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -2778,7 +2784,7 @@ pub fn search_message_candidates_blocking(
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|_| MatrixSearchError::Sdk)?;
+        .map_err(|_| MatrixSearchError::Internal)?;
 
     runtime.block_on(search_message_candidates(session, query, limit))
 }
@@ -3966,7 +3972,11 @@ pub async fn search_message_candidates(
         .client()
         .search_messages(query.to_owned(), limit)
         .build();
-    let Some(candidates) = iterator.next().await.map_err(|_| MatrixSearchError::Sdk)? else {
+    let Some(candidates) = iterator
+        .next()
+        .await
+        .map_err(matrix_search_error_from_sdk)?
+    else {
         return Ok(Vec::new());
     };
 
@@ -3980,6 +3990,28 @@ pub async fn search_message_candidates(
             score_millis: 1_000_u32.saturating_sub(index as u32),
         })
         .collect())
+}
+
+fn matrix_search_error_from_sdk(error: SearchError) -> MatrixSearchError {
+    match error {
+        SearchError::IndexError(error) => matrix_search_error_from_index(&error),
+        SearchError::EventLoadError(_) => MatrixSearchError::Internal,
+    }
+}
+
+fn matrix_search_error_from_index(error: &IndexError) -> MatrixSearchError {
+    match error {
+        IndexError::OpenDirectoryError(_) | IndexError::IO(_) => {
+            MatrixSearchError::IndexUnavailable
+        }
+        IndexError::QueryParserError(_) => MatrixSearchError::Query,
+        IndexError::TantivyError(_)
+        | IndexError::IndexSchemaError(_)
+        | IndexError::IndexWriteError(_)
+        | IndexError::MessageTypeNotSupported
+        | IndexError::CannotIndexRedactedMessage
+        | IndexError::EmptyMessage => MatrixSearchError::Internal,
+    }
 }
 
 /// Normalize a room list snapshot from caller-provided SDK rooms.

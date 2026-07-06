@@ -3141,6 +3141,7 @@ dependencies = [
  "koushi-state",
  "matrix-sdk",
  "matrix-sdk-base",
+ "matrix-sdk-search",
  "matrix-sdk-ui",
  "mime",
  "reqwest",

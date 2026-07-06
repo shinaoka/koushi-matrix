@@ -548,6 +548,7 @@ export type MessageId =
   | "trust.encryption"
   | "trust.failureCancelled"
   | "trust.failureForbidden"
+  | "trust.failureInvalidPassphrase"
   | "trust.failureMismatch"
   | "trust.failureNetwork"
   | "trust.failureSdk"
@@ -1514,6 +1515,7 @@ const en: Catalog = {
   "trust.encryption": "Encryption",
   "trust.failureCancelled": "Cancelled",
   "trust.failureForbidden": "Forbidden",
+  "trust.failureInvalidPassphrase": "Invalid passphrase",
   "trust.failureMismatch": "Mismatch",
   "trust.failureNetwork": "Network",
   "trust.failureSdk": "SDK",
@@ -2366,6 +2368,7 @@ const ja: Catalog = {
   "trust.encryption": "暗号化",
   "trust.failureCancelled": "キャンセル済み",
   "trust.failureForbidden": "禁止",
+  "trust.failureInvalidPassphrase": "パスフレーズが無効",
   "trust.failureMismatch": "不一致",
   "trust.failureNetwork": "ネットワーク",
   "trust.failureSdk": "SDKエラー",

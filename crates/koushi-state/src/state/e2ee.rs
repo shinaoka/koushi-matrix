@@ -254,6 +254,7 @@ pub enum DeviceTrustLevel {
 pub enum TrustOperationFailureKind {
     Cancelled,
     Mismatch,
+    InvalidPassphrase,
     Network,
     Forbidden,
     Timeout,

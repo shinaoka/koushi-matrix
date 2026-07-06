@@ -680,6 +680,7 @@ export type SearchEvent = {
 export type TrustOperationFailureKind =
   | "cancelled"
   | "mismatch"
+  | "invalidPassphrase"
   | "network"
   | "forbidden"
   | "timeout"
