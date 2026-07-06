@@ -830,6 +830,9 @@ pub enum AppAction {
         kind: crate::state::SearchCrawlerFailureKind,
         timestamp_ms: u64,
     },
+    HistoryCrawlStopped {
+        room_id: String,
+    },
     FilesViewOpened {
         request_id: u64,
         scope: FilesViewScope,

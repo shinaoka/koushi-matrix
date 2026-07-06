@@ -875,6 +875,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             kind,
             timestamp_ms,
         } => search::handle_history_crawl_failed(state, room_id, kind, timestamp_ms),
+        AppAction::HistoryCrawlStopped { room_id } => {
+            search::handle_history_crawl_stopped(state, room_id)
+        }
         AppAction::FilesViewOpened {
             request_id,
             scope,

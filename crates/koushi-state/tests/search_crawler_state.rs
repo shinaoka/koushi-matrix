@@ -327,7 +327,7 @@ fn pause_from_active_notifies_actor_without_invalidating_completed_rooms() {
 }
 
 #[test]
-fn pause_from_active_converts_running_rooms_to_queued_and_emits_search_crawler_changed() {
+fn pause_from_active_notifies_actor_without_predicting_running_room_state() {
     let mut state =
         ready_state_with_rooms(&["room-a", "room-b", "room-c", "room-d", "room-e", "room-f"]);
     state.search_crawler.rooms.insert(
@@ -376,11 +376,17 @@ fn pause_from_active_converts_running_rooms_to_queued_and_emits_search_crawler_c
 
     assert_eq!(
         state.search_crawler.rooms.get("room-a"),
-        Some(&SearchCrawlerRoomState::Queued)
+        Some(&SearchCrawlerRoomState::Running {
+            processed: 8,
+            indexed: 5,
+        })
     );
     assert_eq!(
         state.search_crawler.rooms.get("room-b"),
-        Some(&SearchCrawlerRoomState::Queued)
+        Some(&SearchCrawlerRoomState::Running {
+            processed: 2,
+            indexed: 1,
+        })
     );
     assert_eq!(
         state.search_crawler.rooms.get("room-c"),
@@ -401,15 +407,14 @@ fn pause_from_active_converts_running_rooms_to_queued_and_emits_search_crawler_c
         Some(&SearchCrawlerRoomState::Queued)
     );
 
-    let has_crawler_changed = effects.iter().any(|effect| {
-        matches!(
-            effect,
-            AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)
-        )
-    });
     assert!(
-        has_crawler_changed,
-        "pausing with running rooms must emit SearchCrawlerChanged; got {effects:?}"
+        !effects.iter().any(|effect| {
+            matches!(
+                effect,
+                AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)
+            )
+        }),
+        "pause must not mutate crawler lifecycle locally; actor stop projection owns the visible settle"
     );
 
     let notify = effects.iter().find(|effect| {
@@ -425,6 +430,62 @@ fn pause_from_active_converts_running_rooms_to_queued_and_emits_search_crawler_c
         notify.is_some(),
         "pausing must notify the actor with paused settings; got {effects:?}"
     );
+}
+
+#[test]
+fn history_crawl_progress_is_ignored_while_paused_until_actor_settles_stop() {
+    let mut state = ready_state_with_rooms(&["room-a"]);
+    state.settings.values.search_crawler = settings_paused();
+    state
+        .search_crawler
+        .rooms
+        .insert("room-a".to_owned(), SearchCrawlerRoomState::Queued);
+
+    let effects = reduce(
+        &mut state,
+        AppAction::HistoryCrawlProgress {
+            room_id: "room-a".to_owned(),
+            processed: 3,
+            indexed: 2,
+            timestamp_ms: 42,
+        },
+    );
+
+    assert!(effects.is_empty());
+    assert_eq!(
+        state.search_crawler.rooms.get("room-a"),
+        Some(&SearchCrawlerRoomState::Queued)
+    );
+}
+
+#[test]
+fn history_crawl_stopped_settles_room_to_idle() {
+    let mut state = ready_state_with_rooms(&["room-a"]);
+    state.search_crawler.rooms.insert(
+        "room-a".to_owned(),
+        SearchCrawlerRoomState::Running {
+            processed: 8,
+            indexed: 5,
+        },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::HistoryCrawlStopped {
+            room_id: "room-a".to_owned(),
+        },
+    );
+
+    assert_eq!(
+        state.search_crawler.rooms.get("room-a"),
+        Some(&SearchCrawlerRoomState::Idle)
+    );
+    assert!(effects.iter().any(|effect| {
+        matches!(
+            effect,
+            AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)
+        )
+    }));
 }
 
 #[test]

@@ -2271,12 +2271,16 @@ Each room progresses independently; rooms absent from the map are implicitly
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> Running : HistoryCrawlStarted\n(actor auto-start or explicit StartHistoryCrawl)
+    Idle --> Queued : HistoryCrawlStarted\n(actor auto-start or explicit StartHistoryCrawl)
+    Queued --> Running : HistoryCrawlProgress\n(first processed page)
     Running --> Running : HistoryCrawlProgress\n(processed / indexed updated)
+    Queued --> Idle : HistoryCrawlStopped\n(stop / pause / prune)
+    Running --> Idle : HistoryCrawlStopped\n(stop / pause / prune)
     Running --> Completed : HistoryCrawlCompleted
     Running --> Failed : HistoryCrawlFailed
     Completed --> Idle : content-setting toggle\n(include_media_captions or\ninclude_filenames changed)
-    Failed --> Running : HistoryCrawlStarted\n(retry)
+    Completed --> Idle : HistoryCrawlStopped\n(room pruned)
+    Failed --> Queued : HistoryCrawlStarted\n(retry)
 ```
 
 ### Guards and lifecycle
@@ -2300,7 +2304,15 @@ stateDiagram-v2
 - **Pause**: Changing speed from active to `Paused` emits
   `NotifySearchCrawlerRoomsAvailable` with `settings.speed = Paused` so the
   actor clears queued checkpoints and aborts the active page task. Completed
-  markers are retained.
+  markers are retained. The reducer must not predict `Running → Queued` on its
+  own; the `SearchActor` settles queued/running rows through
+  `HistoryCrawlStopped`, and stale `HistoryCrawlProgress` is ignored while the
+  persisted speed is `Paused`.
+- **Stop / prune settle**: Explicit `StopHistoryCrawl`, manual start while
+  paused, and actor-side pruning of unavailable rooms emit
+  `HistoryCrawlStopped`, which returns the room projection to `Idle`. This is a
+  Rust-owned lifecycle projection; React must not synthesize stop state from
+  settings or local queue mirrors.
 - **Pure speed change**: Changing speed between two active values (e.g.
   `Standard → Slow`) does NOT invalidate `Completed` rooms and does NOT emit
   `NotifySearchCrawlerRoomsAvailable`. No `SearchCrawlerChanged` event is
