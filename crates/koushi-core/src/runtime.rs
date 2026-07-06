@@ -305,9 +305,41 @@ pub struct CoreConnection {
     next_sequence: AtomicU64,
 }
 
+/// Lightweight command submitter that can be cloned without cloning event or
+/// snapshot receivers.
+#[derive(Clone)]
+pub struct CoreCommandHandle {
+    connection_id: RuntimeConnectionId,
+    command_tx: mpsc::Sender<CoreCommand>,
+}
+
+impl CoreCommandHandle {
+    /// Submit a command. Fails locally — before routing and before any
+    /// `CoreEvent` is published — if the command's request id does not
+    /// belong to this connection.
+    pub async fn command(&self, command: CoreCommand) -> Result<(), CommandSubmitError> {
+        if command.request_id().connection_id != self.connection_id {
+            return Err(CommandSubmitError::InvalidRequestId);
+        }
+        self.command_tx
+            .send(command)
+            .await
+            .map_err(|_| CommandSubmitError::RuntimeClosed)
+    }
+}
+
 impl CoreConnection {
     pub fn connection_id(&self) -> RuntimeConnectionId {
         self.connection_id
+    }
+
+    /// Clone a lightweight command submitter for callers that must not hold
+    /// the full connection guard while awaiting bounded channel capacity.
+    pub fn command_handle(&self) -> CoreCommandHandle {
+        CoreCommandHandle {
+            connection_id: self.connection_id,
+            command_tx: self.command_tx.clone(),
+        }
     }
 
     /// Allocate the next request id for this connection. Request ids are
@@ -323,13 +355,7 @@ impl CoreConnection {
     /// `CoreEvent` is published — if the command's request id does not
     /// belong to this connection.
     pub async fn command(&self, command: CoreCommand) -> Result<(), CommandSubmitError> {
-        if command.request_id().connection_id != self.connection_id {
-            return Err(CommandSubmitError::InvalidRequestId);
-        }
-        self.command_tx
-            .send(command)
-            .await
-            .map_err(|_| CommandSubmitError::RuntimeClosed)
+        self.command_handle().command(command).await
     }
 
     /// Receive the next event. On lag, intermediate events were dropped for
@@ -3203,6 +3229,56 @@ mod tests {
     fn default_data_dir_uses_xdg_like_user_data_path() {
         let dir = default_data_dir_from_home(Some("/tmp/synthetic-home".into())).unwrap();
         assert!(dir.ends_with(".local/share/koushi-desktop"));
+    }
+
+    #[test]
+    fn core_connection_command_handle_clones_submit_path() {
+        let source = include_str!("runtime.rs");
+        let production_source = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("runtime production source should precede tests");
+        let handle_impl = production_source
+            .split("impl CoreCommandHandle")
+            .nth(1)
+            .expect("CoreConnection should expose a lightweight command handle");
+        let connection_impl = production_source
+            .split("impl CoreConnection")
+            .nth(1)
+            .expect("CoreConnection impl should exist");
+        let command_handle_fn = connection_impl
+            .split("pub fn command_handle")
+            .nth(1)
+            .expect("CoreConnection should clone a command handle for submitters")
+            .split("pub fn next_request_id")
+            .next()
+            .expect("command_handle should precede request-id allocation");
+        let command_fn = connection_impl
+            .split("pub async fn command")
+            .nth(1)
+            .expect("CoreConnection command helper should exist")
+            .split("pub async fn recv_event")
+            .next()
+            .expect("command helper should precede event receiving");
+
+        assert!(
+            production_source.contains("#[derive(Clone)]\npub struct CoreCommandHandle"),
+            "the command submit path must be cloneable without cloning event/snapshot receivers"
+        );
+        assert!(
+            handle_impl.contains("self.command_tx")
+                && handle_impl.contains(".send(command)")
+                && handle_impl.contains(".await"),
+            "the command handle must own the bounded send await"
+        );
+        assert!(
+            command_handle_fn.contains("command_tx: self.command_tx.clone()"),
+            "CoreConnection::command_handle must clone only the bounded sender"
+        );
+        assert!(
+            command_fn.contains("self.command_handle().command(command).await"),
+            "CoreConnection::command should delegate through the same submit handle"
+        );
     }
 
     #[test]

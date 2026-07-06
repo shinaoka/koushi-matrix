@@ -12,6 +12,7 @@
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use koushi_core::{
@@ -48,6 +49,7 @@ static NEXT_TRANSACTION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(any(debug_assertions, test))]
 const QA_RECOVERY_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const CORE_COMMAND_SUBMIT_TIMEOUT: Duration = Duration::from_secs(2);
 const QA_TITLE_ENV: &str = "KOUSHI_QA_TITLE";
 const TIMELINE_BACKWARDS_PAGE_EVENT_COUNT: u16 = 100;
 #[cfg(test)]
@@ -73,18 +75,19 @@ pub(crate) mod views;
 /// Submit a `CoreCommand` over the command-dispatch connection.
 ///
 /// This is the ONLY way commands leave the Tauri adapter.
-/// Uses `tokio::sync::Mutex` so the guard may be held across `.await`.
+/// Clones a lightweight submit handle before awaiting the bounded command
+/// queue so snapshot reads are not blocked behind backpressured sends.
 pub(crate) async fn submit_core_command(
     state: &CoreRuntimeState,
     command: CoreCommand,
 ) -> Result<(), String> {
-    state
-        .connection
-        .lock()
-        .await
-        .command(command)
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))
+    let command_handle = { state.connection.lock().await.command_handle() };
+
+    match tokio::time::timeout(CORE_COMMAND_SUBMIT_TIMEOUT, command_handle.command(command)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(format!("command submit failed: {error}")),
+        Err(_) => Err("command submit timed out".to_owned()),
+    }
 }
 
 /// Allocate a `RequestId` from the command-dispatch connection.
@@ -2670,6 +2673,42 @@ mod tests {
         ]
         .concat()
     }
+
+    #[test]
+    fn submit_core_command_does_not_hold_connection_mutex_while_awaiting_send() {
+        let source = commands_source();
+        let production_source = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("command production source should precede tests");
+        let helper_source = production_source
+            .split("pub(crate) async fn submit_core_command")
+            .nth(1)
+            .expect("submit_core_command helper should exist")
+            .split("/// Allocate a `RequestId`")
+            .next()
+            .expect("next helper should follow submit_core_command");
+
+        assert!(
+            production_source.contains("const CORE_COMMAND_SUBMIT_TIMEOUT"),
+            "Tauri command submits should have a bounded wait instead of blocking snapshots indefinitely"
+        );
+        assert!(
+            helper_source.contains("command_handle"),
+            "submit_core_command should clone a lightweight submit handle before awaiting send"
+        );
+        assert!(
+            helper_source.contains("tokio::time::timeout(CORE_COMMAND_SUBMIT_TIMEOUT"),
+            "submit_core_command should bound backpressured command sends"
+        );
+        assert!(
+            !helper_source
+                .contains(".lock()\n        .await\n        .command(command)\n        .await")
+                && !helper_source.contains(".lock().await.command(command).await"),
+            "submit_core_command must not hold the shared CoreConnection mutex across send().await"
+        );
+    }
+
     use crate::commands::{
         TIMELINE_BACKWARDS_PAGE_EVENT_COUNT, TIMELINE_RESTORE_ANCHOR_MAX_BATCHES,
     };
