@@ -1973,11 +1973,24 @@ impl AccountActor {
                 .await;
             }
             Err(error) => {
-                self.send_actions(vec![AppAction::LocalUserAliasUpdateFailed {
-                    request_id: request_id.sequence,
-                    message: "local alias update failed".to_owned(),
-                }])
-                .await;
+                if let Some(action @ AppAction::LocalUserAliasesLoaded { .. }) =
+                    local_user_aliases_action_from_session(session).await
+                {
+                    self.send_actions(vec![
+                        AppAction::LocalUserAliasUpdateFailed {
+                            request_id: request_id.sequence,
+                            message: "local alias update failed".to_owned(),
+                        },
+                        action,
+                    ])
+                    .await;
+                } else {
+                    self.send_actions(vec![AppAction::LocalUserAliasUpdateFailed {
+                        request_id: request_id.sequence,
+                        message: "local alias update failed".to_owned(),
+                    }])
+                    .await;
+                }
                 self.emit_failure(
                     request_id,
                     CoreFailure::ProfileOperationFailed {
@@ -6578,6 +6591,28 @@ mod tests {
         assert!(
             source.contains("InvalidPassphrase"),
             "trust failure kinds must distinguish invalid room-key/backup passphrases"
+        );
+    }
+
+    #[test]
+    fn local_user_alias_failure_reconciles_authoritative_aliases() {
+        let source = include_str!("account.rs");
+        let handler = source
+            .split("async fn handle_set_local_user_alias")
+            .nth(1)
+            .expect("local alias handler should exist")
+            .split("async fn handle_download_avatar_thumbnail")
+            .next()
+            .expect("avatar handler should follow local alias handler");
+
+        assert!(
+            handler.contains("local_user_aliases_action_from_session(session).await"),
+            "failed local-alias saves must reload authoritative aliases so optimistic display mirrors do not drift"
+        );
+        assert!(
+            handler.contains("AppAction::LocalUserAliasUpdateFailed")
+                && handler.contains("AppAction::LocalUserAliasesLoaded"),
+            "failure reconciliation must emit both the user-visible failure and the full alias projection"
         );
     }
 
