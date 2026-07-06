@@ -176,6 +176,7 @@ fn audit_app_state_delta_slices(state: &AppState) {
         room_preferences: _,
         profile: _,
         sync: _,
+        sync_generation: _,
         sync_mode: _,
         navigation: _,
         spaces: _,

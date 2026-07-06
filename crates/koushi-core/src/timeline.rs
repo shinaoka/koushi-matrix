@@ -69,7 +69,6 @@ use matrix_sdk::room::Receipts;
 use matrix_sdk::room::edit::EditedContent;
 use matrix_sdk::room::reply::{EnforceThread, Reply};
 use matrix_sdk::ruma::UserId;
-use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
 use matrix_sdk::ruma::events::Mentions;
 use matrix_sdk::ruma::events::room::message::FormattedBody;
 use matrix_sdk::ruma::events::room::message::{
@@ -941,7 +940,7 @@ impl TimelineManagerActor {
 
         let focus = match &key.kind {
             TimelineKind::Room { .. } => TimelineFocus::Live {
-                hide_threaded_events: false,
+                hide_threaded_events: true,
             },
             TimelineKind::Thread { root_event_id, .. } => {
                 match matrix_sdk::ruma::EventId::parse(root_event_id.as_str()) {
@@ -4172,11 +4171,9 @@ impl TimelineActor {
             }
         };
 
-        match self
-            .timeline
-            .send_single_receipt(ReceiptType::Read, parsed_event_id)
-            .await
-        {
+        let receipts = Receipts::new().public_read_receipt(parsed_event_id);
+
+        match self.timeline.room().send_multiple_receipts(receipts).await {
             Ok(_) => {
                 self.emit(CoreEvent::LiveSignals(LiveSignalsEvent::ReadReceiptSent {
                     request_id,
@@ -9140,8 +9137,8 @@ mod tests {
             .expect("thread timeline focus arm should follow room arm");
 
         assert!(
-            room_focus.contains("hide_threaded_events: false"),
-            "room live timelines must include threaded events so DM messages are not missing from the main timeline"
+            room_focus.contains("hide_threaded_events: true"),
+            "room live timelines must hide threaded replies and surface them through root summaries"
         );
     }
 

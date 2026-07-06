@@ -996,6 +996,7 @@ pub fn run() {
             commands::session::start_oidc_login,
             commands::session::complete_oidc_login,
             commands::session::submit_login,
+            commands::session::submit_soft_logout_reauth,
             commands::session::list_saved_sessions,
             commands::session::switch_account,
             commands::session::submit_recovery,

@@ -137,6 +137,17 @@ describe("styles.css token system", () => {
     expect(shellSource).toContain('target.closest("button, input, select, textarea, a, label")');
   });
 
+  test("titlebar reserves visible room for Matrix connection status", () => {
+    const titlebarBlock = selectorBlock(".titlebar");
+    expect(titlebarBlock).toContain(
+      "grid-template-columns: 128px minmax(220px, 1fr) 88px minmax(132px, max-content);"
+    );
+    expect(titlebarBlock).not.toContain(" 84px;");
+    expect(shellSource).toContain('className="sync-status"');
+    expect(shellSource).toContain('className="sync-status-label"');
+    expect(shellSource).toContain('className="sync-status-detail"');
+  });
+
   test("locale-sensitive layout uses logical properties instead of physical left/right declarations", () => {
     expect(css).not.toMatch(
       /\b(?:left|right|margin-left|margin-right|padding-left|padding-right|border-left|border-right|inset-left|inset-right)\s*:/

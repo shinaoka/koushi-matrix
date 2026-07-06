@@ -1025,7 +1025,6 @@ impl AccountCommand {
                 | Self::ChangePassword { .. }
                 | Self::DeactivateAccount { .. }
                 | Self::SubmitAccountManagementUia { .. }
-                | Self::SoftLogoutReauth { .. }
                 | Self::ExportRoomKeys { .. }
                 | Self::ImportRoomKeys { .. }
                 | Self::BootstrapSecureBackup { .. }
@@ -2513,6 +2512,16 @@ mod tests {
             connection_id: crate::ids::RuntimeConnectionId(999),
             sequence: seq,
         }
+    }
+
+    #[test]
+    fn soft_logout_reauth_is_allowed_past_ready_session_gate() {
+        let command = CoreCommand::Account(AccountCommand::SoftLogoutReauth {
+            request_id: fake_rid(73),
+            password: koushi_state::AuthSecret::new("synthetic-password"),
+        });
+
+        assert!(!command.requires_ready_session());
     }
 
     #[test]

@@ -388,6 +388,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::SyncReconnecting { reason } => sync::handle_sync_reconnecting(state, reason),
         AppAction::SyncRecovered => sync::handle_sync_recovered(state),
         AppAction::SyncStopped => sync::handle_sync_stopped(state),
+        AppAction::SyncStatusChanged { generation, status } => {
+            sync::handle_sync_status_changed(state, generation, status)
+        }
         AppAction::SyncModeChanged { mode } => sync::handle_sync_mode_changed(state, mode),
         AppAction::RoomListUpdated { spaces, rooms } => {
             room::handle_room_list_updated(state, spaces, rooms)

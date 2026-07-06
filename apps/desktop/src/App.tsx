@@ -1987,16 +1987,19 @@ export function App() {
   async function submitLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const password = loginPasswordRef.current?.value ?? "";
+    const sessionKind = snapshot?.state.domain.session.kind;
     setIsBusy(true);
     try {
-      setSnapshot(
-        await api.submitLogin(
-          loginHomeserver,
-          loginUsername,
-          password,
-          loginDeviceName
-        )
-      );
+      const nextSnapshot =
+        sessionKind === "locked"
+          ? await api.submitSoftLogoutReauth(password)
+          : await api.submitLogin(
+              loginHomeserver,
+              loginUsername,
+              password,
+              loginDeviceName
+            );
+      setSnapshot(nextSnapshot);
     } finally {
       if (loginPasswordRef.current) {
         loginPasswordRef.current.value = "";

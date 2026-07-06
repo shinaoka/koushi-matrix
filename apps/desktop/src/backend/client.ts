@@ -72,6 +72,10 @@ class TauriDesktopApi implements DesktopApi {
     });
   }
 
+  async submitSoftLogoutReauth(password: string): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("submit_soft_logout_reauth", { password });
+  }
+
   async listSavedSessions(): Promise<SavedSessionInfo[]> {
     return invoke<SavedSessionInfo[]>("list_saved_sessions");
   }

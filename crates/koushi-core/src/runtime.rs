@@ -76,6 +76,18 @@ pub const ACTION_QUEUE_CAPACITY: usize = 16384;
 pub const ACTOR_MESSAGE_QUEUE_CAPACITY: usize = 1024;
 pub const COMPOSER_DRAFT_PERSIST_DEBOUNCE: Duration = Duration::from_millis(150);
 const INTERNAL_RUNTIME_CONNECTION_ID: RuntimeConnectionId = RuntimeConnectionId(0);
+const ENV_SYNC_TRACE: &str = "KOUSHI_SYNC_TRACE";
+
+fn trace_runtime_sync(stage: &str, message: &str) {
+    if std::env::var_os(ENV_SYNC_TRACE).is_some() {
+        eprintln!("koushi.sync stage={stage} {message}");
+    }
+}
+
+fn runtime_request_id_trace_label(request_id: RequestId) -> String {
+    format!("{}/{}", request_id.connection_id.0, request_id.sequence)
+}
+
 /// Diagnostic-only, private-data-free trace of slow AppActor loop iterations.
 /// Enable with KOUSHI_SUBSCRIBE_TRACE=1. A loop iteration that takes hundreds of
 /// ms (e.g. a full `self.state.clone()` of a 100+ room account) starves the
@@ -1372,6 +1384,13 @@ impl AppActor {
     /// Returns whether `AppState` changed.
     async fn handle_command(&mut self, command: CoreCommand) -> bool {
         if command.requires_ready_session() && !is_ready_session_for_commands(&self.state.session) {
+            trace_runtime_sync(
+                "command_rejected",
+                &format!(
+                    "request_id={} reason=session_required action=emit_operation_failed",
+                    runtime_request_id_trace_label(command.request_id())
+                ),
+            );
             self.emit(CoreEvent::OperationFailed {
                 request_id: command.request_id(),
                 failure: CoreFailure::SessionRequired,
@@ -2241,6 +2260,13 @@ impl AppActor {
     async fn handle_app_effects(&mut self, request_id: RequestId, effects: Vec<AppEffect>) {
         for effect in effects {
             if let AppEffect::StartSync = effect {
+                trace_runtime_sync(
+                    "effect_start_sync",
+                    &format!(
+                        "source=command_effect request_id={} action=send_sync_start",
+                        runtime_request_id_trace_label(request_id)
+                    ),
+                );
                 let _ = self
                     .account_actor
                     .send(AccountMessage::SyncCommand(SyncCommand::Start {
@@ -2452,6 +2478,13 @@ impl AppActor {
         for effect in effects {
             if let AppEffect::StartSync = effect {
                 let request_id = self.next_internal_request_id();
+                trace_runtime_sync(
+                    "effect_start_sync",
+                    &format!(
+                        "source=actor_projection request_id={} action=send_sync_start",
+                        runtime_request_id_trace_label(request_id)
+                    ),
+                );
                 let _ = self
                     .account_actor
                     .send(AccountMessage::SyncCommand(SyncCommand::Start {
@@ -3803,6 +3836,48 @@ mod tests {
         assert!(
             action_rx_arm.contains("handle_post_projection_effects"),
             "actor-originated LoginSucceeded/RecoverySucceeded actions emit StartSync; action_rx must execute that follow-up effect"
+        );
+    }
+
+    #[test]
+    fn runtime_sync_trace_covers_start_sync_effect_boundaries() {
+        let source = include_str!("runtime.rs");
+        let command_effects = source
+            .split("async fn handle_app_effects")
+            .nth(1)
+            .expect("handle_app_effects should exist")
+            .split("async fn handle_post_projection_effects")
+            .next()
+            .expect("handle_app_effects should precede post projection effects");
+        let actor_projection_effects = source
+            .split("async fn handle_post_projection_effects")
+            .nth(1)
+            .expect("handle_post_projection_effects should exist")
+            .split("async fn handle_ui_event_effects")
+            .next()
+            .expect("post projection effects should precede ui event effects");
+        let compact_command_effects: String = command_effects
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        let compact_actor_projection_effects: String = actor_projection_effects
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+
+        assert!(
+            source.contains("const ENV_SYNC_TRACE: &str = \"KOUSHI_SYNC_TRACE\";"),
+            "runtime sync diagnostics must use the same explicit opt-in env as SyncActor"
+        );
+        assert!(
+            compact_command_effects
+                .contains("trace_runtime_sync(\"effect_start_sync\",&format!(\"source=command_effectrequest_id={}action=send_sync_start\""),
+            "command-originated StartSync effects should be visible in sync diagnostics"
+        );
+        assert!(
+            compact_actor_projection_effects
+                .contains("trace_runtime_sync(\"effect_start_sync\",&format!(\"source=actor_projectionrequest_id={}action=send_sync_start\""),
+            "actor-originated restore/login StartSync effects should be visible in sync diagnostics"
         );
     }
 

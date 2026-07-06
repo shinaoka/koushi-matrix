@@ -45,10 +45,10 @@ use std::{collections::BTreeSet, io};
 
 use koushi_core::command::{
     AccountCommand, AppCommand, CoreCommand, CreateRoomOptions, CreateRoomVisibility,
-    ImageUploadCompressionPolicy,
-    ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantInfo,
-    ImageUploadVariantKind, MediaDownloadSelection, RoomCommand, SearchCommand, SearchScope,
-    SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaRequest, UploadMediaThumbnail,
+    ImageUploadCompressionPolicy, ImageUploadCompressionState, ImageUploadDimensions,
+    ImageUploadVariantInfo, ImageUploadVariantKind, MediaDownloadSelection, RoomCommand,
+    SearchCommand, SearchScope, SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaRequest,
+    UploadMediaThumbnail,
 };
 use koushi_core::event::{
     AccountEvent, ActivityEvent, CoreEvent, E2eeTrustEvent, LinkPreviewState, LiveSignalsEvent,
@@ -61,7 +61,8 @@ use koushi_core::failure::{CoreFailure, RoomFailureKind};
 use koushi_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
 use koushi_core::runtime::{CoreConnection, CoreRuntime};
 use koushi_state::{
-    ActivityMarkReadTarget, ActivityState, AppAction, AppState, AuthSecret, ComposerKey,
+    ActivityMarkReadTarget, ActivityRowKind, ActivityState, AppAction, AppState, AuthSecret,
+    ComposerKey,
     ComposerKeyEvent, ComposerKeyModifiers, ComposerResolvedAction, ComposerResolverContext,
     ComposerSelection, ComposerSendShortcut, ComposerSurface, CrossSigningStatus, DirectoryQuery,
     DirectoryRoomSummary, DisplaySettings, IdentityResetAuthRequest, IdentityResetAuthType,
@@ -98,7 +99,7 @@ const ENV_ALLOW_IDENTITY_RESET: &str = "KOUSHI_QA_ALLOW_IDENTITY_RESET";
 const ENV_E2EE_RECIPIENT_SECOND_DEVICE: &str = "KOUSHI_QA_E2EE_RECIPIENT_SECOND_DEVICE";
 const ENV_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND: &str =
     "KOUSHI_QA_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND";
-#[cfg(any(debug_assertions, test))]
+#[cfg(any(debug_assertions, feature = "qa-bin"))]
 const ENV_FILE_CREDENTIAL_STORE_DIR: &str = "KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR";
 
 const DEVICE_A: &str = "Koushi Core QA A";
@@ -106,8 +107,11 @@ const DEVICE_B: &str = "Koushi Core QA B";
 
 /// Maximum time to wait for a single event.
 const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
+const LOGIN_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const ROOM_LIST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const E2EE_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
+const SEND_QUEUE_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
+const TIMELINE_UNSUBSCRIBE_SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
 const DEVICE_LIST_SETTLE_SYNC_TIMEOUT: Duration = Duration::from_secs(5);
 const THREAD_REPLY_BODY: &str = "Phase 11 QA thread reply from B";
 const E2EE_KEY_BACKUP_SEED_BODY: &str = "Koushi E2EE key backup seed";
@@ -165,6 +169,7 @@ enum QaScenario {
     Directory,
     RoomManagement,
     Timeline,
+    TimelineReconnect,
     TimelineStress,
     Activity,
     Composer,
@@ -193,6 +198,7 @@ enum QaStage {
     Directory,
     RoomManagement,
     Timeline,
+    TimelineReconnect,
     TimelineStress,
     Activity,
     Composer,
@@ -255,12 +261,10 @@ fn run() -> Result<String, String> {
     runtime.block_on(run_async(config, scenario))
 }
 
-/// Refuse to run against the OS keychain. In debug/test builds this checks
-/// both the env var and the structurally resolved backend; release builds
-/// have no file credential store at all, so they are refused outright before
-/// the env var is even consulted.
+/// Refuse to run against the OS keychain. Debug and qa-bin release builds both
+/// check the env var and the structurally resolved backend before any login.
 fn assert_file_credential_store_active() -> Result<(), String> {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "qa-bin"))]
     {
         if std::env::var_os(ENV_FILE_CREDENTIAL_STORE_DIR).is_none() {
             return Err(format!(
@@ -277,7 +281,7 @@ fn assert_file_credential_store_active() -> Result<(), String> {
         Ok(())
     }
 
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "qa-bin")))]
     {
         Err(
             "core QA refuses to run against the OS keychain: release builds have no \
@@ -308,6 +312,7 @@ impl QaScenario {
             "directory" => Ok(Self::Directory),
             "room_management" => Ok(Self::RoomManagement),
             "timeline" => Ok(Self::Timeline),
+            "timeline_reconnect" => Ok(Self::TimelineReconnect),
             "timeline_stress" => Ok(Self::TimelineStress),
             "activity" => Ok(Self::Activity),
             "composer" => Ok(Self::Composer),
@@ -323,14 +328,14 @@ impl QaScenario {
             "link_preview" => Ok(Self::LinkPreview),
             "cache_restore" => Ok(Self::CacheRestore),
             other => Err(format!(
-                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, native_attention, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, search_crawler, scheduled_send, restore_cleanup, link_preview, cache_restore; got {other}"
+                "{ENV_QA_SCENARIO} must be one of all, safety, login_sync, credential_health, native_attention, e2ee_trust, invites_dm, room_space, directory, room_management, timeline, timeline_reconnect, timeline_stress, activity, composer, reply, media, live_signals, thread, edit_redact_search, search_crawler, scheduled_send, restore_cleanup, link_preview, cache_restore; got {other}"
             )),
         }
     }
 
     fn should_run_stage(self, stage: QaStage) -> bool {
         match self {
-            Self::All => !matches!(stage, QaStage::TimelineStress),
+            Self::All => !matches!(stage, QaStage::TimelineReconnect | QaStage::TimelineStress),
             Self::Safety => matches!(stage, QaStage::Safety),
             Self::LoginSync => matches!(stage, QaStage::Safety | QaStage::LoginSync),
             Self::CredentialHealth => matches!(
@@ -367,6 +372,9 @@ impl QaScenario {
                 stage,
                 QaStage::Safety | QaStage::LoginSync | QaStage::RoomSpace | QaStage::Timeline
             ),
+            Self::TimelineReconnect => {
+                matches!(stage, QaStage::Safety | QaStage::TimelineReconnect)
+            }
             Self::TimelineStress => matches!(
                 stage,
                 QaStage::Safety
@@ -521,6 +529,10 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
         QaStage::Directory => &["directory_query=ok", "directory_join=ok"],
         QaStage::RoomManagement => &["room_settings=ok", "moderation=ok", "permission_guard=ok"],
         QaStage::Timeline => &["timeline=ok", "timeline_nav=ok", "hide_redacted=ok"],
+        QaStage::TimelineReconnect => &[
+            "timeline_reconnect_recv_after_reconnect=ok",
+            "timeline_reconnect=ok",
+        ],
         QaStage::TimelineStress => &[
             "timeline_stress=ok",
             "stress_no_blank=ok",
@@ -710,6 +722,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
             QaStage::RoomSpace,
             QaStage::Timeline,
         ],
+        QaScenario::TimelineReconnect => vec![QaStage::Safety, QaStage::TimelineReconnect],
         QaScenario::TimelineStress => vec![
             QaStage::Safety,
             QaStage::LoginSync,
@@ -875,7 +888,7 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
             tokens.dedup();
             tokens
         }
-        QaScenario::CacheRestore => stages_for_scenario(scenario)
+        QaScenario::TimelineReconnect | QaScenario::CacheRestore => stages_for_scenario(scenario)
             .into_iter()
             .flat_map(|stage| tokens_for_stage(stage).iter().copied())
             .collect(),
@@ -1220,18 +1233,10 @@ async fn run_directory_stage(config: &QaConfig, conn_a: &mut CoreConnection) -> 
     let account_key_b = wait_for_logged_in(&mut conn_b, login_b_id, "directory login B").await?;
     wait_for_ready_snapshot(&mut conn_b, "directory session B Ready").await?;
 
-    let join_id = conn_b.next_request_id();
-    conn_b
-        .command(CoreCommand::Room(RoomCommand::JoinDirectoryRoom {
-            request_id: join_id,
-            alias: expected_alias,
-            via_server: Some(config.server_name.clone()),
-        }))
-        .await
-        .map_err(|e| format!("directory: submit join by alias failed: {e}"))?;
-    wait_for_room_joined(
+    join_directory_room_for_qa(
         &mut conn_b,
-        join_id,
+        &expected_alias,
+        &config.server_name,
         &public_room_id,
         "directory B joins public room",
     )
@@ -1240,6 +1245,25 @@ async fn run_directory_stage(config: &QaConfig, conn_a: &mut CoreConnection) -> 
 
     cleanup_logged_in_runtime(conn_b, runtime_b, account_key_b, "directory cleanup B").await?;
     Ok(())
+}
+
+async fn join_directory_room_for_qa(
+    conn_b: &mut CoreConnection,
+    expected_alias: &str,
+    via_server: &str,
+    public_room_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let join_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Room(RoomCommand::JoinDirectoryRoom {
+            request_id: join_id,
+            alias: expected_alias.to_owned(),
+            via_server: Some(via_server.to_owned()),
+        }))
+        .await
+        .map_err(|e| format!("{label}: submit join by alias failed: {e}"))?;
+    wait_for_room_joined(conn_b, join_id, public_room_id, label).await
 }
 
 async fn run_room_management_stage(
@@ -3272,6 +3296,12 @@ async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
     )
     .await?;
 
+    unsubscribe_timeline_for_qa(
+        &mut conn,
+        &key,
+        "send_queue unsubscribe before restart shutdown",
+    )
+    .await?;
     stop_sync_for_qa(&mut conn, "send_queue stop before restart").await?;
     drop(conn);
     drop(runtime);
@@ -3308,6 +3338,8 @@ async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
     let restored_txn = match restored.id {
         TimelineItemId::Transaction { transaction_id } => transaction_id,
         TimelineItemId::Event { .. } => {
+            unsubscribe_timeline_for_qa(&mut conn, &key, "send_queue unsubscribe before cleanup")
+                .await?;
             println!("unsent_restart=ok");
             cleanup_logged_in_runtime(conn, runtime, account_key, "send_queue cleanup").await?;
             return Ok(());
@@ -3337,7 +3369,196 @@ async fn run_send_queue_stage(config: &QaConfig) -> Result<(), String> {
     .await?;
     println!("unsent_restart=ok");
 
+    unsubscribe_timeline_for_qa(&mut conn, &key, "send_queue unsubscribe before cleanup").await?;
     cleanup_logged_in_runtime(conn, runtime, account_key, "send_queue cleanup").await
+}
+
+async fn unsubscribe_timeline_for_qa(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    label: &str,
+) -> Result<(), String> {
+    let request_id = conn.next_request_id();
+    conn.command(CoreCommand::Timeline(TimelineCommand::Unsubscribe {
+        request_id,
+        key: key.clone(),
+    }))
+    .await
+    .map_err(|e| format!("{label}: submit unsubscribe failed: {e}"))?;
+    tokio::time::sleep(TIMELINE_UNSUBSCRIBE_SETTLE_TIMEOUT).await;
+    Ok(())
+}
+
+async fn run_timeline_reconnect_scenario(config: &QaConfig) -> Result<(), String> {
+    let proxy = QaTcpProxy::start(&config.homeserver)?;
+    let data_dir_a = qa_data_dir("timeline_reconnect_a");
+    let data_dir_b = qa_data_dir("timeline_reconnect_b");
+
+    let runtime_a = CoreRuntime::start_with_data_dir(data_dir_a);
+    let mut conn_a = runtime_a.attach();
+    let login_a_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Account(AccountCommand::LoginPassword {
+            request_id: login_a_id,
+            request: koushi_state::LoginRequest {
+                homeserver: proxy.homeserver_url(),
+                username: config.user_a.clone(),
+                password: AuthSecret::new(config.password_a.clone()),
+                device_display_name: Some("Koushi Core QA Timeline Reconnect A".to_owned()),
+            },
+        }))
+        .await
+        .map_err(|e| format!("timeline_reconnect: submit login A failed: {e}"))?;
+
+    let account_key_a =
+        wait_for_logged_in(&mut conn_a, login_a_id, "timeline_reconnect login A").await?;
+    wait_for_ready_snapshot(&mut conn_a, "timeline_reconnect session A Ready").await?;
+    let sync_start_a_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Sync(SyncCommand::Start {
+            request_id: sync_start_a_id,
+        }))
+        .await
+        .map_err(|e| format!("timeline_reconnect: submit sync start A failed: {e}"))?;
+    let sync_backend_a = wait_for_sync_started_and_running(
+        &mut conn_a,
+        sync_start_a_id,
+        "timeline_reconnect sync start A",
+    )
+    .await?;
+    assert_expected_backend(
+        config.expect_sync_backend.as_deref(),
+        sync_backend_a,
+        "timeline_reconnect sync start A",
+    )?;
+
+    let runtime_b = CoreRuntime::start_with_data_dir(data_dir_b);
+    let mut conn_b = runtime_b.attach();
+    let login_b_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Account(AccountCommand::LoginPassword {
+            request_id: login_b_id,
+            request: koushi_state::LoginRequest {
+                homeserver: config.homeserver.clone(),
+                username: config.user_b.clone(),
+                password: AuthSecret::new(config.password_b.clone()),
+                device_display_name: Some("Koushi Core QA Timeline Reconnect B".to_owned()),
+            },
+        }))
+        .await
+        .map_err(|e| format!("timeline_reconnect: submit login B failed: {e}"))?;
+
+    let account_key_b =
+        wait_for_logged_in(&mut conn_b, login_b_id, "timeline_reconnect login B").await?;
+    wait_for_ready_snapshot(&mut conn_b, "timeline_reconnect session B Ready").await?;
+    let sync_start_b_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Sync(SyncCommand::Start {
+            request_id: sync_start_b_id,
+        }))
+        .await
+        .map_err(|e| format!("timeline_reconnect: submit sync start B failed: {e}"))?;
+    let sync_backend_b = wait_for_sync_started_and_running(
+        &mut conn_b,
+        sync_start_b_id,
+        "timeline_reconnect sync start B",
+    )
+    .await?;
+    assert_expected_backend(
+        config.expect_sync_backend.as_deref(),
+        sync_backend_b,
+        "timeline_reconnect sync start B",
+    )?;
+
+    let room_id = create_room_for_qa(
+        &mut conn_a,
+        "QA Timeline Reconnect Room",
+        false,
+        "timeline_reconnect create room",
+    )
+    .await?;
+    sync_once_for_qa(&mut conn_a, "timeline_reconnect sync A after room create").await?;
+    wait_for_room_in_room_list(&mut conn_a, &room_id, "timeline_reconnect A room list").await?;
+
+    let user_b_full_id = format!("@{}:{}", config.user_b, config.server_name);
+    invite_user_for_qa(
+        &mut conn_a,
+        &room_id,
+        &user_b_full_id,
+        "timeline_reconnect invite B",
+    )
+    .await?;
+    sync_once_for_qa(&mut conn_b, "timeline_reconnect sync B for invite").await?;
+    wait_for_invite_in_snapshot(
+        &mut conn_b,
+        &room_id,
+        Some(false),
+        "timeline_reconnect B sees invite",
+    )
+    .await?;
+    accept_invite_for_qa(&mut conn_b, &room_id, "timeline_reconnect B accepts invite").await?;
+    sync_once_for_qa(&mut conn_b, "timeline_reconnect sync B after accept").await?;
+    wait_for_room_in_room_list(&mut conn_b, &room_id, "timeline_reconnect B room list").await?;
+    sync_once_for_qa(&mut conn_a, "timeline_reconnect sync A after B accepts").await?;
+
+    let key_a = TimelineKey::room(account_key_a.clone(), room_id.clone());
+    let key_b = TimelineKey::room(account_key_b.clone(), room_id);
+    subscribe_timeline_for_qa(&mut conn_a, &key_a, "timeline_reconnect subscribe A").await?;
+    subscribe_timeline_for_qa(&mut conn_b, &key_b, "timeline_reconnect subscribe B").await?;
+
+    proxy.disable();
+    wait_for_sync_reconnecting(&mut conn_a, "timeline_reconnect A offline").await?;
+
+    let body = "QA timeline reconnect message from B";
+    let txn = "qa-timeline-reconnect-b";
+    let send_b_id = conn_b.next_request_id();
+    conn_b
+        .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            request_id: send_b_id,
+            key: key_b.clone(),
+            transaction_id: txn.to_owned(),
+            body: body.to_owned(),
+            mentions: MentionIntent::default(),
+        }))
+        .await
+        .map_err(|e| format!("timeline_reconnect: submit B send failed: {e}"))?;
+    wait_for_send_flow_completion(
+        &mut conn_b,
+        send_b_id,
+        &key_b,
+        txn,
+        body,
+        "timeline_reconnect B send while A offline",
+    )
+    .await?;
+
+    proxy.enable();
+    wait_for_sync_running_after_reconnect(&mut conn_a, "timeline_reconnect A recovered").await?;
+    wait_for_item_with_body(
+        &mut conn_a,
+        &key_a,
+        body,
+        "timeline_reconnect A receives after reconnect",
+    )
+    .await?;
+    println!("timeline_reconnect_recv_after_reconnect=ok");
+    println!("timeline_reconnect=ok");
+
+    cleanup_logged_in_runtime(
+        conn_b,
+        runtime_b,
+        account_key_b,
+        "timeline_reconnect cleanup B",
+    )
+    .await?;
+    cleanup_logged_in_runtime(
+        conn_a,
+        runtime_a,
+        account_key_a,
+        "timeline_reconnect cleanup A",
+    )
+    .await?;
+    Ok(())
 }
 
 async fn cleanup_after_full_flow(
@@ -3465,6 +3686,12 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     if scenario == QaScenario::CacheRestore {
         println!("safety=ok");
         run_cache_restore_scenario(&config).await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
+
+    if scenario == QaScenario::TimelineReconnect {
+        println!("safety=ok");
+        run_timeline_reconnect_scenario(&config).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
 
@@ -3608,10 +3835,11 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
         return Ok(scenario_report(&config.server_kind, scenario));
     }
 
+    if scenario.should_run_stage(QaStage::Directory) {
+        run_directory_stage(&config, &mut conn_a).await?;
+    }
+
     if !scenario.should_run_stage(QaStage::RoomSpace) {
-        if scenario.should_run_stage(QaStage::Directory) {
-            run_directory_stage(&config, &mut conn_a).await?;
-        }
         cleanup_after_login_sync(conn_a, runtime_a, data_dir_a, account_key_a).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
@@ -3811,10 +4039,6 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     let room_list_b = room_list_summary(&snapshot_b);
     println!("room_list_b={room_list_b}");
     println!("room_space=ok");
-
-    if scenario.should_run_stage(QaStage::Directory) {
-        run_directory_stage(&config, &mut conn_a).await?;
-    }
 
     if scenario.should_run_stage(QaStage::RoomManagement) {
         run_room_management_stage(
@@ -4048,14 +4272,6 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             .await?;
     println!("paginate={paginate_result}");
 
-    if scenario.should_run_stage(QaStage::Activity) {
-        run_activity_stage(&mut conn_a, &mut conn_b, &key_a, &key_b, &room_id).await?;
-    }
-
-    if scenario.should_run_stage(QaStage::Composer) {
-        run_composer_stage(&mut conn_a, &key_a, &account_key_b.0).await?;
-    }
-
     if scenario.should_run_stage(QaStage::LiveSignals) {
         run_live_signals_stage(
             &mut conn_a,
@@ -4066,6 +4282,14 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             &account_key_b.0,
         )
         .await?;
+    }
+
+    if scenario.should_run_stage(QaStage::Activity) {
+        run_activity_stage(&mut conn_a, &mut conn_b, &key_a, &key_b, &room_id).await?;
+    }
+
+    if scenario.should_run_stage(QaStage::Composer) {
+        run_composer_stage(&mut conn_a, &key_a, &account_key_b.0).await?;
     }
 
     if scenario.should_run_stage(QaStage::Reply) {
@@ -6283,6 +6507,68 @@ async fn start_sync_for_qa(conn: &mut CoreConnection, label: &str) -> Result<(),
         .map(|_| ())
 }
 
+async fn wait_for_sync_reconnecting(conn: &mut CoreConnection, label: &str) -> Result<(), String> {
+    if matches!(
+        conn.snapshot().sync,
+        koushi_state::SyncState::Reconnecting { .. }
+    ) {
+        return Ok(());
+    }
+
+    loop {
+        let event = tokio::time::timeout(ROOM_LIST_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for SyncEvent::Reconnecting"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Sync(SyncEvent::Reconnecting) => return Ok(()),
+            CoreEvent::StateChanged(snapshot)
+                if matches!(snapshot.sync, koushi_state::SyncState::Reconnecting { .. }) =>
+            {
+                return Ok(());
+            }
+            CoreEvent::Sync(SyncEvent::Failed) => {
+                return Err(format!(
+                    "{label}: SyncEvent::Failed received before Reconnecting"
+                ));
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_sync_running_after_reconnect(
+    conn: &mut CoreConnection,
+    label: &str,
+) -> Result<(), String> {
+    if matches!(conn.snapshot().sync, koushi_state::SyncState::Running) {
+        return Ok(());
+    }
+
+    loop {
+        let event = tokio::time::timeout(ROOM_LIST_EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for SyncEvent::Running"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Sync(SyncEvent::Running) => return Ok(()),
+            CoreEvent::StateChanged(snapshot)
+                if matches!(snapshot.sync, koushi_state::SyncState::Running) =>
+            {
+                return Ok(());
+            }
+            CoreEvent::Sync(SyncEvent::Failed) => {
+                return Err(format!(
+                    "{label}: SyncEvent::Failed received before Running"
+                ));
+            }
+            _ => {}
+        }
+    }
+}
+
 async fn wait_for_sync_once(
     conn: &mut CoreConnection,
     request_id: RequestId,
@@ -6371,17 +6657,23 @@ async fn wait_for_activity_snapshot(
                 unread,
                 ..
             }) if ev_id == request_id => {
+                let mut unread_room_ids = Vec::new();
+                for row in unread.rows {
+                    if row.kind != ActivityRowKind::RoomUnread || row.event_id.is_some() {
+                        return Err(format!(
+                            "{label}: Activity unread contained an event row"
+                        ));
+                    }
+                    unread_room_ids.push(row.room_id);
+                }
+
                 return Ok((
                     recent
                         .rows
                         .into_iter()
                         .filter_map(|row| row.event_id)
                         .collect(),
-                    unread
-                        .rows
-                        .into_iter()
-                        .filter_map(|row| row.event_id)
-                        .collect(),
+                    unread_room_ids,
                 ));
             }
             CoreEvent::OperationFailed {
@@ -6527,7 +6819,7 @@ async fn wait_for_logged_in(
     label: &str,
 ) -> Result<AccountKey, String> {
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+        let event = tokio::time::timeout(LOGIN_EVENT_TIMEOUT, conn.recv_event())
             .await
             .map_err(|_| format!("{label}: timed out waiting for LoggedIn event"))?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
@@ -7034,7 +7326,7 @@ async fn run_activity_stage(
         }))
         .await
         .map_err(|e| format!("activity: submit open failed: {e}"))?;
-    let (recent_event_ids, unread_event_ids) =
+    let (recent_event_ids, unread_room_ids) =
         wait_for_activity_snapshot(conn_a, open_id, "activity open").await?;
 
     if !recent_event_ids
@@ -7045,9 +7337,9 @@ async fn run_activity_stage(
     }
     println!("activity_recent=ok");
 
-    if !unread_event_ids
+    if !unread_room_ids
         .iter()
-        .any(|event_id| event_id == &send_outcome.event_id)
+        .any(|unread_room_id| unread_room_id == room_id)
     {
         return Err("activity unread projection did not include the unread seed".to_owned());
     }
@@ -9364,9 +9656,14 @@ async fn wait_for_send_completions_in_order(
 ) -> Result<(), String> {
     let mut first_completed = false;
     loop {
-        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+        let event = tokio::time::timeout(SEND_QUEUE_EVENT_TIMEOUT, conn.recv_event())
             .await
-            .map_err(|_| format!("{label}: timed out waiting for ordered SendCompleted events"))?
+            .map_err(|_| {
+                format!(
+                    "{label}: timed out waiting for ordered SendCompleted events \
+                     first_completed={first_completed}"
+                )
+            })?
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         match event {
@@ -9834,6 +10131,9 @@ async fn run_live_signals_stage(
     let room_id = timeline_key_room_id(key_b)
         .ok_or_else(|| "live signals: expected room timeline key".to_owned())?
         .to_owned();
+    let observer_room_id = timeline_key_room_id(key_a)
+        .ok_or_else(|| "live signals: expected observer room timeline key".to_owned())?
+        .to_owned();
 
     let read_receipt_id = conn_b.next_request_id();
     conn_b
@@ -9848,9 +10148,14 @@ async fn run_live_signals_stage(
         matches!(event, LiveSignalsEvent::ReadReceiptSent { .. })
     })
     .await?;
-    wait_for_live_signal_snapshot(conn_b, "read receipt state", |snapshot| {
-        read_receipt_identity_projected(snapshot, &room_id, event_id, expected_reader_user_id)
-    })
+    best_effort_sync_once_for_qa(conn_a, "live signals sync A for read receipt").await?;
+    wait_for_read_receipt_projection(
+        conn_a,
+        &observer_room_id,
+        event_id,
+        expected_reader_user_id,
+        "read receipt state",
+    )
     .await?;
     println!("read_receipt=ok");
 
@@ -9902,14 +10207,11 @@ async fn run_live_signals_stage(
     // command/event/state contract; product sync policy remains in SyncActor.
     sync_once_for_qa(conn_a, "live signals sync A for typing").await?;
 
-    let room_id_a = timeline_key_room_id(key_a)
-        .ok_or_else(|| "live signals: expected observer room timeline key".to_owned())?
-        .to_owned();
     wait_for_live_signal_snapshot(conn_a, "typing state", |snapshot| {
         snapshot
             .live_signals
             .rooms
-            .get(&room_id_a)
+            .get(&observer_room_id)
             .is_some_and(|room| !room.typing_user_ids.is_empty())
     })
     .await?;
@@ -9941,27 +10243,72 @@ async fn run_live_signals_stage(
     Ok(())
 }
 
-fn read_receipt_identity_projected(
+fn read_receipt_projection_status(
     snapshot: &AppState,
     room_id: &str,
     event_id: &str,
     expected_reader_user_id: &str,
-) -> bool {
-    snapshot
-        .live_signals
-        .rooms
-        .get(room_id)
-        .and_then(|room| room.receipts_by_event.get(event_id))
-        .is_some_and(|receipts| {
-            receipts.readers.iter().any(|reader| {
-                let has_display_label = reader
-                    .display_name
-                    .as_deref()
-                    .is_some_and(|label| !label.trim().is_empty())
-                    || !reader.original_display_label.trim().is_empty();
-                reader.user_id == expected_reader_user_id && has_display_label
-            })
-        })
+) -> &'static str {
+    let Some(room) = snapshot.live_signals.rooms.get(room_id) else {
+        return "room_missing";
+    };
+    let Some(receipts) = room.receipts_by_event.get(event_id) else {
+        return "event_missing";
+    };
+    if receipts.readers.is_empty() {
+        return "readers_empty";
+    }
+    let Some(reader) = receipts
+        .readers
+        .iter()
+        .find(|reader| reader.user_id == expected_reader_user_id)
+    else {
+        return "reader_missing";
+    };
+    let has_display_label = reader
+        .display_name
+        .as_deref()
+        .is_some_and(|label| !label.trim().is_empty())
+        || !reader.original_display_label.trim().is_empty();
+    if has_display_label {
+        "projected"
+    } else {
+        "label_missing"
+    }
+}
+
+async fn wait_for_read_receipt_projection(
+    conn: &mut CoreConnection,
+    room_id: &str,
+    event_id: &str,
+    expected_reader_user_id: &str,
+    label: &str,
+) -> Result<AppState, String> {
+    let snapshot = conn.snapshot();
+    let mut last_status =
+        read_receipt_projection_status(&snapshot, room_id, event_id, expected_reader_user_id);
+    if last_status == "projected" {
+        return Ok(snapshot);
+    }
+
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| {
+                format!(
+                    "{label}: timed out waiting for read-receipt projection status={last_status}"
+                )
+            })?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        if let CoreEvent::StateChanged(snapshot) = event {
+            last_status =
+                read_receipt_projection_status(&snapshot, room_id, event_id, expected_reader_user_id);
+            if last_status == "projected" {
+                return Ok(snapshot);
+            }
+        }
+    }
 }
 
 async fn run_composer_stage(
@@ -10285,13 +10632,18 @@ async fn run_link_preview_stage(
         }))
         .await
         .map_err(|e| format!("submit global preview disable: {e}"))?;
-    wait_for_settings_persisted(conn_b, settings_id, "global preview disable", false).await?;
-
-    let disabled_item = wait_for_item_with_body(
+    let disabled_item = wait_for_link_preview_item_projection(
         conn_b,
         key_b,
+        settings_id,
         URL_MESSAGE_BODY,
         "B sees message after global disable",
+        |item| {
+            item.link_previews
+                .as_ref()
+                .map(|previews| previews.is_empty())
+                .unwrap_or(true)
+        },
     )
     .await?;
     if !disabled_item
@@ -10314,20 +10666,26 @@ async fn run_link_preview_stage(
                     code_block_wrap: true,
                     hide_redacted: false,
                     url_previews_enabled: true,
-                    encrypted_url_previews_enabled: false,
+                    encrypted_url_previews_enabled: true,
                 }),
                 ..SettingsPatch::default()
             },
         }))
         .await
         .map_err(|e| format!("submit global preview enable: {e}"))?;
-    wait_for_settings_persisted(conn_b, settings_id, "global preview enable", true).await?;
-
-    let reenabled_item = wait_for_item_with_body(
+    let reenabled_item = wait_for_link_preview_item_projection(
         conn_b,
         key_b,
+        settings_id,
         URL_MESSAGE_BODY,
         "B sees message after global re-enable",
+        |item| {
+            item.link_previews.as_ref().is_some_and(|previews| {
+                previews.len() == 1
+                    && previews[0].url == URL_EXTRACTED
+                    && matches!(previews[0].state, LinkPreviewState::Pending)
+            })
+        },
     )
     .await?;
     let reenabled_previews = reenabled_item
@@ -10360,6 +10718,24 @@ async fn run_link_preview_stage(
         return Err("hide link preview did not produce empty preview list".to_owned());
     }
     println!("link_preview_hide=ok");
+
+    let settings_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::App(AppCommand::UpdateSettings {
+            request_id: settings_id,
+            patch: SettingsPatch {
+                display: Some(DisplaySettings {
+                    code_block_wrap: true,
+                    hide_redacted: false,
+                    url_previews_enabled: true,
+                    encrypted_url_previews_enabled: true,
+                }),
+                ..SettingsPatch::default()
+            },
+        }))
+        .await
+        .map_err(|e| format!("submit encrypted preview enable: {e}"))?;
+    wait_for_settings_persisted(conn_a, settings_id, "encrypted preview enable", true).await?;
 
     // 6. Test E2EE default-on: create a new encrypted room, send a URL message,
     //    and verify previews are projected for the sender's own item.
@@ -10432,7 +10808,7 @@ async fn run_link_preview_stage(
         .map_err(|e| format!("submit encrypted room URL message: {e}"))?;
     wait_for_send_completed(conn_a, enc_send_id, &enc_key_a, "encrypted room URL send").await?;
 
-    let enc_item = wait_for_item_with_body(
+    let enc_item = wait_for_event_item_with_body(
         conn_a,
         &enc_key_a,
         URL_MESSAGE_BODY,
@@ -10748,6 +11124,112 @@ async fn wait_for_item_with_body(
                         return Ok(item.clone());
                     }
                 }
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_event_item_with_body(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    expected_body: &str,
+    label: &str,
+) -> Result<TimelineItem, String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for event body {expected_body:?}"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref ev_key,
+                items,
+                ..
+            }) if ev_key == key => {
+                if let Some(item) = items.into_iter().find(|item| {
+                    timeline_item_body_matches(item, expected_body)
+                        && matches!(item.id, TimelineItemId::Event { .. })
+                }) {
+                    return Ok(item);
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                let mut found = None;
+                visit_timeline_diff_items(&diffs, |item| {
+                    if found.is_none()
+                        && timeline_item_body_matches(item, expected_body)
+                        && matches!(item.id, TimelineItemId::Event { .. })
+                    {
+                        found = Some(item.clone());
+                    }
+                    Ok(())
+                })?;
+                if let Some(item) = found {
+                    return Ok(item);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn wait_for_link_preview_item_projection(
+    conn: &mut CoreConnection,
+    key: &TimelineKey,
+    request_id: RequestId,
+    expected_body: &str,
+    label: &str,
+    predicate: impl Fn(&TimelineItem) -> bool,
+) -> Result<TimelineItem, String> {
+    loop {
+        let event = tokio::time::timeout(EVENT_TIMEOUT, conn.recv_event())
+            .await
+            .map_err(|_| format!("{label}: timed out waiting for link-preview projection"))?
+            .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
+
+        match event {
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                key: ref ev_key,
+                items,
+                ..
+            }) if ev_key == key => {
+                if let Some(item) = items
+                    .into_iter()
+                    .find(|item| timeline_item_body_matches(item, expected_body) && predicate(item))
+                {
+                    return Ok(item);
+                }
+            }
+            CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: ref ev_key,
+                diffs,
+                ..
+            }) if ev_key == key => {
+                let mut found = None;
+                visit_timeline_diff_items(&diffs, |item| {
+                    if found.is_none()
+                        && timeline_item_body_matches(item, expected_body)
+                        && predicate(item)
+                    {
+                        found = Some(item.clone());
+                    }
+                    Ok(())
+                })?;
+                if let Some(item) = found {
+                    return Ok(item);
+                }
+            }
+            CoreEvent::OperationFailed {
+                request_id: ev_id,
+                failure,
+            } if ev_id == request_id => {
+                return Err(format!("{label}: command failed: {failure:?}"));
             }
             _ => {}
         }
@@ -11373,7 +11855,11 @@ fn assert_room_timeline_hides_thread_reply_and_summarizes_root(
 }
 
 fn assert_thread_reply_relation(item: &TimelineItem, root_event_id: &str) -> Result<(), String> {
-    if item.in_reply_to_event_id.as_deref() != Some(root_event_id) {
+    if item
+        .in_reply_to_event_id
+        .as_deref()
+        .is_some_and(|reply_id| reply_id != root_event_id)
+    {
         return Err("thread_recv relation mismatch: in_reply_to did not match root".to_owned());
     }
     if item.thread_root.as_deref() != Some(root_event_id) {
@@ -12095,6 +12581,10 @@ mod tests {
             QaScenario::Timeline
         );
         assert_eq!(
+            QaScenario::from_env_value("timeline_reconnect").unwrap(),
+            QaScenario::TimelineReconnect
+        );
+        assert_eq!(
             QaScenario::from_env_value("activity").unwrap(),
             QaScenario::Activity
         );
@@ -12180,6 +12670,7 @@ mod tests {
             QaScenario::RoomManagement,
             QaScenario::InvitesDm,
             QaScenario::Timeline,
+            QaScenario::TimelineReconnect,
             QaScenario::TimelineStress,
             QaScenario::Reply,
             QaScenario::Composer,
@@ -12217,6 +12708,7 @@ mod tests {
             QaScenario::Directory,
             QaScenario::RoomManagement,
             QaScenario::Timeline,
+            QaScenario::TimelineReconnect,
             QaScenario::TimelineStress,
             QaScenario::Activity,
             QaScenario::Composer,
@@ -12581,11 +13073,25 @@ mod tests {
     }
 
     #[test]
-    fn thread_relation_helper_requires_reply_and_thread_root_metadata() {
+    fn thread_relation_helper_requires_thread_root_and_validates_optional_reply_metadata() {
         let valid = synthetic_timeline_item(
             "$reply:test",
             Some("Phase 11 QA thread reply from B"),
             Some("$root:test"),
+            Some("$root:test"),
+            None,
+        );
+        let valid_thread_only = synthetic_timeline_item(
+            "$reply:test",
+            Some("Phase 11 QA thread reply from B"),
+            None,
+            Some("$root:test"),
+            None,
+        );
+        let mismatched_reply = synthetic_timeline_item(
+            "$reply:test",
+            Some("Phase 11 QA thread reply from B"),
+            Some("$other:test"),
             Some("$root:test"),
             None,
         );
@@ -12598,6 +13104,8 @@ mod tests {
         );
 
         assert_thread_reply_relation(&valid, "$root:test").unwrap();
+        assert_thread_reply_relation(&valid_thread_only, "$root:test").unwrap();
+        assert!(assert_thread_reply_relation(&mismatched_reply, "$root:test").is_err());
         assert!(assert_thread_reply_relation(&missing_thread_root, "$root:test").is_err());
     }
 
@@ -13041,6 +13549,30 @@ mod tests {
     }
 
     #[test]
+    fn timeline_reconnect_scenario_exercises_proxy_recovery_and_live_receive() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/bin/headless-core-qa.rs"
+        ));
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("headless-core-qa source should contain production section");
+
+        assert!(
+            production_source.contains("\"timeline_reconnect\" => Ok(Self::TimelineReconnect)")
+        );
+        assert!(production_source.contains("async fn run_timeline_reconnect_scenario"));
+        assert!(production_source.contains("QaTcpProxy::start(&config.homeserver)"));
+        assert!(production_source.contains("proxy.disable();"));
+        assert!(production_source.contains("wait_for_sync_reconnecting"));
+        assert!(production_source.contains("proxy.enable();"));
+        assert!(production_source.contains("wait_for_sync_running_after_reconnect"));
+        assert!(production_source.contains("wait_for_item_with_body("));
+        assert!(production_source.contains("timeline_reconnect_recv_after_reconnect=ok"));
+    }
+
+    #[test]
     fn staged_scenarios_stop_after_their_requested_stage() {
         assert!(QaScenario::Safety.should_run_stage(QaStage::Safety));
         assert!(!QaScenario::Safety.should_run_stage(QaStage::LoginSync));
@@ -13067,6 +13599,12 @@ mod tests {
         assert!(!QaScenario::Timeline.should_run_stage(QaStage::Activity));
         assert!(!QaScenario::Timeline.should_run_stage(QaStage::Reply));
         assert!(!QaScenario::Timeline.should_run_stage(QaStage::EditRedactSearch));
+
+        assert!(QaScenario::TimelineReconnect.should_run_stage(QaStage::Safety));
+        assert!(QaScenario::TimelineReconnect.should_run_stage(QaStage::TimelineReconnect));
+        assert!(!QaScenario::TimelineReconnect.should_run_stage(QaStage::LoginSync));
+        assert!(!QaScenario::TimelineReconnect.should_run_stage(QaStage::Timeline));
+        assert!(!QaScenario::TimelineReconnect.should_run_stage(QaStage::SendQueue));
 
         assert!(QaScenario::TimelineStress.should_run_stage(QaStage::LoginSync));
         assert!(QaScenario::TimelineStress.should_run_stage(QaStage::RoomSpace));
@@ -13158,6 +13696,7 @@ mod tests {
         assert!(QaScenario::All.should_run_stage(QaStage::Directory));
         assert!(QaScenario::All.should_run_stage(QaStage::RoomManagement));
         assert!(QaScenario::All.should_run_stage(QaStage::Timeline));
+        assert!(!QaScenario::All.should_run_stage(QaStage::TimelineReconnect));
         assert!(!QaScenario::All.should_run_stage(QaStage::TimelineStress));
         assert!(QaScenario::All.should_run_stage(QaStage::Activity));
         assert!(QaScenario::All.should_run_stage(QaStage::CredentialHealth));
@@ -13238,6 +13777,103 @@ mod tests {
         assert!(
             body.contains("wait_for_invite_in_snapshot"),
             "timeline stress should wait for invite projection through the live sync path"
+        );
+    }
+
+    #[test]
+    fn login_wait_uses_dedicated_timeout_for_loaded_local_homeservers() {
+        let source = include_str!("headless-core-qa.rs");
+        let wait_body = source
+            .split("async fn wait_for_logged_in")
+            .nth(1)
+            .and_then(|rest| rest.split("/// Wait for `AccountEvent::SessionRestored`").next())
+            .expect("wait_for_logged_in body");
+
+        assert!(
+            source.contains("const LOGIN_EVENT_TIMEOUT: Duration = Duration::from_secs(90);"),
+            "login waits need their own timeout because local homeservers can finish /login slowly under full QA load"
+        );
+        assert!(
+            wait_body.contains("tokio::time::timeout(LOGIN_EVENT_TIMEOUT, conn.recv_event())"),
+            "wait_for_logged_in must not use the short generic EVENT_TIMEOUT"
+        );
+    }
+
+    #[test]
+    fn all_directory_stage_runs_before_room_space_b_sync() {
+        let source = include_str!("headless-core-qa.rs");
+        let run_async_body = source
+            .split("async fn run_async")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn cleanup_after_full_flow").next())
+            .expect("run_async body");
+        let directory_call = "run_directory_stage(&config, &mut conn_a).await?";
+        let directory_index = run_async_body
+            .find(directory_call)
+            .expect("directory stage call in run_async");
+        let room_space_index = run_async_body
+            .find("// --- Phase 4: Room operations")
+            .expect("room-space stage marker");
+
+        assert!(
+            directory_index < room_space_index,
+            "All flow must run directory QA before starting the long-lived B sync"
+        );
+        assert!(
+            !run_async_body[room_space_index..].contains(directory_call),
+            "directory QA must not be re-run after RoomSpace has started B sync"
+        );
+    }
+
+    #[test]
+    fn send_queue_fifo_wait_uses_dedicated_reconnect_timeout() {
+        let source = include_str!("headless-core-qa.rs");
+        let body = source
+            .split("async fn wait_for_send_completions_in_order")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn wait_for_cancelled_or_removed_send").next())
+            .expect("send queue FIFO wait body");
+
+        assert!(
+            source.contains("const SEND_QUEUE_EVENT_TIMEOUT: Duration = Duration::from_secs(90);"),
+            "offline send retry can need longer than the generic event timeout after local proxy reconnection"
+        );
+        assert!(
+            body.contains("tokio::time::timeout(SEND_QUEUE_EVENT_TIMEOUT, conn.recv_event())"),
+            "FIFO retry waiter must use the send-queue reconnect timeout"
+        );
+        assert!(
+            body.contains("first_completed={first_completed}"),
+            "FIFO retry timeout should report whether the first queued send completed"
+        );
+    }
+
+    #[test]
+    fn send_queue_unsubscribes_timeline_before_runtime_shutdown() {
+        let source = include_str!("headless-core-qa.rs");
+        let body = source
+            .split("async fn run_send_queue_stage")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn run_timeline_reconnect_scenario").next())
+            .expect("send queue stage body");
+
+        assert!(
+            body.contains("send_queue unsubscribe before restart shutdown"),
+            "send_queue should drop its subscribed timeline before restart shutdown"
+        );
+        assert!(
+            body.contains("send_queue unsubscribe before cleanup"),
+            "send_queue should drop its restored timeline before final cleanup"
+        );
+        assert!(
+            source.contains(
+                "const TIMELINE_UNSUBSCRIBE_SETTLE_TIMEOUT: Duration = Duration::from_secs(2);"
+            ),
+            "send_queue needs a bounded settle window because Unsubscribe has no completion event"
+        );
+        assert!(
+            body.contains("TIMELINE_UNSUBSCRIBE_SETTLE_TIMEOUT"),
+            "send_queue unsubscribe helper should wait for timeline actor shutdown before runtime drop"
         );
     }
 
@@ -13642,6 +14278,14 @@ mod tests {
                 "timeline_nav=ok",
                 "hide_redacted=ok",
                 "restore_cleanup=ok",
+            ]
+        );
+        assert_eq!(
+            final_tokens_for_scenario(QaScenario::TimelineReconnect),
+            [
+                "safety=ok",
+                "timeline_reconnect_recv_after_reconnect=ok",
+                "timeline_reconnect=ok",
             ]
         );
         assert_eq!(

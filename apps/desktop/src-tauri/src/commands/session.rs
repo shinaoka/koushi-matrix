@@ -114,6 +114,16 @@ pub async fn submit_login(
 }
 
 #[tauri::command]
+pub async fn submit_soft_logout_reauth(
+    password: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    submit_soft_logout_reauth_request(app, state.inner(), AuthSecret::new(password)).await?;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn list_saved_sessions(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<Vec<SessionInfo>, String> {

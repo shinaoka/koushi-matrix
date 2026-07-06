@@ -12,9 +12,10 @@ use crate::state::{
     RoomModerationAction, RoomPreferencesState, RoomSettingChange, RoomSettingsSnapshot,
     RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability,
     ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope, SessionInfo, SettingsPatch,
-    SettingsValues, SpaceSummary, StagedUploadCompressionChoice, StagedUploadItem, SyncMode,
-    TimelineMediaDownloadState, TimelineMediaGalleryItem, TimelineScrollAnchor,
-    TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
+    SettingsValues, SpaceSummary, StagedUploadCompressionChoice, StagedUploadItem,
+    SyncLifecycleStatus, SyncMode, TimelineMediaDownloadState, TimelineMediaGalleryItem,
+    TimelineScrollAnchor, TrustOperationFailureKind, UserProfile, VerificationCancelReason,
+    VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
@@ -357,6 +358,10 @@ pub enum AppAction {
     },
     SyncRecovered,
     SyncStopped,
+    SyncStatusChanged {
+        generation: u64,
+        status: SyncLifecycleStatus,
+    },
     SyncModeChanged {
         mode: SyncMode,
     },

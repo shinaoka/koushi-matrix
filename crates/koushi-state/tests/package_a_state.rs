@@ -400,6 +400,21 @@ fn soft_logout_reauth_requested_sets_authenticating_and_emits_ui_event() {
         SoftLogoutReauthState::Authenticating { request_id: 1 }
     );
 
+    let mut locked = AppState::default();
+    locked.session = SessionState::Locked(session_info());
+    let effects = reduce(
+        &mut locked,
+        AppAction::SoftLogoutReauthRequested { request_id: 10 },
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::SoftLogoutReauthChanged)]
+    );
+    assert_eq!(
+        locked.soft_logout_reauth,
+        SoftLogoutReauthState::Authenticating { request_id: 10 }
+    );
+
     let effects = reduce(
         &mut state,
         AppAction::SoftLogoutReauthRequested { request_id: 2 },
@@ -459,6 +474,9 @@ fn soft_logout_reauth_succeeds_and_fails_are_request_correlated() {
         state.soft_logout_reauth,
         SoftLogoutReauthState::Succeeded { request_id: 1 }
     );
+    let effects = reduce(&mut state, AppAction::LoginSucceeded(session_info()));
+    assert!(matches!(state.session, SessionState::Ready(_)));
+    assert!(effects.contains(&AppEffect::StartSync));
 
     let mut state = AppState::default();
     state.session = SessionState::Ready(session_info());

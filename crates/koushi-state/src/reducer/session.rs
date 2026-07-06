@@ -197,8 +197,8 @@ pub(crate) fn handle_soft_logout_reauth_requested(
     state: &mut AppState,
     request_id: u64,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) || !matches!(state.soft_logout_reauth, SoftLogoutReauthState::Idle)
-    {
+    let can_reauth = is_session_ready(state) || matches!(state.session, SessionState::Locked(_));
+    if !can_reauth || !matches!(state.soft_logout_reauth, SoftLogoutReauthState::Idle) {
         return Vec::new();
     }
     state.soft_logout_reauth = SoftLogoutReauthState::Authenticating { request_id };

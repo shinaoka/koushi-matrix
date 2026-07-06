@@ -223,7 +223,7 @@ export function syncStatePresentation(
       ariaLabel: detail
         ? t("sync.reconnectingWithReason", { reason: detail })
         : t("sync.reconnecting"),
-      restartable: true
+      restartable: sync.reconnecting !== "sync_failed_auth"
     };
   }
 
@@ -233,7 +233,7 @@ export function syncStatePresentation(
     label: t("sync.failed"),
     detail,
     ariaLabel: detail ? t("sync.failedWithReason", { reason: detail }) : t("sync.failed"),
-    restartable: true
+    restartable: sync.failed !== "sync_failed_auth"
   };
 }
 

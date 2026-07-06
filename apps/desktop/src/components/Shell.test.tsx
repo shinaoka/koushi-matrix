@@ -576,6 +576,35 @@ describe("TopBar Matrix connection status", () => {
     expect(status.getAttribute("data-sync-state")).toBe("reconnecting");
   });
 
+  it("updates the Matrix connection status after reconnect recovery", () => {
+    const props = {
+      activeSpaceName: "Matrix",
+      homeserver: "https://matrix.org",
+      isBusy: false,
+      searchInputRef: { current: null },
+      searchQuery: "",
+      searchScope: "allRooms" as const,
+      onOpenKeyboardSettings: () => undefined,
+      onRestartSync: () => undefined,
+      onSearchQueryChange: () => undefined,
+      onSearchScopeChange: () => undefined
+    };
+    const { rerender } = render(<TopBar {...props} sync={{ reconnecting: "network_offline" }} />);
+
+    expect(screen.getByRole("status", { name: /Sync reconnecting/ }).textContent).toContain(
+      "Reconnecting"
+    );
+
+    rerender(<TopBar {...props} sync="running" />);
+
+    const status = screen.getByRole("status", { name: /matrix\.org.*Running/ });
+    expect(status.textContent).toContain("matrix.org");
+    expect(status.textContent).toContain("Running");
+    expect(status.textContent).not.toContain("Reconnecting");
+    expect(status.getAttribute("data-sync-state")).toBe("running");
+    expect(screen.queryByRole("button", { name: "Restart sync" })).toBeNull();
+  });
+
   it("shows restart control when Matrix connection failed", () => {
     const onRestartSync = vi.fn();
 
@@ -601,5 +630,27 @@ describe("TopBar Matrix connection status", () => {
     fireEvent.click(screen.getByRole("button", { name: "Restart sync" }));
 
     expect(onRestartSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not show restart control when Matrix auth is required", () => {
+    render(
+      <TopBar
+        activeSpaceName="Matrix"
+        homeserver="https://matrix.org"
+        isBusy={false}
+        searchInputRef={{ current: null }}
+        searchQuery=""
+        searchScope="allRooms"
+        sync={{ failed: "sync_failed_auth" }}
+        onOpenKeyboardSettings={() => undefined}
+        onRestartSync={() => undefined}
+        onSearchQueryChange={() => undefined}
+        onSearchScopeChange={() => undefined}
+      />
+    );
+
+    const status = screen.getByRole("status", { name: /Sign-in required/ });
+    expect(status.textContent).toContain("Sign-in required");
+    expect(screen.queryByRole("button", { name: "Restart sync" })).toBeNull();
   });
 });

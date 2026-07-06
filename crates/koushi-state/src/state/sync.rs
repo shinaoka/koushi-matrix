@@ -9,6 +9,16 @@ pub enum SyncState {
     Reconnecting { reason: String },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SyncLifecycleStatus {
+    Stopped,
+    Starting,
+    Running,
+    Failed { reason: String },
+    Reconnecting { reason: String },
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SyncMode {

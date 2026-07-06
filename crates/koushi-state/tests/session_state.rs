@@ -888,7 +888,7 @@ fn sync_failure_enters_failed_state_before_retry() {
 }
 
 #[test]
-fn sync_auth_failure_does_not_retry() {
+fn sync_auth_failure_locks_session_and_does_not_retry() {
     let mut state = AppState {
         session: SessionState::Ready(session_info()),
         sync: SyncState::Running,
@@ -908,11 +908,22 @@ fn sync_auth_failure_does_not_retry() {
             reason: "sync_failed_auth".to_owned(),
         }
     );
+    assert_eq!(state.session, SessionState::Locked(session_info()));
+    assert!(
+        state
+            .errors
+            .iter()
+            .any(|error| error.code == "sync_auth_required" && error.recoverable)
+    );
     // Auth failures must NOT emit StartSync: the refresh token is invalid and
     // retrying creates an infinite loop with HTTP 401 on every attempt.
     assert_eq!(
         effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+            AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+        ]
     );
 }
 
