@@ -1295,6 +1295,9 @@ stateDiagram-v2
     Idle --> FailedPermissions: RoomSettingUpdateRequested [permission denied]
     Idle --> FailedPermissions: RoomModerationRequested [permission denied]
     Idle --> FailedPermissions: RoomMemberRoleUpdateRequested [permission denied]
+    PendingSettings --> PendingSettings: RoomSettingsSnapshotLoaded [same room]
+    PendingModeration --> PendingModeration: RoomSettingsSnapshotLoaded [same room]
+    PendingRoles --> PendingRoles: RoomSettingsSnapshotLoaded [same room]
     PendingSettings --> Idle: RoomSettingUpdateSucceeded [matching request_id]
     PendingSettings --> FailedSettings: RoomSettingUpdateFailed [matching request_id]
     PendingModeration --> Idle: RoomModerationSucceeded [matching request_id]
@@ -1342,6 +1345,10 @@ stateDiagram-v2
 - Permission-denied requests settle as a failed `permissions` operation before
   SDK mutation. A GUI control may be disabled from the snapshot, but Rust still
   enforces the guard for direct commands and tests.
+- A `RoomSettingsSnapshotLoaded` projection for the same room refreshes the
+  visible snapshot while preserving any pending settings, moderation, or role
+  operation. Loading a different room settings view replaces the selected
+  settings state and clears the prior selected-room operation.
 - Settings and moderation completions are request-correlated. Stale successes,
   stale failures, duplicate completions, and completions for a room that is no
   longer selected are ignored.
@@ -1674,9 +1681,13 @@ stateDiagram-v2
     Unknown --> Trusted: CrossSigningStatusChanged
     Unknown --> NotTrusted: CrossSigningStatusChanged
     Bootstrapping --> Trusted: CrossSigningStatusChanged
-    Bootstrapping --> Missing: CrossSigningStatusChanged
-    Bootstrapping --> NotTrusted: CrossSigningStatusChanged
 ```
+
+- While cross-signing bootstrap is pending, non-success
+  `CrossSigningStatusChanged` projections are ignored so a later correlated
+  `BootstrapCrossSigningFailed` can still settle the operation. `Trusted`
+  remains the uncorrelated success projection produced by the bootstrap result
+  path.
 
 Key-backup status:
 
@@ -1869,6 +1880,7 @@ stateDiagram-v2
     MissingCredential --> Probing: LocalEncryptionProbeRequested
     ResetRequired --> Resetting: ResetLocalDataRequested
     MissingCredential --> Resetting: ResetLocalDataRequested
+    Resetting --> Resetting: LocalEncryptionProbeRequested [ignored]
     Resetting --> Unknown: ResetLocalDataCompleted [matching request_id]
     Resetting --> ResetRequired: ResetLocalDataFailed [matching request_id]
     Healthy --> Unknown: LogoutRequested/SwitchAccountRequested/SessionCleared
@@ -1885,6 +1897,9 @@ stateDiagram-v2
 - Probes are accepted after the account runtime is ready and on explicit retry.
   GUI code requests a probe through the typed `probe_local_encryption_health`
   command; it never reads OS/keyring errors directly.
+- Probes are ignored while local-data reset is in flight. Only the matching
+  reset completion or failure can leave `Resetting`, or session cleanup can
+  clear it to `Unknown`.
 - Commands that open encrypted SDK/search storage fail closed inside the
   StoreActor/credential backend path. `AppState.local_encryption` is the
   public coarse status projection for UI and QA, not a React-side authorization

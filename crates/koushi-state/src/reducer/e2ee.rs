@@ -300,6 +300,14 @@ pub(crate) fn handle_cross_signing_status_changed(
         return Vec::new();
     }
 
+    if matches!(
+        state.e2ee_trust.cross_signing,
+        CrossSigningStatus::Bootstrapping { .. }
+    ) && !matches!(status, CrossSigningStatus::Trusted)
+    {
+        return Vec::new();
+    }
+
     state.e2ee_trust.cross_signing = status;
     vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
 }

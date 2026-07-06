@@ -605,6 +605,49 @@ fn cross_signing_key_backup_and_reset_identity_are_request_correlated() {
 }
 
 #[test]
+fn cross_signing_non_success_projection_does_not_clobber_bootstrap_pending() {
+    let mut state = ready_state();
+
+    reduce(
+        &mut state,
+        AppAction::BootstrapCrossSigningRequested { request_id: 21 },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::CrossSigningStatusChanged {
+            status: CrossSigningStatus::Missing,
+        },
+    );
+
+    assert!(effects.is_empty());
+    assert_eq!(
+        state.e2ee_trust.cross_signing,
+        CrossSigningStatus::Bootstrapping { request_id: 21 }
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::BootstrapCrossSigningFailed {
+            request_id: 21,
+            kind: TrustOperationFailureKind::Sdk,
+        },
+    );
+
+    assert_eq!(
+        state.e2ee_trust.cross_signing,
+        CrossSigningStatus::Failed {
+            request_id: 21,
+            kind: TrustOperationFailureKind::Sdk,
+        }
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+    );
+}
+
+#[test]
 fn identity_reset_auth_required_is_rust_owned_and_request_correlated() {
     let mut state = ready_state();
 

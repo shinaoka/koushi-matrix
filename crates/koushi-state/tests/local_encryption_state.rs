@@ -158,6 +158,25 @@ fn local_data_reset_is_guarded_and_request_correlated() {
 }
 
 #[test]
+fn local_encryption_probe_does_not_clobber_resetting_state() {
+    let mut state = AppState {
+        local_encryption: LocalEncryptionState::Resetting { request_id: 77 },
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::LocalEncryptionProbeRequested { request_id: 78 },
+    );
+
+    assert_eq!(
+        state.local_encryption,
+        LocalEncryptionState::Resetting { request_id: 77 }
+    );
+    assert!(effects.is_empty());
+}
+
+#[test]
 fn logout_lock_and_account_switch_clear_local_encryption_health() {
     let mut state = AppState {
         session: SessionState::Ready(session_info()),
