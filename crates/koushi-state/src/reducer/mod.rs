@@ -981,6 +981,17 @@ pub(crate) fn is_session_ready(state: &AppState) -> bool {
     )
 }
 
+pub(crate) fn has_session_projection_context(state: &AppState) -> bool {
+    matches!(
+        state.session,
+        SessionState::Ready(_)
+            | SessionState::NeedsRecovery { .. }
+            | SessionState::Recovering { .. }
+            | SessionState::Locked(_)
+            | SessionState::SwitchingAccount { .. }
+    )
+}
+
 pub(crate) fn clear_login_failed_errors(state: &mut AppState) -> bool {
     let previous_len = state.errors.len();
     state.errors.retain(|error| error.code != "login_failed");
@@ -991,7 +1002,9 @@ pub(crate) fn session_user_id(state: &AppState) -> Option<&str> {
     match &state.session {
         SessionState::Ready(info)
         | SessionState::NeedsRecovery { info, .. }
-        | SessionState::Recovering { info, .. } => Some(info.user_id.as_str()),
+        | SessionState::Recovering { info, .. }
+        | SessionState::Locked(info)
+        | SessionState::SwitchingAccount { info } => Some(info.user_id.as_str()),
         _ => None,
     }
 }

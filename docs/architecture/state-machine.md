@@ -46,6 +46,12 @@ actions: `SessionState::Ready(_)`, `SessionState::NeedsRecovery { .. }`, or
 may show degraded encrypted-content behavior, but product state still remains
 Rust-owned and guarded.
 
+Actor-delivered projections and request-correlated settles use a wider
+"session projection context": `Ready`, recovery states, `Locked`, and
+`SwitchingAccount`. These actions normalize state instead of being dropped by a
+transient display-state guard. Request starts still require a Ready session;
+logout/session-clear transitions explicitly reset session-scoped state.
+
 ## Maintenance Contract
 
 The state-transition diagrams in this document are normative, not illustrative.
@@ -185,16 +191,18 @@ stateDiagram-v2
   from sliding-sync dynamic adapters). It is accepted only when the projection
   changes.
 - `RoomListUpdated` and `InviteListUpdated` recompute the projection for the
-  current `active_filter`.
+  current `active_filter`. They are applied in session projection context
+  (`Ready`, recovery, `Locked`, or `SwitchingAccount`) so a transient lock or
+  account switch window cannot lose a Rust-owned snapshot.
 - `RoomMarkedAsReadSucceeded` clears `marked_unread`, `unread_count`,
   `notification_count`, and `highlight_count` for the room and recomputes the
-  projection.
+  projection. Success/failure settles are accepted in session projection
+  context for known rooms.
 - `RoomMarkedAsUnreadSucceeded { unread: true }` sets `marked_unread` and bumps
   `unread_count` to at least 1 when it was zero, then recomputes the projection.
   `unread: false` clears the flag and resets `unread_count`.
-- Requested/failed mark-read/unread actions are accepted only for known rooms
-  in a Ready session and emit `RoomListChanged` (requested) or `ErrorChanged`
-  (failed).
+- Requested mark-read/unread actions are accepted only for known rooms in a
+  Ready session and emit `RoomListChanged`.
 
 ### Unread Source Of Truth
 
@@ -656,13 +664,15 @@ stateDiagram-v2
   pinned-event list and emits `RoomInteractionsChanged` when the list changes.
   It may arrive from sync or as the post-command refresh after successful
   pin/unpin. It does not synthesize a room summary and does not settle a
-  pending operation by itself.
+  pending operation by itself. It is applied in session projection context so a
+  transient `Locked` or `SwitchingAccount` state cannot lose the projection.
 - `PinEventRequested` and `UnpinEventRequested` are accepted only for a Ready
   session, a known room, a non-empty event id, and an `Idle` or recoverable
   `Failed` pin operation. Requests while another pin/unpin is pending are
   ignored.
 - Completion and failure actions settle only the matching request id and
-  operation kind. Stale completions, duplicate completions, and opposite
+  operation kind, including while the session is `Locked` or
+  `SwitchingAccount`. Stale completions, duplicate completions, and opposite
   operation completions are ignored.
 - Failures store a recoverable `Failed` state and push only a coarse
   private-data-free `AppError`; raw SDK errors, room ids, event ids, and

@@ -146,6 +146,56 @@ fn stale_pin_completion_is_ignored() {
 }
 
 #[test]
+fn pin_completion_settles_pending_operation_while_session_is_locked_or_switching() {
+    for session in [
+        SessionState::Locked(SessionInfo {
+            homeserver: "https://server.example.invalid".to_owned(),
+            user_id: "@alice:example.invalid".to_owned(),
+            device_id: "ALICEDEVICE".to_owned(),
+        }),
+        SessionState::SwitchingAccount {
+            info: SessionInfo {
+                homeserver: "https://server.example.invalid".to_owned(),
+                user_id: "@alice:example.invalid".to_owned(),
+                device_id: "ALICEDEVICE".to_owned(),
+            },
+        },
+    ] {
+        let mut state = ready_state();
+        reduce(
+            &mut state,
+            AppAction::PinEventRequested {
+                request_id: 7,
+                room_id: "!room:example.invalid".to_owned(),
+                event_id: "$event:example.invalid".to_owned(),
+            },
+        );
+        state.session = session;
+
+        let effects = reduce(
+            &mut state,
+            AppAction::PinEventCompleted {
+                request_id: 7,
+                room_id: "!room:example.invalid".to_owned(),
+            },
+        );
+
+        assert_eq!(
+            state
+                .room_interactions
+                .get("!room:example.invalid")
+                .expect("room interaction state")
+                .pin_operation,
+            PinOperationState::Idle
+        );
+        assert_eq!(
+            effects,
+            vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
+        );
+    }
+}
+
+#[test]
 fn pin_failure_sets_failed_state_and_error_for_matching_request() {
     let mut state = ready_state();
     reduce(
