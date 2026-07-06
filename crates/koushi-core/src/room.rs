@@ -93,7 +93,7 @@ const LINK_SPACE_CHILD_FAILED_MESSAGE: &str = "Linking the room to the space fai
 type SpaceChildLinkKey = (String, String);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct MissingSpaceChildLink {
+pub struct MissingSpaceChildLink {
     space_id: String,
     child_room_id: String,
     via_server: String,
@@ -122,6 +122,9 @@ pub enum RoomMessage {
     /// The active account is logging out/switching/resetting while the
     /// RoomActor stays alive for future sessions.
     SessionCleared,
+    /// Observer relay: parent-only space links discovered in a room-list
+    /// snapshot. RoomActor owns dedupe, server writes, and retry policy.
+    MissingSpaceChildLinks { links: Vec<MissingSpaceChildLink> },
     /// Ordered shutdown.
     Shutdown,
 }
@@ -161,6 +164,7 @@ pub struct RoomActor {
     attempted_space_child_repairs: Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
+    self_tx: mpsc::Sender<RoomMessage>,
     command_rx: mpsc::Receiver<RoomMessage>,
 }
 
@@ -177,6 +181,7 @@ impl RoomActor {
             attempted_space_child_repairs: Arc::new(RwLock::new(BTreeSet::new())),
             action_tx,
             event_tx,
+            self_tx: tx.clone(),
             command_rx,
         };
         let task = executor::spawn(actor.run());
@@ -241,6 +246,9 @@ impl RoomActor {
                     self.clear_known_rooms();
                     self.clear_space_child_repair_attempts();
                 }
+                RoomMessage::MissingSpaceChildLinks { links } => {
+                    self.handle_missing_space_child_links(links).await;
+                }
             }
         }
     }
@@ -259,7 +267,7 @@ impl RoomActor {
             session,
             service,
             self.known_room_ids.clone(),
-            self.attempted_space_child_repairs.clone(),
+            self.self_tx.clone(),
             self.action_tx.clone(),
             self.event_tx.clone(),
             refresh_rx,
@@ -283,7 +291,7 @@ impl RoomActor {
         let task = executor::spawn(run_legacy_room_list_observation(
             session.clone(),
             self.known_room_ids.clone(),
-            self.attempted_space_child_repairs.clone(),
+            self.self_tx.clone(),
             self.action_tx.clone(),
             self.event_tx.clone(),
             refresh_rx,
@@ -294,6 +302,43 @@ impl RoomActor {
             task,
             refresh_tx,
         });
+    }
+
+    async fn handle_missing_space_child_links(&mut self, links: Vec<MissingSpaceChildLink>) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+
+        for link in links {
+            let key = (link.space_id.clone(), link.child_room_id.clone());
+            let already_repaired = self
+                .attempted_space_child_repairs
+                .read()
+                .map(|attempts| attempts.contains(&key))
+                .unwrap_or(true);
+            if already_repaired {
+                continue;
+            }
+
+            match koushi_sdk::set_space_child(
+                &session,
+                &link.space_id,
+                &link.child_room_id,
+                &link.via_server,
+            )
+            .await
+            {
+                Ok(()) => {
+                    if let Ok(mut attempts) = self.attempted_space_child_repairs.write() {
+                        attempts.insert(key);
+                    }
+                    self.refresh_room_list();
+                }
+                Err(error) => {
+                    let _kind = classify_room_error(&error);
+                }
+            }
+        }
     }
 
     /// Stop the observation loop (if running) and wait for it to exit.
@@ -1625,14 +1670,14 @@ impl RoomActor {
         }
         if let Some(session) = self.session.clone() {
             let known_room_ids = self.known_room_ids.clone();
-            let attempted_space_child_repairs = self.attempted_space_child_repairs.clone();
+            let room_tx = self.self_tx.clone();
             let action_tx = self.action_tx.clone();
             let event_tx = self.event_tx.clone();
             let _ = executor::spawn(async move {
                 refresh_room_list_from_joined_rooms(
                     &session,
                     &known_room_ids,
-                    &attempted_space_child_repairs,
+                    &room_tx,
                     &action_tx,
                     &event_tx,
                 )
@@ -1957,7 +2002,7 @@ async fn project_room_list_snapshot(
 async fn refresh_room_list_from_joined_rooms(
     session: &MatrixClientSession,
     known_room_ids: &Arc<RwLock<BTreeSet<String>>>,
-    attempted_space_child_repairs: &Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
+    room_tx: &mpsc::Sender<RoomMessage>,
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     event_tx: &broadcast::Sender<CoreEvent>,
 ) {
@@ -1966,7 +2011,7 @@ async fn refresh_room_list_from_joined_rooms(
         session.client().joined_rooms(),
     )
     .await;
-    repair_missing_space_child_links(session, &snapshot, attempted_space_child_repairs).await;
+    relay_missing_space_child_links(&snapshot, room_tx).await;
     project_room_list_snapshot(&snapshot, known_room_ids, action_tx, event_tx).await;
 }
 
@@ -1986,7 +2031,7 @@ async fn run_live_room_list_observation(
     session: Arc<MatrixClientSession>,
     service: Arc<matrix_sdk_ui::room_list_service::RoomListService>,
     known_room_ids: Arc<RwLock<BTreeSet<String>>>,
-    attempted_space_child_repairs: Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
+    room_tx: mpsc::Sender<RoomMessage>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     mut refresh_rx: mpsc::Receiver<()>,
@@ -2022,7 +2067,7 @@ async fn run_live_room_list_observation(
                     &session,
                     &current,
                     &known_room_ids,
-                    &attempted_space_child_repairs,
+                    &room_tx,
                     &action_tx,
                     &event_tx,
                 ).await;
@@ -2037,7 +2082,7 @@ async fn run_live_room_list_observation(
                         &session,
                         &current,
                         &known_room_ids,
-                        &attempted_space_child_repairs,
+                        &room_tx,
                         &action_tx,
                         &event_tx,
                     ).await;
@@ -2052,7 +2097,7 @@ async fn normalize_and_project_entries(
     session: &MatrixClientSession,
     current: &eyeball_im::Vector<matrix_sdk_ui::room_list_service::RoomListItem>,
     known_room_ids: &Arc<RwLock<BTreeSet<String>>>,
-    attempted_space_child_repairs: &Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
+    room_tx: &mpsc::Sender<RoomMessage>,
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     event_tx: &broadcast::Sender<CoreEvent>,
 ) {
@@ -2063,32 +2108,19 @@ async fn normalize_and_project_entries(
         rooms.push(item.clone().into_inner());
     }
     let snapshot = koushi_sdk::room_list_snapshot_from_sdk_rooms_with_invites(session, rooms).await;
-    repair_missing_space_child_links(session, &snapshot, attempted_space_child_repairs).await;
+    relay_missing_space_child_links(&snapshot, room_tx).await;
     project_room_list_snapshot(&snapshot, known_room_ids, action_tx, event_tx).await;
 }
 
-async fn repair_missing_space_child_links(
-    session: &MatrixClientSession,
+async fn relay_missing_space_child_links(
     snapshot: &MatrixRoomListSnapshot,
-    attempted_space_child_repairs: &Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
+    room_tx: &mpsc::Sender<RoomMessage>,
 ) {
-    for link in missing_space_child_links(snapshot) {
-        let key = (link.space_id.clone(), link.child_room_id.clone());
-        let should_attempt = attempted_space_child_repairs
-            .write()
-            .map(|mut attempts| attempts.insert(key))
-            .unwrap_or(false);
-        if !should_attempt {
-            continue;
-        }
-
-        let _ = koushi_sdk::set_space_child(
-            session,
-            &link.space_id,
-            &link.child_room_id,
-            &link.via_server,
-        )
-        .await;
+    let links = missing_space_child_links(snapshot);
+    if !links.is_empty() {
+        let _ = room_tx
+            .send(RoomMessage::MissingSpaceChildLinks { links })
+            .await;
     }
 }
 
@@ -2141,7 +2173,7 @@ fn room_has_parent_without_space_child(
 async fn run_legacy_room_list_observation(
     session: Arc<MatrixClientSession>,
     known_room_ids: Arc<RwLock<BTreeSet<String>>>,
-    attempted_space_child_repairs: Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
+    room_tx: mpsc::Sender<RoomMessage>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     mut refresh_rx: mpsc::Receiver<()>,
@@ -2163,7 +2195,7 @@ async fn run_legacy_room_list_observation(
                 refresh_room_list_from_joined_rooms(
                     &session,
                     &known_room_ids,
-                    &attempted_space_child_repairs,
+                    &room_tx,
                     &action_tx,
                     &event_tx,
                 ).await;
@@ -2176,7 +2208,7 @@ async fn run_legacy_room_list_observation(
                     refresh_room_list_from_joined_rooms(
                         &session,
                         &known_room_ids,
-                        &attempted_space_child_repairs,
+                        &room_tx,
                         &action_tx,
                         &event_tx,
                     ).await;
@@ -2186,7 +2218,7 @@ async fn run_legacy_room_list_observation(
                     refresh_room_list_from_joined_rooms(
                         &session,
                         &known_room_ids,
-                        &attempted_space_child_repairs,
+                        &room_tx,
                         &action_tx,
                         &event_tx,
                     ).await;
@@ -3855,7 +3887,7 @@ pub mod tests {
     }
 
     #[test]
-    fn room_list_observation_repairs_parent_only_space_links_before_projection() {
+    fn room_list_observation_relays_parent_only_space_links_before_projection() {
         let source = include_str!("room.rs");
         let live_body = source
             .split("async fn normalize_and_project_entries")
@@ -3873,17 +3905,52 @@ pub mod tests {
             .expect("legacy refresh body");
 
         for body in [live_body, legacy_body] {
-            let repair = body
-                .find("repair_missing_space_child_links")
-                .expect("room-list snapshots should repair missing m.space.child state");
+            let relay = body
+                .find("relay_missing_space_child_links")
+                .expect("room-list snapshots should relay missing m.space.child state");
             let projection = body
                 .find("project_room_list_snapshot")
                 .expect("room-list snapshot projection");
             assert!(
-                repair < projection,
-                "repair should run before projection so other clients receive the Matrix state fix promptly"
+                relay < projection,
+                "observation should relay missing links before projection without owning the mutation policy"
+            );
+            assert!(
+                !body.contains("koushi_sdk::set_space_child"),
+                "room-list observers must not perform server writes directly"
             );
         }
+    }
+
+    #[test]
+    fn missing_space_child_repairs_are_actor_owned_and_retryable() {
+        let source = include_str!("room.rs");
+        let actor_body = source
+            .split("async fn handle_missing_space_child_links")
+            .nth(1)
+            .expect("RoomActor should own missing space-child repair handling")
+            .split("async fn stop_observation")
+            .next()
+            .expect("repair handler should precede observation teardown");
+
+        assert!(
+            source.contains("RoomMessage::MissingSpaceChildLinks"),
+            "observation must relay missing links to the RoomActor mailbox"
+        );
+        assert!(
+            actor_body.contains("classify_room_error(&error)"),
+            "RoomActor-owned repair failures must be classified"
+        );
+        let success = actor_body
+            .find("attempts.insert(key)")
+            .expect("successful repair should record the dedupe key");
+        let call = actor_body
+            .find("koushi_sdk::set_space_child")
+            .expect("RoomActor should perform the repair write");
+        assert!(
+            call < success,
+            "dedupe key must be recorded only after set_space_child succeeds so transient failures remain retryable"
+        );
     }
 
     #[test]
