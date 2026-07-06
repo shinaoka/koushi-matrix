@@ -1505,6 +1505,9 @@ enum TimelineActorMessage {
     DiffBatch(Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>),
     /// Internal: send completed (from send queue monitor task).
     SendQueueUpdate(RoomSendQueueUpdate),
+    /// Internal: send queue broadcast lagged and the actor must resync the
+    /// SDK-owned local echo snapshot before projecting outbound send states.
+    SendQueueLagged,
     /// Internal: relay task hit overflow — must resync.
     RelayOverflow,
     /// Internal: re-emit the current navigation_items as InitialItems for a
@@ -2751,7 +2754,10 @@ impl TimelineActor {
                 self.handle_diff_batch(diffs).await;
             }
             TimelineActorMessage::SendQueueUpdate(update) => {
-                self.handle_send_queue_update(update);
+                self.handle_send_queue_update(update).await;
+            }
+            TimelineActorMessage::SendQueueLagged => {
+                self.handle_send_queue_lagged().await;
             }
             TimelineActorMessage::RelayOverflow => {
                 self.handle_relay_overflow().await;
@@ -3339,7 +3345,7 @@ impl TimelineActor {
         let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_send_failed_action(&client_txn_id);
+                self.emit_send_failed_action(&client_txn_id).await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -3351,7 +3357,7 @@ impl TimelineActor {
         };
         let client = self.session.client();
         if client.get_room(&room_id).is_none() {
-            self.emit_send_failed_action(&client_txn_id);
+            self.emit_send_failed_action(&client_txn_id).await;
             self.emit_failure(
                 request_id,
                 CoreFailure::TimelineOperationFailed {
@@ -3370,7 +3376,7 @@ impl TimelineActor {
         let content = match build_room_message_content_from_composer_body(&body, mentions) {
             Ok(content) => content,
             Err(kind) => {
-                self.emit_send_failed_action(&client_txn_id);
+                self.emit_send_failed_action(&client_txn_id).await;
                 self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
                 return;
             }
@@ -3390,7 +3396,7 @@ impl TimelineActor {
                     .send_completion
                     .remember_pending_send(sdk_txn_id, client_txn_id, request_id, true)
                 {
-                    self.emit_send_finished_action(&client_txn_id);
+                    self.emit_send_finished_action(&client_txn_id).await;
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
                         key: self.key.clone(),
@@ -3401,7 +3407,7 @@ impl TimelineActor {
             }
             Err(err) => {
                 let kind = classify_timeline_send_error(&err);
-                self.emit_send_failed_action(&client_txn_id);
+                self.emit_send_failed_action(&client_txn_id).await;
                 self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
             }
         }
@@ -3426,7 +3432,7 @@ impl TimelineActor {
         let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_send_failed_action(&client_txn_id);
+                self.emit_send_failed_action(&client_txn_id).await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -3440,7 +3446,7 @@ impl TimelineActor {
         let reply_event_id = match matrix_sdk::ruma::EventId::parse(&in_reply_to_event_id) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_send_failed_action(&client_txn_id);
+                self.emit_send_failed_action(&client_txn_id).await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -3453,7 +3459,7 @@ impl TimelineActor {
 
         let client = self.session.client();
         if client.get_room(&room_id).is_none() {
-            self.emit_send_failed_action(&client_txn_id);
+            self.emit_send_failed_action(&client_txn_id).await;
             self.emit_failure(
                 request_id,
                 CoreFailure::TimelineOperationFailed {
@@ -3467,7 +3473,7 @@ impl TimelineActor {
             match build_room_message_content_without_relation_from_composer_body(&body, mentions) {
                 Ok(content) => content,
                 Err(kind) => {
-                    self.emit_send_failed_action(&client_txn_id);
+                    self.emit_send_failed_action(&client_txn_id).await;
                     self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
                     return;
                 }
@@ -3481,7 +3487,7 @@ impl TimelineActor {
         let content = match self.timeline.room().make_reply_event(content, reply).await {
             Ok(content) => content,
             Err(_) => {
-                self.emit_send_failed_action(&client_txn_id);
+                self.emit_send_failed_action(&client_txn_id).await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -3505,7 +3511,7 @@ impl TimelineActor {
                     .send_completion
                     .remember_pending_send(sdk_txn_id, client_txn_id, request_id, true)
                 {
-                    self.emit_send_finished_action(&client_txn_id);
+                    self.emit_send_finished_action(&client_txn_id).await;
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
                         key: self.key.clone(),
@@ -3516,7 +3522,7 @@ impl TimelineActor {
             }
             Err(err) => {
                 let kind = classify_timeline_send_error(&err);
-                self.emit_send_failed_action(&client_txn_id);
+                self.emit_send_failed_action(&client_txn_id).await;
                 self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
             }
         }
@@ -3707,7 +3713,7 @@ impl TimelineActor {
                     self.send_completion.record_cancelled_event(&transaction_id)
                 {
                     if settles_composer {
-                        self.emit_send_finished_action(&client_txn_id);
+                        self.emit_send_finished_action(&client_txn_id).await;
                     }
                 }
             }
@@ -5249,7 +5255,7 @@ impl TimelineActor {
         None
     }
 
-    fn handle_send_queue_update(&mut self, update: RoomSendQueueUpdate) {
+    async fn handle_send_queue_update(&mut self, update: RoomSendQueueUpdate) {
         match update {
             RoomSendQueueUpdate::NewLocalEvent(echo) => {
                 remember_local_echo(&mut self.send_statuses, &mut self.send_handles, &echo);
@@ -5263,7 +5269,7 @@ impl TimelineActor {
                     self.send_completion.record_cancelled_event(&sdk_txn_str)
                 {
                     if settles_composer {
-                        self.emit_send_finished_action(&client_txn_id);
+                        self.emit_send_finished_action(&client_txn_id).await;
                     }
                 }
             }
@@ -5287,7 +5293,7 @@ impl TimelineActor {
                     self.send_completion.record_send_error(&sdk_txn_str)
                 {
                     if settles_composer {
-                        self.emit_send_failed_action(&client_txn_id);
+                        self.emit_send_failed_action(&client_txn_id).await;
                     }
                 }
             }
@@ -5311,7 +5317,7 @@ impl TimelineActor {
                     .record_sent_event(sdk_txn_str, event_id.to_string())
                 {
                     if settles_composer {
-                        self.emit_send_finished_action(&client_txn_id);
+                        self.emit_send_finished_action(&client_txn_id).await;
                     }
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
@@ -5347,6 +5353,66 @@ impl TimelineActor {
                     source: file.as_ref().map(timeline_media_source_from_sdk),
                 }));
             }
+        }
+    }
+
+    async fn handle_send_queue_lagged(&mut self) {
+        self.resync_send_queue_statuses().await;
+
+        let (current_items, _) = self.timeline.subscribe().await;
+        let link_preview_context = self.link_preview_policy.for_room(self.key.room_id());
+        let items: Vec<TimelineItem> = current_items
+            .iter()
+            .map(|item| {
+                sdk_item_to_timeline_item_with_send_states(
+                    &self.key,
+                    item,
+                    self.own_user_id.as_deref(),
+                    &self.send_statuses,
+                )
+            })
+            .map(|mut item| {
+                apply_ignored_sender_suppression(&mut item, &self.ignored_user_ids);
+                item
+            })
+            .collect();
+        let mut items = items;
+        for item in &mut items {
+            apply_link_previews_to_item(
+                &mut *item,
+                self.key.room_id(),
+                &link_preview_context,
+                &self.session,
+            )
+            .await;
+        }
+        trace_timeline_items("send_queue_lagged_initial", &self.key, &items);
+        self.emit(CoreEvent::Timeline(TimelineEvent::InitialItems {
+            request_id: None,
+            key: self.key.clone(),
+            generation: self.generation,
+            items,
+        }));
+    }
+
+    async fn resync_send_queue_statuses(&mut self) {
+        let Some(room_id) = timeline_room_id(&self.key) else {
+            return;
+        };
+        let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(room_id) else {
+            return;
+        };
+        let Some(room) = self.session.client().get_room(&room_id) else {
+            return;
+        };
+        let Ok((local_echoes, _update_rx)) = room.send_queue().subscribe().await else {
+            return;
+        };
+
+        self.send_statuses.clear();
+        self.send_handles.clear();
+        for echo in &local_echoes {
+            remember_local_echo(&mut self.send_statuses, &mut self.send_handles, echo);
         }
     }
 
@@ -5484,16 +5550,16 @@ impl TimelineActor {
     /// Drive the reducer's composer completion transition for the matching
     /// pending send. Room timelines settle the main composer; thread timelines
     /// settle the open thread composer; focused timelines own no composer state.
-    fn emit_send_finished_action(&self, client_txn_id: &str) {
+    async fn emit_send_finished_action(&self, client_txn_id: &str) {
         if let Some(action) = send_finished_action(&self.key, client_txn_id.to_owned()) {
-            let _ = self.action_tx.try_send(vec![action]);
+            let _ = self.emit_action_reliable(action).await;
         }
     }
 
     /// Drive the reducer's composer failure transition for the matching pending
     /// send. Room timelines settle the main composer; thread timelines settle
     /// the open thread composer; focused timelines own no composer state.
-    fn emit_send_failed_action(&self, client_txn_id: &str) {
+    async fn emit_send_failed_action(&self, client_txn_id: &str) {
         let projection = match self.key.kind {
             TimelineKind::Room { .. } => SendComposerProjection::Room,
             TimelineKind::Thread { .. } => SendComposerProjection::ThreadReply,
@@ -5505,7 +5571,7 @@ impl TimelineActor {
             client_txn_id.to_owned(),
             "send failed".to_owned(),
         ) {
-            let _ = self.action_tx.try_send(vec![action]);
+            let _ = self.emit_action_reliable(action).await;
         }
     }
 
@@ -5606,8 +5672,13 @@ async fn run_send_queue_monitor(
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                // Some updates dropped — not critical for send completion tracking.
-                continue;
+                if actor_tx
+                    .send(TimelineActorMessage::SendQueueLagged)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                 break;
@@ -6399,10 +6470,11 @@ fn sdk_item_to_timeline_item_with_send_states(
                 .as_message()
                 .map(|message| message.is_edited())
                 .unwrap_or(false);
-            let send_state = transaction_id
-                .as_deref()
-                .and_then(|txn_id| send_statuses.get(txn_id).cloned())
-                .or_else(|| timeline_send_state_from_sdk(event_item.send_state()));
+            let send_state = timeline_send_state_from_sdk(event_item.send_state()).or_else(|| {
+                transaction_id
+                    .as_deref()
+                    .and_then(|txn_id| send_statuses.get(txn_id).cloned())
+            });
             let mut unable_to_decrypt = unable_to_decrypt_from_content(content);
             if let Some(utd) = unable_to_decrypt.as_mut() {
                 utd.can_request_keys = event_item.original_json().is_some();
@@ -9840,6 +9912,59 @@ mod tests {
             source.contains("TimelineKind::Focused { .. } => Self::None")
                 && source.contains("TimelineKind::Focused { .. } => None"),
             "focused timelines must not own composer state"
+        );
+    }
+
+    #[test]
+    fn outbound_send_state_uses_sdk_truth_and_reliable_settles() {
+        let source = include_str!("timeline.rs");
+        let send_queue_monitor = source
+            .split("async fn run_send_queue_monitor")
+            .nth(1)
+            .expect("send queue monitor should exist")
+            .split("async fn run_typing_notifications")
+            .next()
+            .expect("typing monitor should follow send queue monitor");
+        let send_state_projection = source
+            .split("let send_state =")
+            .nth(1)
+            .expect("send state projection should exist")
+            .split("let receipts")
+            .next()
+            .expect("receipts projection should follow send state");
+        let actor_completion_source = source
+            .split("async fn emit_send_finished_action")
+            .nth(1)
+            .expect("send completion helper should be async")
+            .split("fn emit_typing_users_action")
+            .next()
+            .expect("typing helper should follow send completion helpers");
+
+        assert!(
+            send_queue_monitor.contains("TimelineActorMessage::SendQueueLagged"),
+            "send-queue broadcast lag must ask the actor to resync its send-state mirror"
+        );
+        assert!(
+            !send_queue_monitor.contains("not critical for send completion tracking"),
+            "lagged send-queue updates can contain terminal send states and must not be ignored"
+        );
+        let sdk = send_state_projection
+            .find("timeline_send_state_from_sdk")
+            .expect("projection should read SDK send state");
+        let mirror = send_state_projection
+            .find("send_statuses.get")
+            .expect("projection should still use the actor mirror as fallback");
+        assert!(
+            sdk < mirror,
+            "SDK timeline item send state must win over the actor mirror after relay gaps"
+        );
+        assert!(
+            actor_completion_source.contains("self.emit_action_reliable(action).await"),
+            "send/reply completion and failure must use the reliable reducer action path"
+        );
+        assert!(
+            !actor_completion_source.contains("try_send"),
+            "send/reply settlement must not silently drop reducer actions on a full channel"
         );
     }
 
