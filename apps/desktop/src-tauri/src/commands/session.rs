@@ -86,9 +86,12 @@ async fn wait_for_oidc_authorization(
                 });
             }
             Ok(koushi_core::CoreEvent::OperationFailed {
-                request_id: ev_id, ..
-            }) if ev_id == request_id => return Err("OIDC login failed".to_owned()),
-            Err(_) => return Err("OIDC login event stream lagged".to_owned()),
+                request_id: ev_id,
+                failure,
+            }) if ev_id == request_id => {
+                return Err(invoke_error_from_core_failure("OIDC login failed", failure));
+            }
+            Err(_) => continue,
             _ => {}
         }
     }
@@ -157,9 +160,13 @@ pub async fn list_saved_sessions(
                 },
             )) if ev_id == request_id => return Ok(sessions),
             Ok(koushi_core::CoreEvent::OperationFailed {
-                request_id: ev_id, ..
+                request_id: ev_id,
+                failure,
             }) if ev_id == request_id => {
-                return Err("saved sessions could not be loaded".to_owned());
+                return Err(invoke_error_from_core_failure(
+                    "saved sessions could not be loaded",
+                    failure,
+                ));
             }
             // Unrelated events / lag: keep waiting until the deadline.
             _ => {}

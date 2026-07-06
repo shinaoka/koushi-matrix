@@ -655,13 +655,17 @@ async fn wait_for_invite_batch_completed(
             {
                 return Ok(());
             }
-            Ok(CoreEvent::OperationFailed { request_id, .. })
-                if request_id == operation_request_id =>
-            {
-                return Err("invite batch failed".to_owned());
+            Ok(CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            }) if request_id == operation_request_id => {
+                return Err(invoke_error_from_core_failure(
+                    "invite batch failed",
+                    failure,
+                ));
             }
             Ok(_) => {}
-            Err(_) => return Err("room operation event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }

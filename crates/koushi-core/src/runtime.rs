@@ -2736,9 +2736,7 @@ impl AppActor {
         {
             self.emit(CoreEvent::OperationFailed {
                 request_id,
-                failure: CoreFailure::TimelineOperationFailed {
-                    kind: TimelineFailureKind::QueueOverflow,
-                },
+                failure: CoreFailure::ShutdownFailed,
             });
         }
     }
@@ -4009,6 +4007,27 @@ mod tests {
         assert!(
             effects_helper.contains("replay_existing: true"),
             "room selection must replay InitialItems from an existing actor so a rebuilt or reloaded renderer can populate an empty timeline store"
+        );
+    }
+
+    #[test]
+    fn closed_account_actor_timeline_route_is_not_reported_as_queue_overflow() {
+        let source = include_str!("runtime.rs");
+        let helper = source
+            .split("async fn send_timeline_command_or_fail")
+            .nth(1)
+            .expect("timeline command routing helper should exist")
+            .split("fn default_data_dir_from_home")
+            .next()
+            .expect("helper should precede utility functions");
+
+        assert!(
+            helper.contains("CoreFailure::ShutdownFailed"),
+            "a closed AccountActor command route is runtime shutdown/closed, not bounded queue overflow"
+        );
+        assert!(
+            !helper.contains("TimelineFailureKind::QueueOverflow"),
+            "QueueOverflow is reserved for bounded queue backpressure/relay overflow, not closed actor routes"
         );
     }
 

@@ -17,7 +17,7 @@ use std::{
 
 use koushi_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
-    CreateRoomOptions, ImageUploadCompressionPolicy, ImageUploadCompressionState,
+    CoreFailure, CreateRoomOptions, ImageUploadCompressionPolicy, ImageUploadCompressionState,
     ImageUploadDimensions, ImageUploadVariantKind, IntentNoOpReason, IntentOutcome,
     MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent,
     RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand, SearchEvent, SearchScope,
@@ -111,6 +111,10 @@ async fn current_snapshot(state: &CoreRuntimeState) -> Result<FrontendDesktopSna
         snapshot.state,
         snapshot.generation,
     ))
+}
+
+pub(crate) fn invoke_error_from_core_failure(context: &str, failure: CoreFailure) -> String {
+    format!("{context}: {failure:?}")
 }
 
 // ---- QA window title ----
@@ -248,10 +252,9 @@ async fn wait_for_logged_in_authenticated(
     timeout: std::time::Duration,
 ) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + timeout;
-    let mut logged_in = false;
 
     loop {
-        if logged_in && snapshot_has_authenticated_session(&event_conn.snapshot()) {
+        if snapshot_has_authenticated_session(&event_conn.snapshot()) {
             return Ok(());
         }
 
@@ -262,13 +265,18 @@ async fn wait_for_logged_in_authenticated(
             Ok(CoreEvent::Account(AccountEvent::LoggedIn { request_id, .. }))
                 if request_id == login_request_id =>
             {
-                logged_in = true;
+                if snapshot_has_authenticated_session(&event_conn.snapshot()) {
+                    return Ok(());
+                }
             }
-            Ok(CoreEvent::OperationFailed { request_id, .. }) if request_id == login_request_id => {
-                return Err("login failed".to_owned());
+            Ok(CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            }) if request_id == login_request_id => {
+                return Err(invoke_error_from_core_failure("login failed", failure));
             }
             Ok(_) => {}
-            Err(_) => return Err("login event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -280,23 +288,31 @@ async fn wait_for_auth_changed(
     let deadline = tokio::time::Instant::now() + timeout;
 
     loop {
+        if snapshot_has_auth_discovery_answer(&event_conn.snapshot()) {
+            return Ok(());
+        }
+
         let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
             .await
             .map_err(|_| "login discovery did not complete".to_owned())?;
         match event {
             Ok(CoreEvent::StateChanged(snapshot))
-                if matches!(
-                    snapshot.auth,
-                    koushi_state::AuthDiscoveryState::Ready { .. }
-                        | koushi_state::AuthDiscoveryState::Failed { .. }
-                ) =>
+                if snapshot_has_auth_discovery_answer(&snapshot) =>
             {
                 return Ok(());
             }
             Ok(_) => {}
-            Err(_) => return Err("login discovery event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
+}
+
+fn snapshot_has_auth_discovery_answer(snapshot: &koushi_state::AppState) -> bool {
+    matches!(
+        snapshot.auth,
+        koushi_state::AuthDiscoveryState::Ready { .. }
+            | koushi_state::AuthDiscoveryState::Failed { .. }
+    )
 }
 
 fn snapshot_has_authenticated_session(snapshot: &koushi_state::AppState) -> bool {
@@ -361,15 +377,18 @@ async fn wait_for_focused_context_closed(
             }
             Ok(CoreEvent::OperationFailed {
                 request_id: failed_request_id,
-                ..
+                failure,
             }) if failed_request_id == request_id => {
-                return Err("focused context close failed".to_owned());
+                return Err(invoke_error_from_core_failure(
+                    "focused context close failed",
+                    failure,
+                ));
             }
             Ok(_) => {}
             Err(_) if snapshot_has_no_focused_context(&event_conn.snapshot()) => {
                 return Ok(());
             }
-            Err(_) => return Err("focused context close event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -398,15 +417,18 @@ async fn wait_for_focused_context(
             }
             Ok(CoreEvent::OperationFailed {
                 request_id: failed_request_id,
-                ..
+                failure,
             }) if failed_request_id == request_id => {
-                return Err("focused context open failed".to_owned());
+                return Err(invoke_error_from_core_failure(
+                    "focused context open failed",
+                    failure,
+                ));
             }
             Ok(_) => {}
             Err(_) if snapshot_has_focused_context(&event_conn.snapshot(), room_id) => {
                 return Ok(());
             }
-            Err(_) => return Err("focused context event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -436,9 +458,12 @@ async fn wait_for_main_timeline_anchor(
             }
             Ok(CoreEvent::OperationFailed {
                 request_id: failed_request_id,
-                ..
+                failure,
             }) if failed_request_id == request_id => {
-                return Err("main timeline anchor open failed".to_owned());
+                return Err(invoke_error_from_core_failure(
+                    "main timeline anchor open failed",
+                    failure,
+                ));
             }
             Ok(_) => {}
             Err(_)
@@ -446,7 +471,7 @@ async fn wait_for_main_timeline_anchor(
             {
                 return Ok(());
             }
-            Err(_) => return Err("main timeline anchor event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -506,13 +531,17 @@ async fn wait_for_selected_room(
             Ok(CoreEvent::StateDelta(_)) => {
                 state_delta += 1;
             }
-            Ok(CoreEvent::OperationFailed { request_id, .. })
-                if request_id == select_request_id =>
-            {
+            Ok(CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            }) if request_id == select_request_id => {
                 if trace {
                     eprintln!("koushi.select stage=op_failed events={events}");
                 }
-                return Err("room selection failed".to_owned());
+                return Err(invoke_error_from_core_failure(
+                    "room selection failed",
+                    failure,
+                ));
             }
             // Telemetry-lane fast path: IntentLifecycle lets us fail fast with
             // a specific reason instead of waiting the full 10s timeout.
@@ -564,7 +593,7 @@ async fn wait_for_selected_room(
                 if trace {
                     eprintln!("koushi.select stage=lag events={events}");
                 }
-                return Err("room selection event stream lagged".to_owned());
+                continue;
             }
         }
     }
@@ -614,8 +643,10 @@ async fn wait_for_search_completed(
             })) if result_request_id == request_id => {}
             Ok(CoreEvent::OperationFailed {
                 request_id: failed_request_id,
-                ..
-            }) if failed_request_id == request_id => return Err("search failed".to_owned()),
+                failure,
+            }) if failed_request_id == request_id => {
+                return Err(invoke_error_from_core_failure("search failed", failure));
+            }
             Ok(CoreEvent::StateChanged(snapshot))
                 if snapshot_has_completed_search(&snapshot, request_id) =>
             {
@@ -625,7 +656,7 @@ async fn wait_for_search_completed(
             Err(_) if snapshot_has_completed_search(&event_conn.snapshot(), request_id) => {
                 return Ok(());
             }
-            Err(_) => return Err("search event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -651,11 +682,16 @@ async fn wait_for_search_closed(
             }
             Ok(CoreEvent::OperationFailed {
                 request_id: failed_request_id,
-                ..
-            }) if failed_request_id == request_id => return Err("search close failed".to_owned()),
+                failure,
+            }) if failed_request_id == request_id => {
+                return Err(invoke_error_from_core_failure(
+                    "search close failed",
+                    failure,
+                ));
+            }
             Ok(_) => {}
             Err(_) if snapshot_has_closed_search(&event_conn.snapshot()) => return Ok(()),
-            Err(_) => return Err("search close event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -691,11 +727,13 @@ async fn wait_for_upload_staging_snapshot(
             Ok(CoreEvent::StateChanged(snapshot)) if predicate(&snapshot) => return Ok(()),
             Ok(CoreEvent::OperationFailed {
                 request_id: failed_request_id,
-                ..
-            }) if failed_request_id == request_id => return Err(description.to_owned()),
+                failure,
+            }) if failed_request_id == request_id => {
+                return Err(invoke_error_from_core_failure(description, failure));
+            }
             Ok(_) => {}
             Err(_) if predicate(&event_conn.snapshot()) => return Ok(()),
-            Err(_) => return Err("upload staging event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -746,13 +784,17 @@ async fn wait_for_room_created(
             {
                 return Ok(());
             }
-            Ok(CoreEvent::OperationFailed { request_id, .. })
-                if request_id == create_request_id =>
-            {
-                return Err("room creation failed".to_owned());
+            Ok(CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            }) if request_id == create_request_id => {
+                return Err(invoke_error_from_core_failure(
+                    "room creation failed",
+                    failure,
+                ));
             }
             Ok(_) => {}
-            Err(_) => return Err("room creation event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -773,13 +815,17 @@ async fn wait_for_space_created(
             {
                 return Ok(());
             }
-            Ok(CoreEvent::OperationFailed { request_id, .. })
-                if request_id == create_request_id =>
-            {
-                return Err("space creation failed".to_owned());
+            Ok(CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            }) if request_id == create_request_id => {
+                return Err(invoke_error_from_core_failure(
+                    "space creation failed",
+                    failure,
+                ));
             }
             Ok(_) => {}
-            Err(_) => return Err("space creation event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -804,13 +850,14 @@ where
             Ok(CoreEvent::Room(room_event)) if is_success(&room_event, operation_request_id) => {
                 return Ok(());
             }
-            Ok(CoreEvent::OperationFailed { request_id, .. })
-                if request_id == operation_request_id =>
-            {
-                return Err(failure_message.to_owned());
+            Ok(CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            }) if request_id == operation_request_id => {
+                return Err(invoke_error_from_core_failure(failure_message, failure));
             }
             Ok(_) => {}
-            Err(_) => return Err("room operation event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -832,13 +879,14 @@ async fn wait_for_room_joined(
             })) if request_id == operation_request_id => {
                 return Ok(room_id);
             }
-            Ok(CoreEvent::OperationFailed { request_id, .. })
-                if request_id == operation_request_id =>
-            {
-                return Err("room join failed".to_owned());
+            Ok(CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            }) if request_id == operation_request_id => {
+                return Err(invoke_error_from_core_failure("room join failed", failure));
             }
             Ok(_) => {}
-            Err(_) => return Err("room operation event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -2707,6 +2755,158 @@ mod tests {
                 && !helper_source.contains(".lock().await.command(command).await"),
             "submit_core_command must not hold the shared CoreConnection mutex across send().await"
         );
+    }
+
+    #[test]
+    fn event_wait_loops_resync_on_lag_instead_of_failing_immediately() {
+        let source = commands_source();
+        let waiters = [
+            (
+                "async fn wait_for_logged_in_authenticated",
+                "async fn wait_for_auth_changed",
+            ),
+            (
+                "async fn wait_for_auth_changed",
+                "fn snapshot_has_authenticated_session",
+            ),
+            (
+                "async fn wait_for_focused_context_closed",
+                "async fn wait_for_focused_context",
+            ),
+            (
+                "async fn wait_for_focused_context",
+                "async fn wait_for_main_timeline_anchor",
+            ),
+            (
+                "async fn wait_for_main_timeline_anchor",
+                "async fn wait_for_selected_room",
+            ),
+            (
+                "async fn wait_for_selected_room",
+                "fn snapshot_has_active_room",
+            ),
+            (
+                "async fn wait_for_search_completed",
+                "async fn wait_for_search_closed",
+            ),
+            (
+                "async fn wait_for_search_closed",
+                "fn select_active_room_trace_label",
+            ),
+            (
+                "async fn wait_for_upload_staging_snapshot",
+                "/// How long the adapter waits",
+            ),
+            (
+                "async fn wait_for_room_created",
+                "async fn wait_for_space_created",
+            ),
+            (
+                "async fn wait_for_space_created",
+                "async fn wait_for_room_operation",
+            ),
+            (
+                "async fn wait_for_room_operation",
+                "async fn wait_for_room_joined",
+            ),
+            ("async fn wait_for_room_joined", "pub async fn create_room"),
+            (
+                "async fn wait_for_invite_batch_completed",
+                "pub async fn invite_users",
+            ),
+            (
+                "async fn wait_for_oidc_authorization",
+                "#[tauri::command]\npub async fn submit_login",
+            ),
+        ];
+
+        for (start, end) in waiters {
+            let body = source
+                .split(start)
+                .nth(1)
+                .unwrap_or_else(|| panic!("{start} should exist"))
+                .split(end)
+                .next()
+                .unwrap_or_else(|| panic!("{end} should follow {start}"));
+            assert!(
+                !body.contains("event stream lagged"),
+                "{start} should re-check snapshot or keep waiting after EventStreamLag"
+            );
+        }
+    }
+
+    #[test]
+    fn correlated_operation_failures_preserve_core_failure_kind_in_invoke_errors() {
+        let source = commands_source();
+        let failure_waiters = [
+            (
+                "async fn wait_for_logged_in_authenticated",
+                "async fn wait_for_auth_changed",
+            ),
+            (
+                "async fn wait_for_focused_context_closed",
+                "async fn wait_for_focused_context",
+            ),
+            (
+                "async fn wait_for_focused_context",
+                "async fn wait_for_main_timeline_anchor",
+            ),
+            (
+                "async fn wait_for_main_timeline_anchor",
+                "async fn wait_for_selected_room",
+            ),
+            (
+                "async fn wait_for_search_completed",
+                "async fn wait_for_search_closed",
+            ),
+            (
+                "async fn wait_for_search_closed",
+                "fn select_active_room_trace_label",
+            ),
+            (
+                "async fn wait_for_upload_staging_snapshot",
+                "/// How long the adapter waits",
+            ),
+            (
+                "async fn wait_for_room_created",
+                "async fn wait_for_space_created",
+            ),
+            (
+                "async fn wait_for_space_created",
+                "async fn wait_for_room_operation",
+            ),
+            (
+                "async fn wait_for_room_operation",
+                "async fn wait_for_room_joined",
+            ),
+            ("async fn wait_for_room_joined", "pub async fn create_room"),
+            (
+                "async fn wait_for_invite_batch_completed",
+                "pub async fn invite_users",
+            ),
+            (
+                "async fn wait_for_oidc_authorization",
+                "#[tauri::command]\npub async fn submit_login",
+            ),
+            (
+                "pub async fn list_saved_sessions",
+                "#[tauri::command]\npub async fn switch_account",
+            ),
+        ];
+
+        for (start, end) in failure_waiters {
+            let body = source
+                .split(start)
+                .nth(1)
+                .unwrap_or_else(|| panic!("{start} should exist"))
+                .split(end)
+                .next()
+                .unwrap_or_else(|| panic!("{end} should follow {start}"));
+            assert!(
+                body.contains("invoke_error_from_core_failure"),
+                "{start} should include the typed CoreFailure kind in invoke errors"
+            );
+        }
     }
 
     use crate::commands::{
