@@ -765,7 +765,7 @@ impl AccountActor {
                 .await
             {
                 Ok(delay_id) => {
-                    self.reduce(vec![
+                    self.send_actions(vec![
                         AppAction::ScheduledSendCapabilityChanged {
                             capability: ScheduledSendCapability::ServerDelayedEvents,
                         },
@@ -778,14 +778,15 @@ impl AccountActor {
                                 handle: ScheduledSendHandle::Server { delay_id },
                             },
                         },
-                    ]);
+                    ])
+                    .await;
                     return;
                 }
                 Err(()) => {}
             }
         }
 
-        self.reduce(vec![
+        self.send_actions(vec![
             AppAction::ScheduledSendCapabilityChanged {
                 capability: ScheduledSendCapability::LocalFallback,
             },
@@ -798,7 +799,8 @@ impl AccountActor {
                     handle: ScheduledSendHandle::Local,
                 },
             },
-        ]);
+        ])
+        .await;
     }
 
     async fn handle_cancel_server_delayed_send(
@@ -820,7 +822,10 @@ impl AccountActor {
             )
             .await
         {
-            Ok(()) => self.reduce(vec![AppAction::ScheduledSendCancelled { scheduled_id }]),
+            Ok(()) => {
+                self.send_actions(vec![AppAction::ScheduledSendCancelled { scheduled_id }])
+                    .await;
+            }
             Err(()) => self.emit_failure(
                 request_id,
                 CoreFailure::TimelineOperationFailed {
@@ -867,14 +872,15 @@ impl AccountActor {
             .await
         {
             Ok(delay_id) => {
-                self.reduce(vec![AppAction::ScheduledSendRescheduled {
+                self.send_actions(vec![AppAction::ScheduledSendRescheduled {
                     scheduled_id,
                     send_at_ms,
                     handle: ScheduledSendHandle::Server { delay_id },
-                }]);
+                }])
+                .await;
             }
             Err(()) => {
-                self.reduce(vec![
+                self.send_actions(vec![
                     AppAction::ScheduledSendCapabilityChanged {
                         capability: ScheduledSendCapability::LocalFallback,
                     },
@@ -883,7 +889,8 @@ impl AccountActor {
                         send_at_ms,
                         handle: ScheduledSendHandle::Local,
                     },
-                ]);
+                ])
+                .await;
             }
         }
     }
@@ -1451,7 +1458,7 @@ impl AccountActor {
             return;
         }
 
-        self.reduce(vec![AppAction::SessionLocked]);
+        self.send_actions(vec![AppAction::SessionLocked]).await;
         self.invalidate_account_hydration();
         self.stop_sync_actor().await;
     }
@@ -1613,7 +1620,7 @@ impl AccountActor {
                     .await;
             }
             AccountCommand::ProbeLocalEncryptionHealth { request_id } => {
-                self.handle_probe_local_encryption_health(request_id);
+                self.handle_probe_local_encryption_health(request_id).await;
             }
             AccountCommand::ResetLocalData { request_id } => {
                 self.handle_reset_local_data(request_id).await;
@@ -1748,10 +1755,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::VerificationFailed {
+                self.send_actions(vec![AppAction::VerificationFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -1766,10 +1774,11 @@ impl AccountActor {
                     handle: handle.clone(),
                 });
                 self.observe_verification_request(request_id, target.clone(), handle.clone());
-                self.reduce(vec![AppAction::VerificationRequested {
+                self.send_actions(vec![AppAction::VerificationRequested {
                     request_id: request_id.sequence,
                     target: target.clone(),
-                }]);
+                }])
+                .await;
                 self.emit_verification_progress(VerificationFlowState::Requested {
                     request_id: request_id.sequence,
                     target,
@@ -1813,10 +1822,11 @@ impl AccountActor {
             handle: handle.clone(),
         });
         self.observe_verification_request(request_id, target.clone(), handle.clone());
-        self.reduce(vec![AppAction::VerificationRequested {
+        self.send_actions(vec![AppAction::VerificationRequested {
             request_id: request_id.sequence,
             target: target.clone(),
-        }]);
+        }])
+        .await;
         self.emit_verification_progress(VerificationFlowState::Requested {
             request_id: request_id.sequence,
             target,
@@ -2202,7 +2212,7 @@ impl AccountActor {
                 .send(TimelineMessage::IgnoredUsersUpdated { user_ids })
                 .await;
         }
-        self.reduce(actions);
+        self.send_actions(actions).await;
     }
 
     async fn handle_ignore_user(&mut self, request_id: RequestId, user_id: String, ignored: bool) {
@@ -2615,9 +2625,10 @@ impl AccountActor {
             koushi_sdk::MatrixVerificationRequestState::Created
             | koushi_sdk::MatrixVerificationRequestState::Requested => {}
             koushi_sdk::MatrixVerificationRequestState::Ready => {
-                self.reduce(vec![AppAction::VerificationAccepted {
+                self.send_actions(vec![AppAction::VerificationAccepted {
                     request_id: request_id.sequence,
-                }]);
+                }])
+                .await;
             }
             koushi_sdk::MatrixVerificationRequestState::SasStarted(sas) => {
                 let Some(target) = self
@@ -2690,10 +2701,11 @@ impl AccountActor {
             | koushi_sdk::MatrixSasState::Started
             | koushi_sdk::MatrixSasState::Accepted => {}
             koushi_sdk::MatrixSasState::SasPresented { emojis } => {
-                self.reduce(vec![AppAction::VerificationSasPresented {
+                self.send_actions(vec![AppAction::VerificationSasPresented {
                     request_id: request_id.sequence,
                     emojis: emojis.clone(),
-                }]);
+                }])
+                .await;
                 self.emit_verification_progress(VerificationFlowState::SasPresented {
                     request_id: request_id.sequence,
                     target,
@@ -2743,9 +2755,10 @@ impl AccountActor {
         self.stop_sas_verification_observer().await;
         self.verification_request = None;
         self.sas_verification = None;
-        self.reduce(vec![AppAction::VerificationCompleted {
+        self.send_actions(vec![AppAction::VerificationCompleted {
             request_id: request_id.sequence,
-        }]);
+        }])
+        .await;
         self.emit_verification_progress(VerificationFlowState::Done {
             request_id: request_id.sequence,
             target,
@@ -2788,10 +2801,11 @@ impl AccountActor {
                     .await
             }
             None => {
-                self.reduce(vec![AppAction::VerificationFailed {
+                self.send_actions(vec![AppAction::VerificationFailed {
                     request_id: flow_id,
                     kind,
-                }]);
+                }])
+                .await;
                 let failure = if self.session.is_some() {
                     CoreFailure::LocalEncryptionUnavailable
                 } else {
@@ -2812,10 +2826,11 @@ impl AccountActor {
         self.stop_sas_verification_observer().await;
         self.verification_request = None;
         self.sas_verification = None;
-        self.reduce(vec![AppAction::VerificationFailed {
+        self.send_actions(vec![AppAction::VerificationFailed {
             request_id: flow_id,
             kind,
-        }]);
+        }])
+        .await;
         self.emit_verification_progress(VerificationFlowState::Failed {
             request_id: flow_id,
             target,
@@ -2846,10 +2861,11 @@ impl AccountActor {
             Some(session) => session.clone(),
             None => {
                 self.cancel_identity_reset_handle().await;
-                self.reduce(vec![AppAction::ResetIdentityFailed {
+                self.send_actions(vec![AppAction::ResetIdentityFailed {
                     request_id: flow_id,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -2869,7 +2885,7 @@ impl AccountActor {
                 self.identity_reset_handle = None;
                 let (actions, events) =
                     project_reset_identity_completed(flow_request_id, account_key);
-                self.reduce(actions);
+                self.send_actions(actions).await;
                 for event in events {
                     self.emit(event);
                 }
@@ -2878,7 +2894,7 @@ impl AccountActor {
                 self.cancel_identity_reset_handle().await;
                 let (actions, events) =
                     project_reset_identity_error(flow_request_id, account_key, error);
-                self.reduce(actions);
+                self.send_actions(actions).await;
                 for event in events {
                     self.emit(event);
                 }
@@ -2894,10 +2910,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::BootstrapCrossSigningFailed {
+                self.send_actions(vec![AppAction::BootstrapCrossSigningFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -2906,7 +2923,7 @@ impl AccountActor {
         let result = koushi_sdk::bootstrap_cross_signing(&session, auth.as_ref()).await;
         let (actions, events) =
             project_bootstrap_cross_signing_result(request_id, account_key, result);
-        self.reduce(actions);
+        self.send_actions(actions).await;
         for event in events {
             self.emit(event);
         }
@@ -2920,10 +2937,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::KeyBackupFailed {
+                self.send_actions(vec![AppAction::KeyBackupFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -2932,7 +2950,7 @@ impl AccountActor {
         let result = koushi_sdk::enable_key_backup(&session, passphrase.as_ref()).await;
         drop(passphrase);
         let (actions, events) = project_enable_key_backup_result(request_id, account_key, result);
-        self.reduce(actions);
+        self.send_actions(actions).await;
         for event in events {
             self.emit(event);
         }
@@ -2947,10 +2965,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::KeyBackupFailed {
+                self.send_actions(vec![AppAction::KeyBackupFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -2960,7 +2979,7 @@ impl AccountActor {
         drop(request);
 
         let (actions, events) = project_restore_key_backup_result(request_id, account_key, result);
-        self.reduce(actions);
+        self.send_actions(actions).await;
         for event in events {
             self.emit(event);
         }
@@ -2970,10 +2989,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::RoomKeyExportFailed {
+                self.send_actions(vec![AppAction::RoomKeyExportFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -2988,16 +3008,18 @@ impl AccountActor {
         drop(passphrase);
         match result {
             Ok(summary) => {
-                self.reduce(vec![AppAction::RoomKeyExported {
+                self.send_actions(vec![AppAction::RoomKeyExported {
                     request_id: request_id.sequence,
                     exported_sessions: summary.exported_sessions,
-                }]);
+                }])
+                .await;
             }
             Err(_) => {
-                self.reduce(vec![AppAction::RoomKeyExportFailed {
+                self.send_actions(vec![AppAction::RoomKeyExportFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::AccountOperationFailed {
@@ -3012,10 +3034,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::RoomKeyImportFailed {
+                self.send_actions(vec![AppAction::RoomKeyImportFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -3030,17 +3053,19 @@ impl AccountActor {
         drop(passphrase);
         match result {
             Ok(summary) => {
-                self.reduce(vec![AppAction::RoomKeyImported {
+                self.send_actions(vec![AppAction::RoomKeyImported {
                     request_id: request_id.sequence,
                     imported_count: summary.imported_count,
                     total_count: summary.total_count,
-                }]);
+                }])
+                .await;
             }
             Err(_) => {
-                self.reduce(vec![AppAction::RoomKeyImportFailed {
+                self.send_actions(vec![AppAction::RoomKeyImportFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::AccountOperationFailed {
@@ -3059,10 +3084,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::SecureBackupSetupFailed {
+                self.send_actions(vec![AppAction::SecureBackupSetupFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -3086,7 +3112,7 @@ impl AccountActor {
                 } else {
                     RecoveryKeyDeliveryState::NotWritten
                 };
-                self.reduce(vec![
+                self.send_actions(vec![
                     AppAction::SecureBackupRecoveryKeyReady {
                         request_id: request_id.sequence,
                         delivery,
@@ -3094,13 +3120,15 @@ impl AccountActor {
                     AppAction::SecureBackupSetupEnabled {
                         request_id: request_id.sequence,
                     },
-                ]);
+                ])
+                .await;
             }
             Err(_) => {
-                self.reduce(vec![AppAction::SecureBackupSetupFailed {
+                self.send_actions(vec![AppAction::SecureBackupSetupFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::AccountOperationFailed {
@@ -3119,10 +3147,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::SecureBackupPassphraseChangeFailed {
+                self.send_actions(vec![AppAction::SecureBackupPassphraseChangeFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -3149,16 +3178,18 @@ impl AccountActor {
                 } else {
                     RecoveryKeyDeliveryState::NotWritten
                 };
-                self.reduce(vec![AppAction::SecureBackupPassphraseChanged {
+                self.send_actions(vec![AppAction::SecureBackupPassphraseChanged {
                     request_id: request_id.sequence,
                     delivery,
-                }]);
+                }])
+                .await;
             }
             Err(_) => {
-                self.reduce(vec![AppAction::SecureBackupPassphraseChangeFailed {
+                self.send_actions(vec![AppAction::SecureBackupPassphraseChangeFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::AccountOperationFailed {
@@ -3174,10 +3205,11 @@ impl AccountActor {
             Some(session) => session.clone(),
             None => {
                 self.cancel_identity_reset_handle().await;
-                self.reduce(vec![AppAction::ResetIdentityFailed {
+                self.send_actions(vec![AppAction::ResetIdentityFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -3187,7 +3219,7 @@ impl AccountActor {
             Ok(koushi_sdk::IdentityResetOutcome::Completed) => {
                 self.cancel_identity_reset_handle().await;
                 let (actions, events) = project_reset_identity_completed(request_id, account_key);
-                self.reduce(actions);
+                self.send_actions(actions).await;
                 for event in events {
                     self.emit(event);
                 }
@@ -3198,7 +3230,7 @@ impl AccountActor {
                 self.identity_reset_handle = Some(handle);
                 let (actions, events) =
                     project_reset_identity_auth_required(request_id, account_key, auth_type);
-                self.reduce(actions);
+                self.send_actions(actions).await;
                 for event in events {
                     self.emit(event);
                 }
@@ -3207,7 +3239,7 @@ impl AccountActor {
                 self.cancel_identity_reset_handle().await;
                 let (actions, events) =
                     project_reset_identity_error(request_id, account_key, error);
-                self.reduce(actions);
+                self.send_actions(actions).await;
                 for event in events {
                     self.emit(event);
                 }
@@ -3223,23 +3255,26 @@ impl AccountActor {
 
         match discovery_result {
             Ok(Ok(discovery)) => {
-                self.reduce(vec![AppAction::LoginDiscoverySucceeded {
+                self.send_actions(vec![AppAction::LoginDiscoverySucceeded {
                     homeserver: requested_homeserver,
                     flows: discovery.flows,
                     delegated: discovery.delegated,
-                }]);
+                }])
+                .await;
             }
             Ok(Err(error)) => {
-                self.reduce(vec![AppAction::LoginDiscoveryFailed {
+                self.send_actions(vec![AppAction::LoginDiscoveryFailed {
                     homeserver: requested_homeserver,
                     kind: login_discovery_failure_kind(&error),
-                }]);
+                }])
+                .await;
             }
             Err(_) => {
-                self.reduce(vec![AppAction::LoginDiscoveryFailed {
+                self.send_actions(vec![AppAction::LoginDiscoveryFailed {
                     homeserver: requested_homeserver,
                     kind: AuthFailureKind::Sdk,
-                }]);
+                }])
+                .await;
             }
         }
     }
@@ -3256,7 +3291,8 @@ impl AccountActor {
             }
             Err(error) => {
                 let kind = classify_auth_error(&error);
-                self.reduce(vec![AppAction::LoginDiscoveryFailed { homeserver, kind }]);
+                self.send_actions(vec![AppAction::LoginDiscoveryFailed { homeserver, kind }])
+                    .await;
                 self.emit_failure(request_id, CoreFailure::AccountOperationFailed { kind });
             }
         }
@@ -3264,10 +3300,11 @@ impl AccountActor {
 
     async fn handle_complete_oidc_login(&mut self, request_id: RequestId, callback_url: String) {
         let Some((start_request_id, pending)) = self.pending_oidc_login.take() else {
-            self.reduce(vec![AppAction::LoginDiscoveryFailed {
+            self.send_actions(vec![AppAction::LoginDiscoveryFailed {
                 homeserver: String::new(),
                 kind: AuthFailureKind::Cancelled,
-            }]);
+            }])
+            .await;
             self.emit_failure(
                 request_id,
                 CoreFailure::AccountOperationFailed {
@@ -3282,7 +3319,8 @@ impl AccountActor {
             Ok(session) => session,
             Err(error) => {
                 let kind = classify_auth_error(&error);
-                self.reduce(vec![AppAction::LoginDiscoveryFailed { homeserver, kind }]);
+                self.send_actions(vec![AppAction::LoginDiscoveryFailed { homeserver, kind }])
+                    .await;
                 self.emit_failure(request_id, CoreFailure::AccountOperationFailed { kind });
                 return;
             }
@@ -3297,9 +3335,10 @@ impl AccountActor {
             Err(failure) => {
                 self.abort_login(login_session, &key_id, false).await;
                 self.emit_failure(request_id, failure);
-                self.reduce(vec![AppAction::LoginFailed {
+                self.send_actions(vec![AppAction::LoginFailed {
                     message: "login failed".to_owned(),
-                }]);
+                }])
+                .await;
                 return;
             }
         };
@@ -3309,9 +3348,10 @@ impl AccountActor {
             Err(failure) => {
                 self.abort_login(login_session, &key_id, true).await;
                 self.emit_failure(request_id, failure);
-                self.reduce(vec![AppAction::LoginFailed {
+                self.send_actions(vec![AppAction::LoginFailed {
                     message: "login failed".to_owned(),
-                }]);
+                }])
+                .await;
                 return;
             }
         };
@@ -3326,7 +3366,8 @@ impl AccountActor {
 
         self.spawn_sync_actor(session_arc.clone()).await;
 
-        self.reduce(vec![AppAction::LoginSucceeded(info)]);
+        self.send_actions(vec![AppAction::LoginSucceeded(info)])
+            .await;
 
         self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
             request_id: start_request_id,
@@ -3356,9 +3397,10 @@ impl AccountActor {
             Err(error) => {
                 let kind = classify_login_error(&error);
                 self.emit_failure(request_id, CoreFailure::LoginFailed { kind });
-                self.reduce(vec![AppAction::LoginFailed {
+                self.send_actions(vec![AppAction::LoginFailed {
                     message: "login failed".to_owned(),
-                }]);
+                }])
+                .await;
                 return;
             }
             Ok(session) => session,
@@ -3374,9 +3416,10 @@ impl AccountActor {
             Err(failure) => {
                 self.abort_login(login_session, &key_id, false).await;
                 self.emit_failure(request_id, failure);
-                self.reduce(vec![AppAction::LoginFailed {
+                self.send_actions(vec![AppAction::LoginFailed {
                     message: "login failed".to_owned(),
-                }]);
+                }])
+                .await;
                 return;
             }
         };
@@ -3391,9 +3434,10 @@ impl AccountActor {
             Err(failure) => {
                 self.abort_login(login_session, &key_id, true).await;
                 self.emit_failure(request_id, failure);
-                self.reduce(vec![AppAction::LoginFailed {
+                self.send_actions(vec![AppAction::LoginFailed {
                     message: "login failed".to_owned(),
-                }]);
+                }])
+                .await;
                 return;
             }
         };
@@ -3415,7 +3459,8 @@ impl AccountActor {
         // Project login success through the reducer (session → Ready), then
         // hydrate Rust-owned profile/account-data projections. Fetch failure is
         // non-fatal to login.
-        self.reduce(vec![AppAction::LoginSucceeded(info)]);
+        self.send_actions(vec![AppAction::LoginSucceeded(info)])
+            .await;
 
         // Emit domain event carrying the request_id for command correlation.
         self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
@@ -3443,16 +3488,18 @@ impl AccountActor {
                 // No stored session for this account: project
                 // RestoreSessionNotFound so AppState returns to SignedOut, and
                 // keep the redacted failure event for command correlation.
-                self.reduce(vec![AppAction::RestoreSessionNotFound]);
+                self.send_actions(vec![AppAction::RestoreSessionNotFound])
+                    .await;
                 self.emit_failure(request_id, SESSION_NOT_FOUND_FAILURE);
                 return;
             }
             Err(()) => {
                 trace_account_request("restore_session", request_id, "key_lookup_failed");
                 // Credential store unreachable.
-                self.reduce(vec![AppAction::RestoreSessionFailed {
+                self.send_actions(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 return;
             }
@@ -3476,15 +3523,17 @@ impl AccountActor {
             }
             Ok(None) => {
                 trace_account_request("restore_last_session", request_id, "pointer_missing");
-                self.reduce(vec![AppAction::RestoreSessionNotFound]);
+                self.send_actions(vec![AppAction::RestoreSessionNotFound])
+                    .await;
                 self.emit_failure(request_id, SESSION_NOT_FOUND_FAILURE);
                 return;
             }
             Err(_) => {
                 trace_account_request("restore_last_session", request_id, "pointer_load_failed");
-                self.reduce(vec![AppAction::RestoreSessionFailed {
+                self.send_actions(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 return;
             }
@@ -3521,10 +3570,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::DeviceSessionsLoadFailed {
+                self.send_actions(vec![AppAction::DeviceSessionsLoadFailed {
                     request_id: request_id.sequence,
                     kind: AuthFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -3549,16 +3599,18 @@ impl AccountActor {
                     })
                     .collect();
                 self.device_session_ordinals = ordinal_map;
-                self.reduce(vec![AppAction::DeviceSessionsLoaded {
+                self.send_actions(vec![AppAction::DeviceSessionsLoaded {
                     request_id: request_id.sequence,
                     devices: summaries,
-                }]);
+                }])
+                .await;
             }
             Err(_) => {
-                self.reduce(vec![AppAction::DeviceSessionsLoadFailed {
+                self.send_actions(vec![AppAction::DeviceSessionsLoadFailed {
                     request_id: request_id.sequence,
                     kind: AuthFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::StoreUnavailable);
             }
         }
@@ -3568,16 +3620,18 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::AccountManagementCapabilitiesLoadFailed]);
+                self.send_actions(vec![AppAction::AccountManagementCapabilitiesLoadFailed])
+                    .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
         };
 
         let capabilities = koushi_sdk::account_management_capabilities(&session).await;
-        self.reduce(vec![AppAction::AccountManagementCapabilitiesLoaded {
+        self.send_actions(vec![AppAction::AccountManagementCapabilitiesLoaded {
             change_password: capabilities.change_password,
-        }]);
+        }])
+        .await;
     }
 
     async fn handle_rename_device(
@@ -3595,7 +3649,8 @@ impl AccountActor {
                     operation,
                     AuthFailureKind::Sdk,
                     CoreFailure::SessionRequired,
-                );
+                )
+                .await;
                 return;
             }
         };
@@ -3607,25 +3662,32 @@ impl AccountActor {
                 CoreFailure::AccountOperationFailed {
                     kind: AuthFailureKind::Sdk,
                 },
-            );
+            )
+            .await;
             return;
         };
 
         let result = koushi_sdk::rename_device(&session, &raw_device_id, &display_name).await;
         drop(display_name);
         match result {
-            Ok(()) => self.reduce(vec![AppAction::AccountManagementSucceeded {
-                request_id: request_id.sequence,
-                operation,
-            }]),
-            Err(_) => self.project_account_management_failure(
-                request_id,
-                operation,
-                AuthFailureKind::Sdk,
-                CoreFailure::AccountOperationFailed {
-                    kind: AuthFailureKind::Sdk,
-                },
-            ),
+            Ok(()) => {
+                self.send_actions(vec![AppAction::AccountManagementSucceeded {
+                    request_id: request_id.sequence,
+                    operation,
+                }])
+                .await;
+            }
+            Err(_) => {
+                self.project_account_management_failure(
+                    request_id,
+                    operation,
+                    AuthFailureKind::Sdk,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                )
+                .await
+            }
         }
     }
 
@@ -3648,7 +3710,8 @@ impl AccountActor {
                     operation,
                     AuthFailureKind::Sdk,
                     CoreFailure::SessionRequired,
-                );
+                )
+                .await;
                 return;
             }
         };
@@ -3662,7 +3725,8 @@ impl AccountActor {
                     CoreFailure::AccountOperationFailed {
                         kind: AuthFailureKind::Sdk,
                     },
-                );
+                )
+                .await;
                 return;
             };
             raw_device_ids.push(raw_device_id.clone());
@@ -3686,10 +3750,11 @@ impl AccountActor {
         match result {
             Ok(()) => {
                 self.pending_uia_operations.remove(&request_id.sequence);
-                self.reduce(vec![AppAction::AccountManagementSucceeded {
+                self.send_actions(vec![AppAction::AccountManagementSucceeded {
                     request_id: request_id.sequence,
                     operation,
-                }]);
+                }])
+                .await;
             }
             Err(koushi_sdk::DeleteDevicesError::UiaaChallenge { session }) => {
                 let flow_id = request_id.sequence;
@@ -3703,11 +3768,12 @@ impl AccountActor {
                         uiaa_session: session,
                     },
                 );
-                self.reduce(vec![AppAction::AccountManagementUiaRequired {
+                self.send_actions(vec![AppAction::AccountManagementUiaRequired {
                     request_id: request_id.sequence,
                     flow_id,
                     operation,
-                }]);
+                }])
+                .await;
             }
             Err(koushi_sdk::DeleteDevicesError::Sdk(_)) => {
                 self.pending_uia_operations.remove(&request_id.sequence);
@@ -3718,7 +3784,8 @@ impl AccountActor {
                     CoreFailure::AccountOperationFailed {
                         kind: AuthFailureKind::Sdk,
                     },
-                );
+                )
+                .await;
             }
         }
     }
@@ -3737,17 +3804,21 @@ impl AccountActor {
                     operation,
                     AuthFailureKind::Sdk,
                     CoreFailure::SessionRequired,
-                );
+                )
+                .await;
                 return;
             }
         };
 
         let result = koushi_sdk::change_password(&session, &new_password, None, None).await;
         match result {
-            Ok(()) => self.reduce(vec![AppAction::AccountManagementSucceeded {
-                request_id: request_id.sequence,
-                operation,
-            }]),
+            Ok(()) => {
+                self.send_actions(vec![AppAction::AccountManagementSucceeded {
+                    request_id: request_id.sequence,
+                    operation,
+                }])
+                .await;
+            }
             Err(koushi_sdk::AccountManagementError::UiaaChallenge { session }) => {
                 let flow_id = request_id.sequence;
                 self.pending_uia_operations.insert(
@@ -3760,11 +3831,12 @@ impl AccountActor {
                         uiaa_session: session,
                     },
                 );
-                self.reduce(vec![AppAction::AccountManagementUiaRequired {
+                self.send_actions(vec![AppAction::AccountManagementUiaRequired {
                     request_id: request_id.sequence,
                     flow_id,
                     operation,
-                }]);
+                }])
+                .await;
             }
             Err(koushi_sdk::AccountManagementError::Sdk(_)) => {
                 drop(new_password);
@@ -3775,7 +3847,8 @@ impl AccountActor {
                     CoreFailure::AccountOperationFailed {
                         kind: AuthFailureKind::Sdk,
                     },
-                );
+                )
+                .await;
             }
         }
     }
@@ -3790,7 +3863,8 @@ impl AccountActor {
                     operation,
                     AuthFailureKind::Sdk,
                     CoreFailure::SessionRequired,
-                );
+                )
+                .await;
                 return;
             }
         };
@@ -3799,10 +3873,11 @@ impl AccountActor {
         match result {
             Ok(()) => {
                 self.pending_uia_operations.remove(&request_id.sequence);
-                self.reduce(vec![AppAction::AccountManagementSucceeded {
+                self.send_actions(vec![AppAction::AccountManagementSucceeded {
                     request_id: request_id.sequence,
                     operation,
-                }]);
+                }])
+                .await;
                 // Deactivation ends the account on the server. Perform local
                 // sign-out cleanup without sending a second /logout request.
                 self.perform_logout(request_id, false).await;
@@ -3819,11 +3894,12 @@ impl AccountActor {
                         uiaa_session: session,
                     },
                 );
-                self.reduce(vec![AppAction::AccountManagementUiaRequired {
+                self.send_actions(vec![AppAction::AccountManagementUiaRequired {
                     request_id: request_id.sequence,
                     flow_id,
                     operation,
-                }]);
+                }])
+                .await;
             }
             Err(koushi_sdk::AccountManagementError::Sdk(_)) => {
                 self.project_account_management_failure(
@@ -3833,7 +3909,8 @@ impl AccountActor {
                     CoreFailure::AccountOperationFailed {
                         kind: AuthFailureKind::Sdk,
                     },
-                );
+                )
+                .await;
             }
         }
     }
@@ -3865,7 +3942,8 @@ impl AccountActor {
                     operation,
                     AuthFailureKind::Sdk,
                     CoreFailure::SessionRequired,
-                );
+                )
+                .await;
                 return;
             }
         };
@@ -3907,7 +3985,8 @@ impl AccountActor {
                         CoreFailure::AccountOperationFailed {
                             kind: AuthFailureKind::Sdk,
                         },
-                    );
+                    )
+                    .await;
                     return;
                 };
                 koushi_sdk::change_password(
@@ -3932,10 +4011,11 @@ impl AccountActor {
         match result {
             Ok(()) => {
                 let was_deactivation = operation == AccountManagementOperation::DeactivateAccount;
-                self.reduce(vec![AppAction::AccountManagementSucceeded {
+                self.send_actions(vec![AppAction::AccountManagementSucceeded {
                     request_id: flow_id,
                     operation,
-                }]);
+                }])
+                .await;
                 if was_deactivation {
                     self.perform_logout(
                         RequestId {
@@ -3978,7 +4058,8 @@ impl AccountActor {
                     CoreFailure::AccountOperationFailed {
                         kind: AuthFailureKind::Sdk,
                     },
-                );
+                )
+                .await;
             }
         }
     }
@@ -3989,10 +4070,11 @@ impl AccountActor {
         password: koushi_state::AuthSecret,
     ) {
         let Some(session) = self.session.as_ref() else {
-            self.reduce(vec![AppAction::SoftLogoutReauthFailed {
+            self.send_actions(vec![AppAction::SoftLogoutReauthFailed {
                 request_id: request_id.sequence,
                 kind: AuthFailureKind::Sdk,
-            }]);
+            }])
+            .await;
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
@@ -4013,10 +4095,11 @@ impl AccountActor {
         {
             Ok(session) => session,
             Err(error) => {
-                self.reduce(vec![AppAction::SoftLogoutReauthFailed {
+                self.send_actions(vec![AppAction::SoftLogoutReauthFailed {
                     request_id: request_id.sequence,
                     kind: AuthFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 let failure = CoreFailure::LoginFailed {
                     kind: classify_login_error(&koushi_sdk::PasswordLoginError::Sdk(
                         error.to_string(),
@@ -4032,10 +4115,11 @@ impl AccountActor {
             Ok(persistable) => persistable,
             Err(failure) => {
                 self.abort_login(login_session, &key_id, false).await;
-                self.reduce(vec![AppAction::SoftLogoutReauthFailed {
+                self.send_actions(vec![AppAction::SoftLogoutReauthFailed {
                     request_id: request_id.sequence,
                     kind: AuthFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, failure);
                 return;
             }
@@ -4050,10 +4134,11 @@ impl AccountActor {
             Ok(session) => session,
             Err(failure) => {
                 self.abort_login(login_session, &key_id, true).await;
-                self.reduce(vec![AppAction::SoftLogoutReauthFailed {
+                self.send_actions(vec![AppAction::SoftLogoutReauthFailed {
                     request_id: request_id.sequence,
                     kind: AuthFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, failure);
                 return;
             }
@@ -4068,12 +4153,13 @@ impl AccountActor {
         self.spawn_sync_actor(session_arc.clone()).await;
 
         let account_key = account_key_from_info(&info);
-        self.reduce(vec![
+        self.send_actions(vec![
             AppAction::SoftLogoutReauthSucceeded {
                 request_id: request_id.sequence,
             },
             AppAction::LoginSucceeded(info),
-        ]);
+        ])
+        .await;
         self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
             request_id,
             account_key,
@@ -4085,18 +4171,19 @@ impl AccountActor {
         self.start_session_change_observer(session_arc);
     }
 
-    fn project_account_management_failure(
+    async fn project_account_management_failure(
         &self,
         request_id: RequestId,
         operation: AccountManagementOperation,
         kind: AuthFailureKind,
         failure: CoreFailure,
     ) {
-        self.reduce(vec![AppAction::AccountManagementFailed {
+        self.send_actions(vec![AppAction::AccountManagementFailed {
             request_id: request_id.sequence,
             operation,
             kind,
-        }]);
+        }])
+        .await;
         self.emit_failure(request_id, failure);
     }
 
@@ -4112,14 +4199,16 @@ impl AccountActor {
             Ok(Some(key_id)) => key_id,
             Ok(None) => {
                 // Same not-found contract as RestoreSession.
-                self.reduce(vec![AppAction::RestoreSessionNotFound]);
+                self.send_actions(vec![AppAction::RestoreSessionNotFound])
+                    .await;
                 self.emit_failure(request_id, SESSION_NOT_FOUND_FAILURE);
                 return;
             }
             Err(()) => {
-                self.reduce(vec![AppAction::RestoreSessionFailed {
+                self.send_actions(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 return;
             }
@@ -4128,9 +4217,10 @@ impl AccountActor {
         // Project the switch intent so the reducer drives state
         // (SwitchingAccount → cleared views), then run the store-backed
         // restore of the target account.
-        self.reduce(vec![AppAction::SwitchAccountRequested {
+        self.send_actions(vec![AppAction::SwitchAccountRequested {
             info: session_info_from_key_id(&key_id),
-        }]);
+        }])
+        .await;
 
         self.restore_account(request_id, key_id, RestoreOutcome::Switched)
             .await;
@@ -4150,15 +4240,17 @@ impl AccountActor {
             Ok(stored) => stored,
             Err(err) if koushi_key::is_missing_credential_error(&err) => {
                 trace_account_request("restore_account", request_id, "session_missing");
-                self.reduce(vec![AppAction::RestoreSessionNotFound]);
+                self.send_actions(vec![AppAction::RestoreSessionNotFound])
+                    .await;
                 self.emit_failure(request_id, SESSION_NOT_FOUND_FAILURE);
                 return;
             }
             Err(_) => {
                 trace_account_request("restore_account", request_id, "session_load_failed");
-                self.reduce(vec![AppAction::RestoreSessionFailed {
+                self.send_actions(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 return;
             }
@@ -4168,9 +4260,10 @@ impl AccountActor {
             Ok(s) => s,
             Err(_) => {
                 trace_account_request("restore_account", request_id, "session_parse_failed");
-                self.reduce(vec![AppAction::RestoreSessionFailed {
+                self.send_actions(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 return;
             }
@@ -4180,9 +4273,10 @@ impl AccountActor {
         match self.restore_into_store(&persistable, &key_id).await {
             Err(failure) => {
                 trace_account_request("restore_account", request_id, "store_restore_failed");
-                self.reduce(vec![AppAction::RestoreSessionFailed {
+                self.send_actions(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, failure);
             }
             Ok(session) => {
@@ -4200,7 +4294,8 @@ impl AccountActor {
                 // Spawn the SyncActor for the newly restored store-backed session.
                 self.spawn_sync_actor(session_arc.clone()).await;
                 trace_account_request("restore_account", request_id, "sync_actor_spawned");
-                self.reduce(vec![AppAction::RestoreSessionSucceeded(info)]);
+                self.send_actions(vec![AppAction::RestoreSessionSucceeded(info)])
+                    .await;
 
                 self.emit(CoreEvent::Account(match outcome {
                     RestoreOutcome::Restored => AccountEvent::SessionRestored {
@@ -4242,7 +4337,8 @@ impl AccountActor {
 
         // Project E2eeRecoverySubmitted so the reducer transitions
         // NeedsRecovery → Recovering while the async call runs.
-        self.reduce(vec![AppAction::E2eeRecoverySubmitted(request.clone())]);
+        self.send_actions(vec![AppAction::E2eeRecoverySubmitted(request.clone())])
+            .await;
 
         let result = koushi_sdk::recover_e2ee(&session, &request).await;
 
@@ -4252,11 +4348,13 @@ impl AccountActor {
         match result {
             Ok(()) => {
                 // Project success: Recovering → Ready.
-                self.reduce(vec![AppAction::E2eeRecoverySucceeded]);
-                self.reduce(vec![AppAction::RestoreKeyBackupRequested {
+                self.send_actions(vec![AppAction::E2eeRecoverySucceeded])
+                    .await;
+                self.send_actions(vec![AppAction::RestoreKeyBackupRequested {
                     request_id: request_id.sequence,
                     version: None,
-                }]);
+                }])
+                .await;
                 let restore_result =
                     koushi_sdk::download_joined_room_keys_from_backup(&session, None).await;
                 let (actions, events) = project_restore_key_backup_result(
@@ -4264,7 +4362,7 @@ impl AccountActor {
                     account_key.clone(),
                     restore_result,
                 );
-                self.reduce(actions);
+                self.send_actions(actions).await;
                 for event in events {
                     self.emit(event);
                 }
@@ -4276,9 +4374,10 @@ impl AccountActor {
             Err(error) => {
                 let kind = classify_recovery_error(&error);
                 // Project failure: Recovering → NeedsRecovery.
-                self.reduce(vec![AppAction::E2eeRecoveryFailed {
+                self.send_actions(vec![AppAction::E2eeRecoveryFailed {
                     message: "recovery failed".to_owned(),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::RecoveryFailed { kind });
             }
         }
@@ -4311,7 +4410,7 @@ impl AccountActor {
             AccountKey(String::new())
         };
 
-        self.reduce(vec![AppAction::LogoutFinished]);
+        self.send_actions(vec![AppAction::LogoutFinished]).await;
         self.emit(CoreEvent::Account(AccountEvent::LoggedOut {
             request_id,
             account_key,
@@ -4498,16 +4597,17 @@ impl AccountActor {
         )
     }
 
-    fn handle_probe_local_encryption_health(&self, request_id: RequestId) {
+    async fn handle_probe_local_encryption_health(&self, request_id: RequestId) {
         let health = self
             .session_key_id
             .as_ref()
             .map(|key_id| self.store.probe_local_encryption_health(key_id))
             .unwrap_or(koushi_state::LocalEncryptionHealth::Unknown);
-        self.reduce(vec![AppAction::LocalEncryptionHealthChanged {
+        self.send_actions(vec![AppAction::LocalEncryptionHealthChanged {
             request_id: request_id.sequence,
             health,
-        }]);
+        }])
+        .await;
         self.emit(CoreEvent::LocalEncryption(
             LocalEncryptionEvent::HealthChanged { health },
         ));
@@ -4515,9 +4615,10 @@ impl AccountActor {
 
     async fn handle_reset_local_data(&mut self, request_id: RequestId) {
         let Some(key_id) = self.session_key_id.take() else {
-            self.reduce(vec![AppAction::ResetLocalDataFailed {
+            self.send_actions(vec![AppAction::ResetLocalDataFailed {
                 request_id: request_id.sequence,
-            }]);
+            }])
+            .await;
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
@@ -4526,16 +4627,13 @@ impl AccountActor {
 
         drop(self.session.take());
         self.clear_account_persistence(&key_id);
-        self.reduce(vec![
+        self.send_actions(vec![
             AppAction::ResetLocalDataCompleted {
                 request_id: request_id.sequence,
             },
             AppAction::LogoutFinished,
-        ]);
-    }
-
-    fn reduce(&self, actions: Vec<AppAction>) {
-        let _ = self.action_tx.try_send(actions);
+        ])
+        .await;
     }
 
     async fn send_actions(&self, actions: Vec<AppAction>) {
@@ -5575,6 +5673,33 @@ mod tests {
         assert!(
             spawn_body[session_handoff..].contains(".await"),
             "SessionEstablished handoff must await reliable delivery before dependent actors start"
+        );
+    }
+
+    #[test]
+    fn account_actor_reducer_actions_use_reliable_delivery() {
+        let source = include_str!("account.rs");
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source should precede tests");
+        let send_actions_body = production_source
+            .split("async fn send_actions")
+            .nth(1)
+            .and_then(|rest| rest.split("fn trace_room_route").next())
+            .expect("AccountActor reliable reducer delivery helper");
+
+        assert!(
+            send_actions_body.contains("self.action_tx.send(actions).await"),
+            "AccountActor reducer actions must await reliable delivery"
+        );
+        assert!(
+            !production_source.contains("self.reduce("),
+            "AccountActor command-result reducer actions must not use the lossy reduce helper"
+        );
+        assert!(
+            !production_source.contains("action_tx.try_send(actions)"),
+            "AccountActor reducer actions must not be dropped through try_send"
         );
     }
 
