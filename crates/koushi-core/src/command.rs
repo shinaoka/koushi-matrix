@@ -2468,8 +2468,10 @@ pub enum ThreadsListCommand {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SearchScope {
-    Global,
-    Room { room_id: String },
+    AllRooms,
+    CurrentRoom { room_id: String },
+    CurrentSpace { space_id: String },
+    Dms,
 }
 
 // Search queries can quote message content; redact like bodies.

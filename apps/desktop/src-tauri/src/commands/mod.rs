@@ -2459,13 +2459,17 @@ async fn image_upload_compression_contract_from_snapshot(
 fn resolve_search_scope_from_active_room(
     scope: SearchScopeKind,
     active_room_id: Option<String>,
+    active_space_id: Option<String>,
 ) -> SearchScope {
     match scope {
         SearchScopeKind::CurrentRoom => active_room_id
-            .map(|room_id| SearchScope::Room { room_id })
-            .unwrap_or(SearchScope::Global),
-        SearchScopeKind::CurrentSpace | SearchScopeKind::AllRooms => SearchScope::Global,
-        SearchScopeKind::Dms => SearchScope::Global,
+            .map(|room_id| SearchScope::CurrentRoom { room_id })
+            .unwrap_or(SearchScope::AllRooms),
+        SearchScopeKind::CurrentSpace => active_space_id
+            .map(|space_id| SearchScope::CurrentSpace { space_id })
+            .unwrap_or(SearchScope::AllRooms),
+        SearchScopeKind::Dms => SearchScope::Dms,
+        SearchScopeKind::AllRooms => SearchScope::AllRooms,
     }
 }
 
@@ -2474,7 +2478,11 @@ async fn resolve_search_scope(
     state: &CoreRuntimeState,
 ) -> koushi_core::SearchScope {
     let snapshot = state.connection.lock().await.snapshot();
-    resolve_search_scope_from_active_room(scope, snapshot.navigation.active_room_id)
+    resolve_search_scope_from_active_room(
+        scope,
+        snapshot.navigation.active_room_id,
+        snapshot.navigation.active_space_id,
+    )
 }
 
 // ---- QA login pipe (debug/test only) ----
@@ -2764,6 +2772,36 @@ mod tests {
                 .contains(".lock()\n        .await\n        .command(command)\n        .await")
                 && !helper_source.contains(".lock().await.command(command).await"),
             "submit_core_command must not hold the shared CoreConnection mutex across send().await"
+        );
+    }
+
+    #[test]
+    fn search_scope_resolution_preserves_non_all_scope_contract() {
+        let source = commands_source();
+        let production_source = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("command production source should precede tests");
+        let resolver = production_source
+            .split("fn resolve_search_scope_from_active_room")
+            .nth(1)
+            .expect("search scope resolver should exist")
+            .split("async fn resolve_search_scope")
+            .next()
+            .expect("async search scope resolver should follow pure resolver");
+
+        assert!(
+            resolver.contains("SearchScope::CurrentSpace"),
+            "current-space searches must preserve the selected scope kind instead of collapsing to global"
+        );
+        assert!(
+            resolver.contains("SearchScope::Dms"),
+            "DM searches must preserve the selected scope kind instead of collapsing to global"
+        );
+        assert!(
+            !resolver.contains("CurrentSpace | SearchScopeKind::AllRooms => SearchScope::Global")
+                && !resolver.contains("SearchScopeKind::Dms => SearchScope::Global"),
+            "non-all search scopes must not silently round-trip as allRooms"
         );
     }
 
@@ -4355,6 +4393,7 @@ mod tests {
             resolve_search_scope_from_active_room(
                 SearchScopeKind::CurrentRoom,
                 Some(room_id.clone()),
+                Some("!space:example.org".to_owned()),
             ),
         ) {
             CoreCommand::Search(SearchCommand::Query {
@@ -4366,7 +4405,7 @@ mod tests {
                 assert_eq!(route_query, query);
                 assert_eq!(
                     scope,
-                    SearchScope::Room {
+                    SearchScope::CurrentRoom {
                         room_id: room_id.clone()
                     }
                 );
@@ -4375,8 +4414,26 @@ mod tests {
         }
 
         assert_eq!(
-            resolve_search_scope_from_active_room(SearchScopeKind::CurrentRoom, None,),
-            SearchScope::Global
+            resolve_search_scope_from_active_room(SearchScopeKind::CurrentRoom, None, None),
+            SearchScope::AllRooms
+        );
+        assert_eq!(
+            resolve_search_scope_from_active_room(
+                SearchScopeKind::CurrentSpace,
+                Some(room_id.clone()),
+                Some("!space:example.org".to_owned()),
+            ),
+            SearchScope::CurrentSpace {
+                space_id: "!space:example.org".to_owned()
+            }
+        );
+        assert_eq!(
+            resolve_search_scope_from_active_room(
+                SearchScopeKind::Dms,
+                Some(room_id.clone()),
+                None
+            ),
+            SearchScope::Dms
         );
 
         match build_close_search_command(fake_request_id(16)) {
@@ -6345,6 +6402,7 @@ mod tests {
             resolve_search_scope_from_active_room(
                 SearchScopeKind::CurrentRoom,
                 Some("!room:example.org".to_owned()),
+                None,
             ),
         );
         let room_key_export = build_export_room_keys_command(

@@ -64,6 +64,7 @@ export function ContextualRightPanel({
   recoverySecretInputRef,
   snapshot,
   timelineTransport = null,
+  searchIndexingPending = false,
   searchQuery,
   searchResults,
   savedSessions,
@@ -150,6 +151,7 @@ export function ContextualRightPanel({
   recoverySecretInputRef: RefObject<HTMLInputElement | null>;
   snapshot: DesktopSnapshot;
   timelineTransport?: TimelineTransport | null;
+  searchIndexingPending?: boolean;
   searchQuery: string;
   searchResults: SearchResult[];
   savedSessions: SavedSessionInfo[];
@@ -556,6 +558,7 @@ export function ContextualRightPanel({
         ) : null}
         {mode === "search" ? (
           <SearchResults
+            indexingPending={searchIndexingPending}
             query={searchQuery}
             results={searchResults}
             rooms={snapshot.state.domain.rooms}

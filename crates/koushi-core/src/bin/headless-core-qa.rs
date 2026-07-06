@@ -12447,7 +12447,7 @@ async fn poll_search_until_found(
         conn.command(CoreCommand::Search(SearchCommand::Query {
             request_id: rid,
             query: query.to_owned(),
-            scope: SearchScope::Room {
+            scope: SearchScope::CurrentRoom {
                 room_id: room_id.to_owned(),
             },
         }))
@@ -12487,7 +12487,7 @@ async fn poll_search_until_absent(
         conn.command(CoreCommand::Search(SearchCommand::Query {
             request_id: rid,
             query: query.to_owned(),
-            scope: SearchScope::Room {
+            scope: SearchScope::CurrentRoom {
                 room_id: room_id.to_owned(),
             },
         }))

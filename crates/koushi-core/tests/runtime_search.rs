@@ -30,7 +30,7 @@ async fn search_query_projects_search_state_before_routing() {
         .command(CoreCommand::Search(SearchCommand::Query {
             request_id,
             query: "Alpha".to_owned(),
-            scope: SearchScope::Global,
+            scope: SearchScope::AllRooms,
         }))
         .await
         .expect("submit");

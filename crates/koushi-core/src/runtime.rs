@@ -3002,8 +3002,10 @@ fn effects_open_focused_timeline(effects: &[AppEffect]) -> bool {
 
 fn map_core_search_scope_to_state(scope: SearchScope) -> AppSearchScope {
     match scope {
-        SearchScope::Global => AppSearchScope::AllRooms,
-        SearchScope::Room { room_id } => AppSearchScope::CurrentRoom { room_id },
+        SearchScope::AllRooms => AppSearchScope::AllRooms,
+        SearchScope::CurrentRoom { room_id } => AppSearchScope::CurrentRoom { room_id },
+        SearchScope::CurrentSpace { space_id } => AppSearchScope::CurrentSpace { space_id },
+        SearchScope::Dms => AppSearchScope::Dms,
     }
 }
 
@@ -3207,10 +3209,10 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
 
 fn map_state_search_scope_to_core(scope: AppSearchScope) -> SearchScope {
     match scope {
-        AppSearchScope::AllRooms | AppSearchScope::CurrentSpace { .. } | AppSearchScope::Dms => {
-            SearchScope::Global
-        }
-        AppSearchScope::CurrentRoom { room_id } => SearchScope::Room { room_id },
+        AppSearchScope::AllRooms => SearchScope::AllRooms,
+        AppSearchScope::CurrentSpace { space_id } => SearchScope::CurrentSpace { space_id },
+        AppSearchScope::Dms => SearchScope::Dms,
+        AppSearchScope::CurrentRoom { room_id } => SearchScope::CurrentRoom { room_id },
     }
 }
 
@@ -3257,6 +3259,38 @@ mod tests {
     fn default_data_dir_uses_xdg_like_user_data_path() {
         let dir = default_data_dir_from_home(Some("/tmp/synthetic-home".into())).unwrap();
         assert!(dir.ends_with(".local/share/koushi-desktop"));
+    }
+
+    #[test]
+    fn search_scope_round_trips_non_all_scope_kinds() {
+        let source = include_str!("runtime.rs");
+        let to_state = source
+            .split("fn map_core_search_scope_to_state")
+            .nth(1)
+            .expect("core-to-state search scope mapper should exist")
+            .split("fn account_command_projected_action")
+            .next()
+            .expect("account command projector should follow search scope mapper");
+        let to_core = source
+            .split("fn map_state_search_scope_to_core")
+            .nth(1)
+            .expect("state-to-core search scope mapper should exist")
+            .split("fn default_data_dir_from_home")
+            .next()
+            .expect("data-dir helper should follow search scope mapper");
+
+        assert!(
+            to_state.contains("SearchScope::CurrentSpace")
+                && to_state.contains("SearchScope::Dms")
+                && to_state.contains("SearchScope::AllRooms"),
+            "core search scopes must preserve current-space, DM, and all-rooms kinds in AppState"
+        );
+        assert!(
+            to_core.contains("AppSearchScope::CurrentSpace")
+                && to_core.contains("AppSearchScope::Dms")
+                && to_core.contains("AppSearchScope::AllRooms"),
+            "submitted AppState search scopes must round-trip through core without collapsing to global"
+        );
     }
 
     #[test]

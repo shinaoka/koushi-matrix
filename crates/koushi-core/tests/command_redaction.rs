@@ -91,7 +91,7 @@ fn secret_bearing_commands_redact_debug() {
     let search = CoreCommand::Search(SearchCommand::Query {
         request_id: fake_request_id(),
         query: QUERY.to_owned(),
-        scope: SearchScope::Global,
+        scope: SearchScope::AllRooms,
     });
     let thread_draft = CoreCommand::App(AppCommand::SetThreadComposerDraft {
         request_id: fake_request_id(),

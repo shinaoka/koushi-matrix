@@ -775,6 +775,48 @@ describe("ContextualRightPanel", () => {
     expect(markup).toContain("search-results");
   });
 
+  test("renders indexing-pending copy for empty search results while crawler is active", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { ContextualRightPanel } = await import("./App");
+    const api = createBrowserFakeApi();
+    const snapshot = await api.submitSearch("NoMatch", "allRooms");
+
+    const markup = renderToStaticMarkup(
+      <ContextualRightPanel
+        activeRoom={snapshot.state.domain.rooms[0] ?? null}
+        activeSpace={snapshot.state.domain.spaces[0] ?? null}
+        activeSpaceName="Home"
+        isRecoveryBusy={false}
+        mode="search"
+        recoverySecretFilled={false}
+        recoverySecretInputRef={{ current: null }}
+        savedSessions={[]}
+        searchIndexingPending={true}
+        searchQuery="NoMatch"
+        searchResults={[]}
+        snapshot={snapshot}
+        onClosePanel={() => undefined}
+        onCloseThread={() => undefined}
+        onOpenThread={() => undefined}
+        onOpenFiles={() => undefined}
+        onRefreshFilesView={() => undefined}
+        onPaginateThreadsList={() => undefined}
+        onOpenKeyboardSettings={() => undefined}
+        onRecoverySecretPresenceChange={() => undefined}
+        onReply={() => undefined}
+        onResultSelect={() => undefined}
+        onSubmitRecovery={(event) => event.preventDefault()}
+        onSwitchAccount={() => undefined}
+        {...trustPanelHandlers}
+        onThreadComposerDraftChange={() => undefined}
+        onThreadReplySend={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("Indexing message history");
+    expect(markup).not.toContain("No exact matches");
+  });
+
   test("renders focused search context from Rust-owned snapshot state", async () => {
     vi.stubGlobal("window", { location: { search: "" } });
     const { ContextualRightPanel } = await import("./App");

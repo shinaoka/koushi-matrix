@@ -891,6 +891,14 @@ function correlatedSearchState(
   return search.query === query.trim() && search.scope === scope ? search : null;
 }
 
+function searchCrawlerHasPendingIndexing(
+  crawler: DesktopSnapshot["state"]["domain"]["search_crawler"]
+): boolean {
+  return Object.values(crawler.rooms).some(
+    (room) => room.kind === "queued" || room.kind === "running"
+  );
+}
+
 function isTauriRuntime(): boolean {
   return "__TAURI_INTERNALS__" in window;
 }
@@ -3406,6 +3414,10 @@ export function App() {
   const searchResults = activeSearchState?.kind === "results" ? activeSearchState.results : [];
   const searchResultsQuery = activeSearchState?.kind === "results" ? activeSearchState.query : "";
   const searchHighlightQuery = searchResultsQuery;
+  const searchIndexingPending =
+    activeSearchState?.kind === "results" &&
+    searchResults.length === 0 &&
+    searchCrawlerHasPendingIndexing(snapshot.state.domain.search_crawler);
   const effectiveRightPanelMode = effectiveRightPanelModeForSnapshot(rightPanelMode, snapshot);
   const rightPanelOpen = effectiveRightPanelMode !== "closed";
   const appGridStyle = {
@@ -3701,6 +3713,7 @@ export function App() {
           recoverySecretInputRef={recoverySecretRef}
           snapshot={snapshot}
           timelineTransport={appTimelineTransport}
+          searchIndexingPending={searchIndexingPending}
           searchQuery={searchResultsQuery}
           searchResults={searchResults}
           savedSessions={savedSessions}

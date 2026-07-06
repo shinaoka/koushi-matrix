@@ -366,6 +366,7 @@ export type MessageId =
   | "roomList.sortName"
   | "room.markAsRead"
   | "room.markAsUnread"
+  | "search.indexingPending"
   | "search.noExactMatches"
   | "search.matchAttachmentFileName"
   | "search.matchMessage"
@@ -1322,6 +1323,7 @@ const en: Catalog = {
   "roomList.sortName": "Name",
   "room.markAsRead": "Mark as read",
   "room.markAsUnread": "Mark as unread",
+  "search.indexingPending": "Indexing message history. More matches may appear shortly.",
   "search.noExactMatches": "No exact matches",
   "search.matchAttachmentFileName": "attachment filename",
   "search.matchMessage": "message",
@@ -2176,6 +2178,7 @@ const ja: Catalog = {
   "roomList.sortName": "名前",
   "room.markAsRead": "既読にする",
   "room.markAsUnread": "未読にする",
+  "search.indexingPending": "メッセージ履歴をインデックス中です。まもなく追加の一致が表示される場合があります。",
   "search.noExactMatches": "完全一致はありません",
   "search.matchAttachmentFileName": "添付ファイル名",
   "search.matchMessage": "メッセージ",

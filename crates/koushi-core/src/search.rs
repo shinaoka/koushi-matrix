@@ -578,8 +578,8 @@ impl SearchActor {
             .collect::<Vec<_>>();
 
         let room_filter = match &scope {
-            SearchScope::Global => None,
-            SearchScope::Room { room_id } => Some(room_id.as_str()),
+            SearchScope::CurrentRoom { room_id } => Some(room_id.as_str()),
+            SearchScope::AllRooms | SearchScope::CurrentSpace { .. } | SearchScope::Dms => None,
         };
 
         // #162: the SDK ngram index is an accelerator, not the authority. Union
@@ -1364,7 +1364,7 @@ mod tests {
                 sequence: 1,
             },
             query: "super-secret-search-query".to_owned(),
-            scope: SearchScope::Global,
+            scope: SearchScope::AllRooms,
         };
         let debug = format!("{cmd:?}");
         assert!(
