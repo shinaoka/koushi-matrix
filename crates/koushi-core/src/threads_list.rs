@@ -10,7 +10,9 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use koushi_state::{AppAction, OperationFailureKind, ThreadsListItem};
 use matrix_sdk::ruma::RoomId;
-use matrix_sdk_ui::timeline::thread_list_service::ThreadListItem as SdkThreadListItem;
+use matrix_sdk_ui::timeline::thread_list_service::{
+    ThreadListItem as SdkThreadListItem, ThreadListServiceError,
+};
 use matrix_sdk_ui::timeline::{ThreadListPaginationState, ThreadListService, TimelineDetails};
 use tokio::sync::{broadcast, mpsc};
 
@@ -117,7 +119,7 @@ impl ThreadsListActor {
         let room_id = match RoomId::parse(self.room_id.as_str()) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_failed(request_id, OperationFailureKind::Sdk)
+                self.emit_failed(request_id, OperationFailureKind::Invalid)
                     .await;
                 return None;
             }
@@ -125,7 +127,7 @@ impl ThreadsListActor {
         let room = match self.session.client().get_room(&room_id) {
             Some(room) => room,
             None => {
-                self.emit_failed(request_id, OperationFailureKind::Sdk)
+                self.emit_failed(request_id, OperationFailureKind::NotFound)
                     .await;
                 return None;
             }
@@ -151,6 +153,7 @@ impl ThreadsListActor {
         let (items_tx, mut items_rx) = mpsc::channel(64);
         let (pagination_tx, mut pagination_rx) = mpsc::channel(16);
         let (pagination_request_tx, mut pagination_request_rx) = mpsc::channel(16);
+        let (pagination_failure_tx, mut pagination_failure_rx) = mpsc::channel(16);
 
         let items_relay_handle = {
             let service = Arc::clone(&service);
@@ -159,7 +162,9 @@ impl ThreadsListActor {
                 loop {
                     match subscriber.next().await {
                         Some(_) => {
-                            let _ = items_tx.try_send(service.items());
+                            if items_tx.send(service.items()).await.is_err() {
+                                break;
+                            }
                         }
                         None => break,
                     }
@@ -174,7 +179,9 @@ impl ThreadsListActor {
                 loop {
                     match subscriber.next().await {
                         Some(state) => {
-                            let _ = pagination_tx.try_send(state);
+                            if pagination_tx.send(state).await.is_err() {
+                                break;
+                            }
                         }
                         None => break,
                     }
@@ -188,11 +195,26 @@ impl ThreadsListActor {
         let update_service = Arc::clone(&service);
         let update_task = executor::spawn(async move {
             let mut current_request_id = request_id;
+            let mut failed_pagination_request_id: Option<u64> = None;
             loop {
                 tokio::select! {
                     biased;
                     Some(next_request_id) = pagination_request_rx.recv() => {
                         current_request_id = next_request_id;
+                    }
+                    Some((failed_request_id, failure_kind)) = pagination_failure_rx.recv() => {
+                        current_request_id = failed_request_id;
+                        failed_pagination_request_id = Some(failed_request_id.sequence);
+                        let _ = action_tx.send(vec![AppAction::ThreadsListFailed {
+                            request_id: failed_request_id.sequence,
+                            room_id: room_id.clone(),
+                            failure_kind,
+                        }]).await;
+                        let _ = event_tx.send(CoreEvent::ThreadsList(ThreadsListEvent::Failed {
+                            request_id: failed_request_id,
+                            room_id: room_id.clone(),
+                            failure_kind,
+                        }));
                     }
                     Some(items) = items_rx.recv() => {
                         let projected: Vec<ThreadsListItem> = items.iter().map(project_item).collect();
@@ -216,6 +238,13 @@ impl ThreadsListActor {
                         let projected: Vec<ThreadsListItem> = items.iter().map(project_item).collect();
                         let end_reached = matches!(state, ThreadListPaginationState::Idle { end_reached: true });
                         let is_paginating = matches!(state, ThreadListPaginationState::Loading);
+                        if !is_paginating && failed_pagination_request_id == Some(current_request_id.sequence) {
+                            failed_pagination_request_id = None;
+                            continue;
+                        }
+                        if is_paginating {
+                            failed_pagination_request_id = None;
+                        }
                         let action = if is_paginating {
                             AppAction::ThreadsListUpdated {
                                 request_id: current_request_id.sequence,
@@ -259,6 +288,7 @@ impl ThreadsListActor {
         Some(ActiveSubscription {
             service,
             pagination_request_tx,
+            pagination_failure_tx,
             _items_relay: items_relay_handle,
             _pagination_relay: pagination_relay_handle,
             _update_task: update_task,
@@ -314,6 +344,7 @@ impl ThreadsListActor {
 struct ActiveSubscription {
     service: Arc<ThreadListService>,
     pagination_request_tx: mpsc::Sender<RequestId>,
+    pagination_failure_tx: mpsc::Sender<(RequestId, OperationFailureKind)>,
     _items_relay: executor::JoinHandle<()>,
     _pagination_relay: executor::JoinHandle<()>,
     _update_task: executor::JoinHandle<()>,
@@ -324,10 +355,20 @@ impl ActiveSubscription {
         if self.pagination_request_tx.send(request_id).await.is_err() {
             return;
         }
-        if let Err(_) = self.service.paginate().await {
-            // Failure is surfaced through the pagination-state subscriber, which
-            // transitions back to Idle and emits a Failed action.
+        if let Err(error) = self.service.paginate().await {
+            let failure_kind = classify_thread_list_error(&error);
+            let _ = self
+                .pagination_failure_tx
+                .send((request_id, failure_kind))
+                .await;
         }
+    }
+}
+
+fn classify_thread_list_error(error: &ThreadListServiceError) -> OperationFailureKind {
+    match error {
+        ThreadListServiceError::Sdk(matrix_sdk::Error::Http(_)) => OperationFailureKind::Network,
+        ThreadListServiceError::Sdk(_) => OperationFailureKind::Sdk,
     }
 }
 
@@ -431,6 +472,68 @@ mod tests {
         assert!(
             !pagination_updates.contains("request_id: request_id.sequence"),
             "pagination state actions must not keep using the open request id"
+        );
+    }
+
+    #[test]
+    fn thread_list_relays_are_reliable_and_paginate_errors_fail() {
+        let source = include_str!("threads_list.rs");
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source should precede tests");
+        let open_subscription = production_source
+            .split("async fn open_subscription")
+            .nth(1)
+            .expect("open_subscription body")
+            .split("async fn emit_opened")
+            .next()
+            .expect("open_subscription section");
+        let active_paginate = production_source
+            .split("impl ActiveSubscription")
+            .nth(1)
+            .expect("ActiveSubscription impl")
+            .split("async fn paginate(&self, request_id: RequestId)")
+            .nth(1)
+            .expect("ActiveSubscription::paginate body")
+            .split("fn project_item")
+            .next()
+            .expect("ActiveSubscription section");
+
+        assert!(
+            !open_subscription.contains("try_send"),
+            "thread-list item/pagination relays must not drop terminal updates"
+        );
+        assert!(
+            open_subscription.contains("items_tx.send(service.items()).await"),
+            "item relay should await reliable delivery to the update task"
+        );
+        assert!(
+            open_subscription.contains("pagination_tx.send(state).await"),
+            "pagination relay should await terminal state delivery to the update task"
+        );
+        assert!(
+            active_paginate.contains("classify_thread_list_error(&error)"),
+            "paginate errors must be classified instead of reported as success through Idle"
+        );
+        assert!(
+            active_paginate.contains("pagination_failure_tx"),
+            "paginate errors must reach the update task through a reliable failure relay"
+        );
+        assert!(
+            open_subscription.contains("AppAction::ThreadsListFailed"),
+            "paginate errors must project an explicit failed settle"
+        );
+        assert!(
+            open_subscription.contains("failed_pagination_request_id"),
+            "the Idle state emitted after an SDK pagination error must not overwrite Failed"
+        );
+        assert!(
+            open_subscription
+                .contains("self.emit_failed(request_id, OperationFailureKind::Invalid)")
+                && open_subscription
+                    .contains("self.emit_failed(request_id, OperationFailureKind::NotFound)"),
+            "open failures should preserve parse/not-found failure kinds"
         );
     }
 }
