@@ -169,6 +169,8 @@ stateDiagram-v2
     Authenticating --> Ready: LoginSucceeded
     Authenticating --> SignedOut: LoginFailed
     Ready --> Locked: SessionInvalidated { soft_logout } / SessionLocked (user)
+    NeedsRecovery --> Locked: SessionInvalidated { soft_logout }
+    Recovering --> Locked: SessionInvalidated { soft_logout }
     Locked --> Reauthenticating: ReauthSubmitted (password | oidc)
     Reauthenticating --> Ready: ReauthSucceeded (+ StartSync)
     Reauthenticating --> Locked: ReauthFailed (+ error)
@@ -193,6 +195,12 @@ stateDiagram-v2
 - `SoftLogoutReauthState` (separate half-connected machine, unreachable from
   `Locked` due to its `is_session_ready` guard, no UI consumer) is **deleted**:
   state field, actions, DTO field, TS types, fake snapshots.
+- `SessionInvalidated` is accepted from every sync-capable state (`Ready`,
+  `NeedsRecovery`, `Recovering`), not just `Ready` — sync runs during recovery,
+  so auth invalidation can arrive there; a `Ready`-only guard would silently
+  drop it (the current `handle_session_locked` has exactly this defect). When
+  locking from a recovery state, preserve the recovery-needed information so
+  a successful reauth returns to `NeedsRecovery`, not `Ready`.
 - Idempotency: AccountActor keeps a `session_epoch` counter incremented on
   every successful login/restore/reauth. `UnknownToken` signals stamped with
   an older epoch, or arriving while already `Locked`/`Reauthenticating`, are
