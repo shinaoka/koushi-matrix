@@ -1487,6 +1487,19 @@ describe("Tauri state refresh wiring", () => {
     expect(submitRecoverySource).toContain("api.submitRecovery(secret)");
   });
 
+  test("login submit reauthenticates the locked session instead of starting a fresh login", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const submitLoginStart = source.indexOf("async function submitLogin");
+    const submitLoginEnd = source.indexOf("async function discoverLoginMethods", submitLoginStart);
+    const submitLoginSource = source.slice(submitLoginStart, submitLoginEnd);
+
+    expect(submitLoginStart).toBeGreaterThanOrEqual(0);
+    expect(submitLoginSource).toContain("snapshot?.state.domain.session.kind");
+    expect(submitLoginSource).toContain('sessionKind === "locked"');
+    expect(submitLoginSource).toContain("api.submitSoftLogoutReauth(password)");
+    expect(submitLoginSource).toContain("api.submitLogin(");
+  });
+
   test("timeline header omits date jump while keeping anchored return-to-live", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const panesSource = readFileSync(
@@ -1770,6 +1783,19 @@ describe("TopBar sync state rendering", () => {
     expect(failedMarkup).toContain("Failed");
     expect(failedMarkup).toContain("transport error");
     expect(failedMarkup).toContain('aria-label="Restart sync"');
+
+    const authRequiredMarkup = renderToStaticMarkup(
+      <TopBar
+        {...baseProps}
+        sync={
+          {
+            failed: "sync_failed_auth"
+          } as DesktopSnapshot["state"]["domain"]["sync"]
+        }
+      />
+    );
+    expect(authRequiredMarkup).toContain("Sign-in required");
+    expect(authRequiredMarkup).not.toContain('aria-label="Restart sync"');
   });
 });
 

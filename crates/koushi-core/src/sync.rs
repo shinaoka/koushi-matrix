@@ -39,11 +39,14 @@
 //! already guarantees. The SyncActor must not create its own client.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
 
 use koushi_sdk::MatrixClientSession;
-use koushi_state::{AppAction, SyncMode};
+use koushi_state::{AppAction, SyncLifecycleStatus, SyncMode};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::command::SyncCommand;
@@ -68,6 +71,15 @@ const SYNC_ACTOR_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_secs(1);
 const SYNC_ACTOR_SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(10);
 const SYNC_SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const LEGACY_SYNC_ROOM_TIMELINE_LIMIT: u32 = 128;
+const ENV_SYNC_TRACE: &str = "KOUSHI_SYNC_TRACE";
+
+macro_rules! trace_sync {
+    ($stage:expr, $($arg:tt)*) => {{
+        if sync_trace_enabled() {
+            eprintln!("koushi.sync stage={} {}", $stage, format_args!($($arg)*));
+        }
+    }};
+}
 
 /// Messages sent to the SyncActor from AccountActor.
 pub enum SyncMessage {
@@ -142,6 +154,224 @@ enum ActiveBackend {
     LegacySync,
 }
 
+fn sync_trace_enabled() -> bool {
+    std::env::var_os(ENV_SYNC_TRACE).is_some()
+}
+
+fn request_id_trace_label(request_id: Option<RequestId>) -> String {
+    match request_id {
+        Some(request_id) => format!("{}/{}", request_id.connection_id.0, request_id.sequence),
+        None => "none".to_owned(),
+    }
+}
+
+fn bool_trace_label(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn sync_lifecycle_label(lifecycle: SyncLifecycle) -> &'static str {
+    match lifecycle {
+        SyncLifecycle::Stopped => "stopped",
+        SyncLifecycle::Running => "running",
+        SyncLifecycle::Failed => "failed",
+    }
+}
+
+fn active_backend_label(backend: ActiveBackend) -> &'static str {
+    match backend {
+        ActiveBackend::None => "none",
+        ActiveBackend::SyncService => "sync_service",
+        ActiveBackend::LegacySync => "legacy",
+    }
+}
+
+fn sync_backend_label(backend: SyncBackendKind) -> &'static str {
+    match backend {
+        SyncBackendKind::SyncService => "sync_service",
+        SyncBackendKind::LegacySync => "legacy",
+    }
+}
+
+fn sync_status_trace_label(status: &SyncLifecycleStatus) -> &'static str {
+    match status {
+        SyncLifecycleStatus::Stopped => "stopped",
+        SyncLifecycleStatus::Starting => "starting",
+        SyncLifecycleStatus::Running => "running",
+        SyncLifecycleStatus::Failed { .. } => "failed",
+        SyncLifecycleStatus::Reconnecting { .. } => "reconnecting",
+    }
+}
+
+async fn send_sync_status(
+    action_tx: &mpsc::Sender<Vec<AppAction>>,
+    generation: &AtomicU64,
+    status: SyncLifecycleStatus,
+) {
+    let label = sync_status_trace_label(&status);
+    let generation = generation.fetch_add(1, Ordering::Relaxed) + 1;
+    trace_sync!(
+        "status_projected",
+        "generation={} lifecycle={}",
+        generation,
+        label
+    );
+    let _ = action_tx
+        .send(vec![AppAction::SyncStatusChanged { generation, status }])
+        .await;
+}
+
+fn sync_command_trace_parts(command: &SyncCommand) -> (&'static str, RequestId) {
+    match command {
+        SyncCommand::Start { request_id } => ("start", *request_id),
+        SyncCommand::Stop { request_id } => ("stop", *request_id),
+        SyncCommand::Restart { request_id } => ("restart", *request_id),
+        SyncCommand::SyncOnce { request_id } => ("sync_once", *request_id),
+    }
+}
+
+fn sync_task_outcome_trace_label(outcome: &SyncTaskOutcome) -> &'static str {
+    match outcome {
+        SyncTaskOutcome::Stopped => "stopped",
+        SyncTaskOutcome::Failed { .. } => "failed",
+        SyncTaskOutcome::Panicked => "panicked",
+    }
+}
+
+fn sync_service_state_trace_label(state: &matrix_sdk_ui::sync_service::State) -> &'static str {
+    match state {
+        matrix_sdk_ui::sync_service::State::Idle => "idle",
+        matrix_sdk_ui::sync_service::State::Running => "running",
+        matrix_sdk_ui::sync_service::State::Terminated => "terminated",
+        matrix_sdk_ui::sync_service::State::Error(_) => "error",
+        matrix_sdk_ui::sync_service::State::Offline => "offline",
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SyncServiceObserverStatus {
+    sync_started_emitted: bool,
+    connectivity_proven: bool,
+    reconnecting: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SyncServiceStateKind {
+    Idle,
+    Running,
+    Offline,
+    Error,
+    Terminated,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RoomListServiceStateKind {
+    Init,
+    SettingUp,
+    Recovering,
+    Running,
+    Error,
+    Terminated,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SyncServiceObserverDecision {
+    InitialRunningHandoff,
+    RecoveryHandoff,
+    RunningNoop,
+    FallbackBeforeConnectivity,
+    WaitRecovery,
+    AlreadyReconnecting,
+    Fail,
+    Ignore,
+    ConnectivityProven,
+}
+
+fn sync_service_state_kind(state: &matrix_sdk_ui::sync_service::State) -> SyncServiceStateKind {
+    match state {
+        matrix_sdk_ui::sync_service::State::Idle => SyncServiceStateKind::Idle,
+        matrix_sdk_ui::sync_service::State::Running => SyncServiceStateKind::Running,
+        matrix_sdk_ui::sync_service::State::Offline => SyncServiceStateKind::Offline,
+        matrix_sdk_ui::sync_service::State::Error(_) => SyncServiceStateKind::Error,
+        matrix_sdk_ui::sync_service::State::Terminated => SyncServiceStateKind::Terminated,
+    }
+}
+
+fn room_list_service_state_kind(
+    state: &matrix_sdk_ui::room_list_service::State,
+) -> RoomListServiceStateKind {
+    match state {
+        matrix_sdk_ui::room_list_service::State::Init => RoomListServiceStateKind::Init,
+        matrix_sdk_ui::room_list_service::State::SettingUp => RoomListServiceStateKind::SettingUp,
+        matrix_sdk_ui::room_list_service::State::Recovering => RoomListServiceStateKind::Recovering,
+        matrix_sdk_ui::room_list_service::State::Running => RoomListServiceStateKind::Running,
+        matrix_sdk_ui::room_list_service::State::Error { .. } => RoomListServiceStateKind::Error,
+        matrix_sdk_ui::room_list_service::State::Terminated { .. } => {
+            RoomListServiceStateKind::Terminated
+        }
+    }
+}
+
+fn room_list_service_state_trace_label(
+    state: &matrix_sdk_ui::room_list_service::State,
+) -> &'static str {
+    match room_list_service_state_kind(state) {
+        RoomListServiceStateKind::Init => "init",
+        RoomListServiceStateKind::SettingUp => "setting_up",
+        RoomListServiceStateKind::Recovering => "recovering",
+        RoomListServiceStateKind::Running => "running",
+        RoomListServiceStateKind::Error => "error",
+        RoomListServiceStateKind::Terminated => "terminated",
+    }
+}
+
+fn classify_sync_service_state(
+    status: &mut SyncServiceObserverStatus,
+    state: SyncServiceStateKind,
+) -> SyncServiceObserverDecision {
+    match state {
+        SyncServiceStateKind::Running => {
+            if !status.sync_started_emitted {
+                status.sync_started_emitted = true;
+                status.reconnecting = false;
+                SyncServiceObserverDecision::InitialRunningHandoff
+            } else if status.reconnecting {
+                status.reconnecting = false;
+                SyncServiceObserverDecision::RecoveryHandoff
+            } else {
+                SyncServiceObserverDecision::RunningNoop
+            }
+        }
+        SyncServiceStateKind::Offline | SyncServiceStateKind::Error => {
+            if !status.connectivity_proven {
+                SyncServiceObserverDecision::FallbackBeforeConnectivity
+            } else if !status.reconnecting {
+                status.reconnecting = true;
+                SyncServiceObserverDecision::WaitRecovery
+            } else {
+                SyncServiceObserverDecision::AlreadyReconnecting
+            }
+        }
+        SyncServiceStateKind::Terminated => SyncServiceObserverDecision::Fail,
+        SyncServiceStateKind::Idle => SyncServiceObserverDecision::Ignore,
+    }
+}
+
+fn note_room_list_service_state(
+    status: &mut SyncServiceObserverStatus,
+    state: RoomListServiceStateKind,
+) -> Option<SyncServiceObserverDecision> {
+    if matches!(
+        state,
+        RoomListServiceStateKind::SettingUp | RoomListServiceStateKind::Running
+    ) && !status.connectivity_proven
+    {
+        status.connectivity_proven = true;
+        return Some(SyncServiceObserverDecision::ConnectivityProven);
+    }
+
+    None
+}
+
 pub struct SyncActor {
     session: Arc<MatrixClientSession>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
@@ -155,6 +385,7 @@ pub struct SyncActor {
     /// start so timeline subscriptions can subscribe rooms with it (canon).
     timeline_tx: mpsc::Sender<crate::timeline::TimelineMessage>,
     lifecycle: SyncLifecycle,
+    sync_generation: Arc<AtomicU64>,
     active_backend: ActiveBackend,
     /// Task handle for the currently running sync loop.
     sync_task: Option<executor::JoinHandle<SyncTaskOutcome>>,
@@ -186,6 +417,7 @@ impl SyncActor {
             room_tx,
             timeline_tx,
             lifecycle: SyncLifecycle::Stopped,
+            sync_generation: Arc::new(AtomicU64::new(0)),
             active_backend: ActiveBackend::None,
             sync_task: None,
             legacy_stop_tx: None,
@@ -249,14 +481,22 @@ impl SyncActor {
         let _ = self.room_tx.try_send(RoomMessage::SyncStopped);
         let ended_backend = self.active_backend;
         let request_id = self.active_start_request_id;
+        let outcome_label = sync_task_outcome_trace_label(&outcome);
         self.cleanup_ended_backend().await;
         match outcome {
             SyncTaskOutcome::Stopped => {
+                trace_sync!(
+                    "task_ended",
+                    "outcome={} backend={} request_id={} fallback=no",
+                    outcome_label,
+                    active_backend_label(ended_backend),
+                    request_id_trace_label(request_id)
+                );
                 self.lifecycle = SyncLifecycle::Stopped;
                 // Task ended via stop signal — emit Stopped (no request_id because
                 // it was not from an explicit SyncCommand::Stop at this level).
                 self.emit(CoreEvent::Sync(SyncEvent::Stopped { request_id: None }));
-                self.reduce(vec![AppAction::SyncStopped]);
+                self.project_sync_status(SyncLifecycleStatus::Stopped).await;
             }
             SyncTaskOutcome::Failed { .. } | SyncTaskOutcome::Panicked => {
                 let kind = match outcome {
@@ -269,12 +509,23 @@ impl SyncActor {
                     SyncTaskOutcome::Panicked => false,
                     SyncTaskOutcome::Stopped => unreachable!(),
                 };
-                if should_fallback_to_legacy_after_sync_service_failure(
+                let fallback = should_fallback_to_legacy_after_sync_service_failure(
                     ended_backend,
                     kind,
                     ever_ran,
                     self.sync_service_runtime_fallback_attempted,
-                ) {
+                );
+                trace_sync!(
+                    "task_ended",
+                    "outcome={} backend={} request_id={} kind={} ever_ran={} fallback={}",
+                    outcome_label,
+                    active_backend_label(ended_backend),
+                    request_id_trace_label(request_id),
+                    sync_failure_kind_label(kind),
+                    ever_ran,
+                    bool_trace_label(fallback)
+                );
+                if fallback {
                     self.start_legacy_runtime_fallback(request_id).await;
                     return;
                 }
@@ -283,14 +534,24 @@ impl SyncActor {
                 self.reduce(vec![AppAction::SyncModeChanged { mode }]);
                 self.emit(CoreEvent::Sync(SyncEvent::ModeChanged { mode }));
                 self.emit(CoreEvent::Sync(SyncEvent::Failed));
-                self.reduce(vec![AppAction::SyncFailed {
+                self.project_sync_status(SyncLifecycleStatus::Failed {
                     reason: sync_failure_kind_label(kind).to_owned(),
-                }]);
+                })
+                .await;
             }
         }
     }
 
     async fn handle_command(&mut self, command: SyncCommand) {
+        let (command_kind, request_id) = sync_command_trace_parts(&command);
+        trace_sync!(
+            "command",
+            "kind={} request_id={} lifecycle={} active_backend={}",
+            command_kind,
+            request_id_trace_label(Some(request_id)),
+            sync_lifecycle_label(self.lifecycle),
+            active_backend_label(self.active_backend)
+        );
         match command {
             SyncCommand::Start { request_id } => {
                 self.handle_start(request_id).await;
@@ -311,14 +572,25 @@ impl SyncActor {
     }
 
     async fn handle_start(&mut self, request_id: RequestId) {
+        trace_sync!(
+            "start_begin",
+            "request_id={} lifecycle={} active_backend={}",
+            request_id_trace_label(Some(request_id)),
+            sync_lifecycle_label(self.lifecycle),
+            active_backend_label(self.active_backend)
+        );
         // Idempotent: if already running, re-emit Started so QA can assert backend.
         if self.lifecycle == SyncLifecycle::Running {
             let backend = self.current_backend_kind();
             let mode = sync_mode_from_backend(backend, false);
-            self.reduce(vec![
-                AppAction::SyncModeChanged { mode },
-                AppAction::SyncStarted,
-            ]);
+            trace_sync!(
+                "start_idempotent",
+                "request_id={} backend={} action=reemit_running",
+                request_id_trace_label(Some(request_id)),
+                sync_backend_label(backend)
+            );
+            self.reduce(vec![AppAction::SyncModeChanged { mode }]);
+            self.project_sync_status(SyncLifecycleStatus::Running).await;
             self.emit(CoreEvent::Sync(SyncEvent::Started {
                 request_id: Some(request_id),
                 backend,
@@ -328,10 +600,19 @@ impl SyncActor {
             return;
         }
 
+        self.project_sync_status(SyncLifecycleStatus::Starting)
+            .await;
+
         // Probe MSC4186 capability (Async rule 9).
         let client = self.session.client();
         let backend_kind = probe_backend(&client).await;
         let mode = sync_mode_from_backend(backend_kind, false);
+        trace_sync!(
+            "probe_done",
+            "request_id={} backend={}",
+            request_id_trace_label(Some(request_id)),
+            sync_backend_label(backend_kind)
+        );
         self.reduce(vec![AppAction::SyncModeChanged { mode }]);
         self.active_start_request_id = Some(request_id);
 
@@ -361,32 +642,41 @@ impl SyncActor {
             }
         }
         self.lifecycle = SyncLifecycle::Running;
+        trace_sync!(
+            "backend_running",
+            "request_id={} backend={} lifecycle={} action={}",
+            request_id_trace_label(Some(request_id)),
+            sync_backend_label(backend_kind),
+            sync_lifecycle_label(self.lifecycle),
+            if backend_kind == SyncBackendKind::LegacySync {
+                "legacy_started"
+            } else {
+                "await_sync_service_running"
+            }
+        );
 
-        // Notify the RoomActor that sync is running, handing over the ONE
-        // live RoomListService on the SyncService backend (None on legacy).
-        // Only the SyncActor can do this: it knows the selected backend and
-        // owns the SyncService (canon, overview.md RoomActor bullet — ad-hoc
-        // RoomListService instances are prohibited).
-        let room_list_service = self
-            .sync_service
-            .as_ref()
-            .map(|service| service.room_list_service());
-        let _ = self
-            .room_tx
-            .send(RoomMessage::SyncStarted {
-                session: self.session.clone(),
-                room_list_service: room_list_service.clone(),
-            })
+        // LegacySync has no SDK-level Running state observer, so hand off as
+        // soon as the stream task is launched. SyncService handoff happens from
+        // observe_sync_service_states after the SDK reports the first Running
+        // state; otherwise an initial Offline state can look subscribed while
+        // no live sync is actually connected.
+        if backend_kind == SyncBackendKind::LegacySync {
+            notify_dependents_sync_started(
+                self.session.clone(),
+                self.room_tx.clone(),
+                self.timeline_tx.clone(),
+                None,
+            )
             .await;
-        // Same handoff to the timeline manager: timeline subscriptions must
-        // be able to subscribe rooms with the live service (canon).
-        let _ = self
-            .timeline_tx
-            .send(crate::timeline::TimelineMessage::SyncStarted { room_list_service })
-            .await;
+        }
     }
 
     async fn start_legacy_runtime_fallback(&mut self, request_id: Option<RequestId>) {
+        trace_sync!(
+            "fallback_start",
+            "request_id={} from=sync_service to=legacy reason=sync_failed_http",
+            request_id_trace_label(request_id)
+        );
         self.sync_service_runtime_fallback_attempted = true;
         let transition_mode = SyncMode::Transitioning;
         self.reduce(vec![AppAction::SyncModeChanged {
@@ -395,6 +685,8 @@ impl SyncActor {
         self.emit(CoreEvent::Sync(SyncEvent::ModeChanged {
             mode: transition_mode,
         }));
+        self.project_sync_status(SyncLifecycleStatus::Starting)
+            .await;
 
         let client = self.session.client();
         self.active_backend = ActiveBackend::LegacySync;
@@ -414,36 +706,39 @@ impl SyncActor {
 
         self.start_legacy_sync(client).await;
         self.lifecycle = SyncLifecycle::Running;
+        trace_sync!(
+            "fallback_done",
+            "request_id={} backend=legacy lifecycle={} action=legacy_started",
+            request_id_trace_label(request_id),
+            sync_lifecycle_label(self.lifecycle)
+        );
 
-        let _ = self
-            .room_tx
-            .send(RoomMessage::SyncStarted {
-                session: self.session.clone(),
-                room_list_service: None,
-            })
-            .await;
-        let _ = self
-            .timeline_tx
-            .send(crate::timeline::TimelineMessage::SyncStarted {
-                room_list_service: None,
-            })
-            .await;
+        notify_dependents_sync_started(
+            self.session.clone(),
+            self.room_tx.clone(),
+            self.timeline_tx.clone(),
+            None,
+        )
+        .await;
     }
 
     /// Returns Ok(()) on success, Err(()) when SyncService build fails (caller falls back).
     async fn start_sync_service(&mut self, client: matrix_sdk::Client) -> Result<(), ()> {
         self.register_ignored_user_list_handler(&client);
+        trace_sync!("sync_service_build", "action=begin");
 
         let service = matrix_sdk_ui::sync_service::SyncService::builder(client.clone())
             .with_offline_mode()
             .build()
             .await
             .map_err(|_| {
+                trace_sync!("sync_service_build", "action=failed");
                 if let Some(handle) = self.ignored_user_list_handler.take() {
                     client.remove_event_handler(handle);
                 }
                 ()
             })?;
+        trace_sync!("sync_service_build", "action=done");
         let service = Arc::new(service);
 
         // Start observing before the SDK service starts so short-lived
@@ -451,11 +746,29 @@ impl SyncActor {
         let state_sub = service.state();
         let event_tx = self.event_tx.clone();
         let action_tx = self.action_tx.clone();
+        let sync_generation = self.sync_generation.clone();
+        let observer_session = self.session.clone();
+        let observer_room_tx = self.room_tx.clone();
+        let observer_timeline_tx = self.timeline_tx.clone();
+        let observer_room_list_service = service.room_list_service();
 
         let task: executor::JoinHandle<SyncTaskOutcome> = executor::spawn(async move {
-            observe_sync_service_states(state_sub, event_tx, action_tx).await
+            observe_sync_service_states(
+                state_sub,
+                event_tx,
+                action_tx,
+                sync_generation,
+                observer_session,
+                observer_room_tx,
+                observer_timeline_tx,
+                observer_room_list_service,
+            )
+            .await
         });
+        trace_sync!("sync_service_observer", "action=spawned");
+        trace_sync!("sync_service_start", "action=call");
         service.start().await;
+        trace_sync!("sync_service_start", "action=returned");
 
         self.sync_service = Some(service);
         self.sync_task = Some(task);
@@ -469,9 +782,10 @@ impl SyncActor {
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
         let event_tx = self.event_tx.clone();
         let action_tx = self.action_tx.clone();
+        let sync_generation = self.sync_generation.clone();
 
         let task: executor::JoinHandle<SyncTaskOutcome> = executor::spawn(async move {
-            run_legacy_sync_loop(client, stop_rx, event_tx, action_tx).await
+            run_legacy_sync_loop(client, stop_rx, event_tx, action_tx, sync_generation).await
         });
 
         self.legacy_stop_tx = Some(stop_tx);
@@ -514,7 +828,7 @@ impl SyncActor {
         self.active_start_request_id = None;
         self.lifecycle = SyncLifecycle::Stopped;
         self.emit(CoreEvent::Sync(SyncEvent::Stopped { request_id }));
-        self.reduce(vec![AppAction::SyncStopped]);
+        self.project_sync_status(SyncLifecycleStatus::Stopped).await;
     }
 
     fn current_backend_kind(&self) -> SyncBackendKind {
@@ -577,6 +891,10 @@ impl SyncActor {
         let _ = self.event_tx.send(event);
     }
 
+    async fn project_sync_status(&self, status: SyncLifecycleStatus) {
+        send_sync_status(&self.action_tx, &self.sync_generation, status).await;
+    }
+
     fn reduce(&self, actions: Vec<AppAction>) {
         let _ = self.action_tx.try_send(actions);
     }
@@ -586,66 +904,240 @@ impl SyncActor {
 // SyncService state observer (runs in its own task)
 // ---------------------------------------------------------------------------
 
+async fn notify_dependents_sync_started(
+    session: Arc<MatrixClientSession>,
+    room_tx: mpsc::Sender<RoomMessage>,
+    timeline_tx: mpsc::Sender<crate::timeline::TimelineMessage>,
+    room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
+) {
+    let _ = room_tx
+        .send(RoomMessage::SyncStarted {
+            session,
+            room_list_service: room_list_service.clone(),
+        })
+        .await;
+    // Same handoff to the timeline manager: timeline subscriptions must be
+    // able to subscribe rooms with the live service (canon). On SyncService
+    // recovery, reusing this same path rebuilds live room timelines without
+    // restarting the SyncService itself.
+    let _ = timeline_tx
+        .send(crate::timeline::TimelineMessage::SyncStarted { room_list_service })
+        .await;
+}
+
 async fn observe_sync_service_states(
     mut state_sub: eyeball::Subscriber<matrix_sdk_ui::sync_service::State>,
     event_tx: broadcast::Sender<CoreEvent>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
+    sync_generation: Arc<AtomicU64>,
+    session: Arc<MatrixClientSession>,
+    room_tx: mpsc::Sender<RoomMessage>,
+    timeline_tx: mpsc::Sender<crate::timeline::TimelineMessage>,
+    room_list_service: Arc<matrix_sdk_ui::room_list_service::RoomListService>,
 ) -> SyncTaskOutcome {
-    // Track whether we've seen Running at least once so we emit SyncStarted
-    // (Running) on first success and SyncRecovered on subsequent recoveries.
-    let mut ever_ran = false;
-    let mut reconnecting = false;
+    let mut status = SyncServiceObserverStatus::default();
+    let mut room_list_state_sub = room_list_service.state();
 
     let mut pending_state = Some(state_sub.get());
+    let mut pending_room_list_state = Some(room_list_state_sub.get());
     loop {
-        let state = match pending_state.take() {
-            Some(state) => state,
-            None => match state_sub.next().await {
-                Some(state) => state,
-                None => return SyncTaskOutcome::Stopped,
-            },
+        enum ObserverSignal {
+            SyncService(matrix_sdk_ui::sync_service::State),
+            RoomList(matrix_sdk_ui::room_list_service::State),
+        }
+
+        let signal = if let Some(state) = pending_state.take() {
+            ObserverSignal::SyncService(state)
+        } else if let Some(state) = pending_room_list_state.take() {
+            ObserverSignal::RoomList(state)
+        } else {
+            tokio::select! {
+                state = state_sub.next() => match state {
+                    Some(state) => ObserverSignal::SyncService(state),
+                    None => return SyncTaskOutcome::Stopped,
+                },
+                state = room_list_state_sub.next() => match state {
+                    Some(state) => ObserverSignal::RoomList(state),
+                    None => continue,
+                },
+            }
         };
-        match state {
-            matrix_sdk_ui::sync_service::State::Running => {
-                if !ever_ran {
-                    ever_ran = true;
-                    reconnecting = false;
-                    let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
-                    let _ = action_tx.try_send(vec![AppAction::SyncStarted]);
-                } else if reconnecting {
-                    // Recovered from Offline/Reconnecting.
-                    reconnecting = false;
-                    let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
-                    let _ = action_tx.try_send(vec![AppAction::SyncRecovered]);
+
+        match signal {
+            ObserverSignal::RoomList(state) => {
+                let state_label = room_list_service_state_trace_label(&state);
+                let state_kind = room_list_service_state_kind(&state);
+                match note_room_list_service_state(&mut status, state_kind) {
+                    Some(SyncServiceObserverDecision::ConnectivityProven) => {
+                        trace_sync!(
+                            "room_list_state",
+                            "state={} connectivity_proven={} action=connectivity_proven",
+                            state_label,
+                            status.connectivity_proven
+                        );
+                    }
+                    _ => {
+                        trace_sync!(
+                            "room_list_state",
+                            "state={} connectivity_proven={} action=ignore",
+                            state_label,
+                            status.connectivity_proven
+                        );
+                    }
                 }
             }
-            matrix_sdk_ui::sync_service::State::Offline => {
-                if !reconnecting {
-                    reconnecting = true;
-                    let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Reconnecting));
-                    let _ = action_tx.try_send(vec![AppAction::SyncReconnecting {
-                        reason: "network_offline".to_owned(),
-                    }]);
+            ObserverSignal::SyncService(state) => {
+                let state_label = sync_service_state_trace_label(&state);
+                let state_kind = sync_service_state_kind(&state);
+                let decision = classify_sync_service_state(&mut status, state_kind);
+                match decision {
+                    SyncServiceObserverDecision::InitialRunningHandoff => {
+                        trace_sync!(
+                            "sync_service_state",
+                            "state={} sync_started_emitted={} connectivity_proven={} reconnecting={} action=initial_running_handoff",
+                            state_label,
+                            status.sync_started_emitted,
+                            status.connectivity_proven,
+                            status.reconnecting
+                        );
+                        let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
+                        send_sync_status(
+                            &action_tx,
+                            &sync_generation,
+                            SyncLifecycleStatus::Running,
+                        )
+                        .await;
+                        notify_dependents_sync_started(
+                            session.clone(),
+                            room_tx.clone(),
+                            timeline_tx.clone(),
+                            Some(room_list_service.clone()),
+                        )
+                        .await;
+                    }
+                    SyncServiceObserverDecision::RecoveryHandoff => {
+                        // Recovered from Offline/Reconnecting.
+                        trace_sync!(
+                            "sync_service_state",
+                            "state={} sync_started_emitted={} connectivity_proven={} reconnecting={} action=recovery_handoff",
+                            state_label,
+                            status.sync_started_emitted,
+                            status.connectivity_proven,
+                            status.reconnecting
+                        );
+                        let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
+                        send_sync_status(
+                            &action_tx,
+                            &sync_generation,
+                            SyncLifecycleStatus::Running,
+                        )
+                        .await;
+                        notify_dependents_sync_started(
+                            session.clone(),
+                            room_tx.clone(),
+                            timeline_tx.clone(),
+                            Some(room_list_service.clone()),
+                        )
+                        .await;
+                    }
+                    SyncServiceObserverDecision::RunningNoop => {
+                        trace_sync!(
+                            "sync_service_state",
+                            "state={} sync_started_emitted={} connectivity_proven={} reconnecting={} action=running_noop",
+                            state_label,
+                            status.sync_started_emitted,
+                            status.connectivity_proven,
+                            status.reconnecting
+                        );
+                    }
+                    SyncServiceObserverDecision::FallbackBeforeConnectivity => {
+                        trace_sync!(
+                            "sync_service_state",
+                            "state={} sync_started_emitted={} connectivity_proven={} reconnecting={} action=fallback_before_first_running",
+                            state_label,
+                            status.sync_started_emitted,
+                            status.connectivity_proven,
+                            status.reconnecting
+                        );
+                        let reason = match state_kind {
+                            SyncServiceStateKind::Offline => "network_offline",
+                            SyncServiceStateKind::Error => "network_error",
+                            _ => "network_error",
+                        };
+                        let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Reconnecting));
+                        send_sync_status(
+                            &action_tx,
+                            &sync_generation,
+                            SyncLifecycleStatus::Reconnecting {
+                                reason: reason.to_owned(),
+                            },
+                        )
+                        .await;
+                        return SyncTaskOutcome::Failed {
+                            kind: SyncFailureKind::Http,
+                            ever_ran: status.connectivity_proven,
+                        };
+                    }
+                    SyncServiceObserverDecision::WaitRecovery => {
+                        trace_sync!(
+                            "sync_service_state",
+                            "state={} sync_started_emitted={} connectivity_proven={} reconnecting={} action=wait_recovery",
+                            state_label,
+                            status.sync_started_emitted,
+                            status.connectivity_proven,
+                            status.reconnecting
+                        );
+                        let reason = match state_kind {
+                            SyncServiceStateKind::Offline => "network_offline",
+                            SyncServiceStateKind::Error => "network_error",
+                            _ => "network_error",
+                        };
+                        let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Reconnecting));
+                        send_sync_status(
+                            &action_tx,
+                            &sync_generation,
+                            SyncLifecycleStatus::Reconnecting {
+                                reason: reason.to_owned(),
+                            },
+                        )
+                        .await;
+                    }
+                    SyncServiceObserverDecision::AlreadyReconnecting => {
+                        trace_sync!(
+                            "sync_service_state",
+                            "state={} sync_started_emitted={} connectivity_proven={} reconnecting={} action=already_reconnecting",
+                            state_label,
+                            status.sync_started_emitted,
+                            status.connectivity_proven,
+                            status.reconnecting
+                        );
+                    }
+                    SyncServiceObserverDecision::Fail => {
+                        trace_sync!(
+                            "sync_service_state",
+                            "state={} sync_started_emitted={} connectivity_proven={} reconnecting={} action=fail",
+                            state_label,
+                            status.sync_started_emitted,
+                            status.connectivity_proven,
+                            status.reconnecting
+                        );
+                        return SyncTaskOutcome::Failed {
+                            kind: SyncFailureKind::Http,
+                            ever_ran: status.connectivity_proven,
+                        };
+                    }
+                    SyncServiceObserverDecision::Ignore => {
+                        trace_sync!(
+                            "sync_service_state",
+                            "state={} sync_started_emitted={} connectivity_proven={} reconnecting={} action=ignore",
+                            state_label,
+                            status.sync_started_emitted,
+                            status.connectivity_proven,
+                            status.reconnecting
+                        );
+                    }
+                    SyncServiceObserverDecision::ConnectivityProven => {}
                 }
-            }
-            matrix_sdk_ui::sync_service::State::Terminated => {
-                return SyncTaskOutcome::Failed {
-                    kind: SyncFailureKind::Http,
-                    ever_ran,
-                };
-            }
-            matrix_sdk_ui::sync_service::State::Error(_) => {
-                // Error is opaque — never expose SDK error text.
-                if !reconnecting {
-                    reconnecting = true;
-                    let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Reconnecting));
-                    let _ = action_tx.try_send(vec![AppAction::SyncReconnecting {
-                        reason: "network_error".to_owned(),
-                    }]);
-                }
-            }
-            matrix_sdk_ui::sync_service::State::Idle => {
-                // Initial state and state after stop — not a terminal failure.
             }
         }
     }
@@ -660,6 +1152,7 @@ async fn run_legacy_sync_loop(
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
     event_tx: broadcast::Sender<CoreEvent>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
+    sync_generation: Arc<AtomicU64>,
 ) -> SyncTaskOutcome {
     use futures_util::StreamExt as _;
 
@@ -674,21 +1167,57 @@ async fn run_legacy_sync_loop(
         tokio::select! {
             biased;
             _ = &mut stop_rx => {
+                trace_sync!(
+                    "legacy_state",
+                    "state=stopped ever_ran={} reconnecting={} action=stop_signal",
+                    ever_ran,
+                    reconnecting
+                );
                 return SyncTaskOutcome::Stopped;
             }
             item = sync_stream.next() => {
                 match item {
-                    None => return SyncTaskOutcome::Stopped,
+                    None => {
+                        trace_sync!(
+                            "legacy_state",
+                            "state=stopped ever_ran={} reconnecting={} action=stream_ended",
+                            ever_ran,
+                            reconnecting
+                        );
+                        return SyncTaskOutcome::Stopped;
+                    }
                     Some(Ok(_response)) => {
                         if !ever_ran {
+                            trace_sync!(
+                                "legacy_state",
+                                "state=running ever_ran={} reconnecting={} action=legacy_started",
+                                ever_ran,
+                                reconnecting
+                            );
                             ever_ran = true;
                             reconnecting = false;
                             let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
-                            let _ = action_tx.try_send(vec![AppAction::SyncStarted]);
+                            send_sync_status(
+                                &action_tx,
+                                &sync_generation,
+                                SyncLifecycleStatus::Running,
+                            )
+                            .await;
                         } else if reconnecting {
+                            trace_sync!(
+                                "legacy_state",
+                                "state=running ever_ran={} reconnecting={} action=legacy_recovered",
+                                ever_ran,
+                                reconnecting
+                            );
                             reconnecting = false;
                             let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Running));
-                            let _ = action_tx.try_send(vec![AppAction::SyncRecovered]);
+                            send_sync_status(
+                                &action_tx,
+                                &sync_generation,
+                                SyncLifecycleStatus::Running,
+                            )
+                            .await;
                         }
                         // Else: normal running tick — no event needed.
                     }
@@ -696,16 +1225,43 @@ async fn run_legacy_sync_loop(
                         let kind = classify_sdk_sync_error(&error);
                         if kind == SyncFailureKind::Auth {
                             // Auth failures are terminal (the SDK will not recover).
+                            trace_sync!(
+                                "legacy_state",
+                                "state=error kind={} ever_ran={} reconnecting={} action=fail",
+                                sync_failure_kind_label(kind),
+                                ever_ran,
+                                reconnecting
+                            );
                             return SyncTaskOutcome::Failed { kind, ever_ran };
                         }
                         // Network / transient failures: emit Reconnecting and let
                         // the SDK's stream retry internally.
                         if !reconnecting {
+                            trace_sync!(
+                                "legacy_state",
+                                "state=error kind={} ever_ran={} reconnecting={} action=wait_recovery",
+                                sync_failure_kind_label(kind),
+                                ever_ran,
+                                reconnecting
+                            );
                             reconnecting = true;
                             let _ = event_tx.send(CoreEvent::Sync(SyncEvent::Reconnecting));
-                            let _ = action_tx.try_send(vec![AppAction::SyncReconnecting {
-                                reason: "network_error".to_owned(),
-                            }]);
+                            send_sync_status(
+                                &action_tx,
+                                &sync_generation,
+                                SyncLifecycleStatus::Reconnecting {
+                                    reason: "network_error".to_owned(),
+                                },
+                            )
+                            .await;
+                        } else {
+                            trace_sync!(
+                                "legacy_state",
+                                "state=error kind={} ever_ran={} reconnecting={} action=already_reconnecting",
+                                sync_failure_kind_label(kind),
+                                ever_ran,
+                                reconnecting
+                            );
                         }
                     }
                 }
@@ -1001,6 +1557,98 @@ pub mod tests {
     }
 
     #[test]
+    fn sync_trace_labels_are_stable_and_private() {
+        use crate::ids::{RequestId, RuntimeConnectionId};
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(7),
+            sequence: 42,
+        };
+
+        assert_eq!(sync_lifecycle_label(SyncLifecycle::Stopped), "stopped");
+        assert_eq!(sync_lifecycle_label(SyncLifecycle::Running), "running");
+        assert_eq!(sync_lifecycle_label(SyncLifecycle::Failed), "failed");
+        assert_eq!(active_backend_label(ActiveBackend::None), "none");
+        assert_eq!(
+            active_backend_label(ActiveBackend::SyncService),
+            "sync_service"
+        );
+        assert_eq!(active_backend_label(ActiveBackend::LegacySync), "legacy");
+        assert_eq!(
+            sync_service_state_trace_label(&matrix_sdk_ui::sync_service::State::Offline),
+            "offline"
+        );
+        assert_eq!(
+            sync_task_outcome_trace_label(&SyncTaskOutcome::Failed {
+                kind: SyncFailureKind::Http,
+                ever_ran: false,
+            }),
+            "failed"
+        );
+
+        let (kind, traced_request_id) =
+            sync_command_trace_parts(&SyncCommand::Restart { request_id });
+        assert_eq!(kind, "restart");
+        assert_eq!(traced_request_id, request_id);
+        assert_eq!(request_id_trace_label(Some(request_id)), "7/42");
+        assert_eq!(request_id_trace_label(None), "none");
+    }
+
+    #[test]
+    fn sync_trace_covers_command_backend_state_and_fallback_decisions() {
+        let source = include_str!("sync.rs");
+
+        assert!(source.contains("const ENV_SYNC_TRACE: &str = \"KOUSHI_SYNC_TRACE\""));
+        assert!(source.contains("std::env::var_os(ENV_SYNC_TRACE)"));
+        assert!(source.contains("\"command\","));
+        assert!(source.contains("\"probe_done\","));
+        assert!(source.contains("\"sync_service_state\","));
+        assert!(source.contains("\"task_ended\","));
+        assert!(source.contains("action=fallback_before_first_running"));
+        assert!(source.contains("action=recovery_handoff"));
+        assert!(source.contains("action=legacy_started"));
+        assert!(!source.contains(&format!("{}{}", "error", ":?")));
+    }
+
+    #[test]
+    fn sync_service_observer_does_not_treat_sdk_running_as_connectivity() {
+        let mut status = SyncServiceObserverStatus::default();
+
+        assert_eq!(
+            classify_sync_service_state(&mut status, SyncServiceStateKind::Running),
+            SyncServiceObserverDecision::InitialRunningHandoff
+        );
+        assert!(status.sync_started_emitted);
+        assert!(
+            !status.connectivity_proven,
+            "SDK SyncService::Running is emitted immediately after supervisor spawn, before any successful sync"
+        );
+        assert_eq!(
+            classify_sync_service_state(&mut status, SyncServiceStateKind::Offline),
+            SyncServiceObserverDecision::FallbackBeforeConnectivity
+        );
+    }
+
+    #[test]
+    fn room_list_state_proves_connectivity_before_sync_service_waits_on_recovery() {
+        let mut status = SyncServiceObserverStatus::default();
+
+        assert_eq!(
+            classify_sync_service_state(&mut status, SyncServiceStateKind::Running),
+            SyncServiceObserverDecision::InitialRunningHandoff
+        );
+        assert_eq!(
+            note_room_list_service_state(&mut status, RoomListServiceStateKind::SettingUp),
+            Some(SyncServiceObserverDecision::ConnectivityProven)
+        );
+        assert!(status.connectivity_proven);
+        assert_eq!(
+            classify_sync_service_state(&mut status, SyncServiceStateKind::Offline),
+            SyncServiceObserverDecision::WaitRecovery
+        );
+        assert!(status.reconnecting);
+    }
+
+    #[test]
     fn idempotent_start_must_reproject_running_state() {
         let source = include_str!("sync.rs");
         let idempotent_start_arm = source
@@ -1016,8 +1664,8 @@ pub mod tests {
             "a repeated Start while lifecycle is Running must re-emit Running for waiters"
         );
         assert!(
-            idempotent_start_arm.contains("AppAction::SyncStarted"),
-            "a repeated Start must reproject AppState.sync=Running after recovery reducers reset it to Starting"
+            idempotent_start_arm.contains("SyncLifecycleStatus::Running"),
+            "a repeated Start must reproject AppState.sync=Running through the full-status projection"
         );
     }
 
@@ -1125,67 +1773,146 @@ pub mod tests {
     }
 
     #[test]
-    fn sync_service_offline_state_keeps_observer_alive_for_recovery() {
+    fn sync_service_offline_state_falls_back_before_first_running_and_recovers_afterward() {
         let source = include_str!("sync.rs");
-        let offline_arm = source
-            .split("matrix_sdk_ui::sync_service::State::Offline =>")
+        let observer_body = source
+            .split("async fn observe_sync_service_states")
             .nth(1)
-            .and_then(|rest| {
-                rest.split("matrix_sdk_ui::sync_service::State::Terminated")
-                    .next()
-            })
-            .expect("SyncService Offline arm");
+            .and_then(|rest| rest.split("async fn run_legacy_sync_loop").next())
+            .expect("observe_sync_service_states body");
 
         assert!(
-            offline_arm.contains("SyncEvent::Reconnecting"),
+            observer_body.contains("SyncEvent::Reconnecting"),
             "SyncService Offline must surface reconnecting state"
         );
         assert!(
-            offline_arm.contains("network_offline"),
+            observer_body.contains("network_offline"),
             "Offline reconnecting must use a stable reason, not raw SDK text"
         );
         assert!(
-            !offline_arm.contains("return SyncTaskOutcome::Failed"),
-            "transient Offline must keep the observer alive so SyncService can recover"
+            observer_body.contains("SyncServiceObserverDecision::FallbackBeforeConnectivity")
+                && observer_body.contains("return SyncTaskOutcome::Failed")
+                && observer_body.contains("ever_ran: status.connectivity_proven"),
+            "Offline before RoomListService proves connectivity must exit the observer so SyncService startup failure can use the existing LegacySync fallback"
+        );
+        assert!(
+            observer_body.contains("SyncServiceObserverDecision::WaitRecovery"),
+            "Offline after RoomListService proves connectivity must keep the observer alive so mobile-network reconnects can recover without switching backends"
         );
     }
 
     #[test]
-    fn sync_service_error_state_keeps_observer_alive_for_recovery() {
+    fn sync_service_error_state_falls_back_before_first_running_and_recovers_afterward() {
         let source = include_str!("sync.rs");
-        let error_arm = source
-            .split("matrix_sdk_ui::sync_service::State::Error(_)")
+        let observer_body = source
+            .split("async fn observe_sync_service_states")
             .nth(1)
-            .and_then(|rest| {
-                rest.split("matrix_sdk_ui::sync_service::State::Idle")
-                    .next()
-            })
-            .expect("SyncService Error arm");
+            .and_then(|rest| rest.split("async fn run_legacy_sync_loop").next())
+            .expect("observe_sync_service_states body");
 
         assert!(
-            error_arm.contains("SyncEvent::Reconnecting"),
+            observer_body.contains("SyncEvent::Reconnecting"),
             "SyncService Error must surface reconnecting state"
         );
         assert!(
-            error_arm.contains("network_error"),
+            observer_body.contains("network_error"),
             "Error reconnecting must use a stable reason, not raw SDK text"
         );
         assert!(
-            !error_arm.contains("return SyncTaskOutcome::Failed"),
-            "transient Error must keep the observer alive so SyncService can recover"
+            observer_body.contains("SyncServiceObserverDecision::FallbackBeforeConnectivity")
+                && observer_body.contains("return SyncTaskOutcome::Failed")
+                && observer_body.contains("ever_ran: status.connectivity_proven"),
+            "Error before RoomListService proves connectivity must exit the observer so SyncService startup failure can use the existing LegacySync fallback"
+        );
+        assert!(
+            observer_body.contains("SyncServiceObserverDecision::WaitRecovery"),
+            "Error after RoomListService proves connectivity must keep the observer alive so transient runtime failures can recover"
+        );
+    }
+
+    #[test]
+    fn sync_service_first_running_hands_live_room_list_service_to_dependents() {
+        let source = include_str!("sync.rs");
+        let observer_body = source
+            .split("async fn observe_sync_service_states")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn run_legacy_sync_loop").next())
+            .expect("observe_sync_service_states body");
+        let first_running_arm = observer_body
+            .split("SyncServiceObserverDecision::InitialRunningHandoff =>")
+            .nth(1)
+            .and_then(|rest| {
+                rest.split("SyncServiceObserverDecision::RecoveryHandoff")
+                    .next()
+            })
+            .expect("first Running arm");
+
+        assert!(
+            first_running_arm.contains("notify_dependents_sync_started"),
+            "SyncService must only hand live services to RoomActor/TimelineManagerActor after the SDK reports the first Running state"
+        );
+        assert!(
+            first_running_arm.contains("Some(room_list_service.clone())"),
+            "initial SyncService handoff must use the live RoomListService owned by the running SyncService"
+        );
+    }
+
+    #[test]
+    fn sync_service_recovery_rehands_live_room_list_service_to_dependents() {
+        let source = include_str!("sync.rs");
+        let observer_body = source
+            .split("async fn observe_sync_service_states")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn run_legacy_sync_loop").next())
+            .expect("observe_sync_service_states body");
+        let recovery_arm = observer_body
+            .split("SyncServiceObserverDecision::RecoveryHandoff =>")
+            .nth(1)
+            .and_then(|rest| {
+                rest.split("SyncServiceObserverDecision::RunningNoop")
+                    .next()
+            })
+            .expect("Running recovery arm");
+
+        assert!(
+            recovery_arm.contains("notify_dependents_sync_started"),
+            "SyncService recovery must re-hand the live RoomListService to RoomActor and TimelineManagerActor so repeated mobile-network reconnects rebuild live room/timeline streams"
+        );
+        assert!(
+            recovery_arm.contains("Some(room_list_service.clone())"),
+            "SyncService recovery must reuse the running service's live RoomListService handle instead of constructing a disposable one"
+        );
+
+        let start_body = source
+            .split("    async fn start_sync_service")
+            .nth(1)
+            .and_then(|rest| rest.split("    async fn start_legacy_sync").next())
+            .expect("start_sync_service body");
+        assert!(
+            start_body.contains("self.session.clone()")
+                && start_body.contains("self.room_tx.clone()")
+                && start_body.contains("self.timeline_tx.clone()")
+                && start_body.contains("service.room_list_service()"),
+            "SyncService observer must receive the session, dependent actor senders, and live RoomListService handle needed to repair downstream streams after recovery"
+        );
+        assert!(
+            !start_body.contains("observer_sync_service = service.clone()"),
+            "SyncService observer must not retain the entire SyncService just to repair downstream streams; holding only the RoomListService keeps stop/shutdown ownership narrower"
         );
     }
 
     #[test]
     fn sync_service_terminated_state_exits_observer_for_backend_fallback() {
         let source = include_str!("sync.rs");
-        let terminated_arm = source
-            .split("matrix_sdk_ui::sync_service::State::Terminated =>")
+        let observer_body = source
+            .split("async fn observe_sync_service_states")
             .nth(1)
-            .and_then(|rest| {
-                rest.split("matrix_sdk_ui::sync_service::State::Error")
-                    .next()
-            })
+            .and_then(|rest| rest.split("async fn run_legacy_sync_loop").next())
+            .expect("observe_sync_service_states body");
+        let terminated_arm = observer_body
+            .split("SyncServiceObserverDecision::Fail =>")
+            .nth(1)
+            .and_then(|rest| rest.split("SyncServiceObserverDecision::Ignore").next())
             .expect("SyncService Terminated arm");
 
         assert!(
@@ -1228,12 +1955,20 @@ pub mod tests {
             .expect("observe_sync_service_states body");
 
         let get_index = body.find("state_sub.get()").expect("current state read");
-        let next_index = body
-            .find("state_sub.next().await")
-            .expect("next state wait");
+        let next_index = body.find("state_sub.next()").expect("next state wait");
         assert!(
             get_index < next_index,
             "SyncService observer must inspect the current state before waiting for a future change"
+        );
+        let room_list_get_index = body
+            .find("room_list_state_sub.get()")
+            .expect("current RoomListService state read");
+        let room_list_next_index = body
+            .find("room_list_state_sub.next()")
+            .expect("next RoomListService state wait");
+        assert!(
+            room_list_get_index < room_list_next_index,
+            "SyncService observer must inspect the current RoomListService state before waiting for a future change"
         );
     }
 
@@ -1276,6 +2011,42 @@ pub mod tests {
         assert!(matches!(a3[0], AppAction::SyncReconnecting { .. }));
         assert!(matches!(a4[0], AppAction::SyncFailed { .. }));
         assert!(matches!(a5[0], AppAction::SyncStopped));
+    }
+
+    #[tokio::test]
+    async fn action_channel_accepts_projected_sync_statuses_with_generations() {
+        let (action_tx, mut action_rx) = mpsc::channel::<Vec<AppAction>>(16);
+        let generation = std::sync::atomic::AtomicU64::new(0);
+
+        send_sync_status(
+            &action_tx,
+            &generation,
+            koushi_state::SyncLifecycleStatus::Starting,
+        )
+        .await;
+        send_sync_status(
+            &action_tx,
+            &generation,
+            koushi_state::SyncLifecycleStatus::Running,
+        )
+        .await;
+
+        let a1 = action_rx.recv().await.unwrap();
+        let a2 = action_rx.recv().await.unwrap();
+        assert!(matches!(
+            a1[0],
+            AppAction::SyncStatusChanged {
+                generation: 1,
+                status: koushi_state::SyncLifecycleStatus::Starting
+            }
+        ));
+        assert!(matches!(
+            a2[0],
+            AppAction::SyncStatusChanged {
+                generation: 2,
+                status: koushi_state::SyncLifecycleStatus::Running
+            }
+        ));
     }
 
     // --- Failure reason must not be raw error text ---

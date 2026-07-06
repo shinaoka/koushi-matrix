@@ -43,7 +43,7 @@ pub use search_crawler::{
 pub use errors::{AppError, OperationFailureKind};
 
 // ── Re-exports: sync ────────────────────────────────────────────────────────
-pub use sync::{SyncMode, SyncModeFailureKind, SyncState};
+pub use sync::{SyncLifecycleStatus, SyncMode, SyncModeFailureKind, SyncState};
 
 // ── Re-exports: session ─────────────────────────────────────────────────────
 pub use session::{
@@ -211,6 +211,8 @@ pub struct AppState {
     pub profile: ProfileState,
     pub sync: SyncState,
     #[serde(default)]
+    pub sync_generation: u64,
+    #[serde(default)]
     pub sync_mode: SyncMode,
     pub navigation: NavigationState,
     pub spaces: Vec<SpaceSummary>,
@@ -267,6 +269,7 @@ impl Default for AppState {
             room_preferences: RoomPreferencesState::default(),
             profile: ProfileState::default(),
             sync: SyncState::Stopped,
+            sync_generation: 0,
             sync_mode: SyncMode::Unsupported,
             navigation: NavigationState::default(),
             spaces: Vec::new(),

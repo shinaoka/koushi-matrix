@@ -79,6 +79,74 @@ describe("AuthScreen", () => {
     );
   });
 
+  it("shows sync auth failures on the sign-in screen", () => {
+    render(
+      <AuthScreen
+        deviceName="Koushi test"
+        homeserver="matrix.org"
+        isBusy={false}
+        passwordFilled={true}
+        passwordInputRef={createRef<HTMLInputElement>()}
+        snapshot={snapshot({
+          session: { kind: "locked" },
+          errors: [
+            {
+              code: "sync_auth_required",
+              message: "sign-in required",
+              recoverable: true,
+            },
+          ],
+        })}
+        username="hiroshi.shinaoka"
+        onDeviceNameChange={vi.fn()}
+        onDiscoverLoginMethods={vi.fn()}
+        onHomeserverChange={vi.fn()}
+        onPasswordPresenceChange={vi.fn()}
+        onStartOidcLogin={vi.fn()}
+        onSubmit={vi.fn()}
+        onUsernameChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Session locked")).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("sign-in required");
+  });
+
+  it("renders locked sessions as password-only reauthentication", () => {
+    render(
+      <AuthScreen
+        deviceName="Koushi test"
+        homeserver=""
+        isBusy={false}
+        passwordFilled={true}
+        passwordInputRef={createRef<HTMLInputElement>()}
+        snapshot={snapshot({
+          session: {
+            kind: "locked",
+            homeserver: "https://matrix.org",
+            user_id: "@alice:matrix.org",
+            device_id: "DEVICE",
+          },
+        })}
+        username=""
+        onDeviceNameChange={vi.fn()}
+        onDiscoverLoginMethods={vi.fn()}
+        onHomeserverChange={vi.fn()}
+        onPasswordPresenceChange={vi.fn()}
+        onStartOidcLogin={vi.fn()}
+        onSubmit={vi.fn()}
+        onUsernameChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("@alice:matrix.org")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Check login methods" })).toBeNull();
+    expect(screen.queryByLabelText("Username")).toBeNull();
+    expect(screen.queryByText("Device name")).toBeNull();
+    expect(screen.getByLabelText("Password")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
+  });
+
   it("offers OIDC login when discovery reports an OIDC flow", () => {
     const onStartOidcLogin = vi.fn();
     render(

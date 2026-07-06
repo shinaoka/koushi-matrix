@@ -105,6 +105,8 @@ export function AuthScreen({
   onUsernameChange: (value: string) => void;
 }) {
   const primaryError = latestAuthError(snapshot.state.ui.errors);
+  const session = snapshot.state.domain.session;
+  const isLockedSession = session.kind === "locked";
   const auth = snapshot.state.domain.auth;
   const oidcFlow =
     auth.kind === "ready"
@@ -124,102 +126,135 @@ export function AuthScreen({
           </div>
           <div>
             <h1>{t("auth.matrixDesktop")}</h1>
-            <p>{sessionLabel(snapshot.state.domain.session.kind)}</p>
+            <p>{sessionLabel(session.kind)}</p>
           </div>
         </div>
-        <label className="auth-field">
-          <span>{t("settings.homeserver")}</span>
-          <input
-            autoComplete="url"
-            name="homeserver"
-            spellCheck={false}
-            value={homeserver}
-            onChange={(event) => onHomeserverChange(event.target.value)}
-          />
-        </label>
-        <div className="auth-discovery">
-          <button
-            className="auth-secondary"
-            disabled={isBusy || !homeserver.trim()}
-            type="button"
-            onClick={onDiscoverLoginMethods}
-          >
-            {t("auth.checkLoginMethods")}
-          </button>
-          <div className="auth-flows">{authDiscoveryLabel(auth)}</div>
-        </div>
-        {oidcFlow ? (
-          <div className="auth-oidc-actions">
+        {isLockedSession ? (
+          <>
+            <div className="auth-session-summary">
+              <span>{t("settings.matrixAccount")}</span>
+              <strong dir="auto">{session.user_id ?? t("auth.matrixAccount")}</strong>
+            </div>
+            <label className="auth-field">
+              <span>{t("auth.password")}</span>
+              <input
+                autoComplete="current-password"
+                name="password"
+                ref={passwordInputRef}
+                type="password"
+                onInput={(event) => onPasswordPresenceChange(event.currentTarget.value.length > 0)}
+              />
+            </label>
+            {primaryError ? (
+              <div className="auth-error" role="alert">
+                {primaryError.message}
+              </div>
+            ) : null}
             <button
-              className="auth-secondary"
-              disabled={isBusy}
-              type="button"
-              onClick={onStartOidcLogin}
+              className="auth-submit"
+              disabled={isBusy || !passwordFilled}
+              type="submit"
             >
-              {authFlowLabel(oidcFlow)}
+              {isBusy ? t("auth.connecting") : t("auth.continue")}
             </button>
-            {registrationUrl ? (
-              <a className="auth-create-account" href={registrationUrl}>
-                {t("auth.createAccount")}
-              </a>
+          </>
+        ) : (
+          <>
+            <label className="auth-field">
+              <span>{t("settings.homeserver")}</span>
+              <input
+                autoComplete="url"
+                name="homeserver"
+                spellCheck={false}
+                value={homeserver}
+                onChange={(event) => onHomeserverChange(event.target.value)}
+              />
+            </label>
+            <div className="auth-discovery">
+              <button
+                className="auth-secondary"
+                disabled={isBusy || !homeserver.trim()}
+                type="button"
+                onClick={onDiscoverLoginMethods}
+              >
+                {t("auth.checkLoginMethods")}
+              </button>
+              <div className="auth-flows">{authDiscoveryLabel(auth)}</div>
+            </div>
+            {oidcFlow ? (
+              <div className="auth-oidc-actions">
+                <button
+                  className="auth-secondary"
+                  disabled={isBusy}
+                  type="button"
+                  onClick={onStartOidcLogin}
+                >
+                  {authFlowLabel(oidcFlow)}
+                </button>
+                {registrationUrl ? (
+                  <a className="auth-create-account" href={registrationUrl}>
+                    {t("auth.createAccount")}
+                  </a>
+                ) : null}
+              </div>
             ) : null}
-          </div>
-        ) : null}
-        <label className="auth-field">
-          <span>{t("auth.username")}</span>
-          <input
-            aria-label={t("auth.username")}
-            autoComplete="username"
-            name="username"
-            placeholder={t("auth.usernamePlaceholder")}
-            spellCheck={false}
-            value={username}
-            onChange={(event) => onUsernameChange(event.target.value)}
-          />
-        </label>
-        <p className="auth-field-help">{t("auth.usernameHelp")}</p>
-        <label className="auth-field">
-          <span>{t("auth.password")}</span>
-          <input
-            autoComplete="current-password"
-            name="password"
-            ref={passwordInputRef}
-            type="password"
-            disabled={!passwordLoginAvailable}
-            onInput={(event) => onPasswordPresenceChange(event.currentTarget.value.length > 0)}
-          />
-        </label>
-        <label className="auth-field">
-          <span>{t("auth.deviceName")}</span>
-          <input
-            autoComplete="off"
-            name="deviceName"
-            spellCheck={false}
-            value={deviceName}
-            onChange={(event) => onDeviceNameChange(event.target.value)}
-          />
-        </label>
-        {primaryError ? (
-          <div className="auth-error" role="alert">
-            {primaryError.message}
-            {primaryError.code === "login_failed" ? (
-              <p className="auth-error-help">{t("auth.loginFailureUsernameHint")}</p>
+            <label className="auth-field">
+              <span>{t("auth.username")}</span>
+              <input
+                aria-label={t("auth.username")}
+                autoComplete="username"
+                name="username"
+                placeholder={t("auth.usernamePlaceholder")}
+                spellCheck={false}
+                value={username}
+                onChange={(event) => onUsernameChange(event.target.value)}
+              />
+            </label>
+            <p className="auth-field-help">{t("auth.usernameHelp")}</p>
+            <label className="auth-field">
+              <span>{t("auth.password")}</span>
+              <input
+                autoComplete="current-password"
+                name="password"
+                ref={passwordInputRef}
+                type="password"
+                disabled={!passwordLoginAvailable}
+                onInput={(event) => onPasswordPresenceChange(event.currentTarget.value.length > 0)}
+              />
+            </label>
+            <label className="auth-field">
+              <span>{t("auth.deviceName")}</span>
+              <input
+                autoComplete="off"
+                name="deviceName"
+                spellCheck={false}
+                value={deviceName}
+                onChange={(event) => onDeviceNameChange(event.target.value)}
+              />
+            </label>
+            {primaryError ? (
+              <div className="auth-error" role="alert">
+                {primaryError.message}
+                {primaryError.code === "login_failed" ? (
+                  <p className="auth-error-help">{t("auth.loginFailureUsernameHint")}</p>
+                ) : null}
+              </div>
             ) : null}
-          </div>
-        ) : null}
-        <button
-          className="auth-submit"
-          disabled={
-            isBusy ||
-            !homeserver.trim() ||
-            !username.trim() ||
-            !passwordFilled ||
-            !passwordLoginAvailable
-          }
-          type="submit"
-        >
-          {isBusy ? t("auth.connecting") : t("auth.continue")}
-        </button>
+            <button
+              className="auth-submit"
+              disabled={
+                isBusy ||
+                !homeserver.trim() ||
+                !username.trim() ||
+                !passwordFilled ||
+                !passwordLoginAvailable
+              }
+              type="submit"
+            >
+              {isBusy ? t("auth.connecting") : t("auth.continue")}
+            </button>
+          </>
+        )}
       </form>
     </main>
   );
@@ -228,7 +263,11 @@ export function AuthScreen({
 function latestAuthError(errors: AppError[]): AppError | undefined {
   return [...errors]
     .reverse()
-    .find((error) => error.code === "login_failed" || error.code === "restore_failed");
+    .find((error) =>
+      error.code === "login_failed" ||
+      error.code === "restore_failed" ||
+      error.code === "sync_auth_required"
+    );
 }
 
 function latestRecoveryError(errors: AppError[]): AppError | undefined {

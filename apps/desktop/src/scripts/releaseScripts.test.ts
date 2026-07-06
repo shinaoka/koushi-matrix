@@ -327,10 +327,10 @@ describe("desktop release scripts", () => {
     const packageJson = JSON.parse(
       readFileSync(new URL("../../../../apps/desktop/package.json", import.meta.url), "utf8")
     );
+    const localHeadlessCoreReleaseQa =
+      "node ../../scripts/desktop-headless-local-qa.mjs --run --server=both --core --scenario=login_sync,directory,timeline_reconnect --timeout-ms=600000 --cargo-profile=release && node ../../scripts/desktop-headless-local-qa.mjs --run --server=conduit --core --scenario=send_queue --timeout-ms=600000 --cargo-profile=release";
 
-    expect(packageJson.scripts?.["qa:headless-basic:local"]).toBe(
-      "node ../../scripts/desktop-headless-local-qa.mjs --run --server=both --core --scenario=all --timeout-ms=240000"
-    );
+    expect(packageJson.scripts?.["qa:headless-basic:local"]).toBe(localHeadlessCoreReleaseQa);
     expect(packageJson.scripts?.["qa:headless-basic:real"]).toBe(
       "node ../../scripts/desktop-real-homeserver-qa.mjs --run --scenario=space_compat"
     );
@@ -1826,7 +1826,7 @@ describe("desktop release scripts", () => {
     ]);
   });
 
-  test("QA file credential store is gated to debug and test builds in core", () => {
+  test("QA file credential store is gated to debug, test, and qa-bin builds in core", () => {
     // The credential store moved into koushi-core (StoreActor) when
     // src-tauri became a pure transport adapter; the compile-time gate lives
     // there now.
@@ -1840,10 +1840,10 @@ describe("desktop release scripts", () => {
 
     expect(coreStore).toContain("const ENV_FILE_CREDENTIAL_STORE_DIR");
     expect(coreStore).toMatch(
-      /#\[cfg\(any\(debug_assertions, test\)\)\]\nconst ENV_FILE_CREDENTIAL_STORE_DIR/
+      /#\[cfg\(any\(debug_assertions, test, feature = "qa-bin"\)\)\]\nconst ENV_FILE_CREDENTIAL_STORE_DIR/
     );
     expect(coreStore).toMatch(
-      /#\[cfg\(any\(debug_assertions, test\)\)\]\npub struct FileCredentialStore/
+      /#\[cfg\(any\(debug_assertions, test, feature = "qa-bin"\)\)\]\npub struct FileCredentialStore/
     );
 
     // The transport adapter must not read the credential store at all — not

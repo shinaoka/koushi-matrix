@@ -4,6 +4,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use koushi_sdk::{MatrixCreateRoomOptions, MatrixCreateRoomVisibility};
 use koushi_state::{AuthSecret, LoginRequest};
 
 const ENV_HOMESERVER: &str = "KOUSHI_LOCAL_QA_HOMESERVER";
@@ -144,8 +145,14 @@ async fn run_authenticated(
     let suffix = timestamp_millis()?;
     let room_id = koushi_sdk::create_room(
         session_a,
-        &format!("Koushi Headless QA Room {suffix}"),
-        false,
+        MatrixCreateRoomOptions {
+            name: format!("Koushi Headless QA Room {suffix}"),
+            topic: None,
+            alias_localpart: None,
+            encrypted: false,
+            visibility: MatrixCreateRoomVisibility::Private,
+            parent_space: None,
+        },
     )
     .await
     .map_err(|error| format!("create room failed: {error}"))?;

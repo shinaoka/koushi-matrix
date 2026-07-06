@@ -265,6 +265,45 @@ describe("appStore projection cache", () => {
     expect(projected.sidebar).toBe(previous.sidebar);
   });
 
+  test("applies reconnecting and recovered sync state deltas", () => {
+    const snapshot = makeSnapshot();
+    setAppStoreSnapshot(snapshot);
+
+    expect(
+      applyAppStoreDelta({
+        generation: 1,
+        changed: {
+          state: {
+            domain: {
+              sync: { reconnecting: "network_offline" }
+            }
+          }
+        }
+      })
+    ).toBe(true);
+    expect(getAppStoreSnapshot()?.state.domain.sync).toEqual({
+      reconnecting: "network_offline"
+    });
+
+    expect(
+      applyAppStoreDelta({
+        generation: 2,
+        changed: {
+          state: {
+            domain: {
+              sync: "running"
+            }
+          }
+        }
+      })
+    ).toBe(true);
+
+    const recovered = getAppStoreSnapshot();
+    expect(recovered?.state.domain.sync).toBe("running");
+    expect(recovered?.state.ui).toBe(snapshot.state.ui);
+    expect(recovered?.sidebar).toBe(snapshot.sidebar);
+  });
+
   test("delta-applied snapshots match equivalent full snapshots", () => {
     const previous = makeSnapshot();
     const next = structuredClone(previous);

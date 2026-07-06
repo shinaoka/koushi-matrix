@@ -72,6 +72,7 @@ export interface DesktopApi {
     password: string,
     deviceDisplayName: string
   ): Promise<DesktopSnapshot>;
+  submitSoftLogoutReauth(password: string): Promise<DesktopSnapshot>;
   listSavedSessions(): Promise<SavedSessionInfo[]>;
   switchAccount(session: SavedSessionInfo): Promise<DesktopSnapshot>;
   logout(): Promise<DesktopSnapshot>;
@@ -240,7 +241,7 @@ export interface DesktopApi {
 
 export interface BrowserFakeApiOptions {
   restoreSession?: boolean;
-  session?: "ready" | "signedOut" | "needsRecovery";
+  session?: "ready" | "signedOut" | "needsRecovery" | "locked";
 }
 
 export function createBrowserFakeApi(options: BrowserFakeApiOptions = {}): DesktopApi {
@@ -325,6 +326,31 @@ class BrowserFakeApi implements DesktopApi {
       recoverable: true
     });
 
+    return this.getSnapshot();
+  }
+
+  async submitSoftLogoutReauth(password: string): Promise<DesktopSnapshot> {
+    if (this.snapshot.state.domain.session.kind !== "locked") {
+      return this.getSnapshot();
+    }
+
+    const requestId = this.nextRequestId();
+    const session = this.snapshot.state.domain.session;
+    this.snapshot.state.domain.soft_logout_reauth = {
+      kind: "authenticating",
+      request_id: requestId
+    };
+    void password;
+
+    this.snapshot = createReadySnapshot({
+      homeserver: session.homeserver ?? savedSessions[0].homeserver,
+      user_id: session.user_id ?? savedSessions[0].user_id,
+      device_id: session.device_id ?? savedSessions[0].device_id
+    });
+    this.snapshot.state.domain.soft_logout_reauth = {
+      kind: "succeeded",
+      request_id: requestId
+    };
     return this.getSnapshot();
   }
 
@@ -2958,6 +2984,10 @@ function createInitialSnapshot(session: BrowserFakeApiOptions["session"]): Deskt
     return createNeedsRecoverySnapshot();
   }
 
+  if (session === "locked") {
+    return createLockedSnapshot();
+  }
+
   return createReadySnapshot();
 }
 
@@ -3073,6 +3103,20 @@ function createNeedsRecoverySnapshot(): DesktopSnapshot {
     kind: "needsRecovery",
     recovery_methods: ["recoveryKey", "securityPhrase"]
   };
+  return snapshot;
+}
+
+function createLockedSnapshot(): DesktopSnapshot {
+  const snapshot = createReadySnapshot();
+  snapshot.state.domain.session = {
+    ...savedSessions[0],
+    kind: "locked"
+  };
+  snapshot.state.domain.sync = "stopped";
+  snapshot.state.ui.navigation.active_room_id = null;
+  snapshot.state.ui.timeline.room_id = null;
+  snapshot.state.ui.timeline.is_subscribed = false;
+  snapshot.timeline = [];
   return snapshot;
 }
 
@@ -3776,6 +3820,9 @@ function initialSession(options: BrowserFakeApiOptions): BrowserFakeApiOptions["
   }
   if (session === "recovery") {
     return "needsRecovery";
+  }
+  if (session === "locked") {
+    return "locked";
   }
 
   return "ready";

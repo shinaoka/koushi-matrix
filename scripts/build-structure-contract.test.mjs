@@ -71,3 +71,26 @@ test("submodule guard is wired into commit and QA entrypoints", () => {
     assert.match(source, /sdk-submodule-status\.mjs/);
   }
 });
+
+test("headless core QA can run cargo binaries with the release profile", () => {
+  const packageJson = readRepoFile("apps/desktop/package.json");
+  const headless = readRepoFile("scripts/desktop-headless-local-qa.mjs");
+
+  assert.match(headless, /optionValue\("--cargo-profile"\)/);
+  assert.match(headless, /cargoProfileArgs/);
+  assert.match(headless, /--cargo-profile=dev\|release/);
+  assert.match(headless, /explicitCoreBackendOption/);
+  assert.match(headless, /defaultCoreBackendForScenario\(scenarioOption, cargoProfileOption\)/);
+  assert.match(headless, /--cargo-profile=release cannot run LegacySync/);
+  assert.match(headless, /function selectedScenarios/);
+  assert.match(headless, /for \(const scenario of scenarios\)/);
+  assert.match(headless, /KOUSHI_QA_SCENARIO: scenario/);
+  assert.match(
+    packageJson,
+    /"qa:headless-core": "node \.\.\/\.\.\/scripts\/desktop-headless-local-qa\.mjs --run --server=both --core --scenario=login_sync,directory,timeline_reconnect --timeout-ms=600000 --cargo-profile=release && node \.\.\/\.\.\/scripts\/desktop-headless-local-qa\.mjs --run --server=conduit --core --scenario=send_queue --timeout-ms=600000 --cargo-profile=release"/
+  );
+  assert.match(
+    packageJson,
+    /"qa:headless-basic:local": "node \.\.\/\.\.\/scripts\/desktop-headless-local-qa\.mjs --run --server=both --core --scenario=login_sync,directory,timeline_reconnect --timeout-ms=600000 --cargo-profile=release && node \.\.\/\.\.\/scripts\/desktop-headless-local-qa\.mjs --run --server=conduit --core --scenario=send_queue --timeout-ms=600000 --cargo-profile=release"/
+  );
+});

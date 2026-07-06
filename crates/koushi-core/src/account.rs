@@ -27,7 +27,7 @@
 //! SDK handles dropped inside the Tokio runtime context.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
     sync::Arc,
     time::Duration,
@@ -81,11 +81,38 @@ const SESSION_NOT_FOUND_FAILURE: CoreFailure = CoreFailure::SessionNotFound;
 const AVATAR_DOWNLOAD_CONCURRENCY: usize = 6;
 const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
 const SERVER_LOGOUT_TIMEOUT: Duration = Duration::from_secs(10);
+const ACCOUNT_HYDRATION_TIMEOUT: Duration = Duration::from_secs(10);
 const OIDC_REDIRECT_URI: &str = "koushi-desktop://auth/callback";
+const ENV_SYNC_TRACE: &str = "KOUSHI_SYNC_TRACE";
 
 /// Redacted message used in reducer error projections (never raw SDK text).
 const RESTORE_FAILED_MESSAGE: &str = "session restore failed";
 const INCOMING_VERIFICATION_FLOW_ID_BASE: u64 = 1 << 63;
+
+fn trace_restore(stage: &str, message: &str) {
+    if std::env::var_os(ENV_SYNC_TRACE).is_some() {
+        eprintln!("koushi.account stage={stage} {message}");
+    }
+}
+
+fn request_id_trace_label(request_id: RequestId) -> String {
+    format!("{}/{}", request_id.connection_id.0, request_id.sequence)
+}
+
+fn bool_trace_label(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn trace_account_request(stage: &str, request_id: RequestId, action: &str) {
+    trace_restore(
+        stage,
+        &format!(
+            "request_id={} action={}",
+            request_id_trace_label(request_id),
+            action
+        ),
+    );
+}
 
 /// Messages routed to the AccountActor task.
 pub enum AccountMessage {
@@ -158,6 +185,9 @@ pub enum AccountMessage {
         target: VerificationTarget,
         handle: koushi_sdk::MatrixVerificationRequestHandle,
     },
+    SessionInvalidated {
+        soft_logout: bool,
+    },
     /// Internal: a spawned avatar-fetch task completed. Never exposed to
     /// Tauri/React; carries only the resolved state back into the actor loop.
     /// `generation` matches `AccountActor::avatar_session_generation` at the
@@ -167,6 +197,14 @@ pub enum AccountMessage {
         mxc_uri: String,
         generation: u64,
         thumbnail: AvatarThumbnailState,
+    },
+    /// Internal: optional account-data/profile hydration completed after the
+    /// session was already projected as ready. Generation-gated so stale
+    /// completions from a previous session are dropped.
+    AccountHydrationLoaded {
+        generation: u64,
+        actions: Vec<AppAction>,
+        ignored_user_ids: Option<BTreeSet<String>>,
     },
     Shutdown,
 }
@@ -201,6 +239,11 @@ struct VerificationObservation {
 }
 
 struct IncomingVerificationObservation {
+    stop_tx: oneshot::Sender<()>,
+    task: crate::executor::JoinHandle<()>,
+}
+
+struct SessionChangeObservation {
     stop_tx: oneshot::Sender<()>,
     task: crate::executor::JoinHandle<()>,
 }
@@ -300,6 +343,12 @@ pub struct AccountActor {
     sas_verification_observer: Option<VerificationObservation>,
     /// SDK incoming verification request observer for the active session.
     incoming_verification_observer: Option<IncomingVerificationObservation>,
+    /// SDK session-change observer for auth invalidation / soft logout.
+    session_change_observer: Option<SessionChangeObservation>,
+    /// Optional profile/account-data hydration task for the active session.
+    account_hydration_task: Option<crate::executor::JoinHandle<()>>,
+    /// Incremented whenever optional account hydration is invalidated.
+    account_hydration_generation: u64,
     /// Synthetic flow id sequence for SDK-originated verification requests.
     next_incoming_verification_sequence: u64,
     /// Last `NotifySearchCrawlerRoomsAvailable` payload received before the
@@ -380,6 +429,9 @@ impl AccountActor {
             verification_request_observer: None,
             sas_verification_observer: None,
             incoming_verification_observer: None,
+            session_change_observer: None,
+            account_hydration_task: None,
+            account_hydration_generation: 0,
             next_incoming_verification_sequence: INCOMING_VERIFICATION_FLOW_ID_BASE,
             pending_crawler_notification: None,
             avatar_cache: HashMap::new(),
@@ -531,12 +583,23 @@ impl AccountActor {
                     self.handle_incoming_verification_request(request_id, target, handle)
                         .await;
                 }
+                AccountMessage::SessionInvalidated { soft_logout } => {
+                    self.handle_session_invalidated(soft_logout).await;
+                }
                 AccountMessage::AvatarFetched {
                     mxc_uri,
                     generation,
                     thumbnail,
                 } => {
                     self.handle_avatar_fetched(mxc_uri, generation, thumbnail)
+                        .await;
+                }
+                AccountMessage::AccountHydrationLoaded {
+                    generation,
+                    actions,
+                    ignored_user_ids,
+                } => {
+                    self.handle_account_hydration_loaded(generation, actions, ignored_user_ids)
                         .await;
                 }
             }
@@ -546,6 +609,7 @@ impl AccountActor {
         // recovery/incoming observers → timelines → search → room → sync → SDK handles.
         self.stop_recovery_observer().await;
         self.stop_incoming_verification_observer().await;
+        self.stop_session_change_observer().await;
         self.stop_timeline_actor().await;
         self.stop_threads_list_actor().await;
         self.stop_search_actor().await;
@@ -553,6 +617,7 @@ impl AccountActor {
         self.stop_sync_actor().await;
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
+        self.invalidate_account_hydration();
         self.abort_avatar_fetch_tasks();
         self.device_session_ordinals.clear();
         self.pending_uia_operations.clear();
@@ -1085,6 +1150,7 @@ impl AccountActor {
     async fn stop_current_session_runtime(&mut self) {
         self.stop_recovery_observer().await;
         self.stop_incoming_verification_observer().await;
+        self.stop_session_change_observer().await;
         self.stop_timeline_actor().await;
         self.stop_threads_list_actor().await;
         self.stop_search_actor().await;
@@ -1092,6 +1158,7 @@ impl AccountActor {
         self.clear_room_actor_session().await;
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
+        self.invalidate_account_hydration();
         self.abort_avatar_fetch_tasks();
         self.device_session_ordinals.clear();
         self.pending_uia_operations.clear();
@@ -1112,27 +1179,65 @@ impl AccountActor {
     /// Route a SyncCommand to the SyncActor, or emit SessionRequired if no
     /// store-backed session is active yet.
     async fn route_sync_command(&mut self, command: SyncCommand) {
-        let request_id = match &command {
-            SyncCommand::Start { request_id }
-            | SyncCommand::Stop { request_id }
-            | SyncCommand::Restart { request_id }
-            | SyncCommand::SyncOnce { request_id } => *request_id,
+        let (command_kind, request_id) = match &command {
+            SyncCommand::Start { request_id } => ("start", *request_id),
+            SyncCommand::Stop { request_id } => ("stop", *request_id),
+            SyncCommand::Restart { request_id } => ("restart", *request_id),
+            SyncCommand::SyncOnce { request_id } => ("sync_once", *request_id),
         };
+        trace_restore(
+            "route_sync_command",
+            &format!(
+                "request_id={} kind={} session={} sync_actor={} action=begin",
+                request_id_trace_label(request_id),
+                command_kind,
+                if self.session.is_some() { "yes" } else { "no" },
+                if self.sync_actor.is_some() {
+                    "yes"
+                } else {
+                    "no"
+                }
+            ),
+        );
 
         if self.sync_actor.is_none()
             && let Some(session) = &self.session
         {
+            trace_restore(
+                "route_sync_command",
+                &format!(
+                    "request_id={} kind={} action=spawn_sync_actor",
+                    request_id_trace_label(request_id),
+                    command_kind
+                ),
+            );
             self.spawn_sync_actor(session.clone()).await;
         }
 
         match &self.sync_actor {
             Some(handle) => {
+                trace_restore(
+                    "route_sync_command",
+                    &format!(
+                        "request_id={} kind={} action=send_to_sync_actor",
+                        request_id_trace_label(request_id),
+                        command_kind
+                    ),
+                );
                 // The SyncActor notifies the RoomActor itself on start/stop/
                 // restart: only it knows the selected backend and owns the
                 // live RoomListService (canon, overview.md RoomActor bullet).
                 let _ = handle.send(SyncMessage::Command(command)).await;
             }
             None => {
+                trace_restore(
+                    "route_sync_command",
+                    &format!(
+                        "request_id={} kind={} action=session_required",
+                        request_id_trace_label(request_id),
+                        command_kind
+                    ),
+                );
                 // Session not yet ready — gate is enforced in AppActor but be
                 // defensive here too.
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
@@ -1145,6 +1250,7 @@ impl AccountActor {
     /// Also replace the TimelineManagerActor with one that holds the session.
     /// Also spawn the SearchActor (Phase 6).
     async fn spawn_sync_actor(&mut self, session: Arc<MatrixClientSession>) {
+        trace_restore("spawn_sync_actor", "action=begin");
         // Give the RoomActor the session so room ops work even before sync
         // starts. The room-list observation starts later, on the SyncActor's
         // RoomMessage::SyncStarted (which carries the live RoomListService on
@@ -1196,6 +1302,7 @@ impl AccountActor {
             self.timeline_manager.sender(),
         );
         self.sync_actor = Some(handle);
+        trace_restore("spawn_sync_actor", "action=done");
         self.start_scheduled_send_capability_probe(session);
     }
 
@@ -1252,6 +1359,39 @@ impl AccountActor {
             Some(IncomingVerificationObservation { stop_tx, task });
     }
 
+    fn start_session_change_observer(&mut self, session: Arc<MatrixClientSession>) {
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let mut changes = session.client().subscribe_to_session_changes();
+        let tx = self.self_tx.clone();
+        let task = crate::executor::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut stop_rx => break,
+                    change = changes.recv() => {
+                        match change {
+                            Ok(matrix_sdk::SessionChange::UnknownToken(data)) => {
+                                if tx
+                                    .send(AccountMessage::SessionInvalidated {
+                                        soft_logout: data.soft_logout,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                                break;
+                            }
+                            Ok(matrix_sdk::SessionChange::TokensRefreshed) => {}
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                }
+            }
+        });
+        self.session_change_observer = Some(SessionChangeObservation { stop_tx, task });
+    }
+
     fn next_incoming_verification_request_id(&mut self) -> RequestId {
         let sequence = self.next_incoming_verification_sequence;
         self.next_incoming_verification_sequence = self
@@ -1280,6 +1420,27 @@ impl AccountActor {
             let _ = observation.stop_tx.send(());
             let _ = observation.task.await;
         }
+    }
+
+    async fn stop_session_change_observer(&mut self) {
+        if let Some(observation) = self.session_change_observer.take() {
+            let _ = observation.stop_tx.send(());
+            let _ = observation.task.await;
+        }
+    }
+
+    async fn handle_session_invalidated(&mut self, soft_logout: bool) {
+        trace_restore(
+            "session_invalidated",
+            &format!("soft_logout={} action=lock", bool_trace_label(soft_logout)),
+        );
+        if self.session.is_none() {
+            return;
+        }
+
+        self.reduce(vec![AppAction::SessionLocked]);
+        self.invalidate_account_hydration();
+        self.stop_sync_actor().await;
     }
 
     async fn cancel_identity_reset_handle(&mut self) {
@@ -1984,6 +2145,51 @@ impl AccountActor {
         // Advance the generation counter so stale completions from tasks that
         // were spawned before this abort are silently rejected.
         self.avatar_session_generation = self.avatar_session_generation.wrapping_add(1);
+    }
+
+    fn spawn_account_hydration(&mut self, session: Arc<MatrixClientSession>) {
+        self.invalidate_account_hydration();
+        let generation = self.account_hydration_generation;
+        let self_tx = self.self_tx.clone();
+        self.account_hydration_task = Some(crate::executor::spawn(async move {
+            let (actions, ignored_user_ids) = account_hydration_actions_from_session(&session).await;
+            if actions.is_empty() {
+                return;
+            }
+            let _ = self_tx
+                .send(AccountMessage::AccountHydrationLoaded {
+                    generation,
+                    actions,
+                    ignored_user_ids,
+                })
+                .await;
+        }));
+    }
+
+    fn invalidate_account_hydration(&mut self) {
+        self.account_hydration_generation = self.account_hydration_generation.wrapping_add(1);
+        if let Some(task) = self.account_hydration_task.take() {
+            task.abort();
+        }
+    }
+
+    async fn handle_account_hydration_loaded(
+        &mut self,
+        generation: u64,
+        actions: Vec<AppAction>,
+        ignored_user_ids: Option<BTreeSet<String>>,
+    ) {
+        if generation != self.account_hydration_generation || self.session.is_none() {
+            return;
+        }
+        self.account_hydration_task = None;
+        if let Some(user_ids) = ignored_user_ids {
+            let _ = self
+                .timeline_manager
+                .send(TimelineMessage::IgnoredUsersUpdated { user_ids })
+                .await;
+        }
+        self.reduce(actions);
     }
 
     async fn handle_ignore_user(&mut self, request_id: RequestId, user_id: String, ignored: bool) {
@@ -3107,25 +3313,7 @@ impl AccountActor {
 
         self.spawn_sync_actor(session_arc.clone()).await;
 
-        let mut actions = vec![AppAction::LoginSucceeded(info)];
-        if let Some(profile_action) = own_profile_action_from_session(&session_arc).await {
-            actions.push(profile_action);
-        }
-        if let Some(alias_action) = local_user_aliases_action_from_session(&session_arc).await {
-            actions.push(alias_action);
-        }
-        if let Some(action) = ignored_user_ids_action_from_session(&session_arc).await {
-            if let AppAction::IgnoredUsersLoaded { ref user_ids } = action {
-                let _ = self
-                    .timeline_manager
-                    .send(TimelineMessage::IgnoredUsersUpdated {
-                        user_ids: user_ids.clone(),
-                    })
-                    .await;
-            }
-            actions.push(action);
-        }
-        self.reduce(actions);
+        self.reduce(vec![AppAction::LoginSucceeded(info)]);
 
         self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
             request_id: start_request_id,
@@ -3137,9 +3325,11 @@ impl AccountActor {
                 account_key,
             }));
         }
+        self.spawn_account_hydration(session_arc.clone());
 
         self.start_recovery_observer(session_arc.clone());
-        self.start_incoming_verification_observer(session_arc);
+        self.start_incoming_verification_observer(session_arc.clone());
+        self.start_session_change_observer(session_arc);
     }
 
     async fn handle_login_password(&mut self, request_id: RequestId, request: LoginRequest) {
@@ -3212,42 +3402,31 @@ impl AccountActor {
         // Project login success through the reducer (session → Ready), then
         // hydrate Rust-owned profile/account-data projections. Fetch failure is
         // non-fatal to login.
-        let mut actions = vec![AppAction::LoginSucceeded(info)];
-        if let Some(profile_action) = own_profile_action_from_session(&session_arc).await {
-            actions.push(profile_action);
-        }
-        if let Some(alias_action) = local_user_aliases_action_from_session(&session_arc).await {
-            actions.push(alias_action);
-        }
-        if let Some(action) = ignored_user_ids_action_from_session(&session_arc).await {
-            if let AppAction::IgnoredUsersLoaded { ref user_ids } = action {
-                let _ = self
-                    .timeline_manager
-                    .send(TimelineMessage::IgnoredUsersUpdated {
-                        user_ids: user_ids.clone(),
-                    })
-                    .await;
-            }
-            actions.push(action);
-        }
-        self.reduce(actions);
+        self.reduce(vec![AppAction::LoginSucceeded(info)]);
 
         // Emit domain event carrying the request_id for command correlation.
         self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
             request_id,
             account_key,
         }));
+        self.spawn_account_hydration(session_arc.clone());
 
         // Observe the SDK recovery stream asynchronously. New-device recovery
         // can arrive after login completes, once account data syncs in.
         self.start_recovery_observer(session_arc.clone());
-        self.start_incoming_verification_observer(session_arc);
+        self.start_incoming_verification_observer(session_arc.clone());
+        self.start_session_change_observer(session_arc);
     }
 
     async fn handle_restore_session(&mut self, request_id: RequestId, account_key: AccountKey) {
+        trace_account_request("restore_session", request_id, "lookup_key");
         let key_id = match self.lookup_session_key_id(&account_key) {
-            Ok(Some(key_id)) => key_id,
+            Ok(Some(key_id)) => {
+                trace_account_request("restore_session", request_id, "key_found");
+                key_id
+            }
             Ok(None) => {
+                trace_account_request("restore_session", request_id, "key_missing");
                 // No stored session for this account: project
                 // RestoreSessionNotFound so AppState returns to SignedOut, and
                 // keep the redacted failure event for command correlation.
@@ -3256,6 +3435,7 @@ impl AccountActor {
                 return;
             }
             Err(()) => {
+                trace_account_request("restore_session", request_id, "key_lookup_failed");
                 // Credential store unreachable.
                 self.reduce(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
@@ -3275,14 +3455,20 @@ impl AccountActor {
     /// A pointer whose session data is missing follows the same not-found
     /// contract (handled inside `restore_account`).
     async fn handle_restore_last_session(&mut self, request_id: RequestId) {
+        trace_account_request("restore_last_session", request_id, "load_pointer");
         let key_id = match self.store.credential_backend().load_last_session() {
-            Ok(Some(key_id)) => key_id,
+            Ok(Some(key_id)) => {
+                trace_account_request("restore_last_session", request_id, "pointer_found");
+                key_id
+            }
             Ok(None) => {
+                trace_account_request("restore_last_session", request_id, "pointer_missing");
                 self.reduce(vec![AppAction::RestoreSessionNotFound]);
                 self.emit_failure(request_id, SESSION_NOT_FOUND_FAILURE);
                 return;
             }
             Err(_) => {
+                trace_account_request("restore_last_session", request_id, "pointer_load_failed");
                 self.reduce(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
                 }]);
@@ -3800,11 +3986,9 @@ impl AccountActor {
         let info = session.info.clone();
         let key_id = session_key_id_from_info(&info);
 
-        // Preserve the existing per-account store (and thus crypto/cached data)
-        // by stopping sync and dropping the stale session before re-auth.
+        // Stop live sync immediately, but keep the locked session until the
+        // password login succeeds so a bad password does not make retry impossible.
         self.stop_sync_actor().await;
-        drop(self.session.take());
-        self.session_key_id = None;
 
         let login_session = match koushi_sdk::login_with_existing_device(
             &info.homeserver,
@@ -3844,6 +4028,11 @@ impl AccountActor {
             }
         };
 
+        self.stop_session_change_observer().await;
+        self.invalidate_account_hydration();
+        drop(self.session.take());
+        self.session_key_id = None;
+
         let store_backed = match self.restore_into_store(&persistable, &key_id).await {
             Ok(session) => session,
             Err(failure) => {
@@ -3865,24 +4054,22 @@ impl AccountActor {
         self.session_key_id = Some(key_id);
         self.spawn_sync_actor(session_arc.clone()).await;
 
-        let mut actions = vec![AppAction::SoftLogoutReauthSucceeded {
-            request_id: request_id.sequence,
-        }];
-        if let Some(action) = ignored_user_ids_action_from_session(&session_arc).await {
-            if let AppAction::IgnoredUsersLoaded { ref user_ids } = action {
-                let _ = self
-                    .timeline_manager
-                    .send(TimelineMessage::IgnoredUsersUpdated {
-                        user_ids: user_ids.clone(),
-                    })
-                    .await;
-            }
-            actions.push(action);
-        }
-        self.reduce(actions);
+        let account_key = account_key_from_info(&info);
+        self.reduce(vec![
+            AppAction::SoftLogoutReauthSucceeded {
+                request_id: request_id.sequence,
+            },
+            AppAction::LoginSucceeded(info),
+        ]);
+        self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
+            request_id,
+            account_key,
+        }));
+        self.spawn_account_hydration(session_arc.clone());
 
         self.start_recovery_observer(session_arc.clone());
-        self.start_incoming_verification_observer(session_arc);
+        self.start_incoming_verification_observer(session_arc.clone());
+        self.start_session_change_observer(session_arc);
     }
 
     fn project_account_management_failure(
@@ -3945,14 +4132,17 @@ impl AccountActor {
         outcome: RestoreOutcome,
     ) {
         let restore_started = startup_trace::now_if_enabled();
+        trace_account_request("restore_account", request_id, "load_session");
         let session_json = match self.store.credential_backend().load_matrix_session(&key_id) {
             Ok(stored) => stored,
             Err(err) if koushi_key::is_missing_credential_error(&err) => {
+                trace_account_request("restore_account", request_id, "session_missing");
                 self.reduce(vec![AppAction::RestoreSessionNotFound]);
                 self.emit_failure(request_id, SESSION_NOT_FOUND_FAILURE);
                 return;
             }
             Err(_) => {
+                trace_account_request("restore_account", request_id, "session_load_failed");
                 self.reduce(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
                 }]);
@@ -3964,6 +4154,7 @@ impl AccountActor {
         let persistable = match PersistableMatrixSession::from_json(session_json.as_str()) {
             Ok(s) => s,
             Err(_) => {
+                trace_account_request("restore_account", request_id, "session_parse_failed");
                 self.reduce(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
                 }]);
@@ -3972,14 +4163,17 @@ impl AccountActor {
             }
         };
 
+        trace_account_request("restore_account", request_id, "store_restore_begin");
         match self.restore_into_store(&persistable, &key_id).await {
             Err(failure) => {
+                trace_account_request("restore_account", request_id, "store_restore_failed");
                 self.reduce(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
                 }]);
                 self.emit_failure(request_id, failure);
             }
             Ok(session) => {
+                trace_account_request("restore_account", request_id, "store_restore_ok");
                 startup_trace::trace_phase(StartupPhase::Restore, restore_started);
                 let info = session.info.clone();
                 let account_key = account_key_from_info(&info);
@@ -3992,27 +4186,8 @@ impl AccountActor {
 
                 // Spawn the SyncActor for the newly restored store-backed session.
                 self.spawn_sync_actor(session_arc.clone()).await;
-                let mut actions = vec![AppAction::RestoreSessionSucceeded(info)];
-                if let Some(profile_action) = own_profile_action_from_session(&session_arc).await {
-                    actions.push(profile_action);
-                }
-                if let Some(alias_action) =
-                    local_user_aliases_action_from_session(&session_arc).await
-                {
-                    actions.push(alias_action);
-                }
-                if let Some(action) = ignored_user_ids_action_from_session(&session_arc).await {
-                    if let AppAction::IgnoredUsersLoaded { ref user_ids } = action {
-                        let _ = self
-                            .timeline_manager
-                            .send(TimelineMessage::IgnoredUsersUpdated {
-                                user_ids: user_ids.clone(),
-                            })
-                            .await;
-                    }
-                    actions.push(action);
-                }
-                self.reduce(actions);
+                trace_account_request("restore_account", request_id, "sync_actor_spawned");
+                self.reduce(vec![AppAction::RestoreSessionSucceeded(info)]);
 
                 self.emit(CoreEvent::Account(match outcome {
                     RestoreOutcome::Restored => AccountEvent::SessionRestored {
@@ -4024,9 +4199,11 @@ impl AccountActor {
                         account_key,
                     },
                 }));
+                self.spawn_account_hydration(session_arc.clone());
 
                 self.start_recovery_observer(session_arc.clone());
-                self.start_incoming_verification_observer(session_arc);
+                self.start_incoming_verification_observer(session_arc.clone());
+                self.start_session_change_observer(session_arc);
             }
         }
     }
@@ -4474,9 +4651,32 @@ async fn run_recovery_state_observation<S>(
     }
 }
 
+async fn account_hydration_actions_from_session(
+    session: &MatrixClientSession,
+) -> (Vec<AppAction>, Option<BTreeSet<String>>) {
+    let mut actions = Vec::new();
+    let mut ignored_user_ids = None;
+
+    if let Some(action) = own_profile_action_from_session(session).await {
+        actions.push(action);
+    }
+    if let Some(action) = local_user_aliases_action_from_session(session).await {
+        actions.push(action);
+    }
+    if let Some(action) = ignored_user_ids_action_from_session(session).await {
+        if let AppAction::IgnoredUsersLoaded { ref user_ids } = action {
+            ignored_user_ids = Some(user_ids.clone());
+        }
+        actions.push(action);
+    }
+
+    (actions, ignored_user_ids)
+}
+
 async fn own_profile_action_from_session(session: &MatrixClientSession) -> Option<AppAction> {
-    koushi_sdk::get_own_profile(session)
+    crate::executor::timeout(ACCOUNT_HYDRATION_TIMEOUT, koushi_sdk::get_own_profile(session))
         .await
+        .ok()?
         .ok()
         .map(map_matrix_own_profile)
         .map(|profile| AppAction::OwnProfileUpdated { profile })
@@ -4485,19 +4685,27 @@ async fn own_profile_action_from_session(session: &MatrixClientSession) -> Optio
 async fn local_user_aliases_action_from_session(
     session: &MatrixClientSession,
 ) -> Option<AppAction> {
-    koushi_sdk::get_local_user_aliases(session)
-        .await
-        .ok()
-        .map(|aliases| AppAction::LocalUserAliasesLoaded {
-            aliases: aliases.aliases,
-        })
+    crate::executor::timeout(
+        ACCOUNT_HYDRATION_TIMEOUT,
+        koushi_sdk::get_local_user_aliases(session),
+    )
+    .await
+    .ok()?
+    .ok()
+    .map(|aliases| AppAction::LocalUserAliasesLoaded {
+        aliases: aliases.aliases,
+    })
 }
 
 async fn ignored_user_ids_action_from_session(session: &MatrixClientSession) -> Option<AppAction> {
-    koushi_sdk::get_ignored_user_list(session)
-        .await
-        .ok()
-        .map(|user_ids| AppAction::IgnoredUsersLoaded { user_ids })
+    crate::executor::timeout(
+        ACCOUNT_HYDRATION_TIMEOUT,
+        koushi_sdk::get_ignored_user_list(session),
+    )
+    .await
+    .ok()?
+    .ok()
+    .map(|user_ids| AppAction::IgnoredUsersLoaded { user_ids })
 }
 
 fn map_matrix_own_profile(profile: koushi_sdk::MatrixOwnProfile) -> OwnProfile {
@@ -5153,6 +5361,181 @@ mod tests {
         );
     }
 
+    #[test]
+    fn restore_trace_covers_startup_restore_boundaries_without_private_ids() {
+        let source = include_str!("account.rs");
+        let restore_last = source
+            .split("async fn handle_restore_last_session")
+            .nth(1)
+            .expect("handle_restore_last_session should exist")
+            .split("/// List saved sessions")
+            .next()
+            .expect("restore_last_session should precede saved-session listing");
+        let restore_account = source
+            .split("    async fn restore_account")
+            .nth(1)
+            .expect("restore_account should exist")
+            .split("    async fn handle_login_password")
+            .next()
+            .expect("restore_account should precede login handler");
+
+        assert!(
+            source.contains("const ENV_SYNC_TRACE: &str = \"KOUSHI_SYNC_TRACE\";"),
+            "restore diagnostics must share the SyncActor opt-in env"
+        );
+        assert!(
+            restore_last.contains(
+                "trace_account_request(\"restore_last_session\", request_id, \"load_pointer\")"
+            ),
+            "startup restore must log before reading the last-session pointer"
+        );
+        assert!(
+            restore_last.contains(
+                "trace_account_request(\"restore_last_session\", request_id, \"pointer_found\")"
+            ),
+            "startup restore must log that a pointer exists without printing the account id"
+        );
+        assert!(
+            restore_account.contains(
+                "trace_account_request(\"restore_account\", request_id, \"load_session\")"
+            ),
+            "restore must log before loading the persisted Matrix session blob"
+        );
+        assert!(
+            restore_account.contains(
+                "trace_account_request(\"restore_account\", request_id, \"store_restore_ok\")"
+            ),
+            "restore must log successful SDK store restore before sync starts"
+        );
+        assert!(
+            restore_account.contains(
+                "trace_account_request(\"restore_account\", request_id, \"sync_actor_spawned\")"
+            ),
+            "restore must log that the SyncActor was spawned"
+        );
+        assert!(
+            source.contains("fn request_id_trace_label(request_id: RequestId) -> String"),
+            "restore diagnostics must include request ids for correlation"
+        );
+        assert!(
+            !restore_last.contains("account_name()") && !restore_account.contains("account_name()"),
+            "startup restore diagnostics must not print account identifiers"
+        );
+    }
+
+    #[test]
+    fn login_success_is_not_blocked_by_optional_account_hydration() {
+        let source = include_str!("account.rs");
+        let login_body = source
+            .split("    async fn handle_login_password")
+            .nth(1)
+            .expect("handle_login_password should exist")
+            .split("    async fn handle_restore_session")
+            .next()
+            .expect("login handler should precede restore handler");
+
+        let logged_in = login_body
+            .find("AccountEvent::LoggedIn")
+            .expect("login handler must emit LoggedIn");
+        for optional_fetch in [
+            "own_profile_action_from_session(&session_arc).await",
+            "local_user_aliases_action_from_session(&session_arc).await",
+            "ignored_user_ids_action_from_session(&session_arc).await",
+        ] {
+            if let Some(pos) = login_body.find(optional_fetch) {
+                assert!(
+                    pos > logged_in,
+                    "{optional_fetch} must not run before LoggedIn; optional account hydration must not block login success"
+                );
+            }
+        }
+        assert!(
+            login_body.contains("self.spawn_account_hydration(session_arc.clone())"),
+            "login should schedule optional profile/account-data hydration after emitting LoggedIn"
+        );
+    }
+
+    #[test]
+    fn async_account_hydration_is_generation_gated() {
+        let source = include_str!("account.rs");
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source should precede tests");
+        assert!(
+            production_source.contains("AccountHydrationLoaded {"),
+            "optional account hydration should return through the actor mailbox"
+        );
+        assert!(
+            production_source.contains("generation != self.account_hydration_generation"),
+            "stale account hydration from an old session must be dropped before reducer actions are sent"
+        );
+        assert!(
+            production_source.contains("fn invalidate_account_hydration(&mut self)"),
+            "session clear/lock must invalidate in-flight account hydration"
+        );
+    }
+
+    #[test]
+    fn session_change_observer_routes_unknown_token_to_session_lock() {
+        let source = include_str!("account.rs");
+        let observer_body = source
+            .split("fn start_session_change_observer")
+            .nth(1)
+            .and_then(|rest| {
+                rest.split("fn next_incoming_verification_request_id")
+                    .next()
+            })
+            .expect("start_session_change_observer body");
+        let handler_body = source
+            .split("async fn handle_session_invalidated")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn cancel_identity_reset_handle").next())
+            .expect("handle_session_invalidated body");
+
+        assert!(
+            observer_body.contains("subscribe_to_session_changes()"),
+            "AccountActor must subscribe to the SDK session-change channel; sync errors are not a reliable auth-invalidated source"
+        );
+        assert!(
+            observer_body.contains("matrix_sdk::SessionChange::UnknownToken(data)"),
+            "UnknownToken must be handled explicitly instead of inferred from SyncService Offline/Error"
+        );
+        assert!(
+            observer_body.contains("soft_logout: data.soft_logout"),
+            "only the private-data-free soft_logout bool may cross into AccountActor"
+        );
+        assert!(
+            handler_body.contains("AppAction::SessionLocked"),
+            "auth invalidation must lock the active session so the GUI can offer reauth"
+        );
+        assert!(
+            handler_body.contains("self.stop_sync_actor().await"),
+            "auth invalidation must stop the old sync loop instead of leaving it reconnecting forever"
+        );
+    }
+
+    #[test]
+    fn soft_logout_reauth_keeps_locked_session_until_password_login_succeeds() {
+        let source = include_str!("account.rs");
+        let handler_body = source
+            .split("async fn handle_soft_logout_reauth")
+            .nth(1)
+            .and_then(|rest| rest.split("fn project_account_management_failure").next())
+            .expect("handle_soft_logout_reauth body");
+        let login_call = handler_body
+            .find("koushi_sdk::login_with_existing_device")
+            .expect("reauth must use device-preserving password login");
+        let drop_old_session = handler_body
+            .find("drop(self.session.take())")
+            .expect("reauth must drop the old client before restoring into the account store");
+
+        assert!(
+            login_call < drop_old_session,
+            "wrong passwords must not discard the locked session before the user can retry"
+        );
+    }
+
     #[tokio::test]
     async fn server_logout_best_effort_returns_on_timeout() {
         let outcome = wait_for_server_logout_best_effort(
@@ -5464,6 +5847,9 @@ mod tests {
             verification_request_observer: None,
             sas_verification_observer: None,
             incoming_verification_observer: None,
+            session_change_observer: None,
+            account_hydration_task: None,
+            account_hydration_generation: 0,
             next_incoming_verification_sequence: INCOMING_VERIFICATION_FLOW_ID_BASE,
             pending_crawler_notification: None,
             avatar_cache: HashMap::new(),

@@ -43,6 +43,17 @@ describe("TauriDesktopApi", () => {
     });
   });
 
+  test("passes soft logout reauth to the Rust session command", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.submitSoftLogoutReauth("synthetic-password");
+
+    expect(invoke).toHaveBeenCalledWith("submit_soft_logout_reauth", {
+      password: "synthetic-password"
+    });
+  });
+
   test("passes settings patches to the Rust update_settings command", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 

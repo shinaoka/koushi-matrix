@@ -396,6 +396,28 @@ button:disabled {
   align-items: center;
 }
 
+.auth-session-summary {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-hover);
+}
+
+.auth-session-summary span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.auth-session-summary strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 14px;
+}
+
 .auth-secondary {
   height: 34px;
   padding: 0 12px;
@@ -510,7 +532,7 @@ button:disabled {
 .titlebar {
   position: relative;
   display: grid;
-  grid-template-columns: 128px minmax(220px, 1fr) 88px 84px;
+  grid-template-columns: 128px minmax(220px, 1fr) 88px minmax(132px, max-content);
   align-items: center;
   gap: 12px;
   padding: 0 14px;

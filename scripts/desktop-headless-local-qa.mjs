@@ -72,8 +72,10 @@ const args = new Set(process.argv.slice(2));
 const serverOption = optionValue("--server") ?? "both";
 const timeoutMs = Number(optionValue("--timeout-ms") ?? "90000");
 const scenarioOption = optionValue("--scenario") ?? "all";
+const cargoProfileOption = optionValue("--cargo-profile") ?? "dev";
+const explicitCoreBackendOption = optionValue("--core-backend");
 const coreBackendOption =
-  optionValue("--core-backend") ?? defaultCoreBackendForScenario(scenarioOption);
+  explicitCoreBackendOption ?? defaultCoreBackendForScenario(scenarioOption, cargoProfileOption);
 const fixtureRunOption = optionValue("--fixture-run");
 const fixtureReplay = args.has("--fixture-replay") || fixtureRunOption !== undefined;
 const e2eeRecipientSecondDeviceOption = args.has("--e2ee-recipient-second-device");
@@ -128,6 +130,7 @@ printUsage();
 
 async function run() {
   assertSdkSubmoduleSynced({ repoRoot });
+  const scenarios = selectedScenarios(scenarioOption);
 
   if (
     (e2eeRecipientSecondDeviceOption || e2eePauseSyncBeforeMultiDeviceSendOption) &&
@@ -135,11 +138,11 @@ async function run() {
   ) {
     throw new Error("E2EE multi-device options require --core");
   }
-  if (scenarioOption === "timeline_stress" && !runCoreQa) {
+  if (scenarios.includes("timeline_stress") && !runCoreQa) {
     throw new Error("--scenario=timeline_stress requires --core because it validates Core state");
   }
   if (fixtureRunOption !== undefined) {
-    if (scenarioOption !== "timeline_stress") {
+    if (scenarios.length !== 1 || scenarios[0] !== "timeline_stress") {
       throw new Error("--fixture-run is currently supported only with --scenario=timeline_stress");
     }
     if (!runCoreQa) {
@@ -149,6 +152,8 @@ async function run() {
       throw new Error("--fixture-run requires --core-backend=probed");
     }
   }
+  cargoProfileArgs();
+  validateReleaseBackend();
 
   const servers = selectedServers(serverOption);
   if (fixtureRunOption !== undefined && (servers.length !== 1 || servers[0] !== "synapse")) {
@@ -157,18 +162,20 @@ async function run() {
   mkdirSync(localSecretsRoot, { recursive: true });
 
   for (const serverKind of servers) {
-    await runForServer(serverKind);
+    for (const scenario of scenarios) {
+      await runForServer(serverKind, scenario);
+    }
   }
 }
 
-async function runForServer(serverKind) {
+async function runForServer(serverKind, scenario) {
   checkInstalledHomeserver(serverKind);
 
   const fixture = fixtureRunOption ? loadQaFixture(fixtureRunOption, serverKind) : null;
   const port = await freePort();
   const serverName = fixture?.serverName ?? `localhost:${port}`;
   const homeserver = `http://127.0.0.1:${port}`;
-  const runDir = mkdtempSync(join(localSecretsRoot, `${timestamp()}-${serverKind}-`));
+  const runDir = mkdtempSync(join(localSecretsRoot, `${timestamp()}-${serverKind}-${scenario}-`));
   const dataDir = join(runDir, "data");
   const logPath = join(runDir, "homeserver.log");
   if (fixture) {
@@ -197,7 +204,7 @@ async function runForServer(serverKind) {
   try {
     await waitForHomeserver(homeserver, serverProcess, timeoutMs, logPath);
 
-    if (scenarioOption !== "timeline_stress") {
+    if (scenario !== "timeline_stress") {
       const sdkUsers = await registerQaUsers(homeserver, "sdk");
 
       const qaResult = runHeadlessQa({
@@ -230,6 +237,7 @@ async function runForServer(serverKind) {
           serverName,
           ...coreUsers,
           logPath,
+          scenario,
           legLabel: "probed",
           expectSyncBackend: "SyncService",
           replayExistingStress: fixtureReplay
@@ -249,6 +257,7 @@ async function runForServer(serverKind) {
           serverName,
           ...coreUsers,
           logPath,
+          scenario,
           legLabel: "legacy",
           forceLegacyBackend: true,
           expectSyncBackend: "LegacySync"
@@ -295,6 +304,7 @@ function runHeadlessQa({
     [
       "run",
       "--quiet",
+      ...cargoProfileArgs(),
       "-p",
       "koushi-sdk",
       "--features",
@@ -348,6 +358,7 @@ function runCoreHeadlessQa({
   passwordB,
   userC,
   logPath,
+  scenario,
   legLabel = "default",
   forceLegacyBackend = false,
   expectSyncBackend,
@@ -372,7 +383,7 @@ function runCoreHeadlessQa({
     KOUSHI_LOCAL_QA_PASSWORD_B: passwordB,
     KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR: credStoreDir,
     KOUSHI_QA_DATA_DIR: runDataDir,
-    KOUSHI_QA_SCENARIO: scenarioOption
+    KOUSHI_QA_SCENARIO: scenario
   };
   if (userC) {
     env.KOUSHI_LOCAL_QA_USER_C = userC;
@@ -417,6 +428,7 @@ function runCoreHeadlessQa({
     [
       "run",
       "--quiet",
+      ...cargoProfileArgs(),
       "-p",
       "koushi-core",
       "--features",
@@ -564,8 +576,23 @@ function selectedServers(value) {
   throw new Error("--server must be conduit, tuwunel, synapse, matrixorg, both, or all");
 }
 
-function defaultCoreBackendForScenario(value) {
-  if (value === "all" || value === "e2ee_trust" || value === "timeline_stress") {
+function selectedScenarios(value) {
+  const scenarios = value
+    .split(",")
+    .map((scenario) => scenario.trim())
+    .filter(Boolean);
+  if (scenarios.length === 0) {
+    throw new Error("--scenario must name at least one scenario");
+  }
+  return scenarios;
+}
+
+function defaultCoreBackendForScenario(value, cargoProfile) {
+  if (cargoProfile === "release") {
+    return "probed";
+  }
+  const scenarios = selectedScenarios(value);
+  if (scenarios.some((scenario) => ["all", "e2ee_trust", "timeline_stress"].includes(scenario))) {
     return "probed";
   }
   return "both";
@@ -579,6 +606,28 @@ function shouldRunCoreBackend(backend) {
     return coreBackendOption === backend;
   }
   throw new Error("--core-backend must be probed, legacy, or both");
+}
+
+function cargoProfileArgs() {
+  if (cargoProfileOption === "dev") {
+    return [];
+  }
+  if (cargoProfileOption === "release") {
+    return ["--release"];
+  }
+  throw new Error("--cargo-profile must be dev or release");
+}
+
+function validateReleaseBackend() {
+  if (
+    cargoProfileOption === "release" &&
+    explicitCoreBackendOption !== undefined &&
+    (coreBackendOption === "legacy" || coreBackendOption === "both")
+  ) {
+    throw new Error(
+      "--cargo-profile=release cannot run LegacySync; use --core-backend=probed or --cargo-profile=dev"
+    );
+  }
 }
 
 function optionValue(name) {
@@ -601,12 +650,13 @@ function safeTimestamp() {
 
 function printUsage() {
   console.log(
-    "Usage: desktop-headless-local-qa.mjs --run [--server=conduit|tuwunel|synapse|matrixorg|both|all] [--scenario=all|timeline_stress|directory|room_management|activity|composer|credential_health|native_attention|send_queue|live_signals|link_preview] [--core] [--core-backend=probed|legacy|both] [--fixture-run=<local-run-dir>] [--e2ee-recipient-second-device] [--e2ee-pause-sync-before-multi-device-send]"
+    "Usage: desktop-headless-local-qa.mjs --run [--server=conduit|tuwunel|synapse|matrixorg|both|all] [--scenario=all|timeline_stress|directory|room_management|activity|composer|credential_health|native_attention|send_queue|live_signals|link_preview[,scenario...]] [--core] [--core-backend=probed|legacy|both] [--cargo-profile=dev|release] [--fixture-run=<local-run-dir>] [--e2ee-recipient-second-device] [--e2ee-pause-sync-before-multi-device-send]"
   );
   console.log("Starts a disposable local homeserver and runs non-GUI Matrix SDK QA.");
   console.log("  --server=synapse/matrixorg  Runs local Synapse in Docker.");
   console.log("  --core  Also run the headless-core-qa binary (Phase 2+ core runtime QA).");
   console.log("  --core-backend  Select core backend leg. E2EE scenarios default to probed.");
+  console.log("  --cargo-profile  Cargo profile for headless QA binaries; release runs faster after build.");
   console.log("  --fixture-run  Replay a saved local Synapse fixture by copying its data dir.");
   console.log(
     "  --e2ee-recipient-second-device  Require encrypted sends to decrypt on the recipient's second verified device."

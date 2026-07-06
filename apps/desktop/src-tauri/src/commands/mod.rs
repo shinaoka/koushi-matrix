@@ -192,6 +192,25 @@ pub(crate) async fn submit_login_request(
     Ok(())
 }
 
+pub(crate) async fn submit_soft_logout_reauth_request(
+    app: AppHandle,
+    state: &CoreRuntimeState,
+    password: AuthSecret,
+) -> Result<(), String> {
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
+    event_conn
+        .command(build_submit_soft_logout_reauth_command(
+            request_id, password,
+        ))
+        .await
+        .map_err(|e| format!("command submit failed: {e}"))?;
+
+    wait_for_logged_in_authenticated(&mut event_conn, request_id, LOGIN_EVENT_TIMEOUT).await?;
+    update_qa_window_title_from_state(&app, state).await;
+    Ok(())
+}
+
 const LOGIN_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const SELECT_ROOM_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const FOCUSED_CONTEXT_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -830,6 +849,16 @@ pub(crate) fn build_submit_login_command(
     CoreCommand::Account(AccountCommand::LoginPassword {
         request_id,
         request: login_request,
+    })
+}
+
+pub(crate) fn build_submit_soft_logout_reauth_command(
+    request_id: koushi_core::RequestId,
+    password: AuthSecret,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::SoftLogoutReauth {
+        request_id,
+        password,
     })
 }
 
@@ -2699,11 +2728,12 @@ mod tests {
         build_start_direct_message_command, build_submit_identity_reset_oauth_command,
         build_submit_identity_reset_password_command, build_submit_login_command,
         build_submit_recovery_command, build_submit_search_command,
-        build_subscribe_focused_timeline_command, build_switch_account_command,
-        build_toggle_reaction_command, build_unignore_user_command, build_unpin_event_command,
-        build_update_room_member_role_command, build_update_room_setting_command,
-        build_update_settings_command, build_upload_media_command, parse_qa_control_pipe_line,
-        parse_qa_login_pipe_payload, qa_recovery_prompt_is_available, qa_window_title_string,
+        build_submit_soft_logout_reauth_command, build_subscribe_focused_timeline_command,
+        build_switch_account_command, build_toggle_reaction_command, build_unignore_user_command,
+        build_unpin_event_command, build_update_room_member_role_command,
+        build_update_room_setting_command, build_update_settings_command,
+        build_upload_media_command, parse_qa_control_pipe_line, parse_qa_login_pipe_payload,
+        qa_recovery_prompt_is_available, qa_window_title_string,
         resolve_search_scope_from_active_room,
     };
     use koushi_state::{
@@ -2865,6 +2895,20 @@ mod tests {
                 assert_eq!(request.username, "alice");
                 assert_eq!(request.password.expose_secret(), "password-123");
                 assert_eq!(request.device_display_name.as_deref(), Some("Laptop"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_submit_soft_logout_reauth_command(
+            fake_request_id(102),
+            AuthSecret::new("reauth-password-123"),
+        ) {
+            CoreCommand::Account(AccountCommand::SoftLogoutReauth {
+                request_id,
+                password,
+            }) => {
+                assert_eq!(request_id, fake_request_id(102));
+                assert_eq!(password.expose_secret(), "reauth-password-123");
             }
             other => panic!("unexpected command: {other:?}"),
         }
