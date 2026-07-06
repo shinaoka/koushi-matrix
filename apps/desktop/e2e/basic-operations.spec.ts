@@ -6395,6 +6395,22 @@ test("E2EE trust controls dispatch Rust-owned commands and render snapshot updat
   await page.getByRole("button", { name: "Reset", exact: true }).click();
   await expect.poll(() => invocationCount(page, "reset_identity")).toBe(1);
   await expect(page.getByLabel("Password")).toBeVisible();
+  await page.getByRole("button", { name: "Cancel identity reset" }).click();
+  await expect.poll(() => invocationCount(page, "cancel_identity_reset")).toBe(1);
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.invocationsOf("cancel_identity_reset")[0]?.args)
+    )
+    .toEqual({ flowId: 9100 });
+  await expect
+    .poll(async () =>
+      page.evaluate(() => window.__harness.currentSnapshot().state.domain.e2ee_trust.identity_reset.kind)
+    )
+    .toBe("failed");
+
+  await page.getByRole("button", { name: "Reset", exact: true }).click();
+  await expect.poll(() => invocationCount(page, "reset_identity")).toBe(2);
+  await expect(page.getByLabel("Password")).toBeVisible();
   await page.getByLabel("Password").fill("identity reset smoke password");
   await page.getByRole("button", { name: "Continue" }).click();
 

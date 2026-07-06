@@ -512,6 +512,20 @@ pub(crate) fn handle_reset_identity_auth_submitted(
     vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
 }
 
+pub(crate) fn handle_reset_identity_cancelled(
+    state: &mut AppState,
+    request_id: u64,
+) -> Vec<AppEffect> {
+    handle_reset_identity_failed(state, request_id, TrustOperationFailureKind::Cancelled)
+}
+
+pub(crate) fn handle_reset_identity_timed_out(
+    state: &mut AppState,
+    request_id: u64,
+) -> Vec<AppEffect> {
+    handle_reset_identity_failed(state, request_id, TrustOperationFailureKind::Timeout)
+}
+
 pub(crate) fn handle_reset_identity_completed(
     state: &mut AppState,
     request_id: u64,

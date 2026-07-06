@@ -1425,6 +1425,34 @@ mock.setCommandResponse("reset_identity", () =>
     }
   })
 );
+mock.setCommandResponse("cancel_identity_reset", ({ flowId }: { flowId: number }) => {
+  const identityReset = currentSnapshot.state.domain.e2ee_trust.identity_reset;
+  if (identityReset.kind !== "awaitingAuth" || identityReset.request_id !== flowId) {
+    return currentSnapshot;
+  }
+  return setCurrentSnapshot({
+    ...currentSnapshot,
+    state: {
+      ...currentSnapshot.state,
+      domain: {
+        ...currentSnapshot.state.domain,
+        e2ee_trust: {
+          ...currentSnapshot.state.domain.e2ee_trust,
+          cross_signing: {
+            kind: "failed",
+            request_id: flowId,
+            failureKind: "cancelled"
+          },
+          identity_reset: {
+            kind: "failed",
+            request_id: flowId,
+            failureKind: "cancelled"
+          }
+        }
+      },
+    }
+  });
+});
 mock.setCommandResponse(
   "submit_identity_reset_password",
   ({ flowId }: { flowId: number; password: string }) => {

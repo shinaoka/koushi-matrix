@@ -128,6 +128,7 @@ describe("UserSettingsPanel", () => {
     onLogout: () => undefined,
     onResetLocalData: () => undefined,
     onResetIdentity: () => undefined,
+    onCancelIdentityReset: () => undefined,
     onSetAvatar: () => undefined,
     onSetDisplayName: () => undefined,
     onSubmitIdentityResetOAuth: () => undefined,

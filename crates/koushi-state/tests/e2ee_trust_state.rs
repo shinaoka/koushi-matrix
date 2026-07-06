@@ -799,6 +799,86 @@ fn identity_reset_auth_submission_returns_to_resetting_only_for_matching_flow() 
 }
 
 #[test]
+fn identity_reset_awaiting_auth_has_cancel_and_timeout_exits() {
+    let mut state = ready_state();
+
+    reduce(
+        &mut state,
+        AppAction::ResetIdentityRequested { request_id: 24 },
+    );
+    reduce(
+        &mut state,
+        AppAction::ResetIdentityAuthRequired {
+            request_id: 24,
+            auth_type: IdentityResetAuthType::Uiaa,
+        },
+    );
+
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::ResetIdentityCancelled { request_id: 99 },
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        state.e2ee_trust.identity_reset,
+        IdentityResetState::AwaitingAuth {
+            request_id: 24,
+            auth_type: IdentityResetAuthType::Uiaa,
+        }
+    );
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::ResetIdentityCancelled { request_id: 24 },
+        ),
+        vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+    );
+    assert_eq!(
+        state.e2ee_trust.identity_reset,
+        IdentityResetState::Failed {
+            request_id: 24,
+            kind: TrustOperationFailureKind::Cancelled,
+        }
+    );
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::ResetIdentityRequested { request_id: 25 },
+        ),
+        vec![
+            AppEffect::ResetIdentity { request_id: 25 },
+            AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+        ]
+    );
+    reduce(
+        &mut state,
+        AppAction::ResetIdentityAuthRequired {
+            request_id: 25,
+            auth_type: IdentityResetAuthType::OAuth,
+        },
+    );
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::ResetIdentityTimedOut { request_id: 25 },
+        ),
+        vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+    );
+    assert_eq!(
+        state.e2ee_trust.identity_reset,
+        IdentityResetState::Failed {
+            request_id: 25,
+            kind: TrustOperationFailureKind::Timeout,
+        }
+    );
+}
+
+#[test]
 fn identity_reset_auth_type_wire_values_are_stable() {
     assert_eq!(
         serde_json::to_value(IdentityResetAuthType::Uiaa).unwrap(),

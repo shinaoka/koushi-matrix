@@ -107,6 +107,7 @@ impl CoreCommand {
                 | AccountCommand::EnableKeyBackup { request_id, .. }
                 | AccountCommand::RestoreKeyBackup { request_id, .. }
                 | AccountCommand::ResetIdentity { request_id }
+                | AccountCommand::CancelIdentityReset { request_id, .. }
                 | AccountCommand::SubmitIdentityResetAuth { request_id, .. }
                 | AccountCommand::SetPresence { request_id, .. }
                 | AccountCommand::SetDisplayName { request_id, .. }
@@ -959,6 +960,10 @@ pub enum AccountCommand {
     ResetIdentity {
         request_id: RequestId,
     },
+    CancelIdentityReset {
+        request_id: RequestId,
+        flow_id: u64,
+    },
     SubmitIdentityResetAuth {
         request_id: RequestId,
         flow_id: u64,
@@ -1018,6 +1023,7 @@ impl AccountCommand {
                 | Self::BootstrapCrossSigning { .. }
                 | Self::EnableKeyBackup { .. }
                 | Self::ResetIdentity { .. }
+                | Self::CancelIdentityReset { .. }
                 | Self::SubmitIdentityResetAuth { .. }
                 | Self::QueryDevices { .. }
                 | Self::LoadAccountManagementCapabilities { .. }
@@ -1265,6 +1271,14 @@ impl fmt::Debug for AccountCommand {
             Self::ResetIdentity { request_id } => formatter
                 .debug_struct("ResetIdentity")
                 .field("request_id", request_id)
+                .finish(),
+            Self::CancelIdentityReset {
+                request_id,
+                flow_id,
+            } => formatter
+                .debug_struct("CancelIdentityReset")
+                .field("request_id", request_id)
+                .field("flow_id", flow_id)
                 .finish(),
             Self::SubmitIdentityResetAuth {
                 request_id,

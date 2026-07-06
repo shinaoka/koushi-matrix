@@ -115,6 +115,7 @@ describe("TauriDesktopApi", () => {
     await api.confirmSasVerification(42);
     await api.cancelVerification(43);
     await api.resetIdentity();
+    await api.cancelIdentityReset(44);
     await api.submitIdentityResetPassword(44, "synthetic-password");
     await api.submitIdentityResetOAuth(45);
 
@@ -124,6 +125,7 @@ describe("TauriDesktopApi", () => {
     expect(invoke).toHaveBeenCalledWith("confirm_sas_verification", { flowId: 42 });
     expect(invoke).toHaveBeenCalledWith("cancel_verification", { flowId: 43 });
     expect(invoke).toHaveBeenCalledWith("reset_identity");
+    expect(invoke).toHaveBeenCalledWith("cancel_identity_reset", { flowId: 44 });
     expect(invoke).toHaveBeenCalledWith("submit_identity_reset_password", {
       flowId: 44,
       password: "synthetic-password"

@@ -1741,6 +1741,8 @@ stateDiagram-v2
     Failed --> Resetting: ResetIdentityRequested
     Resetting --> AwaitingAuth: ResetIdentityAuthRequired [matching request_id]
     AwaitingAuth --> Resetting: ResetIdentityAuthSubmitted [matching request_id]
+    AwaitingAuth --> Failed: ResetIdentityCancelled [matching request_id]
+    AwaitingAuth --> Failed: ResetIdentityTimedOut [matching request_id]
     Resetting --> Idle: ResetIdentityCompleted [matching request_id]
     AwaitingAuth --> Idle: ResetIdentityCompleted [matching request_id]
     Resetting --> Failed: ResetIdentityFailed [matching request_id]
@@ -1758,6 +1760,10 @@ stateDiagram-v2
 - Verification start is accepted only when no verification is active
   (`Idle`, `Done`, or `Failed`). A second request while `Requested`,
   `Accepted`, `SasPresented`, or `Confirming` is ignored.
+- Identity reset auth waits expose a Rust-owned `CancelIdentityReset` command
+  and actor-owned timeout. Both settle the matching `AwaitingAuth` flow to
+  `Failed` with `Cancelled` or `Timeout`; stale flow ids are ignored and must
+  not cancel a newer SDK continuation.
 - All settle/progress actions are request-correlated. Stale request ids are
   ignored and must not clobber an active verification, cross-signing bootstrap,
   backup enable/restore, or identity reset.

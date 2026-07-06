@@ -2270,6 +2270,10 @@ export function App() {
     setSnapshot(await api.resetIdentity());
   }
 
+  async function cancelIdentityReset(flowId: number) {
+    setSnapshot(await api.cancelIdentityReset(flowId));
+  }
+
   async function submitIdentityResetPassword(flowId: number, password: string) {
     setSnapshot(await api.submitIdentityResetPassword(flowId, password));
   }
@@ -3849,6 +3853,9 @@ export function App() {
           }}
           onResetIdentity={() => {
             void resetIdentity();
+          }}
+          onCancelIdentityReset={(flowId) => {
+            void cancelIdentityReset(flowId);
           }}
           onSubmitIdentityResetOAuth={(flowId) => {
             void submitIdentityResetOAuth(flowId);

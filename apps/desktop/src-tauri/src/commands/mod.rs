@@ -1190,6 +1190,16 @@ pub(crate) fn build_reset_identity_command(request_id: koushi_core::RequestId) -
     CoreCommand::Account(AccountCommand::ResetIdentity { request_id })
 }
 
+pub(crate) fn build_cancel_identity_reset_command(
+    request_id: koushi_core::RequestId,
+    flow_id: u64,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::CancelIdentityReset {
+        request_id,
+        flow_id,
+    })
+}
+
 pub(crate) fn build_submit_identity_reset_password_command(
     request_id: koushi_core::RequestId,
     flow_id: u64,
@@ -2934,9 +2944,10 @@ mod tests {
     use super::{
         build_accept_invite_command, build_accept_verification_command,
         build_bootstrap_cross_signing_command, build_bootstrap_secure_backup_command,
-        build_cancel_scheduled_send_command, build_cancel_send_command,
-        build_cancel_verification_command, build_change_secure_backup_passphrase_command,
-        build_close_activity_command, build_close_files_view_command, build_close_search_command,
+        build_cancel_identity_reset_command, build_cancel_scheduled_send_command,
+        build_cancel_send_command, build_cancel_verification_command,
+        build_change_secure_backup_passphrase_command, build_close_activity_command,
+        build_close_files_view_command, build_close_search_command,
         build_confirm_sas_verification_command, build_create_room_command,
         build_create_space_command, build_decline_invite_command, build_discover_login_command,
         build_download_media_command, build_edit_message_command, build_enable_key_backup_command,
@@ -5402,9 +5413,20 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
+        match build_cancel_identity_reset_command(fake_request_id(31), 75) {
+            CoreCommand::Account(AccountCommand::CancelIdentityReset {
+                request_id,
+                flow_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(31));
+                assert_eq!(flow_id, 75);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
         let password_command = build_submit_identity_reset_password_command(
-            fake_request_id(31),
-            75,
+            fake_request_id(32),
+            76,
             AuthSecret::new("identity-reset-password"),
         );
         match &password_command {
@@ -5413,8 +5435,8 @@ mod tests {
                 flow_id,
                 request: IdentityResetAuthRequest::UiaaPassword { password },
             }) => {
-                assert_eq!(*request_id, fake_request_id(31));
-                assert_eq!(*flow_id, 75);
+                assert_eq!(*request_id, fake_request_id(32));
+                assert_eq!(*flow_id, 76);
                 assert_eq!(password.expose_secret(), "identity-reset-password");
             }
             other => panic!("unexpected command: {other:?}"),
@@ -5422,14 +5444,14 @@ mod tests {
         let debug = format!("{password_command:?}");
         assert!(!debug.contains("identity-reset-password"), "{debug}");
 
-        match build_submit_identity_reset_oauth_command(fake_request_id(32), 76) {
+        match build_submit_identity_reset_oauth_command(fake_request_id(33), 77) {
             CoreCommand::Account(AccountCommand::SubmitIdentityResetAuth {
                 request_id,
                 flow_id,
                 request: IdentityResetAuthRequest::OAuthApproved,
             }) => {
-                assert_eq!(request_id, fake_request_id(32));
-                assert_eq!(flow_id, 76);
+                assert_eq!(request_id, fake_request_id(33));
+                assert_eq!(flow_id, 77);
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -5623,6 +5645,11 @@ mod tests {
                 "pub async fn reset_identity",
                 "build_reset_identity_command",
                 "commands::e2ee::reset_identity",
+            ),
+            (
+                "pub async fn cancel_identity_reset",
+                "build_cancel_identity_reset_command",
+                "commands::e2ee::cancel_identity_reset",
             ),
             (
                 "pub async fn submit_identity_reset_password",

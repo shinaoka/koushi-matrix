@@ -1274,8 +1274,7 @@ impl AppActor {
         let store = self.composer_draft_store_actor.clone();
         let load_key_id = key_id.clone();
         let scheduled_sends = executor::spawn_blocking(move || {
-            store.load_scheduled_sends(&load_key_id)
-                .unwrap_or_default()
+            store.load_scheduled_sends(&load_key_id).unwrap_or_default()
         })
         .await
         .unwrap_or_default();
@@ -1316,10 +1315,9 @@ impl AppActor {
     async fn persist_scheduled_sends(&mut self, key_id: koushi_key::SessionKeyId) {
         let store = self.composer_draft_store_actor.clone();
         let scheduled_sends = self.state.scheduled_sends.clone();
-        let _ = executor::spawn_blocking(move || {
-            store.save_scheduled_sends(&key_id, &scheduled_sends)
-        })
-        .await;
+        let _ =
+            executor::spawn_blocking(move || store.save_scheduled_sends(&key_id, &scheduled_sends))
+                .await;
     }
 
     async fn persist_navigation(&mut self, key_id: koushi_key::SessionKeyId) {
@@ -1334,10 +1332,9 @@ impl AppActor {
         };
         let store = self.composer_draft_store_actor.clone();
         let preferences = preferences.clone();
-        let _ = executor::spawn_blocking(move || {
-            store.save_room_preferences(&key_id, &preferences)
-        })
-        .await;
+        let _ =
+            executor::spawn_blocking(move || store.save_room_preferences(&key_id, &preferences))
+                .await;
     }
 
     async fn schedule_composer_draft_persist(
@@ -2519,8 +2516,10 @@ impl AppActor {
                         continue;
                     }
                     let settings_store = self.settings_store.clone();
-                    let action = match executor::spawn_blocking(move || settings_store.save(&values))
-                        .await
+                    let action = match executor::spawn_blocking(move || {
+                        settings_store.save(&values)
+                    })
+                    .await
                     {
                         Ok(Ok(())) => AppAction::SettingsPersisted {
                             request_id: effect_request_id,
@@ -3079,6 +3078,11 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         AccountCommand::ResetIdentity { request_id } => Some(AppAction::ResetIdentityRequested {
             request_id: request_id.sequence,
         }),
+        AccountCommand::CancelIdentityReset { flow_id, .. } => {
+            Some(AppAction::ResetIdentityCancelled {
+                request_id: *flow_id,
+            })
+        }
         AccountCommand::ProbeLocalEncryptionHealth { request_id } => {
             Some(AppAction::LocalEncryptionProbeRequested {
                 request_id: request_id.sequence,
@@ -3544,7 +3548,7 @@ mod tests {
                 delta = Some(next);
                 break;
             }
-        };
+        }
         let delta = delta.expect("expected state delta event");
 
         let snapshot = connection.versioned_snapshot();

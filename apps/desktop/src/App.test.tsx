@@ -24,6 +24,7 @@ describe("ContextualRightPanel", () => {
     onProbeLocalEncryption: () => undefined,
     onResetLocalData: () => undefined,
     onResetIdentity: () => undefined,
+    onCancelIdentityReset: () => undefined,
     onSubmitIdentityResetOAuth: () => undefined,
     onSubmitIdentityResetPassword: () => undefined
   };

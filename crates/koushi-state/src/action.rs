@@ -266,6 +266,12 @@ pub enum AppAction {
     ResetIdentityAuthSubmitted {
         request_id: u64,
     },
+    ResetIdentityCancelled {
+        request_id: u64,
+    },
+    ResetIdentityTimedOut {
+        request_id: u64,
+    },
     ResetIdentityCompleted {
         request_id: u64,
     },

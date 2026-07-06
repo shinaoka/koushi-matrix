@@ -1047,6 +1047,7 @@ pub fn run() {
             commands::e2ee::confirm_sas_verification,
             commands::e2ee::cancel_verification,
             commands::e2ee::reset_identity,
+            commands::e2ee::cancel_identity_reset,
             commands::e2ee::submit_identity_reset_password,
             commands::e2ee::submit_identity_reset_oauth,
             commands::timeline::resolve_composer_key_action,

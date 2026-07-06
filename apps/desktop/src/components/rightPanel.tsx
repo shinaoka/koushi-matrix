@@ -106,6 +106,7 @@ export function ContextualRightPanel({
   onChangeSecureBackupPassphrase,
   onEnableKeyBackup,
   onResetIdentity,
+  onCancelIdentityReset,
   onResolveComposerKeyAction = ignoreComposerKeyAction,
   onSetAvatar = () => undefined,
   onSetDisplayName = () => undefined,
@@ -208,6 +209,7 @@ export function ContextualRightPanel({
   ) => void;
   onEnableKeyBackup: () => void;
   onResetIdentity: () => void;
+  onCancelIdentityReset: (flowId: number) => void;
   onResolveComposerKeyAction?: ResolveComposerKeyAction;
   onSetAvatar?: (file: File) => void;
   onSetDisplayName?: (displayName: string | null) => void;
@@ -308,6 +310,7 @@ export function ContextualRightPanel({
           onResetLocalData={onResetLocalData}
           onLogout={onLogout}
           onResetIdentity={onResetIdentity}
+          onCancelIdentityReset={onCancelIdentityReset}
           onSetAvatar={onSetAvatar}
           onSetDisplayName={onSetDisplayName}
           onSubmitIdentityResetOAuth={onSubmitIdentityResetOAuth}

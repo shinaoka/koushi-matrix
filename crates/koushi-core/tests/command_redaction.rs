@@ -285,6 +285,10 @@ fn e2ee_trust_account_commands_are_correlated_ready_gated_and_redacted() {
             },
         }),
         CoreCommand::Account(AccountCommand::ResetIdentity { request_id }),
+        CoreCommand::Account(AccountCommand::CancelIdentityReset {
+            request_id,
+            flow_id,
+        }),
         CoreCommand::Account(AccountCommand::SubmitIdentityResetAuth {
             request_id,
             flow_id,

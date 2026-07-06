@@ -83,6 +83,7 @@ const AVATAR_DOWNLOAD_CONCURRENCY: usize = 6;
 const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
 const SERVER_LOGOUT_TIMEOUT: Duration = Duration::from_secs(10);
 const ACCOUNT_HYDRATION_TIMEOUT: Duration = Duration::from_secs(10);
+const IDENTITY_RESET_AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 const OIDC_REDIRECT_URI: &str = "koushi-desktop://auth/callback";
 const ENV_SYNC_TRACE: &str = "KOUSHI_SYNC_TRACE";
 
@@ -188,6 +189,9 @@ pub enum AccountMessage {
     },
     SessionInvalidated {
         soft_logout: bool,
+    },
+    IdentityResetAuthTimedOut {
+        flow_id: u64,
     },
     /// Internal: a spawned avatar-fetch task completed. Never exposed to
     /// Tauri/React; carries only the resolved state back into the actor loop.
@@ -321,6 +325,10 @@ pub struct AccountActor {
     recovery_observer: Option<RecoveryStateObservation>,
     /// Pending SDK identity reset continuation, held only inside AccountActor.
     identity_reset_handle: Option<koushi_sdk::MatrixIdentityResetHandle>,
+    /// Flow id for the pending SDK identity reset continuation.
+    identity_reset_flow_id: Option<u64>,
+    /// Timeout task for the pending identity reset auth challenge.
+    identity_reset_timeout_task: Option<crate::executor::JoinHandle<()>>,
     /// Actor-private mapping from app-owned device ordinal to raw Matrix
     /// device id. Raw ids never enter reducer state or snapshots.
     device_session_ordinals: BTreeMap<u64, String>,
@@ -422,6 +430,8 @@ impl AccountActor {
             threads_list_actor: None,
             recovery_observer: None,
             identity_reset_handle: None,
+            identity_reset_flow_id: None,
+            identity_reset_timeout_task: None,
             device_session_ordinals: BTreeMap::new(),
             pending_uia_operations: BTreeMap::new(),
             pending_oidc_login: None,
@@ -586,6 +596,9 @@ impl AccountActor {
                 }
                 AccountMessage::SessionInvalidated { soft_logout } => {
                     self.handle_session_invalidated(soft_logout).await;
+                }
+                AccountMessage::IdentityResetAuthTimedOut { flow_id } => {
+                    self.handle_identity_reset_auth_timeout(flow_id).await;
                 }
                 AccountMessage::AvatarFetched {
                     mxc_uri,
@@ -1465,9 +1478,34 @@ impl AccountActor {
     }
 
     async fn cancel_identity_reset_handle(&mut self) {
+        self.identity_reset_flow_id = None;
+        if let Some(task) = self.identity_reset_timeout_task.take() {
+            task.abort();
+        }
         if let Some(handle) = self.identity_reset_handle.take() {
             handle.cancel().await;
         }
+    }
+
+    fn spawn_identity_reset_auth_timeout(&mut self, flow_id: u64) {
+        if let Some(task) = self.identity_reset_timeout_task.take() {
+            task.abort();
+        }
+        let tx = self.self_tx.clone();
+        self.identity_reset_timeout_task = Some(executor::spawn(async move {
+            executor::sleep(IDENTITY_RESET_AUTH_TIMEOUT).await;
+            let _ = tx
+                .send(AccountMessage::IdentityResetAuthTimedOut { flow_id })
+                .await;
+        }));
+    }
+
+    fn clear_identity_reset_handle_after_completion(&mut self) {
+        self.identity_reset_flow_id = None;
+        if let Some(task) = self.identity_reset_timeout_task.take() {
+            task.abort();
+        }
+        self.identity_reset_handle = None;
     }
 
     async fn stop_verification_request_observer(&mut self) {
@@ -1660,6 +1698,12 @@ impl AccountActor {
             }
             AccountCommand::ResetIdentity { request_id } => {
                 self.handle_reset_identity(request_id).await;
+            }
+            AccountCommand::CancelIdentityReset {
+                request_id,
+                flow_id,
+            } => {
+                self.handle_cancel_identity_reset(request_id, flow_id).await;
             }
             AccountCommand::SubmitIdentityResetAuth {
                 request_id,
@@ -2176,7 +2220,8 @@ impl AccountActor {
         let generation = self.account_hydration_generation;
         let self_tx = self.self_tx.clone();
         self.account_hydration_task = Some(crate::executor::spawn(async move {
-            let (actions, ignored_user_ids) = account_hydration_actions_from_session(&session).await;
+            let (actions, ignored_user_ids) =
+                account_hydration_actions_from_session(&session).await;
             if actions.is_empty() {
                 return;
             }
@@ -2848,6 +2893,48 @@ impl AccountActor {
         }
     }
 
+    async fn handle_cancel_identity_reset(&mut self, _request_id: RequestId, flow_id: u64) {
+        if self.identity_reset_flow_id != Some(flow_id) {
+            return;
+        }
+        let account_key = self.active_account_key();
+        self.cancel_identity_reset_handle().await;
+        self.send_actions(vec![AppAction::ResetIdentityCancelled {
+            request_id: flow_id,
+        }])
+        .await;
+        if let Some(account_key) = account_key {
+            for event in project_identity_reset_failed_event(
+                flow_id,
+                account_key,
+                TrustOperationFailureKind::Cancelled,
+            ) {
+                self.emit(event);
+            }
+        }
+    }
+
+    async fn handle_identity_reset_auth_timeout(&mut self, flow_id: u64) {
+        if self.identity_reset_flow_id != Some(flow_id) {
+            return;
+        }
+        let account_key = self.active_account_key();
+        self.cancel_identity_reset_handle().await;
+        self.send_actions(vec![AppAction::ResetIdentityTimedOut {
+            request_id: flow_id,
+        }])
+        .await;
+        if let Some(account_key) = account_key {
+            for event in project_identity_reset_failed_event(
+                flow_id,
+                account_key,
+                TrustOperationFailureKind::Timeout,
+            ) {
+                self.emit(event);
+            }
+        }
+    }
+
     async fn handle_submit_identity_reset_auth(
         &mut self,
         request_id: RequestId,
@@ -2872,6 +2959,9 @@ impl AccountActor {
             }
         };
         let account_key = AccountKey(session.info.user_id.clone());
+        if self.identity_reset_flow_id != Some(flow_id) {
+            return;
+        }
         let result = match self.identity_reset_handle.as_ref() {
             Some(handle) => koushi_sdk::complete_identity_reset(&session, handle, &request).await,
             None => Err(koushi_sdk::E2eeTrustError::Sdk(
@@ -2883,7 +2973,7 @@ impl AccountActor {
 
         match result {
             Ok(()) => {
-                self.identity_reset_handle = None;
+                self.clear_identity_reset_handle_after_completion();
                 let (actions, events) =
                     project_reset_identity_completed(flow_request_id, account_key);
                 self.send_actions(actions).await;
@@ -3232,6 +3322,8 @@ impl AccountActor {
             Ok(koushi_sdk::IdentityResetOutcome::AuthRequired(handle)) => {
                 let auth_type = handle.desktop_auth_type();
                 self.cancel_identity_reset_handle().await;
+                self.identity_reset_flow_id = Some(request_id.sequence);
+                self.spawn_identity_reset_auth_timeout(request_id.sequence);
                 self.identity_reset_handle = Some(handle);
                 let (actions, events) =
                     project_reset_identity_auth_required(request_id, account_key, auth_type);
@@ -4818,12 +4910,15 @@ async fn account_hydration_actions_from_session(
 }
 
 async fn own_profile_action_from_session(session: &MatrixClientSession) -> Option<AppAction> {
-    crate::executor::timeout(ACCOUNT_HYDRATION_TIMEOUT, koushi_sdk::get_own_profile(session))
-        .await
-        .ok()?
-        .ok()
-        .map(map_matrix_own_profile)
-        .map(|profile| AppAction::OwnProfileUpdated { profile })
+    crate::executor::timeout(
+        ACCOUNT_HYDRATION_TIMEOUT,
+        koushi_sdk::get_own_profile(session),
+    )
+    .await
+    .ok()?
+    .ok()
+    .map(map_matrix_own_profile)
+    .map(|profile| AppAction::OwnProfileUpdated { profile })
 }
 
 async fn local_user_aliases_action_from_session(
@@ -5217,6 +5312,23 @@ fn project_reset_identity_error(
             CoreEvent::E2eeTrust(E2eeTrustEvent::IdentityResetChanged { account_key, state }),
         ],
     )
+}
+
+fn project_identity_reset_failed_event(
+    request_id: u64,
+    account_key: AccountKey,
+    kind: TrustOperationFailureKind,
+) -> Vec<CoreEvent> {
+    vec![
+        CoreEvent::E2eeTrust(E2eeTrustEvent::CrossSigningChanged {
+            account_key: account_key.clone(),
+            status: CrossSigningStatus::Failed { request_id, kind },
+        }),
+        CoreEvent::E2eeTrust(E2eeTrustEvent::IdentityResetChanged {
+            account_key,
+            state: IdentityResetState::Failed { request_id, kind },
+        }),
+    ]
 }
 
 fn incoming_verification_request_id(sequence: u64) -> RequestId {
@@ -6080,6 +6192,8 @@ mod tests {
             threads_list_actor: None,
             recovery_observer: None,
             identity_reset_handle: None,
+            identity_reset_flow_id: None,
+            identity_reset_timeout_task: None,
             device_session_ordinals: BTreeMap::new(),
             pending_uia_operations: BTreeMap::new(),
             verification_request: None,
@@ -6485,6 +6599,78 @@ mod tests {
         assert!(
             !handler.contains("CoreFailure::StoreUnavailable"),
             "device list failures must not masquerade as credential-store failures"
+        );
+    }
+
+    #[test]
+    fn identity_reset_auth_wait_has_cancel_and_timeout_exits() {
+        let source = include_str!("account.rs");
+        let actor_fields = source
+            .split("pub struct AccountActor {")
+            .nth(1)
+            .expect("account actor fields should exist")
+            .split("impl AccountActor")
+            .next()
+            .expect("account actor impl should follow fields");
+        let command_route = source
+            .split("async fn handle_command")
+            .nth(1)
+            .expect("command router should exist")
+            .split("async fn route_sync_command")
+            .next()
+            .expect("sync router should follow command router");
+        let cancel_handler = source
+            .split("async fn handle_cancel_identity_reset")
+            .nth(1)
+            .expect("identity reset cancel handler should exist")
+            .split("async fn handle_submit_identity_reset_auth")
+            .next()
+            .expect("auth submit handler should follow cancel handler");
+        let auth_required_branch = source
+            .split("IdentityResetOutcome::AuthRequired(handle)")
+            .nth(1)
+            .expect("identity reset auth-required branch should exist")
+            .split("Err(error)")
+            .next()
+            .expect("error branch should follow auth-required branch");
+        let timeout_handler = source
+            .split("async fn handle_identity_reset_auth_timeout")
+            .nth(1)
+            .expect("identity reset timeout handler should exist")
+            .split("async fn handle_submit_identity_reset_auth")
+            .next()
+            .expect("auth submit handler should follow timeout handler");
+        let cleanup = source
+            .split("async fn cancel_identity_reset_handle")
+            .nth(1)
+            .expect("identity reset cleanup helper should exist")
+            .split("async fn stop_verification_request_observer")
+            .next()
+            .expect("verification cleanup should follow identity reset cleanup");
+
+        assert!(
+            actor_fields.contains("identity_reset_timeout_task"),
+            "AccountActor must retain a timeout task for the pending identity-reset UIA wait"
+        );
+        assert!(
+            command_route.contains("AccountCommand::CancelIdentityReset"),
+            "identity reset must expose a user-invocable cancel command"
+        );
+        assert!(
+            cancel_handler.contains("AppAction::ResetIdentityCancelled"),
+            "cancel command must settle reducer state through a typed cancel action"
+        );
+        assert!(
+            auth_required_branch.contains("spawn_identity_reset_auth_timeout"),
+            "auth-required identity reset waits must schedule a bounded timeout"
+        );
+        assert!(
+            timeout_handler.contains("AppAction::ResetIdentityTimedOut"),
+            "timeout must settle reducer state through a typed timeout action"
+        );
+        assert!(
+            cleanup.contains("identity_reset_timeout_task"),
+            "identity reset cleanup must abort the timeout task together with the SDK handle"
         );
     }
 

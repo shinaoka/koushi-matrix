@@ -111,6 +111,7 @@ export interface DesktopApi {
   confirmSasVerification(flowId: number): Promise<DesktopSnapshot>;
   cancelVerification(flowId: number): Promise<DesktopSnapshot>;
   resetIdentity(): Promise<DesktopSnapshot>;
+  cancelIdentityReset(flowId: number): Promise<DesktopSnapshot>;
   submitIdentityResetPassword(flowId: number, password: string): Promise<DesktopSnapshot>;
   submitIdentityResetOAuth(flowId: number): Promise<DesktopSnapshot>;
   resolveComposerKeyAction(
@@ -860,6 +861,27 @@ class BrowserFakeApi implements DesktopApi {
       request_id: this.nextRequestId(),
       auth_type: "uiaa"
     };
+    return this.getSnapshot();
+  }
+
+  async cancelIdentityReset(flowId: number): Promise<DesktopSnapshot> {
+    if (!this.isReady()) {
+      return this.getSnapshot();
+    }
+
+    const identityReset = this.snapshot.state.domain.e2ee_trust.identity_reset;
+    if (identityReset.kind === "awaitingAuth" && identityReset.request_id === flowId) {
+      this.snapshot.state.domain.e2ee_trust.identity_reset = {
+        kind: "failed",
+        request_id: flowId,
+        failureKind: "cancelled"
+      };
+      this.snapshot.state.domain.e2ee_trust.cross_signing = {
+        kind: "failed",
+        request_id: flowId,
+        failureKind: "cancelled"
+      };
+    }
     return this.getSnapshot();
   }
 

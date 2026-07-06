@@ -148,6 +148,12 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::ResetIdentityAuthSubmitted { request_id } => {
             e2ee::handle_reset_identity_auth_submitted(state, request_id)
         }
+        AppAction::ResetIdentityCancelled { request_id } => {
+            e2ee::handle_reset_identity_cancelled(state, request_id)
+        }
+        AppAction::ResetIdentityTimedOut { request_id } => {
+            e2ee::handle_reset_identity_timed_out(state, request_id)
+        }
         AppAction::ResetIdentityCompleted { request_id } => {
             e2ee::handle_reset_identity_completed(state, request_id)
         }

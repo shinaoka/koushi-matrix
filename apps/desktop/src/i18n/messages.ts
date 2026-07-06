@@ -532,6 +532,7 @@ export type MessageId =
   | "trust.acceptVerification"
   | "trust.closeVerification"
   | "trust.confirmSas"
+  | "trust.cancelIdentityReset"
   | "trust.continueIdentityReset"
   | "trust.crossSigning"
   | "trust.declineVerification"
@@ -1499,6 +1500,7 @@ const en: Catalog = {
   "trust.acceptVerification": "Accept",
   "trust.closeVerification": "Close",
   "trust.confirmSas": "Confirm",
+  "trust.cancelIdentityReset": "Cancel identity reset",
   "trust.continueIdentityReset": "Continue",
   "trust.crossSigning": "Cross-signing",
   "trust.declineVerification": "Decline",
@@ -2352,6 +2354,7 @@ const ja: Catalog = {
   "trust.acceptVerification": "承認",
   "trust.closeVerification": "閉じる",
   "trust.confirmSas": "確認",
+  "trust.cancelIdentityReset": "IDリセットをキャンセル",
   "trust.continueIdentityReset": "続行",
   "trust.crossSigning": "クロス署名",
   "trust.declineVerification": "拒否",
