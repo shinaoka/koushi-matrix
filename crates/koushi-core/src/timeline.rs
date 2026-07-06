@@ -847,12 +847,8 @@ impl TimelineManagerActor {
         };
         trace("start");
         let Some(session) = &self.session else {
-            self.emit_failure(
-                request_id,
-                CoreFailure::TimelineOperationFailed {
-                    kind: TimelineFailureKind::NotSubscribed,
-                },
-            );
+            self.emit_subscription_failure(request_id, &key, TimelineFailureKind::NotSubscribed)
+                .await;
             return;
         };
 
@@ -877,7 +873,7 @@ impl TimelineManagerActor {
             Some(Ok(())) => {
                 // Re-emit the subscribed action so the reducer re-confirms
                 // `is_subscribed = true` (idempotent in the reducer).
-                self.emit_timeline_subscribed_action(&key);
+                self.emit_timeline_subscribed_action(&key).await;
                 if !replay_existing {
                     trace("replay_initial_skipped");
                 }
@@ -904,12 +900,8 @@ impl TimelineManagerActor {
         let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
+                self.emit_subscription_failure(request_id, &key, TimelineFailureKind::Sdk)
+                    .await;
                 return;
             }
         };
@@ -917,12 +909,8 @@ impl TimelineManagerActor {
         let room = match client.get_room(&room_id) {
             Some(r) => r,
             None => {
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
+                self.emit_subscription_failure(request_id, &key, TimelineFailureKind::Sdk)
+                    .await;
                 return;
             }
         };
@@ -948,12 +936,8 @@ impl TimelineManagerActor {
                         root_event_id: event_id,
                     },
                     Err(_) => {
-                        self.emit_failure(
-                            request_id,
-                            CoreFailure::TimelineOperationFailed {
-                                kind: TimelineFailureKind::Sdk,
-                            },
-                        );
+                        self.emit_subscription_failure(request_id, &key, TimelineFailureKind::Sdk)
+                            .await;
                         return;
                     }
                 }
@@ -969,12 +953,8 @@ impl TimelineManagerActor {
                             },
                     },
                     Err(_) => {
-                        self.emit_failure(
-                            request_id,
-                            CoreFailure::TimelineOperationFailed {
-                                kind: TimelineFailureKind::Sdk,
-                            },
-                        );
+                        self.emit_subscription_failure(request_id, &key, TimelineFailureKind::Sdk)
+                            .await;
                         return;
                     }
                 }
@@ -990,12 +970,8 @@ impl TimelineManagerActor {
         let timeline = match timeline_result {
             Ok(t) => Arc::new(t),
             Err(_) => {
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
+                self.emit_subscription_failure(request_id, &key, TimelineFailureKind::Sdk)
+                    .await;
                 return;
             }
         };
@@ -1017,7 +993,7 @@ impl TimelineManagerActor {
         .await;
         trace("spawn_done");
 
-        self.emit_timeline_subscribed_action(&key);
+        self.emit_timeline_subscribed_action(&key).await;
         self.timelines.insert(key, handle);
         trace("subscribed_done");
     }
@@ -1054,7 +1030,19 @@ impl TimelineManagerActor {
         });
     }
 
-    fn emit_timeline_subscribed_action(&self, key: &TimelineKey) {
+    async fn emit_subscription_failure(
+        &self,
+        request_id: RequestId,
+        key: &TimelineKey,
+        kind: TimelineFailureKind,
+    ) {
+        if let Some(action) = timeline_subscription_failed_action(key) {
+            let _ = self.action_tx.send(vec![action]).await;
+        }
+        self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
+    }
+
+    async fn emit_timeline_subscribed_action(&self, key: &TimelineKey) {
         let action = match &key.kind {
             TimelineKind::Room { room_id } => AppAction::TimelineSubscribed {
                 room_id: room_id.clone(),
@@ -1071,7 +1059,28 @@ impl TimelineManagerActor {
                 event_id: event_id.clone(),
             },
         };
-        let _ = self.action_tx.try_send(vec![action]);
+        let _ = self.action_tx.send(vec![action]).await;
+    }
+}
+
+fn timeline_subscription_failed_action(key: &TimelineKey) -> Option<AppAction> {
+    match &key.kind {
+        TimelineKind::Room { .. } => None,
+        TimelineKind::Thread {
+            room_id,
+            root_event_id,
+        } => Some(AppAction::ThreadSubscriptionFailed {
+            room_id: room_id.clone(),
+            root_event_id: root_event_id.clone(),
+            message: "timeline subscription failed".to_owned(),
+        }),
+        TimelineKind::Focused { room_id, event_id } => {
+            Some(AppAction::FocusedContextSubscriptionFailed {
+                room_id: room_id.clone(),
+                event_id: event_id.clone(),
+                message: "timeline subscription failed".to_owned(),
+            })
+        }
     }
 }
 
@@ -9053,6 +9062,58 @@ mod tests {
         assert!(
             handle_subscribe_source.contains(room_token),
             "main timeline subscription state should only be marked for room timelines"
+        );
+    }
+
+    #[test]
+    fn timeline_subscribe_settles_use_reliable_reducer_actions() {
+        let source = include_str!("timeline.rs");
+        let subscribed_helper = source
+            .split("async fn emit_timeline_subscribed_action")
+            .nth(1)
+            .expect("subscribed action helper should exist")
+            .split("fn timeline_subscription_failed_action")
+            .next()
+            .expect("failure action helper should follow subscribed helper");
+        assert!(
+            subscribed_helper.contains("self.action_tx.send(vec![action]).await"),
+            "timeline subscribe success must enqueue reducer settle actions reliably"
+        );
+        assert!(
+            !subscribed_helper.contains("try_send(vec![action])"),
+            "timeline subscribe success must not use drop-on-full try_send"
+        );
+
+        let failure_helper = source
+            .split("fn timeline_subscription_failed_action")
+            .nth(1)
+            .expect("failure action helper should exist")
+            .split("fn internal_timeline_request_id")
+            .next()
+            .expect("request-id helper should follow failure helper");
+        assert!(
+            failure_helper.contains("TimelineKind::Room { .. } => None"),
+            "main room subscription failures use the existing main timeline failure path"
+        );
+        assert!(
+            failure_helper.contains("AppAction::ThreadSubscriptionFailed"),
+            "thread subscription failures must settle the thread opening state"
+        );
+        assert!(
+            failure_helper.contains("AppAction::FocusedContextSubscriptionFailed"),
+            "focused subscription failures must settle the focused opening state"
+        );
+
+        let subscribe_body = source
+            .split("async fn handle_subscribe")
+            .nth(1)
+            .expect("handle_subscribe should exist")
+            .split("async fn route_to_actor_or_fail")
+            .next()
+            .expect("route helper should follow subscribe");
+        assert!(
+            subscribe_body.contains("self.emit_subscription_failure"),
+            "subscribe failure branches must emit reducer failure actions"
         );
     }
 

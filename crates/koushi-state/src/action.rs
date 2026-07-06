@@ -761,6 +761,11 @@ pub enum AppAction {
         room_id: String,
         root_event_id: String,
     },
+    ThreadSubscriptionFailed {
+        room_id: String,
+        root_event_id: String,
+        message: String,
+    },
     ThreadAttentionUpdated {
         room_id: String,
         root_event_id: String,
@@ -776,6 +781,11 @@ pub enum AppAction {
     FocusedContextSubscribed {
         room_id: String,
         event_id: String,
+    },
+    FocusedContextSubscriptionFailed {
+        room_id: String,
+        event_id: String,
+        message: String,
     },
     CloseFocusedContext,
     SearchClosed,

@@ -423,13 +423,15 @@ stateDiagram-v2
 
 - The thread pane is either closed, opening a root event, or open with a focused
   thread timeline.
-- Thread subscription success must match the current opening room and root event;
-  stale thread signals are ignored.
+- Thread subscription success or failure must match the current opening room and
+  root event; stale thread signals are ignored.
 - Opening a thread is not complete when `ThreadPaneState` changes to `Opening`.
   The production runtime must also subscribe the corresponding
   `TimelineKind::Thread { room_id, root_event_id }`. Only the actual thread
   timeline subscription success may drive `ThreadSubscribed` and move the pane to
-  `Open`.
+  `Open`. Matching subscription failure drives `ThreadSubscriptionFailed`, closes
+  the pane, clears pane-level thread attention, and records a private-data-free
+  recoverable error.
 - Thread pane identity and open/closed state are Rust-owned `AppState`. Visible
   thread items are not stored in `AppState`; they flow as `TimelineEvent`
   batches/diffs keyed by the thread `TimelineKey`. Legacy top-level frontend
@@ -1100,6 +1102,7 @@ stateDiagram-v2
     Opening --> Opening: OpenFocusedContext [replacement]
     Open --> Opening: OpenFocusedContext [replacement]
     Opening --> Open: FocusedContextSubscribed
+    Opening --> Closed: FocusedContextSubscriptionFailed
     Opening --> Closed: CloseFocusedContext
     Open --> Closed: CloseFocusedContext
 ```
@@ -1113,6 +1116,8 @@ stateDiagram-v2
   `TimelineKind::Focused { room_id, event_id }` through that effect.
 - `FocusedContextSubscribed { room_id, event_id }` moves `Opening` to `Open`
   only when both fields match the currently opening context; stale subscription signals are ignored.
+  Matching `FocusedContextSubscriptionFailed` closes the opening context and
+  records a private-data-free recoverable error; stale failures are ignored.
 - `CloseFocusedContext` closes an `Opening` or `Open` context for a ready
   session. close from `Closed`, or any close without a ready session, is a no-op.
 - Focused context replacement is core-owned: when opening a different focused

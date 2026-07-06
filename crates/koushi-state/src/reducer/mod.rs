@@ -800,6 +800,11 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             root_event_id,
         } => thread::handle_thread_subscribed(state, room_id, root_event_id),
+        AppAction::ThreadSubscriptionFailed {
+            room_id,
+            root_event_id,
+            message,
+        } => thread::handle_thread_subscription_failed(state, room_id, root_event_id, message),
         AppAction::ThreadAttentionUpdated {
             room_id,
             root_event_id,
@@ -821,6 +826,11 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::FocusedContextSubscribed { room_id, event_id } => {
             thread::handle_focused_context_subscribed(state, room_id, event_id)
         }
+        AppAction::FocusedContextSubscriptionFailed {
+            room_id,
+            event_id,
+            message,
+        } => thread::handle_focused_context_subscription_failed(state, room_id, event_id, message),
         AppAction::CloseFocusedContext => thread::handle_close_focused_context(state),
         AppAction::SearchEdited { query, scope } => {
             search::handle_search_edited(state, query, scope)

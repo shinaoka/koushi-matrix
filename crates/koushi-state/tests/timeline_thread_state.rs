@@ -1078,6 +1078,69 @@ fn thread_subscription_success_must_match_current_opening_thread() {
 }
 
 #[test]
+fn thread_subscription_failure_exits_matching_opening_thread() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::OpenThread {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+        },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::ThreadSubscriptionFailed {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            message: "fixture-access-token rejected synthetic-thread".to_owned(),
+        },
+    );
+
+    assert_eq!(state.thread, ThreadPaneState::Closed);
+    assert_eq!(state.thread_attention, ThreadAttentionState::Closed);
+    assert_eq!(state.errors.len(), 1);
+    assert_eq!(state.errors[0].code, "thread_subscription_failed");
+    assert_eq!(state.errors[0].message, "Matrix thread subscription failed");
+    let formatted_errors = format!("{:?}", state.errors);
+    assert!(!formatted_errors.contains("fixture-access-token"));
+    assert!(!formatted_errors.contains("synthetic-thread"));
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
+            AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+        ]
+    );
+}
+
+#[test]
+fn stale_thread_subscription_failure_is_ignored() {
+    let mut state = selected_room_state("room-a");
+    reduce(
+        &mut state,
+        AppAction::OpenThread {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+        },
+    );
+    let opening_state = state.clone();
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::ThreadSubscriptionFailed {
+                room_id: "room-a".to_owned(),
+                root_event_id: "$other".to_owned(),
+                message: "late failure".to_owned(),
+            },
+        ),
+        Vec::new()
+    );
+    assert_eq!(state, opening_state);
+}
+
+#[test]
 fn close_thread_only_notifies_when_thread_was_active() {
     let mut state = selected_room_state("room-a");
 
@@ -1167,6 +1230,11 @@ fn timeline_and_thread_actions_are_ignored_without_ready_session() {
         AppAction::ThreadSubscribed {
             room_id: "room-a".to_owned(),
             root_event_id: "$root".to_owned(),
+        },
+        AppAction::ThreadSubscriptionFailed {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            message: "failed".to_owned(),
         },
         AppAction::CloseThread,
     ];
