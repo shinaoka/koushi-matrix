@@ -1229,10 +1229,13 @@ impl AppActor {
             return;
         }
 
-        let navigation = self
-            .composer_draft_store_actor
-            .load_navigation(&key_id)
-            .unwrap_or_default();
+        let store = self.composer_draft_store_actor.clone();
+        let load_key_id = key_id.clone();
+        let navigation = executor::spawn_blocking(move || {
+            store.load_navigation(&load_key_id).unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
         let effects = reduce(&mut self.state, AppAction::NavigationLoaded { navigation });
         self.navigation_loaded_for = Some(key_id);
         self.handle_ui_event_effects(&effects).await;
@@ -1247,10 +1250,13 @@ impl AppActor {
             return;
         }
 
-        let drafts = self
-            .composer_draft_store_actor
-            .load_composer_drafts(&key_id)
-            .unwrap_or_default();
+        let store = self.composer_draft_store_actor.clone();
+        let load_key_id = key_id.clone();
+        let drafts = executor::spawn_blocking(move || {
+            store.load_composer_drafts(&load_key_id).unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
         let effects = reduce(&mut self.state, AppAction::ComposerDraftsLoaded { drafts });
         self.composer_draft_loaded_for = Some(key_id);
         self.handle_ui_event_effects(&effects).await;
@@ -1265,10 +1271,14 @@ impl AppActor {
             return;
         }
 
-        let scheduled_sends = self
-            .composer_draft_store_actor
-            .load_scheduled_sends(&key_id)
-            .unwrap_or_default();
+        let store = self.composer_draft_store_actor.clone();
+        let load_key_id = key_id.clone();
+        let scheduled_sends = executor::spawn_blocking(move || {
+            store.load_scheduled_sends(&load_key_id)
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
         let effects = reduce(
             &mut self.state,
             AppAction::ScheduledSendsLoaded { scheduled_sends },
@@ -1286,10 +1296,15 @@ impl AppActor {
             return;
         }
 
-        let preferences = self
-            .composer_draft_store_actor
-            .load_room_preferences(&key_id)
-            .unwrap_or_default();
+        let store = self.composer_draft_store_actor.clone();
+        let load_key_id = key_id.clone();
+        let preferences = executor::spawn_blocking(move || {
+            store
+                .load_room_preferences(&load_key_id)
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
         let effects = reduce(
             &mut self.state,
             AppAction::RoomPreferencesLoaded { preferences },
@@ -1299,24 +1314,30 @@ impl AppActor {
     }
 
     async fn persist_scheduled_sends(&mut self, key_id: koushi_key::SessionKeyId) {
-        let _ = self
-            .composer_draft_store_actor
-            .save_scheduled_sends(&key_id, &self.state.scheduled_sends);
+        let store = self.composer_draft_store_actor.clone();
+        let scheduled_sends = self.state.scheduled_sends.clone();
+        let _ = executor::spawn_blocking(move || {
+            store.save_scheduled_sends(&key_id, &scheduled_sends)
+        })
+        .await;
     }
 
     async fn persist_navigation(&mut self, key_id: koushi_key::SessionKeyId) {
-        let _ = self
-            .composer_draft_store_actor
-            .save_navigation(&key_id, &self.state.navigation);
+        let store = self.composer_draft_store_actor.clone();
+        let navigation = self.state.navigation.clone();
+        let _ = executor::spawn_blocking(move || store.save_navigation(&key_id, &navigation)).await;
     }
 
     async fn persist_room_preferences(&mut self, preferences: &koushi_state::RoomPreferencesState) {
         let Some(key_id) = room_preferences_session_key(&self.state) else {
             return;
         };
-        let _ = self
-            .composer_draft_store_actor
-            .save_room_preferences(&key_id, preferences);
+        let store = self.composer_draft_store_actor.clone();
+        let preferences = preferences.clone();
+        let _ = executor::spawn_blocking(move || {
+            store.save_room_preferences(&key_id, &preferences)
+        })
+        .await;
     }
 
     async fn schedule_composer_draft_persist(
@@ -1348,9 +1369,11 @@ impl AppActor {
         let Some(pending) = self.pending_composer_draft_persist.take() else {
             return;
         };
-        let _ = self
-            .composer_draft_store_actor
-            .save_composer_drafts(&pending.key_id, &pending.drafts);
+        let store = self.composer_draft_store_actor.clone();
+        let _ = executor::spawn_blocking(move || {
+            store.save_composer_drafts(&pending.key_id, &pending.drafts)
+        })
+        .await;
     }
 
     fn scheduled_send_delay(&self) -> Option<Duration> {
@@ -2495,11 +2518,14 @@ impl AppActor {
                     if effect_request_id != request_id.sequence {
                         continue;
                     }
-                    let action = match self.settings_store.save(&values) {
-                        Ok(()) => AppAction::SettingsPersisted {
+                    let settings_store = self.settings_store.clone();
+                    let action = match executor::spawn_blocking(move || settings_store.save(&values))
+                        .await
+                    {
+                        Ok(Ok(())) => AppAction::SettingsPersisted {
                             request_id: effect_request_id,
                         },
-                        Err(_) => AppAction::SettingsPersistFailed {
+                        Ok(Err(_)) | Err(_) => AppAction::SettingsPersistFailed {
                             request_id: effect_request_id,
                             message: "settings could not be saved".to_owned(),
                         },
@@ -3507,14 +3533,19 @@ mod tests {
             })])
             .await;
 
-        let event =
-            tokio::time::timeout(std::time::Duration::from_secs(1), connection.recv_event())
-                .await
-                .expect("runtime should emit state delta")
-                .expect("event stream should stay open");
-        let CoreEvent::StateDelta(delta) = event else {
-            panic!("expected state delta event, got {event:?}");
+        let mut delta = None;
+        for _ in 0..8 {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(1), connection.recv_event())
+                    .await
+                    .expect("runtime should emit state delta")
+                    .expect("event stream should stay open");
+            if let CoreEvent::StateDelta(next) = event {
+                delta = Some(next);
+                break;
+            }
         };
+        let delta = delta.expect("expected state delta event");
 
         let snapshot = connection.versioned_snapshot();
         assert_eq!(snapshot.generation, delta.generation);
@@ -3970,6 +4001,67 @@ mod tests {
             assert!(
                 helper.contains("SyncCommand::Stop"),
                 "StopSync effects must route the canonical SyncCommand::Stop path"
+            );
+        }
+    }
+
+    #[test]
+    fn app_actor_persistence_uses_blocking_store_port() {
+        let source = include_str!("runtime.rs");
+        let load_navigation = source
+            .split("async fn load_navigation_for_current_session")
+            .nth(1)
+            .expect("navigation loader should exist")
+            .split("async fn load_composer_drafts_for_current_session")
+            .next()
+            .expect("composer loader should follow navigation loader");
+        let save_scheduled = source
+            .split("async fn persist_scheduled_sends")
+            .nth(1)
+            .expect("scheduled persist helper should exist")
+            .split("async fn persist_navigation")
+            .next()
+            .expect("navigation persist should follow scheduled persist");
+        let save_navigation = source
+            .split("async fn persist_navigation")
+            .nth(1)
+            .expect("navigation persist helper should exist")
+            .split("async fn persist_room_preferences")
+            .next()
+            .expect("room preference persist should follow navigation persist");
+        let save_preferences = source
+            .split("async fn persist_room_preferences")
+            .nth(1)
+            .expect("room preference persist helper should exist")
+            .split("async fn schedule_composer_draft_persist")
+            .next()
+            .expect("composer schedule should follow room preference persist");
+        let flush_drafts = source
+            .split("async fn flush_pending_composer_drafts")
+            .nth(1)
+            .expect("composer draft flush should exist")
+            .split("fn scheduled_send_delay")
+            .next()
+            .expect("scheduled send delay should follow composer draft flush");
+        let settings_effect = source
+            .split("AppEffect::PersistSettings")
+            .nth(1)
+            .expect("settings persist effect should exist")
+            .split("AppEffect::PersistRoomPreferences")
+            .next()
+            .expect("room preference effect should follow settings effect");
+
+        for section in [
+            load_navigation,
+            save_scheduled,
+            save_navigation,
+            save_preferences,
+            flush_drafts,
+            settings_effect,
+        ] {
+            assert!(
+                section.contains("executor::spawn_blocking"),
+                "AppActor store persistence must be offloaded from the reducer loop"
             );
         }
     }

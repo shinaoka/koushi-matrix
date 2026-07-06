@@ -75,6 +75,7 @@ pub struct AccountSearchIndexConfig {
 ///
 /// In Phase 2 this is a pure value type (no background task). Phase 6 may
 /// promote it to an owned task when search index mutations require it.
+#[derive(Clone)]
 pub struct StoreActor {
     pub(crate) credential_store: CredentialStoreBackend,
     data_dir: PathBuf,
@@ -634,6 +635,7 @@ fn account_dir_name(key_id: &SessionKeyId) -> String {
 /// Credential store backend. Production = either OS keychain (injected from
 /// the platform layer) or in-memory; debug/test/qa-bin may use a file dir
 /// override when `KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR` is set.
+#[derive(Clone)]
 pub enum CredentialStoreBackend {
     OsKeychain(OsCredentialStore),
     #[cfg(any(debug_assertions, test, feature = "qa-bin"))]
@@ -854,6 +856,7 @@ impl CredentialStoreBackend {
 }
 
 /// OS keychain credential store for the shipped product service.
+#[derive(Clone)]
 pub struct OsCredentialStore {
     primary: CredentialStore<Arc<dyn koushi_key::CredentialBackend>>,
 }
@@ -986,6 +989,7 @@ fn local_secret_error_health(error: &koushi_key::LocalSecretError) -> LocalEncry
 /// COMPILE-TIME GATE: only present in debug/test/qa-bin builds.
 /// Production release builds must not include this type.
 #[cfg(any(debug_assertions, test, feature = "qa-bin"))]
+#[derive(Clone)]
 pub struct FileCredentialStore {
     dir: PathBuf,
 }

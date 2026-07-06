@@ -19,6 +19,7 @@ impl SettingsStoreError {
     }
 }
 
+#[derive(Clone)]
 pub struct SettingsStore {
     path: PathBuf,
 }

@@ -59,6 +59,7 @@ use crate::event::{
     AccountEvent, CoreEvent, E2eeTrustEvent, EventCacheFailureReasonClass,
     EventCacheSubscribeStatus, LiveSignalsEvent, LocalEncryptionEvent,
 };
+use crate::executor;
 use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
 use crate::link_preview::LinkPreviewContext;
@@ -1542,7 +1543,7 @@ impl AccountActor {
                 self.handle_restore_last_session(request_id).await;
             }
             AccountCommand::QuerySavedSessions { request_id } => {
-                self.handle_query_saved_sessions(request_id);
+                self.handle_query_saved_sessions(request_id).await;
             }
             AccountCommand::QueryDevices { request_id } => {
                 self.handle_query_devices(request_id).await;
@@ -3334,7 +3335,7 @@ impl AccountActor {
         let key_id = session_key_id_from_info(&info);
         let account_key = account_key_from_info(&info);
 
-        let persistable = match self.persist_session(&login_session, &key_id) {
+        let persistable = match self.persist_session(&login_session, &key_id).await {
             Ok(persistable) => persistable,
             Err(failure) => {
                 self.abort_login(login_session, &key_id, false).await;
@@ -3415,7 +3416,7 @@ impl AccountActor {
         let account_key = account_key_from_info(&info);
 
         // Store bootstrap step 2a: persist the session credentials.
-        let persistable = match self.persist_session(&login_session, &key_id) {
+        let persistable = match self.persist_session(&login_session, &key_id).await {
             Ok(persistable) => persistable,
             Err(failure) => {
                 self.abort_login(login_session, &key_id, false).await;
@@ -3482,7 +3483,7 @@ impl AccountActor {
 
     async fn handle_restore_session(&mut self, request_id: RequestId, account_key: AccountKey) {
         trace_account_request("restore_session", request_id, "lookup_key");
-        let key_id = match self.lookup_session_key_id(&account_key) {
+        let key_id = match self.lookup_session_key_id(&account_key).await {
             Ok(Some(key_id)) => {
                 trace_account_request("restore_session", request_id, "key_found");
                 key_id
@@ -3551,9 +3552,12 @@ impl AccountActor {
     /// `AccountEvent::SavedSessionsListed` with identity data only
     /// (homeserver / user_id / device_id) — never tokens or secrets.
     /// An empty list is a normal answer, not a failure.
-    fn handle_query_saved_sessions(&self, request_id: RequestId) {
-        match self.store.credential_backend().load_saved_sessions() {
-            Ok(index) => {
+    async fn handle_query_saved_sessions(&self, request_id: RequestId) {
+        let store = self.store.clone();
+        match executor::spawn_blocking(move || store.credential_backend().load_saved_sessions())
+            .await
+        {
+            Ok(Ok(index)) => {
                 let sessions = index
                     .sessions()
                     .iter()
@@ -3564,7 +3568,7 @@ impl AccountActor {
                     sessions,
                 }));
             }
-            Err(_) => {
+            Ok(Err(_)) | Err(_) => {
                 self.emit_failure(request_id, CoreFailure::StoreUnavailable);
             }
         }
@@ -4116,7 +4120,7 @@ impl AccountActor {
         };
         drop(password);
 
-        let persistable = match self.persist_session(&login_session, &key_id) {
+        let persistable = match self.persist_session(&login_session, &key_id).await {
             Ok(persistable) => persistable,
             Err(failure) => {
                 self.abort_login(login_session, &key_id, false).await;
@@ -4200,7 +4204,7 @@ impl AccountActor {
         drop(self.session.take());
         self.session_key_id = None;
 
-        let key_id = match self.lookup_session_key_id(&account_key) {
+        let key_id = match self.lookup_session_key_id(&account_key).await {
             Ok(Some(key_id)) => key_id,
             Ok(None) => {
                 // Same not-found contract as RestoreSession.
@@ -4409,7 +4413,7 @@ impl AccountActor {
 
         // Clean up credentials and stores for this account only.
         let account_key = if let Some(key_id) = &key_id {
-            self.clear_account_persistence(key_id);
+            self.clear_account_persistence(key_id).await;
             AccountKey(key_id.user_id.clone())
         } else {
             AccountKey(String::new())
@@ -4431,32 +4435,39 @@ impl AccountActor {
     /// Persist session credentials, mirroring the src-tauri flow: session
     /// JSON, saved-session index entry, last-session pointer — with rollback
     /// on partial failure.
-    fn persist_session(
+    async fn persist_session(
         &self,
         session: &MatrixClientSession,
         key_id: &SessionKeyId,
     ) -> Result<PersistableMatrixSession, CoreFailure> {
-        let backend = self.store.credential_backend();
-        let persistable = session
-            .persistable_session()
-            .map_err(|_| CoreFailure::StoreUnavailable)?;
-        let json = persistable
-            .to_json()
-            .map_err(|_| CoreFailure::StoreUnavailable)?;
-        let stored = StoredMatrixSession::new(json);
-        backend
-            .save_matrix_session(key_id, &stored)
-            .map_err(|_| CoreFailure::StoreUnavailable)?;
-        if backend.remember_saved_session(key_id).is_err() {
-            let _ = backend.delete_matrix_session(key_id);
-            return Err(CoreFailure::StoreUnavailable);
-        }
-        if backend.save_last_session(key_id).is_err() {
-            let _ = backend.delete_matrix_session(key_id);
-            let _ = backend.forget_saved_session(key_id);
-            return Err(CoreFailure::StoreUnavailable);
-        }
-        Ok(persistable)
+        let store = self.store.clone();
+        let session = session.clone();
+        let key_id = key_id.clone();
+        executor::spawn_blocking(move || {
+            let backend = store.credential_backend();
+            let persistable = session
+                .persistable_session()
+                .map_err(|_| CoreFailure::StoreUnavailable)?;
+            let json = persistable
+                .to_json()
+                .map_err(|_| CoreFailure::StoreUnavailable)?;
+            let stored = StoredMatrixSession::new(json);
+            backend
+                .save_matrix_session(&key_id, &stored)
+                .map_err(|_| CoreFailure::StoreUnavailable)?;
+            if backend.remember_saved_session(&key_id).is_err() {
+                let _ = backend.delete_matrix_session(&key_id);
+                return Err(CoreFailure::StoreUnavailable);
+            }
+            if backend.save_last_session(&key_id).is_err() {
+                let _ = backend.delete_matrix_session(&key_id);
+                let _ = backend.forget_saved_session(&key_id);
+                return Err(CoreFailure::StoreUnavailable);
+            }
+            Ok(persistable)
+        })
+        .await
+        .unwrap_or(Err(CoreFailure::StoreUnavailable))
     }
 
     /// Restore a persisted session into the per-account encrypted store
@@ -4502,47 +4513,61 @@ impl AccountActor {
         let _ = koushi_sdk::logout(&login_session).await;
         drop(login_session);
         if credentials_persisted {
-            self.clear_account_persistence(key_id);
+            self.clear_account_persistence(key_id).await;
         }
     }
 
     /// Remove all persisted material for one account: session JSON, saved
     /// session index entry, last-session pointer (only if it points at this
     /// account), unlock secret, and store/cache directories.
-    fn clear_account_persistence(&self, key_id: &SessionKeyId) {
-        let backend = self.store.credential_backend();
-        let _ = backend.delete_matrix_session(key_id);
-        let _ = backend.forget_saved_session(key_id);
-        match backend.load_last_session() {
-            Ok(Some(last)) if last == *key_id => {
-                let _ = backend.delete_last_session();
+    async fn clear_account_persistence(&self, key_id: &SessionKeyId) {
+        let store = self.store.clone();
+        let key_id = key_id.clone();
+        let _ = executor::spawn_blocking(move || {
+            let backend = store.credential_backend();
+            let _ = backend.delete_matrix_session(&key_id);
+            let _ = backend.forget_saved_session(&key_id);
+            match backend.load_last_session() {
+                Ok(Some(last)) if last == key_id => {
+                    let _ = backend.delete_last_session();
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    let _ = backend.delete_last_session();
+                }
             }
-            Ok(_) => {}
-            Err(_) => {
-                let _ = backend.delete_last_session();
-            }
-        }
-        self.store.delete_account_credentials(key_id);
+            store.delete_account_credentials(&key_id);
+        })
+        .await;
     }
 
     /// Find the stored `SessionKeyId` for an account key (the user's Matrix
     /// ID). Checks the last-session pointer first, then the saved-session
     /// index. `Ok(None)` = no stored session; `Err(())` = store unreachable.
-    fn lookup_session_key_id(&self, account_key: &AccountKey) -> Result<Option<SessionKeyId>, ()> {
-        let backend = self.store.credential_backend();
-        match backend.load_last_session() {
-            Ok(Some(key_id)) if key_id.user_id == account_key.0 => {
-                return Ok(Some(key_id));
+    async fn lookup_session_key_id(
+        &self,
+        account_key: &AccountKey,
+    ) -> Result<Option<SessionKeyId>, ()> {
+        let store = self.store.clone();
+        let account_key = account_key.clone();
+        executor::spawn_blocking(move || {
+            let backend = store.credential_backend();
+            match backend.load_last_session() {
+                Ok(Some(key_id)) if key_id.user_id == account_key.0 => {
+                    return Ok(Some(key_id));
+                }
+                Ok(_) => {}
+                Err(_) => return Err(()),
             }
-            Ok(_) => {}
-            Err(_) => return Err(()),
-        }
-        let index = backend.load_saved_sessions().map_err(|_| ())?;
-        Ok(index
-            .sessions()
-            .iter()
-            .find(|session| session.user_id == account_key.0)
-            .cloned())
+            let index = backend.load_saved_sessions().map_err(|_| ())?;
+            Ok(index
+                .sessions()
+                .iter()
+                .find(|session| session.user_id == account_key.0)
+                .cloned())
+        })
+        .await
+        .unwrap_or(Err(()))
     }
 
     fn emit(&self, event: CoreEvent) {
@@ -4603,11 +4628,14 @@ impl AccountActor {
     }
 
     async fn handle_probe_local_encryption_health(&self, request_id: RequestId) {
-        let health = self
-            .session_key_id
-            .as_ref()
-            .map(|key_id| self.store.probe_local_encryption_health(key_id))
-            .unwrap_or(koushi_state::LocalEncryptionHealth::Unknown);
+        let health = if let Some(key_id) = self.session_key_id.clone() {
+            let store = self.store.clone();
+            executor::spawn_blocking(move || store.probe_local_encryption_health(&key_id))
+                .await
+                .unwrap_or(koushi_state::LocalEncryptionHealth::Unavailable)
+        } else {
+            koushi_state::LocalEncryptionHealth::Unknown
+        };
         self.send_actions(vec![AppAction::LocalEncryptionHealthChanged {
             request_id: request_id.sequence,
             health,
@@ -4631,7 +4659,7 @@ impl AccountActor {
         self.stop_current_session_runtime().await;
 
         drop(self.session.take());
-        self.clear_account_persistence(&key_id);
+        self.clear_account_persistence(&key_id).await;
         self.send_actions(vec![
             AppAction::ResetLocalDataCompleted {
                 request_id: request_id.sequence,
@@ -5361,7 +5389,7 @@ mod tests {
             .expect("server logout must be bounded best-effort");
         let drop_session = body.find("drop(session)").expect("session drop");
         let clear_persistence = body
-            .find("self.clear_account_persistence(key_id)")
+            .find("self.clear_account_persistence(key_id).await")
             .expect("clear account persistence");
 
         assert!(
@@ -6458,6 +6486,59 @@ mod tests {
             !handler.contains("CoreFailure::StoreUnavailable"),
             "device list failures must not masquerade as credential-store failures"
         );
+    }
+
+    #[test]
+    fn account_actor_credential_store_hot_paths_use_blocking_port() {
+        let source = include_str!("account.rs");
+        let persist_session = source
+            .split("async fn persist_session")
+            .nth(1)
+            .expect("persist session helper should be async")
+            .split("async fn restore_into_store")
+            .next()
+            .expect("restore helper should follow persist session");
+        let clear_persistence = source
+            .split("async fn clear_account_persistence")
+            .nth(1)
+            .expect("clear persistence helper should be async")
+            .split("async fn lookup_session_key_id")
+            .next()
+            .expect("lookup helper should follow clear persistence");
+        let lookup_session = source
+            .split("async fn lookup_session_key_id")
+            .nth(1)
+            .expect("lookup helper should be async")
+            .split("fn emit")
+            .next()
+            .expect("emit helper should follow lookup helper");
+        let query_saved = source
+            .split("async fn handle_query_saved_sessions")
+            .nth(1)
+            .expect("saved sessions handler should be async")
+            .split("async fn restore_session")
+            .next()
+            .expect("restore session handler should follow saved sessions");
+        let probe_health = source
+            .split("async fn handle_probe_local_encryption_health")
+            .nth(1)
+            .expect("local-encryption probe should exist")
+            .split("async fn handle_reset_local_data")
+            .next()
+            .expect("reset local data should follow probe");
+
+        for section in [
+            persist_session,
+            clear_persistence,
+            lookup_session,
+            query_saved,
+            probe_health,
+        ] {
+            assert!(
+                section.contains("executor::spawn_blocking"),
+                "AccountActor credential-store and filesystem hot paths must be offloaded"
+            );
+        }
     }
 
     #[test]
