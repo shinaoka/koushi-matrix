@@ -347,6 +347,9 @@ impl TimelineManagerActor {
                 self.handle_subscribe(request_id, key, replay_existing)
                     .await;
             }
+            TimelineCommand::ReplaySubscribed { request_id } => {
+                self.handle_replay_subscribed(request_id).await;
+            }
             TimelineCommand::Unsubscribe { request_id, key } => {
                 trace_timeline_route("manager_received", "unsubscribe", request_id, &key);
                 // Drop the actor handle, which cancels its relay task and drops
@@ -828,6 +831,14 @@ impl TimelineManagerActor {
                     kind: TimelineFailureKind::QueueOverflow,
                 },
             );
+        }
+    }
+
+    async fn handle_replay_subscribed(&mut self, request_id: RequestId) {
+        for handle in self.timelines.values() {
+            let _ = handle
+                .send(TimelineActorMessage::ReplayInitialItems { request_id })
+                .await;
         }
     }
 
@@ -9396,6 +9407,38 @@ mod tests {
         assert!(
             handle_subscribe_source.contains("if replay_existing"),
             "existing actors should only replay InitialItems when the caller explicitly requests replay"
+        );
+    }
+
+    #[test]
+    fn replay_subscribed_command_replays_initial_items_for_all_existing_timelines() {
+        let source = include_str!("timeline.rs");
+        let handle_command = source
+            .split("async fn handle_command")
+            .nth(1)
+            .expect("handle_command should exist")
+            .split("async fn handle_subscribe")
+            .next()
+            .expect("handle_subscribe should follow handle_command");
+        let replay_handler = source
+            .split("async fn handle_replay_subscribed")
+            .nth(1)
+            .expect("TimelineManagerActor should expose subscribed-timeline replay")
+            .split("async fn handle_subscribe")
+            .next()
+            .expect("handle_subscribe should follow replay handler");
+
+        assert!(
+            handle_command.contains("TimelineCommand::ReplaySubscribed { request_id }")
+                && handle_command.contains("self.handle_replay_subscribed(request_id).await"),
+            "TimelineManagerActor must route replay-subscribed commands to the replay helper"
+        );
+        assert!(
+            replay_handler.contains("for handle in self.timelines.values()")
+                && replay_handler
+                    .contains(".send(TimelineActorMessage::ReplayInitialItems { request_id })")
+                && replay_handler.contains(".await"),
+            "replay helper must reliably ask every subscribed TimelineActor to re-emit InitialItems"
         );
     }
 
