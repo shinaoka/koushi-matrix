@@ -2402,7 +2402,7 @@ impl TimelineActor {
         if let Some(action) =
             media_gallery_updated_action(&key, initial_media_gallery_items.clone())
         {
-            let _ = action_tx.try_send(vec![action]);
+            let _ = action_tx.send(vec![action]).await;
         }
 
         // Spawn the diff relay task: converts SDK VectorDiff stream into actor messages.
@@ -4322,7 +4322,8 @@ impl TimelineActor {
     /// idempotency fast path).  The generation is unchanged; the caller only
     /// needs a fresh InitialItems batch so a re-mounted TimelineView is
     /// populated.
-    fn handle_replay_initial_items(&self, request_id: RequestId) {
+    fn handle_replay_initial_items(&mut self, request_id: RequestId) {
+        self.thread_attention_counts = ThreadAttentionCounters::default();
         let items = replay_initial_items_window(
             &self.key.kind,
             &self.navigation_items,
@@ -4416,7 +4417,7 @@ impl TimelineActor {
             &core_diffs,
             self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
         ) {
-            let _ = self.action_tx.try_send(vec![action]);
+            let _ = self.emit_action_reliable(action).await;
         }
         let activity_rows = activity_rows_from_timeline_diffs(&self.key, &core_diffs);
         if !activity_rows.is_empty() {
@@ -4428,7 +4429,7 @@ impl TimelineActor {
         }
         apply_timeline_diffs_to_items(&mut self.navigation_items, &core_diffs);
         self.maybe_fetch_visible_reply_details();
-        self.emit_media_gallery_if_changed();
+        self.emit_media_gallery_if_changed().await;
 
         let restore_diff_is_relevant = timeline_diffs_include_prepend(&core_diffs);
 
@@ -4501,7 +4502,7 @@ impl TimelineActor {
                     rows: activity_rows,
                 }]);
         }
-        self.emit_media_gallery_if_changed();
+        self.emit_media_gallery_if_changed().await;
 
         let batch_id = self.next_batch_id;
         self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
@@ -4822,15 +4823,18 @@ impl TimelineActor {
         }));
     }
 
-    fn emit_media_gallery_if_changed(&mut self) {
+    async fn emit_media_gallery_if_changed(&mut self) {
         let items = media_gallery_items_from_timeline_items(&self.key, &self.navigation_items);
         if items == self.media_gallery_items {
             return;
         }
-        self.media_gallery_items = items.clone();
         if let Some(action) = media_gallery_updated_action(&self.key, items) {
-            let _ = self.action_tx.try_send(vec![action]);
+            if !self.emit_action_reliable(action).await {
+                return;
+            }
         }
+        self.media_gallery_items =
+            media_gallery_items_from_timeline_items(&self.key, &self.navigation_items);
     }
 
     fn emit_navigation_if_changed(&mut self) {
@@ -5462,8 +5466,8 @@ impl TimelineActor {
     /// momentarily full.  Required for state-machine transitions where a
     /// dropped action would leave the UI stuck in a pending/inconsistent state
     /// (REPOSITORY_RULES L124-128).
-    async fn emit_action_reliable(&self, action: AppAction) {
-        let _ = self.action_tx.send(vec![action]).await;
+    async fn emit_action_reliable(&self, action: AppAction) -> bool {
+        self.action_tx.send(vec![action]).await.is_ok()
     }
 
     fn emit_failure(&self, request_id: RequestId, failure: CoreFailure) {
@@ -9147,6 +9151,63 @@ mod tests {
         assert!(
             !forwarder.contains("try_send(SearchIndexMessage"),
             "search index mutation delivery must not silently drop redactions or edits"
+        );
+    }
+
+    #[test]
+    fn media_gallery_and_thread_attention_projections_use_reliable_delivery() {
+        let source = include_str!("timeline.rs");
+        let initial_subscribe = source
+            .split("// Emit InitialItems")
+            .nth(1)
+            .expect("initial subscribe emission should exist")
+            .split("// Spawn the diff relay task")
+            .next()
+            .expect("initial projection block should precede relay spawn");
+        let diff_batch = source
+            .split("async fn handle_diff_batch")
+            .nth(1)
+            .expect("diff batch handler should exist")
+            .split("async fn handle_ignored_users_updated")
+            .next()
+            .expect("ignored-users handler should follow diff batch");
+        let media_gallery_helper = source
+            .split("async fn emit_media_gallery_if_changed")
+            .nth(1)
+            .expect("media gallery helper should be async")
+            .split("fn emit_navigation_if_changed")
+            .next()
+            .expect("navigation helper should follow media gallery helper");
+
+        assert!(
+            initial_subscribe.contains("action_tx.send(vec![action]).await"),
+            "initial media gallery projection must use reliable delivery"
+        );
+        assert!(
+            diff_batch.contains("self.emit_action_reliable(action).await"),
+            "thread attention projection must use reliable reducer delivery"
+        );
+        assert!(
+            media_gallery_helper.contains("self.emit_action_reliable(action).await")
+                && !media_gallery_helper.contains("try_send(vec![action])"),
+            "media gallery dedupe ledger must not advance behind a dropped try_send"
+        );
+    }
+
+    #[test]
+    fn replaying_thread_initial_items_resets_thread_attention_counter() {
+        let source = include_str!("timeline.rs");
+        let replay_helper = source
+            .split("fn handle_replay_initial_items")
+            .nth(1)
+            .expect("replay helper should exist")
+            .split("async fn handle_paginate")
+            .next()
+            .expect("pagination handler should follow replay helper");
+
+        assert!(
+            replay_helper.contains("self.thread_attention_counts = ThreadAttentionCounters::default();"),
+            "thread replay must reset the actor-owned attention counter to match the reducer's open-thread zero state"
         );
     }
 
