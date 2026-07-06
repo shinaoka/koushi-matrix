@@ -161,7 +161,6 @@ pub(crate) fn handle_logout_requested(state: &mut AppState) -> Vec<AppEffect> {
     state.sync = SyncState::Stopped;
     let mut effects = vec![
         AppEffect::StopSync,
-        AppEffect::ClearSession,
         AppEffect::EmitUiEvent(UiEvent::SessionChanged),
     ];
     effects.extend(clear_session_views(state));
@@ -183,12 +182,7 @@ pub(crate) fn handle_switch_account_requested(
 
     state.session = SessionState::SwitchingAccount { info: info.clone() };
     state.sync = SyncState::Stopped;
-    let mut effects = vec![
-        AppEffect::StopSync,
-        AppEffect::ClearSession,
-        AppEffect::RestoreSessionFor(info),
-        AppEffect::EmitUiEvent(UiEvent::SessionChanged),
-    ];
+    let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)];
     effects.extend(clear_session_views(state));
     effects
 }

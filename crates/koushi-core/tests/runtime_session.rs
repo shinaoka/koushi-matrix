@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use koushi_core::{
     AccountKey, AppCommand, CoreCommand, CoreEvent, CoreFailure, CoreRuntime, CreateRoomOptions,
-    CreateRoomVisibility, PaginationDirection, RoomCommand, TimelineCommand, TimelineKey, executor,
+    CreateRoomVisibility, PaginationDirection, RequestId, RoomCommand, TimelineCommand,
+    TimelineKey, executor,
 };
 use koushi_state::{
     AppAction, AuthSecret, RecoveryMethod, RecoveryRequest, SessionState,
@@ -102,6 +103,52 @@ async fn ready_session_routes_past_appactor_session_gate() {
                 );
                 return;
             }
+            _ => continue,
+        }
+    }
+}
+
+#[tokio::test]
+async fn actor_projected_session_lock_executes_stop_sync_effect() {
+    let runtime = CoreRuntime::start();
+    let mut connection = runtime.attach();
+
+    runtime
+        .inject_actions(vec![AppAction::RestoreSessionSucceeded(session_info())])
+        .await;
+    wait_for_state(&mut connection, |state| {
+        matches!(state.session, SessionState::Ready(_))
+    })
+    .await;
+
+    let start_failure = next_session_required_failure(&mut connection).await;
+
+    runtime.inject_actions(vec![AppAction::SessionLocked]).await;
+    wait_for_state(&mut connection, |state| {
+        matches!(state.session, SessionState::Locked(_))
+    })
+    .await;
+
+    let stop_failure = executor::timeout(Duration::from_millis(500), async {
+        next_session_required_failure(&mut connection).await
+    })
+    .await
+    .expect("SessionLocked must execute AppEffect::StopSync through AccountActor");
+    assert_ne!(
+        start_failure, stop_failure,
+        "lock should produce a distinct stop-sync routing attempt"
+    );
+}
+
+async fn next_session_required_failure(
+    connection: &mut koushi_core::runtime::CoreConnection,
+) -> RequestId {
+    loop {
+        match connection.recv_event().await.expect("event") {
+            CoreEvent::OperationFailed {
+                request_id,
+                failure: CoreFailure::SessionRequired,
+            } => return request_id,
             _ => continue,
         }
     }

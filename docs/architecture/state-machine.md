@@ -98,6 +98,13 @@ timeline, thread pane, search state, search crawler status, invite workflow,
 and basic operation pendings. The reducer emits UI events for any cleared
 visible panes or crawler status.
 
+`SessionLocked` and `LogoutRequested` emit `AppEffect::StopSync`; the core
+runtime must execute it through the canonical sync actor command path.
+Credential/store cleanup and target-account restore are not reducer effects:
+logout and account switch run through the explicit AccountActor command path,
+which owns local persistence deletion, current-session teardown, and
+store-backed account restore.
+
 Password login and OIDC/MAS callback completion both enter `Authenticating`
 through Rust-owned account commands and settle through the same
 `LoginSucceeded` / `LoginFailed` reducer actions. OIDC authorization URLs and

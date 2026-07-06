@@ -1201,6 +1201,7 @@ impl AccountActor {
         );
 
         if self.sync_actor.is_none()
+            && !matches!(command, SyncCommand::Stop { .. })
             && let Some(session) = &self.session
         {
             trace_restore(
@@ -1229,7 +1230,7 @@ impl AccountActor {
                 // live RoomListService (canon, overview.md RoomActor bullet).
                 let _ = handle.send(SyncMessage::Command(command)).await;
             }
-            None => {
+            None if self.session.is_none() => {
                 trace_restore(
                     "route_sync_command",
                     &format!(
@@ -1241,6 +1242,16 @@ impl AccountActor {
                 // Session not yet ready — gate is enforced in AppActor but be
                 // defensive here too.
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
+            }
+            None => {
+                trace_restore(
+                    "route_sync_command",
+                    &format!(
+                        "request_id={} kind={} action=no_sync_actor",
+                        request_id_trace_label(request_id),
+                        command_kind
+                    ),
+                );
             }
         }
     }
@@ -5512,6 +5523,34 @@ mod tests {
         assert!(
             handler_body.contains("self.stop_sync_actor().await"),
             "auth invalidation must stop the old sync loop instead of leaving it reconnecting forever"
+        );
+    }
+
+    #[test]
+    fn sync_stop_command_must_not_spawn_missing_sync_actor() {
+        let source = include_str!("account.rs");
+        let route_body = source
+            .split("async fn route_sync_command")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn spawn_sync_actor").next())
+            .expect("route_sync_command body");
+        let spawn_gate = route_body
+            .find("!matches!(command, SyncCommand::Stop { .. })")
+            .expect("Stop must be excluded from the missing-actor spawn path");
+        let spawn_call = route_body
+            .find("self.spawn_sync_actor(session.clone()).await")
+            .expect("non-stop sync commands may spawn the actor");
+        let no_actor_trace = route_body
+            .find("action=no_sync_actor")
+            .expect("Stop with an existing session and no actor must be an explicit no-op");
+
+        assert!(
+            spawn_gate < spawn_call,
+            "route_sync_command must check for Stop before spawning a missing sync actor"
+        );
+        assert!(
+            spawn_call < no_actor_trace,
+            "no-actor stop handling should be separate from the spawn path"
         );
     }
 

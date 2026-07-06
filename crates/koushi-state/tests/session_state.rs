@@ -339,7 +339,7 @@ fn session_persistence_failure_records_error_without_leaving_ready_session() {
 }
 
 #[test]
-fn account_switch_request_stops_sync_clears_views_and_restores_target_session() {
+fn account_switch_request_enters_switching_state_and_clears_views() {
     let current = session_info();
     let target = alternate_session_info();
     let mut state = AppState {
@@ -431,9 +431,6 @@ fn account_switch_request_stops_sync_clears_views_and_restores_target_session() 
     assert_eq!(
         effects,
         vec![
-            AppEffect::StopSync,
-            AppEffect::ClearSession,
-            AppEffect::RestoreSessionFor(target),
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
             AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
@@ -735,7 +732,6 @@ fn logout_stops_sync_and_clears_session() {
         effects,
         vec![
             AppEffect::StopSync,
-            AppEffect::ClearSession,
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
         ]
@@ -822,7 +818,6 @@ fn logout_clears_session_views_and_notifies_ui() {
         effects,
         vec![
             AppEffect::StopSync,
-            AppEffect::ClearSession,
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
             AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
@@ -881,7 +876,6 @@ fn logout_clears_native_attention_state_and_notifies_ui() {
         effects,
         vec![
             AppEffect::StopSync,
-            AppEffect::ClearSession,
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
             AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged),
