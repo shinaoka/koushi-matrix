@@ -320,9 +320,21 @@ impl TimelineManagerActor {
             .cloned()
             .collect::<Vec<_>>();
         for key in keys {
-            self.timelines.remove(&key);
-            self.handle_subscribe(internal_timeline_request_id(), key, true)
+            self.replace_existing_room_timeline_after_sync_started(key)
                 .await;
+        }
+    }
+
+    async fn replace_existing_room_timeline_after_sync_started(&mut self, key: TimelineKey) {
+        let request_id = internal_timeline_request_id();
+        match self.build_timeline_actor_handle(request_id, &key).await {
+            Ok(handle) => {
+                self.emit_timeline_subscribed_action(&key).await;
+                self.timelines.insert(key, handle);
+            }
+            Err(kind) => {
+                self.emit_subscription_failure(request_id, &key, kind).await;
+            }
         }
     }
 
@@ -860,7 +872,7 @@ impl TimelineManagerActor {
             }
         };
         trace("start");
-        let Some(session) = &self.session else {
+        if self.session.is_none() {
             self.emit_subscription_failure(request_id, &key, TimelineFailureKind::NotSubscribed)
                 .await;
             return;
@@ -896,14 +908,38 @@ impl TimelineManagerActor {
             }
             Some(Err(_)) => {
                 // Mailbox full or closed: the cheap replay could not be
-                // delivered, so drop the stale handle and fall through to a
-                // full rebuild, which is guaranteed to emit InitialItems for
-                // this request_id (a re-mounted view must be populated).
-                self.timelines.remove(&key);
+                // delivered. Fall through to a full rebuild, but keep the old
+                // handle until the replacement actor is built successfully.
+                trace("replay_initial_failed");
             }
             None => {}
         }
 
+        match self.build_timeline_actor_handle(request_id, &key).await {
+            Ok(handle) => {
+                self.emit_timeline_subscribed_action(&key).await;
+                self.timelines.insert(key, handle);
+                trace("subscribed_done");
+            }
+            Err(kind) => {
+                self.emit_subscription_failure(request_id, &key, kind).await;
+            }
+        }
+    }
+
+    async fn build_timeline_actor_handle(
+        &self,
+        request_id: RequestId,
+        key: &TimelineKey,
+    ) -> Result<TimelineActorHandle, TimelineFailureKind> {
+        let trace = |stage: &str| {
+            if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+                eprintln!("koushi.subscribe stage={stage}");
+            }
+        };
+        let Some(session) = &self.session else {
+            return Err(TimelineFailureKind::NotSubscribed);
+        };
         let client = session.client();
         let room_id_str = match &key.kind {
             TimelineKind::Room { room_id } => room_id.clone(),
@@ -913,20 +949,12 @@ impl TimelineManagerActor {
 
         let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             Ok(id) => id,
-            Err(_) => {
-                self.emit_subscription_failure(request_id, &key, TimelineFailureKind::Sdk)
-                    .await;
-                return;
-            }
+            Err(_) => return Err(TimelineFailureKind::Sdk),
         };
 
         let room = match client.get_room(&room_id) {
             Some(r) => r,
-            None => {
-                self.emit_subscription_failure(request_id, &key, TimelineFailureKind::Sdk)
-                    .await;
-                return;
-            }
+            None => return Err(TimelineFailureKind::Sdk),
         };
 
         // On the sliding-sync backend, subscribing a timeline must also
@@ -949,11 +977,7 @@ impl TimelineManagerActor {
                     Ok(event_id) => TimelineFocus::Thread {
                         root_event_id: event_id,
                     },
-                    Err(_) => {
-                        self.emit_subscription_failure(request_id, &key, TimelineFailureKind::Sdk)
-                            .await;
-                        return;
-                    }
+                    Err(_) => return Err(TimelineFailureKind::Sdk),
                 }
             }
             TimelineKind::Focused { event_id, .. } => {
@@ -966,11 +990,7 @@ impl TimelineManagerActor {
                                 hide_threaded_events: false,
                             },
                     },
-                    Err(_) => {
-                        self.emit_subscription_failure(request_id, &key, TimelineFailureKind::Sdk)
-                            .await;
-                        return;
-                    }
+                    Err(_) => return Err(TimelineFailureKind::Sdk),
                 }
             }
         };
@@ -983,11 +1003,7 @@ impl TimelineManagerActor {
 
         let timeline = match timeline_result {
             Ok(t) => Arc::new(t),
-            Err(_) => {
-                self.emit_subscription_failure(request_id, &key, TimelineFailureKind::Sdk)
-                    .await;
-                return;
-            }
+            Err(_) => return Err(TimelineFailureKind::Sdk),
         };
 
         trace("spawn_begin");
@@ -1007,9 +1023,7 @@ impl TimelineManagerActor {
         .await;
         trace("spawn_done");
 
-        self.emit_timeline_subscribed_action(&key).await;
-        self.timelines.insert(key, handle);
-        trace("subscribed_done");
+        Ok(handle)
     }
 
     async fn route_to_actor_or_fail(
@@ -9231,20 +9245,31 @@ mod tests {
         let spawn_token = concat!("TimelineActor::", "spawn");
         let action_token = concat!("emit_timeline", "_subscribed_action");
         let room_token = concat!("TimelineKind::", "Room");
-        let spawn_offset = handle_subscribe_source
-            .find(spawn_token)
-            .expect("subscribe success should spawn the timeline actor");
-        let success_path = &handle_subscribe_source[spawn_offset..];
+        let build_helper_source = source
+            .split("async fn build_timeline_actor_handle")
+            .nth(1)
+            .expect("subscribe build helper should exist")
+            .split("async fn route_to_actor_or_fail")
+            .next()
+            .expect("route helper should follow subscribe build helper");
+        let success_path = handle_subscribe_source
+            .split("Ok(handle) =>")
+            .nth(1)
+            .expect("subscribe success should handle the built timeline actor");
         let action_offset = success_path
             .find(action_token)
             .expect("subscribe success should reduce TimelineSubscribed");
 
         assert!(
+            build_helper_source.contains(spawn_token),
+            "subscribe success should spawn the timeline actor"
+        );
+        assert!(
             action_offset > 0,
             "TimelineSubscribed should be reduced only after subscribe succeeds"
         );
         assert!(
-            handle_subscribe_source.contains(room_token),
+            source.contains(room_token),
             "main timeline subscription state should only be marked for room timelines"
         );
     }
@@ -9620,13 +9645,12 @@ mod tests {
             "only room live timelines should be rebuilt on SyncStarted; focused/thread contexts should not be reset"
         );
         assert!(
-            rebuild_handler.contains("self.timelines.remove(&key);"),
-            "existing room timeline handles must be dropped before full resubscribe so the SDK timeline is rebuilt"
+            !rebuild_handler.contains("self.timelines.remove(&key);"),
+            "sync-start rebuild must not drop the existing room timeline before the replacement subscribe succeeds"
         );
         assert!(
-            rebuild_handler
-                .contains("self.handle_subscribe(internal_timeline_request_id(), key, true)"),
-            "rebuild must take the full subscribe path and emit a fresh InitialItems batch"
+            rebuild_handler.contains("replace_existing_room_timeline_after_sync_started"),
+            "sync-start rebuild must build a replacement actor and swap it in only after success"
         );
     }
 
