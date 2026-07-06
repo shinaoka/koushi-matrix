@@ -330,8 +330,13 @@ impl SearchActorHandle {
             Err(tokio::sync::mpsc::error::TrySendError::Full(
                 SearchActorMessage::RoomsAvailable { room_ids, settings },
             )) => Err((room_ids, settings)),
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(
+                SearchActorMessage::RoomsAvailable { room_ids, settings },
+            )) => Err((room_ids, settings)),
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                unreachable!("try_notify_rooms_available only sends RoomsAvailable messages")
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 unreachable!("try_notify_rooms_available only sends RoomsAvailable messages")
             }
         }
@@ -1468,6 +1473,10 @@ mod tests {
         assert!(
             handle_impl.contains(".try_send(SearchActorMessage::RoomsAvailable"),
             "nonblocking crawler notification delivery must use try_send"
+        );
+        assert!(
+            !handle_impl.contains("TrySendError::Closed(_)) => Ok(())"),
+            "closed SearchActor delivery must not be reported as success"
         );
     }
 

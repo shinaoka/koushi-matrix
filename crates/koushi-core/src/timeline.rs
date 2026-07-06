@@ -2499,7 +2499,9 @@ impl TimelineActor {
             diff_batch_seq: 0,
         };
 
-        actor.forward_initial_items_to_search(initial_sdk_items.iter().cloned());
+        actor
+            .forward_initial_items_to_search(initial_sdk_items.iter().cloned())
+            .await;
         let task = executor::spawn(actor.run());
 
         TimelineActorHandle {
@@ -4360,7 +4362,7 @@ impl TimelineActor {
         // Phase 6: forward search index mutations before converting diffs.
         if self.search_index_tx.is_some() {
             for diff in &diffs {
-                self.forward_diff_to_search(diff);
+                self.forward_diff_to_search(diff).await;
             }
         }
 
@@ -4903,49 +4905,42 @@ impl TimelineActor {
         }
     }
 
-    /// Forward a single SDK diff item to the search index channel.
-    /// Fire-and-forget: if the channel is full, the mutation is dropped rather
-    /// than blocking the diff relay (search index is best-effort for freshness).
-    fn forward_diff_to_search(&self, diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>) {
-        use crate::search::SearchIndexMessage;
-        use eyeball_im::VectorDiff;
-
+    /// Forward SDK diff mutations to the search index channel reliably.
+    /// Redactions are privacy-sensitive removals and must not be silently
+    /// dropped as freshness-only updates.
+    async fn forward_diff_to_search(&self, diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>) {
         let Some(tx) = &self.search_index_tx else {
             return;
         };
 
+        for message in self.search_index_messages_for_diff(diff) {
+            if tx.send(message).await.is_err() {
+                break;
+            }
+        }
+    }
+
+    fn search_index_messages_for_diff(
+        &self,
+        diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>,
+    ) -> Vec<SearchIndexMessage> {
+        use eyeball_im::VectorDiff;
+
         let room_id = match &self.key.kind {
             TimelineKind::Room { room_id }
             | TimelineKind::Thread { room_id, .. }
-            | TimelineKind::Focused { room_id, .. } => room_id.clone(),
+            | TimelineKind::Focused { room_id, .. } => room_id.as_str(),
         };
 
-        // Extract the SDK item (if any) from the diff.
-        let item_ref: Option<&Arc<SdkTimelineItem>> = match diff {
-            VectorDiff::PushFront { value } => Some(value),
-            VectorDiff::PushBack { value } => Some(value),
-            VectorDiff::Insert { value, .. } => Some(value),
-            VectorDiff::Set { value, .. } => Some(value),
-            VectorDiff::Append { values } => {
-                // Bulk append: process each item in order.
-                for item in values.iter() {
-                    let sub_diff = VectorDiff::PushBack {
-                        value: item.clone(),
-                    };
-                    self.forward_diff_to_search(&sub_diff);
-                }
-                return;
-            }
-            VectorDiff::Reset { values } => {
-                // Full reset: process each item.
-                for item in values.iter() {
-                    let sub_diff = VectorDiff::PushBack {
-                        value: item.clone(),
-                    };
-                    self.forward_diff_to_search(&sub_diff);
-                }
-                return;
-            }
+        match diff {
+            VectorDiff::PushFront { value }
+            | VectorDiff::PushBack { value }
+            | VectorDiff::Insert { value, .. }
+            | VectorDiff::Set { value, .. } => self.search_index_messages_for_item(room_id, value),
+            VectorDiff::Append { values } | VectorDiff::Reset { values } => values
+                .iter()
+                .flat_map(|item| self.search_index_messages_for_item(room_id, item))
+                .collect(),
             VectorDiff::Remove { .. }
             | VectorDiff::Truncate { .. }
             | VectorDiff::Clear
@@ -4954,22 +4949,26 @@ impl TimelineActor {
                 // Remove/truncate/clear: we don't know which event_ids are affected
                 // without tracking the full timeline list; skip search forwarding.
                 // Redactions arrive as Set-with-is_redacted=true before any Remove.
-                return;
+                Vec::new()
             }
-        };
+        }
+    }
 
-        let Some(item) = item_ref else { return };
-
+    fn search_index_messages_for_item(
+        &self,
+        room_id: &str,
+        item: &Arc<SdkTimelineItem>,
+    ) -> Vec<SearchIndexMessage> {
         use matrix_sdk_ui::timeline::TimelineItemKind;
         let event_item = match item.kind() {
             TimelineItemKind::Event(e) => e,
-            TimelineItemKind::Virtual(_) => return,
+            TimelineItemKind::Virtual(_) => return Vec::new(),
         };
 
         // Only remote events have a stable event_id we can index.
         let event_id = match event_item.event_id() {
             Some(id) => id.to_string(),
-            None => return, // local-echo without confirmed event_id: skip
+            None => return Vec::new(), // local-echo without confirmed event_id: skip
         };
 
         let sender = event_item.sender().to_string();
@@ -4977,8 +4976,7 @@ impl TimelineActor {
 
         // Redacted items: forward Redact so the document is removed.
         if event_item.content().is_redacted() {
-            let _ = tx.try_send(SearchIndexMessage::Redact { event_id });
-            return;
+            return vec![SearchIndexMessage::Redact { event_id }];
         }
 
         let (body, attachment_filename, attachment, edit_event_id) =
@@ -5021,57 +5019,60 @@ impl TimelineActor {
                     edit_event_id,
                 )
             } else {
-                return;
+                return Vec::new();
             };
 
         if body.is_none() && attachment_filename.is_none() {
-            return;
+            return Vec::new();
         }
 
         if let Some(edit_event_id) = edit_event_id {
             // Edited message: Upsert original with new canonical body, AND
             // forward Edit so the document store registers the alias
             // (edit_event_id → original_event_id) used by verify_candidate.
-            let _ = tx.try_send(SearchIndexMessage::Upsert {
-                room_id: room_id.clone(),
-                event_id: event_id.clone(),
-                sender: sender.clone(),
-                timestamp_ms,
-                body: body.clone(),
-                attachment_filename: attachment_filename.clone(),
-                attachment: attachment.clone(),
-            });
-            let _ = tx.try_send(SearchIndexMessage::Edit {
-                edit_event_id,
-                target_event_id: event_id,
-                sender,
-                timestamp_ms,
-                body,
-                attachment_filename,
-                attachment,
-            });
+            vec![
+                SearchIndexMessage::Upsert {
+                    room_id: room_id.to_owned(),
+                    event_id: event_id.clone(),
+                    sender: sender.clone(),
+                    timestamp_ms,
+                    body: body.clone(),
+                    attachment_filename: attachment_filename.clone(),
+                    attachment: attachment.clone(),
+                },
+                SearchIndexMessage::Edit {
+                    edit_event_id,
+                    target_event_id: event_id,
+                    sender,
+                    timestamp_ms,
+                    body,
+                    attachment_filename,
+                    attachment,
+                },
+            ]
         } else {
             // New (unedited) message: Upsert into document store.
-            let _ = tx.try_send(SearchIndexMessage::Upsert {
-                room_id,
+            vec![SearchIndexMessage::Upsert {
+                room_id: room_id.to_owned(),
                 event_id,
                 sender,
                 timestamp_ms,
                 body,
                 attachment_filename,
                 attachment,
-            });
+            }]
         }
     }
 
-    fn forward_initial_items_to_search(
+    async fn forward_initial_items_to_search(
         &self,
         items: impl IntoIterator<Item = Arc<SdkTimelineItem>>,
     ) {
         use eyeball_im::VectorDiff;
 
         for item in items {
-            self.forward_diff_to_search(&VectorDiff::PushBack { value: item });
+            self.forward_diff_to_search(&VectorDiff::PushBack { value: item })
+                .await;
         }
     }
 
@@ -9125,6 +9126,27 @@ mod tests {
         assert!(
             subscribe_body.contains("self.emit_subscription_failure"),
             "subscribe failure branches must emit reducer failure actions"
+        );
+    }
+
+    #[test]
+    fn timeline_search_index_mutations_use_reliable_delivery() {
+        let source = include_str!("timeline.rs");
+        let forwarder = source
+            .split("async fn forward_diff_to_search")
+            .nth(1)
+            .expect("search index diff forwarder should be async")
+            .split("fn search_index_messages_for_diff")
+            .next()
+            .expect("message builder should follow forwarder");
+
+        assert!(
+            forwarder.contains("tx.send(message).await"),
+            "live search index mutations, including redactions, must use reliable send"
+        );
+        assert!(
+            !forwarder.contains("try_send(SearchIndexMessage"),
+            "search index mutation delivery must not silently drop redactions or edits"
         );
     }
 
