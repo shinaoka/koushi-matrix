@@ -49,7 +49,9 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use koushi_sdk::MatrixClientSession;
 use koushi_search::{AttachmentDocument, SensitiveString};
@@ -115,6 +117,7 @@ pub const TIMELINE_DIFF_QUEUE_CAPACITY: usize = 128;
 const INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT: u16 = 100;
 const ROOM_REPLAY_INITIAL_ITEMS_MAX: usize = 120;
 const REPLY_QUOTE_PREVIEW_MAX_CHARS: usize = 160;
+const MEDIA_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 /// Backstop tick count for the anchor-relay wait. After the SDK signals
 /// `anchor_present == true`, the anchor's diff has been broadcast through the
 /// 3-hop relay (conclude_backwards_pagination_from_disk → event-cache task →
@@ -1440,6 +1443,11 @@ enum TimelineActorMessage {
         event_id: String,
         selection: MediaDownloadSelection,
     },
+    MediaDownloadFinished {
+        request_id: RequestId,
+        event_id: String,
+        outcome: MediaDownloadOutcome,
+    },
     EditText {
         request_id: RequestId,
         event_id: String,
@@ -2099,6 +2107,20 @@ struct PrivateMediaEntry {
     height: Option<u64>,
 }
 
+struct MediaDownloadReady {
+    download_state: TimelineMediaDownloadState,
+    source_url: String,
+    byte_count: u64,
+    mimetype: Option<String>,
+    width: Option<u64>,
+    height: Option<u64>,
+}
+
+enum MediaDownloadOutcome {
+    Ready(MediaDownloadReady),
+    Failed(TimelineFailureKind),
+}
+
 struct ReactionTargetState {
     item_id: TimelineEventItemId,
     can_react: bool,
@@ -2141,6 +2163,8 @@ struct TimelineActor {
     /// Event IDs for which a download is currently in flight. Prevents duplicate
     /// concurrent downloads when the user clicks an attachment repeatedly.
     media_downloads_in_progress: HashSet<String>,
+    /// In-flight media download workers keyed by event id; aborted on actor drop.
+    media_download_tasks: HashMap<String, executor::JoinHandle<()>>,
     /// Search index mutation sender (Phase 6). `None` when no search index is
     /// configured (pre-session or pre-Phase-6 builds). Fire-and-forget: if the
     /// channel is full, we drop the mutation rather than block the diff relay.
@@ -2216,6 +2240,9 @@ impl Drop for TimelineActor {
             task.abort();
         }
         for task in self.reply_detail_fetches.values() {
+            task.abort();
+        }
+        for task in self.media_download_tasks.values() {
             task.abort();
         }
         if let Some(active) = self.pagination_task.take() {
@@ -2480,6 +2507,7 @@ impl TimelineActor {
             sent_event_txns: HashMap::new(),
             media_sources,
             media_downloads_in_progress: HashSet::new(),
+            media_download_tasks: HashMap::new(),
             search_index_tx,
             thread_attention_counts: ThreadAttentionCounters::default(),
             navigation_items,
@@ -2642,6 +2670,14 @@ impl TimelineActor {
                 selection,
             } => {
                 self.handle_download_media(request_id, event_id, selection)
+                    .await;
+            }
+            TimelineActorMessage::MediaDownloadFinished {
+                request_id,
+                event_id,
+                outcome,
+            } => {
+                self.handle_media_download_finished(request_id, event_id, outcome)
                     .await;
             }
             TimelineActorMessage::EditText {
@@ -3845,120 +3881,163 @@ impl TimelineActor {
         event_id: String,
         selection: MediaDownloadSelection,
     ) {
-        if !self.media_downloads_in_progress.insert(event_id.clone()) {
+        if self.media_downloads_in_progress.contains(&event_id) {
+            self.emit_media_download_current_state(request_id, &event_id)
+                .await;
             return;
         }
 
         let Some(entry) = self.media_sources.get(&event_id).cloned() else {
-            self.media_downloads_in_progress.remove(&event_id);
-            self.emit_failure(
-                request_id,
-                CoreFailure::TimelineOperationFailed {
-                    kind: TimelineFailureKind::Sdk,
-                },
-            );
-            return;
-        };
-
-        let total = entry.size;
-        self.emit(CoreEvent::Timeline(TimelineEvent::MediaDownloadProgress {
-            request_id,
-            key: self.key.clone(),
-            event_id: event_id.clone(),
-            progress: MediaTransferProgress { current: 0, total },
-        }));
-        self.emit_action_reliable(AppAction::MediaDownloadUpdated {
-            room_id: self.key.room_id().to_owned(),
-            event_id: event_id.clone(),
-            state: TimelineMediaDownloadState::Pending {
-                progress: Some(MediaTransferProgress { current: 0, total }),
-            },
-        })
-        .await;
-
-        let Some(request) = media_request_for_download(&entry, selection) else {
-            self.media_downloads_in_progress.remove(&event_id);
             self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk)
                 .await;
             return;
         };
 
-        match self
-            .session
-            .client()
-            .media()
-            .get_media_content(&request, true)
-            .await
+        let Some(request) = media_request_for_download(&entry, selection) else {
+            self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk)
+                .await;
+            return;
+        };
+
+        self.media_downloads_in_progress.insert(event_id.clone());
+        self.emit_media_download_current_state(request_id, &event_id)
+            .await;
+
+        let session = self.session.clone();
+        let room_id = self.key.room_id().to_owned();
+        let data_dir = self.data_dir.clone();
+        let actor_tx = self.msg_tx.clone();
+        let event_id_for_task = event_id.clone();
+        let task = executor::spawn(async move {
+            let outcome = Self::download_media_for(
+                session,
+                data_dir,
+                room_id,
+                event_id_for_task.clone(),
+                entry,
+                request,
+            )
+            .await;
+            let _ = actor_tx
+                .send(TimelineActorMessage::MediaDownloadFinished {
+                    request_id,
+                    event_id: event_id_for_task,
+                    outcome,
+                })
+                .await;
+        });
+        self.media_download_tasks.insert(event_id, task);
+    }
+
+    async fn download_media_for(
+        session: Arc<MatrixClientSession>,
+        data_dir: Option<PathBuf>,
+        room_id: String,
+        event_id: String,
+        entry: PrivateMediaEntry,
+        request: MediaRequestParameters,
+    ) -> MediaDownloadOutcome {
+        let bytes = match executor::timeout(
+            MEDIA_DOWNLOAD_TIMEOUT,
+            session.client().media().get_media_content(&request, true),
+        )
+        .await
         {
-            Ok(bytes) => {
-                let byte_count = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                let mut download_state = TimelineMediaDownloadState::Pending {
-                    progress: Some(MediaTransferProgress {
-                        current: byte_count,
-                        total,
-                    }),
-                };
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(error)) => {
+                return MediaDownloadOutcome::Failed(classify_media_download_error(&error));
+            }
+            Err(_) => return MediaDownloadOutcome::Failed(TimelineFailureKind::Timeout),
+        };
 
-                if let Some(data_dir) = self.data_dir.as_deref() {
-                    // Matrix IDs contain ':' which is not valid in Windows
-                    // path components.  Use a hex-encoded SHA-256 of the
-                    // room_id as the directory name and of the event_id as the
-                    // filename so the path is safe on all platforms.
-                    let dir_name = sanitize_matrix_id_for_path(self.key.room_id());
-                    let file_name = format!("{}.bin", sanitize_matrix_id_for_path(&event_id));
-                    let dir = data_dir.join("media_downloads").join(dir_name);
-                    if tokio::fs::create_dir_all(&dir).await.is_ok() {
-                        let path = dir.join(file_name);
-                        if tokio::fs::write(&path, &bytes).await.is_ok() {
-                            download_state = TimelineMediaDownloadState::Ready {
-                                source_url: path.to_string_lossy().into_owned(),
-                                width: entry.width,
-                                height: entry.height,
-                                mime_type: entry.mimetype.clone(),
-                            };
-                        }
-                    }
-                }
+        let byte_count = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let Some(data_dir) = data_dir else {
+            return MediaDownloadOutcome::Failed(TimelineFailureKind::Sdk);
+        };
 
-                let (source_url, width, height, mimetype) = match &download_state {
-                    TimelineMediaDownloadState::Ready {
-                        source_url,
-                        width,
-                        height,
-                        mime_type,
-                    } => (source_url.clone(), *width, *height, mime_type.clone()),
-                    _ => {
-                        self.media_downloads_in_progress.remove(&event_id);
-                        self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk)
-                            .await;
-                        return;
-                    }
-                };
+        // Matrix IDs contain ':' which is not valid in Windows path components.
+        // Use hashed path components so the local path is portable and private.
+        let dir_name = sanitize_matrix_id_for_path(&room_id);
+        let file_name = format!("{}.bin", sanitize_matrix_id_for_path(&event_id));
+        let dir = data_dir.join("media_downloads").join(dir_name);
+        if tokio::fs::create_dir_all(&dir).await.is_err() {
+            return MediaDownloadOutcome::Failed(TimelineFailureKind::Sdk);
+        }
+        let path = dir.join(file_name);
+        if tokio::fs::write(&path, &bytes).await.is_err() {
+            return MediaDownloadOutcome::Failed(TimelineFailureKind::Sdk);
+        }
 
+        let source_url = path.to_string_lossy().into_owned();
+        MediaDownloadOutcome::Ready(MediaDownloadReady {
+            download_state: TimelineMediaDownloadState::Ready {
+                source_url: source_url.clone(),
+                width: entry.width,
+                height: entry.height,
+                mime_type: entry.mimetype.clone(),
+            },
+            source_url,
+            byte_count,
+            mimetype: entry.mimetype,
+            width: entry.width,
+            height: entry.height,
+        })
+    }
+
+    async fn handle_media_download_finished(
+        &mut self,
+        request_id: RequestId,
+        event_id: String,
+        outcome: MediaDownloadOutcome,
+    ) {
+        self.media_downloads_in_progress.remove(&event_id);
+        self.media_download_tasks.remove(&event_id);
+        match outcome {
+            MediaDownloadOutcome::Ready(ready) => {
                 self.emit(CoreEvent::Timeline(TimelineEvent::MediaDownloadCompleted {
                     request_id,
                     key: self.key.clone(),
                     event_id: event_id.clone(),
-                    source_url,
-                    byte_count,
-                    mimetype,
-                    width,
-                    height,
+                    source_url: ready.source_url,
+                    byte_count: ready.byte_count,
+                    mimetype: ready.mimetype,
+                    width: ready.width,
+                    height: ready.height,
                 }));
                 self.emit_action_reliable(AppAction::MediaDownloadUpdated {
                     room_id: self.key.room_id().to_owned(),
-                    event_id: event_id.clone(),
-                    state: download_state,
+                    event_id,
+                    state: ready.download_state,
                 })
                 .await;
-                self.media_downloads_in_progress.remove(&event_id);
             }
-            Err(_) => {
-                self.media_downloads_in_progress.remove(&event_id);
-                self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk)
-                    .await;
+            MediaDownloadOutcome::Failed(kind) => {
+                self.emit_download_failed(request_id, &event_id, kind).await;
             }
         }
+    }
+
+    async fn emit_media_download_current_state(&self, request_id: RequestId, event_id: &str) {
+        let total = self
+            .media_sources
+            .get(event_id)
+            .map(|entry| entry.size)
+            .unwrap_or(0);
+        let progress = MediaTransferProgress { current: 0, total };
+        self.emit(CoreEvent::Timeline(TimelineEvent::MediaDownloadProgress {
+            request_id,
+            key: self.key.clone(),
+            event_id: event_id.to_owned(),
+            progress,
+        }));
+        self.emit_action_reliable(AppAction::MediaDownloadUpdated {
+            room_id: self.key.room_id().to_owned(),
+            event_id: event_id.to_owned(),
+            state: TimelineMediaDownloadState::Pending {
+                progress: Some(progress),
+            },
+        })
+        .await;
     }
 
     async fn emit_download_failed(
@@ -7710,6 +7789,23 @@ fn classify_timeline_send_error(err: &matrix_sdk_ui::timeline::Error) -> Timelin
     }
 }
 
+fn classify_media_download_error(error: &matrix_sdk::Error) -> TimelineFailureKind {
+    if matches!(error, matrix_sdk::Error::Timeout) {
+        return TimelineFailureKind::Timeout;
+    }
+    if error
+        .client_api_error_kind()
+        .map(|kind| kind == &matrix_sdk::ruma::api::error::ErrorKind::Forbidden)
+        .unwrap_or(false)
+    {
+        return TimelineFailureKind::Forbidden;
+    }
+    if matches!(error, matrix_sdk::Error::Http(_)) {
+        return TimelineFailureKind::Network;
+    }
+    TimelineFailureKind::Sdk
+}
+
 fn classify_send_queue_error(
     err: &matrix_sdk::send_queue::RoomSendQueueError,
 ) -> TimelineFailureKind {
@@ -9965,6 +10061,54 @@ mod tests {
         assert!(
             !actor_completion_source.contains("try_send"),
             "send/reply settlement must not silently drop reducer actions on a full channel"
+        );
+    }
+
+    #[test]
+    fn media_downloads_spawn_bounded_tasks_and_report_all_exits() {
+        let source = include_str!("timeline.rs");
+        let handler = source
+            .split("async fn handle_download_media")
+            .nth(1)
+            .expect("download handler should exist")
+            .split("async fn download_media_for")
+            .next()
+            .expect("download worker should follow handler");
+        let worker = source
+            .split("async fn download_media_for")
+            .nth(1)
+            .expect("download worker should exist")
+            .split("async fn handle_media_download_finished")
+            .next()
+            .expect("download completion handler should follow worker");
+
+        assert!(
+            handler.contains("TimelineActorMessage::MediaDownloadFinished"),
+            "download worker must report terminal state back to the actor"
+        );
+        assert!(
+            handler.contains("executor::spawn(async move"),
+            "media download transfer must not run inline on the actor loop"
+        );
+        assert!(
+            !handler.contains(".get_media_content("),
+            "actor-loop download handler must not await the SDK media transfer directly"
+        );
+        assert!(
+            handler.contains("emit_media_download_current_state"),
+            "duplicate in-flight clicks must reproject current download state instead of returning silently"
+        );
+        assert!(
+            worker.contains("executor::timeout(") && worker.contains("MEDIA_DOWNLOAD_TIMEOUT"),
+            "media downloads need a modeled timeout exit"
+        );
+        assert!(
+            worker.contains("classify_media_download_error(&error)"),
+            "download SDK/media failures must keep coarse network/forbidden/sdk classification"
+        );
+        assert!(
+            worker.contains("TimelineFailureKind::Timeout"),
+            "download timeout must settle the pending state with a timeout failure"
         );
     }
 
