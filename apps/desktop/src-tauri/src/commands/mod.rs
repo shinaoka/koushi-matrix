@@ -603,9 +603,13 @@ fn snapshot_has_active_room(snapshot: &koushi_state::AppState, room_id: &str) ->
     snapshot.navigation.active_room_id.as_deref() == Some(room_id)
 }
 
-fn snapshot_has_completed_search(snapshot: &koushi_state::AppState, request_id: RequestId) -> bool {
+fn snapshot_has_started_search(snapshot: &koushi_state::AppState, request_id: RequestId) -> bool {
     match &snapshot.search {
-        koushi_state::SearchState::Results {
+        koushi_state::SearchState::Searching {
+            request_id: state_request_id,
+            ..
+        }
+        | koushi_state::SearchState::Results {
             request_id: state_request_id,
             ..
         }
@@ -621,7 +625,7 @@ fn snapshot_has_closed_search(snapshot: &koushi_state::AppState) -> bool {
     snapshot.search == koushi_state::SearchState::Closed
 }
 
-async fn wait_for_search_completed(
+async fn wait_for_search_started(
     event_conn: &mut CoreConnection,
     request_id: RequestId,
     timeout: std::time::Duration,
@@ -629,13 +633,13 @@ async fn wait_for_search_completed(
     let deadline = tokio::time::Instant::now() + timeout;
 
     loop {
-        if snapshot_has_completed_search(&event_conn.snapshot(), request_id) {
+        if snapshot_has_started_search(&event_conn.snapshot(), request_id) {
             return Ok(());
         }
 
         let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
             .await
-            .map_err(|_| "search did not complete".to_owned())?;
+            .map_err(|_| "search did not start".to_owned())?;
         match event {
             Ok(CoreEvent::Search(SearchEvent::Results {
                 request_id: result_request_id,
@@ -648,12 +652,12 @@ async fn wait_for_search_completed(
                 return Err(invoke_error_from_core_failure("search failed", failure));
             }
             Ok(CoreEvent::StateChanged(snapshot))
-                if snapshot_has_completed_search(&snapshot, request_id) =>
+                if snapshot_has_started_search(&snapshot, request_id) =>
             {
                 return Ok(());
             }
             Ok(_) => {}
-            Err(_) if snapshot_has_completed_search(&event_conn.snapshot(), request_id) => {
+            Err(_) if snapshot_has_started_search(&event_conn.snapshot(), request_id) => {
                 return Ok(());
             }
             Err(_) => continue,
@@ -2834,7 +2838,7 @@ mod tests {
                 "fn snapshot_has_active_room",
             ),
             (
-                "async fn wait_for_search_completed",
+                "async fn wait_for_search_started",
                 "async fn wait_for_search_closed",
             ),
             (
@@ -2904,7 +2908,7 @@ mod tests {
                 "async fn wait_for_selected_room",
             ),
             (
-                "async fn wait_for_search_completed",
+                "async fn wait_for_search_started",
                 "async fn wait_for_search_closed",
             ),
             (
@@ -5958,7 +5962,7 @@ mod tests {
     }
 
     #[test]
-    fn submit_search_waits_for_correlated_result_before_returning_snapshot() {
+    fn submit_search_returns_after_correlated_search_start_before_result_completion() {
         let source = commands_source();
         let fn_name = "pub async fn submit_search";
 
@@ -5975,14 +5979,18 @@ mod tests {
             .find("build_submit_search_command")
             .expect("submit_search should submit the query command");
         let wait_offset = command_source
-            .find("wait_for_search_completed")
-            .expect("submit_search must wait for the correlated search result");
+            .find("wait_for_search_started")
+            .expect("submit_search should wait only for the correlated searching state");
         let snapshot_offset = command_source
             .find("current_snapshot")
             .expect("submit_search should return a snapshot");
         assert!(
             submit_offset < wait_offset && wait_offset < snapshot_offset,
-            "submit_search must not return a pre-result searching snapshot"
+            "submit_search should return the searching snapshot and let results arrive via state events"
+        );
+        assert!(
+            !command_source.contains("wait_for_search_completed"),
+            "submit_search must not block the renderer on search result completion"
         );
     }
 

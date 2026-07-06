@@ -399,12 +399,14 @@ function PinnedEventsList({
 
 function SearchResults({
   indexingPending = false,
+  pending = false,
   query,
   results,
   rooms,
   onResultSelect
 }: {
   indexingPending?: boolean;
+  pending?: boolean;
   query: string;
   results: SearchResult[];
   rooms: DesktopSnapshot["state"]["domain"]["rooms"];
@@ -415,17 +417,19 @@ function SearchResults({
   }
 
   return (
-    <section className="search-results">
+    <section className="search-results" aria-busy={pending || undefined}>
       <div className="search-results-header">
         <span dir="auto">
-          {t(results.length === 1 ? "search.resultCountOne" : "search.resultCountMany", {
-            count: results.length,
-            query
-          })}
+          {pending
+            ? t("search.searchingFor", { query })
+            : t(results.length === 1 ? "search.resultCountOne" : "search.resultCountMany", {
+                count: results.length,
+                query
+              })}
         </span>
       </div>
       <div className="result-list">
-        {results.length ? (
+        {!pending && results.length ? (
           results.map((result) => {
             const room = rooms.find((candidate) => candidate.room_id === result.room_id);
             return (
@@ -445,7 +449,13 @@ function SearchResults({
           })
         ) : (
           <div className="empty-results">
-            {t(indexingPending ? "search.indexingPending" : "search.noExactMatches")}
+            {t(
+              pending
+                ? "search.searching"
+                : indexingPending
+                  ? "search.indexingPending"
+                  : "search.noExactMatches"
+            )}
           </div>
         )}
       </div>

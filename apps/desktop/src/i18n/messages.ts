@@ -372,6 +372,8 @@ export type MessageId =
   | "search.matchMessage"
   | "search.resultCountMany"
   | "search.resultCountOne"
+  | "search.searching"
+  | "search.searchingFor"
   | "search.scopeAll"
   | "search.scopeDm"
   | "search.scopeRoom"
@@ -1329,6 +1331,8 @@ const en: Catalog = {
   "search.matchMessage": "message",
   "search.resultCountMany": "{count} results for \"{query}\"",
   "search.resultCountOne": "1 result for \"{query}\"",
+  "search.searching": "Searching...",
+  "search.searchingFor": "Searching for \"{query}\"",
   "search.scopeAll": "All",
   "search.scopeDm": "DM",
   "search.scopeRoom": "Room",
@@ -2184,6 +2188,8 @@ const ja: Catalog = {
   "search.matchMessage": "メッセージ",
   "search.resultCountMany": "\"{query}\" の結果 {count} 件",
   "search.resultCountOne": "\"{query}\" の結果 1 件",
+  "search.searching": "検索中...",
+  "search.searchingFor": "\"{query}\" を検索中",
   "search.scopeAll": "すべて",
   "search.scopeDm": "ダイレクト",
   "search.scopeRoom": "ルーム",

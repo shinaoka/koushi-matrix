@@ -105,6 +105,11 @@ reverse.
   `cargo test -p koushi-core --lib some_unit_test_name`. Without `--lib`,
   Cargo still launches every matching integration-test binary after the library
   test, which is slow even when those binaries run zero tests.
+- When running a focused Rust integration test, target the integration-test
+  binary with `--test <name>` instead of using only a package-wide name filter.
+  Example: use `cargo test -p koushi-state --test search_state`, not
+  `cargo test -p koushi-state search`, because the latter launches every
+  integration-test binary and then filters inside each one.
 - Cooperate with the external auditor (codex) for independent root-cause
   verification and diff review (see the recipe below). A subagent's "gates
   passed" claim is not evidence — re-run the gate yourself.
