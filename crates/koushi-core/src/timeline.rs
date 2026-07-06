@@ -9206,7 +9206,8 @@ mod tests {
             .expect("pagination handler should follow replay helper");
 
         assert!(
-            replay_helper.contains("self.thread_attention_counts = ThreadAttentionCounters::default();"),
+            replay_helper
+                .contains("self.thread_attention_counts = ThreadAttentionCounters::default();"),
             "thread replay must reset the actor-owned attention counter to match the reducer's open-thread zero state"
         );
     }

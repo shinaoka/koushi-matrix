@@ -502,15 +502,14 @@ pub async fn save_downloaded_media(
 #[tauri::command]
 pub async fn default_media_save_path(filename: String, app: AppHandle) -> Result<String, String> {
     let downloads_dir = app.path().download_dir().ok();
-    Ok(default_media_save_path_for(&filename, downloads_dir.as_deref())
-        .to_string_lossy()
-        .into_owned())
+    Ok(
+        default_media_save_path_for(&filename, downloads_dir.as_deref())
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
-fn default_media_save_path_for(
-    filename: &str,
-    downloads_dir: Option<&std::path::Path>,
-) -> PathBuf {
+fn default_media_save_path_for(filename: &str, downloads_dir: Option<&std::path::Path>) -> PathBuf {
     let safe_filename = safe_media_save_filename(filename);
     downloads_dir
         .map(|directory| directory.join(&safe_filename))

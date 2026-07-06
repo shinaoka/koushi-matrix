@@ -62,24 +62,24 @@ use koushi_core::ids::{AccountKey, RequestId, TimelineKey, TimelineKind};
 use koushi_core::runtime::{CoreConnection, CoreRuntime};
 use koushi_state::{
     ActivityMarkReadTarget, ActivityRowKind, ActivityState, AppAction, AppState, AuthSecret,
-    ComposerKey,
-    ComposerKeyEvent, ComposerKeyModifiers, ComposerResolvedAction, ComposerResolverContext,
-    ComposerSelection, ComposerSendShortcut, ComposerSurface, CrossSigningStatus, DirectoryQuery,
-    DirectoryRoomSummary, DisplaySettings, IdentityResetAuthRequest, IdentityResetAuthType,
-    IdentityResetState, ImageUploadCompressionMode, KeyBackupStatus, LocalEncryptionHealth,
-    LocalEncryptionState, MentionIntent, MentionTarget, NativeAttentionCapabilities,
-    NativeAttentionCapability, NativeAttentionDispatchState, NativeAttentionObservationKind,
-    NativeAttentionProjectionInput, NativeAttentionState, NativeAttentionSuppressionReason,
-    OperationFailureKind, PresenceKind, RecoveryRequest, ReplyQuoteState, RoomAttentionKind,
-    RoomListFilter, RoomManagementOperationKind, RoomManagementOperationState,
-    RoomModerationAction, RoomNotificationMode, RoomSettingChange, RoomSettingsSnapshot,
-    RoomSummary, RoomTags, SasEmoji, ScheduledSendCapability, SearchCrawlerFailureKind,
-    SearchCrawlerRoomState, SearchCrawlerSettings, SearchCrawlerSpeed, SessionInfo, SessionState,
-    SettingsPatch, SettingsPersistenceState, StagedUploadCompressionChoice, StagedUploadItem,
-    StagedUploadKind, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
-    TimelineMediaGallerySource, TimelineMediaKind, TrustOperationFailureKind,
-    VerificationFlowState, VerificationTarget, build_formatted_message_draft, compose_sidebar,
-    native_attention_state_from_rooms, reduce, resolve_composer_key_action,
+    ComposerKey, ComposerKeyEvent, ComposerKeyModifiers, ComposerResolvedAction,
+    ComposerResolverContext, ComposerSelection, ComposerSendShortcut, ComposerSurface,
+    CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, DisplaySettings,
+    IdentityResetAuthRequest, IdentityResetAuthType, IdentityResetState,
+    ImageUploadCompressionMode, KeyBackupStatus, LocalEncryptionHealth, LocalEncryptionState,
+    MentionIntent, MentionTarget, NativeAttentionCapabilities, NativeAttentionCapability,
+    NativeAttentionDispatchState, NativeAttentionObservationKind, NativeAttentionProjectionInput,
+    NativeAttentionState, NativeAttentionSuppressionReason, OperationFailureKind, PresenceKind,
+    RecoveryRequest, ReplyQuoteState, RoomAttentionKind, RoomListFilter,
+    RoomManagementOperationKind, RoomManagementOperationState, RoomModerationAction,
+    RoomNotificationMode, RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTags, SasEmoji,
+    ScheduledSendCapability, SearchCrawlerFailureKind, SearchCrawlerRoomState,
+    SearchCrawlerSettings, SearchCrawlerSpeed, SessionInfo, SessionState, SettingsPatch,
+    SettingsPersistenceState, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
+    TimelineMediaGalleryItem, TimelineMediaGalleryMedia, TimelineMediaGallerySource,
+    TimelineMediaKind, TrustOperationFailureKind, VerificationFlowState, VerificationTarget,
+    build_formatted_message_draft, compose_sidebar, native_attention_state_from_rooms, reduce,
+    resolve_composer_key_action,
 };
 
 const ENV_HOMESERVER: &str = "KOUSHI_LOCAL_QA_HOMESERVER";
@@ -6660,9 +6660,7 @@ async fn wait_for_activity_snapshot(
                 let mut unread_room_ids = Vec::new();
                 for row in unread.rows {
                     if row.kind != ActivityRowKind::RoomUnread || row.event_id.is_some() {
-                        return Err(format!(
-                            "{label}: Activity unread contained an event row"
-                        ));
+                        return Err(format!("{label}: Activity unread contained an event row"));
                     }
                     unread_room_ids.push(row.room_id);
                 }
@@ -10302,8 +10300,12 @@ async fn wait_for_read_receipt_projection(
             .map_err(|lag| format!("{label}: event stream lagged (skipped={})", lag.skipped))?;
 
         if let CoreEvent::StateChanged(snapshot) = event {
-            last_status =
-                read_receipt_projection_status(&snapshot, room_id, event_id, expected_reader_user_id);
+            last_status = read_receipt_projection_status(
+                &snapshot,
+                room_id,
+                event_id,
+                expected_reader_user_id,
+            );
             if last_status == "projected" {
                 return Ok(snapshot);
             }
@@ -13786,7 +13788,10 @@ mod tests {
         let wait_body = source
             .split("async fn wait_for_logged_in")
             .nth(1)
-            .and_then(|rest| rest.split("/// Wait for `AccountEvent::SessionRestored`").next())
+            .and_then(|rest| {
+                rest.split("/// Wait for `AccountEvent::SessionRestored`")
+                    .next()
+            })
             .expect("wait_for_logged_in body");
 
         assert!(
@@ -13831,7 +13836,10 @@ mod tests {
         let body = source
             .split("async fn wait_for_send_completions_in_order")
             .nth(1)
-            .and_then(|rest| rest.split("async fn wait_for_cancelled_or_removed_send").next())
+            .and_then(|rest| {
+                rest.split("async fn wait_for_cancelled_or_removed_send")
+                    .next()
+            })
             .expect("send queue FIFO wait body");
 
         assert!(
@@ -13854,7 +13862,10 @@ mod tests {
         let body = source
             .split("async fn run_send_queue_stage")
             .nth(1)
-            .and_then(|rest| rest.split("async fn run_timeline_reconnect_scenario").next())
+            .and_then(|rest| {
+                rest.split("async fn run_timeline_reconnect_scenario")
+                    .next()
+            })
             .expect("send queue stage body");
 
         assert!(

@@ -52,10 +52,7 @@ impl RenderableThumbnailCache {
         bytes: Vec<u8>,
         mime_type: String,
     ) -> RenderableThumbnailEntry {
-        let entry = RenderableThumbnailEntry {
-            bytes,
-            mime_type,
-        };
+        let entry = RenderableThumbnailEntry { bytes, mime_type };
         self.entries.insert(cache_key, entry.clone());
         entry
     }

@@ -3482,10 +3482,8 @@ pub async fn create_public_directory_room(
 
 fn create_room_request(
     options: MatrixCreateRoomOptions,
-) -> Result<
-    matrix_sdk::ruma::api::client::room::create_room::v3::Request,
-    MatrixRoomOperationError,
-> {
+) -> Result<matrix_sdk::ruma::api::client::room::create_room::v3::Request, MatrixRoomOperationError>
+{
     let mut request = matrix_sdk::ruma::api::client::room::create_room::v3::Request::new();
     request.name = non_empty_name(&options.name);
     request.topic = options
@@ -3525,9 +3523,7 @@ fn create_room_request(
         let via_server = matrix_sdk::ruma::OwnedServerName::try_from(parent_space.via_server)
             .map_err(|_| MatrixRoomOperationError::InvalidServerName)?;
         let mut parent_content =
-            matrix_sdk::ruma::events::space::parent::SpaceParentEventContent::new(vec![
-                via_server,
-            ]);
+            matrix_sdk::ruma::events::space::parent::SpaceParentEventContent::new(vec![via_server]);
         parent_content.canonical = true;
         request.initial_state.push(
             matrix_sdk::ruma::events::InitialStateEvent::new(
@@ -5492,15 +5488,15 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use super::{
-        LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE, MatrixCreateRoomOptions,
-        MatrixCreateRoomParentSpace, MatrixCreateRoomVisibility, MatrixEventCacheError,
-        MatrixLocalUserAliases, MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom,
-        MatrixRoomHistoryVisibility, MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomModerationAction,
+        LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE, MatrixCreateRoomOptions, MatrixCreateRoomParentSpace,
+        MatrixCreateRoomVisibility, MatrixEventCacheError, MatrixLocalUserAliases,
+        MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom, MatrixRoomHistoryVisibility,
+        MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomModerationAction,
         MatrixRoomPermissionFacts, MatrixRoomSettingChange, MatrixRoomSettingsSnapshot,
         MatrixRoomTagInfo, MatrixRoomTags, MatrixSearchIndexKey, MatrixSearchIndexStoreConfig,
-        create_public_directory_room, create_room_request, get_room_settings_snapshot, join_room_by_alias,
-        matrix_room_list_room_from_counts, matrix_room_member_role, moderate_room_member,
-        normalized_local_user_aliases, query_public_room_directory,
+        create_public_directory_room, create_room_request, get_room_settings_snapshot,
+        join_room_by_alias, matrix_room_list_room_from_counts, matrix_room_member_role,
+        moderate_room_member, normalized_local_user_aliases, query_public_room_directory,
         room_settings_snapshot_with_change, room_settings_snapshot_with_member_power_level,
         update_room_member_power_level, update_room_setting,
     };
@@ -5986,29 +5982,25 @@ mod tests {
         assert_eq!(request.name.as_deref(), Some("Synthetic Ops"));
         assert_eq!(request.topic.as_deref(), Some("Deployment notes"));
         assert_eq!(
-            request.room_version.as_ref().map(|version| version.as_str()),
+            request
+                .room_version
+                .as_ref()
+                .map(|version| version.as_str()),
             Some("9")
         );
         let initial_state = initial_state_json(&request);
-        assert!(
-            initial_state
-                .iter()
-                .any(|event| event.get("type").and_then(serde_json::Value::as_str)
-                    == Some("m.room.encryption"))
-        );
-        assert!(
-            initial_state
-                .iter()
-                .any(|event| event.get("type").and_then(serde_json::Value::as_str)
-                    == Some("m.space.parent")
-                    && event.get("state_key").and_then(serde_json::Value::as_str)
-                        == Some("!space:example.invalid"))
-        );
+        assert!(initial_state.iter().any(|event| {
+            event.get("type").and_then(serde_json::Value::as_str) == Some("m.room.encryption")
+        }));
+        assert!(initial_state.iter().any(|event| {
+            event.get("type").and_then(serde_json::Value::as_str) == Some("m.space.parent")
+                && event.get("state_key").and_then(serde_json::Value::as_str)
+                    == Some("!space:example.invalid")
+        }));
         let join_rules = initial_state
             .iter()
             .find(|event| {
-                event.get("type").and_then(serde_json::Value::as_str)
-                    == Some("m.room.join_rules")
+                event.get("type").and_then(serde_json::Value::as_str) == Some("m.room.join_rules")
             })
             .expect("join rules");
         assert_eq!(
@@ -6052,12 +6044,9 @@ mod tests {
             matrix_sdk::ruma::api::client::room::Visibility::Public
         );
         let initial_state = initial_state_json(&request);
-        assert!(
-            !initial_state
-                .iter()
-                .any(|event| event.get("type").and_then(serde_json::Value::as_str)
-                    == Some("m.room.encryption"))
-        );
+        assert!(!initial_state.iter().any(|event| {
+            event.get("type").and_then(serde_json::Value::as_str) == Some("m.room.encryption")
+        }));
     }
 
     fn initial_state_json(
