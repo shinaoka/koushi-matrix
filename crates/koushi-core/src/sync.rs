@@ -477,8 +477,9 @@ impl SyncActor {
     async fn handle_sync_task_ended(&mut self, outcome: SyncTaskOutcome) {
         // The room-list observation must not outlive the sync backend it
         // relays (live RoomListService on SyncService, base-client updates on
-        // legacy). try_send: this is a sync fn; capacity 64 suffices.
-        let _ = self.room_tx.try_send(RoomMessage::SyncStopped);
+        // legacy). Send from a notifier task so shutdown is not blocked by
+        // mailbox backpressure and the one-shot handoff is not silently dropped.
+        notify_room_sync_stopped(self.room_tx.clone());
         let ended_backend = self.active_backend;
         let request_id = self.active_start_request_id;
         let outcome_label = sync_task_outcome_trace_label(&outcome);
@@ -809,7 +810,7 @@ impl SyncActor {
         // Tear down the RoomActor's room-list observation first: on the
         // SyncService backend it consumes the live RoomListService that is
         // about to stop. Harmless no-op when nothing is running.
-        let _ = self.room_tx.try_send(RoomMessage::SyncStopped);
+        notify_room_sync_stopped(self.room_tx.clone());
         // Signal stop to whichever backend is running.
         if let Some(svc) = self.sync_service.take() {
             let _ = executor::timeout(SYNC_SERVICE_STOP_TIMEOUT, svc.stop()).await;
@@ -923,6 +924,12 @@ async fn notify_dependents_sync_started(
     let _ = timeline_tx
         .send(crate::timeline::TimelineMessage::SyncStarted { room_list_service })
         .await;
+}
+
+fn notify_room_sync_stopped(room_tx: mpsc::Sender<RoomMessage>) {
+    executor::spawn(async move {
+        let _ = room_tx.send(RoomMessage::SyncStopped).await;
+    });
 }
 
 async fn observe_sync_service_states(
@@ -1407,23 +1414,40 @@ pub mod tests {
     #[test]
     fn sync_stop_path_bounds_nonessential_shutdown_awaits() {
         let source = include_str!("sync.rs");
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source should precede tests");
         let body = source
             .split("    async fn do_stop")
             .nth(1)
             .and_then(|rest| rest.split("    async fn handle_sync_once").next())
             .expect("do_stop body");
+        let notifier = source
+            .split("fn notify_room_sync_stopped")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn observe_sync_service_states").next())
+            .expect("sync-stopped notifier");
 
         assert!(
-            body.contains("self.room_tx.try_send(RoomMessage::SyncStopped)"),
-            "room observation teardown notification must not block sync shutdown"
+            body.contains("notify_room_sync_stopped(self.room_tx.clone())"),
+            "room observation teardown notification should route through the bounded notifier"
         );
         assert!(
             body.contains("executor::timeout(SYNC_SERVICE_STOP_TIMEOUT, svc.stop()).await"),
             "SyncService::stop must be bounded"
         );
         assert!(
-            !body.contains("self.room_tx.send(RoomMessage::SyncStopped).await"),
-            "room notification send must not be awaited unbounded"
+            notifier.contains("executor::spawn(async move"),
+            "room notification send should run in a notifier task so sync shutdown is not blocked"
+        );
+        assert!(
+            notifier.contains(".send(RoomMessage::SyncStopped).await"),
+            "SyncStopped handoff must use reliable send instead of drop-on-full try_send"
+        );
+        assert!(
+            !production_source.contains("room_tx.try_send(RoomMessage::SyncStopped)"),
+            "SyncStopped handoff must not use drop-on-full try_send"
         );
         assert!(
             !body.contains("svc.stop().await"),

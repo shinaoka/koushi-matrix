@@ -1265,11 +1265,13 @@ impl AccountActor {
         // Give the RoomActor the session so room ops work even before sync
         // starts. The room-list observation starts later, on the SyncActor's
         // RoomMessage::SyncStarted (which carries the live RoomListService on
-        // the SyncService backend). try_send: this is a sync fn; capacity 64
-        // is more than enough for this one message.
-        self.room_actor.try_send(RoomMessage::SessionEstablished {
-            session: session.clone(),
-        });
+        // the SyncService backend).
+        let _ = self
+            .room_actor
+            .send(RoomMessage::SessionEstablished {
+                session: session.clone(),
+            })
+            .await;
 
         // Spawn SearchActor (Phase 6). The session already holds the search
         // index (configured in restore_into_store / the client builder). The
@@ -5551,6 +5553,28 @@ mod tests {
         assert!(
             spawn_call < no_actor_trace,
             "no-actor stop handling should be separate from the spawn path"
+        );
+    }
+
+    #[test]
+    fn session_established_handoff_to_room_actor_is_reliable() {
+        let source = include_str!("account.rs");
+        let spawn_body = source
+            .split("async fn spawn_sync_actor")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn start_recovery_observer").next())
+            .expect("spawn_sync_actor body");
+        let session_handoff = spawn_body
+            .find(".send(RoomMessage::SessionEstablished")
+            .expect("RoomActor session handoff should use reliable send");
+
+        assert!(
+            !spawn_body.contains("room_actor.try_send(RoomMessage::SessionEstablished"),
+            "SessionEstablished must not be delivered through drop-on-full try_send"
+        );
+        assert!(
+            spawn_body[session_handoff..].contains(".await"),
+            "SessionEstablished handoff must await reliable delivery before dependent actors start"
         );
     }
 
