@@ -14,7 +14,7 @@ pub async fn submit_search(
         .command(build_submit_search_command(request_id, query, search_scope))
         .await
         .map_err(|e| format!("command submit failed: {e}"))?;
-    wait_for_search_completed(&mut event_conn, request_id, SEARCH_EVENT_TIMEOUT).await?;
+    wait_for_search_started(&mut event_conn, request_id, SEARCH_EVENT_TIMEOUT).await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
 }

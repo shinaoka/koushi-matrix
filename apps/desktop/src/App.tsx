@@ -3337,10 +3337,10 @@ export function App() {
       }
       return;
     }
-    setSnapshot(await api.submitSearch(trimmed, scope));
     if (searchMode) {
       setRightPanelMode(searchMode);
     }
+    setSnapshot(await api.submitSearch(trimmed, scope));
   }
 
   // #87 Phase 4 IPC contract guard (fail-closed): an incompatible snapshot (a stale flat v1
@@ -3411,9 +3411,20 @@ export function App() {
     searchQuery,
     searchScope
   );
+  const trimmedSearchQuery = searchQuery.trim();
+  const searchPending =
+    Boolean(trimmedSearchQuery) &&
+    (activeSearchState === null ||
+      activeSearchState.kind === "editing" ||
+      activeSearchState.kind === "searching");
   const searchResults = activeSearchState?.kind === "results" ? activeSearchState.results : [];
-  const searchResultsQuery = activeSearchState?.kind === "results" ? activeSearchState.query : "";
-  const searchHighlightQuery = searchResultsQuery;
+  const searchResultsQuery =
+    activeSearchState?.kind === "results"
+      ? activeSearchState.query
+      : searchPending
+        ? trimmedSearchQuery
+        : "";
+  const searchHighlightQuery = activeSearchState?.kind === "results" ? searchResultsQuery : "";
   const searchIndexingPending =
     activeSearchState?.kind === "results" &&
     searchResults.length === 0 &&
@@ -3714,6 +3725,7 @@ export function App() {
           snapshot={snapshot}
           timelineTransport={appTimelineTransport}
           searchIndexingPending={searchIndexingPending}
+          searchPending={searchPending}
           searchQuery={searchResultsQuery}
           searchResults={searchResults}
           savedSessions={savedSessions}
