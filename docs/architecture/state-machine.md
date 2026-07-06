@@ -93,8 +93,10 @@ stateDiagram-v2
     Reconnecting --> Stopped: LogoutRequested
 ```
 
-Logout and lock clear navigation, room lists, the main timeline, thread pane, and
-search state. The reducer emits UI events for any cleared visible panes.
+Logout, lock, and account switch clear navigation, room lists, the main
+timeline, thread pane, search state, search crawler status, invite workflow,
+and basic operation pendings. The reducer emits UI events for any cleared
+visible panes or crawler status.
 
 Password login and OIDC/MAS callback completion both enter `Authenticating`
 through Rust-owned account commands and settle through the same

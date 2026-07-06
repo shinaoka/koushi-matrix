@@ -1027,6 +1027,7 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let had_link_preview_settings = !state.link_preview_settings.room_overrides.is_empty();
     let had_room_preferences = !state.room_preferences.rooms.is_empty();
     let had_room_notification_settings = !state.room_notification_settings.is_empty();
+    let had_search_crawler = state.search_crawler != Default::default();
 
     state.navigation = NavigationState::default();
     state.link_preview_settings = Default::default();
@@ -1048,6 +1049,7 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.thread_attention = ThreadAttentionState::Closed;
     state.focused_context = FocusedContextState::Closed;
     state.search = SearchState::Closed;
+    state.search_crawler = Default::default();
     state.files_view = FilesViewState::Closed;
     state.threads_list = ThreadsListState::Closed;
     state.e2ee_trust = E2eeTrustState::default();
@@ -1059,6 +1061,8 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.live_signals = Default::default();
     state.local_encryption = LocalEncryptionState::Unknown;
     state.native_attention = Default::default();
+    state.invite_workflow = Default::default();
+    state.basic_operation = Default::default();
     state.room_notification_settings.clear();
 
     let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
@@ -1070,6 +1074,9 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     }
     if had_search {
         effects.push(AppEffect::EmitUiEvent(UiEvent::SearchChanged));
+    }
+    if had_search_crawler {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged));
     }
     if had_e2ee_trust {
         effects.push(AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged));
