@@ -605,6 +605,49 @@ fn cross_signing_key_backup_and_reset_identity_are_request_correlated() {
 }
 
 #[test]
+fn cross_signing_non_success_projection_does_not_clobber_bootstrap_pending() {
+    let mut state = ready_state();
+
+    reduce(
+        &mut state,
+        AppAction::BootstrapCrossSigningRequested { request_id: 21 },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::CrossSigningStatusChanged {
+            status: CrossSigningStatus::Missing,
+        },
+    );
+
+    assert!(effects.is_empty());
+    assert_eq!(
+        state.e2ee_trust.cross_signing,
+        CrossSigningStatus::Bootstrapping { request_id: 21 }
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::BootstrapCrossSigningFailed {
+            request_id: 21,
+            kind: TrustOperationFailureKind::Sdk,
+        },
+    );
+
+    assert_eq!(
+        state.e2ee_trust.cross_signing,
+        CrossSigningStatus::Failed {
+            request_id: 21,
+            kind: TrustOperationFailureKind::Sdk,
+        }
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+    );
+}
+
+#[test]
 fn identity_reset_auth_required_is_rust_owned_and_request_correlated() {
     let mut state = ready_state();
 
@@ -752,6 +795,86 @@ fn identity_reset_auth_submission_returns_to_resetting_only_for_matching_flow() 
     assert_eq!(
         state.e2ee_trust.identity_reset,
         IdentityResetState::Resetting { request_id: 24 }
+    );
+}
+
+#[test]
+fn identity_reset_awaiting_auth_has_cancel_and_timeout_exits() {
+    let mut state = ready_state();
+
+    reduce(
+        &mut state,
+        AppAction::ResetIdentityRequested { request_id: 24 },
+    );
+    reduce(
+        &mut state,
+        AppAction::ResetIdentityAuthRequired {
+            request_id: 24,
+            auth_type: IdentityResetAuthType::Uiaa,
+        },
+    );
+
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::ResetIdentityCancelled { request_id: 99 },
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        state.e2ee_trust.identity_reset,
+        IdentityResetState::AwaitingAuth {
+            request_id: 24,
+            auth_type: IdentityResetAuthType::Uiaa,
+        }
+    );
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::ResetIdentityCancelled { request_id: 24 },
+        ),
+        vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+    );
+    assert_eq!(
+        state.e2ee_trust.identity_reset,
+        IdentityResetState::Failed {
+            request_id: 24,
+            kind: TrustOperationFailureKind::Cancelled,
+        }
+    );
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::ResetIdentityRequested { request_id: 25 },
+        ),
+        vec![
+            AppEffect::ResetIdentity { request_id: 25 },
+            AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged),
+        ]
+    );
+    reduce(
+        &mut state,
+        AppAction::ResetIdentityAuthRequired {
+            request_id: 25,
+            auth_type: IdentityResetAuthType::OAuth,
+        },
+    );
+
+    assert_eq!(
+        reduce(
+            &mut state,
+            AppAction::ResetIdentityTimedOut { request_id: 25 },
+        ),
+        vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+    );
+    assert_eq!(
+        state.e2ee_trust.identity_reset,
+        IdentityResetState::Failed {
+            request_id: 25,
+            kind: TrustOperationFailureKind::Timeout,
+        }
     );
 }
 

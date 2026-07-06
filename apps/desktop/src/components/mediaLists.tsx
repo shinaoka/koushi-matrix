@@ -398,11 +398,13 @@ function PinnedEventsList({
 }
 
 function SearchResults({
+  indexingPending = false,
   query,
   results,
   rooms,
   onResultSelect
 }: {
+  indexingPending?: boolean;
   query: string;
   results: SearchResult[];
   rooms: DesktopSnapshot["state"]["domain"]["rooms"];
@@ -442,7 +444,9 @@ function SearchResults({
             );
           })
         ) : (
-          <div className="empty-results">{t("search.noExactMatches")}</div>
+          <div className="empty-results">
+            {t(indexingPending ? "search.indexingPending" : "search.noExactMatches")}
+          </div>
         )}
       </div>
     </section>

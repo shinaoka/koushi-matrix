@@ -2393,7 +2393,7 @@ async fn poll_search_until_found_or_timeout(
         conn.command(CoreCommand::Search(SearchCommand::Query {
             request_id: rid,
             query: query.to_owned(),
-            scope: SearchScope::Room {
+            scope: SearchScope::CurrentRoom {
                 room_id: room_id.to_owned(),
             },
         }))

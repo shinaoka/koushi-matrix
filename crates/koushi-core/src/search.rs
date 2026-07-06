@@ -24,8 +24,9 @@
 //!
 //! ## Fail-closed
 //! If the search index key cannot be derived (credential store unreachable),
-//! `Query` commands emit `SearchFailed { kind: IndexUnavailable }`. The actor
-//! never falls back to a plaintext index (Security Model).
+//! `Query` commands emit `SearchFailed { kind: IndexUnavailable }`. Query
+//! parser and internal SDK failures keep separate coarse kinds. The actor never
+//! falls back to a plaintext index (Security Model).
 //!
 //! ## Document-level mutations (overview.md Async rule 4, Security Model Search)
 //! - **Upsert**: a new or updated visible message is indexed into the document
@@ -330,8 +331,13 @@ impl SearchActorHandle {
             Err(tokio::sync::mpsc::error::TrySendError::Full(
                 SearchActorMessage::RoomsAvailable { room_ids, settings },
             )) => Err((room_ids, settings)),
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(
+                SearchActorMessage::RoomsAvailable { room_ids, settings },
+            )) => Err((room_ids, settings)),
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                unreachable!("try_notify_rooms_available only sends RoomsAvailable messages")
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 unreachable!("try_notify_rooms_available only sends RoomsAvailable messages")
             }
         }
@@ -469,7 +475,7 @@ impl SearchActor {
                     let Some(msg) = msg else { break };
                     match msg {
                         SearchActorMessage::Shutdown => {
-                            self.stop_all_history_crawls();
+                            self.stop_all_history_crawls().await;
                             break;
                         }
                         SearchActorMessage::Query { request_id, query, scope } => {
@@ -499,10 +505,10 @@ impl SearchActor {
                             // re-crawls all rooms with the new settings.
                             self.crawl_settings_generation =
                                 self.crawl_settings_generation.wrapping_add(1);
-                            self.invalidate_history_crawler_cache();
+                            self.invalidate_history_crawler_cache().await;
                         }
                         SearchActorMessage::RebuildIndex => {
-                            self.rebuild_search_index();
+                            self.rebuild_search_index().await;
                         }
                     }
                 }
@@ -540,15 +546,11 @@ impl SearchActor {
 
             let candidates = match candidates {
                 Ok(c) => c,
-                Err(_) => {
-                    self.emit_search_failed(request_id, SEARCH_UNAVAILABLE_MESSAGE)
+                Err(error) => {
+                    let kind = classify_matrix_search_error(&error);
+                    self.emit_search_failed(request_id, search_failure_message(kind))
                         .await;
-                    self.emit_failure(
-                        request_id,
-                        CoreFailure::SearchFailed {
-                            kind: SearchFailureKind::IndexUnavailable,
-                        },
-                    );
+                    self.emit_failure(request_id, CoreFailure::SearchFailed { kind });
                     return;
                 }
             };
@@ -576,8 +578,8 @@ impl SearchActor {
             .collect::<Vec<_>>();
 
         let room_filter = match &scope {
-            SearchScope::Global => None,
-            SearchScope::Room { room_id } => Some(room_id.as_str()),
+            SearchScope::CurrentRoom { room_id } => Some(room_id.as_str()),
+            SearchScope::AllRooms | SearchScope::CurrentSpace { .. } | SearchScope::Dms => None,
         };
 
         // #162: the SDK ngram index is an accelerator, not the authority. Union
@@ -737,6 +739,10 @@ impl SearchActor {
     ) {
         self.remove_history_crawl_room(&room_id);
         self.completed_rooms.remove(&room_id);
+        if settings.speed == SearchCrawlerSpeed::Paused {
+            self.emit_history_crawl_stopped(room_id).await;
+            return;
+        }
         self.enqueue_history_crawl(
             HistoryCrawlCheckpoint::new(
                 room_id,
@@ -754,6 +760,7 @@ impl SearchActor {
 
     async fn handle_stop_history_crawl(&mut self, _request_id: RequestId, room_id: String) {
         self.remove_history_crawl_room(&room_id);
+        self.emit_history_crawl_stopped(room_id).await;
     }
 
     /// Auto-start idempotent background crawls when the account observes a new
@@ -770,12 +777,17 @@ impl SearchActor {
         self.available_crawl_rooms = room_ids.iter().cloned().collect();
 
         if settings.speed == SearchCrawlerSpeed::Paused {
-            self.stop_all_history_crawls();
+            self.stop_all_history_crawls().await;
             return;
         }
 
-        self.retain_history_crawl_rooms();
-        self.abort_active_history_crawl_if_retired();
+        let mut stopped_room_ids = self.retain_history_crawl_rooms();
+        if let Some(room_id) = self.abort_active_history_crawl_if_retired() {
+            stopped_room_ids.push(room_id);
+        }
+        for room_id in stopped_room_ids {
+            self.emit_history_crawl_stopped(room_id).await;
+        }
 
         for room_id in room_ids {
             if self.history_crawl_room_is_known(&room_id) {
@@ -810,6 +822,13 @@ impl SearchActor {
                 }])
                 .await;
         }
+    }
+
+    async fn emit_history_crawl_stopped(&self, room_id: String) {
+        let _ = self
+            .action_tx
+            .send(vec![AppAction::HistoryCrawlStopped { room_id }])
+            .await;
     }
 
     fn history_crawl_room_is_known(&self, room_id: &str) -> bool {
@@ -942,7 +961,18 @@ impl SearchActor {
         }
     }
 
-    fn retain_history_crawl_rooms(&mut self) {
+    fn retain_history_crawl_rooms(&mut self) -> Vec<String> {
+        let mut stopped_room_ids = std::collections::BTreeSet::new();
+        for room_id in &self.completed_rooms {
+            if !self.available_crawl_rooms.contains(room_id) {
+                stopped_room_ids.insert(room_id.clone());
+            }
+        }
+        for checkpoint in &self.crawl_queue {
+            if !checkpoint.manual && !self.available_crawl_rooms.contains(&checkpoint.room_id) {
+                stopped_room_ids.insert(checkpoint.room_id.clone());
+            }
+        }
         self.completed_rooms
             .retain(|room_id| self.available_crawl_rooms.contains(room_id));
         self.crawl_queue.retain(|checkpoint| {
@@ -953,21 +983,24 @@ impl SearchActor {
             .iter()
             .map(|checkpoint| checkpoint.room_id.clone())
             .collect();
+        stopped_room_ids.into_iter().collect()
     }
 
-    fn abort_active_history_crawl_if_retired(&mut self) {
-        let retired = self
+    fn abort_active_history_crawl_if_retired(&mut self) -> Option<String> {
+        let retired_room_id = self
             .active_crawl_checkpoint
             .as_ref()
-            .is_some_and(|checkpoint| {
+            .filter(|checkpoint| {
                 !checkpoint.manual && !self.available_crawl_rooms.contains(&checkpoint.room_id)
-            });
-        if retired {
+            })
+            .map(|checkpoint| checkpoint.room_id.clone());
+        if retired_room_id.is_some() {
             if let Some(handle) = self.active_crawl_page.take() {
                 handle.abort();
             }
             self.active_crawl_checkpoint = None;
         }
+        retired_room_id
     }
 
     fn remove_history_crawl_room(&mut self, room_id: &str) {
@@ -987,7 +1020,12 @@ impl SearchActor {
         }
     }
 
-    fn stop_all_history_crawls(&mut self) {
+    async fn stop_all_history_crawls(&mut self) {
+        let mut stopped_room_ids = std::collections::BTreeSet::new();
+        stopped_room_ids.extend(self.queued_crawl_rooms.iter().cloned());
+        if let Some(checkpoint) = &self.active_crawl_checkpoint {
+            stopped_room_ids.insert(checkpoint.room_id.clone());
+        }
         self.crawl_queue.clear();
         self.queued_crawl_rooms.clear();
         if let Some(handle) = self.active_crawl_page.take() {
@@ -997,18 +1035,21 @@ impl SearchActor {
         if let Some(timer) = self.crawl_delay_timer.take() {
             timer.abort();
         }
+        for room_id in stopped_room_ids {
+            self.emit_history_crawl_stopped(room_id).await;
+        }
     }
 
-    fn invalidate_history_crawler_cache(&mut self) {
+    async fn invalidate_history_crawler_cache(&mut self) {
         self.completed_rooms.clear();
-        self.stop_all_history_crawls();
+        self.stop_all_history_crawls().await;
     }
 
-    fn rebuild_search_index(&mut self) {
+    async fn rebuild_search_index(&mut self) {
         self.document_store.clear();
         self.indexed_rooms.clear();
         self.crawl_settings_generation = self.crawl_settings_generation.wrapping_add(1);
-        self.invalidate_history_crawler_cache();
+        self.invalidate_history_crawler_cache().await;
     }
 
     fn emit(&self, event: CoreEvent) {
@@ -1020,6 +1061,22 @@ impl SearchActor {
             request_id,
             failure,
         });
+    }
+}
+
+fn classify_matrix_search_error(error: &koushi_sdk::MatrixSearchError) -> SearchFailureKind {
+    match error {
+        koushi_sdk::MatrixSearchError::IndexUnavailable => SearchFailureKind::IndexUnavailable,
+        koushi_sdk::MatrixSearchError::Query => SearchFailureKind::Query,
+        koushi_sdk::MatrixSearchError::Internal => SearchFailureKind::Internal,
+    }
+}
+
+fn search_failure_message(kind: SearchFailureKind) -> &'static str {
+    match kind {
+        SearchFailureKind::IndexUnavailable => SEARCH_UNAVAILABLE_MESSAGE,
+        SearchFailureKind::Query => "search query failed",
+        SearchFailureKind::Internal => "search internal failure",
     }
 }
 
@@ -1270,6 +1327,31 @@ mod tests {
         let _ = SearchFailureKind::Internal;
     }
 
+    #[test]
+    fn search_query_failures_are_classified_from_sdk_error() {
+        let source = include_str!("search.rs");
+        let query_handler = source
+            .split("async fn handle_query")
+            .nth(1)
+            .expect("query handler should exist")
+            .split("async fn handle_index_message")
+            .next()
+            .expect("index handler should follow query handler");
+
+        assert!(
+            source.contains("fn classify_matrix_search_error"),
+            "search failures must have a boundary classifier"
+        );
+        assert!(
+            query_handler.contains("classify_matrix_search_error(&error)"),
+            "query failures must classify the SDK search error before emitting CoreFailure"
+        );
+        assert!(
+            !query_handler.contains("kind: SearchFailureKind::IndexUnavailable"),
+            "query failures must not hardcode every SDK error as IndexUnavailable"
+        );
+    }
+
     // --- Debug redaction ---
 
     #[test]
@@ -1282,7 +1364,7 @@ mod tests {
                 sequence: 1,
             },
             query: "super-secret-search-query".to_owned(),
-            scope: SearchScope::Global,
+            scope: SearchScope::AllRooms,
         };
         let debug = format!("{cmd:?}");
         assert!(
@@ -1468,6 +1550,63 @@ mod tests {
         assert!(
             handle_impl.contains(".try_send(SearchActorMessage::RoomsAvailable"),
             "nonblocking crawler notification delivery must use try_send"
+        );
+        assert!(
+            !handle_impl.contains("TrySendError::Closed(_)) => Ok(())"),
+            "closed SearchActor delivery must not be reported as success"
+        );
+    }
+
+    #[test]
+    fn search_crawler_lifecycle_projects_actor_owned_stop_settles() {
+        let source = include_str!("search.rs");
+        let start_handler = source
+            .split("async fn handle_start_history_crawl")
+            .nth(1)
+            .expect("start handler should exist")
+            .split("async fn handle_stop_history_crawl")
+            .next()
+            .expect("stop handler should follow start handler");
+        let stop_handler = source
+            .split("async fn handle_stop_history_crawl")
+            .nth(1)
+            .expect("stop handler should exist")
+            .split("/// Auto-start")
+            .next()
+            .expect("rooms-available handler should follow stop handler");
+        let rooms_available_handler = source
+            .split("async fn handle_rooms_available")
+            .nth(1)
+            .expect("rooms available handler should exist")
+            .split("async fn enqueue_history_crawl")
+            .next()
+            .expect("enqueue helper should follow rooms available handler");
+        let retain_helper = source
+            .split("fn retain_history_crawl_rooms")
+            .nth(1)
+            .expect("retain helper should exist")
+            .split("fn abort_active_history_crawl_if_retired")
+            .next()
+            .expect("active abort helper should follow retain helper");
+
+        assert!(
+            start_handler.contains("settings.speed == SearchCrawlerSpeed::Paused")
+                && start_handler.contains("self.emit_history_crawl_stopped(room_id).await"),
+            "manual crawl start while paused must not leave a Queued room forever"
+        );
+        assert!(
+            stop_handler.contains("self.emit_history_crawl_stopped(room_id).await"),
+            "manual stop must settle the Rust-owned crawler room state"
+        );
+        assert!(
+            rooms_available_handler.contains("self.stop_all_history_crawls().await")
+                && rooms_available_handler
+                    .contains("self.emit_history_crawl_stopped(room_id).await"),
+            "pause and prune must emit stopped projections from the owning actor"
+        );
+        assert!(
+            retain_helper.contains("-> Vec<String>"),
+            "pruning must return retired room ids so AppState is settled"
         );
     }
 

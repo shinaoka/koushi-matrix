@@ -93,7 +93,7 @@ const LINK_SPACE_CHILD_FAILED_MESSAGE: &str = "Linking the room to the space fai
 type SpaceChildLinkKey = (String, String);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct MissingSpaceChildLink {
+pub struct MissingSpaceChildLink {
     space_id: String,
     child_room_id: String,
     via_server: String,
@@ -122,6 +122,9 @@ pub enum RoomMessage {
     /// The active account is logging out/switching/resetting while the
     /// RoomActor stays alive for future sessions.
     SessionCleared,
+    /// Observer relay: parent-only space links discovered in a room-list
+    /// snapshot. RoomActor owns dedupe, server writes, and retry policy.
+    MissingSpaceChildLinks { links: Vec<MissingSpaceChildLink> },
     /// Ordered shutdown.
     Shutdown,
 }
@@ -135,13 +138,6 @@ pub struct RoomActorHandle {
 impl RoomActorHandle {
     pub async fn send(&self, msg: RoomMessage) -> bool {
         self.tx.send(msg).await.is_ok()
-    }
-
-    /// Non-blocking send for use in sync contexts (e.g. `spawn_sync_actor`
-    /// which is a `fn` not `async fn`). Returns false if the channel is full
-    /// or closed.
-    pub(crate) fn try_send(&self, msg: RoomMessage) -> bool {
-        self.tx.try_send(msg).is_ok()
     }
 
     /// Wait for the actor task to complete (used in ordered shutdown).
@@ -168,6 +164,7 @@ pub struct RoomActor {
     attempted_space_child_repairs: Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
+    self_tx: mpsc::Sender<RoomMessage>,
     command_rx: mpsc::Receiver<RoomMessage>,
 }
 
@@ -184,6 +181,7 @@ impl RoomActor {
             attempted_space_child_repairs: Arc::new(RwLock::new(BTreeSet::new())),
             action_tx,
             event_tx,
+            self_tx: tx.clone(),
             command_rx,
         };
         let task = executor::spawn(actor.run());
@@ -248,6 +246,9 @@ impl RoomActor {
                     self.clear_known_rooms();
                     self.clear_space_child_repair_attempts();
                 }
+                RoomMessage::MissingSpaceChildLinks { links } => {
+                    self.handle_missing_space_child_links(links).await;
+                }
             }
         }
     }
@@ -266,7 +267,7 @@ impl RoomActor {
             session,
             service,
             self.known_room_ids.clone(),
-            self.attempted_space_child_repairs.clone(),
+            self.self_tx.clone(),
             self.action_tx.clone(),
             self.event_tx.clone(),
             refresh_rx,
@@ -290,7 +291,7 @@ impl RoomActor {
         let task = executor::spawn(run_legacy_room_list_observation(
             session.clone(),
             self.known_room_ids.clone(),
-            self.attempted_space_child_repairs.clone(),
+            self.self_tx.clone(),
             self.action_tx.clone(),
             self.event_tx.clone(),
             refresh_rx,
@@ -301,6 +302,43 @@ impl RoomActor {
             task,
             refresh_tx,
         });
+    }
+
+    async fn handle_missing_space_child_links(&mut self, links: Vec<MissingSpaceChildLink>) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+
+        for link in links {
+            let key = (link.space_id.clone(), link.child_room_id.clone());
+            let already_repaired = self
+                .attempted_space_child_repairs
+                .read()
+                .map(|attempts| attempts.contains(&key))
+                .unwrap_or(true);
+            if already_repaired {
+                continue;
+            }
+
+            match koushi_sdk::set_space_child(
+                &session,
+                &link.space_id,
+                &link.child_room_id,
+                &link.via_server,
+            )
+            .await
+            {
+                Ok(()) => {
+                    if let Ok(mut attempts) = self.attempted_space_child_repairs.write() {
+                        attempts.insert(key);
+                    }
+                    self.refresh_room_list();
+                }
+                Err(error) => {
+                    let _kind = classify_room_error(&error);
+                }
+            }
+        }
     }
 
     /// Stop the observation loop (if running) and wait for it to exit.
@@ -567,10 +605,11 @@ impl RoomActor {
         // Drive the basic-operation state machine: Idle -> CreatingRoom. The
         // reducer guards re-entry; `request_id.sequence` is the correlation id
         // the settle action below must match.
-        self.reduce(vec![AppAction::BasicOperationRequested {
+        self.reduce_reliable(vec![AppAction::BasicOperationRequested {
             request_id: request_id.sequence,
             request: BasicOperationRequest::CreateRoom { name: name.clone() },
-        }]);
+        }])
+        .await;
         match koushi_sdk::create_room(session, matrix_create_room_options(options)).await {
             Ok(room_id) => {
                 trace_room_operation("create_room", "succeeded", request_id);
@@ -585,9 +624,10 @@ impl RoomActor {
                     request_id,
                     room_id,
                 }));
-                self.reduce(vec![AppAction::BasicOperationSucceeded {
+                self.reduce_reliable(vec![AppAction::BasicOperationSucceeded {
                     request_id: request_id.sequence,
-                }]);
+                }])
+                .await;
                 // Reflect the actor's own mutation immediately instead of
                 // waiting for the next sync round-trip.
                 self.refresh_room_list();
@@ -596,10 +636,11 @@ impl RoomActor {
                 trace_room_operation("create_room", "failed", request_id);
                 let kind = classify_room_error(&error);
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
-                self.reduce(vec![AppAction::BasicOperationFailed {
+                self.reduce_reliable(vec![AppAction::BasicOperationFailed {
                     request_id: request_id.sequence,
                     message: CREATE_ROOM_FAILED_MESSAGE.to_owned(),
-                }]);
+                }])
+                .await;
             }
         }
     }
@@ -667,10 +708,11 @@ impl RoomActor {
             return;
         };
         // Drive the basic-operation state machine: Idle -> CreatingSpace.
-        self.reduce(vec![AppAction::BasicOperationRequested {
+        self.reduce_reliable(vec![AppAction::BasicOperationRequested {
             request_id: request_id.sequence,
             request: BasicOperationRequest::CreateSpace { name: name.clone() },
-        }]);
+        }])
+        .await;
         match koushi_sdk::create_space(session, &name).await {
             Ok(space_id) => {
                 trace_room_operation("create_space", "succeeded", request_id);
@@ -678,9 +720,10 @@ impl RoomActor {
                     request_id,
                     space_id,
                 }));
-                self.reduce(vec![AppAction::BasicOperationSucceeded {
+                self.reduce_reliable(vec![AppAction::BasicOperationSucceeded {
                     request_id: request_id.sequence,
-                }]);
+                }])
+                .await;
                 // Reflect the actor's own mutation immediately.
                 self.refresh_room_list();
             }
@@ -688,10 +731,11 @@ impl RoomActor {
                 trace_room_operation("create_space", "failed", request_id);
                 let kind = classify_room_error(&error);
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
-                self.reduce(vec![AppAction::BasicOperationFailed {
+                self.reduce_reliable(vec![AppAction::BasicOperationFailed {
                     request_id: request_id.sequence,
                     message: CREATE_SPACE_FAILED_MESSAGE.to_owned(),
-                }]);
+                }])
+                .await;
             }
         }
     }
@@ -708,13 +752,14 @@ impl RoomActor {
             return;
         };
         // Drive the basic-operation state machine: Idle -> LinkingSpaceChild.
-        self.reduce(vec![AppAction::BasicOperationRequested {
+        self.reduce_reliable(vec![AppAction::BasicOperationRequested {
             request_id: request_id.sequence,
             request: BasicOperationRequest::LinkSpaceChild {
                 space_id: space_id.clone(),
                 child_room_id: child_room_id.clone(),
             },
-        }]);
+        }])
+        .await;
         match koushi_sdk::set_space_child(session, &space_id, &child_room_id, &via_server).await {
             Ok(()) => {
                 self.emit(CoreEvent::Room(RoomEvent::SpaceChildSet {
@@ -722,19 +767,21 @@ impl RoomActor {
                     space_id,
                     child_room_id,
                 }));
-                self.reduce(vec![AppAction::BasicOperationSucceeded {
+                self.reduce_reliable(vec![AppAction::BasicOperationSucceeded {
                     request_id: request_id.sequence,
-                }]);
+                }])
+                .await;
                 // Reflect the actor's own mutation immediately.
                 self.refresh_room_list();
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
-                self.reduce(vec![AppAction::BasicOperationFailed {
+                self.reduce_reliable(vec![AppAction::BasicOperationFailed {
                     request_id: request_id.sequence,
                     message: LINK_SPACE_CHILD_FAILED_MESSAGE.to_owned(),
-                }]);
+                }])
+                .await;
             }
         }
     }
@@ -767,20 +814,22 @@ impl RoomActor {
         user_ids: Vec<String>,
         scope: InviteScopeSelection,
     ) {
-        self.reduce(vec![AppAction::InviteBatchRequested {
+        self.reduce_reliable(vec![AppAction::InviteBatchRequested {
             request_id: request_id.sequence,
             room_id: room_id.clone(),
             user_ids: user_ids.clone(),
             scope: scope.clone(),
-        }]);
+        }])
+        .await;
 
         let Some(session) = &self.session else {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
-            self.reduce(vec![AppAction::InviteBatchFailed {
+            self.reduce_reliable(vec![AppAction::InviteBatchFailed {
                 request_id: request_id.sequence,
                 room_id,
                 kind: OperationFailureKind::Sdk,
-            }]);
+            }])
+            .await;
             return;
         };
 
@@ -849,11 +898,12 @@ impl RoomActor {
             }
         }
 
-        self.reduce(vec![AppAction::InviteBatchCompleted {
+        self.reduce_reliable(vec![AppAction::InviteBatchCompleted {
             request_id: request_id.sequence,
             room_id: room_id.clone(),
             results: results.clone(),
-        }]);
+        }])
+        .await;
         self.emit(CoreEvent::Room(RoomEvent::InviteBatchCompleted {
             request_id,
             room_id,
@@ -946,16 +996,18 @@ impl RoomActor {
     }
 
     async fn handle_query_directory(&self, request_id: RequestId, query: DirectoryQuery) {
-        self.reduce(vec![AppAction::DirectoryQueryRequested {
+        self.reduce_reliable(vec![AppAction::DirectoryQueryRequested {
             request_id: request_id.sequence,
             query: query.clone(),
-        }]);
+        }])
+        .await;
         let Some(session) = &self.session else {
-            self.reduce(vec![AppAction::DirectoryQueryFailed {
+            self.reduce_reliable(vec![AppAction::DirectoryQueryFailed {
                 request_id: request_id.sequence,
                 query,
                 kind: OperationFailureKind::Sdk,
-            }]);
+            }])
+            .await;
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
@@ -973,12 +1025,13 @@ impl RoomActor {
                     .into_iter()
                     .map(directory_room_summary_from_sdk)
                     .collect();
-                self.reduce(vec![AppAction::DirectoryQuerySucceeded {
+                self.reduce_reliable(vec![AppAction::DirectoryQuerySucceeded {
                     request_id: request_id.sequence,
                     query: query.clone(),
                     rooms: rooms.clone(),
                     next_batch: result.next_batch.clone(),
-                }]);
+                }])
+                .await;
                 self.emit(CoreEvent::Room(RoomEvent::DirectoryQueryCompleted {
                     request_id,
                     query,
@@ -988,11 +1041,12 @@ impl RoomActor {
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
-                self.reduce(vec![AppAction::DirectoryQueryFailed {
+                self.reduce_reliable(vec![AppAction::DirectoryQueryFailed {
                     request_id: request_id.sequence,
                     query,
                     kind: operation_failure_kind(kind),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
@@ -1004,28 +1058,31 @@ impl RoomActor {
         alias: String,
         via_server: Option<String>,
     ) {
-        self.reduce(vec![AppAction::DirectoryJoinRequested {
+        self.reduce_reliable(vec![AppAction::DirectoryJoinRequested {
             request_id: request_id.sequence,
             alias: alias.clone(),
             via_server: via_server.clone(),
-        }]);
+        }])
+        .await;
         let Some(session) = &self.session else {
-            self.reduce(vec![AppAction::DirectoryJoinFailed {
+            self.reduce_reliable(vec![AppAction::DirectoryJoinFailed {
                 request_id: request_id.sequence,
                 alias,
                 via_server,
                 kind: OperationFailureKind::Sdk,
-            }]);
+            }])
+            .await;
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
 
         match koushi_sdk::join_room_by_alias(session, &alias, via_server.as_deref()).await {
             Ok(room_id) => {
-                self.reduce(vec![AppAction::DirectoryJoinSucceeded {
+                self.reduce_reliable(vec![AppAction::DirectoryJoinSucceeded {
                     request_id: request_id.sequence,
                     room_id: room_id.clone(),
-                }]);
+                }])
+                .await;
                 self.emit(CoreEvent::Room(RoomEvent::RoomJoined {
                     request_id,
                     room_id,
@@ -1034,12 +1091,13 @@ impl RoomActor {
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
-                self.reduce(vec![AppAction::DirectoryJoinFailed {
+                self.reduce_reliable(vec![AppAction::DirectoryJoinFailed {
                     request_id: request_id.sequence,
                     alias,
                     via_server,
                     kind: operation_failure_kind(kind),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
@@ -1054,10 +1112,11 @@ impl RoomActor {
         match koushi_sdk::get_room_settings_snapshot(session, &room_id).await {
             Ok(settings) => {
                 let settings = room_settings_snapshot_from_sdk(settings);
-                self.reduce(vec![AppAction::RoomSettingsSnapshotLoaded {
+                self.reduce_reliable(vec![AppAction::RoomSettingsSnapshotLoaded {
                     room_id,
                     settings: settings.clone(),
-                }]);
+                }])
+                .await;
                 self.emit(CoreEvent::Room(RoomEvent::RoomSettingsLoaded {
                     request_id,
                     settings,
@@ -1109,16 +1168,18 @@ impl RoomActor {
                 return;
             }
         };
-        self.reduce(vec![AppAction::RoomSettingsSnapshotLoaded {
+        self.reduce_reliable(vec![AppAction::RoomSettingsSnapshotLoaded {
             room_id: room_id.clone(),
             settings: settings.clone(),
-        }]);
+        }])
+        .await;
         if !settings.permissions.can_edit_settings {
-            self.reduce(vec![AppAction::RoomSettingUpdateRequested {
+            self.reduce_reliable(vec![AppAction::RoomSettingUpdateRequested {
                 request_id: request_id.sequence,
                 room_id,
                 change,
-            }]);
+            }])
+            .await;
             self.emit_failure(
                 request_id,
                 CoreFailure::RoomOperationFailed {
@@ -1128,22 +1189,24 @@ impl RoomActor {
             return;
         }
 
-        self.reduce(vec![AppAction::RoomSettingUpdateRequested {
+        self.reduce_reliable(vec![AppAction::RoomSettingUpdateRequested {
             request_id: request_id.sequence,
             room_id: room_id.clone(),
             change: change.clone(),
-        }]);
+        }])
+        .await;
 
         match koushi_sdk::update_room_setting(session, &room_id, room_setting_change_to_sdk(change))
             .await
         {
             Ok(settings) => {
                 let settings = room_settings_snapshot_from_sdk(settings);
-                self.reduce(vec![AppAction::RoomSettingUpdateSucceeded {
+                self.reduce_reliable(vec![AppAction::RoomSettingUpdateSucceeded {
                     request_id: request_id.sequence,
                     room_id,
                     settings: settings.clone(),
-                }]);
+                }])
+                .await;
                 self.emit(CoreEvent::Room(RoomEvent::RoomSettingUpdated {
                     request_id,
                     settings,
@@ -1151,11 +1214,12 @@ impl RoomActor {
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
-                self.reduce(vec![AppAction::RoomSettingUpdateFailed {
+                self.reduce_reliable(vec![AppAction::RoomSettingUpdateFailed {
                     request_id: request_id.sequence,
                     room_id,
                     kind: operation_failure_kind(kind),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
@@ -1182,18 +1246,20 @@ impl RoomActor {
                 return;
             }
         };
-        self.reduce(vec![AppAction::RoomSettingsSnapshotLoaded {
+        self.reduce_reliable(vec![AppAction::RoomSettingsSnapshotLoaded {
             room_id: room_id.clone(),
             settings: settings.clone(),
-        }]);
+        }])
+        .await;
         if !room_moderation_allowed(&settings.permissions, action) {
-            self.reduce(vec![AppAction::RoomModerationRequested {
+            self.reduce_reliable(vec![AppAction::RoomModerationRequested {
                 request_id: request_id.sequence,
                 room_id,
                 target_user_id,
                 action,
                 reason,
-            }]);
+            }])
+            .await;
             self.emit_failure(
                 request_id,
                 CoreFailure::RoomOperationFailed {
@@ -1203,13 +1269,14 @@ impl RoomActor {
             return;
         }
 
-        self.reduce(vec![AppAction::RoomModerationRequested {
+        self.reduce_reliable(vec![AppAction::RoomModerationRequested {
             request_id: request_id.sequence,
             room_id: room_id.clone(),
             target_user_id: target_user_id.clone(),
             action,
             reason: reason.clone(),
-        }]);
+        }])
+        .await;
 
         match koushi_sdk::moderate_room_member(
             session,
@@ -1221,12 +1288,13 @@ impl RoomActor {
         .await
         {
             Ok(()) => {
-                self.reduce(vec![AppAction::RoomModerationSucceeded {
+                self.reduce_reliable(vec![AppAction::RoomModerationSucceeded {
                     request_id: request_id.sequence,
                     room_id: room_id.clone(),
                     target_user_id: target_user_id.clone(),
                     action,
-                }]);
+                }])
+                .await;
                 self.emit(CoreEvent::Room(RoomEvent::RoomMemberModerated {
                     request_id,
                     room_id,
@@ -1236,13 +1304,14 @@ impl RoomActor {
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
-                self.reduce(vec![AppAction::RoomModerationFailed {
+                self.reduce_reliable(vec![AppAction::RoomModerationFailed {
                     request_id: request_id.sequence,
                     room_id,
                     target_user_id,
                     action,
                     kind: operation_failure_kind(kind),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
@@ -1268,17 +1337,19 @@ impl RoomActor {
                 return;
             }
         };
-        self.reduce(vec![AppAction::RoomSettingsSnapshotLoaded {
+        self.reduce_reliable(vec![AppAction::RoomSettingsSnapshotLoaded {
             room_id: room_id.clone(),
             settings: settings.clone(),
-        }]);
+        }])
+        .await;
         if !settings.permissions.can_edit_roles {
-            self.reduce(vec![AppAction::RoomMemberRoleUpdateRequested {
+            self.reduce_reliable(vec![AppAction::RoomMemberRoleUpdateRequested {
                 request_id: request_id.sequence,
                 room_id,
                 target_user_id,
                 power_level,
-            }]);
+            }])
+            .await;
             self.emit_failure(
                 request_id,
                 CoreFailure::RoomOperationFailed {
@@ -1288,12 +1359,13 @@ impl RoomActor {
             return;
         }
 
-        self.reduce(vec![AppAction::RoomMemberRoleUpdateRequested {
+        self.reduce_reliable(vec![AppAction::RoomMemberRoleUpdateRequested {
             request_id: request_id.sequence,
             room_id: room_id.clone(),
             target_user_id: target_user_id.clone(),
             power_level,
-        }]);
+        }])
+        .await;
 
         match koushi_sdk::update_room_member_power_level(
             session,
@@ -1305,7 +1377,7 @@ impl RoomActor {
         {
             Ok(settings) => {
                 let settings = room_settings_snapshot_from_sdk(settings);
-                self.reduce(vec![
+                self.reduce_reliable(vec![
                     AppAction::RoomSettingsSnapshotLoaded {
                         room_id: room_id.clone(),
                         settings,
@@ -1322,7 +1394,8 @@ impl RoomActor {
                         target_user_id: target_user_id.clone(),
                         power_level,
                     },
-                ]);
+                ])
+                .await;
                 self.emit(CoreEvent::Room(RoomEvent::RoomMemberRoleUpdated {
                     request_id,
                     room_id,
@@ -1332,12 +1405,13 @@ impl RoomActor {
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
-                self.reduce(vec![AppAction::RoomMemberRoleUpdateFailed {
+                self.reduce_reliable(vec![AppAction::RoomMemberRoleUpdateFailed {
                     request_id: request_id.sequence,
                     room_id,
                     target_user_id,
                     kind: operation_failure_kind(kind),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
@@ -1478,20 +1552,22 @@ impl RoomActor {
             return;
         };
 
-        self.reduce(vec![AppAction::PinEventRequested {
+        self.reduce_reliable(vec![AppAction::PinEventRequested {
             request_id: request_id.sequence,
             room_id: room_id.clone(),
             event_id: event_id.clone(),
-        }]);
+        }])
+        .await;
         if !self.ensure_known_room_for_message_interaction(request_id, &room_id) {
             return;
         }
         match koushi_sdk::pin_event(session, &room_id, &event_id).await {
             Ok(()) => {
-                self.reduce(vec![AppAction::PinEventCompleted {
+                self.reduce_reliable(vec![AppAction::PinEventCompleted {
                     request_id: request_id.sequence,
                     room_id: room_id.clone(),
-                }]);
+                }])
+                .await;
                 self.emit(CoreEvent::Room(RoomEvent::PinEventCompleted {
                     request_id,
                     room_id: room_id.clone(),
@@ -1501,11 +1577,12 @@ impl RoomActor {
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
-                self.reduce(vec![AppAction::PinEventFailed {
+                self.reduce_reliable(vec![AppAction::PinEventFailed {
                     request_id: request_id.sequence,
                     room_id,
                     kind: operation_failure_kind(kind),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
@@ -1517,20 +1594,22 @@ impl RoomActor {
             return;
         };
 
-        self.reduce(vec![AppAction::UnpinEventRequested {
+        self.reduce_reliable(vec![AppAction::UnpinEventRequested {
             request_id: request_id.sequence,
             room_id: room_id.clone(),
             event_id: event_id.clone(),
-        }]);
+        }])
+        .await;
         if !self.ensure_known_room_for_message_interaction(request_id, &room_id) {
             return;
         }
         match koushi_sdk::unpin_event(session, &room_id, &event_id).await {
             Ok(()) => {
-                self.reduce(vec![AppAction::UnpinEventCompleted {
+                self.reduce_reliable(vec![AppAction::UnpinEventCompleted {
                     request_id: request_id.sequence,
                     room_id: room_id.clone(),
-                }]);
+                }])
+                .await;
                 self.emit(CoreEvent::Room(RoomEvent::UnpinEventCompleted {
                     request_id,
                     room_id: room_id.clone(),
@@ -1540,11 +1619,12 @@ impl RoomActor {
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
-                self.reduce(vec![AppAction::UnpinEventFailed {
+                self.reduce_reliable(vec![AppAction::UnpinEventFailed {
                     request_id: request_id.sequence,
                     room_id,
                     kind: operation_failure_kind(kind),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
@@ -1563,10 +1643,11 @@ impl RoomActor {
             }
         };
 
-        self.reduce(vec![AppAction::RoomPinnedEventsUpdated {
+        self.reduce_reliable(vec![AppAction::RoomPinnedEventsUpdated {
             room_id: room_id.clone(),
             pinned: pinned.clone(),
-        }]);
+        }])
+        .await;
         self.emit(CoreEvent::Room(RoomEvent::PinnedEventsUpdated {
             room_id,
             pinned,
@@ -1589,14 +1670,14 @@ impl RoomActor {
         }
         if let Some(session) = self.session.clone() {
             let known_room_ids = self.known_room_ids.clone();
-            let attempted_space_child_repairs = self.attempted_space_child_repairs.clone();
+            let room_tx = self.self_tx.clone();
             let action_tx = self.action_tx.clone();
             let event_tx = self.event_tx.clone();
             let _ = executor::spawn(async move {
                 refresh_room_list_from_joined_rooms(
                     &session,
                     &known_room_ids,
-                    &attempted_space_child_repairs,
+                    &room_tx,
                     &action_tx,
                     &event_tx,
                 )
@@ -1622,11 +1703,12 @@ impl RoomActor {
             &room_id,
             Some(event_id.as_str()),
         );
-        self.reduce(vec![AppAction::RoomMarkedAsReadRequested {
+        self.reduce_reliable(vec![AppAction::RoomMarkedAsReadRequested {
             request_id: request_id.sequence,
             room_id: room_id.clone(),
             event_id: event_id.clone(),
-        }]);
+        }])
+        .await;
         if !self.ensure_known_room_for_message_interaction(request_id, &room_id) {
             return;
         }
@@ -1638,7 +1720,7 @@ impl RoomActor {
                     &room_id,
                     Some(event_id.as_str()),
                 );
-                self.reduce(vec![
+                self.reduce_reliable(vec![
                     AppAction::FullyReadMarkerUpdated {
                         room_id: room_id.clone(),
                         event_id: Some(event_id.clone()),
@@ -1647,7 +1729,8 @@ impl RoomActor {
                         request_id: request_id.sequence,
                         room_id: room_id.clone(),
                     },
-                ]);
+                ])
+                .await;
                 self.emit(CoreEvent::Room(RoomEvent::MarkedAsRead {
                     request_id,
                     room_id: room_id.clone(),
@@ -1662,11 +1745,12 @@ impl RoomActor {
                     &room_id,
                     Some(event_id.as_str()),
                 );
-                self.reduce(vec![AppAction::RoomMarkedAsReadFailed {
+                self.reduce_reliable(vec![AppAction::RoomMarkedAsReadFailed {
                     request_id: request_id.sequence,
                     room_id,
                     kind: operation_failure_kind(kind),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
@@ -1683,21 +1767,23 @@ impl RoomActor {
             return;
         };
 
-        self.reduce(vec![AppAction::RoomMarkedAsUnreadRequested {
+        self.reduce_reliable(vec![AppAction::RoomMarkedAsUnreadRequested {
             request_id: request_id.sequence,
             room_id: room_id.clone(),
             unread,
-        }]);
+        }])
+        .await;
         if !self.ensure_known_room_for_message_interaction(request_id, &room_id) {
             return;
         }
         match koushi_sdk::mark_room_as_unread(session, &room_id, unread).await {
             Ok(()) => {
-                self.reduce(vec![AppAction::RoomMarkedAsUnreadSucceeded {
+                self.reduce_reliable(vec![AppAction::RoomMarkedAsUnreadSucceeded {
                     request_id: request_id.sequence,
                     room_id: room_id.clone(),
                     unread,
-                }]);
+                }])
+                .await;
                 self.emit(CoreEvent::Room(RoomEvent::MarkedAsUnread {
                     request_id,
                     room_id: room_id.clone(),
@@ -1707,11 +1793,12 @@ impl RoomActor {
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
-                self.reduce(vec![AppAction::RoomMarkedAsUnreadFailed {
+                self.reduce_reliable(vec![AppAction::RoomMarkedAsUnreadFailed {
                     request_id: request_id.sequence,
                     room_id,
                     kind: operation_failure_kind(kind),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
@@ -1732,25 +1819,28 @@ impl RoomActor {
             return;
         }
 
-        self.reduce(vec![AppAction::RoomNotificationModeSet {
+        self.reduce_reliable(vec![AppAction::RoomNotificationModeSet {
             request_id: request_id.sequence,
             room_id: room_id.clone(),
             mode,
-        }]);
+        }])
+        .await;
         match koushi_sdk::set_room_notification_mode(session, &room_id, mode).await {
             Ok(()) => {
-                self.reduce(vec![AppAction::RoomNotificationModeCompleted {
+                self.reduce_reliable(vec![AppAction::RoomNotificationModeCompleted {
                     request_id: request_id.sequence,
                     room_id,
-                }]);
+                }])
+                .await;
             }
             Err(error) => {
                 let kind = classify_room_error(&error);
-                self.reduce(vec![AppAction::RoomNotificationModeFailed {
+                self.reduce_reliable(vec![AppAction::RoomNotificationModeFailed {
                     request_id: request_id.sequence,
                     room_id,
                     kind: operation_failure_kind(kind),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::RoomOperationFailed { kind });
             }
         }
@@ -1860,24 +1950,6 @@ impl RoomActor {
         });
     }
 
-    /// Non-blocking projection for high-frequency, RE-PROJECTED data only
-    /// (room-list snapshots, command-result status). `try_send` DROPS on a full
-    /// channel; that is acceptable here only because this data is re-sent on the
-    /// next sync. One-shot, non-re-projected actions (navigation, etc.) MUST use
-    /// [`Self::reduce_reliable`]. See the channel-capacity / delivery rule in
-    /// docs/policies/engineering-rules.md.
-    fn reduce(&self, actions: Vec<AppAction>) {
-        if let Err(err) = self.action_tx.try_send(actions) {
-            if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
-                let reason = match err {
-                    mpsc::error::TrySendError::Full(_) => "full",
-                    mpsc::error::TrySendError::Closed(_) => "closed",
-                };
-                eprintln!("koushi.roomactor stage=action_dropped reason={reason}");
-            }
-        }
-    }
-
     /// Reliable projection for one-shot, non-re-projected actions (navigation,
     /// command results) that MUST NOT be dropped under large-account sync load.
     /// Backpressures instead of dropping; the AppActor drains the action inbox
@@ -1897,7 +1969,7 @@ const ROOM_LIST_ENTRIES_LIMIT: usize = 4096;
 
 /// Normalize a snapshot and project it as `AppAction::RoomListUpdated` +
 /// `RoomEvent::RoomListUpdated`.
-fn project_room_list_snapshot(
+async fn project_room_list_snapshot(
     snapshot: &koushi_sdk::MatrixRoomListSnapshot,
     known_room_ids: &Arc<RwLock<BTreeSet<String>>>,
     action_tx: &mpsc::Sender<Vec<AppAction>>,
@@ -1908,15 +1980,21 @@ fn project_room_list_snapshot(
     let invites = normalize_invites(snapshot);
     let user_profiles = normalize_user_profiles(snapshot);
     unread_trace::trace_room_list_snapshot(&rooms);
-    replace_known_room_ids(known_room_ids, &rooms);
-    let _ = action_tx.try_send(vec![
-        AppAction::RoomListUpdated { spaces, rooms },
-        AppAction::InviteListUpdated { invites },
-        AppAction::UserProfilesUpdated {
-            profiles: user_profiles,
-        },
-    ]);
-    let _ = event_tx.send(CoreEvent::Room(RoomEvent::RoomListUpdated));
+    let projected_rooms = rooms.clone();
+    let delivered = action_tx
+        .send(vec![
+            AppAction::RoomListUpdated { spaces, rooms },
+            AppAction::InviteListUpdated { invites },
+            AppAction::UserProfilesUpdated {
+                profiles: user_profiles,
+            },
+        ])
+        .await
+        .is_ok();
+    if delivered {
+        replace_known_room_ids(known_room_ids, &projected_rooms);
+        let _ = event_tx.send(CoreEvent::Room(RoomEvent::RoomListUpdated));
+    }
 }
 
 /// LegacySync-path refresh: normalize from `client.joined_rooms()` and
@@ -1924,7 +2002,7 @@ fn project_room_list_snapshot(
 async fn refresh_room_list_from_joined_rooms(
     session: &MatrixClientSession,
     known_room_ids: &Arc<RwLock<BTreeSet<String>>>,
-    attempted_space_child_repairs: &Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
+    room_tx: &mpsc::Sender<RoomMessage>,
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     event_tx: &broadcast::Sender<CoreEvent>,
 ) {
@@ -1933,8 +2011,8 @@ async fn refresh_room_list_from_joined_rooms(
         session.client().joined_rooms(),
     )
     .await;
-    repair_missing_space_child_links(session, &snapshot, attempted_space_child_repairs).await;
-    project_room_list_snapshot(&snapshot, known_room_ids, action_tx, event_tx);
+    relay_missing_space_child_links(&snapshot, room_tx).await;
+    project_room_list_snapshot(&snapshot, known_room_ids, action_tx, event_tx).await;
 }
 
 /// SyncService-path observation loop (Async rule 1: relay the SDK's
@@ -1953,7 +2031,7 @@ async fn run_live_room_list_observation(
     session: Arc<MatrixClientSession>,
     service: Arc<matrix_sdk_ui::room_list_service::RoomListService>,
     known_room_ids: Arc<RwLock<BTreeSet<String>>>,
-    attempted_space_child_repairs: Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
+    room_tx: mpsc::Sender<RoomMessage>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     mut refresh_rx: mpsc::Receiver<()>,
@@ -1989,7 +2067,7 @@ async fn run_live_room_list_observation(
                     &session,
                     &current,
                     &known_room_ids,
-                    &attempted_space_child_repairs,
+                    &room_tx,
                     &action_tx,
                     &event_tx,
                 ).await;
@@ -2004,7 +2082,7 @@ async fn run_live_room_list_observation(
                         &session,
                         &current,
                         &known_room_ids,
-                        &attempted_space_child_repairs,
+                        &room_tx,
                         &action_tx,
                         &event_tx,
                     ).await;
@@ -2019,7 +2097,7 @@ async fn normalize_and_project_entries(
     session: &MatrixClientSession,
     current: &eyeball_im::Vector<matrix_sdk_ui::room_list_service::RoomListItem>,
     known_room_ids: &Arc<RwLock<BTreeSet<String>>>,
-    attempted_space_child_repairs: &Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
+    room_tx: &mpsc::Sender<RoomMessage>,
     action_tx: &mpsc::Sender<Vec<AppAction>>,
     event_tx: &broadcast::Sender<CoreEvent>,
 ) {
@@ -2030,32 +2108,19 @@ async fn normalize_and_project_entries(
         rooms.push(item.clone().into_inner());
     }
     let snapshot = koushi_sdk::room_list_snapshot_from_sdk_rooms_with_invites(session, rooms).await;
-    repair_missing_space_child_links(session, &snapshot, attempted_space_child_repairs).await;
-    project_room_list_snapshot(&snapshot, known_room_ids, action_tx, event_tx);
+    relay_missing_space_child_links(&snapshot, room_tx).await;
+    project_room_list_snapshot(&snapshot, known_room_ids, action_tx, event_tx).await;
 }
 
-async fn repair_missing_space_child_links(
-    session: &MatrixClientSession,
+async fn relay_missing_space_child_links(
     snapshot: &MatrixRoomListSnapshot,
-    attempted_space_child_repairs: &Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
+    room_tx: &mpsc::Sender<RoomMessage>,
 ) {
-    for link in missing_space_child_links(snapshot) {
-        let key = (link.space_id.clone(), link.child_room_id.clone());
-        let should_attempt = attempted_space_child_repairs
-            .write()
-            .map(|mut attempts| attempts.insert(key))
-            .unwrap_or(false);
-        if !should_attempt {
-            continue;
-        }
-
-        let _ = koushi_sdk::set_space_child(
-            session,
-            &link.space_id,
-            &link.child_room_id,
-            &link.via_server,
-        )
-        .await;
+    let links = missing_space_child_links(snapshot);
+    if !links.is_empty() {
+        let _ = room_tx
+            .send(RoomMessage::MissingSpaceChildLinks { links })
+            .await;
     }
 }
 
@@ -2108,7 +2173,7 @@ fn room_has_parent_without_space_child(
 async fn run_legacy_room_list_observation(
     session: Arc<MatrixClientSession>,
     known_room_ids: Arc<RwLock<BTreeSet<String>>>,
-    attempted_space_child_repairs: Arc<RwLock<BTreeSet<SpaceChildLinkKey>>>,
+    room_tx: mpsc::Sender<RoomMessage>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     mut refresh_rx: mpsc::Receiver<()>,
@@ -2130,7 +2195,7 @@ async fn run_legacy_room_list_observation(
                 refresh_room_list_from_joined_rooms(
                     &session,
                     &known_room_ids,
-                    &attempted_space_child_repairs,
+                    &room_tx,
                     &action_tx,
                     &event_tx,
                 ).await;
@@ -2143,7 +2208,7 @@ async fn run_legacy_room_list_observation(
                     refresh_room_list_from_joined_rooms(
                         &session,
                         &known_room_ids,
-                        &attempted_space_child_repairs,
+                        &room_tx,
                         &action_tx,
                         &event_tx,
                     ).await;
@@ -2153,7 +2218,7 @@ async fn run_legacy_room_list_observation(
                     refresh_room_list_from_joined_rooms(
                         &session,
                         &known_room_ids,
-                        &attempted_space_child_repairs,
+                        &room_tx,
                         &action_tx,
                         &event_tx,
                     ).await;
@@ -3296,7 +3361,7 @@ pub mod tests {
             ..MatrixRoomListSnapshot::default()
         };
 
-        project_room_list_snapshot(&snapshot, &known_room_ids, &action_tx, &event_tx);
+        project_room_list_snapshot(&snapshot, &known_room_ids, &action_tx, &event_tx).await;
 
         let actions = action_rx.recv().await.expect("actions");
         assert!(
@@ -3319,6 +3384,41 @@ pub mod tests {
                 }]
             ),
             "expected UserProfilesUpdated action, got {actions:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn project_room_list_snapshot_does_not_update_known_rooms_when_actions_are_undelivered() {
+        let (action_tx, action_rx) = mpsc::channel(1);
+        drop(action_rx);
+        let (event_tx, _event_rx) = broadcast::channel(16);
+        let known_room_ids = Arc::new(RwLock::new(BTreeSet::new()));
+        let snapshot = MatrixRoomListSnapshot {
+            rooms: vec![MatrixRoomListRoom {
+                room_id: "!room:example.test".to_owned(),
+                display_name: "Private room".to_owned(),
+                avatar_mxc_uri: None,
+                is_dm: false,
+                dm_user_ids: Vec::new(),
+                tags: MatrixRoomTags::default(),
+                unread_count: 0,
+                notification_count: 0,
+                highlight_count: 0,
+                marked_unread: false,
+                last_activity_ms: 0,
+                latest_event: None,
+                parent_space_ids: Vec::new(),
+                is_encrypted: false,
+                joined_members: 0,
+            }],
+            ..MatrixRoomListSnapshot::default()
+        };
+
+        project_room_list_snapshot(&snapshot, &known_room_ids, &action_tx, &event_tx).await;
+
+        assert!(
+            known_room_ids.read().expect("known rooms").is_empty(),
+            "RoomActor known-room book must advance only after reducer projection delivery"
         );
     }
 
@@ -3787,7 +3887,7 @@ pub mod tests {
     }
 
     #[test]
-    fn room_list_observation_repairs_parent_only_space_links_before_projection() {
+    fn room_list_observation_relays_parent_only_space_links_before_projection() {
         let source = include_str!("room.rs");
         let live_body = source
             .split("async fn normalize_and_project_entries")
@@ -3805,17 +3905,79 @@ pub mod tests {
             .expect("legacy refresh body");
 
         for body in [live_body, legacy_body] {
-            let repair = body
-                .find("repair_missing_space_child_links")
-                .expect("room-list snapshots should repair missing m.space.child state");
+            let relay = body
+                .find("relay_missing_space_child_links")
+                .expect("room-list snapshots should relay missing m.space.child state");
             let projection = body
                 .find("project_room_list_snapshot")
                 .expect("room-list snapshot projection");
             assert!(
-                repair < projection,
-                "repair should run before projection so other clients receive the Matrix state fix promptly"
+                relay < projection,
+                "observation should relay missing links before projection without owning the mutation policy"
+            );
+            assert!(
+                !body.contains("koushi_sdk::set_space_child"),
+                "room-list observers must not perform server writes directly"
             );
         }
+    }
+
+    #[test]
+    fn missing_space_child_repairs_are_actor_owned_and_retryable() {
+        let source = include_str!("room.rs");
+        let actor_body = source
+            .split("async fn handle_missing_space_child_links")
+            .nth(1)
+            .expect("RoomActor should own missing space-child repair handling")
+            .split("async fn stop_observation")
+            .next()
+            .expect("repair handler should precede observation teardown");
+
+        assert!(
+            source.contains("RoomMessage::MissingSpaceChildLinks"),
+            "observation must relay missing links to the RoomActor mailbox"
+        );
+        assert!(
+            actor_body.contains("classify_room_error(&error)"),
+            "RoomActor-owned repair failures must be classified"
+        );
+        let success = actor_body
+            .find("attempts.insert(key)")
+            .expect("successful repair should record the dedupe key");
+        let call = actor_body
+            .find("koushi_sdk::set_space_child")
+            .expect("RoomActor should perform the repair write");
+        assert!(
+            call < success,
+            "dedupe key must be recorded only after set_space_child succeeds so transient failures remain retryable"
+        );
+    }
+
+    #[test]
+    fn room_list_projection_is_reliable_before_known_room_book_advances() {
+        let source = include_str!("room.rs");
+        let projection_body = source
+            .split("async fn project_room_list_snapshot")
+            .nth(1)
+            .expect("room-list projection helper")
+            .split("/// LegacySync-path refresh")
+            .next()
+            .expect("room-list projection body");
+        let send = projection_body
+            .find(".send(vec![")
+            .expect("room-list projection must use reliable action delivery");
+        let known = projection_body
+            .find("replace_known_room_ids")
+            .expect("room-list projection should update the actor known-room book");
+
+        assert!(
+            !projection_body.contains("try_send(vec!["),
+            "room-list projection must not drop reducer snapshots under action-channel pressure"
+        );
+        assert!(
+            send < known,
+            "RoomActor known-room book must advance only after reducer projection delivery"
+        );
     }
 
     #[test]
@@ -3867,7 +4029,7 @@ pub mod tests {
             .expect("projection body");
 
         let pin_completion = pin_body
-            .find("self.reduce(vec![AppAction::PinEventCompleted")
+            .find("self.reduce_reliable(vec![AppAction::PinEventCompleted")
             .expect("pin completion action");
         let pin_reload = pin_body
             .find("project_pinned_events_after_success")
@@ -3875,7 +4037,7 @@ pub mod tests {
         assert!(pin_completion < pin_reload);
 
         let unpin_completion = unpin_body
-            .find("self.reduce(vec![AppAction::UnpinEventCompleted")
+            .find("self.reduce_reliable(vec![AppAction::UnpinEventCompleted")
             .expect("unpin completion action");
         let unpin_reload = unpin_body
             .find("project_pinned_events_after_success")

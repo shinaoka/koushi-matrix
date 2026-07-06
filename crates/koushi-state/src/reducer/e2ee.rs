@@ -300,6 +300,14 @@ pub(crate) fn handle_cross_signing_status_changed(
         return Vec::new();
     }
 
+    if matches!(
+        state.e2ee_trust.cross_signing,
+        CrossSigningStatus::Bootstrapping { .. }
+    ) && !matches!(status, CrossSigningStatus::Trusted)
+    {
+        return Vec::new();
+    }
+
     state.e2ee_trust.cross_signing = status;
     vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
 }
@@ -502,6 +510,20 @@ pub(crate) fn handle_reset_identity_auth_submitted(
 
     state.e2ee_trust.identity_reset = IdentityResetState::Resetting { request_id };
     vec![AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged)]
+}
+
+pub(crate) fn handle_reset_identity_cancelled(
+    state: &mut AppState,
+    request_id: u64,
+) -> Vec<AppEffect> {
+    handle_reset_identity_failed(state, request_id, TrustOperationFailureKind::Cancelled)
+}
+
+pub(crate) fn handle_reset_identity_timed_out(
+    state: &mut AppState,
+    request_id: u64,
+) -> Vec<AppEffect> {
+    handle_reset_identity_failed(state, request_id, TrustOperationFailureKind::Timeout)
 }
 
 pub(crate) fn handle_reset_identity_completed(

@@ -7,6 +7,13 @@ pub(crate) fn handle_local_encryption_probe_requested(
     state: &mut AppState,
     request_id: u64,
 ) -> Vec<AppEffect> {
+    if matches!(
+        state.local_encryption,
+        LocalEncryptionState::Resetting { .. }
+    ) {
+        return Vec::new();
+    }
+
     let next = LocalEncryptionState::Probing { request_id };
     if state.local_encryption == next {
         return Vec::new();

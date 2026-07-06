@@ -1,11 +1,13 @@
 use koushi_state::{
     AppAction, AppEffect, AppError, AppState, AuthDiscoveryState, AuthFailureKind, AuthSecret,
-    DelegatedAuthLinks, E2eeRecoveryState, LoginFlow, LoginFlowKind, LoginRequest,
-    NativeAttentionCandidate, NativeAttentionCapabilities, NativeAttentionCapability,
+    BasicOperationState, DelegatedAuthLinks, E2eeRecoveryState, InviteOperationState,
+    InviteScopeSelection, InviteTargetQueryState, InviteWorkflowState, LoginFlow, LoginFlowKind,
+    LoginRequest, NativeAttentionCandidate, NativeAttentionCapabilities, NativeAttentionCapability,
     NativeAttentionState, NativeAttentionSummary, NavigationState, RecoveryMethod, RecoveryRequest,
-    RoomAttentionKind, RoomSummary, RoomTags, SearchScope, SearchState, SessionInfo, SessionState,
-    SpaceSummary, SyncState, ThreadAttentionState, ThreadPaneState, TimelinePaneState, UiEvent,
-    reduce,
+    RoomAttentionKind, RoomSummary, RoomTags, SearchCrawlerLastActive,
+    SearchCrawlerLastActiveStatus, SearchCrawlerRoomState, SearchCrawlerState, SearchScope,
+    SearchState, SessionInfo, SessionState, SpaceSummary, SyncState, ThreadAttentionState,
+    ThreadPaneState, TimelinePaneState, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -22,6 +24,55 @@ fn alternate_session_info() -> SessionInfo {
         user_id: "@user-b:example.invalid".to_owned(),
         device_id: "DEVICE-B".to_owned(),
     }
+}
+
+fn state_with_session_scoped_workflows() -> AppState {
+    AppState {
+        session: SessionState::Ready(session_info()),
+        sync: SyncState::Running,
+        basic_operation: BasicOperationState::CreatingRoom {
+            request_id: 77,
+            name: "Stale room".to_owned(),
+        },
+        invite_workflow: InviteWorkflowState {
+            query: InviteTargetQueryState {
+                room_id: Some("room-a".to_owned()),
+                query: "alice".to_owned(),
+                candidates: Vec::new(),
+                explicit_user_id: None,
+            },
+            operation: InviteOperationState::Pending {
+                request_id: 88,
+                room_id: "room-a".to_owned(),
+                user_ids: vec!["@alice:example.invalid".to_owned()],
+                scope: InviteScopeSelection::RoomOnly,
+            },
+            ..Default::default()
+        },
+        search_crawler: SearchCrawlerState {
+            rooms: std::collections::BTreeMap::from([(
+                "room-a".to_owned(),
+                SearchCrawlerRoomState::Running {
+                    processed: 4,
+                    indexed: 3,
+                },
+            )]),
+            last_active: Some(SearchCrawlerLastActive {
+                room_id: "room-a".to_owned(),
+                updated_at_ms: 1_000,
+                status: SearchCrawlerLastActiveStatus::Running,
+                processed: 4,
+                indexed: 3,
+            }),
+        },
+        ..AppState::default()
+    }
+}
+
+fn assert_session_scoped_workflows_cleared(state: &AppState) {
+    assert_eq!(state.basic_operation, BasicOperationState::Idle);
+    assert_eq!(state.invite_workflow, InviteWorkflowState::default());
+    assert_eq!(state.search_crawler, SearchCrawlerState::default());
 }
 
 #[test]
@@ -288,7 +339,7 @@ fn session_persistence_failure_records_error_without_leaving_ready_session() {
 }
 
 #[test]
-fn account_switch_request_stops_sync_clears_views_and_restores_target_session() {
+fn account_switch_request_enters_switching_state_and_clears_views() {
     let current = session_info();
     let target = alternate_session_info();
     let mut state = AppState {
@@ -380,9 +431,6 @@ fn account_switch_request_stops_sync_clears_views_and_restores_target_session() 
     assert_eq!(
         effects,
         vec![
-            AppEffect::StopSync,
-            AppEffect::ClearSession,
-            AppEffect::RestoreSessionFor(target),
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
             AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
@@ -684,7 +732,6 @@ fn logout_stops_sync_and_clears_session() {
         effects,
         vec![
             AppEffect::StopSync,
-            AppEffect::ClearSession,
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
         ]
@@ -771,7 +818,6 @@ fn logout_clears_session_views_and_notifies_ui() {
         effects,
         vec![
             AppEffect::StopSync,
-            AppEffect::ClearSession,
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
             AppEffect::EmitUiEvent(UiEvent::TimelineChanged {
@@ -781,6 +827,16 @@ fn logout_clears_session_views_and_notifies_ui() {
             AppEffect::EmitUiEvent(UiEvent::SearchChanged),
         ]
     );
+}
+
+#[test]
+fn logout_clears_session_scoped_workflows_and_crawler_state() {
+    let mut state = state_with_session_scoped_workflows();
+
+    let effects = reduce(&mut state, AppAction::LogoutRequested);
+
+    assert_session_scoped_workflows_cleared(&state);
+    assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)));
 }
 
 #[test]
@@ -820,7 +876,6 @@ fn logout_clears_native_attention_state_and_notifies_ui() {
         effects,
         vec![
             AppEffect::StopSync,
-            AppEffect::ClearSession,
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
             AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged),
@@ -855,6 +910,31 @@ fn session_locked_stops_sync_and_clears_session_views() {
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
         ]
     );
+}
+
+#[test]
+fn session_locked_clears_session_scoped_workflows_and_crawler_state() {
+    let mut state = state_with_session_scoped_workflows();
+
+    let effects = reduce(&mut state, AppAction::SessionLocked);
+
+    assert_session_scoped_workflows_cleared(&state);
+    assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)));
+}
+
+#[test]
+fn switch_account_clears_session_scoped_workflows_and_crawler_state() {
+    let mut state = state_with_session_scoped_workflows();
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SwitchAccountRequested {
+            info: alternate_session_info(),
+        },
+    );
+
+    assert_session_scoped_workflows_cleared(&state);
+    assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)));
 }
 
 #[test]

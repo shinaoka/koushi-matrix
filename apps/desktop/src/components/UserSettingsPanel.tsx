@@ -101,6 +101,7 @@ export function UserSettingsPanel({
   onConfirmSasVerification,
   onCancelVerification,
   onResetIdentity,
+  onCancelIdentityReset,
   onSubmitIdentityResetPassword,
   onSubmitIdentityResetOAuth,
   onProbeLocalEncryption,
@@ -157,6 +158,7 @@ export function UserSettingsPanel({
   onConfirmSasVerification: (flowId: number) => void;
   onCancelVerification: (flowId: number) => void;
   onResetIdentity: () => void;
+  onCancelIdentityReset: (flowId: number) => void;
   onSubmitIdentityResetPassword: (flowId: number, password: string) => void;
   onSubmitIdentityResetOAuth: (flowId: number) => void;
   onProbeLocalEncryption: () => void;
@@ -704,6 +706,7 @@ export function UserSettingsPanel({
         onConfirmSasVerification={onConfirmSasVerification}
         onEnableKeyBackup={onEnableKeyBackup}
         onResetIdentity={onResetIdentity}
+        onCancelIdentityReset={onCancelIdentityReset}
         onSubmitIdentityResetOAuth={onSubmitIdentityResetOAuth}
         onSubmitIdentityResetPassword={onSubmitIdentityResetPassword}
       />
@@ -1545,6 +1548,7 @@ function TrustSection({
   onConfirmSasVerification,
   onCancelVerification,
   onResetIdentity,
+  onCancelIdentityReset,
   onSubmitIdentityResetPassword,
   onSubmitIdentityResetOAuth
 }: {
@@ -1555,6 +1559,7 @@ function TrustSection({
   onConfirmSasVerification: (flowId: number) => void;
   onCancelVerification: (flowId: number) => void;
   onResetIdentity: () => void;
+  onCancelIdentityReset: (flowId: number) => void;
   onSubmitIdentityResetPassword: (flowId: number, password: string) => void;
   onSubmitIdentityResetOAuth: (flowId: number) => void;
 }) {
@@ -1624,6 +1629,7 @@ function TrustSection({
 
       <IdentityResetAuthControls
         state={trust.identity_reset}
+        onCancelIdentityReset={onCancelIdentityReset}
         onSubmitIdentityResetOAuth={onSubmitIdentityResetOAuth}
         onSubmitIdentityResetPassword={onSubmitIdentityResetPassword}
       />
@@ -2358,10 +2364,12 @@ function TrustActionButton({
 
 function IdentityResetAuthControls({
   state,
+  onCancelIdentityReset,
   onSubmitIdentityResetPassword,
   onSubmitIdentityResetOAuth
 }: {
   state: IdentityResetState;
+  onCancelIdentityReset: (flowId: number) => void;
   onSubmitIdentityResetPassword: (flowId: number, password: string) => void;
   onSubmitIdentityResetOAuth: (flowId: number) => void;
 }) {
@@ -2378,6 +2386,11 @@ function IdentityResetAuthControls({
     return (
       <div className="trust-auth-row">
         <TrustActionButton
+          icon={<X size={14} />}
+          label={t("trust.cancelIdentityReset")}
+          onClick={() => onCancelIdentityReset(flowId)}
+        />
+        <TrustActionButton
           icon={<Check size={14} />}
           label={t("trust.continueIdentityReset")}
           onClick={() => onSubmitIdentityResetOAuth(flowId)}
@@ -2391,6 +2404,11 @@ function IdentityResetAuthControls({
       <div className="trust-auth-row" role="status">
         <ShieldAlert size={15} aria-hidden="true" />
         <span>{t("trust.identityResetAuthUnknown")}</span>
+        <TrustActionButton
+          icon={<X size={14} />}
+          label={t("trust.cancelIdentityReset")}
+          onClick={() => onCancelIdentityReset(flowId)}
+        />
       </div>
     );
   }
@@ -2422,6 +2440,14 @@ function IdentityResetAuthControls({
       <button className="trust-action-button primary" type="submit" disabled={!passwordFilled}>
         <Check size={14} />
         <span>{t("trust.continueIdentityReset")}</span>
+      </button>
+      <button
+        className="trust-action-button"
+        type="button"
+        onClick={() => onCancelIdentityReset(flowId)}
+      >
+        <X size={14} />
+        <span>{t("trust.cancelIdentityReset")}</span>
       </button>
     </form>
   );
@@ -2628,6 +2654,8 @@ function failureKindLabel(kind: TrustOperationFailureKind): string {
       return t("trust.failureCancelled");
     case "mismatch":
       return t("trust.failureMismatch");
+    case "invalidPassphrase":
+      return t("trust.failureInvalidPassphrase");
     case "network":
       return t("trust.failureNetwork");
     case "forbidden":

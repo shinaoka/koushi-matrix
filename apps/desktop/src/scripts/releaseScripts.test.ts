@@ -1843,7 +1843,7 @@ describe("desktop release scripts", () => {
       /#\[cfg\(any\(debug_assertions, test, feature = "qa-bin"\)\)\]\nconst ENV_FILE_CREDENTIAL_STORE_DIR/
     );
     expect(coreStore).toMatch(
-      /#\[cfg\(any\(debug_assertions, test, feature = "qa-bin"\)\)\]\npub struct FileCredentialStore/
+      /#\[cfg\(any\(debug_assertions, test, feature = "qa-bin"\)\)\]\n(?:#\[derive\([^\n]+\)\]\n)?pub struct FileCredentialStore/
     );
 
     // The transport adapter must not read the credential store at all — not

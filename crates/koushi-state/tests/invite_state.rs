@@ -75,7 +75,7 @@ fn invite_list_is_rust_owned_and_replaces_by_snapshot() {
 }
 
 #[test]
-fn invite_list_is_ignored_without_ready_session_and_cleared_on_logout() {
+fn invite_list_is_ignored_when_signed_out_applies_when_locked_and_clears_on_logout() {
     let mut signed_out = AppState::default();
     reduce(
         &mut signed_out,
@@ -84,6 +84,23 @@ fn invite_list_is_ignored_without_ready_session_and_cleared_on_logout() {
         },
     );
     assert!(signed_out.invites.is_empty());
+
+    let mut locked = ready_state();
+    locked.session = SessionState::Locked(SessionInfo {
+        homeserver: "http://127.0.0.1:6167".to_owned(),
+        user_id: "@qa:localhost".to_owned(),
+        device_id: "LOCALDEVICE".to_owned(),
+    });
+    reduce(
+        &mut locked,
+        AppAction::InviteListUpdated {
+            invites: vec![invite_preview("!room:localhost", false)],
+        },
+    );
+    assert_eq!(
+        locked.invites,
+        vec![invite_preview("!room:localhost", false)]
+    );
 
     let mut state = ready_state();
     reduce(

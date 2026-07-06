@@ -179,6 +179,10 @@ pub(crate) fn handle_history_crawl_progress(
     indexed: u64,
     timestamp_ms: u64,
 ) -> Vec<AppEffect> {
+    if state.settings.values.search_crawler.speed == crate::state::SearchCrawlerSpeed::Paused {
+        return Vec::new();
+    }
+
     state.search_crawler.rooms.insert(
         room_id.clone(),
         crate::state::SearchCrawlerRoomState::Running { processed, indexed },
@@ -191,6 +195,17 @@ pub(crate) fn handle_history_crawl_progress(
         processed,
         indexed,
     );
+    vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
+}
+
+pub(crate) fn handle_history_crawl_stopped(
+    state: &mut AppState,
+    room_id: String,
+) -> Vec<AppEffect> {
+    state
+        .search_crawler
+        .rooms
+        .insert(room_id, crate::state::SearchCrawlerRoomState::Idle);
     vec![AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged)]
 }
 

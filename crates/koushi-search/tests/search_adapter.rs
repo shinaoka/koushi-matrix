@@ -68,6 +68,39 @@ fn exact_message_body_match_returns_utf16_highlight() {
 }
 
 #[test]
+fn six_character_ascii_exact_match_highlights_full_word() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(SearchableEvent {
+        room_id: "!room-a:example.invalid".into(),
+        event_id: "$ascii-event".into(),
+        sender: "@user-a:example.invalid".into(),
+        timestamp_ms: 1_700_000_000_000,
+        body: Some(SensitiveString::new("prefix Signal suffix")),
+        attachment_filename: None,
+        attachment: None,
+    });
+
+    let result = store
+        .verify_candidate(
+            SearchCandidate {
+                room_id: "!room-a:example.invalid".into(),
+                event_id: "$ascii-event".into(),
+                score_millis: 900,
+            },
+            "Signal",
+        )
+        .expect("candidate should verify");
+
+    assert_eq!(
+        result.highlights,
+        vec![TextRange {
+            start_utf16: 7,
+            end_utf16: 13,
+        }]
+    );
+}
+
+#[test]
 fn full_width_query_matches_half_width_indexed_message_body() {
     let mut store = SearchDocumentStore::default();
     store.upsert_message(SearchableEvent {

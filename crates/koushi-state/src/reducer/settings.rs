@@ -130,15 +130,6 @@ pub(crate) fn handle_settings_update_requested(
         && new_crawler.speed == SearchCrawlerSpeed::Paused
     {
         let room_ids: Vec<String> = state.rooms.iter().map(|r| r.room_id.clone()).collect();
-        for room_state in state.search_crawler.rooms.values_mut() {
-            if matches!(
-                room_state,
-                crate::state::SearchCrawlerRoomState::Running { .. }
-            ) {
-                *room_state = crate::state::SearchCrawlerRoomState::Queued;
-                emit_search_crawler_changed = true;
-            }
-        }
         effects.push(AppEffect::NotifySearchCrawlerRoomsAvailable {
             room_ids,
             settings: new_crawler.clone(),

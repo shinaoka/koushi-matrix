@@ -266,6 +266,12 @@ pub enum AppAction {
     ResetIdentityAuthSubmitted {
         request_id: u64,
     },
+    ResetIdentityCancelled {
+        request_id: u64,
+    },
+    ResetIdentityTimedOut {
+        request_id: u64,
+    },
     ResetIdentityCompleted {
         request_id: u64,
     },
@@ -761,6 +767,11 @@ pub enum AppAction {
         room_id: String,
         root_event_id: String,
     },
+    ThreadSubscriptionFailed {
+        room_id: String,
+        root_event_id: String,
+        message: String,
+    },
     ThreadAttentionUpdated {
         room_id: String,
         root_event_id: String,
@@ -776,6 +787,11 @@ pub enum AppAction {
     FocusedContextSubscribed {
         room_id: String,
         event_id: String,
+    },
+    FocusedContextSubscriptionFailed {
+        room_id: String,
+        event_id: String,
+        message: String,
     },
     CloseFocusedContext,
     SearchClosed,
@@ -819,6 +835,9 @@ pub enum AppAction {
         room_id: String,
         kind: crate::state::SearchCrawlerFailureKind,
         timestamp_ms: u64,
+    },
+    HistoryCrawlStopped {
+        room_id: String,
     },
     FilesViewOpened {
         request_id: u64,

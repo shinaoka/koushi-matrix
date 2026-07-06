@@ -788,6 +788,44 @@ fn mark_as_read_clears_unread_state_and_recomputes_room_list_projection() {
 }
 
 #[test]
+fn mark_as_read_success_applies_while_session_is_locked() {
+    let rooms = vec![room_summary("!room1:example.invalid", false, 3, 1, true)];
+    let mut state = ready_state_with_rooms(rooms);
+    state.room_list.active_filter = RoomListFilter::Unread;
+    state.room_list = compute_room_list_projection(
+        RoomListFilter::Unread,
+        state.room_list.sort,
+        state.navigation.active_space_id.as_deref(),
+        &state.spaces,
+        &state.rooms,
+        &state.invites,
+    );
+    state.session = SessionState::Locked(session_info());
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomMarkedAsReadSucceeded {
+            request_id: 1,
+            room_id: "!room1:example.invalid".to_owned(),
+        },
+    );
+
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
+    );
+    let room = state
+        .rooms
+        .iter()
+        .find(|r| r.room_id == "!room1:example.invalid")
+        .unwrap();
+    assert!(!room.marked_unread);
+    assert_eq!(room.unread_count, 0);
+    assert_eq!(room.notification_count, 0);
+    assert!(state.room_list.items.is_empty());
+}
+
+#[test]
 fn mark_as_read_failure_emits_error_event() {
     let rooms = vec![room_summary("!room1:example.invalid", false, 3, 0, false)];
     let mut state = ready_state_with_rooms(rooms);

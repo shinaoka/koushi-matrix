@@ -12,11 +12,12 @@
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use koushi_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
-    CreateRoomOptions, ImageUploadCompressionPolicy, ImageUploadCompressionState,
+    CoreFailure, CreateRoomOptions, ImageUploadCompressionPolicy, ImageUploadCompressionState,
     ImageUploadDimensions, ImageUploadVariantKind, IntentNoOpReason, IntentOutcome,
     MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent,
     RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand, SearchEvent, SearchScope,
@@ -48,6 +49,7 @@ static NEXT_TRANSACTION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(any(debug_assertions, test))]
 const QA_RECOVERY_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const CORE_COMMAND_SUBMIT_TIMEOUT: Duration = Duration::from_secs(2);
 const QA_TITLE_ENV: &str = "KOUSHI_QA_TITLE";
 const TIMELINE_BACKWARDS_PAGE_EVENT_COUNT: u16 = 100;
 #[cfg(test)]
@@ -73,18 +75,19 @@ pub(crate) mod views;
 /// Submit a `CoreCommand` over the command-dispatch connection.
 ///
 /// This is the ONLY way commands leave the Tauri adapter.
-/// Uses `tokio::sync::Mutex` so the guard may be held across `.await`.
+/// Clones a lightweight submit handle before awaiting the bounded command
+/// queue so snapshot reads are not blocked behind backpressured sends.
 pub(crate) async fn submit_core_command(
     state: &CoreRuntimeState,
     command: CoreCommand,
 ) -> Result<(), String> {
-    state
-        .connection
-        .lock()
-        .await
-        .command(command)
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))
+    let command_handle = { state.connection.lock().await.command_handle() };
+
+    match tokio::time::timeout(CORE_COMMAND_SUBMIT_TIMEOUT, command_handle.command(command)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(format!("command submit failed: {error}")),
+        Err(_) => Err("command submit timed out".to_owned()),
+    }
 }
 
 /// Allocate a `RequestId` from the command-dispatch connection.
@@ -108,6 +111,10 @@ async fn current_snapshot(state: &CoreRuntimeState) -> Result<FrontendDesktopSna
         snapshot.state,
         snapshot.generation,
     ))
+}
+
+pub(crate) fn invoke_error_from_core_failure(context: &str, failure: CoreFailure) -> String {
+    format!("{context}: {failure:?}")
 }
 
 // ---- QA window title ----
@@ -245,10 +252,9 @@ async fn wait_for_logged_in_authenticated(
     timeout: std::time::Duration,
 ) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + timeout;
-    let mut logged_in = false;
 
     loop {
-        if logged_in && snapshot_has_authenticated_session(&event_conn.snapshot()) {
+        if snapshot_has_authenticated_session(&event_conn.snapshot()) {
             return Ok(());
         }
 
@@ -259,13 +265,18 @@ async fn wait_for_logged_in_authenticated(
             Ok(CoreEvent::Account(AccountEvent::LoggedIn { request_id, .. }))
                 if request_id == login_request_id =>
             {
-                logged_in = true;
+                if snapshot_has_authenticated_session(&event_conn.snapshot()) {
+                    return Ok(());
+                }
             }
-            Ok(CoreEvent::OperationFailed { request_id, .. }) if request_id == login_request_id => {
-                return Err("login failed".to_owned());
+            Ok(CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            }) if request_id == login_request_id => {
+                return Err(invoke_error_from_core_failure("login failed", failure));
             }
             Ok(_) => {}
-            Err(_) => return Err("login event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -277,23 +288,31 @@ async fn wait_for_auth_changed(
     let deadline = tokio::time::Instant::now() + timeout;
 
     loop {
+        if snapshot_has_auth_discovery_answer(&event_conn.snapshot()) {
+            return Ok(());
+        }
+
         let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
             .await
             .map_err(|_| "login discovery did not complete".to_owned())?;
         match event {
             Ok(CoreEvent::StateChanged(snapshot))
-                if matches!(
-                    snapshot.auth,
-                    koushi_state::AuthDiscoveryState::Ready { .. }
-                        | koushi_state::AuthDiscoveryState::Failed { .. }
-                ) =>
+                if snapshot_has_auth_discovery_answer(&snapshot) =>
             {
                 return Ok(());
             }
             Ok(_) => {}
-            Err(_) => return Err("login discovery event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
+}
+
+fn snapshot_has_auth_discovery_answer(snapshot: &koushi_state::AppState) -> bool {
+    matches!(
+        snapshot.auth,
+        koushi_state::AuthDiscoveryState::Ready { .. }
+            | koushi_state::AuthDiscoveryState::Failed { .. }
+    )
 }
 
 fn snapshot_has_authenticated_session(snapshot: &koushi_state::AppState) -> bool {
@@ -358,15 +377,18 @@ async fn wait_for_focused_context_closed(
             }
             Ok(CoreEvent::OperationFailed {
                 request_id: failed_request_id,
-                ..
+                failure,
             }) if failed_request_id == request_id => {
-                return Err("focused context close failed".to_owned());
+                return Err(invoke_error_from_core_failure(
+                    "focused context close failed",
+                    failure,
+                ));
             }
             Ok(_) => {}
             Err(_) if snapshot_has_no_focused_context(&event_conn.snapshot()) => {
                 return Ok(());
             }
-            Err(_) => return Err("focused context close event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -395,15 +417,18 @@ async fn wait_for_focused_context(
             }
             Ok(CoreEvent::OperationFailed {
                 request_id: failed_request_id,
-                ..
+                failure,
             }) if failed_request_id == request_id => {
-                return Err("focused context open failed".to_owned());
+                return Err(invoke_error_from_core_failure(
+                    "focused context open failed",
+                    failure,
+                ));
             }
             Ok(_) => {}
             Err(_) if snapshot_has_focused_context(&event_conn.snapshot(), room_id) => {
                 return Ok(());
             }
-            Err(_) => return Err("focused context event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -433,9 +458,12 @@ async fn wait_for_main_timeline_anchor(
             }
             Ok(CoreEvent::OperationFailed {
                 request_id: failed_request_id,
-                ..
+                failure,
             }) if failed_request_id == request_id => {
-                return Err("main timeline anchor open failed".to_owned());
+                return Err(invoke_error_from_core_failure(
+                    "main timeline anchor open failed",
+                    failure,
+                ));
             }
             Ok(_) => {}
             Err(_)
@@ -443,7 +471,7 @@ async fn wait_for_main_timeline_anchor(
             {
                 return Ok(());
             }
-            Err(_) => return Err("main timeline anchor event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -503,13 +531,17 @@ async fn wait_for_selected_room(
             Ok(CoreEvent::StateDelta(_)) => {
                 state_delta += 1;
             }
-            Ok(CoreEvent::OperationFailed { request_id, .. })
-                if request_id == select_request_id =>
-            {
+            Ok(CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            }) if request_id == select_request_id => {
                 if trace {
                     eprintln!("koushi.select stage=op_failed events={events}");
                 }
-                return Err("room selection failed".to_owned());
+                return Err(invoke_error_from_core_failure(
+                    "room selection failed",
+                    failure,
+                ));
             }
             // Telemetry-lane fast path: IntentLifecycle lets us fail fast with
             // a specific reason instead of waiting the full 10s timeout.
@@ -561,7 +593,7 @@ async fn wait_for_selected_room(
                 if trace {
                     eprintln!("koushi.select stage=lag events={events}");
                 }
-                return Err("room selection event stream lagged".to_owned());
+                continue;
             }
         }
     }
@@ -611,8 +643,10 @@ async fn wait_for_search_completed(
             })) if result_request_id == request_id => {}
             Ok(CoreEvent::OperationFailed {
                 request_id: failed_request_id,
-                ..
-            }) if failed_request_id == request_id => return Err("search failed".to_owned()),
+                failure,
+            }) if failed_request_id == request_id => {
+                return Err(invoke_error_from_core_failure("search failed", failure));
+            }
             Ok(CoreEvent::StateChanged(snapshot))
                 if snapshot_has_completed_search(&snapshot, request_id) =>
             {
@@ -622,7 +656,7 @@ async fn wait_for_search_completed(
             Err(_) if snapshot_has_completed_search(&event_conn.snapshot(), request_id) => {
                 return Ok(());
             }
-            Err(_) => return Err("search event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -648,11 +682,16 @@ async fn wait_for_search_closed(
             }
             Ok(CoreEvent::OperationFailed {
                 request_id: failed_request_id,
-                ..
-            }) if failed_request_id == request_id => return Err("search close failed".to_owned()),
+                failure,
+            }) if failed_request_id == request_id => {
+                return Err(invoke_error_from_core_failure(
+                    "search close failed",
+                    failure,
+                ));
+            }
             Ok(_) => {}
             Err(_) if snapshot_has_closed_search(&event_conn.snapshot()) => return Ok(()),
-            Err(_) => return Err("search close event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -688,11 +727,13 @@ async fn wait_for_upload_staging_snapshot(
             Ok(CoreEvent::StateChanged(snapshot)) if predicate(&snapshot) => return Ok(()),
             Ok(CoreEvent::OperationFailed {
                 request_id: failed_request_id,
-                ..
-            }) if failed_request_id == request_id => return Err(description.to_owned()),
+                failure,
+            }) if failed_request_id == request_id => {
+                return Err(invoke_error_from_core_failure(description, failure));
+            }
             Ok(_) => {}
             Err(_) if predicate(&event_conn.snapshot()) => return Ok(()),
-            Err(_) => return Err("upload staging event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -743,13 +784,17 @@ async fn wait_for_room_created(
             {
                 return Ok(());
             }
-            Ok(CoreEvent::OperationFailed { request_id, .. })
-                if request_id == create_request_id =>
-            {
-                return Err("room creation failed".to_owned());
+            Ok(CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            }) if request_id == create_request_id => {
+                return Err(invoke_error_from_core_failure(
+                    "room creation failed",
+                    failure,
+                ));
             }
             Ok(_) => {}
-            Err(_) => return Err("room creation event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -770,13 +815,17 @@ async fn wait_for_space_created(
             {
                 return Ok(());
             }
-            Ok(CoreEvent::OperationFailed { request_id, .. })
-                if request_id == create_request_id =>
-            {
-                return Err("space creation failed".to_owned());
+            Ok(CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            }) if request_id == create_request_id => {
+                return Err(invoke_error_from_core_failure(
+                    "space creation failed",
+                    failure,
+                ));
             }
             Ok(_) => {}
-            Err(_) => return Err("space creation event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -801,13 +850,14 @@ where
             Ok(CoreEvent::Room(room_event)) if is_success(&room_event, operation_request_id) => {
                 return Ok(());
             }
-            Ok(CoreEvent::OperationFailed { request_id, .. })
-                if request_id == operation_request_id =>
-            {
-                return Err(failure_message.to_owned());
+            Ok(CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            }) if request_id == operation_request_id => {
+                return Err(invoke_error_from_core_failure(failure_message, failure));
             }
             Ok(_) => {}
-            Err(_) => return Err("room operation event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -829,13 +879,14 @@ async fn wait_for_room_joined(
             })) if request_id == operation_request_id => {
                 return Ok(room_id);
             }
-            Ok(CoreEvent::OperationFailed { request_id, .. })
-                if request_id == operation_request_id =>
-            {
-                return Err("room join failed".to_owned());
+            Ok(CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            }) if request_id == operation_request_id => {
+                return Err(invoke_error_from_core_failure("room join failed", failure));
             }
             Ok(_) => {}
-            Err(_) => return Err("room operation event stream lagged".to_owned()),
+            Err(_) => continue,
         }
     }
 }
@@ -1137,6 +1188,16 @@ pub(crate) fn build_cancel_verification_command(
 
 pub(crate) fn build_reset_identity_command(request_id: koushi_core::RequestId) -> CoreCommand {
     CoreCommand::Account(AccountCommand::ResetIdentity { request_id })
+}
+
+pub(crate) fn build_cancel_identity_reset_command(
+    request_id: koushi_core::RequestId,
+    flow_id: u64,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::CancelIdentityReset {
+        request_id,
+        flow_id,
+    })
 }
 
 pub(crate) fn build_submit_identity_reset_password_command(
@@ -2398,13 +2459,17 @@ async fn image_upload_compression_contract_from_snapshot(
 fn resolve_search_scope_from_active_room(
     scope: SearchScopeKind,
     active_room_id: Option<String>,
+    active_space_id: Option<String>,
 ) -> SearchScope {
     match scope {
         SearchScopeKind::CurrentRoom => active_room_id
-            .map(|room_id| SearchScope::Room { room_id })
-            .unwrap_or(SearchScope::Global),
-        SearchScopeKind::CurrentSpace | SearchScopeKind::AllRooms => SearchScope::Global,
-        SearchScopeKind::Dms => SearchScope::Global,
+            .map(|room_id| SearchScope::CurrentRoom { room_id })
+            .unwrap_or(SearchScope::AllRooms),
+        SearchScopeKind::CurrentSpace => active_space_id
+            .map(|space_id| SearchScope::CurrentSpace { space_id })
+            .unwrap_or(SearchScope::AllRooms),
+        SearchScopeKind::Dms => SearchScope::Dms,
+        SearchScopeKind::AllRooms => SearchScope::AllRooms,
     }
 }
 
@@ -2413,7 +2478,11 @@ async fn resolve_search_scope(
     state: &CoreRuntimeState,
 ) -> koushi_core::SearchScope {
     let snapshot = state.connection.lock().await.snapshot();
-    resolve_search_scope_from_active_room(scope, snapshot.navigation.active_room_id)
+    resolve_search_scope_from_active_room(
+        scope,
+        snapshot.navigation.active_room_id,
+        snapshot.navigation.active_space_id,
+    )
 }
 
 // ---- QA login pipe (debug/test only) ----
@@ -2670,6 +2739,224 @@ mod tests {
         ]
         .concat()
     }
+
+    #[test]
+    fn submit_core_command_does_not_hold_connection_mutex_while_awaiting_send() {
+        let source = commands_source();
+        let production_source = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("command production source should precede tests");
+        let helper_source = production_source
+            .split("pub(crate) async fn submit_core_command")
+            .nth(1)
+            .expect("submit_core_command helper should exist")
+            .split("/// Allocate a `RequestId`")
+            .next()
+            .expect("next helper should follow submit_core_command");
+
+        assert!(
+            production_source.contains("const CORE_COMMAND_SUBMIT_TIMEOUT"),
+            "Tauri command submits should have a bounded wait instead of blocking snapshots indefinitely"
+        );
+        assert!(
+            helper_source.contains("command_handle"),
+            "submit_core_command should clone a lightweight submit handle before awaiting send"
+        );
+        assert!(
+            helper_source.contains("tokio::time::timeout(CORE_COMMAND_SUBMIT_TIMEOUT"),
+            "submit_core_command should bound backpressured command sends"
+        );
+        assert!(
+            !helper_source
+                .contains(".lock()\n        .await\n        .command(command)\n        .await")
+                && !helper_source.contains(".lock().await.command(command).await"),
+            "submit_core_command must not hold the shared CoreConnection mutex across send().await"
+        );
+    }
+
+    #[test]
+    fn search_scope_resolution_preserves_non_all_scope_contract() {
+        let source = commands_source();
+        let production_source = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("command production source should precede tests");
+        let resolver = production_source
+            .split("fn resolve_search_scope_from_active_room")
+            .nth(1)
+            .expect("search scope resolver should exist")
+            .split("async fn resolve_search_scope")
+            .next()
+            .expect("async search scope resolver should follow pure resolver");
+
+        assert!(
+            resolver.contains("SearchScope::CurrentSpace"),
+            "current-space searches must preserve the selected scope kind instead of collapsing to global"
+        );
+        assert!(
+            resolver.contains("SearchScope::Dms"),
+            "DM searches must preserve the selected scope kind instead of collapsing to global"
+        );
+        assert!(
+            !resolver.contains("CurrentSpace | SearchScopeKind::AllRooms => SearchScope::Global")
+                && !resolver.contains("SearchScopeKind::Dms => SearchScope::Global"),
+            "non-all search scopes must not silently round-trip as allRooms"
+        );
+    }
+
+    #[test]
+    fn event_wait_loops_resync_on_lag_instead_of_failing_immediately() {
+        let source = commands_source();
+        let waiters = [
+            (
+                "async fn wait_for_logged_in_authenticated",
+                "async fn wait_for_auth_changed",
+            ),
+            (
+                "async fn wait_for_auth_changed",
+                "fn snapshot_has_authenticated_session",
+            ),
+            (
+                "async fn wait_for_focused_context_closed",
+                "async fn wait_for_focused_context",
+            ),
+            (
+                "async fn wait_for_focused_context",
+                "async fn wait_for_main_timeline_anchor",
+            ),
+            (
+                "async fn wait_for_main_timeline_anchor",
+                "async fn wait_for_selected_room",
+            ),
+            (
+                "async fn wait_for_selected_room",
+                "fn snapshot_has_active_room",
+            ),
+            (
+                "async fn wait_for_search_completed",
+                "async fn wait_for_search_closed",
+            ),
+            (
+                "async fn wait_for_search_closed",
+                "fn select_active_room_trace_label",
+            ),
+            (
+                "async fn wait_for_upload_staging_snapshot",
+                "/// How long the adapter waits",
+            ),
+            (
+                "async fn wait_for_room_created",
+                "async fn wait_for_space_created",
+            ),
+            (
+                "async fn wait_for_space_created",
+                "async fn wait_for_room_operation",
+            ),
+            (
+                "async fn wait_for_room_operation",
+                "async fn wait_for_room_joined",
+            ),
+            ("async fn wait_for_room_joined", "pub async fn create_room"),
+            (
+                "async fn wait_for_invite_batch_completed",
+                "pub async fn invite_users",
+            ),
+            (
+                "async fn wait_for_oidc_authorization",
+                "#[tauri::command]\npub async fn submit_login",
+            ),
+        ];
+
+        for (start, end) in waiters {
+            let body = source
+                .split(start)
+                .nth(1)
+                .unwrap_or_else(|| panic!("{start} should exist"))
+                .split(end)
+                .next()
+                .unwrap_or_else(|| panic!("{end} should follow {start}"));
+            assert!(
+                !body.contains("event stream lagged"),
+                "{start} should re-check snapshot or keep waiting after EventStreamLag"
+            );
+        }
+    }
+
+    #[test]
+    fn correlated_operation_failures_preserve_core_failure_kind_in_invoke_errors() {
+        let source = commands_source();
+        let failure_waiters = [
+            (
+                "async fn wait_for_logged_in_authenticated",
+                "async fn wait_for_auth_changed",
+            ),
+            (
+                "async fn wait_for_focused_context_closed",
+                "async fn wait_for_focused_context",
+            ),
+            (
+                "async fn wait_for_focused_context",
+                "async fn wait_for_main_timeline_anchor",
+            ),
+            (
+                "async fn wait_for_main_timeline_anchor",
+                "async fn wait_for_selected_room",
+            ),
+            (
+                "async fn wait_for_search_completed",
+                "async fn wait_for_search_closed",
+            ),
+            (
+                "async fn wait_for_search_closed",
+                "fn select_active_room_trace_label",
+            ),
+            (
+                "async fn wait_for_upload_staging_snapshot",
+                "/// How long the adapter waits",
+            ),
+            (
+                "async fn wait_for_room_created",
+                "async fn wait_for_space_created",
+            ),
+            (
+                "async fn wait_for_space_created",
+                "async fn wait_for_room_operation",
+            ),
+            (
+                "async fn wait_for_room_operation",
+                "async fn wait_for_room_joined",
+            ),
+            ("async fn wait_for_room_joined", "pub async fn create_room"),
+            (
+                "async fn wait_for_invite_batch_completed",
+                "pub async fn invite_users",
+            ),
+            (
+                "async fn wait_for_oidc_authorization",
+                "#[tauri::command]\npub async fn submit_login",
+            ),
+            (
+                "pub async fn list_saved_sessions",
+                "#[tauri::command]\npub async fn switch_account",
+            ),
+        ];
+
+        for (start, end) in failure_waiters {
+            let body = source
+                .split(start)
+                .nth(1)
+                .unwrap_or_else(|| panic!("{start} should exist"))
+                .split(end)
+                .next()
+                .unwrap_or_else(|| panic!("{end} should follow {start}"));
+            assert!(
+                body.contains("invoke_error_from_core_failure"),
+                "{start} should include the typed CoreFailure kind in invoke errors"
+            );
+        }
+    }
+
     use crate::commands::{
         TIMELINE_BACKWARDS_PAGE_EVENT_COUNT, TIMELINE_RESTORE_ANCHOR_MAX_BATCHES,
     };
@@ -2695,9 +2982,10 @@ mod tests {
     use super::{
         build_accept_invite_command, build_accept_verification_command,
         build_bootstrap_cross_signing_command, build_bootstrap_secure_backup_command,
-        build_cancel_scheduled_send_command, build_cancel_send_command,
-        build_cancel_verification_command, build_change_secure_backup_passphrase_command,
-        build_close_activity_command, build_close_files_view_command, build_close_search_command,
+        build_cancel_identity_reset_command, build_cancel_scheduled_send_command,
+        build_cancel_send_command, build_cancel_verification_command,
+        build_change_secure_backup_passphrase_command, build_close_activity_command,
+        build_close_files_view_command, build_close_search_command,
         build_confirm_sas_verification_command, build_create_room_command,
         build_create_space_command, build_decline_invite_command, build_discover_login_command,
         build_download_media_command, build_edit_message_command, build_enable_key_backup_command,
@@ -4105,6 +4393,7 @@ mod tests {
             resolve_search_scope_from_active_room(
                 SearchScopeKind::CurrentRoom,
                 Some(room_id.clone()),
+                Some("!space:example.org".to_owned()),
             ),
         ) {
             CoreCommand::Search(SearchCommand::Query {
@@ -4116,7 +4405,7 @@ mod tests {
                 assert_eq!(route_query, query);
                 assert_eq!(
                     scope,
-                    SearchScope::Room {
+                    SearchScope::CurrentRoom {
                         room_id: room_id.clone()
                     }
                 );
@@ -4125,8 +4414,26 @@ mod tests {
         }
 
         assert_eq!(
-            resolve_search_scope_from_active_room(SearchScopeKind::CurrentRoom, None,),
-            SearchScope::Global
+            resolve_search_scope_from_active_room(SearchScopeKind::CurrentRoom, None, None),
+            SearchScope::AllRooms
+        );
+        assert_eq!(
+            resolve_search_scope_from_active_room(
+                SearchScopeKind::CurrentSpace,
+                Some(room_id.clone()),
+                Some("!space:example.org".to_owned()),
+            ),
+            SearchScope::CurrentSpace {
+                space_id: "!space:example.org".to_owned()
+            }
+        );
+        assert_eq!(
+            resolve_search_scope_from_active_room(
+                SearchScopeKind::Dms,
+                Some(room_id.clone()),
+                None
+            ),
+            SearchScope::Dms
         );
 
         match build_close_search_command(fake_request_id(16)) {
@@ -5163,9 +5470,20 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
 
+        match build_cancel_identity_reset_command(fake_request_id(31), 75) {
+            CoreCommand::Account(AccountCommand::CancelIdentityReset {
+                request_id,
+                flow_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(31));
+                assert_eq!(flow_id, 75);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
         let password_command = build_submit_identity_reset_password_command(
-            fake_request_id(31),
-            75,
+            fake_request_id(32),
+            76,
             AuthSecret::new("identity-reset-password"),
         );
         match &password_command {
@@ -5174,8 +5492,8 @@ mod tests {
                 flow_id,
                 request: IdentityResetAuthRequest::UiaaPassword { password },
             }) => {
-                assert_eq!(*request_id, fake_request_id(31));
-                assert_eq!(*flow_id, 75);
+                assert_eq!(*request_id, fake_request_id(32));
+                assert_eq!(*flow_id, 76);
                 assert_eq!(password.expose_secret(), "identity-reset-password");
             }
             other => panic!("unexpected command: {other:?}"),
@@ -5183,14 +5501,14 @@ mod tests {
         let debug = format!("{password_command:?}");
         assert!(!debug.contains("identity-reset-password"), "{debug}");
 
-        match build_submit_identity_reset_oauth_command(fake_request_id(32), 76) {
+        match build_submit_identity_reset_oauth_command(fake_request_id(33), 77) {
             CoreCommand::Account(AccountCommand::SubmitIdentityResetAuth {
                 request_id,
                 flow_id,
                 request: IdentityResetAuthRequest::OAuthApproved,
             }) => {
-                assert_eq!(request_id, fake_request_id(32));
-                assert_eq!(flow_id, 76);
+                assert_eq!(request_id, fake_request_id(33));
+                assert_eq!(flow_id, 77);
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -5384,6 +5702,11 @@ mod tests {
                 "pub async fn reset_identity",
                 "build_reset_identity_command",
                 "commands::e2ee::reset_identity",
+            ),
+            (
+                "pub async fn cancel_identity_reset",
+                "build_cancel_identity_reset_command",
+                "commands::e2ee::cancel_identity_reset",
             ),
             (
                 "pub async fn submit_identity_reset_password",
@@ -6079,6 +6402,7 @@ mod tests {
             resolve_search_scope_from_active_room(
                 SearchScopeKind::CurrentRoom,
                 Some("!room:example.org".to_owned()),
+                None,
             ),
         );
         let room_key_export = build_export_room_keys_command(

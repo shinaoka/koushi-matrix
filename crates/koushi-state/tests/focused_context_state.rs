@@ -235,6 +235,67 @@ fn stale_focused_context_subscription_signals_are_ignored() {
 }
 
 #[test]
+fn focused_context_subscription_failure_exits_matching_opening_context() {
+    let mut state = ready_selected_room_state();
+    let _ = reduce(
+        &mut state,
+        AppAction::OpenFocusedContext {
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$wanted:example.invalid".to_owned(),
+        },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::FocusedContextSubscriptionFailed {
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$wanted:example.invalid".to_owned(),
+            message: "fixture-access-token rejected synthetic-focused".to_owned(),
+        },
+    );
+
+    assert_eq!(state.focused_context, FocusedContextState::Closed);
+    assert_eq!(state.errors.len(), 1);
+    assert_eq!(state.errors[0].code, "focused_context_subscription_failed");
+    assert_eq!(
+        state.errors[0].message,
+        "Matrix focused context subscription failed"
+    );
+    let formatted_errors = format!("{:?}", state.errors);
+    assert!(!formatted_errors.contains("fixture-access-token"));
+    assert!(!formatted_errors.contains("synthetic-focused"));
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(koushi_state::UiEvent::ErrorChanged)]
+    );
+}
+
+#[test]
+fn stale_focused_context_subscription_failure_is_ignored() {
+    let mut state = ready_selected_room_state();
+    let _ = reduce(
+        &mut state,
+        AppAction::OpenFocusedContext {
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$wanted:example.invalid".to_owned(),
+        },
+    );
+    let opening_state = state.clone();
+
+    let effects = reduce(
+        &mut state,
+        AppAction::FocusedContextSubscriptionFailed {
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$stale:example.invalid".to_owned(),
+            message: "late failure".to_owned(),
+        },
+    );
+
+    assert_eq!(state, opening_state);
+    assert_eq!(effects, Vec::new());
+}
+
+#[test]
 fn focused_context_close_is_noop_when_closed_or_without_ready_session() {
     let mut closed = ready_selected_room_state();
     let effects = reduce(&mut closed, AppAction::CloseFocusedContext);

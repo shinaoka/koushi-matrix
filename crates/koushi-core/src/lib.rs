@@ -59,7 +59,7 @@ pub use ids::{
 };
 pub use koushi_state::MediaTransferProgress;
 pub use runtime::{
-    COMMAND_INBOX_CAPACITY, CommandSubmitError, CoreConnection, CoreRuntime, EVENT_QUEUE_CAPACITY,
-    EventStreamLag,
+    COMMAND_INBOX_CAPACITY, CommandSubmitError, CoreCommandHandle, CoreConnection, CoreRuntime,
+    EVENT_QUEUE_CAPACITY, EventStreamLag,
 };
 pub use state_delta::{StateDelta, StateDeltaChangedSlices, build_state_delta};

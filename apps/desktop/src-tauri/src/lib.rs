@@ -7,6 +7,7 @@ pub mod keyring_backend;
 use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
 };
 use tokio::sync::Mutex as TokioMutex;
 
@@ -26,8 +27,8 @@ use koushi_core::renderable_thumbnail::{
     cleanup_legacy_plaintext_thumbnail_dirs, lookup_renderable_thumbnail,
 };
 use koushi_core::{
-    AccountCommand, CoreCommand, CoreConnection, CoreEvent, CoreRuntime, SearchEvent,
-    TimelineEvent, event::AppStateSnapshot,
+    AccountCommand, CoreCommand, CoreCommandHandle, CoreConnection, CoreEvent, CoreRuntime,
+    SearchEvent, TimelineCommand, TimelineEvent, event::AppStateSnapshot,
 };
 
 const MENU_EVENT_NAME: &str = "koushi-desktop://menu";
@@ -36,6 +37,7 @@ pub(crate) const CORE_EVENT_NAME: &str = "koushi-desktop://event";
 /// Tauri event for serialized AppStateSnapshot payloads (latest-wins).
 const STATE_EVENT_NAME: &str = "koushi-desktop://state";
 const OIDC_CALLBACK_URL_PREFIX: &str = "koushi-desktop://auth/callback";
+const CORE_FORWARDER_TIMELINE_REPLAY_TIMEOUT: Duration = Duration::from_secs(2);
 const MENU_ID_OPEN_USER_SETTINGS: &str = "open_user_settings";
 const MENU_ID_SIGN_OUT: &str = "sign_out";
 const MENU_ID_SHOW_KEYBOARD_SETTINGS: &str = "show_keyboard_settings";
@@ -655,9 +657,26 @@ fn spawn_core_event_forwarder(
                         &app,
                         forwarded_webview_events_for_lag_resync(&snapshot),
                     );
+                    let command_handle = event_conn.command_handle();
+                    let request_id = event_conn.next_request_id();
+                    submit_timeline_replay_after_forwarder_lag(command_handle, request_id);
                 }
             }
         }
+    });
+}
+
+fn submit_timeline_replay_after_forwarder_lag(
+    command_handle: CoreCommandHandle,
+    request_id: koushi_core::RequestId,
+) {
+    tauri::async_runtime::spawn(async move {
+        let command = CoreCommand::Timeline(TimelineCommand::ReplaySubscribed { request_id });
+        let _ = tokio::time::timeout(
+            CORE_FORWARDER_TIMELINE_REPLAY_TIMEOUT,
+            command_handle.command(command),
+        )
+        .await;
     });
 }
 
@@ -1028,6 +1047,7 @@ pub fn run() {
             commands::e2ee::confirm_sas_verification,
             commands::e2ee::cancel_verification,
             commands::e2ee::reset_identity,
+            commands::e2ee::cancel_identity_reset,
             commands::e2ee::submit_identity_reset_password,
             commands::e2ee::submit_identity_reset_oauth,
             commands::timeline::resolve_composer_key_action,
@@ -1452,6 +1472,46 @@ mod tests {
         assert_eq!(forwarded[0].payload, json!("stateChanged"));
         assert_eq!(forwarded[1].event_name, CORE_EVENT_NAME);
         assert_eq!(forwarded[1].payload, json!({ "kind": "ResyncMarker" }));
+    }
+
+    #[test]
+    fn lag_resync_forwarder_requests_core_timeline_replay_after_marker() {
+        let source = include_str!("lib.rs");
+        let production_source = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source should precede tests");
+        let forwarder_source = production_source
+            .split("fn spawn_core_event_forwarder")
+            .nth(1)
+            .expect("core event forwarder should exist")
+            .split("fn forwarded_webview_events_for_core_event")
+            .next()
+            .expect("forwarded event helper should follow forwarder");
+        let lag_branch = forwarder_source
+            .split("Err(_lag)")
+            .nth(1)
+            .expect("forwarder should handle EventStreamLag");
+
+        assert!(
+            production_source.contains("TimelineCommand::ReplaySubscribed"),
+            "forwarder lag recovery must ask core to replay InitialItems for subscribed timelines"
+        );
+        assert!(
+            lag_branch.contains("event_conn.command_handle()")
+                && lag_branch.contains("event_conn.next_request_id()"),
+            "lag recovery should clone a command handle and allocate a request id from the event connection"
+        );
+        let marker_offset = lag_branch
+            .find("emit_forwarded_webview_events")
+            .expect("lag branch should emit state + ResyncMarker");
+        let replay_offset = lag_branch
+            .find("submit_timeline_replay_after_forwarder_lag")
+            .expect("lag branch should submit the replay command");
+        assert!(
+            marker_offset < replay_offset,
+            "ResyncMarker must be emitted before replay is requested so fresh InitialItems are not cleared"
+        );
     }
 
     #[test]

@@ -64,6 +64,7 @@ export function ContextualRightPanel({
   recoverySecretInputRef,
   snapshot,
   timelineTransport = null,
+  searchIndexingPending = false,
   searchQuery,
   searchResults,
   savedSessions,
@@ -106,6 +107,7 @@ export function ContextualRightPanel({
   onChangeSecureBackupPassphrase,
   onEnableKeyBackup,
   onResetIdentity,
+  onCancelIdentityReset,
   onResolveComposerKeyAction = ignoreComposerKeyAction,
   onSetAvatar = () => undefined,
   onSetDisplayName = () => undefined,
@@ -149,6 +151,7 @@ export function ContextualRightPanel({
   recoverySecretInputRef: RefObject<HTMLInputElement | null>;
   snapshot: DesktopSnapshot;
   timelineTransport?: TimelineTransport | null;
+  searchIndexingPending?: boolean;
   searchQuery: string;
   searchResults: SearchResult[];
   savedSessions: SavedSessionInfo[];
@@ -208,6 +211,7 @@ export function ContextualRightPanel({
   ) => void;
   onEnableKeyBackup: () => void;
   onResetIdentity: () => void;
+  onCancelIdentityReset: (flowId: number) => void;
   onResolveComposerKeyAction?: ResolveComposerKeyAction;
   onSetAvatar?: (file: File) => void;
   onSetDisplayName?: (displayName: string | null) => void;
@@ -308,6 +312,7 @@ export function ContextualRightPanel({
           onResetLocalData={onResetLocalData}
           onLogout={onLogout}
           onResetIdentity={onResetIdentity}
+          onCancelIdentityReset={onCancelIdentityReset}
           onSetAvatar={onSetAvatar}
           onSetDisplayName={onSetDisplayName}
           onSubmitIdentityResetOAuth={onSubmitIdentityResetOAuth}
@@ -553,6 +558,7 @@ export function ContextualRightPanel({
         ) : null}
         {mode === "search" ? (
           <SearchResults
+            indexingPending={searchIndexingPending}
             query={searchQuery}
             results={searchResults}
             rooms={snapshot.state.domain.rooms}

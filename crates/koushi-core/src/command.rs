@@ -107,6 +107,7 @@ impl CoreCommand {
                 | AccountCommand::EnableKeyBackup { request_id, .. }
                 | AccountCommand::RestoreKeyBackup { request_id, .. }
                 | AccountCommand::ResetIdentity { request_id }
+                | AccountCommand::CancelIdentityReset { request_id, .. }
                 | AccountCommand::SubmitIdentityResetAuth { request_id, .. }
                 | AccountCommand::SetPresence { request_id, .. }
                 | AccountCommand::SetDisplayName { request_id, .. }
@@ -161,6 +162,7 @@ impl CoreCommand {
             Self::Timeline(command) => match command {
                 TimelineCommand::Subscribe { request_id, .. }
                 | TimelineCommand::EnsureSubscribed { request_id, .. }
+                | TimelineCommand::ReplaySubscribed { request_id }
                 | TimelineCommand::Unsubscribe { request_id, .. }
                 | TimelineCommand::Paginate { request_id, .. }
                 | TimelineCommand::CancelPagination { request_id, .. }
@@ -958,6 +960,10 @@ pub enum AccountCommand {
     ResetIdentity {
         request_id: RequestId,
     },
+    CancelIdentityReset {
+        request_id: RequestId,
+        flow_id: u64,
+    },
     SubmitIdentityResetAuth {
         request_id: RequestId,
         flow_id: u64,
@@ -1017,6 +1023,7 @@ impl AccountCommand {
                 | Self::BootstrapCrossSigning { .. }
                 | Self::EnableKeyBackup { .. }
                 | Self::ResetIdentity { .. }
+                | Self::CancelIdentityReset { .. }
                 | Self::SubmitIdentityResetAuth { .. }
                 | Self::QueryDevices { .. }
                 | Self::LoadAccountManagementCapabilities { .. }
@@ -1264,6 +1271,14 @@ impl fmt::Debug for AccountCommand {
             Self::ResetIdentity { request_id } => formatter
                 .debug_struct("ResetIdentity")
                 .field("request_id", request_id)
+                .finish(),
+            Self::CancelIdentityReset {
+                request_id,
+                flow_id,
+            } => formatter
+                .debug_struct("CancelIdentityReset")
+                .field("request_id", request_id)
+                .field("flow_id", flow_id)
                 .finish(),
             Self::SubmitIdentityResetAuth {
                 request_id,
@@ -2003,6 +2018,9 @@ pub enum TimelineCommand {
         key: TimelineKey,
         replay_existing: bool,
     },
+    ReplaySubscribed {
+        request_id: RequestId,
+    },
     Unsubscribe {
         request_id: RequestId,
         key: TimelineKey,
@@ -2169,6 +2187,10 @@ impl fmt::Debug for TimelineCommand {
                 .field("request_id", request_id)
                 .field("key", key)
                 .field("replay_existing", replay_existing)
+                .finish(),
+            Self::ReplaySubscribed { request_id } => formatter
+                .debug_struct("ReplaySubscribed")
+                .field("request_id", request_id)
                 .finish(),
             Self::Unsubscribe { request_id, key } => formatter
                 .debug_struct("Unsubscribe")
@@ -2446,8 +2468,10 @@ pub enum ThreadsListCommand {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SearchScope {
-    Global,
-    Room { room_id: String },
+    AllRooms,
+    CurrentRoom { room_id: String },
+    CurrentSpace { space_id: String },
+    Dms,
 }
 
 // Search queries can quote message content; redact like bodies.

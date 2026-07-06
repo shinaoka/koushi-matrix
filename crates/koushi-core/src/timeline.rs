@@ -49,7 +49,9 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use koushi_sdk::MatrixClientSession;
 use koushi_search::{AttachmentDocument, SensitiveString};
@@ -115,6 +117,7 @@ pub const TIMELINE_DIFF_QUEUE_CAPACITY: usize = 128;
 const INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT: u16 = 100;
 const ROOM_REPLAY_INITIAL_ITEMS_MAX: usize = 120;
 const REPLY_QUOTE_PREVIEW_MAX_CHARS: usize = 160;
+const MEDIA_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 /// Backstop tick count for the anchor-relay wait. After the SDK signals
 /// `anchor_present == true`, the anchor's diff has been broadcast through the
 /// 3-hop relay (conclude_backwards_pagination_from_disk → event-cache task →
@@ -317,9 +320,21 @@ impl TimelineManagerActor {
             .cloned()
             .collect::<Vec<_>>();
         for key in keys {
-            self.timelines.remove(&key);
-            self.handle_subscribe(internal_timeline_request_id(), key, true)
+            self.replace_existing_room_timeline_after_sync_started(key)
                 .await;
+        }
+    }
+
+    async fn replace_existing_room_timeline_after_sync_started(&mut self, key: TimelineKey) {
+        let request_id = internal_timeline_request_id();
+        match self.build_timeline_actor_handle(request_id, &key).await {
+            Ok(handle) => {
+                self.emit_timeline_subscribed_action(&key).await;
+                self.timelines.insert(key, handle);
+            }
+            Err(kind) => {
+                self.emit_subscription_failure(request_id, &key, kind).await;
+            }
         }
     }
 
@@ -346,6 +361,9 @@ impl TimelineManagerActor {
                 trace_timeline_route("manager_received", "ensure_subscribed", request_id, &key);
                 self.handle_subscribe(request_id, key, replay_existing)
                     .await;
+            }
+            TimelineCommand::ReplaySubscribed { request_id } => {
+                self.handle_replay_subscribed(request_id).await;
             }
             TimelineCommand::Unsubscribe { request_id, key } => {
                 trace_timeline_route("manager_received", "unsubscribe", request_id, &key);
@@ -831,6 +849,14 @@ impl TimelineManagerActor {
         }
     }
 
+    async fn handle_replay_subscribed(&mut self, request_id: RequestId) {
+        for handle in self.timelines.values() {
+            let _ = handle
+                .send(TimelineActorMessage::ReplayInitialItems { request_id })
+                .await;
+        }
+    }
+
     async fn handle_subscribe(
         &mut self,
         request_id: RequestId,
@@ -846,13 +872,9 @@ impl TimelineManagerActor {
             }
         };
         trace("start");
-        let Some(session) = &self.session else {
-            self.emit_failure(
-                request_id,
-                CoreFailure::TimelineOperationFailed {
-                    kind: TimelineFailureKind::NotSubscribed,
-                },
-            );
+        if self.session.is_none() {
+            self.emit_subscription_failure(request_id, &key, TimelineFailureKind::NotSubscribed)
+                .await;
             return;
         };
 
@@ -877,7 +899,7 @@ impl TimelineManagerActor {
             Some(Ok(())) => {
                 // Re-emit the subscribed action so the reducer re-confirms
                 // `is_subscribed = true` (idempotent in the reducer).
-                self.emit_timeline_subscribed_action(&key);
+                self.emit_timeline_subscribed_action(&key).await;
                 if !replay_existing {
                     trace("replay_initial_skipped");
                 }
@@ -886,14 +908,38 @@ impl TimelineManagerActor {
             }
             Some(Err(_)) => {
                 // Mailbox full or closed: the cheap replay could not be
-                // delivered, so drop the stale handle and fall through to a
-                // full rebuild, which is guaranteed to emit InitialItems for
-                // this request_id (a re-mounted view must be populated).
-                self.timelines.remove(&key);
+                // delivered. Fall through to a full rebuild, but keep the old
+                // handle until the replacement actor is built successfully.
+                trace("replay_initial_failed");
             }
             None => {}
         }
 
+        match self.build_timeline_actor_handle(request_id, &key).await {
+            Ok(handle) => {
+                self.emit_timeline_subscribed_action(&key).await;
+                self.timelines.insert(key, handle);
+                trace("subscribed_done");
+            }
+            Err(kind) => {
+                self.emit_subscription_failure(request_id, &key, kind).await;
+            }
+        }
+    }
+
+    async fn build_timeline_actor_handle(
+        &self,
+        request_id: RequestId,
+        key: &TimelineKey,
+    ) -> Result<TimelineActorHandle, TimelineFailureKind> {
+        let trace = |stage: &str| {
+            if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+                eprintln!("koushi.subscribe stage={stage}");
+            }
+        };
+        let Some(session) = &self.session else {
+            return Err(TimelineFailureKind::NotSubscribed);
+        };
         let client = session.client();
         let room_id_str = match &key.kind {
             TimelineKind::Room { room_id } => room_id.clone(),
@@ -903,28 +949,12 @@ impl TimelineManagerActor {
 
         let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             Ok(id) => id,
-            Err(_) => {
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
-                return;
-            }
+            Err(_) => return Err(TimelineFailureKind::Sdk),
         };
 
         let room = match client.get_room(&room_id) {
             Some(r) => r,
-            None => {
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
-                return;
-            }
+            None => return Err(TimelineFailureKind::Sdk),
         };
 
         // On the sliding-sync backend, subscribing a timeline must also
@@ -947,15 +977,7 @@ impl TimelineManagerActor {
                     Ok(event_id) => TimelineFocus::Thread {
                         root_event_id: event_id,
                     },
-                    Err(_) => {
-                        self.emit_failure(
-                            request_id,
-                            CoreFailure::TimelineOperationFailed {
-                                kind: TimelineFailureKind::Sdk,
-                            },
-                        );
-                        return;
-                    }
+                    Err(_) => return Err(TimelineFailureKind::Sdk),
                 }
             }
             TimelineKind::Focused { event_id, .. } => {
@@ -968,15 +990,7 @@ impl TimelineManagerActor {
                                 hide_threaded_events: false,
                             },
                     },
-                    Err(_) => {
-                        self.emit_failure(
-                            request_id,
-                            CoreFailure::TimelineOperationFailed {
-                                kind: TimelineFailureKind::Sdk,
-                            },
-                        );
-                        return;
-                    }
+                    Err(_) => return Err(TimelineFailureKind::Sdk),
                 }
             }
         };
@@ -989,15 +1003,7 @@ impl TimelineManagerActor {
 
         let timeline = match timeline_result {
             Ok(t) => Arc::new(t),
-            Err(_) => {
-                self.emit_failure(
-                    request_id,
-                    CoreFailure::TimelineOperationFailed {
-                        kind: TimelineFailureKind::Sdk,
-                    },
-                );
-                return;
-            }
+            Err(_) => return Err(TimelineFailureKind::Sdk),
         };
 
         trace("spawn_begin");
@@ -1017,9 +1023,7 @@ impl TimelineManagerActor {
         .await;
         trace("spawn_done");
 
-        self.emit_timeline_subscribed_action(&key);
-        self.timelines.insert(key, handle);
-        trace("subscribed_done");
+        Ok(handle)
     }
 
     async fn route_to_actor_or_fail(
@@ -1054,7 +1058,19 @@ impl TimelineManagerActor {
         });
     }
 
-    fn emit_timeline_subscribed_action(&self, key: &TimelineKey) {
+    async fn emit_subscription_failure(
+        &self,
+        request_id: RequestId,
+        key: &TimelineKey,
+        kind: TimelineFailureKind,
+    ) {
+        if let Some(action) = timeline_subscription_failed_action(key) {
+            let _ = self.action_tx.send(vec![action]).await;
+        }
+        self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
+    }
+
+    async fn emit_timeline_subscribed_action(&self, key: &TimelineKey) {
         let action = match &key.kind {
             TimelineKind::Room { room_id } => AppAction::TimelineSubscribed {
                 room_id: room_id.clone(),
@@ -1071,7 +1087,28 @@ impl TimelineManagerActor {
                 event_id: event_id.clone(),
             },
         };
-        let _ = self.action_tx.try_send(vec![action]);
+        let _ = self.action_tx.send(vec![action]).await;
+    }
+}
+
+fn timeline_subscription_failed_action(key: &TimelineKey) -> Option<AppAction> {
+    match &key.kind {
+        TimelineKind::Room { .. } => None,
+        TimelineKind::Thread {
+            room_id,
+            root_event_id,
+        } => Some(AppAction::ThreadSubscriptionFailed {
+            room_id: room_id.clone(),
+            root_event_id: root_event_id.clone(),
+            message: "timeline subscription failed".to_owned(),
+        }),
+        TimelineKind::Focused { room_id, event_id } => {
+            Some(AppAction::FocusedContextSubscriptionFailed {
+                room_id: room_id.clone(),
+                event_id: event_id.clone(),
+                message: "timeline subscription failed".to_owned(),
+            })
+        }
     }
 }
 
@@ -1420,6 +1457,11 @@ enum TimelineActorMessage {
         event_id: String,
         selection: MediaDownloadSelection,
     },
+    MediaDownloadFinished {
+        request_id: RequestId,
+        event_id: String,
+        outcome: MediaDownloadOutcome,
+    },
     EditText {
         request_id: RequestId,
         event_id: String,
@@ -1485,6 +1527,9 @@ enum TimelineActorMessage {
     DiffBatch(Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>),
     /// Internal: send completed (from send queue monitor task).
     SendQueueUpdate(RoomSendQueueUpdate),
+    /// Internal: send queue broadcast lagged and the actor must resync the
+    /// SDK-owned local echo snapshot before projecting outbound send states.
+    SendQueueLagged,
     /// Internal: relay task hit overflow — must resync.
     RelayOverflow,
     /// Internal: re-emit the current navigation_items as InitialItems for a
@@ -2076,6 +2121,20 @@ struct PrivateMediaEntry {
     height: Option<u64>,
 }
 
+struct MediaDownloadReady {
+    download_state: TimelineMediaDownloadState,
+    source_url: String,
+    byte_count: u64,
+    mimetype: Option<String>,
+    width: Option<u64>,
+    height: Option<u64>,
+}
+
+enum MediaDownloadOutcome {
+    Ready(MediaDownloadReady),
+    Failed(TimelineFailureKind),
+}
+
 struct ReactionTargetState {
     item_id: TimelineEventItemId,
     can_react: bool,
@@ -2118,6 +2177,8 @@ struct TimelineActor {
     /// Event IDs for which a download is currently in flight. Prevents duplicate
     /// concurrent downloads when the user clicks an attachment repeatedly.
     media_downloads_in_progress: HashSet<String>,
+    /// In-flight media download workers keyed by event id; aborted on actor drop.
+    media_download_tasks: HashMap<String, executor::JoinHandle<()>>,
     /// Search index mutation sender (Phase 6). `None` when no search index is
     /// configured (pre-session or pre-Phase-6 builds). Fire-and-forget: if the
     /// channel is full, we drop the mutation rather than block the diff relay.
@@ -2193,6 +2254,9 @@ impl Drop for TimelineActor {
             task.abort();
         }
         for task in self.reply_detail_fetches.values() {
+            task.abort();
+        }
+        for task in self.media_download_tasks.values() {
             task.abort();
         }
         if let Some(active) = self.pagination_task.take() {
@@ -2382,7 +2446,7 @@ impl TimelineActor {
         if let Some(action) =
             media_gallery_updated_action(&key, initial_media_gallery_items.clone())
         {
-            let _ = action_tx.try_send(vec![action]);
+            let _ = action_tx.send(vec![action]).await;
         }
 
         // Spawn the diff relay task: converts SDK VectorDiff stream into actor messages.
@@ -2457,6 +2521,7 @@ impl TimelineActor {
             sent_event_txns: HashMap::new(),
             media_sources,
             media_downloads_in_progress: HashSet::new(),
+            media_download_tasks: HashMap::new(),
             search_index_tx,
             thread_attention_counts: ThreadAttentionCounters::default(),
             navigation_items,
@@ -2479,7 +2544,9 @@ impl TimelineActor {
             diff_batch_seq: 0,
         };
 
-        actor.forward_initial_items_to_search(initial_sdk_items.iter().cloned());
+        actor
+            .forward_initial_items_to_search(initial_sdk_items.iter().cloned())
+            .await;
         let task = executor::spawn(actor.run());
 
         TimelineActorHandle {
@@ -2619,6 +2686,14 @@ impl TimelineActor {
                 self.handle_download_media(request_id, event_id, selection)
                     .await;
             }
+            TimelineActorMessage::MediaDownloadFinished {
+                request_id,
+                event_id,
+                outcome,
+            } => {
+                self.handle_media_download_finished(request_id, event_id, outcome)
+                    .await;
+            }
             TimelineActorMessage::EditText {
                 request_id,
                 event_id,
@@ -2729,7 +2804,10 @@ impl TimelineActor {
                 self.handle_diff_batch(diffs).await;
             }
             TimelineActorMessage::SendQueueUpdate(update) => {
-                self.handle_send_queue_update(update);
+                self.handle_send_queue_update(update).await;
+            }
+            TimelineActorMessage::SendQueueLagged => {
+                self.handle_send_queue_lagged().await;
             }
             TimelineActorMessage::RelayOverflow => {
                 self.handle_relay_overflow().await;
@@ -3317,7 +3395,7 @@ impl TimelineActor {
         let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_send_failed_action(&client_txn_id);
+                self.emit_send_failed_action(&client_txn_id).await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -3329,7 +3407,7 @@ impl TimelineActor {
         };
         let client = self.session.client();
         if client.get_room(&room_id).is_none() {
-            self.emit_send_failed_action(&client_txn_id);
+            self.emit_send_failed_action(&client_txn_id).await;
             self.emit_failure(
                 request_id,
                 CoreFailure::TimelineOperationFailed {
@@ -3348,7 +3426,7 @@ impl TimelineActor {
         let content = match build_room_message_content_from_composer_body(&body, mentions) {
             Ok(content) => content,
             Err(kind) => {
-                self.emit_send_failed_action(&client_txn_id);
+                self.emit_send_failed_action(&client_txn_id).await;
                 self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
                 return;
             }
@@ -3368,7 +3446,7 @@ impl TimelineActor {
                     .send_completion
                     .remember_pending_send(sdk_txn_id, client_txn_id, request_id, true)
                 {
-                    self.emit_send_finished_action(&client_txn_id);
+                    self.emit_send_finished_action(&client_txn_id).await;
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
                         key: self.key.clone(),
@@ -3379,7 +3457,7 @@ impl TimelineActor {
             }
             Err(err) => {
                 let kind = classify_timeline_send_error(&err);
-                self.emit_send_failed_action(&client_txn_id);
+                self.emit_send_failed_action(&client_txn_id).await;
                 self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
             }
         }
@@ -3404,7 +3482,7 @@ impl TimelineActor {
         let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_send_failed_action(&client_txn_id);
+                self.emit_send_failed_action(&client_txn_id).await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -3418,7 +3496,7 @@ impl TimelineActor {
         let reply_event_id = match matrix_sdk::ruma::EventId::parse(&in_reply_to_event_id) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_send_failed_action(&client_txn_id);
+                self.emit_send_failed_action(&client_txn_id).await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -3431,7 +3509,7 @@ impl TimelineActor {
 
         let client = self.session.client();
         if client.get_room(&room_id).is_none() {
-            self.emit_send_failed_action(&client_txn_id);
+            self.emit_send_failed_action(&client_txn_id).await;
             self.emit_failure(
                 request_id,
                 CoreFailure::TimelineOperationFailed {
@@ -3445,7 +3523,7 @@ impl TimelineActor {
             match build_room_message_content_without_relation_from_composer_body(&body, mentions) {
                 Ok(content) => content,
                 Err(kind) => {
-                    self.emit_send_failed_action(&client_txn_id);
+                    self.emit_send_failed_action(&client_txn_id).await;
                     self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
                     return;
                 }
@@ -3459,7 +3537,7 @@ impl TimelineActor {
         let content = match self.timeline.room().make_reply_event(content, reply).await {
             Ok(content) => content,
             Err(_) => {
-                self.emit_send_failed_action(&client_txn_id);
+                self.emit_send_failed_action(&client_txn_id).await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -3483,7 +3561,7 @@ impl TimelineActor {
                     .send_completion
                     .remember_pending_send(sdk_txn_id, client_txn_id, request_id, true)
                 {
-                    self.emit_send_finished_action(&client_txn_id);
+                    self.emit_send_finished_action(&client_txn_id).await;
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
                         key: self.key.clone(),
@@ -3494,7 +3572,7 @@ impl TimelineActor {
             }
             Err(err) => {
                 let kind = classify_timeline_send_error(&err);
-                self.emit_send_failed_action(&client_txn_id);
+                self.emit_send_failed_action(&client_txn_id).await;
                 self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
             }
         }
@@ -3685,7 +3763,7 @@ impl TimelineActor {
                     self.send_completion.record_cancelled_event(&transaction_id)
                 {
                     if settles_composer {
-                        self.emit_send_finished_action(&client_txn_id);
+                        self.emit_send_finished_action(&client_txn_id).await;
                     }
                 }
             }
@@ -3817,120 +3895,163 @@ impl TimelineActor {
         event_id: String,
         selection: MediaDownloadSelection,
     ) {
-        if !self.media_downloads_in_progress.insert(event_id.clone()) {
+        if self.media_downloads_in_progress.contains(&event_id) {
+            self.emit_media_download_current_state(request_id, &event_id)
+                .await;
             return;
         }
 
         let Some(entry) = self.media_sources.get(&event_id).cloned() else {
-            self.media_downloads_in_progress.remove(&event_id);
-            self.emit_failure(
-                request_id,
-                CoreFailure::TimelineOperationFailed {
-                    kind: TimelineFailureKind::Sdk,
-                },
-            );
-            return;
-        };
-
-        let total = entry.size;
-        self.emit(CoreEvent::Timeline(TimelineEvent::MediaDownloadProgress {
-            request_id,
-            key: self.key.clone(),
-            event_id: event_id.clone(),
-            progress: MediaTransferProgress { current: 0, total },
-        }));
-        self.emit_action_reliable(AppAction::MediaDownloadUpdated {
-            room_id: self.key.room_id().to_owned(),
-            event_id: event_id.clone(),
-            state: TimelineMediaDownloadState::Pending {
-                progress: Some(MediaTransferProgress { current: 0, total }),
-            },
-        })
-        .await;
-
-        let Some(request) = media_request_for_download(&entry, selection) else {
-            self.media_downloads_in_progress.remove(&event_id);
             self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk)
                 .await;
             return;
         };
 
-        match self
-            .session
-            .client()
-            .media()
-            .get_media_content(&request, true)
-            .await
+        let Some(request) = media_request_for_download(&entry, selection) else {
+            self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk)
+                .await;
+            return;
+        };
+
+        self.media_downloads_in_progress.insert(event_id.clone());
+        self.emit_media_download_current_state(request_id, &event_id)
+            .await;
+
+        let session = self.session.clone();
+        let room_id = self.key.room_id().to_owned();
+        let data_dir = self.data_dir.clone();
+        let actor_tx = self.msg_tx.clone();
+        let event_id_for_task = event_id.clone();
+        let task = executor::spawn(async move {
+            let outcome = Self::download_media_for(
+                session,
+                data_dir,
+                room_id,
+                event_id_for_task.clone(),
+                entry,
+                request,
+            )
+            .await;
+            let _ = actor_tx
+                .send(TimelineActorMessage::MediaDownloadFinished {
+                    request_id,
+                    event_id: event_id_for_task,
+                    outcome,
+                })
+                .await;
+        });
+        self.media_download_tasks.insert(event_id, task);
+    }
+
+    async fn download_media_for(
+        session: Arc<MatrixClientSession>,
+        data_dir: Option<PathBuf>,
+        room_id: String,
+        event_id: String,
+        entry: PrivateMediaEntry,
+        request: MediaRequestParameters,
+    ) -> MediaDownloadOutcome {
+        let bytes = match executor::timeout(
+            MEDIA_DOWNLOAD_TIMEOUT,
+            session.client().media().get_media_content(&request, true),
+        )
+        .await
         {
-            Ok(bytes) => {
-                let byte_count = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                let mut download_state = TimelineMediaDownloadState::Pending {
-                    progress: Some(MediaTransferProgress {
-                        current: byte_count,
-                        total,
-                    }),
-                };
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(error)) => {
+                return MediaDownloadOutcome::Failed(classify_media_download_error(&error));
+            }
+            Err(_) => return MediaDownloadOutcome::Failed(TimelineFailureKind::Timeout),
+        };
 
-                if let Some(data_dir) = self.data_dir.as_deref() {
-                    // Matrix IDs contain ':' which is not valid in Windows
-                    // path components.  Use a hex-encoded SHA-256 of the
-                    // room_id as the directory name and of the event_id as the
-                    // filename so the path is safe on all platforms.
-                    let dir_name = sanitize_matrix_id_for_path(self.key.room_id());
-                    let file_name = format!("{}.bin", sanitize_matrix_id_for_path(&event_id));
-                    let dir = data_dir.join("media_downloads").join(dir_name);
-                    if tokio::fs::create_dir_all(&dir).await.is_ok() {
-                        let path = dir.join(file_name);
-                        if tokio::fs::write(&path, &bytes).await.is_ok() {
-                            download_state = TimelineMediaDownloadState::Ready {
-                                source_url: path.to_string_lossy().into_owned(),
-                                width: entry.width,
-                                height: entry.height,
-                                mime_type: entry.mimetype.clone(),
-                            };
-                        }
-                    }
-                }
+        let byte_count = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let Some(data_dir) = data_dir else {
+            return MediaDownloadOutcome::Failed(TimelineFailureKind::Sdk);
+        };
 
-                let (source_url, width, height, mimetype) = match &download_state {
-                    TimelineMediaDownloadState::Ready {
-                        source_url,
-                        width,
-                        height,
-                        mime_type,
-                    } => (source_url.clone(), *width, *height, mime_type.clone()),
-                    _ => {
-                        self.media_downloads_in_progress.remove(&event_id);
-                        self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk)
-                            .await;
-                        return;
-                    }
-                };
+        // Matrix IDs contain ':' which is not valid in Windows path components.
+        // Use hashed path components so the local path is portable and private.
+        let dir_name = sanitize_matrix_id_for_path(&room_id);
+        let file_name = format!("{}.bin", sanitize_matrix_id_for_path(&event_id));
+        let dir = data_dir.join("media_downloads").join(dir_name);
+        if tokio::fs::create_dir_all(&dir).await.is_err() {
+            return MediaDownloadOutcome::Failed(TimelineFailureKind::Sdk);
+        }
+        let path = dir.join(file_name);
+        if tokio::fs::write(&path, &bytes).await.is_err() {
+            return MediaDownloadOutcome::Failed(TimelineFailureKind::Sdk);
+        }
 
+        let source_url = path.to_string_lossy().into_owned();
+        MediaDownloadOutcome::Ready(MediaDownloadReady {
+            download_state: TimelineMediaDownloadState::Ready {
+                source_url: source_url.clone(),
+                width: entry.width,
+                height: entry.height,
+                mime_type: entry.mimetype.clone(),
+            },
+            source_url,
+            byte_count,
+            mimetype: entry.mimetype,
+            width: entry.width,
+            height: entry.height,
+        })
+    }
+
+    async fn handle_media_download_finished(
+        &mut self,
+        request_id: RequestId,
+        event_id: String,
+        outcome: MediaDownloadOutcome,
+    ) {
+        self.media_downloads_in_progress.remove(&event_id);
+        self.media_download_tasks.remove(&event_id);
+        match outcome {
+            MediaDownloadOutcome::Ready(ready) => {
                 self.emit(CoreEvent::Timeline(TimelineEvent::MediaDownloadCompleted {
                     request_id,
                     key: self.key.clone(),
                     event_id: event_id.clone(),
-                    source_url,
-                    byte_count,
-                    mimetype,
-                    width,
-                    height,
+                    source_url: ready.source_url,
+                    byte_count: ready.byte_count,
+                    mimetype: ready.mimetype,
+                    width: ready.width,
+                    height: ready.height,
                 }));
                 self.emit_action_reliable(AppAction::MediaDownloadUpdated {
                     room_id: self.key.room_id().to_owned(),
-                    event_id: event_id.clone(),
-                    state: download_state,
+                    event_id,
+                    state: ready.download_state,
                 })
                 .await;
-                self.media_downloads_in_progress.remove(&event_id);
             }
-            Err(_) => {
-                self.media_downloads_in_progress.remove(&event_id);
-                self.emit_download_failed(request_id, &event_id, TimelineFailureKind::Sdk)
-                    .await;
+            MediaDownloadOutcome::Failed(kind) => {
+                self.emit_download_failed(request_id, &event_id, kind).await;
             }
         }
+    }
+
+    async fn emit_media_download_current_state(&self, request_id: RequestId, event_id: &str) {
+        let total = self
+            .media_sources
+            .get(event_id)
+            .map(|entry| entry.size)
+            .unwrap_or(0);
+        let progress = MediaTransferProgress { current: 0, total };
+        self.emit(CoreEvent::Timeline(TimelineEvent::MediaDownloadProgress {
+            request_id,
+            key: self.key.clone(),
+            event_id: event_id.to_owned(),
+            progress,
+        }));
+        self.emit_action_reliable(AppAction::MediaDownloadUpdated {
+            room_id: self.key.room_id().to_owned(),
+            event_id: event_id.to_owned(),
+            state: TimelineMediaDownloadState::Pending {
+                progress: Some(progress),
+            },
+        })
+        .await;
     }
 
     async fn emit_download_failed(
@@ -4300,7 +4421,8 @@ impl TimelineActor {
     /// idempotency fast path).  The generation is unchanged; the caller only
     /// needs a fresh InitialItems batch so a re-mounted TimelineView is
     /// populated.
-    fn handle_replay_initial_items(&self, request_id: RequestId) {
+    fn handle_replay_initial_items(&mut self, request_id: RequestId) {
+        self.thread_attention_counts = ThreadAttentionCounters::default();
         let items = replay_initial_items_window(
             &self.key.kind,
             &self.navigation_items,
@@ -4340,7 +4462,7 @@ impl TimelineActor {
         // Phase 6: forward search index mutations before converting diffs.
         if self.search_index_tx.is_some() {
             for diff in &diffs {
-                self.forward_diff_to_search(diff);
+                self.forward_diff_to_search(diff).await;
             }
         }
 
@@ -4394,7 +4516,7 @@ impl TimelineActor {
             &core_diffs,
             self.own_user_id.as_ref().map(|user_id| user_id.as_str()),
         ) {
-            let _ = self.action_tx.try_send(vec![action]);
+            let _ = self.emit_action_reliable(action).await;
         }
         let activity_rows = activity_rows_from_timeline_diffs(&self.key, &core_diffs);
         if !activity_rows.is_empty() {
@@ -4406,7 +4528,7 @@ impl TimelineActor {
         }
         apply_timeline_diffs_to_items(&mut self.navigation_items, &core_diffs);
         self.maybe_fetch_visible_reply_details();
-        self.emit_media_gallery_if_changed();
+        self.emit_media_gallery_if_changed().await;
 
         let restore_diff_is_relevant = timeline_diffs_include_prepend(&core_diffs);
 
@@ -4479,7 +4601,7 @@ impl TimelineActor {
                     rows: activity_rows,
                 }]);
         }
-        self.emit_media_gallery_if_changed();
+        self.emit_media_gallery_if_changed().await;
 
         let batch_id = self.next_batch_id;
         self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
@@ -4800,15 +4922,18 @@ impl TimelineActor {
         }));
     }
 
-    fn emit_media_gallery_if_changed(&mut self) {
+    async fn emit_media_gallery_if_changed(&mut self) {
         let items = media_gallery_items_from_timeline_items(&self.key, &self.navigation_items);
         if items == self.media_gallery_items {
             return;
         }
-        self.media_gallery_items = items.clone();
         if let Some(action) = media_gallery_updated_action(&self.key, items) {
-            let _ = self.action_tx.try_send(vec![action]);
+            if !self.emit_action_reliable(action).await {
+                return;
+            }
         }
+        self.media_gallery_items =
+            media_gallery_items_from_timeline_items(&self.key, &self.navigation_items);
     }
 
     fn emit_navigation_if_changed(&mut self) {
@@ -4883,49 +5008,42 @@ impl TimelineActor {
         }
     }
 
-    /// Forward a single SDK diff item to the search index channel.
-    /// Fire-and-forget: if the channel is full, the mutation is dropped rather
-    /// than blocking the diff relay (search index is best-effort for freshness).
-    fn forward_diff_to_search(&self, diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>) {
-        use crate::search::SearchIndexMessage;
-        use eyeball_im::VectorDiff;
-
+    /// Forward SDK diff mutations to the search index channel reliably.
+    /// Redactions are privacy-sensitive removals and must not be silently
+    /// dropped as freshness-only updates.
+    async fn forward_diff_to_search(&self, diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>) {
         let Some(tx) = &self.search_index_tx else {
             return;
         };
 
+        for message in self.search_index_messages_for_diff(diff) {
+            if tx.send(message).await.is_err() {
+                break;
+            }
+        }
+    }
+
+    fn search_index_messages_for_diff(
+        &self,
+        diff: &eyeball_im::VectorDiff<Arc<SdkTimelineItem>>,
+    ) -> Vec<SearchIndexMessage> {
+        use eyeball_im::VectorDiff;
+
         let room_id = match &self.key.kind {
             TimelineKind::Room { room_id }
             | TimelineKind::Thread { room_id, .. }
-            | TimelineKind::Focused { room_id, .. } => room_id.clone(),
+            | TimelineKind::Focused { room_id, .. } => room_id.as_str(),
         };
 
-        // Extract the SDK item (if any) from the diff.
-        let item_ref: Option<&Arc<SdkTimelineItem>> = match diff {
-            VectorDiff::PushFront { value } => Some(value),
-            VectorDiff::PushBack { value } => Some(value),
-            VectorDiff::Insert { value, .. } => Some(value),
-            VectorDiff::Set { value, .. } => Some(value),
-            VectorDiff::Append { values } => {
-                // Bulk append: process each item in order.
-                for item in values.iter() {
-                    let sub_diff = VectorDiff::PushBack {
-                        value: item.clone(),
-                    };
-                    self.forward_diff_to_search(&sub_diff);
-                }
-                return;
-            }
-            VectorDiff::Reset { values } => {
-                // Full reset: process each item.
-                for item in values.iter() {
-                    let sub_diff = VectorDiff::PushBack {
-                        value: item.clone(),
-                    };
-                    self.forward_diff_to_search(&sub_diff);
-                }
-                return;
-            }
+        match diff {
+            VectorDiff::PushFront { value }
+            | VectorDiff::PushBack { value }
+            | VectorDiff::Insert { value, .. }
+            | VectorDiff::Set { value, .. } => self.search_index_messages_for_item(room_id, value),
+            VectorDiff::Append { values } | VectorDiff::Reset { values } => values
+                .iter()
+                .flat_map(|item| self.search_index_messages_for_item(room_id, item))
+                .collect(),
             VectorDiff::Remove { .. }
             | VectorDiff::Truncate { .. }
             | VectorDiff::Clear
@@ -4934,22 +5052,26 @@ impl TimelineActor {
                 // Remove/truncate/clear: we don't know which event_ids are affected
                 // without tracking the full timeline list; skip search forwarding.
                 // Redactions arrive as Set-with-is_redacted=true before any Remove.
-                return;
+                Vec::new()
             }
-        };
+        }
+    }
 
-        let Some(item) = item_ref else { return };
-
+    fn search_index_messages_for_item(
+        &self,
+        room_id: &str,
+        item: &Arc<SdkTimelineItem>,
+    ) -> Vec<SearchIndexMessage> {
         use matrix_sdk_ui::timeline::TimelineItemKind;
         let event_item = match item.kind() {
             TimelineItemKind::Event(e) => e,
-            TimelineItemKind::Virtual(_) => return,
+            TimelineItemKind::Virtual(_) => return Vec::new(),
         };
 
         // Only remote events have a stable event_id we can index.
         let event_id = match event_item.event_id() {
             Some(id) => id.to_string(),
-            None => return, // local-echo without confirmed event_id: skip
+            None => return Vec::new(), // local-echo without confirmed event_id: skip
         };
 
         let sender = event_item.sender().to_string();
@@ -4957,8 +5079,7 @@ impl TimelineActor {
 
         // Redacted items: forward Redact so the document is removed.
         if event_item.content().is_redacted() {
-            let _ = tx.try_send(SearchIndexMessage::Redact { event_id });
-            return;
+            return vec![SearchIndexMessage::Redact { event_id }];
         }
 
         let (body, attachment_filename, attachment, edit_event_id) =
@@ -5001,57 +5122,60 @@ impl TimelineActor {
                     edit_event_id,
                 )
             } else {
-                return;
+                return Vec::new();
             };
 
         if body.is_none() && attachment_filename.is_none() {
-            return;
+            return Vec::new();
         }
 
         if let Some(edit_event_id) = edit_event_id {
             // Edited message: Upsert original with new canonical body, AND
             // forward Edit so the document store registers the alias
             // (edit_event_id → original_event_id) used by verify_candidate.
-            let _ = tx.try_send(SearchIndexMessage::Upsert {
-                room_id: room_id.clone(),
-                event_id: event_id.clone(),
-                sender: sender.clone(),
-                timestamp_ms,
-                body: body.clone(),
-                attachment_filename: attachment_filename.clone(),
-                attachment: attachment.clone(),
-            });
-            let _ = tx.try_send(SearchIndexMessage::Edit {
-                edit_event_id,
-                target_event_id: event_id,
-                sender,
-                timestamp_ms,
-                body,
-                attachment_filename,
-                attachment,
-            });
+            vec![
+                SearchIndexMessage::Upsert {
+                    room_id: room_id.to_owned(),
+                    event_id: event_id.clone(),
+                    sender: sender.clone(),
+                    timestamp_ms,
+                    body: body.clone(),
+                    attachment_filename: attachment_filename.clone(),
+                    attachment: attachment.clone(),
+                },
+                SearchIndexMessage::Edit {
+                    edit_event_id,
+                    target_event_id: event_id,
+                    sender,
+                    timestamp_ms,
+                    body,
+                    attachment_filename,
+                    attachment,
+                },
+            ]
         } else {
             // New (unedited) message: Upsert into document store.
-            let _ = tx.try_send(SearchIndexMessage::Upsert {
-                room_id,
+            vec![SearchIndexMessage::Upsert {
+                room_id: room_id.to_owned(),
                 event_id,
                 sender,
                 timestamp_ms,
                 body,
                 attachment_filename,
                 attachment,
-            });
+            }]
         }
     }
 
-    fn forward_initial_items_to_search(
+    async fn forward_initial_items_to_search(
         &self,
         items: impl IntoIterator<Item = Arc<SdkTimelineItem>>,
     ) {
         use eyeball_im::VectorDiff;
 
         for item in items {
-            self.forward_diff_to_search(&VectorDiff::PushBack { value: item });
+            self.forward_diff_to_search(&VectorDiff::PushBack { value: item })
+                .await;
         }
     }
 
@@ -5224,7 +5348,7 @@ impl TimelineActor {
         None
     }
 
-    fn handle_send_queue_update(&mut self, update: RoomSendQueueUpdate) {
+    async fn handle_send_queue_update(&mut self, update: RoomSendQueueUpdate) {
         match update {
             RoomSendQueueUpdate::NewLocalEvent(echo) => {
                 remember_local_echo(&mut self.send_statuses, &mut self.send_handles, &echo);
@@ -5238,7 +5362,7 @@ impl TimelineActor {
                     self.send_completion.record_cancelled_event(&sdk_txn_str)
                 {
                     if settles_composer {
-                        self.emit_send_finished_action(&client_txn_id);
+                        self.emit_send_finished_action(&client_txn_id).await;
                     }
                 }
             }
@@ -5262,7 +5386,7 @@ impl TimelineActor {
                     self.send_completion.record_send_error(&sdk_txn_str)
                 {
                     if settles_composer {
-                        self.emit_send_failed_action(&client_txn_id);
+                        self.emit_send_failed_action(&client_txn_id).await;
                     }
                 }
             }
@@ -5286,7 +5410,7 @@ impl TimelineActor {
                     .record_sent_event(sdk_txn_str, event_id.to_string())
                 {
                     if settles_composer {
-                        self.emit_send_finished_action(&client_txn_id);
+                        self.emit_send_finished_action(&client_txn_id).await;
                     }
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
@@ -5322,6 +5446,66 @@ impl TimelineActor {
                     source: file.as_ref().map(timeline_media_source_from_sdk),
                 }));
             }
+        }
+    }
+
+    async fn handle_send_queue_lagged(&mut self) {
+        self.resync_send_queue_statuses().await;
+
+        let (current_items, _) = self.timeline.subscribe().await;
+        let link_preview_context = self.link_preview_policy.for_room(self.key.room_id());
+        let items: Vec<TimelineItem> = current_items
+            .iter()
+            .map(|item| {
+                sdk_item_to_timeline_item_with_send_states(
+                    &self.key,
+                    item,
+                    self.own_user_id.as_deref(),
+                    &self.send_statuses,
+                )
+            })
+            .map(|mut item| {
+                apply_ignored_sender_suppression(&mut item, &self.ignored_user_ids);
+                item
+            })
+            .collect();
+        let mut items = items;
+        for item in &mut items {
+            apply_link_previews_to_item(
+                &mut *item,
+                self.key.room_id(),
+                &link_preview_context,
+                &self.session,
+            )
+            .await;
+        }
+        trace_timeline_items("send_queue_lagged_initial", &self.key, &items);
+        self.emit(CoreEvent::Timeline(TimelineEvent::InitialItems {
+            request_id: None,
+            key: self.key.clone(),
+            generation: self.generation,
+            items,
+        }));
+    }
+
+    async fn resync_send_queue_statuses(&mut self) {
+        let Some(room_id) = timeline_room_id(&self.key) else {
+            return;
+        };
+        let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(room_id) else {
+            return;
+        };
+        let Some(room) = self.session.client().get_room(&room_id) else {
+            return;
+        };
+        let Ok((local_echoes, _update_rx)) = room.send_queue().subscribe().await else {
+            return;
+        };
+
+        self.send_statuses.clear();
+        self.send_handles.clear();
+        for echo in &local_echoes {
+            remember_local_echo(&mut self.send_statuses, &mut self.send_handles, echo);
         }
     }
 
@@ -5441,8 +5625,8 @@ impl TimelineActor {
     /// momentarily full.  Required for state-machine transitions where a
     /// dropped action would leave the UI stuck in a pending/inconsistent state
     /// (REPOSITORY_RULES L124-128).
-    async fn emit_action_reliable(&self, action: AppAction) {
-        let _ = self.action_tx.send(vec![action]).await;
+    async fn emit_action_reliable(&self, action: AppAction) -> bool {
+        self.action_tx.send(vec![action]).await.is_ok()
     }
 
     fn emit_failure(&self, request_id: RequestId, failure: CoreFailure) {
@@ -5459,16 +5643,16 @@ impl TimelineActor {
     /// Drive the reducer's composer completion transition for the matching
     /// pending send. Room timelines settle the main composer; thread timelines
     /// settle the open thread composer; focused timelines own no composer state.
-    fn emit_send_finished_action(&self, client_txn_id: &str) {
+    async fn emit_send_finished_action(&self, client_txn_id: &str) {
         if let Some(action) = send_finished_action(&self.key, client_txn_id.to_owned()) {
-            let _ = self.action_tx.try_send(vec![action]);
+            let _ = self.emit_action_reliable(action).await;
         }
     }
 
     /// Drive the reducer's composer failure transition for the matching pending
     /// send. Room timelines settle the main composer; thread timelines settle
     /// the open thread composer; focused timelines own no composer state.
-    fn emit_send_failed_action(&self, client_txn_id: &str) {
+    async fn emit_send_failed_action(&self, client_txn_id: &str) {
         let projection = match self.key.kind {
             TimelineKind::Room { .. } => SendComposerProjection::Room,
             TimelineKind::Thread { .. } => SendComposerProjection::ThreadReply,
@@ -5480,7 +5664,7 @@ impl TimelineActor {
             client_txn_id.to_owned(),
             "send failed".to_owned(),
         ) {
-            let _ = self.action_tx.try_send(vec![action]);
+            let _ = self.emit_action_reliable(action).await;
         }
     }
 
@@ -5581,8 +5765,13 @@ async fn run_send_queue_monitor(
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                // Some updates dropped — not critical for send completion tracking.
-                continue;
+                if actor_tx
+                    .send(TimelineActorMessage::SendQueueLagged)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                 break;
@@ -6374,10 +6563,11 @@ fn sdk_item_to_timeline_item_with_send_states(
                 .as_message()
                 .map(|message| message.is_edited())
                 .unwrap_or(false);
-            let send_state = transaction_id
-                .as_deref()
-                .and_then(|txn_id| send_statuses.get(txn_id).cloned())
-                .or_else(|| timeline_send_state_from_sdk(event_item.send_state()));
+            let send_state = timeline_send_state_from_sdk(event_item.send_state()).or_else(|| {
+                transaction_id
+                    .as_deref()
+                    .and_then(|txn_id| send_statuses.get(txn_id).cloned())
+            });
             let mut unable_to_decrypt = unable_to_decrypt_from_content(content);
             if let Some(utd) = unable_to_decrypt.as_mut() {
                 utd.can_request_keys = event_item.original_json().is_some();
@@ -7611,6 +7801,23 @@ fn classify_timeline_send_error(err: &matrix_sdk_ui::timeline::Error) -> Timelin
         }
         _ => TimelineFailureKind::Sdk,
     }
+}
+
+fn classify_media_download_error(error: &matrix_sdk::Error) -> TimelineFailureKind {
+    if matches!(error, matrix_sdk::Error::Timeout) {
+        return TimelineFailureKind::Timeout;
+    }
+    if error
+        .client_api_error_kind()
+        .map(|kind| kind == &matrix_sdk::ruma::api::error::ErrorKind::Forbidden)
+        .unwrap_or(false)
+    {
+        return TimelineFailureKind::Forbidden;
+    }
+    if matches!(error, matrix_sdk::Error::Http(_)) {
+        return TimelineFailureKind::Network;
+    }
+    TimelineFailureKind::Sdk
 }
 
 fn classify_send_queue_error(
@@ -9038,21 +9245,163 @@ mod tests {
         let spawn_token = concat!("TimelineActor::", "spawn");
         let action_token = concat!("emit_timeline", "_subscribed_action");
         let room_token = concat!("TimelineKind::", "Room");
-        let spawn_offset = handle_subscribe_source
-            .find(spawn_token)
-            .expect("subscribe success should spawn the timeline actor");
-        let success_path = &handle_subscribe_source[spawn_offset..];
+        let build_helper_source = source
+            .split("async fn build_timeline_actor_handle")
+            .nth(1)
+            .expect("subscribe build helper should exist")
+            .split("async fn route_to_actor_or_fail")
+            .next()
+            .expect("route helper should follow subscribe build helper");
+        let success_path = handle_subscribe_source
+            .split("Ok(handle) =>")
+            .nth(1)
+            .expect("subscribe success should handle the built timeline actor");
         let action_offset = success_path
             .find(action_token)
             .expect("subscribe success should reduce TimelineSubscribed");
 
         assert!(
+            build_helper_source.contains(spawn_token),
+            "subscribe success should spawn the timeline actor"
+        );
+        assert!(
             action_offset > 0,
             "TimelineSubscribed should be reduced only after subscribe succeeds"
         );
         assert!(
-            handle_subscribe_source.contains(room_token),
+            source.contains(room_token),
             "main timeline subscription state should only be marked for room timelines"
+        );
+    }
+
+    #[test]
+    fn timeline_subscribe_settles_use_reliable_reducer_actions() {
+        let source = include_str!("timeline.rs");
+        let subscribed_helper = source
+            .split("async fn emit_timeline_subscribed_action")
+            .nth(1)
+            .expect("subscribed action helper should exist")
+            .split("fn timeline_subscription_failed_action")
+            .next()
+            .expect("failure action helper should follow subscribed helper");
+        assert!(
+            subscribed_helper.contains("self.action_tx.send(vec![action]).await"),
+            "timeline subscribe success must enqueue reducer settle actions reliably"
+        );
+        assert!(
+            !subscribed_helper.contains("try_send(vec![action])"),
+            "timeline subscribe success must not use drop-on-full try_send"
+        );
+
+        let failure_helper = source
+            .split("fn timeline_subscription_failed_action")
+            .nth(1)
+            .expect("failure action helper should exist")
+            .split("fn internal_timeline_request_id")
+            .next()
+            .expect("request-id helper should follow failure helper");
+        assert!(
+            failure_helper.contains("TimelineKind::Room { .. } => None"),
+            "main room subscription failures use the existing main timeline failure path"
+        );
+        assert!(
+            failure_helper.contains("AppAction::ThreadSubscriptionFailed"),
+            "thread subscription failures must settle the thread opening state"
+        );
+        assert!(
+            failure_helper.contains("AppAction::FocusedContextSubscriptionFailed"),
+            "focused subscription failures must settle the focused opening state"
+        );
+
+        let subscribe_body = source
+            .split("async fn handle_subscribe")
+            .nth(1)
+            .expect("handle_subscribe should exist")
+            .split("async fn route_to_actor_or_fail")
+            .next()
+            .expect("route helper should follow subscribe");
+        assert!(
+            subscribe_body.contains("self.emit_subscription_failure"),
+            "subscribe failure branches must emit reducer failure actions"
+        );
+    }
+
+    #[test]
+    fn timeline_search_index_mutations_use_reliable_delivery() {
+        let source = include_str!("timeline.rs");
+        let forwarder = source
+            .split("async fn forward_diff_to_search")
+            .nth(1)
+            .expect("search index diff forwarder should be async")
+            .split("fn search_index_messages_for_diff")
+            .next()
+            .expect("message builder should follow forwarder");
+
+        assert!(
+            forwarder.contains("tx.send(message).await"),
+            "live search index mutations, including redactions, must use reliable send"
+        );
+        assert!(
+            !forwarder.contains("try_send(SearchIndexMessage"),
+            "search index mutation delivery must not silently drop redactions or edits"
+        );
+    }
+
+    #[test]
+    fn media_gallery_and_thread_attention_projections_use_reliable_delivery() {
+        let source = include_str!("timeline.rs");
+        let initial_subscribe = source
+            .split("// Emit InitialItems")
+            .nth(1)
+            .expect("initial subscribe emission should exist")
+            .split("// Spawn the diff relay task")
+            .next()
+            .expect("initial projection block should precede relay spawn");
+        let diff_batch = source
+            .split("async fn handle_diff_batch")
+            .nth(1)
+            .expect("diff batch handler should exist")
+            .split("async fn handle_ignored_users_updated")
+            .next()
+            .expect("ignored-users handler should follow diff batch");
+        let media_gallery_helper = source
+            .split("async fn emit_media_gallery_if_changed")
+            .nth(1)
+            .expect("media gallery helper should be async")
+            .split("fn emit_navigation_if_changed")
+            .next()
+            .expect("navigation helper should follow media gallery helper");
+
+        assert!(
+            initial_subscribe.contains("action_tx.send(vec![action]).await"),
+            "initial media gallery projection must use reliable delivery"
+        );
+        assert!(
+            diff_batch.contains("self.emit_action_reliable(action).await"),
+            "thread attention projection must use reliable reducer delivery"
+        );
+        assert!(
+            media_gallery_helper.contains("self.emit_action_reliable(action).await")
+                && !media_gallery_helper.contains("try_send(vec![action])"),
+            "media gallery dedupe ledger must not advance behind a dropped try_send"
+        );
+    }
+
+    #[test]
+    fn replaying_thread_initial_items_resets_thread_attention_counter() {
+        let source = include_str!("timeline.rs");
+        let replay_helper = source
+            .split("fn handle_replay_initial_items")
+            .nth(1)
+            .expect("replay helper should exist")
+            .split("async fn handle_paginate")
+            .next()
+            .expect("pagination handler should follow replay helper");
+
+        assert!(
+            replay_helper
+                .contains("self.thread_attention_counts = ThreadAttentionCounters::default();"),
+            "thread replay must reset the actor-owned attention counter to match the reducer's open-thread zero state"
         );
     }
 
@@ -9296,13 +9645,12 @@ mod tests {
             "only room live timelines should be rebuilt on SyncStarted; focused/thread contexts should not be reset"
         );
         assert!(
-            rebuild_handler.contains("self.timelines.remove(&key);"),
-            "existing room timeline handles must be dropped before full resubscribe so the SDK timeline is rebuilt"
+            !rebuild_handler.contains("self.timelines.remove(&key);"),
+            "sync-start rebuild must not drop the existing room timeline before the replacement subscribe succeeds"
         );
         assert!(
-            rebuild_handler
-                .contains("self.handle_subscribe(internal_timeline_request_id(), key, true)"),
-            "rebuild must take the full subscribe path and emit a fresh InitialItems batch"
+            rebuild_handler.contains("replace_existing_room_timeline_after_sync_started"),
+            "sync-start rebuild must build a replacement actor and swap it in only after success"
         );
     }
 
@@ -9335,6 +9683,38 @@ mod tests {
         assert!(
             handle_subscribe_source.contains("if replay_existing"),
             "existing actors should only replay InitialItems when the caller explicitly requests replay"
+        );
+    }
+
+    #[test]
+    fn replay_subscribed_command_replays_initial_items_for_all_existing_timelines() {
+        let source = include_str!("timeline.rs");
+        let handle_command = source
+            .split("async fn handle_command")
+            .nth(1)
+            .expect("handle_command should exist")
+            .split("async fn handle_subscribe")
+            .next()
+            .expect("handle_subscribe should follow handle_command");
+        let replay_handler = source
+            .split("async fn handle_replay_subscribed")
+            .nth(1)
+            .expect("TimelineManagerActor should expose subscribed-timeline replay")
+            .split("async fn handle_subscribe")
+            .next()
+            .expect("handle_subscribe should follow replay handler");
+
+        assert!(
+            handle_command.contains("TimelineCommand::ReplaySubscribed { request_id }")
+                && handle_command.contains("self.handle_replay_subscribed(request_id).await"),
+            "TimelineManagerActor must route replay-subscribed commands to the replay helper"
+        );
+        assert!(
+            replay_handler.contains("for handle in self.timelines.values()")
+                && replay_handler
+                    .contains(".send(TimelineActorMessage::ReplayInitialItems { request_id })")
+                && replay_handler.contains(".await"),
+            "replay helper must reliably ask every subscribed TimelineActor to re-emit InitialItems"
         );
     }
 
@@ -9652,6 +10032,107 @@ mod tests {
             source.contains("TimelineKind::Focused { .. } => Self::None")
                 && source.contains("TimelineKind::Focused { .. } => None"),
             "focused timelines must not own composer state"
+        );
+    }
+
+    #[test]
+    fn outbound_send_state_uses_sdk_truth_and_reliable_settles() {
+        let source = include_str!("timeline.rs");
+        let send_queue_monitor = source
+            .split("async fn run_send_queue_monitor")
+            .nth(1)
+            .expect("send queue monitor should exist")
+            .split("async fn run_typing_notifications")
+            .next()
+            .expect("typing monitor should follow send queue monitor");
+        let send_state_projection = source
+            .split("let send_state =")
+            .nth(1)
+            .expect("send state projection should exist")
+            .split("let receipts")
+            .next()
+            .expect("receipts projection should follow send state");
+        let actor_completion_source = source
+            .split("async fn emit_send_finished_action")
+            .nth(1)
+            .expect("send completion helper should be async")
+            .split("fn emit_typing_users_action")
+            .next()
+            .expect("typing helper should follow send completion helpers");
+
+        assert!(
+            send_queue_monitor.contains("TimelineActorMessage::SendQueueLagged"),
+            "send-queue broadcast lag must ask the actor to resync its send-state mirror"
+        );
+        assert!(
+            !send_queue_monitor.contains("not critical for send completion tracking"),
+            "lagged send-queue updates can contain terminal send states and must not be ignored"
+        );
+        let sdk = send_state_projection
+            .find("timeline_send_state_from_sdk")
+            .expect("projection should read SDK send state");
+        let mirror = send_state_projection
+            .find("send_statuses.get")
+            .expect("projection should still use the actor mirror as fallback");
+        assert!(
+            sdk < mirror,
+            "SDK timeline item send state must win over the actor mirror after relay gaps"
+        );
+        assert!(
+            actor_completion_source.contains("self.emit_action_reliable(action).await"),
+            "send/reply completion and failure must use the reliable reducer action path"
+        );
+        assert!(
+            !actor_completion_source.contains("try_send"),
+            "send/reply settlement must not silently drop reducer actions on a full channel"
+        );
+    }
+
+    #[test]
+    fn media_downloads_spawn_bounded_tasks_and_report_all_exits() {
+        let source = include_str!("timeline.rs");
+        let handler = source
+            .split("async fn handle_download_media")
+            .nth(1)
+            .expect("download handler should exist")
+            .split("async fn download_media_for")
+            .next()
+            .expect("download worker should follow handler");
+        let worker = source
+            .split("async fn download_media_for")
+            .nth(1)
+            .expect("download worker should exist")
+            .split("async fn handle_media_download_finished")
+            .next()
+            .expect("download completion handler should follow worker");
+
+        assert!(
+            handler.contains("TimelineActorMessage::MediaDownloadFinished"),
+            "download worker must report terminal state back to the actor"
+        );
+        assert!(
+            handler.contains("executor::spawn(async move"),
+            "media download transfer must not run inline on the actor loop"
+        );
+        assert!(
+            !handler.contains(".get_media_content("),
+            "actor-loop download handler must not await the SDK media transfer directly"
+        );
+        assert!(
+            handler.contains("emit_media_download_current_state"),
+            "duplicate in-flight clicks must reproject current download state instead of returning silently"
+        );
+        assert!(
+            worker.contains("executor::timeout(") && worker.contains("MEDIA_DOWNLOAD_TIMEOUT"),
+            "media downloads need a modeled timeout exit"
+        );
+        assert!(
+            worker.contains("classify_media_download_error(&error)"),
+            "download SDK/media failures must keep coarse network/forbidden/sdk classification"
+        );
+        assert!(
+            worker.contains("TimelineFailureKind::Timeout"),
+            "download timeout must settle the pending state with a timeout failure"
         );
     }
 

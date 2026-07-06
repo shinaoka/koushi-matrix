@@ -12,10 +12,11 @@ use crate::{
 use super::{
     active_room_left_selected_space, apply_space_order,
     avatar::{collect_known_avatar_thumbnails, preserve_avatar_thumbnail},
-    first_default_room_id, is_session_ready, preferred_room_id_in_active_space,
-    recompute_room_list_projection, reconcile_space_order, refresh_timeline_media_gallery,
-    refresh_timeline_scheduled_sends, refresh_timeline_upload_staging,
-    retain_navigation_room_memory, retarget_active_room_for_selected_space, room_exists,
+    first_default_room_id, has_session_projection_context, is_session_ready,
+    preferred_room_id_in_active_space, recompute_room_list_projection, reconcile_space_order,
+    refresh_timeline_media_gallery, refresh_timeline_scheduled_sends,
+    refresh_timeline_upload_staging, retain_navigation_room_memory,
+    retarget_active_room_for_selected_space, room_exists,
     select_active_room_after_room_list_update, session_user_id,
 };
 
@@ -27,7 +28,7 @@ pub(crate) fn handle_room_list_updated(
     spaces: Vec<crate::state::SpaceSummary>,
     rooms: Vec<crate::state::RoomSummary>,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
+    if !has_session_projection_context(state) {
         return Vec::new();
     }
 
@@ -268,7 +269,7 @@ pub(crate) fn handle_room_tags_updated(
     room_id: String,
     tags: crate::state::RoomTags,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
+    if !has_session_projection_context(state) {
         return Vec::new();
     }
 
@@ -290,7 +291,7 @@ pub(crate) fn handle_room_tag_set(
     tag: RoomTagKind,
     info: RoomTagInfo,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
+    if !has_session_projection_context(state) {
         return Vec::new();
     }
 
@@ -313,7 +314,7 @@ pub(crate) fn handle_room_tag_removed(
     room_id: String,
     tag: RoomTagKind,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
+    if !has_session_projection_context(state) {
         return Vec::new();
     }
 
@@ -336,7 +337,7 @@ pub(crate) fn handle_room_pinned_events_updated(
     room_id: String,
     pinned: Vec<PinnedEvent>,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
+    if !has_session_projection_context(state) {
         return Vec::new();
     }
 
@@ -378,7 +379,7 @@ pub(crate) fn handle_pin_event_completed(
     request_id: u64,
     room_id: String,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
+    if !has_session_projection_context(state) {
         return Vec::new();
     }
 
@@ -406,7 +407,7 @@ pub(crate) fn handle_pin_event_failed(
     room_id: String,
     _kind: crate::state::OperationFailureKind,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
+    if !has_session_projection_context(state) {
         return Vec::new();
     }
 
@@ -473,7 +474,7 @@ pub(crate) fn handle_unpin_event_completed(
     request_id: u64,
     room_id: String,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
+    if !has_session_projection_context(state) {
         return Vec::new();
     }
 
@@ -501,7 +502,7 @@ pub(crate) fn handle_unpin_event_failed(
     room_id: String,
     _kind: crate::state::OperationFailureKind,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
+    if !has_session_projection_context(state) {
         return Vec::new();
     }
 
@@ -558,7 +559,7 @@ pub(crate) fn handle_room_marked_as_read_succeeded(
     request_id: u64,
     room_id: String,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) || !room_exists(state, &room_id) {
+    if !has_session_projection_context(state) || !room_exists(state, &room_id) {
         return Vec::new();
     }
 
@@ -579,7 +580,7 @@ pub(crate) fn handle_room_marked_as_read_failed(
     room_id: String,
     kind: OperationFailureKind,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) || !room_exists(state, &room_id) {
+    if !has_session_projection_context(state) || !room_exists(state, &room_id) {
         return Vec::new();
     }
 
@@ -607,7 +608,7 @@ pub(crate) fn handle_room_marked_as_unread_succeeded(
     room_id: String,
     unread: bool,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) || !room_exists(state, &room_id) {
+    if !has_session_projection_context(state) || !room_exists(state, &room_id) {
         return Vec::new();
     }
 
@@ -631,7 +632,7 @@ pub(crate) fn handle_room_marked_as_unread_failed(
     room_id: String,
     kind: OperationFailureKind,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) || !room_exists(state, &room_id) {
+    if !has_session_projection_context(state) || !room_exists(state, &room_id) {
         return Vec::new();
     }
 

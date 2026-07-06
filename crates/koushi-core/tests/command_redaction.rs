@@ -91,7 +91,7 @@ fn secret_bearing_commands_redact_debug() {
     let search = CoreCommand::Search(SearchCommand::Query {
         request_id: fake_request_id(),
         query: QUERY.to_owned(),
-        scope: SearchScope::Global,
+        scope: SearchScope::AllRooms,
     });
     let thread_draft = CoreCommand::App(AppCommand::SetThreadComposerDraft {
         request_id: fake_request_id(),
@@ -285,6 +285,10 @@ fn e2ee_trust_account_commands_are_correlated_ready_gated_and_redacted() {
             },
         }),
         CoreCommand::Account(AccountCommand::ResetIdentity { request_id }),
+        CoreCommand::Account(AccountCommand::CancelIdentityReset {
+            request_id,
+            flow_id,
+        }),
         CoreCommand::Account(AccountCommand::SubmitIdentityResetAuth {
             request_id,
             flow_id,

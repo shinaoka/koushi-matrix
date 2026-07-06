@@ -228,6 +228,10 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("reset_identity");
   }
 
+  async cancelIdentityReset(flowId: number): Promise<DesktopSnapshot> {
+    return invoke<DesktopSnapshot>("cancel_identity_reset", { flowId });
+  }
+
   async submitIdentityResetPassword(
     flowId: number,
     password: string

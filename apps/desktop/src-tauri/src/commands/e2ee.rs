@@ -164,6 +164,22 @@ pub async fn reset_identity(
 }
 
 #[tauri::command]
+pub async fn cancel_identity_reset(
+    flow_id: u64,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_cancel_identity_reset_command(request_id, flow_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn submit_identity_reset_password(
     flow_id: u64,
     password: String,

@@ -117,8 +117,7 @@ fn room_settings_share_link_prefers_aliases_then_room_id() {
         Some("https://matrix.to/#/%23alternate%3Aexample.invalid")
     );
     assert_eq!(
-        koushi_state::room_settings_share_link("!fallback:example.invalid", None, &[])
-            .as_deref(),
+        koushi_state::room_settings_share_link("!fallback:example.invalid", None, &[]).as_deref(),
         Some("https://matrix.to/#/!fallback%3Aexample.invalid")
     );
 }
@@ -517,6 +516,52 @@ fn room_settings_snapshot_replaces_existing_room_management_state() {
             selected_room_id: Some("!new:example.invalid".to_owned()),
             settings: Some(editable_settings("!new:example.invalid")),
             operation: RoomManagementOperationState::Idle,
+        }
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
+    );
+}
+
+#[test]
+fn room_settings_snapshot_preserves_same_room_pending_operation() {
+    let mut state = ready_state();
+    let room_id = "!room:example.invalid";
+    state.room_management = RoomManagementState {
+        selected_room_id: Some(room_id.to_owned()),
+        settings: Some(editable_settings(room_id)),
+        operation: RoomManagementOperationState::Pending {
+            request_id: 7,
+            room_id: room_id.to_owned(),
+            operation: RoomManagementOperationKind::Settings,
+        },
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::RoomSettingsSnapshotLoaded {
+            room_id: room_id.to_owned(),
+            settings: RoomSettingsSnapshot {
+                topic: Some("Fresh synthetic topic".to_owned()),
+                ..editable_settings(room_id)
+            },
+        },
+    );
+
+    assert_eq!(
+        state.room_management.settings,
+        Some(RoomSettingsSnapshot {
+            topic: Some("Fresh synthetic topic".to_owned()),
+            ..editable_settings(room_id)
+        })
+    );
+    assert_eq!(
+        state.room_management.operation,
+        RoomManagementOperationState::Pending {
+            request_id: 7,
+            room_id: room_id.to_owned(),
+            operation: RoomManagementOperationKind::Settings,
         }
     );
     assert_eq!(

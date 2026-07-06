@@ -22,6 +22,7 @@ eyeball-im = "0.8"
 futures-util = "0.3"
 koushi-state = { path = "../koushi-state" }
 matrix-sdk = { workspace = true }
+matrix-sdk-search = { workspace = true }
 matrix-sdk-ui = { workspace = true }
 mime = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }

@@ -6,9 +6,10 @@ use crate::{
 use super::{
     apply_space_order,
     avatar::{collect_known_avatar_thumbnails, preserve_avatar_thumbnail},
-    clear_active_room_for_navigation, first_default_room_id, is_complete_space_order,
-    is_session_ready, preferred_room_id_in_space, recompute_room_list_projection,
-    remember_active_room_for_current_space, select_active_room_for_navigation,
+    clear_active_room_for_navigation, first_default_room_id, has_session_projection_context,
+    is_complete_space_order, is_session_ready, preferred_room_id_in_space,
+    recompute_room_list_projection, remember_active_room_for_current_space,
+    select_active_room_for_navigation,
 };
 
 const MAX_ROOM_SCROLL_ANCHORS: usize = 200;
@@ -17,7 +18,7 @@ pub(crate) fn handle_invite_list_updated(
     state: &mut AppState,
     mut invites: Vec<crate::state::InvitePreview>,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
+    if !has_session_projection_context(state) {
         return Vec::new();
     }
 

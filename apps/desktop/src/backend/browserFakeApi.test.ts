@@ -339,7 +339,19 @@ describe("BrowserFakeApi settings preview", () => {
       awaitingAuth.state.domain.e2ee_trust.identity_reset.kind === "awaitingAuth"
         ? awaitingAuth.state.domain.e2ee_trust.identity_reset.request_id
         : 0;
-    const reset = await api.submitIdentityResetPassword(flow, "synthetic-password");
+    const cancelled = await api.cancelIdentityReset(flow);
+    expect(cancelled.state.domain.e2ee_trust.identity_reset).toEqual({
+      kind: "failed",
+      request_id: flow,
+      failureKind: "cancelled"
+    });
+
+    const retryAwaitingAuth = await api.resetIdentity();
+    const retryFlow =
+      retryAwaitingAuth.state.domain.e2ee_trust.identity_reset.kind === "awaitingAuth"
+        ? retryAwaitingAuth.state.domain.e2ee_trust.identity_reset.request_id
+        : 0;
+    const reset = await api.submitIdentityResetPassword(retryFlow, "synthetic-password");
     expect(reset.state.domain.e2ee_trust.identity_reset).toEqual({ kind: "idle" });
     expect(reset.state.domain.e2ee_trust.cross_signing).toEqual({ kind: "missing" });
     expect(reset.state.domain.e2ee_trust.key_backup).toEqual({ kind: "disabled" });

@@ -24,9 +24,17 @@ pub(crate) fn handle_room_settings_snapshot_loaded(
         &state.profile,
         own_user_id.as_deref(),
     );
+    let pending_operation = match &state.room_management.operation {
+        RoomManagementOperationState::Pending {
+            room_id: pending_room_id,
+            ..
+        } if pending_room_id == &room_id => Some(state.room_management.operation.clone()),
+        _ => None,
+    };
     state.room_management.selected_room_id = Some(room_id);
     state.room_management.settings = Some(settings);
-    state.room_management.operation = RoomManagementOperationState::Idle;
+    state.room_management.operation =
+        pending_operation.unwrap_or(RoomManagementOperationState::Idle);
     vec![AppEffect::EmitUiEvent(UiEvent::RoomManagementChanged)]
 }
 

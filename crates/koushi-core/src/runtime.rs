@@ -305,9 +305,41 @@ pub struct CoreConnection {
     next_sequence: AtomicU64,
 }
 
+/// Lightweight command submitter that can be cloned without cloning event or
+/// snapshot receivers.
+#[derive(Clone)]
+pub struct CoreCommandHandle {
+    connection_id: RuntimeConnectionId,
+    command_tx: mpsc::Sender<CoreCommand>,
+}
+
+impl CoreCommandHandle {
+    /// Submit a command. Fails locally — before routing and before any
+    /// `CoreEvent` is published — if the command's request id does not
+    /// belong to this connection.
+    pub async fn command(&self, command: CoreCommand) -> Result<(), CommandSubmitError> {
+        if command.request_id().connection_id != self.connection_id {
+            return Err(CommandSubmitError::InvalidRequestId);
+        }
+        self.command_tx
+            .send(command)
+            .await
+            .map_err(|_| CommandSubmitError::RuntimeClosed)
+    }
+}
+
 impl CoreConnection {
     pub fn connection_id(&self) -> RuntimeConnectionId {
         self.connection_id
+    }
+
+    /// Clone a lightweight command submitter for callers that must not hold
+    /// the full connection guard while awaiting bounded channel capacity.
+    pub fn command_handle(&self) -> CoreCommandHandle {
+        CoreCommandHandle {
+            connection_id: self.connection_id,
+            command_tx: self.command_tx.clone(),
+        }
     }
 
     /// Allocate the next request id for this connection. Request ids are
@@ -323,13 +355,7 @@ impl CoreConnection {
     /// `CoreEvent` is published — if the command's request id does not
     /// belong to this connection.
     pub async fn command(&self, command: CoreCommand) -> Result<(), CommandSubmitError> {
-        if command.request_id().connection_id != self.connection_id {
-            return Err(CommandSubmitError::InvalidRequestId);
-        }
-        self.command_tx
-            .send(command)
-            .await
-            .map_err(|_| CommandSubmitError::RuntimeClosed)
+        self.command_handle().command(command).await
     }
 
     /// Receive the next event. On lag, intermediate events were dropped for
@@ -1203,10 +1229,13 @@ impl AppActor {
             return;
         }
 
-        let navigation = self
-            .composer_draft_store_actor
-            .load_navigation(&key_id)
-            .unwrap_or_default();
+        let store = self.composer_draft_store_actor.clone();
+        let load_key_id = key_id.clone();
+        let navigation = executor::spawn_blocking(move || {
+            store.load_navigation(&load_key_id).unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
         let effects = reduce(&mut self.state, AppAction::NavigationLoaded { navigation });
         self.navigation_loaded_for = Some(key_id);
         self.handle_ui_event_effects(&effects).await;
@@ -1221,10 +1250,13 @@ impl AppActor {
             return;
         }
 
-        let drafts = self
-            .composer_draft_store_actor
-            .load_composer_drafts(&key_id)
-            .unwrap_or_default();
+        let store = self.composer_draft_store_actor.clone();
+        let load_key_id = key_id.clone();
+        let drafts = executor::spawn_blocking(move || {
+            store.load_composer_drafts(&load_key_id).unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
         let effects = reduce(&mut self.state, AppAction::ComposerDraftsLoaded { drafts });
         self.composer_draft_loaded_for = Some(key_id);
         self.handle_ui_event_effects(&effects).await;
@@ -1239,10 +1271,13 @@ impl AppActor {
             return;
         }
 
-        let scheduled_sends = self
-            .composer_draft_store_actor
-            .load_scheduled_sends(&key_id)
-            .unwrap_or_default();
+        let store = self.composer_draft_store_actor.clone();
+        let load_key_id = key_id.clone();
+        let scheduled_sends = executor::spawn_blocking(move || {
+            store.load_scheduled_sends(&load_key_id).unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
         let effects = reduce(
             &mut self.state,
             AppAction::ScheduledSendsLoaded { scheduled_sends },
@@ -1260,10 +1295,15 @@ impl AppActor {
             return;
         }
 
-        let preferences = self
-            .composer_draft_store_actor
-            .load_room_preferences(&key_id)
-            .unwrap_or_default();
+        let store = self.composer_draft_store_actor.clone();
+        let load_key_id = key_id.clone();
+        let preferences = executor::spawn_blocking(move || {
+            store
+                .load_room_preferences(&load_key_id)
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
         let effects = reduce(
             &mut self.state,
             AppAction::RoomPreferencesLoaded { preferences },
@@ -1273,24 +1313,28 @@ impl AppActor {
     }
 
     async fn persist_scheduled_sends(&mut self, key_id: koushi_key::SessionKeyId) {
-        let _ = self
-            .composer_draft_store_actor
-            .save_scheduled_sends(&key_id, &self.state.scheduled_sends);
+        let store = self.composer_draft_store_actor.clone();
+        let scheduled_sends = self.state.scheduled_sends.clone();
+        let _ =
+            executor::spawn_blocking(move || store.save_scheduled_sends(&key_id, &scheduled_sends))
+                .await;
     }
 
     async fn persist_navigation(&mut self, key_id: koushi_key::SessionKeyId) {
-        let _ = self
-            .composer_draft_store_actor
-            .save_navigation(&key_id, &self.state.navigation);
+        let store = self.composer_draft_store_actor.clone();
+        let navigation = self.state.navigation.clone();
+        let _ = executor::spawn_blocking(move || store.save_navigation(&key_id, &navigation)).await;
     }
 
     async fn persist_room_preferences(&mut self, preferences: &koushi_state::RoomPreferencesState) {
         let Some(key_id) = room_preferences_session_key(&self.state) else {
             return;
         };
-        let _ = self
-            .composer_draft_store_actor
-            .save_room_preferences(&key_id, preferences);
+        let store = self.composer_draft_store_actor.clone();
+        let preferences = preferences.clone();
+        let _ =
+            executor::spawn_blocking(move || store.save_room_preferences(&key_id, &preferences))
+                .await;
     }
 
     async fn schedule_composer_draft_persist(
@@ -1322,9 +1366,11 @@ impl AppActor {
         let Some(pending) = self.pending_composer_draft_persist.take() else {
             return;
         };
-        let _ = self
-            .composer_draft_store_actor
-            .save_composer_drafts(&pending.key_id, &pending.drafts);
+        let store = self.composer_draft_store_actor.clone();
+        let _ = executor::spawn_blocking(move || {
+            store.save_composer_drafts(&pending.key_id, &pending.drafts)
+        })
+        .await;
     }
 
     fn scheduled_send_delay(&self) -> Option<Duration> {
@@ -2259,263 +2305,352 @@ impl AppActor {
 
     async fn handle_app_effects(&mut self, request_id: RequestId, effects: Vec<AppEffect>) {
         for effect in effects {
-            if let AppEffect::StartSync = effect {
-                trace_runtime_sync(
-                    "effect_start_sync",
-                    &format!(
-                        "source=command_effect request_id={} action=send_sync_start",
-                        runtime_request_id_trace_label(request_id)
-                    ),
-                );
-                let _ = self
-                    .account_actor
-                    .send(AccountMessage::SyncCommand(SyncCommand::Start {
+            match effect {
+                AppEffect::StartSync => {
+                    trace_runtime_sync(
+                        "effect_start_sync",
+                        &format!(
+                            "source=command_effect request_id={} action=send_sync_start",
+                            runtime_request_id_trace_label(request_id)
+                        ),
+                    );
+                    let _ = self
+                        .account_actor
+                        .send(AccountMessage::SyncCommand(SyncCommand::Start {
+                            request_id,
+                        }))
+                        .await;
+                }
+                AppEffect::StopSync => {
+                    trace_runtime_sync(
+                        "effect_stop_sync",
+                        &format!(
+                            "source=command_effect request_id={} action=send_sync_stop",
+                            runtime_request_id_trace_label(request_id)
+                        ),
+                    );
+                    let _ = self
+                        .account_actor
+                        .send(AccountMessage::SyncCommand(SyncCommand::Stop {
+                            request_id,
+                        }))
+                        .await;
+                }
+                AppEffect::SubscribeTimeline { room_id } => {
+                    let Some(account_key) = self.current_account_key() else {
+                        self.emit(CoreEvent::OperationFailed {
+                            request_id,
+                            failure: CoreFailure::SessionRequired,
+                        });
+                        continue;
+                    };
+                    self.send_timeline_command_or_fail(
                         request_id,
-                    }))
-                    .await;
-            } else if let AppEffect::SubscribeTimeline { room_id } = effect {
-                let Some(account_key) = self.current_account_key() else {
-                    self.emit(CoreEvent::OperationFailed {
-                        request_id,
-                        failure: CoreFailure::SessionRequired,
-                    });
-                    continue;
-                };
-                self.send_timeline_command_or_fail(
-                    request_id,
-                    TimelineCommand::EnsureSubscribed {
-                        request_id,
-                        key: TimelineKey {
-                            account_key,
-                            kind: TimelineKind::Room { room_id },
-                        },
-                        replay_existing: false,
-                    },
-                )
-                .await;
-            } else if let AppEffect::OpenThreadTimeline {
-                room_id,
-                root_event_id,
-            } = effect
-            {
-                let Some(account_key) = self.current_account_key() else {
-                    self.emit(CoreEvent::OperationFailed {
-                        request_id,
-                        failure: CoreFailure::SessionRequired,
-                    });
-                    continue;
-                };
-                self.send_timeline_command_or_fail(
-                    request_id,
-                    TimelineCommand::Subscribe {
-                        request_id,
-                        key: TimelineKey {
-                            account_key,
-                            kind: TimelineKind::Thread {
-                                room_id,
-                                root_event_id,
+                        TimelineCommand::EnsureSubscribed {
+                            request_id,
+                            key: TimelineKey {
+                                account_key,
+                                kind: TimelineKind::Room { room_id },
                             },
-                        },
-                    },
-                )
-                .await;
-            } else if let AppEffect::OpenFocusedTimeline { room_id, event_id } = effect {
-                let Some(account_key) = self.current_account_key() else {
-                    self.emit(CoreEvent::OperationFailed {
-                        request_id,
-                        failure: CoreFailure::SessionRequired,
-                    });
-                    continue;
-                };
-                self.send_timeline_command_or_fail(
-                    request_id,
-                    TimelineCommand::Subscribe {
-                        request_id,
-                        key: TimelineKey {
-                            account_key,
-                            kind: TimelineKind::Focused { room_id, event_id },
-                        },
-                    },
-                )
-                .await;
-            } else if let AppEffect::SearchMessages {
-                request_id: effect_request_id,
-                query,
-                scope,
-            } = effect
-            {
-                if effect_request_id != request_id.sequence {
-                    continue;
-                }
-                let _ = self
-                    .account_actor
-                    .send(crate::account::AccountMessage::SearchCommand(
-                        SearchCommand::Query {
-                            request_id,
-                            query,
-                            scope: map_state_search_scope_to_core(scope),
-                        },
-                    ))
-                    .await;
-            } else if let AppEffect::SearchAttachments {
-                request_id: effect_request_id,
-                scope,
-                filter,
-                sort,
-            } = effect
-            {
-                if effect_request_id != request_id.sequence {
-                    continue;
-                }
-                let _ = self
-                    .account_actor
-                    .send(crate::account::AccountMessage::SearchCommand(
-                        SearchCommand::Attachments {
-                            request_id,
-                            scope,
-                            filter,
-                            sort,
-                        },
-                    ))
-                    .await;
-            } else if let AppEffect::SubscribeThreadsList {
-                request_id: effect_request_id,
-                room_id,
-            } = effect
-            {
-                if effect_request_id != request_id.sequence {
-                    continue;
-                }
-                let _ = self
-                    .account_actor
-                    .send(crate::account::AccountMessage::ThreadsListCommand(
-                        crate::command::ThreadsListCommand::Open {
-                            request_id,
-                            room_id,
-                        },
-                    ))
-                    .await;
-            } else if let AppEffect::PaginateThreadsList {
-                request_id: effect_request_id,
-                room_id,
-            } = effect
-            {
-                if effect_request_id != request_id.sequence {
-                    continue;
-                }
-                let _ = self
-                    .account_actor
-                    .send(crate::account::AccountMessage::ThreadsListCommand(
-                        crate::command::ThreadsListCommand::Paginate {
-                            request_id,
-                            room_id,
-                        },
-                    ))
-                    .await;
-            } else if let AppEffect::UnsubscribeThreadsList = effect {
-                let _ = self
-                    .account_actor
-                    .send(crate::account::AccountMessage::ThreadsListCommand(
-                        crate::command::ThreadsListCommand::Close { request_id },
-                    ))
-                    .await;
-            } else if let AppEffect::NotifySearchCrawlerRoomsAvailable { room_ids, settings } =
-                effect
-            {
-                let _ = self
-                    .account_actor
-                    .send(
-                        crate::account::AccountMessage::NotifySearchCrawlerRoomsAvailable {
-                            room_ids,
-                            settings,
+                            replay_existing: false,
                         },
                     )
                     .await;
-            } else if let AppEffect::InvalidateSearchCrawlerCache = effect {
-                let _ = self
-                    .account_actor
-                    .send(crate::account::AccountMessage::InvalidateSearchCrawlerCache)
-                    .await;
-            } else if let AppEffect::RebuildSearchIndex = effect {
-                let _ = self
-                    .account_actor
-                    .send(crate::account::AccountMessage::RebuildSearchIndex)
-                    .await;
-            } else if let AppEffect::PersistSettings {
-                request_id: effect_request_id,
-                values,
-            } = effect
-            {
-                if effect_request_id != request_id.sequence {
-                    continue;
                 }
-                let action = match self.settings_store.save(&values) {
-                    Ok(()) => AppAction::SettingsPersisted {
-                        request_id: effect_request_id,
-                    },
-                    Err(_) => AppAction::SettingsPersistFailed {
-                        request_id: effect_request_id,
-                        message: "settings could not be saved".to_owned(),
-                    },
-                };
-                let _ = self.reduce_app_action(action).await;
-            } else if let AppEffect::PersistRoomPreferences {
-                request_id: effect_request_id,
-                preferences,
-            } = effect
-            {
-                if effect_request_id != request_id.sequence {
-                    continue;
+                AppEffect::OpenThreadTimeline {
+                    room_id,
+                    root_event_id,
+                } => {
+                    let Some(account_key) = self.current_account_key() else {
+                        self.emit(CoreEvent::OperationFailed {
+                            request_id,
+                            failure: CoreFailure::SessionRequired,
+                        });
+                        continue;
+                    };
+                    self.send_timeline_command_or_fail(
+                        request_id,
+                        TimelineCommand::Subscribe {
+                            request_id,
+                            key: TimelineKey {
+                                account_key,
+                                kind: TimelineKind::Thread {
+                                    room_id,
+                                    root_event_id,
+                                },
+                            },
+                        },
+                    )
+                    .await;
                 }
-                self.persist_room_preferences(&preferences).await;
-            } else if let AppEffect::EmitUiEvent(ui_event) = effect {
-                self.handle_ui_event_effect(&ui_event, &[]).await;
+                AppEffect::OpenFocusedTimeline { room_id, event_id } => {
+                    let Some(account_key) = self.current_account_key() else {
+                        self.emit(CoreEvent::OperationFailed {
+                            request_id,
+                            failure: CoreFailure::SessionRequired,
+                        });
+                        continue;
+                    };
+                    self.send_timeline_command_or_fail(
+                        request_id,
+                        TimelineCommand::Subscribe {
+                            request_id,
+                            key: TimelineKey {
+                                account_key,
+                                kind: TimelineKind::Focused { room_id, event_id },
+                            },
+                        },
+                    )
+                    .await;
+                }
+                AppEffect::SearchMessages {
+                    request_id: effect_request_id,
+                    query,
+                    scope,
+                } => {
+                    if effect_request_id != request_id.sequence {
+                        continue;
+                    }
+                    let _ = self
+                        .account_actor
+                        .send(crate::account::AccountMessage::SearchCommand(
+                            SearchCommand::Query {
+                                request_id,
+                                query,
+                                scope: map_state_search_scope_to_core(scope),
+                            },
+                        ))
+                        .await;
+                }
+                AppEffect::SearchAttachments {
+                    request_id: effect_request_id,
+                    scope,
+                    filter,
+                    sort,
+                } => {
+                    if effect_request_id != request_id.sequence {
+                        continue;
+                    }
+                    let _ = self
+                        .account_actor
+                        .send(crate::account::AccountMessage::SearchCommand(
+                            SearchCommand::Attachments {
+                                request_id,
+                                scope,
+                                filter,
+                                sort,
+                            },
+                        ))
+                        .await;
+                }
+                AppEffect::SubscribeThreadsList {
+                    request_id: effect_request_id,
+                    room_id,
+                } => {
+                    if effect_request_id != request_id.sequence {
+                        continue;
+                    }
+                    let _ = self
+                        .account_actor
+                        .send(crate::account::AccountMessage::ThreadsListCommand(
+                            crate::command::ThreadsListCommand::Open {
+                                request_id,
+                                room_id,
+                            },
+                        ))
+                        .await;
+                }
+                AppEffect::PaginateThreadsList {
+                    request_id: effect_request_id,
+                    room_id,
+                } => {
+                    if effect_request_id != request_id.sequence {
+                        continue;
+                    }
+                    let _ = self
+                        .account_actor
+                        .send(crate::account::AccountMessage::ThreadsListCommand(
+                            crate::command::ThreadsListCommand::Paginate {
+                                request_id,
+                                room_id,
+                            },
+                        ))
+                        .await;
+                }
+                AppEffect::UnsubscribeThreadsList => {
+                    let _ = self
+                        .account_actor
+                        .send(crate::account::AccountMessage::ThreadsListCommand(
+                            crate::command::ThreadsListCommand::Close { request_id },
+                        ))
+                        .await;
+                }
+                AppEffect::NotifySearchCrawlerRoomsAvailable { room_ids, settings } => {
+                    let _ = self
+                        .account_actor
+                        .send(
+                            crate::account::AccountMessage::NotifySearchCrawlerRoomsAvailable {
+                                room_ids,
+                                settings,
+                            },
+                        )
+                        .await;
+                }
+                AppEffect::InvalidateSearchCrawlerCache => {
+                    let _ = self
+                        .account_actor
+                        .send(crate::account::AccountMessage::InvalidateSearchCrawlerCache)
+                        .await;
+                }
+                AppEffect::RebuildSearchIndex => {
+                    let _ = self
+                        .account_actor
+                        .send(crate::account::AccountMessage::RebuildSearchIndex)
+                        .await;
+                }
+                AppEffect::PersistSettings {
+                    request_id: effect_request_id,
+                    values,
+                } => {
+                    if effect_request_id != request_id.sequence {
+                        continue;
+                    }
+                    let settings_store = self.settings_store.clone();
+                    let action = match executor::spawn_blocking(move || {
+                        settings_store.save(&values)
+                    })
+                    .await
+                    {
+                        Ok(Ok(())) => AppAction::SettingsPersisted {
+                            request_id: effect_request_id,
+                        },
+                        Ok(Err(_)) | Err(_) => AppAction::SettingsPersistFailed {
+                            request_id: effect_request_id,
+                            message: "settings could not be saved".to_owned(),
+                        },
+                    };
+                    let _ = self.reduce_app_action(action).await;
+                }
+                AppEffect::PersistRoomPreferences {
+                    request_id: effect_request_id,
+                    preferences,
+                } => {
+                    if effect_request_id != request_id.sequence {
+                        continue;
+                    }
+                    self.persist_room_preferences(&preferences).await;
+                }
+                AppEffect::EmitUiEvent(ui_event) => {
+                    self.handle_ui_event_effect(&ui_event, &[]).await;
+                }
+                AppEffect::RestoreSession
+                | AppEffect::DiscoverLogin { .. }
+                | AppEffect::Login(_)
+                | AppEffect::RecoverE2ee(_)
+                | AppEffect::RequestVerification { .. }
+                | AppEffect::AcceptVerification { .. }
+                | AppEffect::ConfirmSasVerification { .. }
+                | AppEffect::CancelVerification { .. }
+                | AppEffect::BootstrapCrossSigning { .. }
+                | AppEffect::EnableKeyBackup { .. }
+                | AppEffect::RestoreKeyBackup { .. }
+                | AppEffect::ResetIdentity { .. }
+                | AppEffect::PersistSession(_)
+                | AppEffect::PaginateTimelineBackwards { .. }
+                | AppEffect::SendText { .. } => {}
             }
         }
     }
 
     async fn handle_post_projection_effects(&mut self, effects: &[AppEffect]) {
         for effect in effects {
-            if let AppEffect::StartSync = effect {
-                let request_id = self.next_internal_request_id();
-                trace_runtime_sync(
-                    "effect_start_sync",
-                    &format!(
-                        "source=actor_projection request_id={} action=send_sync_start",
-                        runtime_request_id_trace_label(request_id)
-                    ),
-                );
-                let _ = self
-                    .account_actor
-                    .send(AccountMessage::SyncCommand(SyncCommand::Start {
+            match effect {
+                AppEffect::StartSync => {
+                    let request_id = self.next_internal_request_id();
+                    trace_runtime_sync(
+                        "effect_start_sync",
+                        &format!(
+                            "source=actor_projection request_id={} action=send_sync_start",
+                            runtime_request_id_trace_label(request_id)
+                        ),
+                    );
+                    let _ = self
+                        .account_actor
+                        .send(AccountMessage::SyncCommand(SyncCommand::Start {
+                            request_id,
+                        }))
+                        .await;
+                }
+                AppEffect::StopSync => {
+                    let request_id = self.next_internal_request_id();
+                    trace_runtime_sync(
+                        "effect_stop_sync",
+                        &format!(
+                            "source=actor_projection request_id={} action=send_sync_stop",
+                            runtime_request_id_trace_label(request_id)
+                        ),
+                    );
+                    let _ = self
+                        .account_actor
+                        .send(AccountMessage::SyncCommand(SyncCommand::Stop {
+                            request_id,
+                        }))
+                        .await;
+                }
+                AppEffect::SubscribeTimeline { room_id } => {
+                    let request_id = self.next_internal_request_id();
+                    let Some(account_key) = self.current_account_key() else {
+                        self.emit(CoreEvent::OperationFailed {
+                            request_id,
+                            failure: CoreFailure::SessionRequired,
+                        });
+                        continue;
+                    };
+                    self.send_timeline_command_or_fail(
                         request_id,
-                    }))
-                    .await;
-            } else if let AppEffect::SubscribeTimeline { room_id } = effect {
-                let request_id = self.next_internal_request_id();
-                let Some(account_key) = self.current_account_key() else {
-                    self.emit(CoreEvent::OperationFailed {
-                        request_id,
-                        failure: CoreFailure::SessionRequired,
-                    });
-                    continue;
-                };
-                self.send_timeline_command_or_fail(
-                    request_id,
-                    TimelineCommand::EnsureSubscribed {
-                        request_id,
-                        key: TimelineKey {
-                            account_key,
-                            kind: TimelineKind::Room {
-                                room_id: room_id.clone(),
+                        TimelineCommand::EnsureSubscribed {
+                            request_id,
+                            key: TimelineKey {
+                                account_key,
+                                kind: TimelineKind::Room {
+                                    room_id: room_id.clone(),
+                                },
                             },
+                            replay_existing: true,
                         },
-                        replay_existing: true,
-                    },
-                )
-                .await;
-            } else if let AppEffect::PersistRoomPreferences { preferences, .. } = effect {
-                self.persist_room_preferences(preferences).await;
+                    )
+                    .await;
+                }
+                AppEffect::PersistRoomPreferences { preferences, .. } => {
+                    self.persist_room_preferences(preferences).await;
+                }
+                AppEffect::RestoreSession
+                | AppEffect::DiscoverLogin { .. }
+                | AppEffect::Login(_)
+                | AppEffect::RecoverE2ee(_)
+                | AppEffect::RequestVerification { .. }
+                | AppEffect::AcceptVerification { .. }
+                | AppEffect::ConfirmSasVerification { .. }
+                | AppEffect::CancelVerification { .. }
+                | AppEffect::BootstrapCrossSigning { .. }
+                | AppEffect::EnableKeyBackup { .. }
+                | AppEffect::RestoreKeyBackup { .. }
+                | AppEffect::ResetIdentity { .. }
+                | AppEffect::PersistSession(_)
+                | AppEffect::PersistSettings { .. }
+                | AppEffect::PaginateTimelineBackwards { .. }
+                | AppEffect::SendText { .. }
+                | AppEffect::OpenThreadTimeline { .. }
+                | AppEffect::OpenFocusedTimeline { .. }
+                | AppEffect::SearchMessages { .. }
+                | AppEffect::SearchAttachments { .. }
+                | AppEffect::SubscribeThreadsList { .. }
+                | AppEffect::PaginateThreadsList { .. }
+                | AppEffect::UnsubscribeThreadsList
+                | AppEffect::NotifySearchCrawlerRoomsAvailable { .. }
+                | AppEffect::InvalidateSearchCrawlerCache
+                | AppEffect::RebuildSearchIndex
+                | AppEffect::EmitUiEvent(_) => {}
             }
         }
     }
@@ -2626,9 +2761,7 @@ impl AppActor {
         {
             self.emit(CoreEvent::OperationFailed {
                 request_id,
-                failure: CoreFailure::TimelineOperationFailed {
-                    kind: TimelineFailureKind::QueueOverflow,
-                },
+                failure: CoreFailure::ShutdownFailed,
             });
         }
     }
@@ -2869,8 +3002,10 @@ fn effects_open_focused_timeline(effects: &[AppEffect]) -> bool {
 
 fn map_core_search_scope_to_state(scope: SearchScope) -> AppSearchScope {
     match scope {
-        SearchScope::Global => AppSearchScope::AllRooms,
-        SearchScope::Room { room_id } => AppSearchScope::CurrentRoom { room_id },
+        SearchScope::AllRooms => AppSearchScope::AllRooms,
+        SearchScope::CurrentRoom { room_id } => AppSearchScope::CurrentRoom { room_id },
+        SearchScope::CurrentSpace { space_id } => AppSearchScope::CurrentSpace { space_id },
+        SearchScope::Dms => AppSearchScope::Dms,
     }
 }
 
@@ -2945,6 +3080,11 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         AccountCommand::ResetIdentity { request_id } => Some(AppAction::ResetIdentityRequested {
             request_id: request_id.sequence,
         }),
+        AccountCommand::CancelIdentityReset { flow_id, .. } => {
+            Some(AppAction::ResetIdentityCancelled {
+                request_id: *flow_id,
+            })
+        }
         AccountCommand::ProbeLocalEncryptionHealth { request_id } => {
             Some(AppAction::LocalEncryptionProbeRequested {
                 request_id: request_id.sequence,
@@ -3069,10 +3209,10 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
 
 fn map_state_search_scope_to_core(scope: AppSearchScope) -> SearchScope {
     match scope {
-        AppSearchScope::AllRooms | AppSearchScope::CurrentSpace { .. } | AppSearchScope::Dms => {
-            SearchScope::Global
-        }
-        AppSearchScope::CurrentRoom { room_id } => SearchScope::Room { room_id },
+        AppSearchScope::AllRooms => SearchScope::AllRooms,
+        AppSearchScope::CurrentSpace { space_id } => SearchScope::CurrentSpace { space_id },
+        AppSearchScope::Dms => SearchScope::Dms,
+        AppSearchScope::CurrentRoom { room_id } => SearchScope::CurrentRoom { room_id },
     }
 }
 
@@ -3119,6 +3259,88 @@ mod tests {
     fn default_data_dir_uses_xdg_like_user_data_path() {
         let dir = default_data_dir_from_home(Some("/tmp/synthetic-home".into())).unwrap();
         assert!(dir.ends_with(".local/share/koushi-desktop"));
+    }
+
+    #[test]
+    fn search_scope_round_trips_non_all_scope_kinds() {
+        let source = include_str!("runtime.rs");
+        let to_state = source
+            .split("fn map_core_search_scope_to_state")
+            .nth(1)
+            .expect("core-to-state search scope mapper should exist")
+            .split("fn account_command_projected_action")
+            .next()
+            .expect("account command projector should follow search scope mapper");
+        let to_core = source
+            .split("fn map_state_search_scope_to_core")
+            .nth(1)
+            .expect("state-to-core search scope mapper should exist")
+            .split("fn default_data_dir_from_home")
+            .next()
+            .expect("data-dir helper should follow search scope mapper");
+
+        assert!(
+            to_state.contains("SearchScope::CurrentSpace")
+                && to_state.contains("SearchScope::Dms")
+                && to_state.contains("SearchScope::AllRooms"),
+            "core search scopes must preserve current-space, DM, and all-rooms kinds in AppState"
+        );
+        assert!(
+            to_core.contains("AppSearchScope::CurrentSpace")
+                && to_core.contains("AppSearchScope::Dms")
+                && to_core.contains("AppSearchScope::AllRooms"),
+            "submitted AppState search scopes must round-trip through core without collapsing to global"
+        );
+    }
+
+    #[test]
+    fn core_connection_command_handle_clones_submit_path() {
+        let source = include_str!("runtime.rs");
+        let production_source = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("runtime production source should precede tests");
+        let handle_impl = production_source
+            .split("impl CoreCommandHandle")
+            .nth(1)
+            .expect("CoreConnection should expose a lightweight command handle");
+        let connection_impl = production_source
+            .split("impl CoreConnection")
+            .nth(1)
+            .expect("CoreConnection impl should exist");
+        let command_handle_fn = connection_impl
+            .split("pub fn command_handle")
+            .nth(1)
+            .expect("CoreConnection should clone a command handle for submitters")
+            .split("pub fn next_request_id")
+            .next()
+            .expect("command_handle should precede request-id allocation");
+        let command_fn = connection_impl
+            .split("pub async fn command")
+            .nth(1)
+            .expect("CoreConnection command helper should exist")
+            .split("pub async fn recv_event")
+            .next()
+            .expect("command helper should precede event receiving");
+
+        assert!(
+            production_source.contains("#[derive(Clone)]\npub struct CoreCommandHandle"),
+            "the command submit path must be cloneable without cloning event/snapshot receivers"
+        );
+        assert!(
+            handle_impl.contains("self.command_tx")
+                && handle_impl.contains(".send(command)")
+                && handle_impl.contains(".await"),
+            "the command handle must own the bounded send await"
+        );
+        assert!(
+            command_handle_fn.contains("command_tx: self.command_tx.clone()"),
+            "CoreConnection::command_handle must clone only the bounded sender"
+        );
+        assert!(
+            command_fn.contains("self.command_handle().command(command).await"),
+            "CoreConnection::command should delegate through the same submit handle"
+        );
     }
 
     #[test]
@@ -3349,14 +3571,19 @@ mod tests {
             })])
             .await;
 
-        let event =
-            tokio::time::timeout(std::time::Duration::from_secs(1), connection.recv_event())
-                .await
-                .expect("runtime should emit state delta")
-                .expect("event stream should stay open");
-        let CoreEvent::StateDelta(delta) = event else {
-            panic!("expected state delta event, got {event:?}");
-        };
+        let mut delta = None;
+        for _ in 0..8 {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(1), connection.recv_event())
+                    .await
+                    .expect("runtime should emit state delta")
+                    .expect("event stream should stay open");
+            if let CoreEvent::StateDelta(next) = event {
+                delta = Some(next);
+                break;
+            }
+        }
+        let delta = delta.expect("expected state delta event");
 
         let snapshot = connection.versioned_snapshot();
         assert_eq!(snapshot.generation, delta.generation);
@@ -3787,6 +4014,97 @@ mod tests {
     }
 
     #[test]
+    fn runtime_must_execute_session_cleanup_effects_from_session_reducer() {
+        let source = include_str!("runtime.rs");
+        let command_effects = source
+            .split("async fn handle_app_effects")
+            .nth(1)
+            .expect("handle_app_effects should exist")
+            .split("async fn handle_post_projection_effects")
+            .next()
+            .expect("handle_app_effects should precede post projection effects");
+        let actor_projection_effects = source
+            .split("async fn handle_post_projection_effects")
+            .nth(1)
+            .expect("handle_post_projection_effects should exist")
+            .split("async fn handle_ui_event_effects")
+            .next()
+            .expect("post projection effects should precede ui event effects");
+
+        for helper in [command_effects, actor_projection_effects] {
+            assert!(
+                helper.contains("AppEffect::StopSync"),
+                "session lock/logout reducers emit StopSync; runtime must handle it explicitly"
+            );
+            assert!(
+                helper.contains("SyncCommand::Stop"),
+                "StopSync effects must route the canonical SyncCommand::Stop path"
+            );
+        }
+    }
+
+    #[test]
+    fn app_actor_persistence_uses_blocking_store_port() {
+        let source = include_str!("runtime.rs");
+        let load_navigation = source
+            .split("async fn load_navigation_for_current_session")
+            .nth(1)
+            .expect("navigation loader should exist")
+            .split("async fn load_composer_drafts_for_current_session")
+            .next()
+            .expect("composer loader should follow navigation loader");
+        let save_scheduled = source
+            .split("async fn persist_scheduled_sends")
+            .nth(1)
+            .expect("scheduled persist helper should exist")
+            .split("async fn persist_navigation")
+            .next()
+            .expect("navigation persist should follow scheduled persist");
+        let save_navigation = source
+            .split("async fn persist_navigation")
+            .nth(1)
+            .expect("navigation persist helper should exist")
+            .split("async fn persist_room_preferences")
+            .next()
+            .expect("room preference persist should follow navigation persist");
+        let save_preferences = source
+            .split("async fn persist_room_preferences")
+            .nth(1)
+            .expect("room preference persist helper should exist")
+            .split("async fn schedule_composer_draft_persist")
+            .next()
+            .expect("composer schedule should follow room preference persist");
+        let flush_drafts = source
+            .split("async fn flush_pending_composer_drafts")
+            .nth(1)
+            .expect("composer draft flush should exist")
+            .split("fn scheduled_send_delay")
+            .next()
+            .expect("scheduled send delay should follow composer draft flush");
+        let settings_effect = source
+            .split("AppEffect::PersistSettings")
+            .nth(1)
+            .expect("settings persist effect should exist")
+            .split("AppEffect::PersistRoomPreferences")
+            .next()
+            .expect("room preference effect should follow settings effect");
+
+        for section in [
+            load_navigation,
+            save_scheduled,
+            save_navigation,
+            save_preferences,
+            flush_drafts,
+            settings_effect,
+        ] {
+            assert!(
+                section.contains("executor::spawn_blocking"),
+                "AppActor store persistence must be offloaded from the reducer loop"
+            );
+        }
+    }
+
+    #[test]
     fn runtime_must_execute_subscribe_timeline_effects_from_navigation_reducers() {
         let source = include_str!("runtime.rs");
         let effects_helper = source
@@ -3819,6 +4137,27 @@ mod tests {
         assert!(
             effects_helper.contains("replay_existing: true"),
             "room selection must replay InitialItems from an existing actor so a rebuilt or reloaded renderer can populate an empty timeline store"
+        );
+    }
+
+    #[test]
+    fn closed_account_actor_timeline_route_is_not_reported_as_queue_overflow() {
+        let source = include_str!("runtime.rs");
+        let helper = source
+            .split("async fn send_timeline_command_or_fail")
+            .nth(1)
+            .expect("timeline command routing helper should exist")
+            .split("fn default_data_dir_from_home")
+            .next()
+            .expect("helper should precede utility functions");
+
+        assert!(
+            helper.contains("CoreFailure::ShutdownFailed"),
+            "a closed AccountActor command route is runtime shutdown/closed, not bounded queue overflow"
+        );
+        assert!(
+            !helper.contains("TimelineFailureKind::QueueOverflow"),
+            "QueueOverflow is reserved for bounded queue backpressure/relay overflow, not closed actor routes"
         );
     }
 

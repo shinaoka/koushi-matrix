@@ -10,7 +10,6 @@ use crate::{
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AppEffect {
     RestoreSession,
-    RestoreSessionFor(SessionInfo),
     DiscoverLogin {
         homeserver: String,
     },
@@ -52,7 +51,6 @@ pub enum AppEffect {
         request_id: u64,
         preferences: RoomPreferencesState,
     },
-    ClearSession,
     StartSync,
     StopSync,
     SubscribeTimeline {

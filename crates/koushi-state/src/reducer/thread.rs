@@ -191,6 +191,37 @@ pub(crate) fn handle_thread_subscribed(
     vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
 }
 
+pub(crate) fn handle_thread_subscription_failed(
+    state: &mut AppState,
+    room_id: String,
+    root_event_id: String,
+    _message: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state)
+        || !matches!(
+            &state.thread,
+            ThreadPaneState::Opening {
+                room_id: opening_room_id,
+                root_event_id: opening_root_event_id,
+            } if opening_room_id == &room_id && opening_root_event_id == &root_event_id
+        )
+    {
+        return Vec::new();
+    }
+
+    state.thread = ThreadPaneState::Closed;
+    state.thread_attention = ThreadAttentionState::Closed;
+    state.errors.push(AppError {
+        code: "thread_subscription_failed".to_owned(),
+        message: "Matrix thread subscription failed".to_owned(),
+        recoverable: true,
+    });
+    vec![
+        AppEffect::EmitUiEvent(UiEvent::ThreadChanged),
+        AppEffect::EmitUiEvent(UiEvent::ErrorChanged),
+    ]
+}
+
 pub(crate) fn handle_thread_attention_updated(
     state: &mut AppState,
     room_id: String,
@@ -277,6 +308,33 @@ pub(crate) fn handle_focused_context_subscribed(
         is_subscribed: true,
     };
     Vec::new()
+}
+
+pub(crate) fn handle_focused_context_subscription_failed(
+    state: &mut AppState,
+    room_id: String,
+    event_id: String,
+    _message: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state)
+        || !matches!(
+            &state.focused_context,
+            FocusedContextState::Opening {
+                room_id: opening_room_id,
+                event_id: opening_event_id,
+            } if opening_room_id == &room_id && opening_event_id == &event_id
+        )
+    {
+        return Vec::new();
+    }
+
+    state.focused_context = FocusedContextState::Closed;
+    state.errors.push(AppError {
+        code: "focused_context_subscription_failed".to_owned(),
+        message: "Matrix focused context subscription failed".to_owned(),
+        recoverable: true,
+    });
+    vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
 }
 
 pub(crate) fn handle_close_focused_context(state: &mut AppState) -> Vec<AppEffect> {

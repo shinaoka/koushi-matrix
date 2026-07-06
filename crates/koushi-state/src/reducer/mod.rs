@@ -148,6 +148,12 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::ResetIdentityAuthSubmitted { request_id } => {
             e2ee::handle_reset_identity_auth_submitted(state, request_id)
         }
+        AppAction::ResetIdentityCancelled { request_id } => {
+            e2ee::handle_reset_identity_cancelled(state, request_id)
+        }
+        AppAction::ResetIdentityTimedOut { request_id } => {
+            e2ee::handle_reset_identity_timed_out(state, request_id)
+        }
         AppAction::ResetIdentityCompleted { request_id } => {
             e2ee::handle_reset_identity_completed(state, request_id)
         }
@@ -800,6 +806,11 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             root_event_id,
         } => thread::handle_thread_subscribed(state, room_id, root_event_id),
+        AppAction::ThreadSubscriptionFailed {
+            room_id,
+            root_event_id,
+            message,
+        } => thread::handle_thread_subscription_failed(state, room_id, root_event_id, message),
         AppAction::ThreadAttentionUpdated {
             room_id,
             root_event_id,
@@ -821,6 +832,11 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::FocusedContextSubscribed { room_id, event_id } => {
             thread::handle_focused_context_subscribed(state, room_id, event_id)
         }
+        AppAction::FocusedContextSubscriptionFailed {
+            room_id,
+            event_id,
+            message,
+        } => thread::handle_focused_context_subscription_failed(state, room_id, event_id, message),
         AppAction::CloseFocusedContext => thread::handle_close_focused_context(state),
         AppAction::SearchEdited { query, scope } => {
             search::handle_search_edited(state, query, scope)
@@ -865,6 +881,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             kind,
             timestamp_ms,
         } => search::handle_history_crawl_failed(state, room_id, kind, timestamp_ms),
+        AppAction::HistoryCrawlStopped { room_id } => {
+            search::handle_history_crawl_stopped(state, room_id)
+        }
         AppAction::FilesViewOpened {
             request_id,
             scope,
@@ -971,6 +990,17 @@ pub(crate) fn is_session_ready(state: &AppState) -> bool {
     )
 }
 
+pub(crate) fn has_session_projection_context(state: &AppState) -> bool {
+    matches!(
+        state.session,
+        SessionState::Ready(_)
+            | SessionState::NeedsRecovery { .. }
+            | SessionState::Recovering { .. }
+            | SessionState::Locked(_)
+            | SessionState::SwitchingAccount { .. }
+    )
+}
+
 pub(crate) fn clear_login_failed_errors(state: &mut AppState) -> bool {
     let previous_len = state.errors.len();
     state.errors.retain(|error| error.code != "login_failed");
@@ -981,7 +1011,9 @@ pub(crate) fn session_user_id(state: &AppState) -> Option<&str> {
     match &state.session {
         SessionState::Ready(info)
         | SessionState::NeedsRecovery { info, .. }
-        | SessionState::Recovering { info, .. } => Some(info.user_id.as_str()),
+        | SessionState::Recovering { info, .. }
+        | SessionState::Locked(info)
+        | SessionState::SwitchingAccount { info } => Some(info.user_id.as_str()),
         _ => None,
     }
 }
@@ -1027,6 +1059,7 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     let had_link_preview_settings = !state.link_preview_settings.room_overrides.is_empty();
     let had_room_preferences = !state.room_preferences.rooms.is_empty();
     let had_room_notification_settings = !state.room_notification_settings.is_empty();
+    let had_search_crawler = state.search_crawler != Default::default();
 
     state.navigation = NavigationState::default();
     state.link_preview_settings = Default::default();
@@ -1048,6 +1081,7 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.thread_attention = ThreadAttentionState::Closed;
     state.focused_context = FocusedContextState::Closed;
     state.search = SearchState::Closed;
+    state.search_crawler = Default::default();
     state.files_view = FilesViewState::Closed;
     state.threads_list = ThreadsListState::Closed;
     state.e2ee_trust = E2eeTrustState::default();
@@ -1059,6 +1093,8 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     state.live_signals = Default::default();
     state.local_encryption = LocalEncryptionState::Unknown;
     state.native_attention = Default::default();
+    state.invite_workflow = Default::default();
+    state.basic_operation = Default::default();
     state.room_notification_settings.clear();
 
     let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)];
@@ -1070,6 +1106,9 @@ pub(crate) fn clear_session_views(state: &mut AppState) -> Vec<AppEffect> {
     }
     if had_search {
         effects.push(AppEffect::EmitUiEvent(UiEvent::SearchChanged));
+    }
+    if had_search_crawler {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::SearchCrawlerChanged));
     }
     if had_e2ee_trust {
         effects.push(AppEffect::EmitUiEvent(UiEvent::E2eeTrustChanged));

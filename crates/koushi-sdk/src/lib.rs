@@ -16,6 +16,7 @@ use matrix_sdk::{
     },
     deserialized_responses::SyncOrStrippedState,
     encryption::{BackupDownloadStrategy, EncryptionSettings},
+    message_search::SearchError,
     room::ParentSpace,
     ruma::{
         events::{
@@ -30,6 +31,7 @@ use matrix_sdk::{
     },
     utils::UrlOrQuery,
 };
+use matrix_sdk_search::error::IndexError;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -2157,8 +2159,12 @@ pub struct MatrixSearchCandidate {
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum MatrixSearchError {
-    #[error("Matrix search failed")]
-    Sdk,
+    #[error("Matrix search index unavailable")]
+    IndexUnavailable,
+    #[error("Matrix search query failed")]
+    Query,
+    #[error("Matrix search internal failure")]
+    Internal,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -2778,7 +2784,7 @@ pub fn search_message_candidates_blocking(
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|_| MatrixSearchError::Sdk)?;
+        .map_err(|_| MatrixSearchError::Internal)?;
 
     runtime.block_on(search_message_candidates(session, query, limit))
 }
@@ -3476,10 +3482,8 @@ pub async fn create_public_directory_room(
 
 fn create_room_request(
     options: MatrixCreateRoomOptions,
-) -> Result<
-    matrix_sdk::ruma::api::client::room::create_room::v3::Request,
-    MatrixRoomOperationError,
-> {
+) -> Result<matrix_sdk::ruma::api::client::room::create_room::v3::Request, MatrixRoomOperationError>
+{
     let mut request = matrix_sdk::ruma::api::client::room::create_room::v3::Request::new();
     request.name = non_empty_name(&options.name);
     request.topic = options
@@ -3519,9 +3523,7 @@ fn create_room_request(
         let via_server = matrix_sdk::ruma::OwnedServerName::try_from(parent_space.via_server)
             .map_err(|_| MatrixRoomOperationError::InvalidServerName)?;
         let mut parent_content =
-            matrix_sdk::ruma::events::space::parent::SpaceParentEventContent::new(vec![
-                via_server,
-            ]);
+            matrix_sdk::ruma::events::space::parent::SpaceParentEventContent::new(vec![via_server]);
         parent_content.canonical = true;
         request.initial_state.push(
             matrix_sdk::ruma::events::InitialStateEvent::new(
@@ -3966,7 +3968,11 @@ pub async fn search_message_candidates(
         .client()
         .search_messages(query.to_owned(), limit)
         .build();
-    let Some(candidates) = iterator.next().await.map_err(|_| MatrixSearchError::Sdk)? else {
+    let Some(candidates) = iterator
+        .next()
+        .await
+        .map_err(matrix_search_error_from_sdk)?
+    else {
         return Ok(Vec::new());
     };
 
@@ -3980,6 +3986,28 @@ pub async fn search_message_candidates(
             score_millis: 1_000_u32.saturating_sub(index as u32),
         })
         .collect())
+}
+
+fn matrix_search_error_from_sdk(error: SearchError) -> MatrixSearchError {
+    match error {
+        SearchError::IndexError(error) => matrix_search_error_from_index(&error),
+        SearchError::EventLoadError(_) => MatrixSearchError::Internal,
+    }
+}
+
+fn matrix_search_error_from_index(error: &IndexError) -> MatrixSearchError {
+    match error {
+        IndexError::OpenDirectoryError(_) | IndexError::IO(_) => {
+            MatrixSearchError::IndexUnavailable
+        }
+        IndexError::QueryParserError(_) => MatrixSearchError::Query,
+        IndexError::TantivyError(_)
+        | IndexError::IndexSchemaError(_)
+        | IndexError::IndexWriteError(_)
+        | IndexError::MessageTypeNotSupported
+        | IndexError::CannotIndexRedactedMessage
+        | IndexError::EmptyMessage => MatrixSearchError::Internal,
+    }
 }
 
 /// Normalize a room list snapshot from caller-provided SDK rooms.
@@ -5460,15 +5488,15 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use super::{
-        LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE, MatrixCreateRoomOptions,
-        MatrixCreateRoomParentSpace, MatrixCreateRoomVisibility, MatrixEventCacheError,
-        MatrixLocalUserAliases, MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom,
-        MatrixRoomHistoryVisibility, MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomModerationAction,
+        LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE, MatrixCreateRoomOptions, MatrixCreateRoomParentSpace,
+        MatrixCreateRoomVisibility, MatrixEventCacheError, MatrixLocalUserAliases,
+        MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom, MatrixRoomHistoryVisibility,
+        MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomModerationAction,
         MatrixRoomPermissionFacts, MatrixRoomSettingChange, MatrixRoomSettingsSnapshot,
         MatrixRoomTagInfo, MatrixRoomTags, MatrixSearchIndexKey, MatrixSearchIndexStoreConfig,
-        create_public_directory_room, create_room_request, get_room_settings_snapshot, join_room_by_alias,
-        matrix_room_list_room_from_counts, matrix_room_member_role, moderate_room_member,
-        normalized_local_user_aliases, query_public_room_directory,
+        create_public_directory_room, create_room_request, get_room_settings_snapshot,
+        join_room_by_alias, matrix_room_list_room_from_counts, matrix_room_member_role,
+        moderate_room_member, normalized_local_user_aliases, query_public_room_directory,
         room_settings_snapshot_with_change, room_settings_snapshot_with_member_power_level,
         update_room_member_power_level, update_room_setting,
     };
@@ -5954,29 +5982,25 @@ mod tests {
         assert_eq!(request.name.as_deref(), Some("Synthetic Ops"));
         assert_eq!(request.topic.as_deref(), Some("Deployment notes"));
         assert_eq!(
-            request.room_version.as_ref().map(|version| version.as_str()),
+            request
+                .room_version
+                .as_ref()
+                .map(|version| version.as_str()),
             Some("9")
         );
         let initial_state = initial_state_json(&request);
-        assert!(
-            initial_state
-                .iter()
-                .any(|event| event.get("type").and_then(serde_json::Value::as_str)
-                    == Some("m.room.encryption"))
-        );
-        assert!(
-            initial_state
-                .iter()
-                .any(|event| event.get("type").and_then(serde_json::Value::as_str)
-                    == Some("m.space.parent")
-                    && event.get("state_key").and_then(serde_json::Value::as_str)
-                        == Some("!space:example.invalid"))
-        );
+        assert!(initial_state.iter().any(|event| {
+            event.get("type").and_then(serde_json::Value::as_str) == Some("m.room.encryption")
+        }));
+        assert!(initial_state.iter().any(|event| {
+            event.get("type").and_then(serde_json::Value::as_str) == Some("m.space.parent")
+                && event.get("state_key").and_then(serde_json::Value::as_str)
+                    == Some("!space:example.invalid")
+        }));
         let join_rules = initial_state
             .iter()
             .find(|event| {
-                event.get("type").and_then(serde_json::Value::as_str)
-                    == Some("m.room.join_rules")
+                event.get("type").and_then(serde_json::Value::as_str) == Some("m.room.join_rules")
             })
             .expect("join rules");
         assert_eq!(
@@ -6020,12 +6044,9 @@ mod tests {
             matrix_sdk::ruma::api::client::room::Visibility::Public
         );
         let initial_state = initial_state_json(&request);
-        assert!(
-            !initial_state
-                .iter()
-                .any(|event| event.get("type").and_then(serde_json::Value::as_str)
-                    == Some("m.room.encryption"))
-        );
+        assert!(!initial_state.iter().any(|event| {
+            event.get("type").and_then(serde_json::Value::as_str) == Some("m.room.encryption")
+        }));
     }
 
     fn initial_state_json(

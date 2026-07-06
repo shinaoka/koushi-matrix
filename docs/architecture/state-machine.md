@@ -46,6 +46,12 @@ actions: `SessionState::Ready(_)`, `SessionState::NeedsRecovery { .. }`, or
 may show degraded encrypted-content behavior, but product state still remains
 Rust-owned and guarded.
 
+Actor-delivered projections and request-correlated settles use a wider
+"session projection context": `Ready`, recovery states, `Locked`, and
+`SwitchingAccount`. These actions normalize state instead of being dropped by a
+transient display-state guard. Request starts still require a Ready session;
+logout/session-clear transitions explicitly reset session-scoped state.
+
 ## Maintenance Contract
 
 The state-transition diagrams in this document are normative, not illustrative.
@@ -93,8 +99,17 @@ stateDiagram-v2
     Reconnecting --> Stopped: LogoutRequested
 ```
 
-Logout and lock clear navigation, room lists, the main timeline, thread pane, and
-search state. The reducer emits UI events for any cleared visible panes.
+Logout, lock, and account switch clear navigation, room lists, the main
+timeline, thread pane, search state, search crawler status, invite workflow,
+and basic operation pendings. The reducer emits UI events for any cleared
+visible panes or crawler status.
+
+`SessionLocked` and `LogoutRequested` emit `AppEffect::StopSync`; the core
+runtime must execute it through the canonical sync actor command path.
+Credential/store cleanup and target-account restore are not reducer effects:
+logout and account switch run through the explicit AccountActor command path,
+which owns local persistence deletion, current-session teardown, and
+store-backed account restore.
 
 Password login and OIDC/MAS callback completion both enter `Authenticating`
 through Rust-owned account commands and settle through the same
@@ -176,16 +191,18 @@ stateDiagram-v2
   from sliding-sync dynamic adapters). It is accepted only when the projection
   changes.
 - `RoomListUpdated` and `InviteListUpdated` recompute the projection for the
-  current `active_filter`.
+  current `active_filter`. They are applied in session projection context
+  (`Ready`, recovery, `Locked`, or `SwitchingAccount`) so a transient lock or
+  account switch window cannot lose a Rust-owned snapshot.
 - `RoomMarkedAsReadSucceeded` clears `marked_unread`, `unread_count`,
   `notification_count`, and `highlight_count` for the room and recomputes the
-  projection.
+  projection. Success/failure settles are accepted in session projection
+  context for known rooms.
 - `RoomMarkedAsUnreadSucceeded { unread: true }` sets `marked_unread` and bumps
   `unread_count` to at least 1 when it was zero, then recomputes the projection.
   `unread: false` clears the flag and resets `unread_count`.
-- Requested/failed mark-read/unread actions are accepted only for known rooms
-  in a Ready session and emit `RoomListChanged` (requested) or `ErrorChanged`
-  (failed).
+- Requested mark-read/unread actions are accepted only for known rooms in a
+  Ready session and emit `RoomListChanged`.
 
 ### Unread Source Of Truth
 
@@ -421,13 +438,15 @@ stateDiagram-v2
 
 - The thread pane is either closed, opening a root event, or open with a focused
   thread timeline.
-- Thread subscription success must match the current opening room and root event;
-  stale thread signals are ignored.
+- Thread subscription success or failure must match the current opening room and
+  root event; stale thread signals are ignored.
 - Opening a thread is not complete when `ThreadPaneState` changes to `Opening`.
   The production runtime must also subscribe the corresponding
   `TimelineKind::Thread { room_id, root_event_id }`. Only the actual thread
   timeline subscription success may drive `ThreadSubscribed` and move the pane to
-  `Open`.
+  `Open`. Matching subscription failure drives `ThreadSubscriptionFailed`, closes
+  the pane, clears pane-level thread attention, and records a private-data-free
+  recoverable error.
 - Thread pane identity and open/closed state are Rust-owned `AppState`. Visible
   thread items are not stored in `AppState`; they flow as `TimelineEvent`
   batches/diffs keyed by the thread `TimelineKey`. Legacy top-level frontend
@@ -645,13 +664,15 @@ stateDiagram-v2
   pinned-event list and emits `RoomInteractionsChanged` when the list changes.
   It may arrive from sync or as the post-command refresh after successful
   pin/unpin. It does not synthesize a room summary and does not settle a
-  pending operation by itself.
+  pending operation by itself. It is applied in session projection context so a
+  transient `Locked` or `SwitchingAccount` state cannot lose the projection.
 - `PinEventRequested` and `UnpinEventRequested` are accepted only for a Ready
   session, a known room, a non-empty event id, and an `Idle` or recoverable
   `Failed` pin operation. Requests while another pin/unpin is pending are
   ignored.
 - Completion and failure actions settle only the matching request id and
-  operation kind. Stale completions, duplicate completions, and opposite
+  operation kind, including while the session is `Locked` or
+  `SwitchingAccount`. Stale completions, duplicate completions, and opposite
   operation completions are ignored.
 - Failures store a recoverable `Failed` state and push only a coarse
   private-data-free `AppError`; raw SDK errors, room ids, event ids, and
@@ -1098,6 +1119,7 @@ stateDiagram-v2
     Opening --> Opening: OpenFocusedContext [replacement]
     Open --> Opening: OpenFocusedContext [replacement]
     Opening --> Open: FocusedContextSubscribed
+    Opening --> Closed: FocusedContextSubscriptionFailed
     Opening --> Closed: CloseFocusedContext
     Open --> Closed: CloseFocusedContext
 ```
@@ -1111,6 +1133,8 @@ stateDiagram-v2
   `TimelineKind::Focused { room_id, event_id }` through that effect.
 - `FocusedContextSubscribed { room_id, event_id }` moves `Opening` to `Open`
   only when both fields match the currently opening context; stale subscription signals are ignored.
+  Matching `FocusedContextSubscriptionFailed` closes the opening context and
+  records a private-data-free recoverable error; stale failures are ignored.
 - `CloseFocusedContext` closes an `Opening` or `Open` context for a ready
   session. close from `Closed`, or any close without a ready session, is a no-op.
 - Focused context replacement is core-owned: when opening a different focused
@@ -1293,6 +1317,9 @@ stateDiagram-v2
     Idle --> FailedPermissions: RoomSettingUpdateRequested [permission denied]
     Idle --> FailedPermissions: RoomModerationRequested [permission denied]
     Idle --> FailedPermissions: RoomMemberRoleUpdateRequested [permission denied]
+    PendingSettings --> PendingSettings: RoomSettingsSnapshotLoaded [same room]
+    PendingModeration --> PendingModeration: RoomSettingsSnapshotLoaded [same room]
+    PendingRoles --> PendingRoles: RoomSettingsSnapshotLoaded [same room]
     PendingSettings --> Idle: RoomSettingUpdateSucceeded [matching request_id]
     PendingSettings --> FailedSettings: RoomSettingUpdateFailed [matching request_id]
     PendingModeration --> Idle: RoomModerationSucceeded [matching request_id]
@@ -1340,6 +1367,10 @@ stateDiagram-v2
 - Permission-denied requests settle as a failed `permissions` operation before
   SDK mutation. A GUI control may be disabled from the snapshot, but Rust still
   enforces the guard for direct commands and tests.
+- A `RoomSettingsSnapshotLoaded` projection for the same room refreshes the
+  visible snapshot while preserving any pending settings, moderation, or role
+  operation. Loading a different room settings view replaces the selected
+  settings state and clears the prior selected-room operation.
 - Settings and moderation completions are request-correlated. Stale successes,
   stale failures, duplicate completions, and completions for a room that is no
   longer selected are ignored.
@@ -1672,9 +1703,13 @@ stateDiagram-v2
     Unknown --> Trusted: CrossSigningStatusChanged
     Unknown --> NotTrusted: CrossSigningStatusChanged
     Bootstrapping --> Trusted: CrossSigningStatusChanged
-    Bootstrapping --> Missing: CrossSigningStatusChanged
-    Bootstrapping --> NotTrusted: CrossSigningStatusChanged
 ```
+
+- While cross-signing bootstrap is pending, non-success
+  `CrossSigningStatusChanged` projections are ignored so a later correlated
+  `BootstrapCrossSigningFailed` can still settle the operation. `Trusted`
+  remains the uncorrelated success projection produced by the bootstrap result
+  path.
 
 Key-backup status:
 
@@ -1706,6 +1741,8 @@ stateDiagram-v2
     Failed --> Resetting: ResetIdentityRequested
     Resetting --> AwaitingAuth: ResetIdentityAuthRequired [matching request_id]
     AwaitingAuth --> Resetting: ResetIdentityAuthSubmitted [matching request_id]
+    AwaitingAuth --> Failed: ResetIdentityCancelled [matching request_id]
+    AwaitingAuth --> Failed: ResetIdentityTimedOut [matching request_id]
     Resetting --> Idle: ResetIdentityCompleted [matching request_id]
     AwaitingAuth --> Idle: ResetIdentityCompleted [matching request_id]
     Resetting --> Failed: ResetIdentityFailed [matching request_id]
@@ -1723,6 +1760,10 @@ stateDiagram-v2
 - Verification start is accepted only when no verification is active
   (`Idle`, `Done`, or `Failed`). A second request while `Requested`,
   `Accepted`, `SasPresented`, or `Confirming` is ignored.
+- Identity reset auth waits expose a Rust-owned `CancelIdentityReset` command
+  and actor-owned timeout. Both settle the matching `AwaitingAuth` flow to
+  `Failed` with `Cancelled` or `Timeout`; stale flow ids are ignored and must
+  not cancel a newer SDK continuation.
 - All settle/progress actions are request-correlated. Stale request ids are
   ignored and must not clobber an active verification, cross-signing bootstrap,
   backup enable/restore, or identity reset.
@@ -1867,6 +1908,7 @@ stateDiagram-v2
     MissingCredential --> Probing: LocalEncryptionProbeRequested
     ResetRequired --> Resetting: ResetLocalDataRequested
     MissingCredential --> Resetting: ResetLocalDataRequested
+    Resetting --> Resetting: LocalEncryptionProbeRequested [ignored]
     Resetting --> Unknown: ResetLocalDataCompleted [matching request_id]
     Resetting --> ResetRequired: ResetLocalDataFailed [matching request_id]
     Healthy --> Unknown: LogoutRequested/SwitchAccountRequested/SessionCleared
@@ -1883,6 +1925,9 @@ stateDiagram-v2
 - Probes are accepted after the account runtime is ready and on explicit retry.
   GUI code requests a probe through the typed `probe_local_encryption_health`
   command; it never reads OS/keyring errors directly.
+- Probes are ignored while local-data reset is in flight. Only the matching
+  reset completion or failure can leave `Resetting`, or session cleanup can
+  clear it to `Unknown`.
 - Commands that open encrypted SDK/search storage fail closed inside the
   StoreActor/credential backend path. `AppState.local_encryption` is the
   public coarse status projection for UI and QA, not a React-side authorization
@@ -2232,12 +2277,16 @@ Each room progresses independently; rooms absent from the map are implicitly
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> Running : HistoryCrawlStarted\n(actor auto-start or explicit StartHistoryCrawl)
+    Idle --> Queued : HistoryCrawlStarted\n(actor auto-start or explicit StartHistoryCrawl)
+    Queued --> Running : HistoryCrawlProgress\n(first processed page)
     Running --> Running : HistoryCrawlProgress\n(processed / indexed updated)
+    Queued --> Idle : HistoryCrawlStopped\n(stop / pause / prune)
+    Running --> Idle : HistoryCrawlStopped\n(stop / pause / prune)
     Running --> Completed : HistoryCrawlCompleted
     Running --> Failed : HistoryCrawlFailed
     Completed --> Idle : content-setting toggle\n(include_media_captions or\ninclude_filenames changed)
-    Failed --> Running : HistoryCrawlStarted\n(retry)
+    Completed --> Idle : HistoryCrawlStopped\n(room pruned)
+    Failed --> Queued : HistoryCrawlStarted\n(retry)
 ```
 
 ### Guards and lifecycle
@@ -2261,7 +2310,15 @@ stateDiagram-v2
 - **Pause**: Changing speed from active to `Paused` emits
   `NotifySearchCrawlerRoomsAvailable` with `settings.speed = Paused` so the
   actor clears queued checkpoints and aborts the active page task. Completed
-  markers are retained.
+  markers are retained. The reducer must not predict `Running → Queued` on its
+  own; the `SearchActor` settles queued/running rows through
+  `HistoryCrawlStopped`, and stale `HistoryCrawlProgress` is ignored while the
+  persisted speed is `Paused`.
+- **Stop / prune settle**: Explicit `StopHistoryCrawl`, manual start while
+  paused, and actor-side pruning of unavailable rooms emit
+  `HistoryCrawlStopped`, which returns the room projection to `Idle`. This is a
+  Rust-owned lifecycle projection; React must not synthesize stop state from
+  settings or local queue mirrors.
 - **Pure speed change**: Changing speed between two active values (e.g.
   `Standard → Slow`) does NOT invalidate `Completed` rooms and does NOT emit
   `NotifySearchCrawlerRoomsAvailable`. No `SearchCrawlerChanged` event is

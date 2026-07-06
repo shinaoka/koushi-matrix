@@ -59,6 +59,7 @@ use crate::event::{
     AccountEvent, CoreEvent, E2eeTrustEvent, EventCacheFailureReasonClass,
     EventCacheSubscribeStatus, LiveSignalsEvent, LocalEncryptionEvent,
 };
+use crate::executor;
 use crate::failure::{CoreFailure, LoginFailureKind, ProfileFailureKind, TimelineFailureKind};
 use crate::ids::{AccountKey, RequestId, RuntimeConnectionId, TimelineKey, TimelineKind};
 use crate::link_preview::LinkPreviewContext;
@@ -82,6 +83,7 @@ const AVATAR_DOWNLOAD_CONCURRENCY: usize = 6;
 const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
 const SERVER_LOGOUT_TIMEOUT: Duration = Duration::from_secs(10);
 const ACCOUNT_HYDRATION_TIMEOUT: Duration = Duration::from_secs(10);
+const IDENTITY_RESET_AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 const OIDC_REDIRECT_URI: &str = "koushi-desktop://auth/callback";
 const ENV_SYNC_TRACE: &str = "KOUSHI_SYNC_TRACE";
 
@@ -187,6 +189,9 @@ pub enum AccountMessage {
     },
     SessionInvalidated {
         soft_logout: bool,
+    },
+    IdentityResetAuthTimedOut {
+        flow_id: u64,
     },
     /// Internal: a spawned avatar-fetch task completed. Never exposed to
     /// Tauri/React; carries only the resolved state back into the actor loop.
@@ -320,6 +325,10 @@ pub struct AccountActor {
     recovery_observer: Option<RecoveryStateObservation>,
     /// Pending SDK identity reset continuation, held only inside AccountActor.
     identity_reset_handle: Option<koushi_sdk::MatrixIdentityResetHandle>,
+    /// Flow id for the pending SDK identity reset continuation.
+    identity_reset_flow_id: Option<u64>,
+    /// Timeout task for the pending identity reset auth challenge.
+    identity_reset_timeout_task: Option<crate::executor::JoinHandle<()>>,
     /// Actor-private mapping from app-owned device ordinal to raw Matrix
     /// device id. Raw ids never enter reducer state or snapshots.
     device_session_ordinals: BTreeMap<u64, String>,
@@ -421,6 +430,8 @@ impl AccountActor {
             threads_list_actor: None,
             recovery_observer: None,
             identity_reset_handle: None,
+            identity_reset_flow_id: None,
+            identity_reset_timeout_task: None,
             device_session_ordinals: BTreeMap::new(),
             pending_uia_operations: BTreeMap::new(),
             pending_oidc_login: None,
@@ -585,6 +596,9 @@ impl AccountActor {
                 }
                 AccountMessage::SessionInvalidated { soft_logout } => {
                     self.handle_session_invalidated(soft_logout).await;
+                }
+                AccountMessage::IdentityResetAuthTimedOut { flow_id } => {
+                    self.handle_identity_reset_auth_timeout(flow_id).await;
                 }
                 AccountMessage::AvatarFetched {
                     mxc_uri,
@@ -765,7 +779,7 @@ impl AccountActor {
                 .await
             {
                 Ok(delay_id) => {
-                    self.reduce(vec![
+                    self.send_actions(vec![
                         AppAction::ScheduledSendCapabilityChanged {
                             capability: ScheduledSendCapability::ServerDelayedEvents,
                         },
@@ -778,14 +792,15 @@ impl AccountActor {
                                 handle: ScheduledSendHandle::Server { delay_id },
                             },
                         },
-                    ]);
+                    ])
+                    .await;
                     return;
                 }
                 Err(()) => {}
             }
         }
 
-        self.reduce(vec![
+        self.send_actions(vec![
             AppAction::ScheduledSendCapabilityChanged {
                 capability: ScheduledSendCapability::LocalFallback,
             },
@@ -798,7 +813,8 @@ impl AccountActor {
                     handle: ScheduledSendHandle::Local,
                 },
             },
-        ]);
+        ])
+        .await;
     }
 
     async fn handle_cancel_server_delayed_send(
@@ -820,7 +836,10 @@ impl AccountActor {
             )
             .await
         {
-            Ok(()) => self.reduce(vec![AppAction::ScheduledSendCancelled { scheduled_id }]),
+            Ok(()) => {
+                self.send_actions(vec![AppAction::ScheduledSendCancelled { scheduled_id }])
+                    .await;
+            }
             Err(()) => self.emit_failure(
                 request_id,
                 CoreFailure::TimelineOperationFailed {
@@ -867,14 +886,15 @@ impl AccountActor {
             .await
         {
             Ok(delay_id) => {
-                self.reduce(vec![AppAction::ScheduledSendRescheduled {
+                self.send_actions(vec![AppAction::ScheduledSendRescheduled {
                     scheduled_id,
                     send_at_ms,
                     handle: ScheduledSendHandle::Server { delay_id },
-                }]);
+                }])
+                .await;
             }
             Err(()) => {
-                self.reduce(vec![
+                self.send_actions(vec![
                     AppAction::ScheduledSendCapabilityChanged {
                         capability: ScheduledSendCapability::LocalFallback,
                     },
@@ -883,7 +903,8 @@ impl AccountActor {
                         send_at_ms,
                         handle: ScheduledSendHandle::Local,
                     },
-                ]);
+                ])
+                .await;
             }
         }
     }
@@ -1201,6 +1222,7 @@ impl AccountActor {
         );
 
         if self.sync_actor.is_none()
+            && !matches!(command, SyncCommand::Stop { .. })
             && let Some(session) = &self.session
         {
             trace_restore(
@@ -1229,7 +1251,7 @@ impl AccountActor {
                 // live RoomListService (canon, overview.md RoomActor bullet).
                 let _ = handle.send(SyncMessage::Command(command)).await;
             }
-            None => {
+            None if self.session.is_none() => {
                 trace_restore(
                     "route_sync_command",
                     &format!(
@@ -1241,6 +1263,16 @@ impl AccountActor {
                 // Session not yet ready — gate is enforced in AppActor but be
                 // defensive here too.
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
+            }
+            None => {
+                trace_restore(
+                    "route_sync_command",
+                    &format!(
+                        "request_id={} kind={} action=no_sync_actor",
+                        request_id_trace_label(request_id),
+                        command_kind
+                    ),
+                );
             }
         }
     }
@@ -1254,11 +1286,13 @@ impl AccountActor {
         // Give the RoomActor the session so room ops work even before sync
         // starts. The room-list observation starts later, on the SyncActor's
         // RoomMessage::SyncStarted (which carries the live RoomListService on
-        // the SyncService backend). try_send: this is a sync fn; capacity 64
-        // is more than enough for this one message.
-        self.room_actor.try_send(RoomMessage::SessionEstablished {
-            session: session.clone(),
-        });
+        // the SyncService backend).
+        let _ = self
+            .room_actor
+            .send(RoomMessage::SessionEstablished {
+                session: session.clone(),
+            })
+            .await;
 
         // Spawn SearchActor (Phase 6). The session already holds the search
         // index (configured in restore_into_store / the client builder). The
@@ -1438,15 +1472,40 @@ impl AccountActor {
             return;
         }
 
-        self.reduce(vec![AppAction::SessionLocked]);
+        self.send_actions(vec![AppAction::SessionLocked]).await;
         self.invalidate_account_hydration();
         self.stop_sync_actor().await;
     }
 
     async fn cancel_identity_reset_handle(&mut self) {
+        self.identity_reset_flow_id = None;
+        if let Some(task) = self.identity_reset_timeout_task.take() {
+            task.abort();
+        }
         if let Some(handle) = self.identity_reset_handle.take() {
             handle.cancel().await;
         }
+    }
+
+    fn spawn_identity_reset_auth_timeout(&mut self, flow_id: u64) {
+        if let Some(task) = self.identity_reset_timeout_task.take() {
+            task.abort();
+        }
+        let tx = self.self_tx.clone();
+        self.identity_reset_timeout_task = Some(executor::spawn(async move {
+            executor::sleep(IDENTITY_RESET_AUTH_TIMEOUT).await;
+            let _ = tx
+                .send(AccountMessage::IdentityResetAuthTimedOut { flow_id })
+                .await;
+        }));
+    }
+
+    fn clear_identity_reset_handle_after_completion(&mut self) {
+        self.identity_reset_flow_id = None;
+        if let Some(task) = self.identity_reset_timeout_task.take() {
+            task.abort();
+        }
+        self.identity_reset_handle = None;
     }
 
     async fn stop_verification_request_observer(&mut self) {
@@ -1522,7 +1581,7 @@ impl AccountActor {
                 self.handle_restore_last_session(request_id).await;
             }
             AccountCommand::QuerySavedSessions { request_id } => {
-                self.handle_query_saved_sessions(request_id);
+                self.handle_query_saved_sessions(request_id).await;
             }
             AccountCommand::QueryDevices { request_id } => {
                 self.handle_query_devices(request_id).await;
@@ -1600,7 +1659,7 @@ impl AccountActor {
                     .await;
             }
             AccountCommand::ProbeLocalEncryptionHealth { request_id } => {
-                self.handle_probe_local_encryption_health(request_id);
+                self.handle_probe_local_encryption_health(request_id).await;
             }
             AccountCommand::ResetLocalData { request_id } => {
                 self.handle_reset_local_data(request_id).await;
@@ -1639,6 +1698,12 @@ impl AccountActor {
             }
             AccountCommand::ResetIdentity { request_id } => {
                 self.handle_reset_identity(request_id).await;
+            }
+            AccountCommand::CancelIdentityReset {
+                request_id,
+                flow_id,
+            } => {
+                self.handle_cancel_identity_reset(request_id, flow_id).await;
             }
             AccountCommand::SubmitIdentityResetAuth {
                 request_id,
@@ -1735,10 +1800,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::VerificationFailed {
+                self.send_actions(vec![AppAction::VerificationFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -1753,10 +1819,11 @@ impl AccountActor {
                     handle: handle.clone(),
                 });
                 self.observe_verification_request(request_id, target.clone(), handle.clone());
-                self.reduce(vec![AppAction::VerificationRequested {
+                self.send_actions(vec![AppAction::VerificationRequested {
                     request_id: request_id.sequence,
                     target: target.clone(),
-                }]);
+                }])
+                .await;
                 self.emit_verification_progress(VerificationFlowState::Requested {
                     request_id: request_id.sequence,
                     target,
@@ -1800,10 +1867,11 @@ impl AccountActor {
             handle: handle.clone(),
         });
         self.observe_verification_request(request_id, target.clone(), handle.clone());
-        self.reduce(vec![AppAction::VerificationRequested {
+        self.send_actions(vec![AppAction::VerificationRequested {
             request_id: request_id.sequence,
             target: target.clone(),
-        }]);
+        }])
+        .await;
         self.emit_verification_progress(VerificationFlowState::Requested {
             request_id: request_id.sequence,
             target,
@@ -1905,11 +1973,24 @@ impl AccountActor {
                 .await;
             }
             Err(error) => {
-                self.send_actions(vec![AppAction::LocalUserAliasUpdateFailed {
-                    request_id: request_id.sequence,
-                    message: "local alias update failed".to_owned(),
-                }])
-                .await;
+                if let Some(action @ AppAction::LocalUserAliasesLoaded { .. }) =
+                    local_user_aliases_action_from_session(session).await
+                {
+                    self.send_actions(vec![
+                        AppAction::LocalUserAliasUpdateFailed {
+                            request_id: request_id.sequence,
+                            message: "local alias update failed".to_owned(),
+                        },
+                        action,
+                    ])
+                    .await;
+                } else {
+                    self.send_actions(vec![AppAction::LocalUserAliasUpdateFailed {
+                        request_id: request_id.sequence,
+                        message: "local alias update failed".to_owned(),
+                    }])
+                    .await;
+                }
                 self.emit_failure(
                     request_id,
                     CoreFailure::ProfileOperationFailed {
@@ -2152,7 +2233,8 @@ impl AccountActor {
         let generation = self.account_hydration_generation;
         let self_tx = self.self_tx.clone();
         self.account_hydration_task = Some(crate::executor::spawn(async move {
-            let (actions, ignored_user_ids) = account_hydration_actions_from_session(&session).await;
+            let (actions, ignored_user_ids) =
+                account_hydration_actions_from_session(&session).await;
             if actions.is_empty() {
                 return;
             }
@@ -2189,7 +2271,7 @@ impl AccountActor {
                 .send(TimelineMessage::IgnoredUsersUpdated { user_ids })
                 .await;
         }
-        self.reduce(actions);
+        self.send_actions(actions).await;
     }
 
     async fn handle_ignore_user(&mut self, request_id: RequestId, user_id: String, ignored: bool) {
@@ -2602,9 +2684,10 @@ impl AccountActor {
             koushi_sdk::MatrixVerificationRequestState::Created
             | koushi_sdk::MatrixVerificationRequestState::Requested => {}
             koushi_sdk::MatrixVerificationRequestState::Ready => {
-                self.reduce(vec![AppAction::VerificationAccepted {
+                self.send_actions(vec![AppAction::VerificationAccepted {
                     request_id: request_id.sequence,
-                }]);
+                }])
+                .await;
             }
             koushi_sdk::MatrixVerificationRequestState::SasStarted(sas) => {
                 let Some(target) = self
@@ -2677,10 +2760,11 @@ impl AccountActor {
             | koushi_sdk::MatrixSasState::Started
             | koushi_sdk::MatrixSasState::Accepted => {}
             koushi_sdk::MatrixSasState::SasPresented { emojis } => {
-                self.reduce(vec![AppAction::VerificationSasPresented {
+                self.send_actions(vec![AppAction::VerificationSasPresented {
                     request_id: request_id.sequence,
                     emojis: emojis.clone(),
-                }]);
+                }])
+                .await;
                 self.emit_verification_progress(VerificationFlowState::SasPresented {
                     request_id: request_id.sequence,
                     target,
@@ -2730,9 +2814,10 @@ impl AccountActor {
         self.stop_sas_verification_observer().await;
         self.verification_request = None;
         self.sas_verification = None;
-        self.reduce(vec![AppAction::VerificationCompleted {
+        self.send_actions(vec![AppAction::VerificationCompleted {
             request_id: request_id.sequence,
-        }]);
+        }])
+        .await;
         self.emit_verification_progress(VerificationFlowState::Done {
             request_id: request_id.sequence,
             target,
@@ -2775,10 +2860,11 @@ impl AccountActor {
                     .await
             }
             None => {
-                self.reduce(vec![AppAction::VerificationFailed {
+                self.send_actions(vec![AppAction::VerificationFailed {
                     request_id: flow_id,
                     kind,
-                }]);
+                }])
+                .await;
                 let failure = if self.session.is_some() {
                     CoreFailure::LocalEncryptionUnavailable
                 } else {
@@ -2799,10 +2885,11 @@ impl AccountActor {
         self.stop_sas_verification_observer().await;
         self.verification_request = None;
         self.sas_verification = None;
-        self.reduce(vec![AppAction::VerificationFailed {
+        self.send_actions(vec![AppAction::VerificationFailed {
             request_id: flow_id,
             kind,
-        }]);
+        }])
+        .await;
         self.emit_verification_progress(VerificationFlowState::Failed {
             request_id: flow_id,
             target,
@@ -2816,6 +2903,48 @@ impl AccountActor {
                 account_key,
                 state,
             }));
+        }
+    }
+
+    async fn handle_cancel_identity_reset(&mut self, _request_id: RequestId, flow_id: u64) {
+        if self.identity_reset_flow_id != Some(flow_id) {
+            return;
+        }
+        let account_key = self.active_account_key();
+        self.cancel_identity_reset_handle().await;
+        self.send_actions(vec![AppAction::ResetIdentityCancelled {
+            request_id: flow_id,
+        }])
+        .await;
+        if let Some(account_key) = account_key {
+            for event in project_identity_reset_failed_event(
+                flow_id,
+                account_key,
+                TrustOperationFailureKind::Cancelled,
+            ) {
+                self.emit(event);
+            }
+        }
+    }
+
+    async fn handle_identity_reset_auth_timeout(&mut self, flow_id: u64) {
+        if self.identity_reset_flow_id != Some(flow_id) {
+            return;
+        }
+        let account_key = self.active_account_key();
+        self.cancel_identity_reset_handle().await;
+        self.send_actions(vec![AppAction::ResetIdentityTimedOut {
+            request_id: flow_id,
+        }])
+        .await;
+        if let Some(account_key) = account_key {
+            for event in project_identity_reset_failed_event(
+                flow_id,
+                account_key,
+                TrustOperationFailureKind::Timeout,
+            ) {
+                self.emit(event);
+            }
         }
     }
 
@@ -2833,15 +2962,19 @@ impl AccountActor {
             Some(session) => session.clone(),
             None => {
                 self.cancel_identity_reset_handle().await;
-                self.reduce(vec![AppAction::ResetIdentityFailed {
+                self.send_actions(vec![AppAction::ResetIdentityFailed {
                     request_id: flow_id,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
         };
         let account_key = AccountKey(session.info.user_id.clone());
+        if self.identity_reset_flow_id != Some(flow_id) {
+            return;
+        }
         let result = match self.identity_reset_handle.as_ref() {
             Some(handle) => koushi_sdk::complete_identity_reset(&session, handle, &request).await,
             None => Err(koushi_sdk::E2eeTrustError::Sdk(
@@ -2853,10 +2986,10 @@ impl AccountActor {
 
         match result {
             Ok(()) => {
-                self.identity_reset_handle = None;
+                self.clear_identity_reset_handle_after_completion();
                 let (actions, events) =
                     project_reset_identity_completed(flow_request_id, account_key);
-                self.reduce(actions);
+                self.send_actions(actions).await;
                 for event in events {
                     self.emit(event);
                 }
@@ -2865,7 +2998,7 @@ impl AccountActor {
                 self.cancel_identity_reset_handle().await;
                 let (actions, events) =
                     project_reset_identity_error(flow_request_id, account_key, error);
-                self.reduce(actions);
+                self.send_actions(actions).await;
                 for event in events {
                     self.emit(event);
                 }
@@ -2881,10 +3014,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::BootstrapCrossSigningFailed {
+                self.send_actions(vec![AppAction::BootstrapCrossSigningFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -2893,7 +3027,7 @@ impl AccountActor {
         let result = koushi_sdk::bootstrap_cross_signing(&session, auth.as_ref()).await;
         let (actions, events) =
             project_bootstrap_cross_signing_result(request_id, account_key, result);
-        self.reduce(actions);
+        self.send_actions(actions).await;
         for event in events {
             self.emit(event);
         }
@@ -2907,10 +3041,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::KeyBackupFailed {
+                self.send_actions(vec![AppAction::KeyBackupFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -2919,7 +3054,7 @@ impl AccountActor {
         let result = koushi_sdk::enable_key_backup(&session, passphrase.as_ref()).await;
         drop(passphrase);
         let (actions, events) = project_enable_key_backup_result(request_id, account_key, result);
-        self.reduce(actions);
+        self.send_actions(actions).await;
         for event in events {
             self.emit(event);
         }
@@ -2934,10 +3069,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::KeyBackupFailed {
+                self.send_actions(vec![AppAction::KeyBackupFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -2947,7 +3083,7 @@ impl AccountActor {
         drop(request);
 
         let (actions, events) = project_restore_key_backup_result(request_id, account_key, result);
-        self.reduce(actions);
+        self.send_actions(actions).await;
         for event in events {
             self.emit(event);
         }
@@ -2957,10 +3093,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::RoomKeyExportFailed {
+                self.send_actions(vec![AppAction::RoomKeyExportFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -2975,20 +3112,23 @@ impl AccountActor {
         drop(passphrase);
         match result {
             Ok(summary) => {
-                self.reduce(vec![AppAction::RoomKeyExported {
+                self.send_actions(vec![AppAction::RoomKeyExported {
                     request_id: request_id.sequence,
                     exported_sessions: summary.exported_sessions,
-                }]);
+                }])
+                .await;
             }
-            Err(_) => {
-                self.reduce(vec![AppAction::RoomKeyExportFailed {
+            Err(error) => {
+                let kind = classify_e2ee_trust_error(&error);
+                self.send_actions(vec![AppAction::RoomKeyExportFailed {
                     request_id: request_id.sequence,
-                    kind: TrustOperationFailureKind::Sdk,
-                }]);
+                    kind,
+                }])
+                .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::AccountOperationFailed {
-                        kind: AuthFailureKind::Sdk,
+                        kind: classify_e2ee_trust_auth_failure(&error),
                     },
                 );
             }
@@ -2999,10 +3139,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::RoomKeyImportFailed {
+                self.send_actions(vec![AppAction::RoomKeyImportFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -3017,21 +3158,24 @@ impl AccountActor {
         drop(passphrase);
         match result {
             Ok(summary) => {
-                self.reduce(vec![AppAction::RoomKeyImported {
+                self.send_actions(vec![AppAction::RoomKeyImported {
                     request_id: request_id.sequence,
                     imported_count: summary.imported_count,
                     total_count: summary.total_count,
-                }]);
+                }])
+                .await;
             }
-            Err(_) => {
-                self.reduce(vec![AppAction::RoomKeyImportFailed {
+            Err(error) => {
+                let kind = classify_e2ee_trust_error(&error);
+                self.send_actions(vec![AppAction::RoomKeyImportFailed {
                     request_id: request_id.sequence,
-                    kind: TrustOperationFailureKind::Sdk,
-                }]);
+                    kind,
+                }])
+                .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::AccountOperationFailed {
-                        kind: AuthFailureKind::Sdk,
+                        kind: classify_e2ee_trust_auth_failure(&error),
                     },
                 );
             }
@@ -3046,10 +3190,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::SecureBackupSetupFailed {
+                self.send_actions(vec![AppAction::SecureBackupSetupFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -3073,7 +3218,7 @@ impl AccountActor {
                 } else {
                     RecoveryKeyDeliveryState::NotWritten
                 };
-                self.reduce(vec![
+                self.send_actions(vec![
                     AppAction::SecureBackupRecoveryKeyReady {
                         request_id: request_id.sequence,
                         delivery,
@@ -3081,17 +3226,20 @@ impl AccountActor {
                     AppAction::SecureBackupSetupEnabled {
                         request_id: request_id.sequence,
                     },
-                ]);
+                ])
+                .await;
             }
-            Err(_) => {
-                self.reduce(vec![AppAction::SecureBackupSetupFailed {
+            Err(error) => {
+                let kind = classify_e2ee_trust_error(&error);
+                self.send_actions(vec![AppAction::SecureBackupSetupFailed {
                     request_id: request_id.sequence,
-                    kind: TrustOperationFailureKind::Sdk,
-                }]);
+                    kind,
+                }])
+                .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::AccountOperationFailed {
-                        kind: AuthFailureKind::Sdk,
+                        kind: classify_e2ee_trust_auth_failure(&error),
                     },
                 );
             }
@@ -3106,10 +3254,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::SecureBackupPassphraseChangeFailed {
+                self.send_actions(vec![AppAction::SecureBackupPassphraseChangeFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -3136,20 +3285,23 @@ impl AccountActor {
                 } else {
                     RecoveryKeyDeliveryState::NotWritten
                 };
-                self.reduce(vec![AppAction::SecureBackupPassphraseChanged {
+                self.send_actions(vec![AppAction::SecureBackupPassphraseChanged {
                     request_id: request_id.sequence,
                     delivery,
-                }]);
+                }])
+                .await;
             }
-            Err(_) => {
-                self.reduce(vec![AppAction::SecureBackupPassphraseChangeFailed {
+            Err(error) => {
+                let kind = classify_e2ee_trust_error(&error);
+                self.send_actions(vec![AppAction::SecureBackupPassphraseChangeFailed {
                     request_id: request_id.sequence,
-                    kind: TrustOperationFailureKind::Sdk,
-                }]);
+                    kind,
+                }])
+                .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::AccountOperationFailed {
-                        kind: AuthFailureKind::Sdk,
+                        kind: classify_e2ee_trust_auth_failure(&error),
                     },
                 );
             }
@@ -3161,10 +3313,11 @@ impl AccountActor {
             Some(session) => session.clone(),
             None => {
                 self.cancel_identity_reset_handle().await;
-                self.reduce(vec![AppAction::ResetIdentityFailed {
+                self.send_actions(vec![AppAction::ResetIdentityFailed {
                     request_id: request_id.sequence,
                     kind: TrustOperationFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -3174,7 +3327,7 @@ impl AccountActor {
             Ok(koushi_sdk::IdentityResetOutcome::Completed) => {
                 self.cancel_identity_reset_handle().await;
                 let (actions, events) = project_reset_identity_completed(request_id, account_key);
-                self.reduce(actions);
+                self.send_actions(actions).await;
                 for event in events {
                     self.emit(event);
                 }
@@ -3182,10 +3335,12 @@ impl AccountActor {
             Ok(koushi_sdk::IdentityResetOutcome::AuthRequired(handle)) => {
                 let auth_type = handle.desktop_auth_type();
                 self.cancel_identity_reset_handle().await;
+                self.identity_reset_flow_id = Some(request_id.sequence);
+                self.spawn_identity_reset_auth_timeout(request_id.sequence);
                 self.identity_reset_handle = Some(handle);
                 let (actions, events) =
                     project_reset_identity_auth_required(request_id, account_key, auth_type);
-                self.reduce(actions);
+                self.send_actions(actions).await;
                 for event in events {
                     self.emit(event);
                 }
@@ -3194,7 +3349,7 @@ impl AccountActor {
                 self.cancel_identity_reset_handle().await;
                 let (actions, events) =
                     project_reset_identity_error(request_id, account_key, error);
-                self.reduce(actions);
+                self.send_actions(actions).await;
                 for event in events {
                     self.emit(event);
                 }
@@ -3210,23 +3365,26 @@ impl AccountActor {
 
         match discovery_result {
             Ok(Ok(discovery)) => {
-                self.reduce(vec![AppAction::LoginDiscoverySucceeded {
+                self.send_actions(vec![AppAction::LoginDiscoverySucceeded {
                     homeserver: requested_homeserver,
                     flows: discovery.flows,
                     delegated: discovery.delegated,
-                }]);
+                }])
+                .await;
             }
             Ok(Err(error)) => {
-                self.reduce(vec![AppAction::LoginDiscoveryFailed {
+                self.send_actions(vec![AppAction::LoginDiscoveryFailed {
                     homeserver: requested_homeserver,
                     kind: login_discovery_failure_kind(&error),
-                }]);
+                }])
+                .await;
             }
             Err(_) => {
-                self.reduce(vec![AppAction::LoginDiscoveryFailed {
+                self.send_actions(vec![AppAction::LoginDiscoveryFailed {
                     homeserver: requested_homeserver,
                     kind: AuthFailureKind::Sdk,
-                }]);
+                }])
+                .await;
             }
         }
     }
@@ -3243,7 +3401,8 @@ impl AccountActor {
             }
             Err(error) => {
                 let kind = classify_auth_error(&error);
-                self.reduce(vec![AppAction::LoginDiscoveryFailed { homeserver, kind }]);
+                self.send_actions(vec![AppAction::LoginDiscoveryFailed { homeserver, kind }])
+                    .await;
                 self.emit_failure(request_id, CoreFailure::AccountOperationFailed { kind });
             }
         }
@@ -3251,10 +3410,11 @@ impl AccountActor {
 
     async fn handle_complete_oidc_login(&mut self, request_id: RequestId, callback_url: String) {
         let Some((start_request_id, pending)) = self.pending_oidc_login.take() else {
-            self.reduce(vec![AppAction::LoginDiscoveryFailed {
+            self.send_actions(vec![AppAction::LoginDiscoveryFailed {
                 homeserver: String::new(),
                 kind: AuthFailureKind::Cancelled,
-            }]);
+            }])
+            .await;
             self.emit_failure(
                 request_id,
                 CoreFailure::AccountOperationFailed {
@@ -3269,7 +3429,8 @@ impl AccountActor {
             Ok(session) => session,
             Err(error) => {
                 let kind = classify_auth_error(&error);
-                self.reduce(vec![AppAction::LoginDiscoveryFailed { homeserver, kind }]);
+                self.send_actions(vec![AppAction::LoginDiscoveryFailed { homeserver, kind }])
+                    .await;
                 self.emit_failure(request_id, CoreFailure::AccountOperationFailed { kind });
                 return;
             }
@@ -3279,14 +3440,15 @@ impl AccountActor {
         let key_id = session_key_id_from_info(&info);
         let account_key = account_key_from_info(&info);
 
-        let persistable = match self.persist_session(&login_session, &key_id) {
+        let persistable = match self.persist_session(&login_session, &key_id).await {
             Ok(persistable) => persistable,
             Err(failure) => {
                 self.abort_login(login_session, &key_id, false).await;
                 self.emit_failure(request_id, failure);
-                self.reduce(vec![AppAction::LoginFailed {
+                self.send_actions(vec![AppAction::LoginFailed {
                     message: "login failed".to_owned(),
-                }]);
+                }])
+                .await;
                 return;
             }
         };
@@ -3296,9 +3458,10 @@ impl AccountActor {
             Err(failure) => {
                 self.abort_login(login_session, &key_id, true).await;
                 self.emit_failure(request_id, failure);
-                self.reduce(vec![AppAction::LoginFailed {
+                self.send_actions(vec![AppAction::LoginFailed {
                     message: "login failed".to_owned(),
-                }]);
+                }])
+                .await;
                 return;
             }
         };
@@ -3313,7 +3476,8 @@ impl AccountActor {
 
         self.spawn_sync_actor(session_arc.clone()).await;
 
-        self.reduce(vec![AppAction::LoginSucceeded(info)]);
+        self.send_actions(vec![AppAction::LoginSucceeded(info)])
+            .await;
 
         self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
             request_id: start_request_id,
@@ -3343,9 +3507,10 @@ impl AccountActor {
             Err(error) => {
                 let kind = classify_login_error(&error);
                 self.emit_failure(request_id, CoreFailure::LoginFailed { kind });
-                self.reduce(vec![AppAction::LoginFailed {
+                self.send_actions(vec![AppAction::LoginFailed {
                     message: "login failed".to_owned(),
-                }]);
+                }])
+                .await;
                 return;
             }
             Ok(session) => session,
@@ -3356,14 +3521,15 @@ impl AccountActor {
         let account_key = account_key_from_info(&info);
 
         // Store bootstrap step 2a: persist the session credentials.
-        let persistable = match self.persist_session(&login_session, &key_id) {
+        let persistable = match self.persist_session(&login_session, &key_id).await {
             Ok(persistable) => persistable,
             Err(failure) => {
                 self.abort_login(login_session, &key_id, false).await;
                 self.emit_failure(request_id, failure);
-                self.reduce(vec![AppAction::LoginFailed {
+                self.send_actions(vec![AppAction::LoginFailed {
                     message: "login failed".to_owned(),
-                }]);
+                }])
+                .await;
                 return;
             }
         };
@@ -3378,9 +3544,10 @@ impl AccountActor {
             Err(failure) => {
                 self.abort_login(login_session, &key_id, true).await;
                 self.emit_failure(request_id, failure);
-                self.reduce(vec![AppAction::LoginFailed {
+                self.send_actions(vec![AppAction::LoginFailed {
                     message: "login failed".to_owned(),
-                }]);
+                }])
+                .await;
                 return;
             }
         };
@@ -3402,7 +3569,8 @@ impl AccountActor {
         // Project login success through the reducer (session → Ready), then
         // hydrate Rust-owned profile/account-data projections. Fetch failure is
         // non-fatal to login.
-        self.reduce(vec![AppAction::LoginSucceeded(info)]);
+        self.send_actions(vec![AppAction::LoginSucceeded(info)])
+            .await;
 
         // Emit domain event carrying the request_id for command correlation.
         self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
@@ -3420,7 +3588,7 @@ impl AccountActor {
 
     async fn handle_restore_session(&mut self, request_id: RequestId, account_key: AccountKey) {
         trace_account_request("restore_session", request_id, "lookup_key");
-        let key_id = match self.lookup_session_key_id(&account_key) {
+        let key_id = match self.lookup_session_key_id(&account_key).await {
             Ok(Some(key_id)) => {
                 trace_account_request("restore_session", request_id, "key_found");
                 key_id
@@ -3430,16 +3598,18 @@ impl AccountActor {
                 // No stored session for this account: project
                 // RestoreSessionNotFound so AppState returns to SignedOut, and
                 // keep the redacted failure event for command correlation.
-                self.reduce(vec![AppAction::RestoreSessionNotFound]);
+                self.send_actions(vec![AppAction::RestoreSessionNotFound])
+                    .await;
                 self.emit_failure(request_id, SESSION_NOT_FOUND_FAILURE);
                 return;
             }
             Err(()) => {
                 trace_account_request("restore_session", request_id, "key_lookup_failed");
                 // Credential store unreachable.
-                self.reduce(vec![AppAction::RestoreSessionFailed {
+                self.send_actions(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 return;
             }
@@ -3463,15 +3633,17 @@ impl AccountActor {
             }
             Ok(None) => {
                 trace_account_request("restore_last_session", request_id, "pointer_missing");
-                self.reduce(vec![AppAction::RestoreSessionNotFound]);
+                self.send_actions(vec![AppAction::RestoreSessionNotFound])
+                    .await;
                 self.emit_failure(request_id, SESSION_NOT_FOUND_FAILURE);
                 return;
             }
             Err(_) => {
                 trace_account_request("restore_last_session", request_id, "pointer_load_failed");
-                self.reduce(vec![AppAction::RestoreSessionFailed {
+                self.send_actions(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 return;
             }
@@ -3485,9 +3657,12 @@ impl AccountActor {
     /// `AccountEvent::SavedSessionsListed` with identity data only
     /// (homeserver / user_id / device_id) — never tokens or secrets.
     /// An empty list is a normal answer, not a failure.
-    fn handle_query_saved_sessions(&self, request_id: RequestId) {
-        match self.store.credential_backend().load_saved_sessions() {
-            Ok(index) => {
+    async fn handle_query_saved_sessions(&self, request_id: RequestId) {
+        let store = self.store.clone();
+        match executor::spawn_blocking(move || store.credential_backend().load_saved_sessions())
+            .await
+        {
+            Ok(Ok(index)) => {
                 let sessions = index
                     .sessions()
                     .iter()
@@ -3498,7 +3673,7 @@ impl AccountActor {
                     sessions,
                 }));
             }
-            Err(_) => {
+            Ok(Err(_)) | Err(_) => {
                 self.emit_failure(request_id, CoreFailure::StoreUnavailable);
             }
         }
@@ -3508,10 +3683,11 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::DeviceSessionsLoadFailed {
+                self.send_actions(vec![AppAction::DeviceSessionsLoadFailed {
                     request_id: request_id.sequence,
                     kind: AuthFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
@@ -3536,17 +3712,20 @@ impl AccountActor {
                     })
                     .collect();
                 self.device_session_ordinals = ordinal_map;
-                self.reduce(vec![AppAction::DeviceSessionsLoaded {
+                self.send_actions(vec![AppAction::DeviceSessionsLoaded {
                     request_id: request_id.sequence,
                     devices: summaries,
-                }]);
+                }])
+                .await;
             }
-            Err(_) => {
-                self.reduce(vec![AppAction::DeviceSessionsLoadFailed {
+            Err(error) => {
+                let kind = classify_e2ee_trust_auth_failure(&error);
+                self.send_actions(vec![AppAction::DeviceSessionsLoadFailed {
                     request_id: request_id.sequence,
-                    kind: AuthFailureKind::Sdk,
-                }]);
-                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
+                    kind,
+                }])
+                .await;
+                self.emit_failure(request_id, CoreFailure::AccountOperationFailed { kind });
             }
         }
     }
@@ -3555,16 +3734,18 @@ impl AccountActor {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
-                self.reduce(vec![AppAction::AccountManagementCapabilitiesLoadFailed]);
+                self.send_actions(vec![AppAction::AccountManagementCapabilitiesLoadFailed])
+                    .await;
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
                 return;
             }
         };
 
         let capabilities = koushi_sdk::account_management_capabilities(&session).await;
-        self.reduce(vec![AppAction::AccountManagementCapabilitiesLoaded {
+        self.send_actions(vec![AppAction::AccountManagementCapabilitiesLoaded {
             change_password: capabilities.change_password,
-        }]);
+        }])
+        .await;
     }
 
     async fn handle_rename_device(
@@ -3582,7 +3763,8 @@ impl AccountActor {
                     operation,
                     AuthFailureKind::Sdk,
                     CoreFailure::SessionRequired,
-                );
+                )
+                .await;
                 return;
             }
         };
@@ -3594,25 +3776,32 @@ impl AccountActor {
                 CoreFailure::AccountOperationFailed {
                     kind: AuthFailureKind::Sdk,
                 },
-            );
+            )
+            .await;
             return;
         };
 
         let result = koushi_sdk::rename_device(&session, &raw_device_id, &display_name).await;
         drop(display_name);
         match result {
-            Ok(()) => self.reduce(vec![AppAction::AccountManagementSucceeded {
-                request_id: request_id.sequence,
-                operation,
-            }]),
-            Err(_) => self.project_account_management_failure(
-                request_id,
-                operation,
-                AuthFailureKind::Sdk,
-                CoreFailure::AccountOperationFailed {
-                    kind: AuthFailureKind::Sdk,
-                },
-            ),
+            Ok(()) => {
+                self.send_actions(vec![AppAction::AccountManagementSucceeded {
+                    request_id: request_id.sequence,
+                    operation,
+                }])
+                .await;
+            }
+            Err(_) => {
+                self.project_account_management_failure(
+                    request_id,
+                    operation,
+                    AuthFailureKind::Sdk,
+                    CoreFailure::AccountOperationFailed {
+                        kind: AuthFailureKind::Sdk,
+                    },
+                )
+                .await
+            }
         }
     }
 
@@ -3635,7 +3824,8 @@ impl AccountActor {
                     operation,
                     AuthFailureKind::Sdk,
                     CoreFailure::SessionRequired,
-                );
+                )
+                .await;
                 return;
             }
         };
@@ -3649,7 +3839,8 @@ impl AccountActor {
                     CoreFailure::AccountOperationFailed {
                         kind: AuthFailureKind::Sdk,
                     },
-                );
+                )
+                .await;
                 return;
             };
             raw_device_ids.push(raw_device_id.clone());
@@ -3673,10 +3864,11 @@ impl AccountActor {
         match result {
             Ok(()) => {
                 self.pending_uia_operations.remove(&request_id.sequence);
-                self.reduce(vec![AppAction::AccountManagementSucceeded {
+                self.send_actions(vec![AppAction::AccountManagementSucceeded {
                     request_id: request_id.sequence,
                     operation,
-                }]);
+                }])
+                .await;
             }
             Err(koushi_sdk::DeleteDevicesError::UiaaChallenge { session }) => {
                 let flow_id = request_id.sequence;
@@ -3690,11 +3882,12 @@ impl AccountActor {
                         uiaa_session: session,
                     },
                 );
-                self.reduce(vec![AppAction::AccountManagementUiaRequired {
+                self.send_actions(vec![AppAction::AccountManagementUiaRequired {
                     request_id: request_id.sequence,
                     flow_id,
                     operation,
-                }]);
+                }])
+                .await;
             }
             Err(koushi_sdk::DeleteDevicesError::Sdk(_)) => {
                 self.pending_uia_operations.remove(&request_id.sequence);
@@ -3705,7 +3898,8 @@ impl AccountActor {
                     CoreFailure::AccountOperationFailed {
                         kind: AuthFailureKind::Sdk,
                     },
-                );
+                )
+                .await;
             }
         }
     }
@@ -3724,17 +3918,21 @@ impl AccountActor {
                     operation,
                     AuthFailureKind::Sdk,
                     CoreFailure::SessionRequired,
-                );
+                )
+                .await;
                 return;
             }
         };
 
         let result = koushi_sdk::change_password(&session, &new_password, None, None).await;
         match result {
-            Ok(()) => self.reduce(vec![AppAction::AccountManagementSucceeded {
-                request_id: request_id.sequence,
-                operation,
-            }]),
+            Ok(()) => {
+                self.send_actions(vec![AppAction::AccountManagementSucceeded {
+                    request_id: request_id.sequence,
+                    operation,
+                }])
+                .await;
+            }
             Err(koushi_sdk::AccountManagementError::UiaaChallenge { session }) => {
                 let flow_id = request_id.sequence;
                 self.pending_uia_operations.insert(
@@ -3747,11 +3945,12 @@ impl AccountActor {
                         uiaa_session: session,
                     },
                 );
-                self.reduce(vec![AppAction::AccountManagementUiaRequired {
+                self.send_actions(vec![AppAction::AccountManagementUiaRequired {
                     request_id: request_id.sequence,
                     flow_id,
                     operation,
-                }]);
+                }])
+                .await;
             }
             Err(koushi_sdk::AccountManagementError::Sdk(_)) => {
                 drop(new_password);
@@ -3762,7 +3961,8 @@ impl AccountActor {
                     CoreFailure::AccountOperationFailed {
                         kind: AuthFailureKind::Sdk,
                     },
-                );
+                )
+                .await;
             }
         }
     }
@@ -3777,7 +3977,8 @@ impl AccountActor {
                     operation,
                     AuthFailureKind::Sdk,
                     CoreFailure::SessionRequired,
-                );
+                )
+                .await;
                 return;
             }
         };
@@ -3786,10 +3987,11 @@ impl AccountActor {
         match result {
             Ok(()) => {
                 self.pending_uia_operations.remove(&request_id.sequence);
-                self.reduce(vec![AppAction::AccountManagementSucceeded {
+                self.send_actions(vec![AppAction::AccountManagementSucceeded {
                     request_id: request_id.sequence,
                     operation,
-                }]);
+                }])
+                .await;
                 // Deactivation ends the account on the server. Perform local
                 // sign-out cleanup without sending a second /logout request.
                 self.perform_logout(request_id, false).await;
@@ -3806,11 +4008,12 @@ impl AccountActor {
                         uiaa_session: session,
                     },
                 );
-                self.reduce(vec![AppAction::AccountManagementUiaRequired {
+                self.send_actions(vec![AppAction::AccountManagementUiaRequired {
                     request_id: request_id.sequence,
                     flow_id,
                     operation,
-                }]);
+                }])
+                .await;
             }
             Err(koushi_sdk::AccountManagementError::Sdk(_)) => {
                 self.project_account_management_failure(
@@ -3820,7 +4023,8 @@ impl AccountActor {
                     CoreFailure::AccountOperationFailed {
                         kind: AuthFailureKind::Sdk,
                     },
-                );
+                )
+                .await;
             }
         }
     }
@@ -3852,7 +4056,8 @@ impl AccountActor {
                     operation,
                     AuthFailureKind::Sdk,
                     CoreFailure::SessionRequired,
-                );
+                )
+                .await;
                 return;
             }
         };
@@ -3894,7 +4099,8 @@ impl AccountActor {
                         CoreFailure::AccountOperationFailed {
                             kind: AuthFailureKind::Sdk,
                         },
-                    );
+                    )
+                    .await;
                     return;
                 };
                 koushi_sdk::change_password(
@@ -3919,10 +4125,11 @@ impl AccountActor {
         match result {
             Ok(()) => {
                 let was_deactivation = operation == AccountManagementOperation::DeactivateAccount;
-                self.reduce(vec![AppAction::AccountManagementSucceeded {
+                self.send_actions(vec![AppAction::AccountManagementSucceeded {
                     request_id: flow_id,
                     operation,
-                }]);
+                }])
+                .await;
                 if was_deactivation {
                     self.perform_logout(
                         RequestId {
@@ -3965,7 +4172,8 @@ impl AccountActor {
                     CoreFailure::AccountOperationFailed {
                         kind: AuthFailureKind::Sdk,
                     },
-                );
+                )
+                .await;
             }
         }
     }
@@ -3976,10 +4184,11 @@ impl AccountActor {
         password: koushi_state::AuthSecret,
     ) {
         let Some(session) = self.session.as_ref() else {
-            self.reduce(vec![AppAction::SoftLogoutReauthFailed {
+            self.send_actions(vec![AppAction::SoftLogoutReauthFailed {
                 request_id: request_id.sequence,
                 kind: AuthFailureKind::Sdk,
-            }]);
+            }])
+            .await;
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
@@ -4000,10 +4209,11 @@ impl AccountActor {
         {
             Ok(session) => session,
             Err(error) => {
-                self.reduce(vec![AppAction::SoftLogoutReauthFailed {
+                self.send_actions(vec![AppAction::SoftLogoutReauthFailed {
                     request_id: request_id.sequence,
                     kind: AuthFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 let failure = CoreFailure::LoginFailed {
                     kind: classify_login_error(&koushi_sdk::PasswordLoginError::Sdk(
                         error.to_string(),
@@ -4015,14 +4225,15 @@ impl AccountActor {
         };
         drop(password);
 
-        let persistable = match self.persist_session(&login_session, &key_id) {
+        let persistable = match self.persist_session(&login_session, &key_id).await {
             Ok(persistable) => persistable,
             Err(failure) => {
                 self.abort_login(login_session, &key_id, false).await;
-                self.reduce(vec![AppAction::SoftLogoutReauthFailed {
+                self.send_actions(vec![AppAction::SoftLogoutReauthFailed {
                     request_id: request_id.sequence,
                     kind: AuthFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, failure);
                 return;
             }
@@ -4037,10 +4248,11 @@ impl AccountActor {
             Ok(session) => session,
             Err(failure) => {
                 self.abort_login(login_session, &key_id, true).await;
-                self.reduce(vec![AppAction::SoftLogoutReauthFailed {
+                self.send_actions(vec![AppAction::SoftLogoutReauthFailed {
                     request_id: request_id.sequence,
                     kind: AuthFailureKind::Sdk,
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, failure);
                 return;
             }
@@ -4055,12 +4267,13 @@ impl AccountActor {
         self.spawn_sync_actor(session_arc.clone()).await;
 
         let account_key = account_key_from_info(&info);
-        self.reduce(vec![
+        self.send_actions(vec![
             AppAction::SoftLogoutReauthSucceeded {
                 request_id: request_id.sequence,
             },
             AppAction::LoginSucceeded(info),
-        ]);
+        ])
+        .await;
         self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
             request_id,
             account_key,
@@ -4072,18 +4285,19 @@ impl AccountActor {
         self.start_session_change_observer(session_arc);
     }
 
-    fn project_account_management_failure(
+    async fn project_account_management_failure(
         &self,
         request_id: RequestId,
         operation: AccountManagementOperation,
         kind: AuthFailureKind,
         failure: CoreFailure,
     ) {
-        self.reduce(vec![AppAction::AccountManagementFailed {
+        self.send_actions(vec![AppAction::AccountManagementFailed {
             request_id: request_id.sequence,
             operation,
             kind,
-        }]);
+        }])
+        .await;
         self.emit_failure(request_id, failure);
     }
 
@@ -4095,18 +4309,20 @@ impl AccountActor {
         drop(self.session.take());
         self.session_key_id = None;
 
-        let key_id = match self.lookup_session_key_id(&account_key) {
+        let key_id = match self.lookup_session_key_id(&account_key).await {
             Ok(Some(key_id)) => key_id,
             Ok(None) => {
                 // Same not-found contract as RestoreSession.
-                self.reduce(vec![AppAction::RestoreSessionNotFound]);
+                self.send_actions(vec![AppAction::RestoreSessionNotFound])
+                    .await;
                 self.emit_failure(request_id, SESSION_NOT_FOUND_FAILURE);
                 return;
             }
             Err(()) => {
-                self.reduce(vec![AppAction::RestoreSessionFailed {
+                self.send_actions(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 return;
             }
@@ -4115,9 +4331,10 @@ impl AccountActor {
         // Project the switch intent so the reducer drives state
         // (SwitchingAccount → cleared views), then run the store-backed
         // restore of the target account.
-        self.reduce(vec![AppAction::SwitchAccountRequested {
+        self.send_actions(vec![AppAction::SwitchAccountRequested {
             info: session_info_from_key_id(&key_id),
-        }]);
+        }])
+        .await;
 
         self.restore_account(request_id, key_id, RestoreOutcome::Switched)
             .await;
@@ -4137,15 +4354,17 @@ impl AccountActor {
             Ok(stored) => stored,
             Err(err) if koushi_key::is_missing_credential_error(&err) => {
                 trace_account_request("restore_account", request_id, "session_missing");
-                self.reduce(vec![AppAction::RestoreSessionNotFound]);
+                self.send_actions(vec![AppAction::RestoreSessionNotFound])
+                    .await;
                 self.emit_failure(request_id, SESSION_NOT_FOUND_FAILURE);
                 return;
             }
             Err(_) => {
                 trace_account_request("restore_account", request_id, "session_load_failed");
-                self.reduce(vec![AppAction::RestoreSessionFailed {
+                self.send_actions(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 return;
             }
@@ -4155,9 +4374,10 @@ impl AccountActor {
             Ok(s) => s,
             Err(_) => {
                 trace_account_request("restore_account", request_id, "session_parse_failed");
-                self.reduce(vec![AppAction::RestoreSessionFailed {
+                self.send_actions(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 return;
             }
@@ -4167,9 +4387,10 @@ impl AccountActor {
         match self.restore_into_store(&persistable, &key_id).await {
             Err(failure) => {
                 trace_account_request("restore_account", request_id, "store_restore_failed");
-                self.reduce(vec![AppAction::RestoreSessionFailed {
+                self.send_actions(vec![AppAction::RestoreSessionFailed {
                     message: RESTORE_FAILED_MESSAGE.to_owned(),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, failure);
             }
             Ok(session) => {
@@ -4187,7 +4408,8 @@ impl AccountActor {
                 // Spawn the SyncActor for the newly restored store-backed session.
                 self.spawn_sync_actor(session_arc.clone()).await;
                 trace_account_request("restore_account", request_id, "sync_actor_spawned");
-                self.reduce(vec![AppAction::RestoreSessionSucceeded(info)]);
+                self.send_actions(vec![AppAction::RestoreSessionSucceeded(info)])
+                    .await;
 
                 self.emit(CoreEvent::Account(match outcome {
                     RestoreOutcome::Restored => AccountEvent::SessionRestored {
@@ -4229,7 +4451,8 @@ impl AccountActor {
 
         // Project E2eeRecoverySubmitted so the reducer transitions
         // NeedsRecovery → Recovering while the async call runs.
-        self.reduce(vec![AppAction::E2eeRecoverySubmitted(request.clone())]);
+        self.send_actions(vec![AppAction::E2eeRecoverySubmitted(request.clone())])
+            .await;
 
         let result = koushi_sdk::recover_e2ee(&session, &request).await;
 
@@ -4239,11 +4462,13 @@ impl AccountActor {
         match result {
             Ok(()) => {
                 // Project success: Recovering → Ready.
-                self.reduce(vec![AppAction::E2eeRecoverySucceeded]);
-                self.reduce(vec![AppAction::RestoreKeyBackupRequested {
+                self.send_actions(vec![AppAction::E2eeRecoverySucceeded])
+                    .await;
+                self.send_actions(vec![AppAction::RestoreKeyBackupRequested {
                     request_id: request_id.sequence,
                     version: None,
-                }]);
+                }])
+                .await;
                 let restore_result =
                     koushi_sdk::download_joined_room_keys_from_backup(&session, None).await;
                 let (actions, events) = project_restore_key_backup_result(
@@ -4251,7 +4476,7 @@ impl AccountActor {
                     account_key.clone(),
                     restore_result,
                 );
-                self.reduce(actions);
+                self.send_actions(actions).await;
                 for event in events {
                     self.emit(event);
                 }
@@ -4263,9 +4488,10 @@ impl AccountActor {
             Err(error) => {
                 let kind = classify_recovery_error(&error);
                 // Project failure: Recovering → NeedsRecovery.
-                self.reduce(vec![AppAction::E2eeRecoveryFailed {
+                self.send_actions(vec![AppAction::E2eeRecoveryFailed {
                     message: "recovery failed".to_owned(),
-                }]);
+                }])
+                .await;
                 self.emit_failure(request_id, CoreFailure::RecoveryFailed { kind });
             }
         }
@@ -4292,13 +4518,13 @@ impl AccountActor {
 
         // Clean up credentials and stores for this account only.
         let account_key = if let Some(key_id) = &key_id {
-            self.clear_account_persistence(key_id);
+            self.clear_account_persistence(key_id).await;
             AccountKey(key_id.user_id.clone())
         } else {
             AccountKey(String::new())
         };
 
-        self.reduce(vec![AppAction::LogoutFinished]);
+        self.send_actions(vec![AppAction::LogoutFinished]).await;
         self.emit(CoreEvent::Account(AccountEvent::LoggedOut {
             request_id,
             account_key,
@@ -4314,32 +4540,39 @@ impl AccountActor {
     /// Persist session credentials, mirroring the src-tauri flow: session
     /// JSON, saved-session index entry, last-session pointer — with rollback
     /// on partial failure.
-    fn persist_session(
+    async fn persist_session(
         &self,
         session: &MatrixClientSession,
         key_id: &SessionKeyId,
     ) -> Result<PersistableMatrixSession, CoreFailure> {
-        let backend = self.store.credential_backend();
-        let persistable = session
-            .persistable_session()
-            .map_err(|_| CoreFailure::StoreUnavailable)?;
-        let json = persistable
-            .to_json()
-            .map_err(|_| CoreFailure::StoreUnavailable)?;
-        let stored = StoredMatrixSession::new(json);
-        backend
-            .save_matrix_session(key_id, &stored)
-            .map_err(|_| CoreFailure::StoreUnavailable)?;
-        if backend.remember_saved_session(key_id).is_err() {
-            let _ = backend.delete_matrix_session(key_id);
-            return Err(CoreFailure::StoreUnavailable);
-        }
-        if backend.save_last_session(key_id).is_err() {
-            let _ = backend.delete_matrix_session(key_id);
-            let _ = backend.forget_saved_session(key_id);
-            return Err(CoreFailure::StoreUnavailable);
-        }
-        Ok(persistable)
+        let store = self.store.clone();
+        let session = session.clone();
+        let key_id = key_id.clone();
+        executor::spawn_blocking(move || {
+            let backend = store.credential_backend();
+            let persistable = session
+                .persistable_session()
+                .map_err(|_| CoreFailure::StoreUnavailable)?;
+            let json = persistable
+                .to_json()
+                .map_err(|_| CoreFailure::StoreUnavailable)?;
+            let stored = StoredMatrixSession::new(json);
+            backend
+                .save_matrix_session(&key_id, &stored)
+                .map_err(|_| CoreFailure::StoreUnavailable)?;
+            if backend.remember_saved_session(&key_id).is_err() {
+                let _ = backend.delete_matrix_session(&key_id);
+                return Err(CoreFailure::StoreUnavailable);
+            }
+            if backend.save_last_session(&key_id).is_err() {
+                let _ = backend.delete_matrix_session(&key_id);
+                let _ = backend.forget_saved_session(&key_id);
+                return Err(CoreFailure::StoreUnavailable);
+            }
+            Ok(persistable)
+        })
+        .await
+        .unwrap_or(Err(CoreFailure::StoreUnavailable))
     }
 
     /// Restore a persisted session into the per-account encrypted store
@@ -4385,47 +4618,61 @@ impl AccountActor {
         let _ = koushi_sdk::logout(&login_session).await;
         drop(login_session);
         if credentials_persisted {
-            self.clear_account_persistence(key_id);
+            self.clear_account_persistence(key_id).await;
         }
     }
 
     /// Remove all persisted material for one account: session JSON, saved
     /// session index entry, last-session pointer (only if it points at this
     /// account), unlock secret, and store/cache directories.
-    fn clear_account_persistence(&self, key_id: &SessionKeyId) {
-        let backend = self.store.credential_backend();
-        let _ = backend.delete_matrix_session(key_id);
-        let _ = backend.forget_saved_session(key_id);
-        match backend.load_last_session() {
-            Ok(Some(last)) if last == *key_id => {
-                let _ = backend.delete_last_session();
+    async fn clear_account_persistence(&self, key_id: &SessionKeyId) {
+        let store = self.store.clone();
+        let key_id = key_id.clone();
+        let _ = executor::spawn_blocking(move || {
+            let backend = store.credential_backend();
+            let _ = backend.delete_matrix_session(&key_id);
+            let _ = backend.forget_saved_session(&key_id);
+            match backend.load_last_session() {
+                Ok(Some(last)) if last == key_id => {
+                    let _ = backend.delete_last_session();
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    let _ = backend.delete_last_session();
+                }
             }
-            Ok(_) => {}
-            Err(_) => {
-                let _ = backend.delete_last_session();
-            }
-        }
-        self.store.delete_account_credentials(key_id);
+            store.delete_account_credentials(&key_id);
+        })
+        .await;
     }
 
     /// Find the stored `SessionKeyId` for an account key (the user's Matrix
     /// ID). Checks the last-session pointer first, then the saved-session
     /// index. `Ok(None)` = no stored session; `Err(())` = store unreachable.
-    fn lookup_session_key_id(&self, account_key: &AccountKey) -> Result<Option<SessionKeyId>, ()> {
-        let backend = self.store.credential_backend();
-        match backend.load_last_session() {
-            Ok(Some(key_id)) if key_id.user_id == account_key.0 => {
-                return Ok(Some(key_id));
+    async fn lookup_session_key_id(
+        &self,
+        account_key: &AccountKey,
+    ) -> Result<Option<SessionKeyId>, ()> {
+        let store = self.store.clone();
+        let account_key = account_key.clone();
+        executor::spawn_blocking(move || {
+            let backend = store.credential_backend();
+            match backend.load_last_session() {
+                Ok(Some(key_id)) if key_id.user_id == account_key.0 => {
+                    return Ok(Some(key_id));
+                }
+                Ok(_) => {}
+                Err(_) => return Err(()),
             }
-            Ok(_) => {}
-            Err(_) => return Err(()),
-        }
-        let index = backend.load_saved_sessions().map_err(|_| ())?;
-        Ok(index
-            .sessions()
-            .iter()
-            .find(|session| session.user_id == account_key.0)
-            .cloned())
+            let index = backend.load_saved_sessions().map_err(|_| ())?;
+            Ok(index
+                .sessions()
+                .iter()
+                .find(|session| session.user_id == account_key.0)
+                .cloned())
+        })
+        .await
+        .unwrap_or(Err(()))
     }
 
     fn emit(&self, event: CoreEvent) {
@@ -4485,16 +4732,20 @@ impl AccountActor {
         )
     }
 
-    fn handle_probe_local_encryption_health(&self, request_id: RequestId) {
-        let health = self
-            .session_key_id
-            .as_ref()
-            .map(|key_id| self.store.probe_local_encryption_health(key_id))
-            .unwrap_or(koushi_state::LocalEncryptionHealth::Unknown);
-        self.reduce(vec![AppAction::LocalEncryptionHealthChanged {
+    async fn handle_probe_local_encryption_health(&self, request_id: RequestId) {
+        let health = if let Some(key_id) = self.session_key_id.clone() {
+            let store = self.store.clone();
+            executor::spawn_blocking(move || store.probe_local_encryption_health(&key_id))
+                .await
+                .unwrap_or(koushi_state::LocalEncryptionHealth::Unavailable)
+        } else {
+            koushi_state::LocalEncryptionHealth::Unknown
+        };
+        self.send_actions(vec![AppAction::LocalEncryptionHealthChanged {
             request_id: request_id.sequence,
             health,
-        }]);
+        }])
+        .await;
         self.emit(CoreEvent::LocalEncryption(
             LocalEncryptionEvent::HealthChanged { health },
         ));
@@ -4502,9 +4753,10 @@ impl AccountActor {
 
     async fn handle_reset_local_data(&mut self, request_id: RequestId) {
         let Some(key_id) = self.session_key_id.take() else {
-            self.reduce(vec![AppAction::ResetLocalDataFailed {
+            self.send_actions(vec![AppAction::ResetLocalDataFailed {
                 request_id: request_id.sequence,
-            }]);
+            }])
+            .await;
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         };
@@ -4512,17 +4764,14 @@ impl AccountActor {
         self.stop_current_session_runtime().await;
 
         drop(self.session.take());
-        self.clear_account_persistence(&key_id);
-        self.reduce(vec![
+        self.clear_account_persistence(&key_id).await;
+        self.send_actions(vec![
             AppAction::ResetLocalDataCompleted {
                 request_id: request_id.sequence,
             },
             AppAction::LogoutFinished,
-        ]);
-    }
-
-    fn reduce(&self, actions: Vec<AppAction>) {
-        let _ = self.action_tx.try_send(actions);
+        ])
+        .await;
     }
 
     async fn send_actions(&self, actions: Vec<AppAction>) {
@@ -4674,12 +4923,15 @@ async fn account_hydration_actions_from_session(
 }
 
 async fn own_profile_action_from_session(session: &MatrixClientSession) -> Option<AppAction> {
-    crate::executor::timeout(ACCOUNT_HYDRATION_TIMEOUT, koushi_sdk::get_own_profile(session))
-        .await
-        .ok()?
-        .ok()
-        .map(map_matrix_own_profile)
-        .map(|profile| AppAction::OwnProfileUpdated { profile })
+    crate::executor::timeout(
+        ACCOUNT_HYDRATION_TIMEOUT,
+        koushi_sdk::get_own_profile(session),
+    )
+    .await
+    .ok()?
+    .ok()
+    .map(map_matrix_own_profile)
+    .map(|profile| AppAction::OwnProfileUpdated { profile })
 }
 
 async fn local_user_aliases_action_from_session(
@@ -4825,7 +5077,14 @@ fn classify_e2ee_trust_error(error: &koushi_sdk::E2eeTrustError) -> TrustOperati
         koushi_sdk::E2eeTrustError::NoOlmMachine => TrustOperationFailureKind::Sdk,
         koushi_sdk::E2eeTrustError::Sdk(message) => {
             let lower = message.to_ascii_lowercase();
-            if lower.contains("timeout") {
+            if lower.contains("passphrase")
+                || lower.contains("mac")
+                || lower.contains("decrypt")
+                || lower.contains("recovery key")
+                || lower.contains("invalid key")
+            {
+                TrustOperationFailureKind::InvalidPassphrase
+            } else if lower.contains("timeout") {
                 TrustOperationFailureKind::Timeout
             } else if lower.contains("forbidden")
                 || lower.contains("m_forbidden")
@@ -4842,6 +5101,18 @@ fn classify_e2ee_trust_error(error: &koushi_sdk::E2eeTrustError) -> TrustOperati
                 TrustOperationFailureKind::Sdk
             }
         }
+    }
+}
+
+fn classify_e2ee_trust_auth_failure(error: &koushi_sdk::E2eeTrustError) -> AuthFailureKind {
+    match classify_e2ee_trust_error(error) {
+        TrustOperationFailureKind::Network => AuthFailureKind::Network,
+        TrustOperationFailureKind::Forbidden => AuthFailureKind::Forbidden,
+        TrustOperationFailureKind::Timeout => AuthFailureKind::Timeout,
+        TrustOperationFailureKind::Cancelled
+        | TrustOperationFailureKind::Mismatch
+        | TrustOperationFailureKind::InvalidPassphrase
+        | TrustOperationFailureKind::Sdk => AuthFailureKind::Sdk,
     }
 }
 
@@ -5056,6 +5327,23 @@ fn project_reset_identity_error(
     )
 }
 
+fn project_identity_reset_failed_event(
+    request_id: u64,
+    account_key: AccountKey,
+    kind: TrustOperationFailureKind,
+) -> Vec<CoreEvent> {
+    vec![
+        CoreEvent::E2eeTrust(E2eeTrustEvent::CrossSigningChanged {
+            account_key: account_key.clone(),
+            status: CrossSigningStatus::Failed { request_id, kind },
+        }),
+        CoreEvent::E2eeTrust(E2eeTrustEvent::IdentityResetChanged {
+            account_key,
+            state: IdentityResetState::Failed { request_id, kind },
+        }),
+    ]
+}
+
 fn incoming_verification_request_id(sequence: u64) -> RequestId {
     RequestId {
         connection_id: RuntimeConnectionId(0),
@@ -5226,7 +5514,7 @@ mod tests {
             .expect("server logout must be bounded best-effort");
         let drop_session = body.find("drop(session)").expect("session drop");
         let clear_persistence = body
-            .find("self.clear_account_persistence(key_id)")
+            .find("self.clear_account_persistence(key_id).await")
             .expect("clear account persistence");
 
         assert!(
@@ -5512,6 +5800,83 @@ mod tests {
         assert!(
             handler_body.contains("self.stop_sync_actor().await"),
             "auth invalidation must stop the old sync loop instead of leaving it reconnecting forever"
+        );
+    }
+
+    #[test]
+    fn sync_stop_command_must_not_spawn_missing_sync_actor() {
+        let source = include_str!("account.rs");
+        let route_body = source
+            .split("async fn route_sync_command")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn spawn_sync_actor").next())
+            .expect("route_sync_command body");
+        let spawn_gate = route_body
+            .find("!matches!(command, SyncCommand::Stop { .. })")
+            .expect("Stop must be excluded from the missing-actor spawn path");
+        let spawn_call = route_body
+            .find("self.spawn_sync_actor(session.clone()).await")
+            .expect("non-stop sync commands may spawn the actor");
+        let no_actor_trace = route_body
+            .find("action=no_sync_actor")
+            .expect("Stop with an existing session and no actor must be an explicit no-op");
+
+        assert!(
+            spawn_gate < spawn_call,
+            "route_sync_command must check for Stop before spawning a missing sync actor"
+        );
+        assert!(
+            spawn_call < no_actor_trace,
+            "no-actor stop handling should be separate from the spawn path"
+        );
+    }
+
+    #[test]
+    fn session_established_handoff_to_room_actor_is_reliable() {
+        let source = include_str!("account.rs");
+        let spawn_body = source
+            .split("async fn spawn_sync_actor")
+            .nth(1)
+            .and_then(|rest| rest.split("async fn start_recovery_observer").next())
+            .expect("spawn_sync_actor body");
+        let session_handoff = spawn_body
+            .find(".send(RoomMessage::SessionEstablished")
+            .expect("RoomActor session handoff should use reliable send");
+
+        assert!(
+            !spawn_body.contains("room_actor.try_send(RoomMessage::SessionEstablished"),
+            "SessionEstablished must not be delivered through drop-on-full try_send"
+        );
+        assert!(
+            spawn_body[session_handoff..].contains(".await"),
+            "SessionEstablished handoff must await reliable delivery before dependent actors start"
+        );
+    }
+
+    #[test]
+    fn account_actor_reducer_actions_use_reliable_delivery() {
+        let source = include_str!("account.rs");
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source should precede tests");
+        let send_actions_body = production_source
+            .split("async fn send_actions")
+            .nth(1)
+            .and_then(|rest| rest.split("fn trace_room_route").next())
+            .expect("AccountActor reliable reducer delivery helper");
+
+        assert!(
+            send_actions_body.contains("self.action_tx.send(actions).await"),
+            "AccountActor reducer actions must await reliable delivery"
+        );
+        assert!(
+            !production_source.contains("self.reduce("),
+            "AccountActor command-result reducer actions must not use the lossy reduce helper"
+        );
+        assert!(
+            !production_source.contains("action_tx.try_send(actions)"),
+            "AccountActor reducer actions must not be dropped through try_send"
         );
     }
 
@@ -5840,6 +6205,8 @@ mod tests {
             threads_list_actor: None,
             recovery_observer: None,
             identity_reset_handle: None,
+            identity_reset_flow_id: None,
+            identity_reset_timeout_task: None,
             device_session_ordinals: BTreeMap::new(),
             pending_uia_operations: BTreeMap::new(),
             verification_request: None,
@@ -6162,6 +6529,237 @@ mod tests {
             classify_e2ee_trust_error(&koushi_sdk::E2eeTrustError::Sdk("M_FORBIDDEN".to_owned())),
             koushi_state::TrustOperationFailureKind::Forbidden
         );
+        let invalid_passphrase =
+            koushi_sdk::E2eeTrustError::Sdk("invalid passphrase MAC".to_owned());
+        assert_eq!(
+            classify_e2ee_trust_error(&invalid_passphrase),
+            koushi_state::TrustOperationFailureKind::InvalidPassphrase
+        );
+        assert_eq!(
+            classify_e2ee_trust_auth_failure(&invalid_passphrase),
+            AuthFailureKind::Sdk
+        );
+    }
+
+    #[test]
+    fn e2ee_key_management_failures_use_typed_classification() {
+        let source = include_str!("account.rs");
+        let export_handler = source
+            .split("async fn handle_export_room_keys")
+            .nth(1)
+            .expect("export handler should exist")
+            .split("async fn handle_import_room_keys")
+            .next()
+            .expect("import handler should follow export handler");
+        let import_handler = source
+            .split("async fn handle_import_room_keys")
+            .nth(1)
+            .expect("import handler should exist")
+            .split("async fn handle_bootstrap_secure_backup")
+            .next()
+            .expect("secure-backup handler should follow import handler");
+        let setup_handler = source
+            .split("async fn handle_bootstrap_secure_backup")
+            .nth(1)
+            .expect("secure-backup handler should exist")
+            .split("async fn handle_change_secure_backup_passphrase")
+            .next()
+            .expect("passphrase-change handler should follow setup handler");
+        let passphrase_handler = source
+            .split("async fn handle_change_secure_backup_passphrase")
+            .nth(1)
+            .expect("passphrase-change handler should exist")
+            .split("async fn handle_reset_identity")
+            .next()
+            .expect("identity-reset handler should follow passphrase-change handler");
+
+        for handler in [
+            export_handler,
+            import_handler,
+            setup_handler,
+            passphrase_handler,
+        ] {
+            assert!(
+                handler.contains("classify_e2ee_trust_error(&error)"),
+                "E2EE key-management failures must preserve coarse typed failure kinds"
+            );
+            assert!(
+                !handler.contains("Err(_)"),
+                "E2EE key-management handlers must not erase typed errors before classification"
+            );
+        }
+        assert!(
+            source.contains("InvalidPassphrase"),
+            "trust failure kinds must distinguish invalid room-key/backup passphrases"
+        );
+    }
+
+    #[test]
+    fn local_user_alias_failure_reconciles_authoritative_aliases() {
+        let source = include_str!("account.rs");
+        let handler = source
+            .split("async fn handle_set_local_user_alias")
+            .nth(1)
+            .expect("local alias handler should exist")
+            .split("async fn handle_download_avatar_thumbnail")
+            .next()
+            .expect("avatar handler should follow local alias handler");
+
+        assert!(
+            handler.contains("local_user_aliases_action_from_session(session).await"),
+            "failed local-alias saves must reload authoritative aliases so optimistic display mirrors do not drift"
+        );
+        assert!(
+            handler.contains("AppAction::LocalUserAliasUpdateFailed")
+                && handler.contains("AppAction::LocalUserAliasesLoaded"),
+            "failure reconciliation must emit both the user-visible failure and the full alias projection"
+        );
+    }
+
+    #[test]
+    fn device_list_failures_are_not_reported_as_store_unavailable() {
+        let source = include_str!("account.rs");
+        let handler = source
+            .split("async fn handle_query_devices")
+            .nth(1)
+            .expect("device query handler should exist")
+            .split("async fn handle_load_account_management_capabilities")
+            .next()
+            .expect("capabilities handler should follow device query");
+
+        assert!(
+            handler.contains("classify_e2ee_trust_auth_failure(&error)"),
+            "device list failures must classify SDK/network channel errors"
+        );
+        assert!(
+            !handler.contains("CoreFailure::StoreUnavailable"),
+            "device list failures must not masquerade as credential-store failures"
+        );
+    }
+
+    #[test]
+    fn identity_reset_auth_wait_has_cancel_and_timeout_exits() {
+        let source = include_str!("account.rs");
+        let actor_fields = source
+            .split("pub struct AccountActor {")
+            .nth(1)
+            .expect("account actor fields should exist")
+            .split("impl AccountActor")
+            .next()
+            .expect("account actor impl should follow fields");
+        let command_route = source
+            .split("async fn handle_command")
+            .nth(1)
+            .expect("command router should exist")
+            .split("async fn route_sync_command")
+            .next()
+            .expect("sync router should follow command router");
+        let cancel_handler = source
+            .split("async fn handle_cancel_identity_reset")
+            .nth(1)
+            .expect("identity reset cancel handler should exist")
+            .split("async fn handle_submit_identity_reset_auth")
+            .next()
+            .expect("auth submit handler should follow cancel handler");
+        let auth_required_branch = source
+            .split("IdentityResetOutcome::AuthRequired(handle)")
+            .nth(1)
+            .expect("identity reset auth-required branch should exist")
+            .split("Err(error)")
+            .next()
+            .expect("error branch should follow auth-required branch");
+        let timeout_handler = source
+            .split("async fn handle_identity_reset_auth_timeout")
+            .nth(1)
+            .expect("identity reset timeout handler should exist")
+            .split("async fn handle_submit_identity_reset_auth")
+            .next()
+            .expect("auth submit handler should follow timeout handler");
+        let cleanup = source
+            .split("async fn cancel_identity_reset_handle")
+            .nth(1)
+            .expect("identity reset cleanup helper should exist")
+            .split("async fn stop_verification_request_observer")
+            .next()
+            .expect("verification cleanup should follow identity reset cleanup");
+
+        assert!(
+            actor_fields.contains("identity_reset_timeout_task"),
+            "AccountActor must retain a timeout task for the pending identity-reset UIA wait"
+        );
+        assert!(
+            command_route.contains("AccountCommand::CancelIdentityReset"),
+            "identity reset must expose a user-invocable cancel command"
+        );
+        assert!(
+            cancel_handler.contains("AppAction::ResetIdentityCancelled"),
+            "cancel command must settle reducer state through a typed cancel action"
+        );
+        assert!(
+            auth_required_branch.contains("spawn_identity_reset_auth_timeout"),
+            "auth-required identity reset waits must schedule a bounded timeout"
+        );
+        assert!(
+            timeout_handler.contains("AppAction::ResetIdentityTimedOut"),
+            "timeout must settle reducer state through a typed timeout action"
+        );
+        assert!(
+            cleanup.contains("identity_reset_timeout_task"),
+            "identity reset cleanup must abort the timeout task together with the SDK handle"
+        );
+    }
+
+    #[test]
+    fn account_actor_credential_store_hot_paths_use_blocking_port() {
+        let source = include_str!("account.rs");
+        let persist_session = source
+            .split("async fn persist_session")
+            .nth(1)
+            .expect("persist session helper should be async")
+            .split("async fn restore_into_store")
+            .next()
+            .expect("restore helper should follow persist session");
+        let clear_persistence = source
+            .split("async fn clear_account_persistence")
+            .nth(1)
+            .expect("clear persistence helper should be async")
+            .split("async fn lookup_session_key_id")
+            .next()
+            .expect("lookup helper should follow clear persistence");
+        let lookup_session = source
+            .split("async fn lookup_session_key_id")
+            .nth(1)
+            .expect("lookup helper should be async")
+            .split("fn emit")
+            .next()
+            .expect("emit helper should follow lookup helper");
+        let query_saved = source
+            .split("async fn handle_query_saved_sessions")
+            .nth(1)
+            .expect("saved sessions handler should be async")
+            .split("async fn restore_session")
+            .next()
+            .expect("restore session handler should follow saved sessions");
+        let probe_health = source
+            .split("async fn handle_probe_local_encryption_health")
+            .nth(1)
+            .expect("local-encryption probe should exist")
+            .split("async fn handle_reset_local_data")
+            .next()
+            .expect("reset local data should follow probe");
+
+        for section in [
+            persist_session,
+            clear_persistence,
+            lookup_session,
+            query_saved,
+            probe_health,
+        ] {
+            assert!(
+                section.contains("executor::spawn_blocking"),
+                "AccountActor credential-store and filesystem hot paths must be offloaded"
+            );
+        }
     }
 
     #[test]

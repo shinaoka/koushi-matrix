@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     fs,
     hash::{DefaultHasher, Hasher},
     path::Path,
@@ -9,8 +9,6 @@ use std::{
 use crate::cached_image::cached_image_kind;
 use koushi_state::AvatarThumbnailState;
 
-const MAX_RENDERABLE_THUMBNAILS: usize = 128;
-const MAX_RENDERABLE_THUMBNAIL_BYTES: usize = 32 * 1024 * 1024;
 const RENDERABLE_THUMBNAIL_SCHEME: &str = "koushi-thumbnail://localhost/";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,16 +36,13 @@ pub struct RenderableThumbnailContent {
 struct RenderableThumbnailEntry {
     bytes: Vec<u8>,
     mime_type: String,
-    bytes_len: usize,
-    sequence: u64,
 }
 
 #[derive(Default)]
 struct RenderableThumbnailCache {
+    // Ready protocol URLs are stored in AppState; keep bytes until the session
+    // cache is explicitly cleared so those projections remain reconstructible.
     entries: HashMap<String, RenderableThumbnailEntry>,
-    order: BTreeMap<u64, String>,
-    total_bytes: usize,
-    next_sequence: u64,
 }
 
 impl RenderableThumbnailCache {
@@ -57,60 +52,17 @@ impl RenderableThumbnailCache {
         bytes: Vec<u8>,
         mime_type: String,
     ) -> RenderableThumbnailEntry {
-        let bytes_len = bytes.len();
-        let sequence = self.next_sequence;
-        self.next_sequence = self.next_sequence.wrapping_add(1);
-
-        if let Some(previous) = self.entries.remove(&cache_key) {
-            self.total_bytes = self.total_bytes.saturating_sub(previous.bytes_len);
-            self.order.remove(&previous.sequence);
-        }
-
-        let entry = RenderableThumbnailEntry {
-            bytes,
-            mime_type,
-            bytes_len,
-            sequence,
-        };
-        self.total_bytes += entry.bytes_len;
-        self.order.insert(sequence, cache_key.clone());
+        let entry = RenderableThumbnailEntry { bytes, mime_type };
         self.entries.insert(cache_key, entry.clone());
-        self.evict_if_needed();
         entry
     }
 
     fn get(&mut self, cache_key: &str) -> Option<RenderableThumbnailContent> {
         let entry = self.entries.get(cache_key)?.clone();
-        self.order.remove(&entry.sequence);
-        let sequence = self.next_sequence;
-        self.next_sequence = self.next_sequence.wrapping_add(1);
-        self.order.insert(sequence, cache_key.to_owned());
-        self.entries
-            .get_mut(cache_key)
-            .expect("entry exists after lookup")
-            .sequence = sequence;
         Some(RenderableThumbnailContent {
             bytes: entry.bytes,
             mime_type: Some(entry.mime_type),
         })
-    }
-
-    fn evict_if_needed(&mut self) {
-        while self.entries.len() > MAX_RENDERABLE_THUMBNAILS
-            || self.total_bytes > MAX_RENDERABLE_THUMBNAIL_BYTES
-        {
-            let Some((sequence, cache_key)) = self.order.pop_first() else {
-                break;
-            };
-            let Some(entry) = self.entries.get(&cache_key) else {
-                continue;
-            };
-            if entry.sequence != sequence {
-                continue;
-            }
-            let entry = self.entries.remove(&cache_key).expect("entry present");
-            self.total_bytes = self.total_bytes.saturating_sub(entry.bytes_len);
-        }
     }
 }
 
@@ -277,6 +229,34 @@ mod tests {
             content.mime_type.as_deref(),
             Some("application/octet-stream")
         );
+    }
+
+    #[test]
+    fn ready_thumbnail_protocol_urls_survive_session_cache_churn() {
+        let _guard = cache_test_lock();
+        clear_renderable_thumbnail_cache();
+
+        let ready = store_renderable_thumbnail(
+            RenderableThumbnailKind::Avatar,
+            "mxc://example.test/pinned",
+            b"pinned-bytes".to_vec(),
+        );
+        let AvatarThumbnailState::Ready { source_url, .. } = ready else {
+            panic!("thumbnail should be ready");
+        };
+        let path = source_url
+            .strip_prefix("koushi-thumbnail://localhost")
+            .expect("protocol url should have localhost authority");
+
+        for index in 0..=128 {
+            let source = format!("mxc://example.test/churn/{index}");
+            let bytes = format!("bytes-{index}").into_bytes();
+            let _ = store_renderable_thumbnail(RenderableThumbnailKind::Avatar, &source, bytes);
+        }
+
+        let content = lookup_renderable_thumbnail(path)
+            .expect("Ready thumbnail URL must remain reconstructible until session clear");
+        assert_eq!(content.bytes, b"pinned-bytes");
     }
 
     #[test]

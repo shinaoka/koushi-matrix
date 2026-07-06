@@ -139,7 +139,11 @@ pub fn room_settings_share_link(
 ) -> Option<String> {
     canonical_alias
         .and_then(non_empty_trimmed)
-        .or_else(|| alternate_aliases.iter().find_map(|alias| non_empty_trimmed(alias)))
+        .or_else(|| {
+            alternate_aliases
+                .iter()
+                .find_map(|alias| non_empty_trimmed(alias))
+        })
         .or_else(|| non_empty_trimmed(room_id))
         .map(|identifier| {
             format!(

@@ -366,6 +366,7 @@ export type MessageId =
   | "roomList.sortName"
   | "room.markAsRead"
   | "room.markAsUnread"
+  | "search.indexingPending"
   | "search.noExactMatches"
   | "search.matchAttachmentFileName"
   | "search.matchMessage"
@@ -532,6 +533,7 @@ export type MessageId =
   | "trust.acceptVerification"
   | "trust.closeVerification"
   | "trust.confirmSas"
+  | "trust.cancelIdentityReset"
   | "trust.continueIdentityReset"
   | "trust.crossSigning"
   | "trust.declineVerification"
@@ -548,6 +550,7 @@ export type MessageId =
   | "trust.encryption"
   | "trust.failureCancelled"
   | "trust.failureForbidden"
+  | "trust.failureInvalidPassphrase"
   | "trust.failureMismatch"
   | "trust.failureNetwork"
   | "trust.failureSdk"
@@ -1320,6 +1323,7 @@ const en: Catalog = {
   "roomList.sortName": "Name",
   "room.markAsRead": "Mark as read",
   "room.markAsUnread": "Mark as unread",
+  "search.indexingPending": "Indexing message history. More matches may appear shortly.",
   "search.noExactMatches": "No exact matches",
   "search.matchAttachmentFileName": "attachment filename",
   "search.matchMessage": "message",
@@ -1498,6 +1502,7 @@ const en: Catalog = {
   "trust.acceptVerification": "Accept",
   "trust.closeVerification": "Close",
   "trust.confirmSas": "Confirm",
+  "trust.cancelIdentityReset": "Cancel identity reset",
   "trust.continueIdentityReset": "Continue",
   "trust.crossSigning": "Cross-signing",
   "trust.declineVerification": "Decline",
@@ -1514,6 +1519,7 @@ const en: Catalog = {
   "trust.encryption": "Encryption",
   "trust.failureCancelled": "Cancelled",
   "trust.failureForbidden": "Forbidden",
+  "trust.failureInvalidPassphrase": "Invalid passphrase",
   "trust.failureMismatch": "Mismatch",
   "trust.failureNetwork": "Network",
   "trust.failureSdk": "SDK",
@@ -2172,6 +2178,7 @@ const ja: Catalog = {
   "roomList.sortName": "名前",
   "room.markAsRead": "既読にする",
   "room.markAsUnread": "未読にする",
+  "search.indexingPending": "メッセージ履歴をインデックス中です。まもなく追加の一致が表示される場合があります。",
   "search.noExactMatches": "完全一致はありません",
   "search.matchAttachmentFileName": "添付ファイル名",
   "search.matchMessage": "メッセージ",
@@ -2350,6 +2357,7 @@ const ja: Catalog = {
   "trust.acceptVerification": "承認",
   "trust.closeVerification": "閉じる",
   "trust.confirmSas": "確認",
+  "trust.cancelIdentityReset": "IDリセットをキャンセル",
   "trust.continueIdentityReset": "続行",
   "trust.crossSigning": "クロス署名",
   "trust.declineVerification": "拒否",
@@ -2366,6 +2374,7 @@ const ja: Catalog = {
   "trust.encryption": "暗号化",
   "trust.failureCancelled": "キャンセル済み",
   "trust.failureForbidden": "禁止",
+  "trust.failureInvalidPassphrase": "パスフレーズが無効",
   "trust.failureMismatch": "不一致",
   "trust.failureNetwork": "ネットワーク",
   "trust.failureSdk": "SDKエラー",
