@@ -3874,8 +3874,8 @@ function search(
     .filter((result): result is SearchResult => Boolean(result))
     .sort(
       (left, right) =>
+        right.timestamp_ms - left.timestamp_ms ||
         right.score_millis - left.score_millis ||
-        left.timestamp_ms - right.timestamp_ms ||
         left.event_id.localeCompare(right.event_id)
     );
 }

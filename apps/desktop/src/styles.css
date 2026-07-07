@@ -1831,6 +1831,23 @@ button:disabled {
   background: var(--brand-weak);
 }
 
+.thread-pane.search-panel {
+  overflow: hidden;
+}
+
+.thread-pane.search-panel > .search-results {
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+  flex-direction: column;
+}
+
+.thread-pane.search-panel > .search-results .result-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .search-results-header {
   display: flex;
   align-items: center;

@@ -46,7 +46,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use koushi_sdk::MatrixClientSession;
 use koushi_search::{
@@ -71,6 +71,7 @@ use crate::search_crawler::{HistoryCrawlCheckpoint, HistoryCrawlPageResult};
 /// Verification filters this down; the final result set may be smaller.
 const SEARCH_CANDIDATE_LIMIT: usize = 50;
 const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
+const ENV_SEARCH_TRACE: &str = "KOUSHI_SEARCH_TRACE";
 
 /// Search index mutation queue capacity (canon, overview.md: 512).
 pub const SEARCH_INDEX_MUTATION_QUEUE: usize = 512;
@@ -80,6 +81,32 @@ pub const SEARCH_INDEX_MUTATION_QUEUE: usize = 512;
 /// startup window. Crawler timing is Rust-owned (not a user setting). The
 /// maintainer confirmed a ~1 minute delay is fully acceptable (#123).
 const CRAWLER_STARTUP_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn state_search_scope(scope: &SearchScope) -> koushi_state::SearchScope {
+    match scope {
+        SearchScope::AllRooms => koushi_state::SearchScope::AllRooms,
+        SearchScope::CurrentRoom { room_id } => koushi_state::SearchScope::CurrentRoom {
+            room_id: room_id.clone(),
+        },
+        SearchScope::CurrentSpace { space_id } => koushi_state::SearchScope::CurrentSpace {
+            space_id: space_id.clone(),
+        },
+        SearchScope::Dms => koushi_state::SearchScope::Dms,
+    }
+}
+
+fn search_trace_enabled() -> bool {
+    std::env::var_os(ENV_SEARCH_TRACE).is_some()
+}
+
+fn search_scope_trace_label(scope: &SearchScope) -> &'static str {
+    match scope {
+        SearchScope::AllRooms => "all_rooms",
+        SearchScope::CurrentRoom { .. } => "current_room",
+        SearchScope::CurrentSpace { .. } => "current_space",
+        SearchScope::Dms => "dms",
+    }
+}
 
 fn current_epoch_ms() -> u64 {
     SystemTime::now()
@@ -167,6 +194,7 @@ pub(crate) enum SearchActorMessage {
         request_id: RequestId,
         query: String,
         scope: SearchScope,
+        enqueued_at: Instant,
     },
     /// A `SearchCommand::Attachments` from the command boundary.
     Attachments {
@@ -201,6 +229,23 @@ pub(crate) enum SearchActorMessage {
     /// rooms can be indexed from scratch.
     RebuildIndex,
     Shutdown,
+}
+
+fn coalesce_contiguous_pending_queries(
+    mut message: SearchActorMessage,
+    pending: &mut VecDeque<SearchActorMessage>,
+) -> (SearchActorMessage, usize) {
+    debug_assert!(matches!(message, SearchActorMessage::Query { .. }));
+    let mut dropped_queries = 0;
+
+    while matches!(pending.front(), Some(SearchActorMessage::Query { .. })) {
+        if let Some(next_query) = pending.pop_front() {
+            message = next_query;
+            dropped_queries += 1;
+        }
+    }
+
+    (message, dropped_queries)
 }
 
 // Redact query text in Debug (queries may contain message content).
@@ -278,6 +323,7 @@ impl SearchActorHandle {
                 request_id,
                 query,
                 scope,
+                enqueued_at: Instant::now(),
             },
             SearchCommand::Attachments {
                 request_id,
@@ -382,6 +428,9 @@ pub(crate) struct SearchActor {
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_rx: mpsc::Receiver<SearchActorMessage>,
+    /// Read-ahead actor messages drained from `msg_rx` while coalescing a burst
+    /// of pending search queries. Non-query messages stay in order here.
+    deferred_messages: VecDeque<SearchActorMessage>,
     messages_backpressure: MessagesBackpressure,
     /// Element-style checkpoint queue for history crawling. The actor starts
     /// exactly one bounded `/messages` page at a time; unfinished rooms are
@@ -432,6 +481,7 @@ impl SearchActor {
             action_tx,
             event_tx,
             msg_rx,
+            deferred_messages: VecDeque::new(),
             messages_backpressure,
             crawl_queue: VecDeque::new(),
             queued_crawl_rooms: HashSet::new(),
@@ -452,6 +502,13 @@ impl SearchActor {
 
     async fn run(mut self, mut index_rx: mpsc::Receiver<SearchIndexMessage>) {
         loop {
+            if let Some(msg) = self.deferred_messages.pop_front() {
+                if !self.handle_actor_message(msg).await {
+                    break;
+                }
+                continue;
+            }
+
             tokio::select! {
                 biased;
                 crawl_result = async {
@@ -473,43 +530,8 @@ impl SearchActor {
                 }
                 msg = self.msg_rx.recv() => {
                     let Some(msg) = msg else { break };
-                    match msg {
-                        SearchActorMessage::Shutdown => {
-                            self.stop_all_history_crawls().await;
-                            break;
-                        }
-                        SearchActorMessage::Query { request_id, query, scope } => {
-                            self.handle_query(request_id, &query, scope).await;
-                        }
-                        SearchActorMessage::Attachments { request_id, scope, filter, sort } => {
-                            self.handle_attachments(request_id, scope, filter, sort).await;
-                        }
-                        SearchActorMessage::StartHistoryCrawl {
-                            request_id,
-                            room_id,
-                            settings,
-                        } => {
-                            self.handle_start_history_crawl(request_id, room_id, settings)
-                                .await;
-                        }
-                        SearchActorMessage::StopHistoryCrawl { request_id, room_id } => {
-                            self.handle_stop_history_crawl(request_id, room_id).await;
-                        }
-                        SearchActorMessage::RoomsAvailable { room_ids, settings } => {
-                            self.handle_rooms_available(room_ids, settings).await;
-                        }
-                        SearchActorMessage::InvalidateCrawlerCache => {
-                            // Content-indexing settings changed — bump the
-                            // generation and drop queued/in-flight checkpoints
-                            // so the next `RoomsAvailable` notification
-                            // re-crawls all rooms with the new settings.
-                            self.crawl_settings_generation =
-                                self.crawl_settings_generation.wrapping_add(1);
-                            self.invalidate_history_crawler_cache().await;
-                        }
-                        SearchActorMessage::RebuildIndex => {
-                            self.rebuild_search_index().await;
-                        }
+                    if !self.handle_actor_message(msg).await {
+                        break;
                     }
                 }
                 index_msg = index_rx.recv() => {
@@ -523,10 +545,110 @@ impl SearchActor {
         }
     }
 
-    async fn handle_query(&self, request_id: RequestId, query: &str, scope: SearchScope) {
+    async fn handle_actor_message(&mut self, msg: SearchActorMessage) -> bool {
+        match msg {
+            SearchActorMessage::Shutdown => {
+                self.stop_all_history_crawls().await;
+                false
+            }
+            SearchActorMessage::Query {
+                request_id,
+                query,
+                scope,
+                enqueued_at,
+            } => {
+                self.drain_available_actor_messages();
+                let (latest_query, dropped_queries) = coalesce_contiguous_pending_queries(
+                    SearchActorMessage::Query {
+                        request_id,
+                        query,
+                        scope,
+                        enqueued_at,
+                    },
+                    &mut self.deferred_messages,
+                );
+                if let SearchActorMessage::Query {
+                    request_id,
+                    query,
+                    scope,
+                    enqueued_at,
+                } = latest_query
+                {
+                    if search_trace_enabled() && dropped_queries > 0 {
+                        eprintln!(
+                            "koushi.search stage=coalesce request={} dropped_queries={} deferred_messages={}",
+                            request_id.sequence,
+                            dropped_queries,
+                            self.deferred_messages.len()
+                        );
+                    }
+                    self.handle_query(request_id, &query, scope, enqueued_at)
+                        .await;
+                }
+                true
+            }
+            SearchActorMessage::Attachments {
+                request_id,
+                scope,
+                filter,
+                sort,
+            } => {
+                self.handle_attachments(request_id, scope, filter, sort)
+                    .await;
+                true
+            }
+            SearchActorMessage::StartHistoryCrawl {
+                request_id,
+                room_id,
+                settings,
+            } => {
+                self.handle_start_history_crawl(request_id, room_id, settings)
+                    .await;
+                true
+            }
+            SearchActorMessage::StopHistoryCrawl {
+                request_id,
+                room_id,
+            } => {
+                self.handle_stop_history_crawl(request_id, room_id).await;
+                true
+            }
+            SearchActorMessage::RoomsAvailable { room_ids, settings } => {
+                self.handle_rooms_available(room_ids, settings).await;
+                true
+            }
+            SearchActorMessage::InvalidateCrawlerCache => {
+                // Content-indexing settings changed — bump the generation and
+                // drop queued/in-flight checkpoints so the next `RoomsAvailable`
+                // notification re-crawls all rooms with the new settings.
+                self.crawl_settings_generation = self.crawl_settings_generation.wrapping_add(1);
+                self.invalidate_history_crawler_cache().await;
+                true
+            }
+            SearchActorMessage::RebuildIndex => {
+                self.rebuild_search_index().await;
+                true
+            }
+        }
+    }
+
+    fn drain_available_actor_messages(&mut self) {
+        while let Ok(msg) = self.msg_rx.try_recv() {
+            self.deferred_messages.push_back(msg);
+        }
+    }
+
+    async fn handle_query(
+        &self,
+        request_id: RequestId,
+        query: &str,
+        scope: SearchScope,
+        enqueued_at: Instant,
+    ) {
         let query = query.trim();
         if query.trim().is_empty() {
-            self.emit_search_succeeded(request_id, Vec::new()).await;
+            self.emit_search_succeeded(request_id, query, &scope, Vec::new())
+                .await;
             self.emit(CoreEvent::Search(SearchEvent::Results {
                 request_id,
                 results: Vec::new(),
@@ -534,12 +656,31 @@ impl SearchActor {
             return;
         }
 
+        let trace = search_trace_enabled();
+        let query_started = trace.then(Instant::now);
+        let queued_ms = trace.then(|| enqueued_at.elapsed().as_millis());
+        let variants = cjk_search_query_variants(query);
+        if trace {
+            eprintln!(
+                "koushi.search stage=start request={} scope={} queued_ms={} query_bytes={} query_chars={} variants={} normalized_diff={}",
+                request_id.sequence,
+                search_scope_trace_label(&scope),
+                queued_ms.unwrap_or_default(),
+                query.len(),
+                query.chars().count(),
+                variants.len(),
+                variants.iter().any(|variant| variant != query)
+            );
+        }
+
+        let sdk_started = trace.then(Instant::now);
         let mut candidates_by_key: HashMap<(String, String), koushi_sdk::MatrixSearchCandidate> =
             HashMap::new();
-        for query_variant in cjk_search_query_variants(query) {
+        for (variant_index, query_variant) in variants.iter().enumerate() {
+            let variant_started = trace.then(Instant::now);
             let candidates = koushi_sdk::search_message_candidates(
                 &self.session,
-                &query_variant,
+                query_variant,
                 SEARCH_CANDIDATE_LIMIT,
             )
             .await;
@@ -548,12 +689,30 @@ impl SearchActor {
                 Ok(c) => c,
                 Err(error) => {
                     let kind = classify_matrix_search_error(&error);
-                    self.emit_search_failed(request_id, search_failure_message(kind))
-                        .await;
+                    self.emit_search_failed(
+                        request_id,
+                        query,
+                        &scope,
+                        search_failure_message(kind),
+                    )
+                    .await;
                     self.emit_failure(request_id, CoreFailure::SearchFailed { kind });
                     return;
                 }
             };
+            if trace {
+                let elapsed_ms = variant_started
+                    .map(|started| started.elapsed().as_millis())
+                    .unwrap_or_default();
+                eprintln!(
+                    "koushi.search stage=sdk_variant request={} variant={} raw={} candidates={} elapsed_ms={}",
+                    request_id.sequence,
+                    variant_index,
+                    query_variant == query,
+                    candidates.len(),
+                    elapsed_ms
+                );
+            }
 
             for candidate in candidates {
                 let key = (candidate.room_id.clone(), candidate.event_id.clone());
@@ -567,6 +726,9 @@ impl SearchActor {
                     .or_insert(candidate);
             }
         }
+        let sdk_total_ms = sdk_started
+            .map(|started| started.elapsed().as_millis())
+            .unwrap_or_default();
 
         let sdk_candidates = candidates_by_key
             .into_values()
@@ -581,18 +743,48 @@ impl SearchActor {
             SearchScope::CurrentRoom { room_id } => Some(room_id.as_str()),
             SearchScope::AllRooms | SearchScope::CurrentSpace { .. } | SearchScope::Dms => None,
         };
+        let sdk_room_count = trace.then(|| {
+            sdk_candidates
+                .iter()
+                .map(|candidate| candidate.room_id.as_str())
+                .collect::<HashSet<_>>()
+                .len()
+        });
 
         // #162: the SDK ngram index is an accelerator, not the authority. Union
         // the index candidates with a direct scan of the document store so any
         // message koushi has indexed (crawled history, live, CJK, short
         // queries) is found even when the sync-fed ngram index does not surface
         // it. Verification against canonical text still drops false positives.
-        let projected_results = self.document_store.search_with_candidates(
+        let projection_started = trace.then(Instant::now);
+        let projection = self.document_store.search_with_candidates_with_stats(
             query,
             room_filter,
             &sdk_candidates,
             SEARCH_CANDIDATE_LIMIT,
         );
+        let projection_elapsed_ms = projection_started
+            .map(|started| started.elapsed().as_millis())
+            .unwrap_or_default();
+        if trace {
+            eprintln!(
+                "koushi.search stage=verify request={} sdk_unique={} sdk_rooms={} sdk_in_scope={} verified_sdk={} store_docs={} scan_visited={} scan_in_scope={} scan_matches={} scan_returned={} sdk_total_ms={} project_ms={} scan_ms={}",
+                request_id.sequence,
+                sdk_candidates.len(),
+                sdk_room_count.unwrap_or_default(),
+                projection.stats.sdk_candidates_in_scope,
+                projection.stats.verified_sdk_count,
+                self.document_store.document_count(),
+                projection.stats.scan.documents_visited,
+                projection.stats.scan.documents_in_scope,
+                projection.stats.scan.matches_before_limit,
+                projection.stats.scan.returned,
+                sdk_total_ms,
+                projection_elapsed_ms,
+                projection.stats.scan_elapsed_ms
+            );
+        }
+        let projected_results = projection.results;
         let compact_results = projected_results
             .iter()
             .map(|result| SearchResultItem {
@@ -601,8 +793,24 @@ impl SearchActor {
                 snippet: result.snippet.clone(),
             })
             .collect();
+        if trace {
+            let result_room_count = projected_results
+                .iter()
+                .map(|result| result.room_id.as_str())
+                .collect::<HashSet<_>>()
+                .len();
+            eprintln!(
+                "koushi.search stage=finish request={} results={} result_rooms={} total_ms={}",
+                request_id.sequence,
+                projected_results.len(),
+                result_room_count,
+                query_started
+                    .map(|started| started.elapsed().as_millis())
+                    .unwrap_or_default()
+            );
+        }
 
-        self.emit_search_succeeded(request_id, projected_results)
+        self.emit_search_succeeded(request_id, query, &scope, projected_results)
             .await;
         self.emit(CoreEvent::Search(SearchEvent::Results {
             request_id,
@@ -638,22 +846,34 @@ impl SearchActor {
     async fn emit_search_succeeded(
         &self,
         request_id: RequestId,
+        query: &str,
+        scope: &SearchScope,
         results: Vec<koushi_state::SearchResult>,
     ) {
         let _ = self
             .action_tx
             .send(vec![AppAction::SearchSucceeded {
                 request_id: request_id.sequence,
+                query: query.to_owned(),
+                scope: state_search_scope(scope),
                 results,
             }])
             .await;
     }
 
-    async fn emit_search_failed(&self, request_id: RequestId, message: &str) {
+    async fn emit_search_failed(
+        &self,
+        request_id: RequestId,
+        query: &str,
+        scope: &SearchScope,
+        message: &str,
+    ) {
         let _ = self
             .action_tx
             .send(vec![AppAction::SearchFailed {
                 request_id: request_id.sequence,
+                query: query.to_owned(),
+                scope: state_search_scope(scope),
                 message: message.to_owned(),
             }])
             .await;
@@ -1466,6 +1686,54 @@ mod tests {
         assert!(
             search_source.contains("CoreEvent::Search(SearchEvent::Results"),
             "search actor should still emit search results events"
+        );
+    }
+
+    #[test]
+    fn contiguous_pending_queries_coalesce_to_latest_without_crossing_non_query_messages() {
+        use std::collections::VecDeque;
+        use std::time::Instant;
+
+        use crate::command::SearchScope;
+        use crate::ids::{RequestId, RuntimeConnectionId};
+
+        fn query(sequence: u64) -> super::SearchActorMessage {
+            super::SearchActorMessage::Query {
+                request_id: RequestId {
+                    connection_id: RuntimeConnectionId(1),
+                    sequence,
+                },
+                query: format!("q{sequence}"),
+                scope: SearchScope::AllRooms,
+                enqueued_at: Instant::now(),
+            }
+        }
+
+        fn query_sequence(message: &super::SearchActorMessage) -> u64 {
+            match message {
+                super::SearchActorMessage::Query { request_id, .. } => request_id.sequence,
+                other => panic!("expected query message, got {other:?}"),
+            }
+        }
+
+        let mut pending = VecDeque::from([
+            query(2),
+            query(3),
+            super::SearchActorMessage::RebuildIndex,
+            query(5),
+        ]);
+
+        let (latest, dropped) = super::coalesce_contiguous_pending_queries(query(1), &mut pending);
+
+        assert_eq!(query_sequence(&latest), 3);
+        assert_eq!(dropped, 2);
+        assert!(matches!(
+            pending.front(),
+            Some(super::SearchActorMessage::RebuildIndex)
+        ));
+        assert_eq!(
+            query_sequence(pending.get(1).expect("query after rebuild")),
+            5
         );
     }
 

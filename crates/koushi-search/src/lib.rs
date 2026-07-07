@@ -4,7 +4,8 @@ mod sensitive;
 mod verify;
 
 pub use document::{
-    AttachmentDocument, SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent,
+    AttachmentDocument, SearchCandidate, SearchDocumentStore, SearchEdit, SearchScanStats,
+    SearchWithCandidatesOutcome, SearchWithCandidatesStats, SearchableEvent,
     cjk_search_query_variants,
 };
 pub use maintenance::{SearchEventRef, SearchMaintenanceQueue};

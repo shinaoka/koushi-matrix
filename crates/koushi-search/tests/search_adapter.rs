@@ -222,6 +222,49 @@ fn cjk_search_query_variants_include_raw_and_nfkc_width_folded_terms() {
 }
 
 #[test]
+fn ascii_case_variant_generation_matches_displayed_query_case() {
+    assert_eq!(
+        cjk_search_query_variants("Gpt"),
+        vec!["Gpt".to_owned(), "gpt".to_owned()]
+    );
+    assert_eq!(cjk_search_query_variants("gpt"), vec!["gpt".to_owned()]);
+}
+
+#[test]
+fn uppercase_ascii_query_verifies_lowercase_message_body() {
+    let mut store = SearchDocumentStore::default();
+    store.upsert_message(SearchableEvent {
+        room_id: "!room-a:example.invalid".into(),
+        event_id: "$event".into(),
+        sender: "@user-a:example.invalid".into(),
+        timestamp_ms: 1_700_000_000_000,
+        body: Some(SensitiveString::new("open https://chatgpt.example/share")),
+        attachment_filename: None,
+        attachment: None,
+    });
+
+    let result = store
+        .verify_candidate(
+            SearchCandidate {
+                room_id: "!room-a:example.invalid".into(),
+                event_id: "$event".into(),
+                score_millis: 900,
+            },
+            "Gpt",
+        )
+        .expect("normalized verification should match lowercase body text");
+
+    assert_eq!(result.event_id, "$event");
+    assert_eq!(
+        result.highlights,
+        vec![TextRange {
+            start_utf16: 17,
+            end_utf16: 20,
+        }]
+    );
+}
+
+#[test]
 fn attachment_filename_match_uses_attachment_field() {
     let mut store = SearchDocumentStore::default();
     store.upsert_message(SearchableEvent {
@@ -470,7 +513,7 @@ fn document_store_scan_orders_recent_first_and_caps() {
 
 // #162: search_with_candidates unions SDK ngram-index candidates (accelerator)
 // with a direct store scan (authority). A store message is found even when the
-// SDK candidate list is empty; SDK-verified hits rank first; results dedupe.
+// SDK candidate list is empty; results are newest-first and deduped.
 #[test]
 fn search_with_candidates_unions_store_scan_with_index_candidates() {
     let mut store = SearchDocumentStore::default();
@@ -523,4 +566,69 @@ fn search_with_candidates_unions_store_scan_with_index_candidates() {
             .search_with_candidates("検査", Some("!other:example.invalid"), &[], 50)
             .is_empty()
     );
+}
+
+#[test]
+fn search_with_candidates_orders_results_newest_first_before_score() {
+    let mut store = SearchDocumentStore::default();
+    for (event_id, timestamp_ms) in [("$old-high-score", 1_000u64), ("$new-low-score", 3_000u64)] {
+        store.upsert_message(SearchableEvent {
+            room_id: "!room-a:example.invalid".into(),
+            event_id: event_id.into(),
+            sender: "@user-a:example.invalid".into(),
+            timestamp_ms,
+            body: Some(SensitiveString::new("検査しました")),
+            attachment_filename: None,
+            attachment: None,
+        });
+    }
+
+    let hits = store.search_with_candidates(
+        "検査",
+        None,
+        &[SearchCandidate {
+            room_id: "!room-a:example.invalid".into(),
+            event_id: "$old-high-score".into(),
+            score_millis: 1_000,
+        }],
+        50,
+    );
+
+    assert_eq!(
+        hits.iter()
+            .map(|hit| hit.event_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["$new-low-score", "$old-high-score"]
+    );
+}
+
+#[test]
+fn search_with_candidates_stats_report_store_scan_work() {
+    let mut store = SearchDocumentStore::default();
+    for (event_id, room_id, body) in [
+        ("$match-a", "!room-a:example.invalid", "検査しました"),
+        ("$miss-a", "!room-a:example.invalid", "別件です"),
+        ("$match-b", "!room-b:example.invalid", "検査しました"),
+    ] {
+        store.upsert_message(SearchableEvent {
+            room_id: room_id.into(),
+            event_id: event_id.into(),
+            sender: "@user-a:example.invalid".into(),
+            timestamp_ms: 1_700_000_000_000,
+            body: Some(SensitiveString::new(body)),
+            attachment_filename: None,
+            attachment: None,
+        });
+    }
+
+    let outcome =
+        store.search_with_candidates_with_stats("検査", Some("!room-a:example.invalid"), &[], 50);
+
+    assert_eq!(outcome.results.len(), 1);
+    assert_eq!(outcome.results[0].event_id, "$match-a");
+    assert_eq!(outcome.stats.verified_sdk_count, 0);
+    assert_eq!(outcome.stats.scan.documents_visited, 3);
+    assert_eq!(outcome.stats.scan.documents_in_scope, 2);
+    assert_eq!(outcome.stats.scan.matches_before_limit, 1);
+    assert_eq!(outcome.stats.scan.returned, 1);
 }

@@ -806,10 +806,14 @@ pub enum AppAction {
     },
     SearchSucceeded {
         request_id: u64,
+        query: String,
+        scope: SearchScope,
         results: Vec<SearchResult>,
     },
     SearchFailed {
         request_id: u64,
+        query: String,
+        scope: SearchScope,
         message: String,
     },
     SearchIndexRebuildRequested {

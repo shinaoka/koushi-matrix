@@ -2137,6 +2137,7 @@ export const TimelineView = memo(function TimelineView({
   const scrollFollowUpFramesRef = useRef<Set<TimelineScheduledFrame>>(new Set());
   /** Pagination request currently in flight (suppresses duplicates). */
   const backfillInFlightRef = useRef(false);
+  const underfilledInitialBackfillDiagnosticSignatureRef = useRef<string | null>(null);
   const readSignalEventRef = useRef<string | null>(null);
   const lastViewportObservationRef = useRef<string | null>(null);
   const downloadedEventIdsRef = useRef<Set<string>>(new Set());
@@ -3679,6 +3680,81 @@ export const TimelineView = memo(function TimelineView({
     virtualWindow.startIndex,
     virtualWindow.virtualized,
     visibleItems
+  ]);
+
+  useLayoutEffect(() => {
+    if (!timelineInitialized || roomTimelineRoomId === null || suppressPaginationUi) {
+      return;
+    }
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+    const clientHeight = Math.round(container.clientHeight);
+    if (clientHeight <= 0) {
+      return;
+    }
+    const scrollHeight = Math.round(container.scrollHeight);
+    const overflowPx = Math.max(0, scrollHeight - clientHeight);
+    if (overflowPx > SCROLL_EDGE_TOLERANCE_PX) {
+      return;
+    }
+    const stateLabel = paginationStateDiagnosticLabel(backwardState);
+    const skipReasons = [
+      !autoLoadOlderMessages ? "auto_load_disabled" : null,
+      anchorRestorePendingRef.current ? "anchor_restore" : null,
+      roomScrollAnchorRestorePendingRef.current ? "room_anchor_restore" : null,
+      autoBackfillRequiresUserScrollRef.current ? "await_user_scroll_after_room_restore" : null,
+      backfillInFlightRef.current ? "in_flight" : null,
+      shouldSuppressAutoBackfill(store, timelineKeyRef.current) ? "pagination_state" : null
+    ].filter((reason): reason is string => reason !== null);
+    const stage = skipReasons.length > 0 ? "skip" : "request";
+    const reason = skipReasons.length > 0 ? ` reason=${skipReasons.join("+")}` : "";
+    const signature = [
+      timelineKeyHash,
+      generation,
+      items.length,
+      scrollHeight,
+      clientHeight,
+      autoLoadOlderMessages ? "auto" : "manual",
+      stateLabel,
+      stage,
+      reason
+    ].join("\u0000");
+    if (underfilledInitialBackfillDiagnosticSignatureRef.current === signature) {
+      return;
+    }
+    underfilledInitialBackfillDiagnosticSignatureRef.current = signature;
+    const message = `${stage === "request" ? "stage=request" : "stage=skip"} trigger=underfilled_initial${reason} items=${items.length} scroll_height_px=${scrollHeight} client_height_px=${clientHeight} overflow_px=${overflowPx} auto_load=${autoLoadOlderMessages} state=${stateLabel}`;
+    emitDiagnosticLog(
+      "timeline.backfill",
+      message
+    );
+    if (stage !== "request") {
+      return;
+    }
+    backfillInFlightRef.current = true;
+    void transport
+      .paginateBackwards(timelineKeyRef.current)
+      .catch(() => {
+        emitDiagnosticLog(
+          "timeline.backfill",
+          "stage=failed trigger=underfilled_initial reason=transport"
+        );
+        backfillInFlightRef.current = false;
+      });
+  }, [
+    autoLoadOlderMessages,
+    backwardState,
+    emitDiagnosticLog,
+    generation,
+    items.length,
+    roomTimelineRoomId,
+    store,
+    suppressPaginationUi,
+    timelineInitialized,
+    timelineKeyHash,
+    transport
   ]);
 
   // --- Automatic backfill on scroll near the top ---

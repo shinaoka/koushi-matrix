@@ -50,13 +50,15 @@ pub(crate) fn handle_search_submitted(
 pub(crate) fn handle_search_succeeded(
     state: &mut AppState,
     request_id: u64,
+    response_query: String,
+    response_scope: crate::state::SearchScope,
     results: Vec<crate::state::SearchResult>,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
     }
 
-    let (current_request_id, query, scope) = match &state.search {
+    let (current_request_id, current_query, current_scope) = match &state.search {
         SearchState::Searching {
             request_id,
             query,
@@ -65,14 +67,17 @@ pub(crate) fn handle_search_succeeded(
         _ => return Vec::new(),
     };
 
-    if current_request_id != request_id {
+    if current_request_id != request_id
+        || response_query != current_query
+        || response_scope != current_scope
+    {
         return Vec::new();
     }
 
     state.search = SearchState::Results {
         request_id,
-        query,
-        scope,
+        query: current_query,
+        scope: current_scope,
         results,
     };
     vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]
@@ -81,13 +86,15 @@ pub(crate) fn handle_search_succeeded(
 pub(crate) fn handle_search_failed(
     state: &mut AppState,
     request_id: u64,
+    response_query: String,
+    response_scope: crate::state::SearchScope,
     message: String,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
     }
 
-    let (current_request_id, query, scope) = match &state.search {
+    let (current_request_id, current_query, current_scope) = match &state.search {
         SearchState::Searching {
             request_id,
             query,
@@ -96,14 +103,17 @@ pub(crate) fn handle_search_failed(
         _ => return Vec::new(),
     };
 
-    if current_request_id != request_id {
+    if current_request_id != request_id
+        || response_query != current_query
+        || response_scope != current_scope
+    {
         return Vec::new();
     }
 
     state.search = SearchState::Failed {
         request_id,
-        query,
-        scope,
+        query: current_query,
+        scope: current_scope,
         message,
     };
     vec![AppEffect::EmitUiEvent(UiEvent::SearchChanged)]

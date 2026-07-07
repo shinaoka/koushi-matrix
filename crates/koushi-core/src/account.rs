@@ -91,6 +91,23 @@ const ENV_SYNC_TRACE: &str = "KOUSHI_SYNC_TRACE";
 const RESTORE_FAILED_MESSAGE: &str = "session restore failed";
 const INCOMING_VERIFICATION_FLOW_ID_BASE: u64 = 1 << 63;
 
+fn state_search_scope(scope: &crate::command::SearchScope) -> koushi_state::SearchScope {
+    match scope {
+        crate::command::SearchScope::AllRooms => koushi_state::SearchScope::AllRooms,
+        crate::command::SearchScope::CurrentRoom { room_id } => {
+            koushi_state::SearchScope::CurrentRoom {
+                room_id: room_id.clone(),
+            }
+        }
+        crate::command::SearchScope::CurrentSpace { space_id } => {
+            koushi_state::SearchScope::CurrentSpace {
+                space_id: space_id.clone(),
+            }
+        }
+        crate::command::SearchScope::Dms => koushi_state::SearchScope::Dms,
+    }
+}
+
 fn trace_restore(stage: &str, message: &str) {
     if std::env::var_os(ENV_SYNC_TRACE).is_some() {
         eprintln!("koushi.account stage={stage} {message}");
@@ -692,17 +709,34 @@ impl AccountActor {
             | SearchCommand::StartHistoryCrawl { request_id, .. }
             | SearchCommand::StopHistoryCrawl { request_id, .. } => *request_id,
         };
+        let query_context = match &command {
+            SearchCommand::Query {
+                request_id,
+                query,
+                scope,
+            } => Some((*request_id, query.clone(), scope.clone())),
+            _ => None,
+        };
         match &self.search_actor {
             Some(handle) => {
                 if !handle.send_command(command).await {
-                    self.emit_search_failed(request_id, SEARCH_UNAVAILABLE_MESSAGE)
+                    if let Some((request_id, query, scope)) = query_context.as_ref() {
+                        self.emit_search_failed(
+                            *request_id,
+                            query,
+                            scope,
+                            SEARCH_UNAVAILABLE_MESSAGE,
+                        )
                         .await;
+                    }
                     self.emit_failure(request_id, CoreFailure::SessionRequired);
                 }
             }
             None => {
-                self.emit_search_failed(request_id, SEARCH_UNAVAILABLE_MESSAGE)
-                    .await;
+                if let Some((request_id, query, scope)) = query_context.as_ref() {
+                    self.emit_search_failed(*request_id, query, scope, SEARCH_UNAVAILABLE_MESSAGE)
+                        .await;
+                }
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
             }
         }
@@ -963,11 +997,19 @@ impl AccountActor {
             .map_err(|_| ())
     }
 
-    async fn emit_search_failed(&self, request_id: RequestId, message: &str) {
+    async fn emit_search_failed(
+        &self,
+        request_id: RequestId,
+        query: &str,
+        scope: &crate::command::SearchScope,
+        message: &str,
+    ) {
         let _ = self
             .action_tx
             .send(vec![AppAction::SearchFailed {
                 request_id: request_id.sequence,
+                query: query.to_owned(),
+                scope: state_search_scope(scope),
                 message: message.to_owned(),
             }])
             .await;

@@ -7,6 +7,7 @@ import { MessageSourceDialog, TimelineItemRow } from "./components/TimelineView"
 import type { TimelineItem } from "./domain/coreEvents";
 import type { DesktopSnapshot } from "./domain/types";
 import type { RightPanelMode } from "./domain/rightPanel";
+import { formatScheduledSendTime } from "./app/uiShared";
 import { t } from "./i18n/messages";
 
 describe("ContextualRightPanel", () => {
@@ -735,6 +736,8 @@ describe("ContextualRightPanel", () => {
     const { ContextualRightPanel } = await import("./App");
     const api = createBrowserFakeApi();
     const snapshot = await api.submitSearch("Alpha", "allRooms");
+    const firstSearchResult =
+      snapshot.state.domain.search.kind === "results" ? snapshot.state.domain.search.results[0] : null;
 
     const markup = renderToStaticMarkup(
       <ContextualRightPanel
@@ -773,6 +776,17 @@ describe("ContextualRightPanel", () => {
     expect(markup).toContain("Alpha");
     expect(markup).toContain("keyword update");
     expect(markup).toContain("search-results");
+    expect(markup).toContain("search-panel");
+    expect(firstSearchResult).not.toBeNull();
+    expect(markup).toContain(formatScheduledSendTime(firstSearchResult!.timestamp_ms));
+  });
+
+  test("search right panel keeps long result lists in a bounded scroller", () => {
+    const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+
+    expect(styles).toContain(".thread-pane.search-panel > .search-results");
+    expect(styles).toContain(".thread-pane.search-panel > .search-results .result-list");
+    expect(styles).toContain("overflow-y: auto");
   });
 
   test("renders indexing-pending copy for empty search results while crawler is active", async () => {

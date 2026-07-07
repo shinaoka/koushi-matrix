@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::time::Instant;
 
 use koushi_state::{
     AttachmentFilter, AttachmentKind, AttachmentResult, AttachmentScope, AttachmentSort,
@@ -78,6 +79,35 @@ pub struct SearchDocumentStore {
     /// event). This alias map lets `verify_candidate` resolve an edit_event_id
     /// back to the original document so verification succeeds.
     edit_aliases: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SearchScanStats {
+    pub documents_visited: usize,
+    pub documents_in_scope: usize,
+    pub matches_before_limit: usize,
+    pub returned: usize,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SearchWithCandidatesStats {
+    pub sdk_candidates_in_scope: usize,
+    pub verified_sdk_count: usize,
+    pub scan_elapsed_ms: u128,
+    pub scan: SearchScanStats,
+    pub results_before_limit: usize,
+    pub returned: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchWithCandidatesOutcome {
+    pub results: Vec<SearchResult>,
+    pub stats: SearchWithCandidatesStats,
+}
+
+struct SearchScanOutcome {
+    results: Vec<SearchResult>,
+    stats: SearchScanStats,
 }
 
 impl SearchDocumentStore {
@@ -171,25 +201,46 @@ impl SearchDocumentStore {
         room_filter: Option<&str>,
         limit: usize,
     ) -> Vec<SearchResult> {
+        self.scan_candidates_with_stats(query, room_filter, limit)
+            .results
+    }
+
+    fn scan_candidates_with_stats(
+        &self,
+        query: &str,
+        room_filter: Option<&str>,
+        limit: usize,
+    ) -> SearchScanOutcome {
+        let mut stats = SearchScanStats::default();
         if query.trim().is_empty() || limit == 0 {
-            return Vec::new();
+            return SearchScanOutcome {
+                results: Vec::new(),
+                stats,
+            };
         }
 
-        let mut results: Vec<SearchResult> = self
-            .documents
-            .values()
-            .filter(|event| room_filter.map_or(true, |room_id| event.room_id == room_id))
-            .filter_map(|event| self.resolved_event(&event.event_id))
-            .filter_map(|event| {
-                let candidate = SearchCandidate {
-                    room_id: event.room_id.clone(),
-                    event_id: event.event_id.clone(),
-                    score_millis: 0,
-                };
-                crate::verify::verify_candidate(&candidate, &event, query)
-            })
-            .collect();
+        let mut results: Vec<SearchResult> = Vec::new();
+        for event in self.documents.values() {
+            stats.documents_visited += 1;
+            if room_filter.is_some_and(|room_id| event.room_id != room_id) {
+                continue;
+            }
+            stats.documents_in_scope += 1;
 
+            let Some(event) = self.resolved_event(&event.event_id) else {
+                continue;
+            };
+            let candidate = SearchCandidate {
+                room_id: event.room_id.clone(),
+                event_id: event.event_id.clone(),
+                score_millis: 0,
+            };
+            if let Some(result) = crate::verify::verify_candidate(&candidate, &event, query) {
+                results.push(result);
+            }
+        }
+
+        stats.matches_before_limit = results.len();
         results.sort_by(|left, right| {
             right
                 .timestamp_ms
@@ -197,14 +248,15 @@ impl SearchDocumentStore {
                 .then_with(|| left.event_id.cmp(&right.event_id))
         });
         results.truncate(limit);
-        results
+        stats.returned = results.len();
+
+        SearchScanOutcome { results, stats }
     }
 
     /// Resolve a query against SDK ngram-index candidates (an accelerator)
     /// unioned with a direct store scan (the authority) — issue #162.
     ///
-    /// SDK-verified candidates are ranked first (by score), then store-only
-    /// matches by recency. Results are deduped by `(room_id, event_id)` and
+    /// Results are ordered newest-first, deduped by `(room_id, event_id)`, and
     /// capped at `limit`. `room_filter == None` searches all rooms; `Some`
     /// restricts scope. This is the single matching path shared by the core
     /// `SearchActor` and the fake backend so both agree that any message the
@@ -216,8 +268,23 @@ impl SearchDocumentStore {
         sdk_candidates: &[SearchCandidate],
         limit: usize,
     ) -> Vec<SearchResult> {
+        self.search_with_candidates_with_stats(query, room_filter, sdk_candidates, limit)
+            .results
+    }
+
+    pub fn search_with_candidates_with_stats(
+        &self,
+        query: &str,
+        room_filter: Option<&str>,
+        sdk_candidates: &[SearchCandidate],
+        limit: usize,
+    ) -> SearchWithCandidatesOutcome {
+        let mut stats = SearchWithCandidatesStats::default();
         if query.trim().is_empty() || limit == 0 {
-            return Vec::new();
+            return SearchWithCandidatesOutcome {
+                results: Vec::new(),
+                stats,
+            };
         }
 
         let mut seen: HashSet<(String, String)> = HashSet::new();
@@ -227,28 +294,38 @@ impl SearchDocumentStore {
             if room_filter.is_some_and(|room_id| candidate.room_id != room_id) {
                 continue;
             }
-            if let Some(result) = self.verify_candidate(candidate.clone(), query)
-                && seen.insert((result.room_id.clone(), result.event_id.clone()))
-            {
-                results.push(result);
+            stats.sdk_candidates_in_scope += 1;
+            if let Some(result) = self.verify_candidate(candidate.clone(), query) {
+                stats.verified_sdk_count += 1;
+                if seen.insert((result.room_id.clone(), result.event_id.clone())) {
+                    results.push(result);
+                }
             }
         }
 
-        for result in self.scan_candidates(query, room_filter, limit) {
+        let scan_started = Instant::now();
+        let scan_outcome = self.scan_candidates_with_stats(query, room_filter, limit);
+        stats.scan_elapsed_ms = scan_started.elapsed().as_millis();
+        stats.scan = scan_outcome.stats;
+
+        for result in scan_outcome.results {
             if seen.insert((result.room_id.clone(), result.event_id.clone())) {
                 results.push(result);
             }
         }
 
+        stats.results_before_limit = results.len();
         results.sort_by(|left, right| {
             right
-                .score_millis
-                .cmp(&left.score_millis)
-                .then_with(|| right.timestamp_ms.cmp(&left.timestamp_ms))
+                .timestamp_ms
+                .cmp(&left.timestamp_ms)
+                .then_with(|| right.score_millis.cmp(&left.score_millis))
                 .then_with(|| left.event_id.cmp(&right.event_id))
         });
         results.truncate(limit);
-        results
+        stats.returned = results.len();
+
+        SearchWithCandidatesOutcome { results, stats }
     }
 
     fn apply_edit(&mut self, edit: SearchEdit) {
