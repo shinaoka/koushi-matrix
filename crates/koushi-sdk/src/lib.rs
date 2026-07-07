@@ -37,6 +37,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     future::Future,
+    hash::{Hash, Hasher},
     net::IpAddr,
     path::{Path, PathBuf},
     pin::Pin,
@@ -50,6 +51,7 @@ use zeroize::Zeroizing;
 const LOGIN_DISCOVERY_PATH: &str = "_matrix/client/v3/login";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const MATRIX_ROOM_LIST_SNAPSHOT_LIMIT: usize = 4096;
+const UNREAD_TRACE_ENV_VAR: &str = "KOUSHI_UNREAD_TRACE";
 pub const LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE: &str = "app.koushi.local_aliases";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2279,6 +2281,144 @@ pub struct MatrixRoomLatestEventSummary {
     pub sender_avatar_mxc_uri: Option<String>,
     pub preview: Option<String>,
     pub timestamp_ms: u64,
+    pub event_type: Option<String>,
+    pub relation_type: Option<String>,
+    pub relation_event_id: Option<String>,
+    pub content_converted: bool,
+    pub is_threaded: bool,
+    pub is_reply: bool,
+    pub has_thread_summary: bool,
+    pub has_reactions: bool,
+}
+
+struct SdkUnreadTrace<'a> {
+    room_id: &'a str,
+    unread_messages: u64,
+    unread_count: u64,
+    notification_count: u64,
+    highlight_count: u64,
+    marked_unread: bool,
+    latest_event: &'a Option<MatrixRoomLatestEventSummary>,
+    fully_read_event_id: Option<&'a str>,
+    private_read_receipt_event_id: Option<&'a str>,
+    last_activity_ms: u64,
+}
+
+fn unread_trace_enabled() -> bool {
+    std::env::var_os(UNREAD_TRACE_ENV_VAR).is_some()
+}
+
+fn unread_trace_token(value: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn unread_trace_event_token(event_id: Option<&str>) -> String {
+    event_id
+        .filter(|event_id| !event_id.trim().is_empty())
+        .map(unread_trace_token)
+        .unwrap_or_else(|| "none".to_owned())
+}
+
+fn unread_trace_label(value: Option<&str>) -> String {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value
+                .chars()
+                .map(|character| {
+                    if character.is_ascii_alphanumeric()
+                        || matches!(character, '.' | '_' | '-' | ':')
+                    {
+                        character
+                    } else {
+                        '_'
+                    }
+                })
+                .take(96)
+                .collect()
+        })
+        .unwrap_or_else(|| "none".to_owned())
+}
+
+fn sdk_unread_snapshot_line(trace: SdkUnreadTrace<'_>) -> String {
+    let latest_event_id = trace
+        .latest_event
+        .as_ref()
+        .map(|event| event.event_id.as_str());
+    let fully_read_matches_latest = read_marker_matches_latest(
+        trace.latest_event,
+        &trace.fully_read_event_id.map(str::to_owned),
+    );
+    let private_receipt_matches_latest = read_marker_matches_latest(
+        trace.latest_event,
+        &trace.private_read_receipt_event_id.map(str::to_owned),
+    );
+    let latest_event_type = trace
+        .latest_event
+        .as_ref()
+        .and_then(|event| event.event_type.as_deref());
+    let latest_event_relation_type = trace
+        .latest_event
+        .as_ref()
+        .and_then(|event| event.relation_type.as_deref());
+    let latest_event_relation_event_id = trace
+        .latest_event
+        .as_ref()
+        .and_then(|event| event.relation_event_id.as_deref());
+    let latest_event_content_converted = trace
+        .latest_event
+        .as_ref()
+        .is_some_and(|event| event.content_converted);
+    let latest_event_threaded = trace
+        .latest_event
+        .as_ref()
+        .is_some_and(|event| event.is_threaded);
+    let latest_event_reply = trace
+        .latest_event
+        .as_ref()
+        .is_some_and(|event| event.is_reply);
+    let latest_event_thread_summary = trace
+        .latest_event
+        .as_ref()
+        .is_some_and(|event| event.has_thread_summary);
+    let latest_event_reactions = trace
+        .latest_event
+        .as_ref()
+        .is_some_and(|event| event.has_reactions);
+    format!(
+        "koushi.unread_trace stage=sdk_room_snapshot room={} unread_messages={} unread_count={} notification_count={} highlight_count={} marked_unread={} latest_event_present={} latest_event={} latest_event_type={} latest_event_relation_type={} latest_event_relation_event={} latest_event_content_converted={} latest_event_threaded={} latest_event_reply={} latest_event_thread_summary={} latest_event_reactions={} fully_read_present={} fully_read={} private_unthreaded_receipt_present={} private_unthreaded_receipt={} fully_read_matches_latest={} private_unthreaded_receipt_matches_latest={} last_activity_ms={}",
+        unread_trace_token(trace.room_id),
+        trace.unread_messages,
+        trace.unread_count,
+        trace.notification_count,
+        trace.highlight_count,
+        trace.marked_unread,
+        latest_event_id.is_some(),
+        unread_trace_event_token(latest_event_id),
+        unread_trace_label(latest_event_type),
+        unread_trace_label(latest_event_relation_type),
+        unread_trace_event_token(latest_event_relation_event_id),
+        latest_event_content_converted,
+        latest_event_threaded,
+        latest_event_reply,
+        latest_event_thread_summary,
+        latest_event_reactions,
+        trace.fully_read_event_id.is_some(),
+        unread_trace_event_token(trace.fully_read_event_id),
+        trace.private_read_receipt_event_id.is_some(),
+        unread_trace_event_token(trace.private_read_receipt_event_id),
+        fully_read_matches_latest,
+        private_receipt_matches_latest,
+        trace.last_activity_ms,
+    )
+}
+
+fn trace_sdk_unread_snapshot(trace: SdkUnreadTrace<'_>) {
+    if unread_trace_enabled() {
+        eprintln!("{}", sdk_unread_snapshot_line(trace));
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -4740,11 +4880,9 @@ async fn matrix_room_list_snapshot_from_rooms(
         let notification_count = unread_notifications.notification_count.into();
         let highlight_count = unread_notifications.highlight_count.into();
         let is_marked_unread = room.is_marked_unread();
-        let unread_count = room_attention_unread_count(
-            notification_count,
-            room.num_unread_messages(),
-            is_marked_unread,
-        );
+        let unread_messages = room.num_unread_messages();
+        let unread_count =
+            room_attention_unread_count(notification_count, unread_messages, is_marked_unread);
 
         let parent_space_ids = matrix_parent_space_ids(&room).await;
         let tags = matrix_room_tags(&room).await;
@@ -4769,6 +4907,22 @@ async fn matrix_room_list_snapshot_from_rooms(
         let latest_event = matrix_room_latest_event_summary(&room).await;
         let fully_read_event_id = matrix_room_fully_read_event_id(&room).await;
         let private_read_receipt_event_id = matrix_room_private_read_receipt_event_id(&room).await;
+        let last_activity_ms = room.recency_stamp().map(|stamp| stamp.into()).unwrap_or(0);
+
+        if unread_count > 0 || notification_count > 0 || highlight_count > 0 || is_marked_unread {
+            trace_sdk_unread_snapshot(SdkUnreadTrace {
+                room_id: &room_id,
+                unread_messages,
+                unread_count,
+                notification_count,
+                highlight_count,
+                marked_unread: is_marked_unread,
+                latest_event: &latest_event,
+                fully_read_event_id: fully_read_event_id.as_deref(),
+                private_read_receipt_event_id: private_read_receipt_event_id.as_deref(),
+                last_activity_ms,
+            });
+        }
 
         snapshot.rooms.push(matrix_room_list_room_from_counts(
             room_id,
@@ -4781,7 +4935,7 @@ async fn matrix_room_list_snapshot_from_rooms(
             highlight_count,
             unread_count,
             is_marked_unread,
-            room.recency_stamp().map(|stamp| stamp.into()).unwrap_or(0),
+            last_activity_ms,
             latest_event,
             fully_read_event_id,
             private_read_receipt_event_id,
@@ -5055,6 +5209,50 @@ async fn matrix_room_private_read_receipt_event_id(room: &matrix_sdk::Room) -> O
     .map(|(event_id, _)| event_id.to_string())
 }
 
+fn matrix_timeline_event_type(
+    timeline_event: &matrix_sdk::deserialized_responses::TimelineEvent,
+) -> Option<String> {
+    timeline_event
+        .raw()
+        .get_field::<String>("type")
+        .ok()
+        .flatten()
+}
+
+fn matrix_timeline_event_relation(
+    timeline_event: &matrix_sdk::deserialized_responses::TimelineEvent,
+) -> (Option<String>, Option<String>) {
+    let Ok(Some(content)) = timeline_event
+        .raw()
+        .get_field::<serde_json::Value>("content")
+    else {
+        return (None, None);
+    };
+    let Some(relates_to) = content.get("m.relates_to") else {
+        return (None, None);
+    };
+    let relation_event_id = relates_to
+        .get("event_id")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            relates_to
+                .get("m.in_reply_to")
+                .and_then(|reply| reply.get("event_id"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(ToOwned::to_owned);
+    let relation_type = relates_to
+        .get("rel_type")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            relation_event_id
+                .as_ref()
+                .map(|_| "m.in_reply_to".to_owned())
+        });
+    (relation_type, relation_event_id)
+}
+
 async fn matrix_room_latest_event_summary(
     room: &matrix_sdk::Room,
 ) -> Option<MatrixRoomLatestEventSummary> {
@@ -5072,9 +5270,26 @@ async fn matrix_room_latest_event_summary(
                 .timestamp()
                 .map(|timestamp| u64::from(timestamp.get()))
                 .unwrap_or(0);
+            let event_type = matrix_timeline_event_type(&timeline_event);
+            let (relation_type, relation_event_id) =
+                matrix_timeline_event_relation(&timeline_event);
             let content =
                 matrix_sdk_ui::timeline::TimelineItemContent::from_event(room, timeline_event)
                     .await;
+            let content_converted = content.is_some();
+            let is_threaded = content
+                .as_ref()
+                .is_some_and(|content| content.thread_root().is_some());
+            let is_reply = content
+                .as_ref()
+                .is_some_and(|content| content.in_reply_to().is_some());
+            let has_thread_summary = content
+                .as_ref()
+                .is_some_and(|content| content.thread_summary().is_some());
+            let has_reactions = content
+                .as_ref()
+                .and_then(|content| content.reactions())
+                .is_some_and(|reactions| !reactions.is_empty());
             let (sender_label, sender_avatar_mxc_uri) = match sender.as_ref() {
                 Some(sender) => matrix_room_member_display(room, sender).await,
                 None => (None, None),
@@ -5086,6 +5301,14 @@ async fn matrix_room_latest_event_summary(
                 sender_avatar_mxc_uri,
                 preview: content.as_ref().and_then(matrix_latest_event_preview),
                 timestamp_ms,
+                event_type,
+                relation_type,
+                relation_event_id,
+                content_converted,
+                is_threaded,
+                is_reply,
+                has_thread_summary,
+                has_reactions,
             })
         }
         matrix_sdk::latest_events::LatestEventValue::LocalHasBeenSent { event_id, value } => {
@@ -5097,6 +5320,14 @@ async fn matrix_room_latest_event_summary(
                 sender_avatar_mxc_uri: None,
                 preview: matrix_local_latest_event_preview(&value.content),
                 timestamp_ms: u64::from(value.timestamp.get()),
+                event_type: None,
+                relation_type: None,
+                relation_event_id: None,
+                content_converted: false,
+                is_threaded: false,
+                is_reply: false,
+                has_thread_summary: false,
+                has_reactions: false,
             })
         }
         matrix_sdk::latest_events::LatestEventValue::None
@@ -5494,10 +5725,11 @@ mod tests {
         MatrixRoomJoinRule, MatrixRoomMemberRole, MatrixRoomModerationAction,
         MatrixRoomPermissionFacts, MatrixRoomSettingChange, MatrixRoomSettingsSnapshot,
         MatrixRoomTagInfo, MatrixRoomTags, MatrixSearchIndexKey, MatrixSearchIndexStoreConfig,
-        create_public_directory_room, create_room_request, get_room_settings_snapshot,
-        join_room_by_alias, matrix_room_list_room_from_counts, matrix_room_member_role,
-        moderate_room_member, normalized_local_user_aliases, query_public_room_directory,
-        room_settings_snapshot_with_change, room_settings_snapshot_with_member_power_level,
+        SdkUnreadTrace, create_public_directory_room, create_room_request,
+        get_room_settings_snapshot, join_room_by_alias, matrix_room_list_room_from_counts,
+        matrix_room_member_role, moderate_room_member, normalized_local_user_aliases,
+        query_public_room_directory, room_settings_snapshot_with_change,
+        room_settings_snapshot_with_member_power_level, sdk_unread_snapshot_line,
         update_room_member_power_level, update_room_setting,
     };
 
@@ -5530,6 +5762,72 @@ mod tests {
 
         assert!(defaults_body.contains("with_encryption_settings"));
         assert!(defaults_body.contains("BackupDownloadStrategy::AfterDecryptionFailure"));
+    }
+
+    #[test]
+    fn sdk_unread_snapshot_line_is_private_data_free() {
+        let latest_event = Some(crate::MatrixRoomLatestEventSummary {
+            event_id: "$latest:example.invalid".to_owned(),
+            sender_id: Some("@sender:example.invalid".to_owned()),
+            sender_label: Some("Private Sender".to_owned()),
+            sender_avatar_mxc_uri: Some("mxc://example.invalid/avatar".to_owned()),
+            preview: Some("private message body".to_owned()),
+            timestamp_ms: 42,
+            event_type: Some("m.room.message".to_owned()),
+            relation_type: Some("m.thread".to_owned()),
+            relation_event_id: Some("$thread-root:example.invalid".to_owned()),
+            content_converted: true,
+            is_threaded: true,
+            is_reply: false,
+            has_thread_summary: true,
+            has_reactions: true,
+        });
+
+        let line = sdk_unread_snapshot_line(SdkUnreadTrace {
+            room_id: "!private-room:example.invalid",
+            unread_messages: 1,
+            unread_count: 1,
+            notification_count: 1,
+            highlight_count: 0,
+            marked_unread: false,
+            latest_event: &latest_event,
+            fully_read_event_id: Some("$older:example.invalid"),
+            private_read_receipt_event_id: Some("$latest:example.invalid"),
+            last_activity_ms: 42,
+        });
+
+        assert!(line.contains("koushi.unread_trace stage=sdk_room_snapshot"));
+        assert!(line.contains("unread_messages=1"));
+        assert!(line.contains("unread_count=1"));
+        assert!(line.contains("notification_count=1"));
+        assert!(line.contains("highlight_count=0"));
+        assert!(line.contains("latest_event_present=true"));
+        assert!(line.contains("latest_event_type=m.room.message"));
+        assert!(line.contains("latest_event_relation_type=m.thread"));
+        assert!(line.contains("latest_event_content_converted=true"));
+        assert!(line.contains("latest_event_threaded=true"));
+        assert!(line.contains("latest_event_reply=false"));
+        assert!(line.contains("latest_event_thread_summary=true"));
+        assert!(line.contains("latest_event_reactions=true"));
+        assert!(line.contains("fully_read_present=true"));
+        assert!(line.contains("private_unthreaded_receipt_present=true"));
+        assert!(line.contains("fully_read_matches_latest=false"));
+        assert!(line.contains("private_unthreaded_receipt_matches_latest=true"));
+        for private_value in [
+            "!private-room:example.invalid",
+            "$latest:example.invalid",
+            "$older:example.invalid",
+            "$thread-root:example.invalid",
+            "@sender:example.invalid",
+            "Private Sender",
+            "mxc://example.invalid/avatar",
+            "private message body",
+        ] {
+            assert!(
+                !line.contains(private_value),
+                "trace leaked {private_value}: {line}"
+            );
+        }
     }
 
     #[test]
@@ -5906,6 +6204,14 @@ mod tests {
             sender_avatar_mxc_uri: None,
             preview: None,
             timestamp_ms: 42,
+            event_type: Some("m.room.message".to_owned()),
+            relation_type: None,
+            relation_event_id: None,
+            content_converted: true,
+            is_threaded: false,
+            is_reply: false,
+            has_thread_summary: false,
+            has_reactions: false,
         }
     }
 
