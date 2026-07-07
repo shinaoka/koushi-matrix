@@ -527,7 +527,10 @@ export function ContextualRightPanel({
     );
 
     return (
-      <aside className="thread-pane" aria-label={t("panel.context")}>
+      <aside
+        className={mode === "search" ? "thread-pane search-panel" : "thread-pane"}
+        aria-label={t("panel.context")}
+      >
         <PanelHeader
           title={mode === "search" ? t("panel.search") : t("panel.focusedContext")}
           onClose={onClosePanel}

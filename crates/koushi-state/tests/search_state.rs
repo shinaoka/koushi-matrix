@@ -197,6 +197,8 @@ fn search_actions_are_ignored_without_ready_session() {
             &mut state,
             AppAction::SearchSucceeded {
                 request_id: 7,
+                query: "アンケート".to_owned(),
+                scope: scope(),
                 results: vec![result("$event")],
             },
         ),
@@ -228,6 +230,8 @@ fn editing_search_after_submit_suppresses_previous_response() {
         &mut state,
         AppAction::SearchSucceeded {
             request_id: 8,
+            query: "old".to_owned(),
+            scope: scope(),
             results: vec![result("$old")],
         },
     );
@@ -258,6 +262,8 @@ fn stale_search_result_is_ignored() {
         &mut state,
         AppAction::SearchSucceeded {
             request_id: 7,
+            query: "old".to_owned(),
+            scope: scope(),
             results: vec![result("$old")],
         },
     );
@@ -268,6 +274,75 @@ fn stale_search_result_is_ignored() {
             request_id: 8,
             query: "new".to_owned(),
             scope: scope(),
+        }
+    );
+    assert_eq!(effects, Vec::<AppEffect>::new());
+}
+
+#[test]
+fn same_sequence_search_result_for_different_query_is_ignored() {
+    let mut state = ready_state();
+    reduce(
+        &mut state,
+        AppAction::SearchSubmitted {
+            request_id: 1,
+            query: "gpt".to_owned(),
+            scope: scope(),
+        },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SearchSucceeded {
+            request_id: 1,
+            query: "pt".to_owned(),
+            scope: scope(),
+            results: vec![result("$pt")],
+        },
+    );
+
+    assert_eq!(
+        state.search,
+        SearchState::Searching {
+            request_id: 1,
+            query: "gpt".to_owned(),
+            scope: scope(),
+        }
+    );
+    assert_eq!(effects, Vec::<AppEffect>::new());
+}
+
+#[test]
+fn same_sequence_search_failure_for_different_scope_is_ignored() {
+    let mut state = ready_state();
+    let current_scope = SearchScope::CurrentRoom {
+        room_id: "room-a".to_owned(),
+    };
+    reduce(
+        &mut state,
+        AppAction::SearchSubmitted {
+            request_id: 1,
+            query: "gpt".to_owned(),
+            scope: current_scope.clone(),
+        },
+    );
+
+    let effects = reduce(
+        &mut state,
+        AppAction::SearchFailed {
+            request_id: 1,
+            query: "gpt".to_owned(),
+            scope: SearchScope::AllRooms,
+            message: "late failure".to_owned(),
+        },
+    );
+
+    assert_eq!(
+        state.search,
+        SearchState::Searching {
+            request_id: 1,
+            query: "gpt".to_owned(),
+            scope: current_scope,
         }
     );
     assert_eq!(effects, Vec::<AppEffect>::new());
@@ -289,6 +364,8 @@ fn matching_search_result_updates_results() {
         &mut state,
         AppAction::SearchSucceeded {
             request_id: 9,
+            query: "アンケート".to_owned(),
+            scope: scope(),
             results: vec![result("$event")],
         },
     );
@@ -323,6 +400,8 @@ fn duplicate_search_response_after_results_is_ignored() {
         &mut state,
         AppAction::SearchSucceeded {
             request_id: 13,
+            query: "アンケート".to_owned(),
+            scope: scope(),
             results: vec![result("$event")],
         },
     );
@@ -331,6 +410,8 @@ fn duplicate_search_response_after_results_is_ignored() {
         &mut state,
         AppAction::SearchFailed {
             request_id: 13,
+            query: "アンケート".to_owned(),
+            scope: scope(),
             message: "late failure".to_owned(),
         },
     );
@@ -363,6 +444,8 @@ fn matching_search_failure_updates_failed_state() {
         &mut state,
         AppAction::SearchFailed {
             request_id: 10,
+            query: "アンケート".to_owned(),
+            scope: scope(),
             message: "search unavailable".to_owned(),
         },
     );
@@ -443,6 +526,8 @@ fn stale_search_failure_is_ignored() {
         &mut state,
         AppAction::SearchFailed {
             request_id: 11,
+            query: "new".to_owned(),
+            scope: scope(),
             message: "late failure".to_owned(),
         },
     );

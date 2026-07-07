@@ -2211,9 +2211,11 @@ stateDiagram-v2
 ```
 
 - Search has editing, searching, results, and failed states.
-- Search responses carry a `request_id`.
-- Responses whose `request_id` does not match the active searching state are
-  ignored.
+- Search responses carry the submitted `request_id`, `query`, and `scope`.
+- Responses whose `request_id`, `query`, or `scope` does not match the active
+  searching state are ignored. This prevents results from a previous transient
+  command connection from settling the current search if connection-local
+  sequence numbers collide.
 - If the user edits the query while a search is in flight, the in-flight response
   is ignored because the state is no longer `Searching`.
 - Submitting a search emits both the backend search request and `SearchChanged`

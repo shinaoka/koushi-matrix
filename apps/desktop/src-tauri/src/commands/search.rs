@@ -1,5 +1,27 @@
 use super::*;
 
+fn search_trace_enabled() -> bool {
+    std::env::var_os("KOUSHI_SEARCH_TRACE").is_some()
+}
+
+fn search_scope_kind_trace_label(scope: SearchScopeKind) -> &'static str {
+    match scope {
+        SearchScopeKind::CurrentRoom => "current_room",
+        SearchScopeKind::CurrentSpace => "current_space",
+        SearchScopeKind::Dms => "dms",
+        SearchScopeKind::AllRooms => "all_rooms",
+    }
+}
+
+fn resolved_search_scope_trace_label(scope: &SearchScope) -> &'static str {
+    match scope {
+        SearchScope::CurrentRoom { .. } => "current_room",
+        SearchScope::CurrentSpace { .. } => "current_space",
+        SearchScope::Dms => "dms",
+        SearchScope::AllRooms => "all_rooms",
+    }
+}
+
 #[tauri::command]
 pub async fn submit_search(
     query: String,
@@ -9,11 +31,22 @@ pub async fn submit_search(
 ) -> Result<FrontendDesktopSnapshot, String> {
     let search_scope = resolve_search_scope(scope, state.inner()).await;
     let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_submit_search_command(request_id, query, search_scope))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
+    let request_id = next_request_id(state.inner()).await;
+    if search_trace_enabled() {
+        eprintln!(
+            "koushi.search_cmd stage=submit request={} ui_scope={} resolved_scope={} query_bytes={} query_chars={}",
+            request_id.sequence,
+            search_scope_kind_trace_label(scope),
+            resolved_search_scope_trace_label(&search_scope),
+            query.trim().len(),
+            query.trim().chars().count()
+        );
+    }
+    submit_core_command(
+        state.inner(),
+        build_submit_search_command(request_id, query, search_scope),
+    )
+    .await?;
     wait_for_search_started(&mut event_conn, request_id, SEARCH_EVENT_TIMEOUT).await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await
@@ -25,11 +58,8 @@ pub async fn close_search(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
     let mut event_conn = state.runtime.attach();
-    let request_id = event_conn.next_request_id();
-    event_conn
-        .command(build_close_search_command(request_id))
-        .await
-        .map_err(|e| format!("command submit failed: {e}"))?;
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(state.inner(), build_close_search_command(request_id)).await?;
     wait_for_search_closed(&mut event_conn, request_id, SEARCH_EVENT_TIMEOUT).await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     current_snapshot(state.inner()).await

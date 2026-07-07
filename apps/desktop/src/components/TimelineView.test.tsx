@@ -1839,6 +1839,68 @@ describe("TimelineView", () => {
     });
   });
 
+  it("backfills an underfilled room timeline after short initial items arrive", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const paginateBackwards = vi.fn(async () => undefined);
+    const onDiagnosticLogEntry = vi.fn();
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      paginateBackwards
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        autoLoadOlderMessages={true}
+        onReply={vi.fn()}
+        onDiagnosticLogEntry={onDiagnosticLogEntry}
+      />
+    );
+
+    const timeline = await screen.findByTestId("timeline-view");
+    Object.defineProperty(timeline, "scrollHeight", { value: 320, configurable: true });
+    Object.defineProperty(timeline, "clientHeight", { value: 600, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", { value: 0, writable: true, configurable: true });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$latest", "Latest")]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      const underfilledLogs = onDiagnosticLogEntry.mock.calls
+        .map(([entry]) => entry)
+        .filter((entry) => entry.source === "timeline.backfill")
+        .map((entry) => entry.message)
+        .filter((message) => message.includes("trigger=underfilled_initial"));
+      expect(underfilledLogs).toEqual([
+        expect.stringContaining("stage=request trigger=underfilled_initial")
+      ]);
+      expect(underfilledLogs[0]).toContain("items=1");
+      expect(underfilledLogs[0]).toContain("scroll_height_px=320");
+      expect(underfilledLogs[0]).toContain("client_height_px=600");
+      expect(underfilledLogs[0]).toContain("overflow_px=0");
+      expect(underfilledLogs[0]).toContain("auto_load=true");
+      expect(underfilledLogs[0]).toContain("state=Idle");
+    });
+    expect(paginateBackwards).toHaveBeenCalledWith(KEY);
+    expect(paginateBackwards).toHaveBeenCalledTimes(1);
+  });
+
   it("captures the bottom-most visible event as the persisted room scroll anchor", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const updateScrollAnchor = vi.fn(async () => undefined);

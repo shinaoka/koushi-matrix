@@ -848,12 +848,16 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         } => search::handle_search_submitted(state, request_id, query, scope),
         AppAction::SearchSucceeded {
             request_id,
+            query,
+            scope,
             results,
-        } => search::handle_search_succeeded(state, request_id, results),
+        } => search::handle_search_succeeded(state, request_id, query, scope, results),
         AppAction::SearchFailed {
             request_id,
+            query,
+            scope,
             message,
-        } => search::handle_search_failed(state, request_id, message),
+        } => search::handle_search_failed(state, request_id, query, scope, message),
         AppAction::SearchClosed => search::handle_search_closed(state),
         AppAction::SearchIndexRebuildRequested { request_id: _ } => {
             search::handle_search_index_rebuild_requested(state)

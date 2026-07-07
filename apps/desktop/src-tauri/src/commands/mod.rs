@@ -5975,9 +5975,15 @@ mod tests {
             .expect("start_room_crawl command should follow submit_search");
         let command_source = &rest[..end];
 
+        let attach_offset = command_source
+            .find("let mut event_conn = state.runtime.attach()")
+            .expect("submit_search should attach a transient event listener");
+        let request_offset = command_source
+            .find("let request_id = next_request_id(state.inner()).await")
+            .expect("submit_search should allocate request ids from the command connection");
         let submit_offset = command_source
-            .find("build_submit_search_command")
-            .expect("submit_search should submit the query command");
+            .find("submit_core_command")
+            .expect("submit_search should submit through the command connection");
         let wait_offset = command_source
             .find("wait_for_search_started")
             .expect("submit_search should wait only for the correlated searching state");
@@ -5985,8 +5991,15 @@ mod tests {
             .find("current_snapshot")
             .expect("submit_search should return a snapshot");
         assert!(
-            submit_offset < wait_offset && wait_offset < snapshot_offset,
+            attach_offset < request_offset
+                && request_offset < submit_offset
+                && submit_offset < wait_offset
+                && wait_offset < snapshot_offset,
             "submit_search should return the searching snapshot and let results arrive via state events"
+        );
+        assert!(
+            !command_source.contains("let request_id = event_conn.next_request_id()"),
+            "submit_search must not use transient event-connection sequence numbers for state correlation"
         );
         assert!(
             !command_source.contains("wait_for_search_completed"),

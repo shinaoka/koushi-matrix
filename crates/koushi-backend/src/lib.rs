@@ -244,6 +244,8 @@ impl FakeDesktopBackend {
         let results = self.search_candidates(&query, &scope, &candidates);
         self.dispatch(AppAction::SearchSucceeded {
             request_id,
+            query,
+            scope,
             results: results.clone(),
         });
         results
@@ -380,6 +382,8 @@ impl FakeDesktopBackend {
                 scope,
             } => vec![AppAction::SearchSucceeded {
                 request_id: *request_id,
+                query: query.clone(),
+                scope: scope.clone(),
                 results: self.search(query, scope),
             }],
             AppEffect::SearchAttachments {
@@ -405,12 +409,7 @@ impl FakeDesktopBackend {
                 }
                 SyncMode::Deferred => Vec::new(),
             },
-            AppEffect::ClearSession => {
-                self.matrix_session = None;
-                Vec::new()
-            }
-            AppEffect::RestoreSessionFor(_)
-            | AppEffect::PersistSession(_)
+            AppEffect::PersistSession(_)
             | AppEffect::PersistSettings { .. }
             | AppEffect::PersistRoomPreferences { .. }
             | AppEffect::StopSync

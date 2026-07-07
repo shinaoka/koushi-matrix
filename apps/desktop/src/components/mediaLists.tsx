@@ -442,7 +442,10 @@ function SearchResults({
                 <span dir="auto">{highlight(result.snippet, result.highlights)}</span>
                 <span className="result-meta">
                   <span dir="auto">{room?.display_label ?? result.room_id}</span> ·{" "}
-                  {matchFieldLabel(result.match_field)}
+                  <time dateTime={new Date(result.timestamp_ms).toISOString()}>
+                    {formatScheduledSendTime(result.timestamp_ms)}
+                  </time>{" "}
+                  · {matchFieldLabel(result.match_field)}
                 </span>
               </button>
             );
