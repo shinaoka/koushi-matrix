@@ -1791,6 +1791,87 @@ fn relation_type_trace_token(rel_type: Option<&str>) -> &'static str {
     }
 }
 
+#[derive(Clone, Copy)]
+struct FullyReadReceiptContext<'a> {
+    visible_event_id: &'a str,
+    latest_event_id: Option<&'a str>,
+    latest_event_relation_type: Option<&'a str>,
+    unread_messages: u64,
+    notification_count: u64,
+}
+
+struct RoomLatestReceiptContext {
+    event_id: Option<String>,
+    relation_type: Option<String>,
+    unread_messages: u64,
+    notification_count: u64,
+}
+
+fn private_read_receipt_event_id_for_fully_read<'a>(
+    context: FullyReadReceiptContext<'a>,
+) -> &'a str {
+    if context.unread_messages == 0
+        && context.notification_count > 0
+        && context.latest_event_relation_type == Some("m.replace")
+        && let Some(latest_event_id) = context.latest_event_id
+        && !latest_event_id.trim().is_empty()
+    {
+        latest_event_id
+    } else {
+        context.visible_event_id
+    }
+}
+
+fn private_read_receipt_event_id_from_room_for_fully_read(
+    room: &matrix_sdk::Room,
+    visible_event_id: &str,
+) -> String {
+    let latest = room_latest_receipt_context(room);
+    private_read_receipt_event_id_for_fully_read(FullyReadReceiptContext {
+        visible_event_id,
+        latest_event_id: latest.event_id.as_deref(),
+        latest_event_relation_type: latest.relation_type.as_deref(),
+        unread_messages: latest.unread_messages,
+        notification_count: latest.notification_count,
+    })
+    .to_owned()
+}
+
+fn room_latest_receipt_context(room: &matrix_sdk::Room) -> RoomLatestReceiptContext {
+    let unread_notifications = room.unread_notification_counts();
+    let (event_id, relation_type) = match room.latest_event() {
+        matrix_sdk::latest_events::LatestEventValue::Remote(timeline_event) => (
+            timeline_event
+                .event_id()
+                .map(|event_id| event_id.to_string()),
+            timeline_event_relation_type(&timeline_event),
+        ),
+        _ => (None, None),
+    };
+
+    RoomLatestReceiptContext {
+        event_id,
+        relation_type,
+        unread_messages: room.num_unread_messages(),
+        notification_count: unread_notifications.notification_count.into(),
+    }
+}
+
+fn timeline_event_relation_type(
+    timeline_event: &matrix_sdk::deserialized_responses::TimelineEvent,
+) -> Option<String> {
+    let content = timeline_event
+        .raw()
+        .get_field::<serde_json::Value>("content")
+        .ok()
+        .flatten()?;
+    content
+        .get("m.relates_to")?
+        .get("rel_type")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
 fn event_cache_trace_line(
     stage: &str,
     key: &TimelineKey,
@@ -4344,9 +4425,43 @@ impl TimelineActor {
             }
         };
 
+        let private_read_receipt_event_id =
+            private_read_receipt_event_id_from_room_for_fully_read(self.timeline.room(), &event_id);
+        if private_read_receipt_event_id != event_id
+            && let Some(room_id) = &room_id_for_trace
+        {
+            unread_trace::trace_mark_read(
+                "set_fully_read_private_receipt_target",
+                request_id.sequence,
+                room_id,
+                Some(private_read_receipt_event_id.as_str()),
+            );
+        }
+        let parsed_private_read_receipt_event_id =
+            match matrix_sdk::ruma::EventId::parse(private_read_receipt_event_id.as_str()) {
+                Ok(event_id) => event_id,
+                Err(_) => {
+                    if let Some(room_id) = &room_id_for_trace {
+                        unread_trace::trace_mark_read(
+                            "set_fully_read_failed",
+                            request_id.sequence,
+                            room_id,
+                            Some(private_read_receipt_event_id.as_str()),
+                        );
+                    }
+                    self.emit_failure(
+                        request_id,
+                        CoreFailure::TimelineOperationFailed {
+                            kind: TimelineFailureKind::Sdk,
+                        },
+                    );
+                    return;
+                }
+            };
+
         let receipts = Receipts::new()
-            .fully_read_marker(parsed_event_id.clone())
-            .private_read_receipt(parsed_event_id);
+            .fully_read_marker(parsed_event_id)
+            .private_read_receipt(parsed_private_read_receipt_event_id);
 
         match self.timeline.room().send_multiple_receipts(receipts).await {
             Ok(_) => {
@@ -8211,6 +8326,55 @@ mod tests {
             success_arm.contains("AppAction::RoomMarkedAsReadSucceeded"),
             "set_fully_read SDK success must also clear RoomSummary unread counts so sidebar and Activity/Unread agree"
         );
+    }
+
+    #[test]
+    fn private_read_receipt_target_advances_to_hidden_edit_notification() {
+        let target = private_read_receipt_event_id_for_fully_read(FullyReadReceiptContext {
+            visible_event_id: "$visible:test",
+            latest_event_id: Some("$latest-edit:test"),
+            latest_event_relation_type: Some("m.replace"),
+            unread_messages: 0,
+            notification_count: 1,
+        });
+
+        assert_eq!(target, "$latest-edit:test");
+
+        for context in [
+            FullyReadReceiptContext {
+                visible_event_id: "$visible:test",
+                latest_event_id: Some("$latest-message:test"),
+                latest_event_relation_type: None,
+                unread_messages: 0,
+                notification_count: 1,
+            },
+            FullyReadReceiptContext {
+                visible_event_id: "$visible:test",
+                latest_event_id: Some("$latest-edit:test"),
+                latest_event_relation_type: Some("m.replace"),
+                unread_messages: 1,
+                notification_count: 1,
+            },
+            FullyReadReceiptContext {
+                visible_event_id: "$visible:test",
+                latest_event_id: Some("$latest-edit:test"),
+                latest_event_relation_type: Some("m.replace"),
+                unread_messages: 0,
+                notification_count: 0,
+            },
+            FullyReadReceiptContext {
+                visible_event_id: "$visible:test",
+                latest_event_id: None,
+                latest_event_relation_type: Some("m.replace"),
+                unread_messages: 0,
+                notification_count: 1,
+            },
+        ] {
+            assert_eq!(
+                private_read_receipt_event_id_for_fully_read(context),
+                "$visible:test"
+            );
+        }
     }
 
     struct DropFlag(Arc<AtomicBool>);
