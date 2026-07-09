@@ -1846,13 +1846,24 @@ pub(crate) fn build_send_read_receipt_command(
     account_key: AccountKey,
     room_id: String,
     event_id: String,
+    thread_root_event_id: Option<String>,
 ) -> Option<CoreCommand> {
     if event_id.trim().is_empty() {
         return None;
     }
+    let key = match thread_root_event_id.filter(|root_event_id| !root_event_id.trim().is_empty()) {
+        Some(root_event_id) => TimelineKey {
+            account_key,
+            kind: TimelineKind::Thread {
+                room_id,
+                root_event_id,
+            },
+        },
+        None => build_timeline_key(account_key, room_id),
+    };
     Some(CoreCommand::Timeline(TimelineCommand::SendReadReceipt {
         request_id,
-        key: build_timeline_key(account_key, room_id),
+        key,
         event_id,
     }))
 }
@@ -4019,6 +4030,7 @@ mod tests {
             active_account_key.clone(),
             room_id.clone(),
             "$receipt-event".to_owned(),
+            None,
         )
         .expect("send_read_receipt should build a command")
         {
@@ -4036,6 +4048,34 @@ mod tests {
                     }
                 );
                 assert_eq!(event_id, "$receipt-event");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_send_read_receipt_command(
+            fake_request_id(128),
+            active_account_key.clone(),
+            room_id.clone(),
+            "$thread-receipt-event".to_owned(),
+            Some("$thread-root".to_owned()),
+        )
+        .expect("thread send_read_receipt should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::SendReadReceipt {
+                request_id,
+                key,
+                event_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(128));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    koushi_core::TimelineKind::Thread {
+                        room_id: room_id.clone(),
+                        root_event_id: "$thread-root".to_owned()
+                    }
+                );
+                assert_eq!(event_id, "$thread-receipt-event");
             }
             other => panic!("unexpected command: {other:?}"),
         }

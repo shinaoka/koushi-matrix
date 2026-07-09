@@ -817,6 +817,89 @@ describe("TimelineView", () => {
     }
   });
 
+  it("marks the latest visible thread event with a threaded read receipt", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const threadKey = threadTimelineKey(
+      "@alice:example.invalid",
+      "!room:example.invalid",
+      "$root:example.invalid"
+    );
+    const sendReadReceipt = vi.fn().mockResolvedValue(undefined);
+    const setFullyRead = vi.fn().mockResolvedValue(undefined);
+    const observeViewport = vi.fn().mockResolvedValue(undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      sendReadReceipt,
+      setFullyRead,
+      observeViewport
+    });
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    const rectSpy = mockTimelineRects(
+      {
+        "$thread-reply:example.invalid": { top: 140, height: 80 }
+      },
+      { top: 0, height: 500 },
+      scrollContainerRef
+    );
+
+    try {
+      render(
+        <TimelineView
+          timelineKey={threadKey}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+        />
+      );
+
+      const timeline = await screen.findByTestId("timeline-view");
+      scrollContainerRef.current = timeline;
+      Object.defineProperty(timeline, "clientHeight", { value: 500, configurable: true });
+      Object.defineProperty(timeline, "scrollHeight", { value: 2_000, configurable: true });
+      Object.defineProperty(timeline, "scrollTop", {
+        value: 0,
+        writable: true,
+        configurable: true
+      });
+
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            InitialItems: {
+              request_id: null,
+              key: threadKey,
+              generation: 1,
+              items: [message("$thread-reply:example.invalid", "Thread reply")]
+            }
+          }
+        });
+      });
+
+      timeline.scrollTop = 0;
+      fireEvent.wheel(timeline, { deltaY: 1 });
+      fireEvent.scroll(timeline);
+
+      await waitFor(() => {
+        expect(sendReadReceipt).toHaveBeenCalledWith(
+          "!room:example.invalid",
+          "$thread-reply:example.invalid",
+          "$root:example.invalid"
+        );
+      });
+      expect(setFullyRead).toHaveBeenCalledWith(
+        "!room:example.invalid",
+        "$thread-reply:example.invalid"
+      );
+      expect(observeViewport).not.toHaveBeenCalled();
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+
   it("emits safe timestamped timeline event diagnostics for thread timelines", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const onDiagnosticLogEntry = vi.fn();

@@ -71,7 +71,9 @@ use matrix_sdk::room::Receipts;
 use matrix_sdk::room::edit::EditedContent;
 use matrix_sdk::room::reply::{EnforceThread, Reply};
 use matrix_sdk::ruma::UserId;
+use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType as SendReceiptType;
 use matrix_sdk::ruma::events::Mentions;
+use matrix_sdk::ruma::events::receipt::ReceiptThread;
 use matrix_sdk::ruma::events::room::message::FormattedBody;
 use matrix_sdk::ruma::events::room::message::{
     AddMentions, MessageFormat, MessageType, ReplyWithinThread, RoomMessageEventContent,
@@ -1812,7 +1814,10 @@ fn private_read_receipt_event_id_for_fully_read<'a>(
 ) -> &'a str {
     if context.unread_messages == 0
         && context.notification_count > 0
-        && context.latest_event_relation_type == Some("m.replace")
+        && matches!(
+            context.latest_event_relation_type,
+            Some("m.replace" | "m.thread")
+        )
         && let Some(latest_event_id) = context.latest_event_id
         && !latest_event_id.trim().is_empty()
     {
@@ -4373,9 +4378,37 @@ impl TimelineActor {
             }
         };
 
-        let receipts = Receipts::new().public_read_receipt(parsed_event_id);
+        let result = match &self.key.kind {
+            TimelineKind::Thread { root_event_id, .. } => {
+                let parsed_root_event_id =
+                    match matrix_sdk::ruma::EventId::parse(root_event_id.as_str()) {
+                        Ok(event_id) => event_id,
+                        Err(_) => {
+                            self.emit_failure(
+                                request_id,
+                                CoreFailure::TimelineOperationFailed {
+                                    kind: TimelineFailureKind::Sdk,
+                                },
+                            );
+                            return;
+                        }
+                    };
+                self.timeline
+                    .room()
+                    .send_single_receipt(
+                        SendReceiptType::Read,
+                        ReceiptThread::Thread(parsed_root_event_id),
+                        parsed_event_id,
+                    )
+                    .await
+            }
+            TimelineKind::Room { .. } | TimelineKind::Focused { .. } => {
+                let receipts = Receipts::new().public_read_receipt(parsed_event_id);
+                self.timeline.room().send_multiple_receipts(receipts).await
+            }
+        };
 
-        match self.timeline.room().send_multiple_receipts(receipts).await {
+        match result {
             Ok(_) => {
                 self.emit(CoreEvent::LiveSignals(LiveSignalsEvent::ReadReceiptSent {
                     request_id,
@@ -8375,6 +8408,44 @@ mod tests {
                 "$visible:test"
             );
         }
+    }
+
+    #[test]
+    fn private_read_receipt_target_advances_to_hidden_thread_notification() {
+        let target = private_read_receipt_event_id_for_fully_read(FullyReadReceiptContext {
+            visible_event_id: "$visible:test",
+            latest_event_id: Some("$latest-thread:test"),
+            latest_event_relation_type: Some("m.thread"),
+            unread_messages: 0,
+            notification_count: 1,
+        });
+
+        assert_eq!(target, "$latest-thread:test");
+    }
+
+    #[test]
+    fn send_read_receipt_uses_threaded_receipt_for_thread_timelines() {
+        let source = include_str!("timeline.rs");
+        let handler = source
+            .split("async fn handle_send_read_receipt")
+            .nth(1)
+            .expect("handle_send_read_receipt should exist")
+            .split("async fn handle_set_fully_read")
+            .next()
+            .expect("handle_set_fully_read should follow handle_send_read_receipt");
+
+        assert!(
+            handler.contains("TimelineKind::Thread"),
+            "thread timeline read receipts must branch on TimelineKind::Thread"
+        );
+        assert!(
+            handler.contains("ReceiptThread::Thread"),
+            "thread timeline read receipts must use ReceiptThread::Thread(root)"
+        );
+        assert!(
+            handler.contains("send_single_receipt"),
+            "threaded read receipts must use the SDK single-receipt endpoint that accepts a thread"
+        );
     }
 
     struct DropFlag(Arc<AtomicBool>);

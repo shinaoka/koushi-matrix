@@ -177,7 +177,7 @@ export interface TimelineTransport {
     reactionEventId: string
   ): Promise<void>;
   /** Send a read receipt for a room event. */
-  sendReadReceipt(roomId: string, eventId: string): Promise<void>;
+  sendReadReceipt(roomId: string, eventId: string, threadRootEventId?: string | null): Promise<void>;
   /** Advance the fully-read marker for a room event. */
   setFullyRead(roomId: string, eventId: string): Promise<void>;
   /** Set typing state for a room. */
@@ -2165,6 +2165,14 @@ export const TimelineView = memo(function TimelineView({
   timelineKeyHashRef.current = timelineKeyHash;
   const sessionRoomScrollAnchorRef = useRef<TimelineScrollAnchor | null>(null);
   const roomTimelineRoomId = "Room" in timelineKey.kind ? timelineKey.kind.Room.room_id : null;
+  const readSignalRoomId =
+    "Room" in timelineKey.kind
+      ? timelineKey.kind.Room.room_id
+      : "Thread" in timelineKey.kind
+        ? timelineKey.kind.Thread.room_id
+        : null;
+  const readSignalThreadRootEventId =
+    "Thread" in timelineKey.kind ? timelineKey.kind.Thread.root_event_id : null;
   const items = getItems(store, timelineKey);
   const emitDiagnosticLog = useCallback(
     (source: string, message: string) => {
@@ -3237,18 +3245,25 @@ export const TimelineView = memo(function TimelineView({
       : [{ room_id: roomId, display_name: roomId }];
   const sendReadSignalsForEvent = useCallback(
     (eventId: string) => {
-      const signalKey = `${roomId}\u0000${eventId}`;
+      const signalKey = `${roomId}\u0000${readSignalThreadRootEventId ?? ""}\u0000${eventId}`;
       if (readSignalEventRef.current === signalKey) {
         return;
       }
       readSignalEventRef.current = signalKey;
-      void transport.sendReadReceipt(roomId, eventId).catch(() => undefined);
+      const sendReadReceipt =
+        readSignalThreadRootEventId === null
+          ? transport.sendReadReceipt(roomId, eventId)
+          : transport.sendReadReceipt(roomId, eventId, readSignalThreadRootEventId);
+      void sendReadReceipt.catch(() => undefined);
       void transport.setFullyRead(roomId, eventId).catch(() => undefined);
     },
-    [roomId, transport]
+    [readSignalThreadRootEventId, roomId, transport]
   );
   const reportViewportObservation = useCallback(() => {
-    if (!transport.observeViewport || roomTimelineRoomId !== roomId) {
+    const observeViewport = transport.observeViewport;
+    const canObserveRoomViewport = Boolean(observeViewport && roomTimelineRoomId === roomId);
+    const canSendReadSignals = readSignalRoomId === roomId;
+    if (!canObserveRoomViewport && !canSendReadSignals) {
       return;
     }
     const container = containerRef.current;
@@ -3267,8 +3282,11 @@ export const TimelineView = memo(function TimelineView({
     setViewportAtBottom((current) =>
       current === effectiveAtBottom ? current : effectiveAtBottom
     );
-    if (effectiveAtBottom && latestReadableEventId) {
+    if (canSendReadSignals && effectiveAtBottom && latestReadableEventId) {
       sendReadSignalsForEvent(latestReadableEventId);
+    }
+    if (!canObserveRoomViewport || !observeViewport) {
+      return;
     }
     const signature = [
       roomId,
@@ -3280,8 +3298,7 @@ export const TimelineView = memo(function TimelineView({
       return;
     }
     lastViewportObservationRef.current = signature;
-    void transport
-      .observeViewport(
+    void observeViewport(
         roomId,
         visible.firstVisibleEventId,
         visible.lastVisibleEventId,
@@ -3290,6 +3307,7 @@ export const TimelineView = memo(function TimelineView({
       .catch(() => undefined);
   }, [
     latestReadableEventId,
+    readSignalRoomId,
     roomId,
     roomTimelineRoomId,
     sendReadSignalsForEvent,
@@ -3363,7 +3381,7 @@ export const TimelineView = memo(function TimelineView({
   ]);
 
   useEffect(() => {
-    if (!latestReadableEventId || roomTimelineRoomId !== roomId) {
+    if (!latestReadableEventId || readSignalRoomId !== roomId) {
       return;
     }
     const container = containerRef.current;
@@ -3373,8 +3391,8 @@ export const TimelineView = memo(function TimelineView({
     sendReadSignalsForEvent(latestReadableEventId);
   }, [
     latestReadableEventId,
+    readSignalRoomId,
     roomId,
-    roomTimelineRoomId,
     sendReadSignalsForEvent,
     viewportAtBottom
   ]);

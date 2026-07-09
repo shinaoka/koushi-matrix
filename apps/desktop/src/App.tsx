@@ -306,8 +306,8 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
           reactionEventId
         });
       },
-      async sendReadReceipt(roomId: string, eventId: string) {
-        await invoke("send_read_receipt", { roomId, eventId });
+      async sendReadReceipt(roomId: string, eventId: string, threadRootEventId?: string | null) {
+        await invoke("send_read_receipt", { roomId, eventId, threadRootEventId });
       },
       async setFullyRead(roomId: string, eventId: string) {
         await invoke("set_fully_read", { roomId, eventId });

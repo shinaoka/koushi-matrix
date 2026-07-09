@@ -4,14 +4,19 @@ use super::*;
 pub async fn send_read_receipt(
     room_id: String,
     event_id: String,
+    thread_root_event_id: Option<String>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<(), String> {
     let account_key = account_key_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
-    if let Some(command) =
-        build_send_read_receipt_command(request_id, account_key, room_id, event_id)
-    {
+    if let Some(command) = build_send_read_receipt_command(
+        request_id,
+        account_key,
+        room_id,
+        event_id,
+        thread_root_event_id,
+    ) {
         submit_core_command(state.inner(), command).await?;
     }
     update_qa_window_title_from_state(&app, state.inner()).await;

@@ -147,7 +147,7 @@ export interface DesktopApi {
     reactionKey: string,
     reactionEventId: string
   ): Promise<DesktopSnapshot>;
-  sendReadReceipt(roomId: string, eventId: string): Promise<void>;
+  sendReadReceipt(roomId: string, eventId: string, threadRootEventId?: string | null): Promise<void>;
   setFullyRead(roomId: string, eventId: string): Promise<void>;
   setTyping(roomId: string, isTyping: boolean): Promise<void>;
   setPresence(presence: PresenceKind): Promise<DesktopSnapshot>;
@@ -1212,7 +1212,12 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
-  async sendReadReceipt(roomId: string, eventId: string): Promise<void> {
+  async sendReadReceipt(
+    roomId: string,
+    eventId: string,
+    threadRootEventId?: string | null
+  ): Promise<void> {
+    void threadRootEventId;
     const session = this.snapshot.state.domain.session;
     if (!this.isReady() || !session.user_id || eventId.trim().length === 0) {
       return;
