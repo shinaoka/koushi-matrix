@@ -3241,13 +3241,19 @@ export const TimelineView = memo(function TimelineView({
   const submitAliasDialog = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
+      closeAliasDialog();
+    },
+    [closeAliasDialog]
+  );
+  const updateAliasDraft = useCallback(
+    (nextAlias: string) => {
+      setAliasDraft(nextAlias);
       if (!aliasTarget || !onSetLocalUserAlias) {
         return;
       }
-      onSetLocalUserAlias(aliasTarget.userId, aliasDraft.trim() || null);
-      closeAliasDialog();
+      onSetLocalUserAlias(aliasTarget.userId, nextAlias.trim() || null);
     },
-    [aliasDraft, aliasTarget, closeAliasDialog, onSetLocalUserAlias]
+    [aliasTarget, onSetLocalUserAlias]
   );
   const effectiveForwardDestinations =
     forwardDestinations.length > 0
@@ -4363,15 +4369,12 @@ export const TimelineView = memo(function TimelineView({
               className="dialog-input"
               aria-label={t("room.aliasInput")}
               value={aliasDraft}
-              onChange={(event) => setAliasDraft(event.currentTarget.value)}
+              onChange={(event) => updateAliasDraft(event.currentTarget.value)}
               autoFocus
             />
             <div className="dialog-actions">
-              <button className="dialog-button" type="button" onClick={closeAliasDialog}>
-                {t("action.cancel")}
-              </button>
               <button className="dialog-button is-primary" type="submit">
-                {t("room.saveAlias")}
+                {t("action.done")}
               </button>
             </div>
           </form>

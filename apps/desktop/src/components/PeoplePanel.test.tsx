@@ -574,7 +574,7 @@ describe("ProfilePanel", () => {
     expect(onUnignoreUser).toHaveBeenCalledWith("@ada:example.invalid");
   });
 
-  test("saves a local alias", () => {
+  test("autosaves a local alias", () => {
     const onSetLocalUserAlias = vi.fn();
     render(
       <ProfilePanel
@@ -591,12 +591,12 @@ describe("ProfilePanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Set alias" }));
     const input = screen.getByRole("textbox");
     fireEvent.change(input, { target: { value: "Legend" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save alias" }));
 
+    expect(screen.queryByRole("button", { name: "Save alias" })).toBeNull();
     expect(onSetLocalUserAlias).toHaveBeenCalledWith("@ada:example.invalid", "Legend");
   });
 
-  test("clears a local alias when the input is empty", () => {
+  test("autosaves a cleared local alias when the input is empty", () => {
     const onSetLocalUserAlias = vi.fn();
     render(
       <ProfilePanel
@@ -613,8 +613,8 @@ describe("ProfilePanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Set alias" }));
     const input = screen.getByRole("textbox");
     fireEvent.change(input, { target: { value: "   " } });
-    fireEvent.click(screen.getByRole("button", { name: "Save alias" }));
 
+    expect(screen.queryByRole("button", { name: "Save alias" })).toBeNull();
     expect(onSetLocalUserAlias).toHaveBeenCalledWith("@ada:example.invalid", null);
   });
 

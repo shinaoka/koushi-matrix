@@ -8,6 +8,7 @@ export type MessageId =
   | "action.continue"
   | "action.createRoom"
   | "action.createSpace"
+  | "action.done"
   | "action.forward"
   | "action.history"
   | "action.more"
@@ -296,7 +297,6 @@ export type MessageId =
   | "room.editAlias"
   | "room.editAliasForMember"
   | "room.memberOriginalName"
-  | "room.saveAlias"
   | "room.setAlias"
   | "room.setAliasForMember"
   | "room.noMembers"
@@ -606,7 +606,6 @@ export type MessageId =
   | "space.localNamePlaceholder"
   | "space.localPresentation"
   | "space.resetLocalPresentation"
-  | "space.saveLocalPresentation"
   | "space.noUnread"
   | "space.preferences"
   | "space.roomMembership"
@@ -963,6 +962,7 @@ const en: Catalog = {
   "action.continue": "Continue",
   "action.createRoom": "Create room",
   "action.createSpace": "Create space",
+  "action.done": "Done",
   "action.forward": "Forward",
   "action.history": "History",
   "action.more": "More",
@@ -1260,7 +1260,6 @@ const en: Catalog = {
   "room.editAlias": "Edit alias",
   "room.editAliasForMember": "Edit alias for {name}",
   "room.memberOriginalName": "Original: {name}",
-  "room.saveAlias": "Save alias",
   "room.setAlias": "Set alias",
   "room.setAliasForMember": "Set alias for {name}",
   "room.noAvatar": "No avatar",
@@ -1580,7 +1579,6 @@ const en: Catalog = {
   "space.localNamePlaceholder": "Space label on this device",
   "space.localPresentation": "Local presentation",
   "space.resetLocalPresentation": "Reset local presentation",
-  "space.saveLocalPresentation": "Save local presentation",
   "space.noUnread": "No unread",
   "space.preferences": "Preferences",
   "space.roomMembership": "Room membership",
@@ -1832,6 +1830,7 @@ const ja: Catalog = {
   "action.continue": "続行",
   "action.createRoom": "ルームを作成",
   "action.createSpace": "スペースを作成",
+  "action.done": "完了",
   "action.forward": "進む",
   "action.history": "履歴",
   "action.more": "その他",
@@ -2120,7 +2119,6 @@ const ja: Catalog = {
   "room.editAlias": "エイリアスを編集",
   "room.editAliasForMember": "{name}のエイリアスを編集",
   "room.memberOriginalName": "元の名前: {name}",
-  "room.saveAlias": "エイリアスを保存",
   "room.setAlias": "エイリアスを設定",
   "room.setAliasForMember": "{name}のエイリアスを設定",
   "room.noAvatar": "アバターなし",
@@ -2440,7 +2438,6 @@ const ja: Catalog = {
   "space.localNamePlaceholder": "この端末でのスペース名",
   "space.localPresentation": "ローカル表示",
   "space.resetLocalPresentation": "ローカル表示をリセット",
-  "space.saveLocalPresentation": "ローカル表示を保存",
   "space.noUnread": "未読なし",
   "space.preferences": "環境設定",
   "space.roomMembership": "ルーム参加状態",
