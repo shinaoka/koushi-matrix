@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createBrowserFakeApi } from "../backend/browserFakeApi";
 import { computeBrowserRoomListProjection } from "../backend/roomListProjection";
 import type { RoomSummary } from "../domain/types";
-import { EntityAvatar, Sidebar, TopBar, WorkspaceRail } from "./Shell";
+import { EntityAvatar, Sidebar, TopBar, WorkspaceRail, avatarColorClass } from "./Shell";
 
 afterEach(() => {
   cleanup();
@@ -15,6 +15,27 @@ afterEach(() => {
 });
 
 describe("EntityAvatar", () => {
+  it("maps stable avatar seeds to one of the eight palette classes", () => {
+    expect(avatarColorClass("!alpha:example.invalid")).toMatch(/^avatar-c[1-8]$/);
+    expect(avatarColorClass("!alpha:example.invalid")).toBe(
+      avatarColorClass("!alpha:example.invalid")
+    );
+  });
+
+  it("applies a stable palette class to fallback avatars", () => {
+    render(
+      <EntityAvatar
+        avatar={null}
+        className="room-avatar"
+        colorSeed="!alpha:example.invalid"
+        fallback="AL"
+      />
+    );
+
+    const fallback = screen.getByText("AL");
+    expect(fallback.className).toContain(avatarColorClass("!alpha:example.invalid"));
+  });
+
   it("renders a ready avatar image", () => {
     render(
       <EntityAvatar

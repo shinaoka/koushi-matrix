@@ -183,6 +183,40 @@ describe("appStore projection cache", () => {
     );
   });
 
+  test("projects mention candidates with user avatars and @room", () => {
+    const snapshot = makeSnapshot();
+    const avatar = {
+      mxc_uri: "mxc://example.invalid/alice",
+      thumbnail: { kind: "notRequested" as const }
+    };
+    snapshot.state.domain.profile.users["@alice:example.invalid"] = {
+      user_id: "@alice:example.invalid",
+      display_name: "Alice",
+      display_label: "Alice",
+      original_display_label: "Alice",
+      mention_search_terms: ["alice", "@alice:example.invalid"],
+      avatar
+    };
+
+    const candidates = selectMentionCandidates({ snapshot });
+
+    expect(candidates).toContainEqual(
+      expect.objectContaining({
+        key: "@alice:example.invalid",
+        avatar,
+        target: expect.objectContaining({ kind: "user", user_id: "@alice:example.invalid" })
+      })
+    );
+    expect(candidates).toContainEqual(
+      expect.objectContaining({
+        key: "roomMention",
+        label: "@room",
+        searchText: expect.stringContaining("notify the whole room"),
+        target: { kind: "roomMention", display_label: "room" }
+      })
+    );
+  });
+
   test("notifies selector subscribers only when the selected slice changes", () => {
     const previous = makeSnapshot();
     setAppStoreSnapshot(previous);

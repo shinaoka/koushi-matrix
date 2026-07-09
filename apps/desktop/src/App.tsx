@@ -306,8 +306,8 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
           reactionEventId
         });
       },
-      async sendReadReceipt(roomId: string, eventId: string) {
-        await invoke("send_read_receipt", { roomId, eventId });
+      async sendReadReceipt(roomId: string, eventId: string, threadRootEventId?: string | null) {
+        await invoke("send_read_receipt", { roomId, eventId, threadRootEventId });
       },
       async setFullyRead(roomId: string, eventId: string) {
         await invoke("set_fully_read", { roomId, eventId });
@@ -3165,7 +3165,15 @@ export function App() {
     setRightPanelMode("closed");
   }
 
-  function openActivityRow(roomId: string, eventId: string) {
+  function openActivityRow(roomId: string, eventId: string, threadRootEventId: string | null) {
+    if (threadRootEventId) {
+      void (async () => {
+        setPrimaryView("timeline");
+        setSnapshot(await api.selectRoom(roomId));
+        await openThread(roomId, threadRootEventId);
+      })();
+      return;
+    }
     void api.openActivityEvent(roomId, eventId).then((nextSnapshot) => {
       setSnapshot(nextSnapshot);
       setPrimaryView("timeline");
@@ -3584,7 +3592,7 @@ export function App() {
             }}
             onOpenRow={(row) => {
               if (row.kind === "event" && row.event_id !== null) {
-                openActivityRow(row.room_id, row.event_id);
+                openActivityRow(row.room_id, row.event_id, row.thread_root_event_id);
               } else if (row.kind === "roomUnread") {
                 void openActivityRoom(row.room_id);
               }

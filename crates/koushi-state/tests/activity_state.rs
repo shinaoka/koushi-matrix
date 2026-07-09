@@ -397,6 +397,20 @@ fn activity_row_event_source_serializes_real_event_id() {
     let value = serde_json::to_value(&row).expect("serialize activity row");
     assert_eq!(value["kind"], serde_json::json!("event"));
     assert_eq!(value["event_id"], serde_json::json!("$event"));
+    assert_eq!(value["thread_root_event_id"], serde_json::Value::Null);
+}
+
+#[test]
+fn activity_row_event_source_serializes_thread_root_event_id() {
+    let mut row = row("!room", "$thread-reply", 10);
+    row.thread_root_event_id = Some("$thread-root".to_owned());
+    let value = serde_json::to_value(&row).expect("serialize activity row");
+    assert_eq!(value["kind"], serde_json::json!("event"));
+    assert_eq!(value["event_id"], serde_json::json!("$thread-reply"));
+    assert_eq!(
+        value["thread_root_event_id"],
+        serde_json::json!("$thread-root")
+    );
 }
 
 #[test]
@@ -410,6 +424,7 @@ fn activity_row_room_unread_source_has_no_event_id_and_redacted_debug() {
     let value = serde_json::to_value(&row).expect("serialize activity row");
     assert_eq!(value["kind"], serde_json::json!("roomUnread"));
     assert_eq!(value["event_id"], serde_json::Value::Null);
+    assert_eq!(value["thread_root_event_id"], serde_json::Value::Null);
     let debug = format!("{row:?}");
     assert!(!debug.contains("!private-room:example.invalid"));
     assert!(!debug.contains("Private Room"));

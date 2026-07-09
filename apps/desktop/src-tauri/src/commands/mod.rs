@@ -22,8 +22,9 @@ use koushi_core::{
     MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent,
     RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand, SearchEvent, SearchScope,
     SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SetAvatarRequest, SyncCommand,
-    TimelineCommand, TimelineKey, TimelineKind, TimelineViewportObservation, UploadMediaKind,
-    UploadMediaRequest, UploadMediaThumbnail,
+    TimelineCommand, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineKey,
+    TimelineKind, TimelineViewportObservation, UploadMediaKind, UploadMediaRequest,
+    UploadMediaThumbnail,
 };
 use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentSort, AuthSecret,
@@ -431,6 +432,91 @@ async fn wait_for_focused_context(
             Err(_) => continue,
         }
     }
+}
+
+async fn wait_for_focused_timeline_event(
+    event_conn: &mut CoreConnection,
+    request_id: RequestId,
+    room_id: &str,
+    event_id: &str,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| "focused timeline did not emit target event".to_owned())?;
+        match event {
+            Ok(CoreEvent::Timeline(event))
+                if timeline_event_contains_focused_event(&event, room_id, event_id) =>
+            {
+                return Ok(());
+            }
+            Ok(CoreEvent::OperationFailed {
+                request_id: failed_request_id,
+                failure,
+            }) if failed_request_id == request_id => {
+                return Err(invoke_error_from_core_failure(
+                    "focused timeline open failed",
+                    failure,
+                ));
+            }
+            Ok(_) => {}
+            Err(_) => continue,
+        }
+    }
+}
+
+fn timeline_event_contains_focused_event(
+    event: &TimelineEvent,
+    room_id: &str,
+    event_id: &str,
+) -> bool {
+    match event {
+        TimelineEvent::InitialItems { key, items, .. }
+            if timeline_key_matches_focused_event(key, room_id, event_id) =>
+        {
+            items
+                .iter()
+                .any(|item| timeline_item_matches_event_id(item, event_id))
+        }
+        TimelineEvent::ItemsUpdated { key, diffs, .. }
+            if timeline_key_matches_focused_event(key, room_id, event_id) =>
+        {
+            diffs
+                .iter()
+                .any(|diff| timeline_diff_contains_event_id(diff, event_id))
+        }
+        _ => false,
+    }
+}
+
+fn timeline_key_matches_focused_event(key: &TimelineKey, room_id: &str, event_id: &str) -> bool {
+    matches!(
+        &key.kind,
+        TimelineKind::Focused {
+            room_id: focused_room_id,
+            event_id: focused_event_id,
+        } if focused_room_id == room_id && focused_event_id == event_id
+    )
+}
+
+fn timeline_diff_contains_event_id(diff: &TimelineDiff, event_id: &str) -> bool {
+    match diff {
+        TimelineDiff::PushFront { item }
+        | TimelineDiff::PushBack { item }
+        | TimelineDiff::Insert { item, .. }
+        | TimelineDiff::Set { item, .. } => timeline_item_matches_event_id(item, event_id),
+        TimelineDiff::Reset { items } => items
+            .iter()
+            .any(|item| timeline_item_matches_event_id(item, event_id)),
+        TimelineDiff::Remove { .. } | TimelineDiff::Truncate { .. } | TimelineDiff::Clear => false,
+    }
+}
+
+fn timeline_item_matches_event_id(item: &TimelineItem, event_id: &str) -> bool {
+    matches!(&item.id, TimelineItemId::Event { event_id: item_event_id } if item_event_id == event_id)
 }
 
 async fn wait_for_main_timeline_anchor(
@@ -1846,13 +1932,24 @@ pub(crate) fn build_send_read_receipt_command(
     account_key: AccountKey,
     room_id: String,
     event_id: String,
+    thread_root_event_id: Option<String>,
 ) -> Option<CoreCommand> {
     if event_id.trim().is_empty() {
         return None;
     }
+    let key = match thread_root_event_id.filter(|root_event_id| !root_event_id.trim().is_empty()) {
+        Some(root_event_id) => TimelineKey {
+            account_key,
+            kind: TimelineKind::Thread {
+                room_id,
+                root_event_id,
+            },
+        },
+        None => build_timeline_key(account_key, room_id),
+    };
     Some(CoreCommand::Timeline(TimelineCommand::SendReadReceipt {
         request_id,
-        key: build_timeline_key(account_key, room_id),
+        key,
         event_id,
     }))
 }
@@ -4019,6 +4116,7 @@ mod tests {
             active_account_key.clone(),
             room_id.clone(),
             "$receipt-event".to_owned(),
+            None,
         )
         .expect("send_read_receipt should build a command")
         {
@@ -4036,6 +4134,34 @@ mod tests {
                     }
                 );
                 assert_eq!(event_id, "$receipt-event");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        match build_send_read_receipt_command(
+            fake_request_id(128),
+            active_account_key.clone(),
+            room_id.clone(),
+            "$thread-receipt-event".to_owned(),
+            Some("$thread-root".to_owned()),
+        )
+        .expect("thread send_read_receipt should build a command")
+        {
+            CoreCommand::Timeline(TimelineCommand::SendReadReceipt {
+                request_id,
+                key,
+                event_id,
+            }) => {
+                assert_eq!(request_id, fake_request_id(128));
+                assert_eq!(key.account_key, active_account_key);
+                assert_eq!(
+                    key.kind,
+                    koushi_core::TimelineKind::Thread {
+                        room_id: room_id.clone(),
+                        root_event_id: "$thread-root".to_owned()
+                    }
+                );
+                assert_eq!(event_id, "$thread-receipt-event");
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -6044,6 +6170,10 @@ mod tests {
             "activity event navigation should wait for the focused event timeline"
         );
         assert!(
+            command_source.contains("wait_for_focused_timeline_event"),
+            "activity event navigation should wait for the focused timeline item before anchoring"
+        );
+        assert!(
             command_source.contains("wait_for_main_timeline_anchor"),
             "activity event navigation should wait for the main anchored timeline"
         );
@@ -6090,6 +6220,10 @@ mod tests {
             .find("wait_for_focused_context(")
             .map(|offset| open_offset + offset)
             .expect("activity event navigation should wait for focused event timeline state");
+        let wait_item_offset = command_source[wait_open_offset..]
+            .find("wait_for_focused_timeline_event")
+            .map(|offset| wait_open_offset + offset)
+            .expect("activity event navigation should wait for the focused timeline item");
         let anchor_offset = command_source
             .find(anchor_token)
             .expect("activity event navigation should enter the main anchored timeline");
@@ -6100,8 +6234,9 @@ mod tests {
                 && select_offset < wait_select_offset
                 && wait_select_offset < open_offset
                 && open_offset < wait_open_offset
-                && wait_open_offset < anchor_offset,
-            "activity event navigation must clear the previous anchor, select the room, open the focused event timeline, then enter the main anchored timeline"
+                && wait_open_offset < wait_item_offset
+                && wait_item_offset < anchor_offset,
+            "activity event navigation must clear the previous anchor, select the room, open the focused event timeline, observe the target item, then enter the main anchored timeline"
         );
     }
 

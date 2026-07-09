@@ -807,6 +807,7 @@ interface ActivityRowBase {
 export interface ActivityEventRow extends ActivityRowBase {
   kind: "event";
   event_id: string;
+  thread_root_event_id: string | null;
   sender_id: string | null;
   sender_label: string | null;
   sender_avatar: AvatarImage | null;
@@ -816,6 +817,7 @@ export interface ActivityEventRow extends ActivityRowBase {
 export interface ActivityRoomUnreadRow extends ActivityRowBase {
   kind: "roomUnread";
   event_id: null;
+  thread_root_event_id: null;
   sender_id: null;
   sender_label: null;
   sender_avatar: null;

@@ -1,65 +1,88 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="560" viewBox="0 0 760 560" font-family="Inter, system-ui, sans-serif">
-  <rect width="760" height="560" fill="#ffffff"/>
-  <text x="24" y="34" font-size="20" font-weight="800" fill="#0F1B2D">Koushi — proposed blue palette (semantic tokens)</text>
-  <text x="24" y="56" font-size="12" fill="#5B6B82">Differentiated from Element (green). Light is default; dark via [data-theme="dark"] + prefers-color-scheme.</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="720" viewBox="0 0 900 720" font-family="Inter, system-ui, sans-serif">
+  <rect width="900" height="720" fill="#ffffff"/>
+  <text x="24" y="34" font-size="20" font-weight="800" fill="#171B21">Koushi -- white shell palette (semantic tokens)</text>
+  <text x="24" y="56" font-size="12" fill="#5F6B7A">Blue is reserved for primary accents, unread, focus, toggles, links, and one avatar color. Rail/sidebar/selection are neutral.</text>
 
-  <text x="24" y="92" font-size="13" font-weight="700" fill="#0F1B2D">token</text>
-  <text x="250" y="92" font-size="13" font-weight="700" fill="#0F1B2D">LIGHT</text>
-  <text x="510" y="92" font-size="13" font-weight="700" fill="#0F1B2D">DARK</text>
-  <line x1="24" y1="100" x2="736" y2="100" stroke="#E3E8F0"/>
+  <text x="24" y="92" font-size="13" font-weight="700" fill="#171B21">token</text>
+  <text x="290" y="92" font-size="13" font-weight="700" fill="#171B21">LIGHT</text>
+  <text x="600" y="92" font-size="13" font-weight="700" fill="#171B21">DARK</text>
+  <line x1="24" y1="100" x2="876" y2="100" stroke="#E5E8EC"/>
 
-  <!-- rows: role | light swatch+hex | dark swatch+hex -->
   <g font-size="12">
-    <!-- brand -->
-    <text x="24" y="128" fill="#0F1B2D" font-weight="600">--brand (primary action)</text>
-    <rect x="250" y="114" width="150" height="22" rx="4" fill="#2D6FEF"/><text x="408" y="129" fill="#5B6B82">#2D6FEF</text>
-    <rect x="510" y="114" width="150" height="22" rx="4" fill="#5C8DF6"/><text x="668" y="129" fill="#5B6B82">#5C8DF6</text>
-    <!-- brand-weak -->
-    <text x="24" y="160" fill="#0F1B2D" font-weight="600">--brand-weak (selection bg)</text>
-    <rect x="250" y="146" width="150" height="22" rx="4" fill="#E7F0FE"/><text x="408" y="161" fill="#5B6B82">#E7F0FE</text>
-    <rect x="510" y="146" width="150" height="22" rx="4" fill="#1B2942"/><text x="668" y="161" fill="#5B6B82">#1B2942</text>
-    <!-- rail -->
-    <text x="24" y="192" fill="#0F1B2D" font-weight="600">--rail (space rail bg)</text>
-    <rect x="250" y="178" width="150" height="22" rx="4" fill="#16213E"/><text x="408" y="193" fill="#5B6B82">#16213E</text>
-    <rect x="510" y="178" width="150" height="22" rx="4" fill="#0A111F"/><text x="668" y="193" fill="#5B6B82">#0A111F</text>
-    <!-- sidebar -->
-    <text x="24" y="224" fill="#0F1B2D" font-weight="600">--sidebar (room list bg)</text>
-    <rect x="250" y="210" width="150" height="22" rx="4" fill="#F5F7FB" stroke="#E3E8F0"/><text x="408" y="225" fill="#5B6B82">#F5F7FB</text>
-    <rect x="510" y="210" width="150" height="22" rx="4" fill="#111A2B"/><text x="668" y="225" fill="#5B6B82">#111A2B</text>
-    <!-- surface -->
-    <text x="24" y="256" fill="#0F1B2D" font-weight="600">--surface (timeline bg)</text>
-    <rect x="250" y="242" width="150" height="22" rx="4" fill="#FFFFFF" stroke="#E3E8F0"/><text x="408" y="257" fill="#5B6B82">#FFFFFF</text>
-    <rect x="510" y="242" width="150" height="22" rx="4" fill="#0E1726"/><text x="668" y="257" fill="#5B6B82">#0E1726</text>
-    <!-- surface-hover -->
-    <text x="24" y="288" fill="#0F1B2D" font-weight="600">--surface-hover</text>
-    <rect x="250" y="274" width="150" height="22" rx="4" fill="#EEF2F8" stroke="#E3E8F0"/><text x="408" y="289" fill="#5B6B82">#EEF2F8</text>
-    <rect x="510" y="274" width="150" height="22" rx="4" fill="#1A2740"/><text x="668" y="289" fill="#5B6B82">#1A2740</text>
-    <!-- text -->
-    <text x="24" y="320" fill="#0F1B2D" font-weight="600">--text</text>
-    <rect x="250" y="306" width="150" height="22" rx="4" fill="#0F1B2D"/><text x="408" y="321" fill="#5B6B82">#0F1B2D</text>
-    <rect x="510" y="306" width="150" height="22" rx="4" fill="#E6ECF5"/><text x="668" y="321" fill="#5B6B82">#E6ECF5</text>
-    <!-- text-muted -->
-    <text x="24" y="352" fill="#0F1B2D" font-weight="600">--text-muted</text>
-    <rect x="250" y="338" width="150" height="22" rx="4" fill="#5B6B82"/><text x="408" y="353" fill="#5B6B82">#5B6B82</text>
-    <rect x="510" y="338" width="150" height="22" rx="4" fill="#93A0B4"/><text x="668" y="353" fill="#5B6B82">#93A0B4</text>
-    <!-- line -->
-    <text x="24" y="384" fill="#0F1B2D" font-weight="600">--line (borders)</text>
-    <rect x="250" y="370" width="150" height="22" rx="4" fill="#E3E8F0"/><text x="408" y="385" fill="#5B6B82">#E3E8F0</text>
-    <rect x="510" y="370" width="150" height="22" rx="4" fill="#1E2A40"/><text x="668" y="385" fill="#5B6B82">#1E2A40</text>
-    <!-- unread -->
-    <text x="24" y="416" fill="#0F1B2D" font-weight="600">--unread (badge)</text>
-    <rect x="250" y="402" width="150" height="22" rx="4" fill="#2D6FEF"/><text x="408" y="417" fill="#5B6B82">#2D6FEF</text>
-    <rect x="510" y="402" width="150" height="22" rx="4" fill="#5C8DF6"/><text x="668" y="417" fill="#5B6B82">#5C8DF6</text>
-    <!-- mention -->
-    <text x="24" y="448" fill="#0F1B2D" font-weight="600">--mention / --danger</text>
-    <rect x="250" y="434" width="150" height="22" rx="4" fill="#E5484D"/><text x="408" y="449" fill="#5B6B82">#E5484D</text>
-    <rect x="510" y="434" width="150" height="22" rx="4" fill="#F2575C"/><text x="668" y="449" fill="#5B6B82">#F2575C</text>
-    <!-- success -->
-    <text x="24" y="480" fill="#0F1B2D" font-weight="600">--success (presence/online)</text>
-    <rect x="250" y="466" width="150" height="22" rx="4" fill="#1A9E6C"/><text x="408" y="481" fill="#5B6B82">#1A9E6C</text>
-    <rect x="510" y="466" width="150" height="22" rx="4" fill="#34B988"/><text x="668" y="481" fill="#5B6B82">#34B988</text>
+    <text x="24" y="128" fill="#171B21" font-weight="600">--brand (primary accent)</text>
+    <rect x="290" y="114" width="158" height="22" rx="4" fill="#2D6FEF"/><text x="456" y="129" fill="#5F6B7A">#2D6FEF</text>
+    <rect x="600" y="114" width="158" height="22" rx="4" fill="#5C8DF6"/><text x="766" y="129" fill="#5F6B7A">#5C8DF6</text>
+
+    <text x="24" y="160" fill="#171B21" font-weight="600">--brand-weak (brand chip bg)</text>
+    <rect x="290" y="146" width="158" height="22" rx="4" fill="#E7F0FE" stroke="#E5E8EC"/><text x="456" y="161" fill="#5F6B7A">#E7F0FE</text>
+    <rect x="600" y="146" width="158" height="22" rx="4" fill="#1B2942"/><text x="766" y="161" fill="#5F6B7A">#1B2942</text>
+
+    <text x="24" y="192" fill="#171B21" font-weight="600">--rail (space rail bg)</text>
+    <rect x="290" y="178" width="158" height="22" rx="4" fill="#F7F8FA" stroke="#E5E8EC"/><text x="456" y="193" fill="#5F6B7A">#F7F8FA</text>
+    <rect x="600" y="178" width="158" height="22" rx="4" fill="#151719"/><text x="766" y="193" fill="#5F6B7A">#151719</text>
+
+    <text x="24" y="224" fill="#171B21" font-weight="600">--rail-item (inactive rail tile)</text>
+    <rect x="290" y="210" width="158" height="22" rx="4" fill="#E9ECF1" stroke="#E5E8EC"/><text x="456" y="225" fill="#5F6B7A">#E9ECF1</text>
+    <rect x="600" y="210" width="158" height="22" rx="4" fill="#23262B"/><text x="766" y="225" fill="#5F6B7A">#23262B</text>
+
+    <text x="24" y="256" fill="#171B21" font-weight="600">--sidebar (room list bg)</text>
+    <rect x="290" y="242" width="158" height="22" rx="4" fill="#FAFBFC" stroke="#E5E8EC"/><text x="456" y="257" fill="#5F6B7A">#FAFBFC</text>
+    <rect x="600" y="242" width="158" height="22" rx="4" fill="#191C20"/><text x="766" y="257" fill="#5F6B7A">#191C20</text>
+
+    <text x="24" y="288" fill="#171B21" font-weight="600">--surface (timeline bg)</text>
+    <rect x="290" y="274" width="158" height="22" rx="4" fill="#FFFFFF" stroke="#E5E8EC"/><text x="456" y="289" fill="#5F6B7A">#FFFFFF</text>
+    <rect x="600" y="274" width="158" height="22" rx="4" fill="#1E2126"/><text x="766" y="289" fill="#5F6B7A">#1E2126</text>
+
+    <text x="24" y="320" fill="#171B21" font-weight="600">--surface-hover</text>
+    <rect x="290" y="306" width="158" height="22" rx="4" fill="#F2F4F6" stroke="#E5E8EC"/><text x="456" y="321" fill="#5F6B7A">#F2F4F6</text>
+    <rect x="600" y="306" width="158" height="22" rx="4" fill="#26292F"/><text x="766" y="321" fill="#5F6B7A">#26292F</text>
+
+    <text x="24" y="352" fill="#171B21" font-weight="600">--selected</text>
+    <rect x="290" y="338" width="158" height="22" rx="4" fill="#E9ECF0" stroke="#E5E8EC"/><text x="456" y="353" fill="#5F6B7A">#E9ECF0</text>
+    <rect x="600" y="338" width="158" height="22" rx="4" fill="#2A2E34"/><text x="766" y="353" fill="#5F6B7A">#2A2E34</text>
+
+    <text x="24" y="384" fill="#171B21" font-weight="600">--text</text>
+    <rect x="290" y="370" width="158" height="22" rx="4" fill="#171B21"/><text x="456" y="385" fill="#5F6B7A">#171B21</text>
+    <rect x="600" y="370" width="158" height="22" rx="4" fill="#E6ECF5"/><text x="766" y="385" fill="#5F6B7A">#E6ECF5</text>
+
+    <text x="24" y="416" fill="#171B21" font-weight="600">--text-muted</text>
+    <rect x="290" y="402" width="158" height="22" rx="4" fill="#5F6B7A"/><text x="456" y="417" fill="#5F6B7A">#5F6B7A</text>
+    <rect x="600" y="402" width="158" height="22" rx="4" fill="#93A0B4"/><text x="766" y="417" fill="#5F6B7A">#93A0B4</text>
+
+    <text x="24" y="448" fill="#171B21" font-weight="600">--line</text>
+    <rect x="290" y="434" width="158" height="22" rx="4" fill="#E5E8EC" stroke="#CCD2DA"/><text x="456" y="449" fill="#5F6B7A">#E5E8EC</text>
+    <rect x="600" y="434" width="158" height="22" rx="4" fill="#2E3238"/><text x="766" y="449" fill="#5F6B7A">#2E3238</text>
+
+    <text x="24" y="480" fill="#171B21" font-weight="600">--unread</text>
+    <rect x="290" y="466" width="158" height="22" rx="4" fill="#2D6FEF"/><text x="456" y="481" fill="#5F6B7A">#2D6FEF</text>
+    <rect x="600" y="466" width="158" height="22" rx="4" fill="#5C8DF6"/><text x="766" y="481" fill="#5F6B7A">#5C8DF6</text>
   </g>
 
-  <line x1="24" y1="502" x2="736" y2="502" stroke="#E3E8F0"/>
-  <text x="24" y="526" font-size="11" fill="#93A0B4">Brand is the only saturated hue in chrome; the rest is a cool slate ramp so unread/mention/presence read clearly. WCAG AA targeted for text on surface/sidebar.</text>
+  <text x="24" y="528" font-size="14" font-weight="800" fill="#171B21">Avatar fallback palette</text>
+  <text x="24" y="548" font-size="12" fill="#5F6B7A">Stable FNV-1a hash over Matrix ID or label maps to avatar-c1..avatar-c8.</text>
+
+  <g font-size="11" font-weight="700">
+    <rect x="24" y="570" width="86" height="42" rx="6" fill="#2D6FEF"/><text x="38" y="596" fill="#FFFFFF">c1 blue</text>
+    <rect x="120" y="570" width="86" height="42" rx="6" fill="#0C7D72"/><text x="134" y="596" fill="#FFFFFF">c2 teal</text>
+    <rect x="216" y="570" width="86" height="42" rx="6" fill="#7C5CD6"/><text x="228" y="596" fill="#FFFFFF">c3 violet</text>
+    <rect x="312" y="570" width="86" height="42" rx="6" fill="#B34482"/><text x="322" y="596" fill="#FFFFFF">c4 magenta</text>
+    <rect x="408" y="570" width="86" height="42" rx="6" fill="#B34D28"/><text x="421" y="596" fill="#FFFFFF">c5 coral</text>
+    <rect x="504" y="570" width="86" height="42" rx="6" fill="#2F7D50"/><text x="517" y="596" fill="#FFFFFF">c6 green</text>
+    <rect x="600" y="570" width="86" height="42" rx="6" fill="#96690F"/><text x="613" y="596" fill="#FFFFFF">c7 amber</text>
+    <rect x="696" y="570" width="86" height="42" rx="6" fill="#64748B"/><text x="710" y="596" fill="#FFFFFF">c8 slate</text>
+  </g>
+
+  <g font-size="11" font-weight="700">
+    <rect x="24" y="626" width="86" height="42" rx="6" fill="#5C8DF6"/><text x="38" y="652" fill="#101214">dark c1</text>
+    <rect x="120" y="626" width="86" height="42" rx="6" fill="#35B1A2"/><text x="134" y="652" fill="#101214">dark c2</text>
+    <rect x="216" y="626" width="86" height="42" rx="6" fill="#A08AEC"/><text x="230" y="652" fill="#101214">dark c3</text>
+    <rect x="312" y="626" width="86" height="42" rx="6" fill="#D678AD"/><text x="326" y="652" fill="#101214">dark c4</text>
+    <rect x="408" y="626" width="86" height="42" rx="6" fill="#D97E57"/><text x="422" y="652" fill="#101214">dark c5</text>
+    <rect x="504" y="626" width="86" height="42" rx="6" fill="#58B183"/><text x="518" y="652" fill="#101214">dark c6</text>
+    <rect x="600" y="626" width="86" height="42" rx="6" fill="#D0A13C"/><text x="614" y="652" fill="#101214">dark c7</text>
+    <rect x="696" y="626" width="86" height="42" rx="6" fill="#8B9BB4"/><text x="710" y="652" fill="#101214">dark c8</text>
+  </g>
+
+  <line x1="24" y1="688" x2="876" y2="688" stroke="#E5E8EC"/>
+  <text x="24" y="708" font-size="11" fill="#8A94A3">Generated for the 2026-07-09 #229 recolor: white/light-gray shell, neutral selection, and hash-distributed fallback avatars.</text>
 </svg>

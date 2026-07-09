@@ -276,6 +276,7 @@ export type ComposerResolvedAction =
   | "send"
   | "insertNewline"
   | "acceptAutocomplete"
+  | "closeAutocomplete"
   | "cancel"
   | "commitImeCandidate"
   | "noop";
@@ -793,6 +794,7 @@ interface ActivityRowBase {
 export interface ActivityEventRow extends ActivityRowBase {
   kind: "event";
   event_id: string;
+  thread_root_event_id: string | null;
   sender_id: string | null;
   sender_label: string | null;
   sender_avatar: AvatarImage | null;
@@ -802,6 +804,7 @@ export interface ActivityEventRow extends ActivityRowBase {
 export interface ActivityRoomUnreadRow extends ActivityRowBase {
   kind: "roomUnread";
   event_id: null;
+  thread_root_event_id: null;
   sender_id: null;
   sender_label: null;
   sender_avatar: null;
@@ -1536,6 +1539,7 @@ export interface TimelineMessage {
   body: string;
   attachment_filename: string | null;
   reply_count: number;
+  thread_root?: string | null;
   link_previews?: LinkPreview[];
   link_ranges?: { url: string; start_utf16: number; end_utf16: number }[];
 }

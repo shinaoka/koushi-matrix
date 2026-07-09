@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -195,6 +195,63 @@ describe("TimelinePane render isolation", () => {
 
     expect(renderCounts.composer).toBe(2);
     expect(renderCounts.timelineView).toBe(3);
+  });
+
+  test("shows thread attention counts on the timeline header threads button", () => {
+    const snapshot = makeSnapshot();
+    snapshot.state.domain.thread_attention = {
+      kind: "tracking",
+      room_id: "!room-alpha:example.invalid",
+      root_event_id: "$thread-root:example.invalid",
+      notification_count: 3,
+      highlight_count: 1,
+      live_event_marker_count: 2
+    };
+    const noop = () => undefined;
+    const timelineTransport = noopTimelineTransport();
+    setAppStoreSnapshot(snapshot);
+
+    render(
+      createElement(TimelinePane, {
+        activeRoomName: "Alpha Room",
+        composerDraft: snapshot.state.ui.timeline.composer.draft,
+        composerMode: { kind: "plain" },
+        mentionIntent: { targets: [] },
+        resolveComposerKeyAction: async (): Promise<"noop"> => "noop",
+        searchQuery: "",
+        searchResults: [],
+        showSearchResults: false,
+        snapshot,
+        timelineTransport,
+        onCancelReply: noop,
+        onCancelScheduledSend: noop,
+        onAttachFiles: noop,
+        onClearUploadStaging: noop,
+        onUpdateStagedUploadCaption: noop,
+        onUpdateStagedUploadCompression: noop,
+        onComposerDraftChange: noop,
+        onMentionIntentChange: noop,
+        onEditMessage: noop,
+        onOpenContextMenu: noop,
+        onOpenThread: noop,
+        onRedactMessage: noop,
+        onReply: noop,
+        onRescheduleScheduledSend: noop,
+        onResultSelect: noop,
+        onScheduleSend: noop,
+        onSendText: noop,
+        onSetLocalUserAlias: noop,
+        onUnpinPinnedEvent: noop,
+        onOpenPeople: noop,
+        onOpenThreads: noop,
+        onToggleRoomInfo: noop
+      })
+    );
+
+    const threadsButton = screen.getByRole("button", { name: "Threads" });
+    expect(threadsButton.getAttribute("data-count")).toBe("3");
+    expect(threadsButton.getAttribute("data-live-count")).toBe("2");
+    expect(threadsButton.getAttribute("data-mention-count")).toBe("1");
   });
 });
 

@@ -81,6 +81,7 @@ describe("styles.css token system", () => {
       "--sidebar",
       "--surface",
       "--surface-hover",
+      "--selected",
       "--text",
       "--text-muted",
       "--text-faint",
@@ -92,6 +93,34 @@ describe("styles.css token system", () => {
       "--warning"
     ]) {
       expect(css).toContain(`${token}:`);
+    }
+  });
+
+  test("uses a neutral light shell with blue reserved for brand accents", () => {
+    expect(css).toContain("--rail: #f7f8fa;");
+    expect(css).toContain("--rail-item: #e9ecf1;");
+    expect(css).toContain("--sidebar: #fafbfc;");
+    expect(css).toContain("--surface-hover: #f2f4f6;");
+    expect(css).toContain("--selected: #e9ecf0;");
+    expect(css).toContain("--text: #171b21;");
+    expect(css).toContain("--line: #e5e8ec;");
+  });
+
+  test("defines the eight-color avatar palette and fallback classes", () => {
+    for (const token of [
+      "--avatar-1",
+      "--avatar-2",
+      "--avatar-3",
+      "--avatar-4",
+      "--avatar-5",
+      "--avatar-6",
+      "--avatar-7",
+      "--avatar-8"
+    ]) {
+      expect(css).toContain(`${token}:`);
+    }
+    for (let index = 1; index <= 8; index += 1) {
+      expect(selectorBlock(`.avatar-c${index}`)).toContain(`background: var(--avatar-${index});`);
     }
   });
 

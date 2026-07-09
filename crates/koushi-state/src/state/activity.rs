@@ -99,6 +99,8 @@ pub struct ActivityRow {
     pub room_id: String,
     pub event_id: Option<String>,
     #[serde(default)]
+    pub thread_root_event_id: Option<String>,
+    #[serde(default)]
     pub sender_id: Option<String>,
     pub room_label: String,
     pub sender_label: Option<String>,
@@ -128,6 +130,7 @@ impl ActivityRow {
             kind: ActivityRowKind::Event,
             room_id,
             event_id: Some(event_id),
+            thread_root_event_id: None,
             sender_id,
             room_label,
             sender_label,
@@ -150,6 +153,7 @@ impl ActivityRow {
             kind: ActivityRowKind::RoomUnread,
             room_id,
             event_id: None,
+            thread_root_event_id: None,
             sender_id: None,
             room_label,
             sender_label: None,
@@ -170,6 +174,10 @@ impl fmt::Debug for ActivityRow {
             .field("kind", &self.kind)
             .field("room_id", &"RoomId(..)")
             .field("event_id", &self.event_id.as_ref().map(|_| "EventId(..)"))
+            .field(
+                "thread_root_event_id",
+                &self.thread_root_event_id.as_ref().map(|_| "EventId(..)"),
+            )
             .field("sender_id", &self.sender_id.as_ref().map(|_| "UserId(..)"))
             .field("room_label", &"RoomLabel(..)")
             .field(

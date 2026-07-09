@@ -177,7 +177,7 @@ export interface TimelineTransport {
     reactionEventId: string
   ): Promise<void>;
   /** Send a read receipt for a room event. */
-  sendReadReceipt(roomId: string, eventId: string): Promise<void>;
+  sendReadReceipt(roomId: string, eventId: string, threadRootEventId?: string | null): Promise<void>;
   /** Advance the fully-read marker for a room event. */
   setFullyRead(roomId: string, eventId: string): Promise<void>;
   /** Set typing state for a room. */
@@ -222,6 +222,13 @@ export interface TimelineTransport {
   /** Resolve a timestamp through Rust and open focused context. */
   openAtTimestamp?(roomId: string, timestampMs: number): Promise<void>;
 }
+
+export type TimelineThreadAttention = {
+  rootEventId: string;
+  notificationCount: number;
+  highlightCount: number;
+  liveEventMarkerCount: number;
+};
 
 /**
  * Row-level actions surfaced on timeline items. Matrix semantics stay
@@ -1954,7 +1961,8 @@ export const TimelineView = memo(function TimelineView({
   timelineStore,
   setTimelineStore,
   listRefCallback,
-  onRegisterJumpToLatest
+  onRegisterJumpToLatest,
+  threadAttention = null
 }: {
   timelineKey: TimelineKey;
   roomId: string;
@@ -2017,6 +2025,8 @@ export const TimelineView = memo(function TimelineView({
    * for parent chrome controls.
    */
   onRegisterJumpToLatest?: (handler: (() => void) | null) => void;
+  /** Thread attention counters for the root row in the currently selected room. */
+  threadAttention?: TimelineThreadAttention | null;
 }) {
   // Persisted restart anchors are intentionally ignored for restoration:
   // first entry after app startup goes to live edge, while in-session room
@@ -2165,6 +2175,14 @@ export const TimelineView = memo(function TimelineView({
   timelineKeyHashRef.current = timelineKeyHash;
   const sessionRoomScrollAnchorRef = useRef<TimelineScrollAnchor | null>(null);
   const roomTimelineRoomId = "Room" in timelineKey.kind ? timelineKey.kind.Room.room_id : null;
+  const readSignalRoomId =
+    "Room" in timelineKey.kind
+      ? timelineKey.kind.Room.room_id
+      : "Thread" in timelineKey.kind
+        ? timelineKey.kind.Thread.room_id
+        : null;
+  const readSignalThreadRootEventId =
+    "Thread" in timelineKey.kind ? timelineKey.kind.Thread.root_event_id : null;
   const items = getItems(store, timelineKey);
   const emitDiagnosticLog = useCallback(
     (source: string, message: string) => {
@@ -3237,18 +3255,25 @@ export const TimelineView = memo(function TimelineView({
       : [{ room_id: roomId, display_name: roomId }];
   const sendReadSignalsForEvent = useCallback(
     (eventId: string) => {
-      const signalKey = `${roomId}\u0000${eventId}`;
+      const signalKey = `${roomId}\u0000${readSignalThreadRootEventId ?? ""}\u0000${eventId}`;
       if (readSignalEventRef.current === signalKey) {
         return;
       }
       readSignalEventRef.current = signalKey;
-      void transport.sendReadReceipt(roomId, eventId).catch(() => undefined);
+      const sendReadReceipt =
+        readSignalThreadRootEventId === null
+          ? transport.sendReadReceipt(roomId, eventId)
+          : transport.sendReadReceipt(roomId, eventId, readSignalThreadRootEventId);
+      void sendReadReceipt.catch(() => undefined);
       void transport.setFullyRead(roomId, eventId).catch(() => undefined);
     },
-    [roomId, transport]
+    [readSignalThreadRootEventId, roomId, transport]
   );
   const reportViewportObservation = useCallback(() => {
-    if (!transport.observeViewport || roomTimelineRoomId !== roomId) {
+    const observeViewport = transport.observeViewport;
+    const canObserveRoomViewport = Boolean(observeViewport && roomTimelineRoomId === roomId);
+    const canSendReadSignals = readSignalRoomId === roomId;
+    if (!canObserveRoomViewport && !canSendReadSignals) {
       return;
     }
     const container = containerRef.current;
@@ -3267,8 +3292,11 @@ export const TimelineView = memo(function TimelineView({
     setViewportAtBottom((current) =>
       current === effectiveAtBottom ? current : effectiveAtBottom
     );
-    if (effectiveAtBottom && latestReadableEventId) {
+    if (canSendReadSignals && effectiveAtBottom && latestReadableEventId) {
       sendReadSignalsForEvent(latestReadableEventId);
+    }
+    if (!canObserveRoomViewport || !observeViewport) {
+      return;
     }
     const signature = [
       roomId,
@@ -3280,8 +3308,7 @@ export const TimelineView = memo(function TimelineView({
       return;
     }
     lastViewportObservationRef.current = signature;
-    void transport
-      .observeViewport(
+    void observeViewport(
         roomId,
         visible.firstVisibleEventId,
         visible.lastVisibleEventId,
@@ -3290,6 +3317,7 @@ export const TimelineView = memo(function TimelineView({
       .catch(() => undefined);
   }, [
     latestReadableEventId,
+    readSignalRoomId,
     roomId,
     roomTimelineRoomId,
     sendReadSignalsForEvent,
@@ -3363,7 +3391,7 @@ export const TimelineView = memo(function TimelineView({
   ]);
 
   useEffect(() => {
-    if (!latestReadableEventId || roomTimelineRoomId !== roomId) {
+    if (!latestReadableEventId || readSignalRoomId !== roomId) {
       return;
     }
     const container = containerRef.current;
@@ -3373,8 +3401,8 @@ export const TimelineView = memo(function TimelineView({
     sendReadSignalsForEvent(latestReadableEventId);
   }, [
     latestReadableEventId,
+    readSignalRoomId,
     roomId,
-    roomTimelineRoomId,
     sendReadSignalsForEvent,
     viewportAtBottom
   ]);
@@ -4270,6 +4298,7 @@ export const TimelineView = memo(function TimelineView({
                 ignoredUserIds={ignoredUserIds}
                 onOpenContextMenu={onOpenContextMenu}
                 mentionProfileUsers={profileUsers}
+                threadAttention={threadAttention}
                 mediaDownload={eventId ? mediaDownloads[eventId] : undefined}
                 receipts={eventId ? roomSignals?.receipts_by_event[eventId]?.readers ?? [] : []}
                 receiptTotalCount={
@@ -4392,6 +4421,7 @@ export function TimelineItemRow({
   currentUserId,
   ignoredUserIds = [],
   onOpenContextMenu,
+  threadAttention = null,
   mediaDownload
 }: {
   item: TimelineItem;
@@ -4440,6 +4470,7 @@ export function TimelineItemRow({
     },
     items: ContextMenuItem[]
   ) => void;
+  threadAttention?: TimelineThreadAttention | null;
   mediaDownload?: TimelineMediaDownloadState;
 }) {
   const domId = timelineItemDomId(item.id);
@@ -4884,6 +4915,14 @@ export function TimelineItemRow({
         item.thread_summary.latest_body_preview
       )
     : "";
+  const newThreadReplyCount =
+    eventId && threadAttention?.rootEventId === eventId
+      ? threadAttention.liveEventMarkerCount
+      : 0;
+  const newThreadRepliesText =
+    newThreadReplyCount > 0
+      ? t("timeline.viewReplies", { count: newThreadReplyCount })
+      : "";
   const receiptDetails = formatReceiptDetails(receipts, receiptOverflowCount);
   const receiptLabel = t("timeline.readBy", { count: receiptTotalCount });
   const receiptAriaLabel =
@@ -5149,6 +5188,17 @@ export function TimelineItemRow({
               <span>{t("timeline.requestRoomKey")}</span>
             </button>
           </div>
+        ) : null}
+        {newThreadReplyCount > 0 ? (
+          <button
+            className="thread-summary-chip thread-new-replies-chip"
+            type="button"
+            aria-label={t("timeline.openThreadSummary", { summary: newThreadRepliesText })}
+            onClick={submitOpenThread}
+          >
+            <MessageCircle size={13} />
+            <span>{newThreadRepliesText}</span>
+          </button>
         ) : null}
         {canShowThreadSummary ? (
           <button

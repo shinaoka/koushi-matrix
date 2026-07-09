@@ -187,8 +187,8 @@ const transport: TimelineTransport = {
       reactionEventId
     });
   },
-  sendReadReceipt(roomId, eventId) {
-    return ipc.invoke("send_read_receipt", { roomId, eventId });
+  sendReadReceipt(roomId, eventId, threadRootEventId) {
+    return ipc.invoke("send_read_receipt", { roomId, eventId, threadRootEventId });
   },
   setFullyRead(roomId, eventId) {
     return ipc.invoke("set_fully_read", { roomId, eventId });

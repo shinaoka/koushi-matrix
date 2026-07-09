@@ -221,6 +221,7 @@ function PeopleListRow({
         <EntityAvatar
           avatar={null}
           className="people-list-avatar is-user"
+          colorSeed={member.user_id}
           fallback={initials(displayLabel)}
         />
         <span className="people-list-text">
@@ -313,6 +314,7 @@ export function ProfilePanel({
         <EntityAvatar
           avatar={avatar}
           className="profile-large-avatar is-user"
+          colorSeed={userId}
           fallback={initials(displayLabel)}
         />
         <h3 dir="auto">{displayLabel}</h3>

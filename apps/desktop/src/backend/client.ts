@@ -353,8 +353,12 @@ class TauriDesktopApi implements DesktopApi {
     });
   }
 
-  async sendReadReceipt(roomId: string, eventId: string): Promise<void> {
-    return invoke<void>("send_read_receipt", { roomId, eventId });
+  async sendReadReceipt(
+    roomId: string,
+    eventId: string,
+    threadRootEventId?: string | null
+  ): Promise<void> {
+    return invoke<void>("send_read_receipt", { roomId, eventId, threadRootEventId });
   }
 
   async setFullyRead(roomId: string, eventId: string): Promise<void> {

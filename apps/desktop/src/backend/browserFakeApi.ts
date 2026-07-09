@@ -147,7 +147,7 @@ export interface DesktopApi {
     reactionKey: string,
     reactionEventId: string
   ): Promise<DesktopSnapshot>;
-  sendReadReceipt(roomId: string, eventId: string): Promise<void>;
+  sendReadReceipt(roomId: string, eventId: string, threadRootEventId?: string | null): Promise<void>;
   setFullyRead(roomId: string, eventId: string): Promise<void>;
   setTyping(roomId: string, isTyping: boolean): Promise<void>;
   setPresence(presence: PresenceKind): Promise<DesktopSnapshot>;
@@ -1212,7 +1212,12 @@ class BrowserFakeApi implements DesktopApi {
     return this.getSnapshot();
   }
 
-  async sendReadReceipt(roomId: string, eventId: string): Promise<void> {
+  async sendReadReceipt(
+    roomId: string,
+    eventId: string,
+    threadRootEventId?: string | null
+  ): Promise<void> {
+    void threadRootEventId;
     const session = this.snapshot.state.domain.session;
     if (!this.isReady() || !session.user_id || eventId.trim().length === 0) {
       return;
@@ -3783,7 +3788,7 @@ function resolveComposerKeyActionFromSettings(
     return "commitImeCandidate";
   }
   if (keyEvent.key === "escape") {
-    return "cancel";
+    return options.autocomplete_open ? "closeAutocomplete" : "cancel";
   }
   if (keyEvent.key !== "enter") {
     return "noop";
@@ -3974,6 +3979,7 @@ function createActivityStreams(
       kind: "roomUnread" as const,
       room_id: room.room_id,
       event_id: null,
+      thread_root_event_id: null,
       sender_id: null,
       room_label: room.display_label,
       sender_label: null,
@@ -4041,6 +4047,7 @@ function activityRows(
           kind: "event" as const,
           room_id: message.room_id,
           event_id: message.event_id,
+          thread_root_event_id: message.thread_root ?? null,
           sender_id: message.sender,
           room_label: room?.display_label ?? room?.display_name ?? "Unknown room",
           sender_label: sender?.display_label ?? message.sender,

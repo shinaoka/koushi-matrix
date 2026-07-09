@@ -97,6 +97,7 @@
               "sender_avatar": null,
               "sender_id": null,
               "sender_label": "Recent sender",
+              "thread_root_event_id": null,
               "timestamp_ms": 20,
               "unread": false
             }
@@ -120,6 +121,7 @@
               "sender_avatar": null,
               "sender_id": null,
               "sender_label": "Unread sender",
+              "thread_root_event_id": null,
               "timestamp_ms": 10,
               "unread": true
             },
@@ -134,6 +136,7 @@
               "sender_avatar": null,
               "sender_id": null,
               "sender_label": null,
+              "thread_root_event_id": null,
               "timestamp_ms": 9,
               "unread": true
             }

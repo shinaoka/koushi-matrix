@@ -104,6 +104,17 @@ fn composer_autocomplete_acceptance_precedes_send_shortcut() {
 }
 
 #[test]
+fn composer_escape_closes_autocomplete_before_canceling_surface_state() {
+    let mut open_context = context(ComposerSurface::Main);
+    open_context.autocomplete_open = true;
+
+    assert_eq!(
+        resolve_composer_key_action(key_event(ComposerKey::Escape), open_context),
+        ComposerResolvedAction::CloseAutocomplete
+    );
+}
+
+#[test]
 fn composer_disabled_send_or_ime_composition_never_submits() {
     let mut disabled_context = context(ComposerSurface::Main);
     disabled_context.send_enabled = false;

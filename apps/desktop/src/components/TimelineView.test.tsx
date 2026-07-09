@@ -817,6 +817,89 @@ describe("TimelineView", () => {
     }
   });
 
+  it("marks the latest visible thread event with a threaded read receipt", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const threadKey = threadTimelineKey(
+      "@alice:example.invalid",
+      "!room:example.invalid",
+      "$root:example.invalid"
+    );
+    const sendReadReceipt = vi.fn().mockResolvedValue(undefined);
+    const setFullyRead = vi.fn().mockResolvedValue(undefined);
+    const observeViewport = vi.fn().mockResolvedValue(undefined);
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      sendReadReceipt,
+      setFullyRead,
+      observeViewport
+    });
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    const rectSpy = mockTimelineRects(
+      {
+        "$thread-reply:example.invalid": { top: 140, height: 80 }
+      },
+      { top: 0, height: 500 },
+      scrollContainerRef
+    );
+
+    try {
+      render(
+        <TimelineView
+          timelineKey={threadKey}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+        />
+      );
+
+      const timeline = await screen.findByTestId("timeline-view");
+      scrollContainerRef.current = timeline;
+      Object.defineProperty(timeline, "clientHeight", { value: 500, configurable: true });
+      Object.defineProperty(timeline, "scrollHeight", { value: 2_000, configurable: true });
+      Object.defineProperty(timeline, "scrollTop", {
+        value: 0,
+        writable: true,
+        configurable: true
+      });
+
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            InitialItems: {
+              request_id: null,
+              key: threadKey,
+              generation: 1,
+              items: [message("$thread-reply:example.invalid", "Thread reply")]
+            }
+          }
+        });
+      });
+
+      timeline.scrollTop = 0;
+      fireEvent.wheel(timeline, { deltaY: 1 });
+      fireEvent.scroll(timeline);
+
+      await waitFor(() => {
+        expect(sendReadReceipt).toHaveBeenCalledWith(
+          "!room:example.invalid",
+          "$thread-reply:example.invalid",
+          "$root:example.invalid"
+        );
+      });
+      expect(setFullyRead).toHaveBeenCalledWith(
+        "!room:example.invalid",
+        "$thread-reply:example.invalid"
+      );
+      expect(observeViewport).not.toHaveBeenCalled();
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+
   it("emits safe timestamped timeline event diagnostics for thread timelines", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const onDiagnosticLogEntry = vi.fn();
@@ -5007,6 +5090,80 @@ describe("TimelineView", () => {
       expect(paginateBackwards).toHaveBeenCalledWith(threadKey);
     });
     expect(paginateBackwards).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows new thread replies on the matching root row without moving timeline rows", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const onOpenThread = vi.fn();
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const root = {
+      ...message("$thread-root:example.invalid", "Thread root"),
+      thread_summary: {
+        reply_count: 4,
+        latest_sender: "@bob:example.invalid",
+        latest_sender_label: "Bob",
+        latest_body_preview: "latest reply",
+        latest_timestamp_ms: 1_800_000_000_500
+      }
+    };
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        onOpenThread={onOpenThread}
+        threadAttention={{
+          rootEventId: "$thread-root:example.invalid",
+          notificationCount: 2,
+          highlightCount: 0,
+          liveEventMarkerCount: 2
+        }}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              message("$before:example.invalid", "Before"),
+              root,
+              message("$after:example.invalid", "After")
+            ]
+          }
+        }
+      });
+    });
+
+    const newReplies = await screen.findByRole("button", { name: /View new replies · 2/ });
+    expect(newReplies.closest("[data-event-id]")?.getAttribute("data-event-id")).toBe(
+      "$thread-root:example.invalid"
+    );
+    const eventOrder = Array.from(document.querySelectorAll("article[data-event-id]")).map(
+      (row) => row.getAttribute("data-event-id")
+    );
+    expect(eventOrder).toEqual([
+      "$before:example.invalid",
+      "$thread-root:example.invalid",
+      "$after:example.invalid"
+    ]);
+
+    fireEvent.click(newReplies);
+    expect(onOpenThread).toHaveBeenCalledWith(
+      "!room:example.invalid",
+      "$thread-root:example.invalid"
+    );
   });
 
   it("lets users request missing room keys from undecryptable events", async () => {

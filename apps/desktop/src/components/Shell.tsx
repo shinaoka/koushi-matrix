@@ -351,6 +351,7 @@ export function WorkspaceRail({
                   <EntityAvatar
                     avatar={space.avatar}
                     className="workspace-button-avatar is-space"
+                    colorSeed={space.space_id}
                     fallback={localIcon || compactAvatarLabel(displayName)}
                     fallbackMode="compactLabel"
                   />
@@ -868,6 +869,7 @@ function RoomButton({
         <EntityAvatar
           avatar={room.avatar}
           className={`room-avatar ${kind === "dm" ? "is-user" : "is-room"}`}
+          colorSeed={room.room_id}
           fallback={initials(room.display_name)}
         />
         {isOnlineDm ? <span className="room-presence-dot" aria-hidden="true" /> : null}
@@ -884,11 +886,13 @@ function RoomButton({
 export function EntityAvatar({
   avatar,
   className,
+  colorSeed,
   fallback,
   fallbackMode = "initials"
 }: {
   avatar: RoomListItem["avatar"];
   className: string;
+  colorSeed?: string | null;
   fallback: string;
   fallbackMode?: "initials" | "compactLabel";
 }) {
@@ -896,8 +900,11 @@ export function EntityAvatar({
     avatar?.thumbnail.kind === "ready" ? mediaSourceUrl(avatar.thumbnail.source_url) : null;
   const { displaySourceUrl, onImageError, onImageLoad } = useRecoverableImageSource(sourceUrl);
   const showImage = Boolean(displaySourceUrl);
+  const colorClassName = avatarColorClass(colorSeed || fallback);
   const fallbackClassName =
-    fallbackMode === "compactLabel" ? "avatar-fallback compact-label" : "avatar-fallback";
+    fallbackMode === "compactLabel"
+      ? `avatar-fallback compact-label ${colorClassName}`
+      : `avatar-fallback ${colorClassName}`;
   const fallbackStyle =
     fallbackMode === "compactLabel"
       ? ({
@@ -919,6 +926,15 @@ export function EntityAvatar({
       )}
     </span>
   );
+}
+
+export function avatarColorClass(seed: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `avatar-c${(hash % 8) + 1}`;
 }
 
 function readJsonRecord<T>(key: string, fallback: T): T {

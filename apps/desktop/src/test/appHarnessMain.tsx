@@ -431,7 +431,7 @@ function resolveComposerKeyActionFromSettings(
     return "commitImeCandidate";
   }
   if (keyEvent.key === "escape") {
-    return "cancel";
+    return options.autocomplete_open ? "closeAutocomplete" : "cancel";
   }
   if (keyEvent.key !== "enter") {
     return "noop";

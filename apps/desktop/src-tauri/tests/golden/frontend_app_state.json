@@ -76,6 +76,7 @@
               "sender_avatar": null,
               "sender_id": null,
               "sender_label": "Fixture User",
+              "thread_root_event_id": null,
               "timestamp_ms": 500000,
               "unread": false
             }
@@ -95,6 +96,7 @@
               "sender_avatar": null,
               "sender_id": null,
               "sender_label": null,
+              "thread_root_event_id": null,
               "timestamp_ms": 499000,
               "unread": true
             }
