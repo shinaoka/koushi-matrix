@@ -60,6 +60,12 @@ export function SpaceInfoPanel({
     onOpenMembers?.();
   }
 
+  function updateLocalPresentation(next: { name: string; icon: string }) {
+    setLocalNameDraft(next.name);
+    setLocalIconDraft(next.icon);
+    onSetLocalPresentation?.(next);
+  }
+
   return (
     <section className="settings-panel space-info-panel" aria-labelledby="space-info-title">
       <header className="settings-panel-header">
@@ -84,7 +90,12 @@ export function SpaceInfoPanel({
               <input
                 value={localNameDraft}
                 placeholder={t("space.localNamePlaceholder")}
-                onChange={(event) => setLocalNameDraft(event.currentTarget.value)}
+                onChange={(event) =>
+                  updateLocalPresentation({
+                    name: event.currentTarget.value,
+                    icon: localIconDraft
+                  })
+                }
               />
             </label>
             <label className="profile-settings-field">
@@ -93,26 +104,23 @@ export function SpaceInfoPanel({
                 value={localIconDraft}
                 placeholder={t("space.localIconPlaceholder")}
                 maxLength={12}
-                onChange={(event) => setLocalIconDraft(event.currentTarget.value)}
+                onChange={(event) =>
+                  updateLocalPresentation({
+                    name: localNameDraft,
+                    icon: event.currentTarget.value
+                  })
+                }
               />
             </label>
             <div className="profile-settings-actions">
               <button
                 className="profile-settings-action"
                 type="button"
-                onClick={() =>
-                  onSetLocalPresentation({
-                    name: localNameDraft,
-                    icon: localIconDraft
-                  })
-                }
-              >
-                {t("space.saveLocalPresentation")}
-              </button>
-              <button
-                className="profile-settings-action"
-                type="button"
-                onClick={() => onSetLocalPresentation(null)}
+                onClick={() => {
+                  setLocalNameDraft("");
+                  setLocalIconDraft("");
+                  onSetLocalPresentation(null);
+                }}
               >
                 {t("space.resetLocalPresentation")}
               </button>

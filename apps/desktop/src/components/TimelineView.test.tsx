@@ -403,6 +403,48 @@ describe("TimelineView", () => {
     expect(within(menu).queryByRole("menuitem", { name: "Reply to message" })).toBeNull();
   });
 
+  it("autosaves sender aliases from the message action menu", () => {
+    const onSetLocalUserAlias = vi.fn();
+    const store: TimelineStoreState = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [message("$alias", "Alias me")]
+      }
+    });
+
+    render(
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={baseTransport({})}
+          onReply={vi.fn()}
+          onSetLocalUserAlias={onSetLocalUserAlias}
+        />
+      </TimelineStoreContext.Provider>
+    );
+
+    const row = screen.getByText("Alias me").closest("article");
+    expect(row).not.toBeNull();
+
+    fireEvent.click(within(row!).getByRole("button", { name: "Message actions" }));
+    fireEvent.click(
+      within(row!).getByRole("menuitem", { name: "Set alias for @bob:example.invalid" })
+    );
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Alias" }), {
+      target: { value: "Builder Bob" }
+    });
+
+    expect(screen.queryByRole("button", { name: "Save alias" })).toBeNull();
+    expect(onSetLocalUserAlias).toHaveBeenCalledWith(
+      "@bob:example.invalid",
+      "Builder Bob"
+    );
+  });
+
   it("shrinks the reaction emoji picker to the visible space instead of clipping it", async () => {
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
       this: HTMLElement

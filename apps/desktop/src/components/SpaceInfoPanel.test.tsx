@@ -197,4 +197,41 @@ describe("SpaceInfoPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Members" }));
     expect(onOpenMembers).toHaveBeenCalledTimes(1);
   });
+
+  test("autosaves local presentation edits without a save button", () => {
+    const onSetLocalPresentation = vi.fn();
+    render(
+      <SpaceInfoPanel
+        fallbackName="Synthetic Workspace"
+        localIcon="SW"
+        localName="Synthetic Workspace"
+        rooms={[]}
+        space={{
+          space_id: "!space-work:example.invalid",
+          display_name: "Synthetic Workspace",
+          avatar: null,
+          child_room_ids: []
+        }}
+        onSetLocalPresentation={onSetLocalPresentation}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: "Save local presentation" })).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Local name"), {
+      target: { value: "Research" }
+    });
+    expect(onSetLocalPresentation).toHaveBeenLastCalledWith({
+      name: "Research",
+      icon: "SW"
+    });
+
+    fireEvent.change(screen.getByLabelText("Local icon"), {
+      target: { value: "R" }
+    });
+    expect(onSetLocalPresentation).toHaveBeenLastCalledWith({
+      name: "Research",
+      icon: "R"
+    });
+  });
 });
