@@ -6049,6 +6049,7 @@ fn activity_row_from_timeline_item(room_id: &str, item: &TimelineItem) -> Option
         false,
     );
     row.sender_avatar = item.sender_avatar.clone();
+    row.thread_root_event_id = item.thread_root.clone();
     Some(row)
 }
 
@@ -8536,6 +8537,27 @@ mod tests {
             send_state: None,
             unable_to_decrypt: None,
         }
+    }
+
+    #[test]
+    fn activity_row_from_timeline_item_preserves_thread_root_event_id() {
+        let mut item = timeline_item(
+            "$thread-reply:test",
+            Some("reply body"),
+            "@sender:test",
+            false,
+        );
+        item.thread_root = Some("$thread-root:test".to_owned());
+
+        let row = activity_row_from_timeline_item("!room:test", &item)
+            .expect("event timeline item should project to an activity row");
+        let value = serde_json::to_value(&row).expect("activity row should serialize");
+
+        assert_eq!(value["event_id"], serde_json::json!("$thread-reply:test"));
+        assert_eq!(
+            value["thread_root_event_id"],
+            serde_json::json!("$thread-root:test")
+        );
     }
 
     fn timeline_media_item(

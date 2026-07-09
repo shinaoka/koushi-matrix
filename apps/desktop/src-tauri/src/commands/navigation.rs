@@ -113,6 +113,14 @@ pub async fn open_activity_event(
         FOCUSED_CONTEXT_EVENT_TIMEOUT,
     )
     .await?;
+    wait_for_focused_timeline_event(
+        &mut event_conn,
+        open_request_id,
+        &selected_room_id,
+        &event_id,
+        FOCUSED_CONTEXT_EVENT_TIMEOUT,
+    )
+    .await?;
 
     let anchor_request_id = event_conn.next_request_id();
     event_conn
@@ -189,6 +197,14 @@ pub async fn select_search_result(
         &mut event_conn,
         open_request_id,
         &selected_room_id,
+        FOCUSED_CONTEXT_EVENT_TIMEOUT,
+    )
+    .await?;
+    wait_for_focused_timeline_event(
+        &mut event_conn,
+        open_request_id,
+        &selected_room_id,
+        &event_id,
         FOCUSED_CONTEXT_EVENT_TIMEOUT,
     )
     .await?;

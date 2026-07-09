@@ -1467,7 +1467,7 @@ describe("Tauri state refresh wiring", () => {
     expect(source).toContain("showSearchResults={false}");
   });
 
-  test("activity row selection navigates to the event without opening the focused-context panel", () => {
+  test("activity row selection opens thread rows in the thread panel and room rows as anchored events", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     const openActivityRowStart = source.indexOf("function openActivityRow");
     const openActivityRowEnd = source.indexOf("function selectSearchResult");
@@ -1477,12 +1477,20 @@ describe("Tauri state refresh wiring", () => {
     const activityRenderSource = source.slice(activityRenderStart, activityRenderEnd);
 
     expect(openActivityRowStart).toBeGreaterThanOrEqual(0);
+    expect(openActivityRowSource).toContain(
+      "function openActivityRow(roomId: string, eventId: string, threadRootEventId: string | null)"
+    );
+    expect(openActivityRowSource).toContain("if (threadRootEventId)");
+    expect(openActivityRowSource).toContain("await api.selectRoom(roomId)");
+    expect(openActivityRowSource).toContain("await openThread(roomId, threadRootEventId)");
     expect(openActivityRowSource).toContain(".openActivityEvent(roomId, eventId)");
     expect(openActivityRowSource).not.toContain(".selectSearchResult(roomId, eventId)");
     expect(openActivityRowSource).toContain('setRightPanelMode("closed")');
     expect(openActivityRowSource).not.toContain('setRightPanelMode("focusedContext")');
     expect(openActivityRowSource).not.toContain('setRightPanelMode("search")');
-    expect(activityRenderSource).toContain("openActivityRow(row.room_id, row.event_id)");
+    expect(activityRenderSource).toContain(
+      "openActivityRow(row.room_id, row.event_id, row.thread_root_event_id)"
+    );
     expect(activityRenderSource).toContain('row.kind === "roomUnread"');
     expect(activityRenderSource).toContain("openActivityRoom(row.room_id)");
     expect(activityRenderSource).not.toContain("selectSearchResult(row.room_id, row.event_id)");
@@ -1501,6 +1509,7 @@ describe("Tauri state refresh wiring", () => {
 
     expect(openActivityStart).toBeGreaterThanOrEqual(0);
     expect(openActivitySource).toContain("wait_for_focused_context");
+    expect(openActivitySource).toContain("wait_for_focused_timeline_event");
     expect(openActivitySource).toContain("wait_for_main_timeline_anchor");
     expect(openFocusedContextIndex).toBeGreaterThanOrEqual(0);
     expect(enterAnchoredTimelineIndex).toBeGreaterThan(openFocusedContextIndex);
@@ -1635,6 +1644,7 @@ describe("Tauri state refresh wiring", () => {
     const unreadTypeEnd = coreEventsSource.indexOf("export type ActivityRow", unreadTypeStart);
     const unreadTypeSource = coreEventsSource.slice(unreadTypeStart, unreadTypeEnd);
     expect(unreadTypeSource).toContain("event_id: null");
+    expect(unreadTypeSource).toContain("thread_root_event_id: null");
   });
 
   test("member-panel avatar thumbnail requests respect the global avatar download gate", () => {
