@@ -205,6 +205,7 @@ export function ActivityPane({
                       <EntityAvatar
                         avatar={null}
                         className="activity-row-avatar is-room"
+                        colorSeed={row.room_id}
                         fallback={initials(row.room_label)}
                       />
                       <span className="activity-row-body">
@@ -227,6 +228,7 @@ export function ActivityPane({
                       <EntityAvatar
                         avatar={row.sender_avatar}
                         className="activity-row-avatar is-user"
+                        colorSeed={row.sender_id ?? row.room_id}
                         fallback={initials(row.sender_label ?? row.room_label)}
                       />
                       <span className="activity-row-body">
@@ -472,6 +474,7 @@ export function InvitesPane({
                 <EntityAvatar
                   avatar={invite.avatar}
                   className={`invite-row-icon ${invite.is_dm ? "is-user" : "is-room"}`}
+                  colorSeed={invite.room_id}
                   fallback={initials(invite.display_name)}
                 />
                 <span className="invite-row-main">
@@ -495,6 +498,7 @@ export function InvitesPane({
                 <EntityAvatar
                   avatar={selectedInvite.avatar}
                   className={`invite-preview-icon ${selectedInvite.is_dm ? "is-user" : "is-room"}`}
+                  colorSeed={selectedInvite.room_id}
                   fallback={initials(selectedInvite.display_name)}
                 />
                 <div>
@@ -731,6 +735,7 @@ export function TimelinePane({
           <EntityAvatar
             avatar={activeRoom?.avatar ?? null}
             className="channel-avatar is-room"
+            colorSeed={activeRoom?.room_id ?? activeRoomName}
             fallback={initials(activeRoomName)}
           />
           <span>{activeRoomName}</span>

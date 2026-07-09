@@ -1,17 +1,20 @@
 # Koushi — UI/UX Design Language (v1)
 
-Status: design reference for implementers. Date: 2026-06-14.
+Status: design reference for implementers. Date: 2026-07-09.
 
 This document defines the visual + interaction design language for
-Koushi, the Element-like Matrix desktop client: a **blue** identity, **light + dark**
-themes, and an **Element-aligned navigation/menu structure**. It is the design
-source other implementation agents follow so the UI is consistent and they do
-not have to re-derive look-and-feel per surface.
+Koushi, the Element-like Matrix desktop client: a **white-first shell** with
+blue reserved for meaningful accents, **light + dark** themes, and an
+**Element-aligned navigation/menu structure**. It is the design source other
+implementation agents follow so the UI is consistent and they do not have to
+re-derive look-and-feel per surface.
 
 Mockups (open in a browser or any SVG viewer):
 - `docs/design/palette.svg` — semantic tokens, light + dark.
-- `docs/design/ui-shell-light.svg` — full shell, light.
-- `docs/design/ui-shell-dark.svg` — full shell, dark.
+- `docs/design/ui-shell-light.svg` — full shell, light. This artifact predates
+  the 2026-07-09 white-shell recolor and is stale until regenerated.
+- `docs/design/ui-shell-dark.svg` — full shell, dark. This artifact predates
+  the 2026-07-09 neutral dark recolor and is stale until regenerated.
 
 ## 0. Relationship to canon (binding)
 
@@ -29,16 +32,20 @@ This is a *design* document; it does not override the rule book.
 
 ## 1. Principles
 
-1. **One saturated hue.** Blue (`--brand`) is the only saturated color in the
-   chrome; everything else is a cool slate ramp so unread/mention/presence and
-   the brand read clearly.
-2. **Calm chrome, legible content.** Rail/sidebar are quiet; the timeline is the
+1. **White shell, limited blue.** The app chrome is white to pale neutral gray
+   in light mode. Blue (`--brand`) remains the product accent for primary
+   buttons, links, unread badges, focus rings, toggles, and the selected-space
+   indicator; it is not the default rail, row selection, hover, or avatar color.
+2. **Hash-distributed avatars.** Fallback avatars use eight stable colors
+   derived from a Matrix room/user/space ID where available, otherwise the
+   display label. Blue is one avatar color, not the whole avatar system.
+3. **Calm chrome, legible content.** Rail/sidebar are quiet; the timeline is the
    brightest surface. Content (messages) has the highest contrast.
-3. **Token-driven theming.** Every color is a CSS custom property; light/dark
+4. **Token-driven theming.** Every color is a CSS custom property; light/dark
    differ only in token values, never in component markup.
-4. **Element-aligned IA, original identity.** Match Element's menu *structure*
+5. **Element-aligned IA, original identity.** Match Element's menu *structure*
    and information architecture; do not match its colors or assets.
-5. **Direction-agnostic, translation-tolerant.** Logical CSS properties, `dir`
+6. **Direction-agnostic, translation-tolerant.** Logical CSS properties, `dir`
    aware, no fixed-width labels.
 
 ## 2. Design tokens
@@ -50,21 +57,31 @@ Tokens live in `apps/desktop/src/styles.css` as CSS custom properties on
 | --- | --- | --- | --- |
 | `--brand` | primary action / active / link | `#2D6FEF` | `#5C8DF6` |
 | `--brand-hover` | hover/pressed brand | `#1F59D0` | `#79A2F8` |
-| `--brand-weak` | selected-row / chip bg | `#E7F0FE` | `#1B2942` |
+| `--brand-weak` | subtle brand chip bg | `#E7F0FE` | `#1B2942` |
 | `--brand-contrast` | text/icon on `--brand` | `#FFFFFF` | `#0A111F` |
-| `--rail` | space rail bg | `#16213E` | `#0A111F` |
-| `--rail-item` | inactive rail tile | `#27324F` | `#1B2942` |
-| `--sidebar` | room-list bg | `#F5F7FB` | `#111A2B` |
-| `--surface` | timeline / main bg | `#FFFFFF` | `#0E1726` |
-| `--surface-hover` | row hover | `#EEF2F8` | `#1A2740` |
-| `--text` | primary text | `#0F1B2D` | `#E6ECF5` |
-| `--text-muted` | secondary text | `#5B6B82` | `#93A0B4` |
-| `--text-faint` | tertiary / placeholder | `#93A0B4` | `#5B6B82` |
-| `--line` | borders / dividers | `#E3E8F0` | `#1E2A40` |
+| `--rail` | space rail bg | `#F7F8FA` | `#151719` |
+| `--rail-item` | inactive rail tile | `#E9ECF1` | `#23262B` |
+| `--sidebar` | room-list bg | `#FAFBFC` | `#191C20` |
+| `--surface` | timeline / main bg | `#FFFFFF` | `#1E2126` |
+| `--surface-hover` | row hover | `#F2F4F6` | `#26292F` |
+| `--selected` | selected-row bg | `#E9ECF0` | `#2A2E34` |
+| `--text` | primary text | `#171B21` | `#E6ECF5` |
+| `--text-muted` | secondary text | `#5F6B7A` | `#93A0B4` |
+| `--text-faint` | tertiary / placeholder | `#8A94A3` | `#5B6B82` |
+| `--line` | borders / dividers | `#E5E8EC` | `#2E3238` |
 | `--unread` | unread count badge | `#2D6FEF` | `#5C8DF6` |
 | `--mention` / `--danger` | mention dot / destructive | `#E5484D` | `#F2575C` |
 | `--success` | presence online / success | `#1A9E6C` | `#34B988` |
 | `--warning` | warning | `#C98A1B` | `#E0A53A` |
+| `--avatar-1` | avatar blue | `#2D6FEF` | `#5C8DF6` |
+| `--avatar-2` | avatar teal | `#0C7D72` | `#35B1A2` |
+| `--avatar-3` | avatar violet | `#7C5CD6` | `#A08AEC` |
+| `--avatar-4` | avatar magenta | `#B34482` | `#D678AD` |
+| `--avatar-5` | avatar coral | `#B34D28` | `#D97E57` |
+| `--avatar-6` | avatar green | `#2F7D50` | `#58B183` |
+| `--avatar-7` | avatar amber | `#96690F` | `#D0A13C` |
+| `--avatar-8` | avatar slate | `#64748B` | `#8B9BB4` |
+| `--avatar-contrast` | fallback avatar text | `#FFFFFF` | `#101214` |
 
 Non-color tokens (theme-independent):
 - Radii: `--r-sm 6px`, `--r-md 8px`, `--r-lg 12px`, `--r-pill 999px`.
@@ -101,7 +118,8 @@ Keep the existing CSS-grid shell (`.app-grid`), four columns:
 Mirror Element's left-panel structure; map onto existing components.
 
 **Space rail** (`WorkspaceRail`, col 1):
-1. Home (all rooms) — active state = filled `--brand` tile.
+1. Home (all rooms) — active state = neutral `--selected` tile with the
+   brand indicator reserved for selected-space emphasis.
 2. Space tiles — rounded squares, unread→count badge, mention→red dot.
 3. `+` create space (dashed tile).
 4. Bottom: account avatar (presence ring) + Settings.
@@ -113,7 +131,7 @@ Mirror Element's left-panel structure; map onto existing components.
    **Favourites → People → Rooms → Low priority (collapsed)**. DMs live under
    People. (This replaces the current `Rooms` / `People` only split.)
 4. Row affordances: unread = `--unread` count badge; mention = `--mention`
-   dot; selected = `--brand-weak` bg + 3px `--brand` left bar; hover =
+   dot; selected = `--selected` bg + 3px `--brand` left bar; hover =
    `--surface-hover` + trailing 3-dot menu (leave / low priority / settings).
 5. Footer: Explore public rooms (compass) + Settings.
 
@@ -131,10 +149,10 @@ Search results / Settings as modes (Rust-owned `thread` + right-panel mode).
   `--r-md`. Focus: 2px `--brand` outline offset 2px.
 - **Inputs / search**: `--surface`, 1px `--line`, focus border `--brand`;
   placeholder `--text-faint`; logical padding.
-- **Room-list item**: avatar (28) · name (`650`) + optional preview/time
+- **Room-list item**: hash-colored avatar (28) · name (`650`) + optional preview/time
   (`--text-muted`) · trailing badge/dot. States: default / hover / selected /
   muted (low-priority = `--text-muted`, no count, mention still shows).
-- **Message row**: avatar (36) · sender (`800`) + time (`--text-muted`) · body
+- **Message row**: hash-colored avatar (36) · sender (`800`) + time (`--text-muted`) · body
   (`--text`); hover reveals action bar (reply/react/edit/redact/more) and
   `--surface-hover`; reactions = pill chips (`--brand-weak`, count); edited tag
   muted; pending/failed send states use `--text-muted` / `--danger`.
@@ -179,8 +197,13 @@ Search results / Settings as modes (Rust-owned `thread` + right-panel mode).
 ## 10. Implementation map (where this lands)
 
 - Tokens + theme: `apps/desktop/src/styles.css` (`:root` + `[data-theme="dark"]`).
-  Replace the current purple ramp (`--rail #34123d`, `--brand #5b236a`, green
-  accent) with §2.
+  Keep rail/sidebar/hover/selection neutral, restrict blue to the accent roles
+  in §1, and use `--avatar-1` through `--avatar-8` through the `avatar-c*`
+  fallback classes.
+- Avatar hashing: `EntityAvatar` in `apps/desktop/src/components/Shell.tsx`
+  applies `avatar-c1` through `avatar-c8` using stable Matrix IDs before
+  display labels. Image avatars still win; the palette is visible only for
+  fallback text avatars.
 - Rail: `WorkspaceRail` (in `App.tsx`); room list: `Sidebar` sections →
   Favourites/People/Rooms/Low-priority; right panel: `ContextualRightPanel` +
   panels in `src/components/`.
