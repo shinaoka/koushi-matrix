@@ -223,6 +223,13 @@ export interface TimelineTransport {
   openAtTimestamp?(roomId: string, timestampMs: number): Promise<void>;
 }
 
+export type TimelineThreadAttention = {
+  rootEventId: string;
+  notificationCount: number;
+  highlightCount: number;
+  liveEventMarkerCount: number;
+};
+
 /**
  * Row-level actions surfaced on timeline items. Matrix semantics stay
  * Rust-owned: the row reports event-backed intent plus Rust-projected reaction
@@ -1954,7 +1961,8 @@ export const TimelineView = memo(function TimelineView({
   timelineStore,
   setTimelineStore,
   listRefCallback,
-  onRegisterJumpToLatest
+  onRegisterJumpToLatest,
+  threadAttention = null
 }: {
   timelineKey: TimelineKey;
   roomId: string;
@@ -2017,6 +2025,8 @@ export const TimelineView = memo(function TimelineView({
    * for parent chrome controls.
    */
   onRegisterJumpToLatest?: (handler: (() => void) | null) => void;
+  /** Thread attention counters for the root row in the currently selected room. */
+  threadAttention?: TimelineThreadAttention | null;
 }) {
   // Persisted restart anchors are intentionally ignored for restoration:
   // first entry after app startup goes to live edge, while in-session room
@@ -4288,6 +4298,7 @@ export const TimelineView = memo(function TimelineView({
                 ignoredUserIds={ignoredUserIds}
                 onOpenContextMenu={onOpenContextMenu}
                 mentionProfileUsers={profileUsers}
+                threadAttention={threadAttention}
                 mediaDownload={eventId ? mediaDownloads[eventId] : undefined}
                 receipts={eventId ? roomSignals?.receipts_by_event[eventId]?.readers ?? [] : []}
                 receiptTotalCount={
@@ -4410,6 +4421,7 @@ export function TimelineItemRow({
   currentUserId,
   ignoredUserIds = [],
   onOpenContextMenu,
+  threadAttention = null,
   mediaDownload
 }: {
   item: TimelineItem;
@@ -4458,6 +4470,7 @@ export function TimelineItemRow({
     },
     items: ContextMenuItem[]
   ) => void;
+  threadAttention?: TimelineThreadAttention | null;
   mediaDownload?: TimelineMediaDownloadState;
 }) {
   const domId = timelineItemDomId(item.id);
@@ -4902,6 +4915,14 @@ export function TimelineItemRow({
         item.thread_summary.latest_body_preview
       )
     : "";
+  const newThreadReplyCount =
+    eventId && threadAttention?.rootEventId === eventId
+      ? threadAttention.liveEventMarkerCount
+      : 0;
+  const newThreadRepliesText =
+    newThreadReplyCount > 0
+      ? t("timeline.viewReplies", { count: newThreadReplyCount })
+      : "";
   const receiptDetails = formatReceiptDetails(receipts, receiptOverflowCount);
   const receiptLabel = t("timeline.readBy", { count: receiptTotalCount });
   const receiptAriaLabel =
@@ -5167,6 +5188,17 @@ export function TimelineItemRow({
               <span>{t("timeline.requestRoomKey")}</span>
             </button>
           </div>
+        ) : null}
+        {newThreadReplyCount > 0 ? (
+          <button
+            className="thread-summary-chip thread-new-replies-chip"
+            type="button"
+            aria-label={t("timeline.openThreadSummary", { summary: newThreadRepliesText })}
+            onClick={submitOpenThread}
+          >
+            <MessageCircle size={13} />
+            <span>{newThreadRepliesText}</span>
+          </button>
         ) : null}
         {canShowThreadSummary ? (
           <button

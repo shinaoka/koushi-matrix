@@ -51,6 +51,7 @@ import {
   type TimelineDiagnosticLogEntry,
   type TimelineDiagnostics,
   type TimelineRowActionHandlers,
+  type TimelineThreadAttention,
   type TimelineTransport
 } from "./TimelineView";
 import { EntityAvatar } from "./Shell";
@@ -652,13 +653,32 @@ export function TimelinePane({
     ? snapshot.state.domain.rooms.find((room) => room.room_id === timelineRoomId) ?? null
     : null;
   const threadAttention = snapshot.state.domain.thread_attention;
+  const trackingThreadAttention = threadAttention.kind === "tracking" ? threadAttention : null;
+  const timelineThreadAttention = useMemo<TimelineThreadAttention | null>(() => {
+    if (!timelineRoomId || !trackingThreadAttention || trackingThreadAttention.room_id !== timelineRoomId) {
+      return null;
+    }
+    return {
+      rootEventId: trackingThreadAttention.root_event_id,
+      notificationCount: trackingThreadAttention.notification_count,
+      highlightCount: trackingThreadAttention.highlight_count,
+      liveEventMarkerCount: trackingThreadAttention.live_event_marker_count
+    };
+  }, [
+    timelineRoomId,
+    trackingThreadAttention?.room_id,
+    trackingThreadAttention?.root_event_id,
+    trackingThreadAttention?.notification_count,
+    trackingThreadAttention?.highlight_count,
+    trackingThreadAttention?.live_event_marker_count
+  ]);
+  const threadsHeaderNotificationCount = timelineThreadAttention?.notificationCount ?? 0;
+  const threadsHeaderHighlightCount = timelineThreadAttention?.highlightCount ?? 0;
+  const threadsHeaderLiveCount = timelineThreadAttention?.liveEventMarkerCount ?? 0;
   const showThreadsHeader =
-    timelineRoomId &&
-    threadAttention.kind === "tracking" &&
-    threadAttention.room_id === timelineRoomId &&
-    (threadAttention.notification_count > 0 ||
-      threadAttention.highlight_count > 0 ||
-      threadAttention.live_event_marker_count > 0);
+    threadsHeaderNotificationCount > 0 ||
+    threadsHeaderHighlightCount > 0 ||
+    threadsHeaderLiveCount > 0;
   // #161: when the main pane is anchored (jump-to-date landed on an event), it
   // renders the focused (event-centered) timeline instead of the live room
   // timeline; the right panel is not opened.
@@ -780,6 +800,9 @@ export function TimelinePane({
             <button
               className="icon-button"
               type="button"
+              data-count={threadsHeaderNotificationCount || undefined}
+              data-live-count={threadsHeaderLiveCount || undefined}
+              data-mention-count={threadsHeaderHighlightCount || undefined}
               aria-label={t("workspace.threads")}
               title={t("workspace.threads")}
               onClick={onOpenThreadsStable}
@@ -859,6 +882,7 @@ export function TimelinePane({
               onDiagnosticsChange={onTimelineDiagnosticsChangeStable}
               onDiagnosticLogEntry={onTimelineDiagnosticLogEntryStable}
               onRegisterJumpToLatest={registerJumpToLatest}
+              threadAttention={timelineThreadAttention}
             />
           ) : (
             // Browser fixture preview only (no Tauri runtime).

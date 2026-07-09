@@ -596,6 +596,47 @@ button:disabled {
   background: var(--surface-hover);
 }
 
+.channel-actions .icon-button[data-count],
+.channel-actions .icon-button[data-live-count],
+.channel-actions .icon-button[data-mention-count] {
+  position: relative;
+}
+
+.channel-actions .icon-button[data-count]::after {
+  position: absolute;
+  inset-block-start: -4px;
+  inset-inline-end: -5px;
+  min-inline-size: var(--nav-badge-size);
+  block-size: var(--nav-badge-size);
+  padding: 0 var(--nav-badge-padding-inline);
+  border: 2px solid var(--surface);
+  border-radius: var(--r-pill);
+  content: attr(data-count);
+  color: var(--brand-contrast);
+  font-size: var(--nav-badge-font-size);
+  font-weight: 820;
+  line-height: calc(var(--nav-badge-size) - 4px);
+  text-align: center;
+  background: var(--unread);
+}
+
+.channel-actions .icon-button[data-mention-count]::before,
+.channel-actions .icon-button[data-live-count]:not([data-mention-count])::before {
+  position: absolute;
+  inset-block-end: 3px;
+  inset-inline-end: 3px;
+  inline-size: var(--nav-dot-size);
+  block-size: var(--nav-dot-size);
+  border: 2px solid var(--surface);
+  border-radius: var(--r-pill);
+  content: "";
+  background: var(--unread);
+}
+
+.channel-actions .icon-button[data-mention-count]::before {
+  background: var(--mention);
+}
+
 .top-search {
   position: relative;
   color: var(--text-muted);
@@ -3403,6 +3444,16 @@ button:disabled {
 .thread-summary-chip:focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
+}
+
+.thread-new-replies-chip {
+  border-color: var(--unread);
+  color: var(--brand);
+  background: var(--selected);
+}
+
+.thread-new-replies-chip:hover {
+  background: var(--selected-strong);
 }
 
 .reply-link {
