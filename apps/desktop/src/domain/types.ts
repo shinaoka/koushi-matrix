@@ -276,6 +276,7 @@ export type ComposerResolvedAction =
   | "send"
   | "insertNewline"
   | "acceptAutocomplete"
+  | "closeAutocomplete"
   | "cancel"
   | "commitImeCandidate"
   | "noop";

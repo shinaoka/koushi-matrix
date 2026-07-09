@@ -3982,8 +3982,8 @@ mark {
 
 .composer-autocomplete {
   display: grid;
-  gap: 2px;
-  max-height: 150px;
+  gap: 4px;
+  max-height: 240px;
   margin: 8px 10px 0;
   padding: 4px;
   overflow: auto;
@@ -3993,19 +3993,63 @@ mark {
   box-shadow: 0 16px 32px rgb(15 27 45 / 18%);
 }
 
+.composer-autocomplete-section {
+  display: grid;
+  gap: 2px;
+}
+
+.composer-autocomplete-section-heading {
+  padding: 4px 8px 2px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
 .composer-autocomplete-option {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 2px;
-  min-height: 38px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 42px;
   padding: 6px 8px;
+  border: 0;
   border-radius: 6px;
+  color: var(--text);
+  background: transparent;
   text-align: start;
+  cursor: pointer;
 }
 
 .composer-autocomplete-option:hover,
-.composer-autocomplete-option:focus-visible {
+.composer-autocomplete-option:focus-visible,
+.composer-autocomplete-option.is-active {
   background: var(--surface-hover);
+}
+
+.composer-autocomplete-option[aria-selected="true"] {
+  background: var(--selected);
+}
+
+.mention-option-avatar {
+  width: 28px;
+  height: 28px;
+  font-size: 12px;
+}
+
+.mention-option-avatar img,
+.mention-option-avatar .avatar-fallback {
+  width: 28px;
+  height: 28px;
+}
+
+.mention-option-avatar.is-room-mention .avatar-fallback {
+  font-size: 14px;
+}
+
+.mention-option-main {
+  display: grid;
+  min-width: 0;
 }
 
 .composer-emoji-anchor {

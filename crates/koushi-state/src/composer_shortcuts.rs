@@ -57,6 +57,7 @@ pub enum ComposerResolvedAction {
     Send,
     InsertNewline,
     AcceptAutocomplete,
+    CloseAutocomplete,
     Cancel,
     CommitImeCandidate,
     Noop,
@@ -145,7 +146,13 @@ pub fn resolve_composer_key_action(
     }
 
     match event.key {
-        ComposerKey::Escape => ComposerResolvedAction::Cancel,
+        ComposerKey::Escape => {
+            if context.autocomplete_open {
+                ComposerResolvedAction::CloseAutocomplete
+            } else {
+                ComposerResolvedAction::Cancel
+            }
+        }
         ComposerKey::Other => ComposerResolvedAction::Noop,
         ComposerKey::Enter => resolve_enter_key(event.modifiers, context),
     }
@@ -308,5 +315,44 @@ fn push_escaped_html_char(output: &mut String, ch: char) {
         '"' => output.push_str("&quot;"),
         '\'' => output.push_str("&#39;"),
         _ => output.push(ch),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn context(autocomplete_open: bool) -> ComposerResolverContext {
+        ComposerResolverContext {
+            surface: ComposerSurface::Main,
+            send_shortcut: ComposerSendShortcut::Enter,
+            autocomplete_open,
+            send_enabled: true,
+        }
+    }
+
+    fn key_event(key: ComposerKey) -> ComposerKeyEvent {
+        ComposerKeyEvent {
+            key,
+            modifiers: ComposerKeyModifiers::default(),
+            is_composing: false,
+            selection: None,
+        }
+    }
+
+    #[test]
+    fn escape_closes_open_autocomplete_before_reply_cancel() {
+        assert_eq!(
+            resolve_composer_key_action(key_event(ComposerKey::Escape), context(true)),
+            ComposerResolvedAction::CloseAutocomplete
+        );
+    }
+
+    #[test]
+    fn escape_still_cancels_when_autocomplete_is_closed() {
+        assert_eq!(
+            resolve_composer_key_action(key_event(ComposerKey::Escape), context(false)),
+            ComposerResolvedAction::Cancel
+        );
     }
 }

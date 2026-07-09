@@ -16,6 +16,12 @@ interface AppStoreState {
 
 const EMPTY_FORWARD_DESTINATIONS: TimelineForwardDestination[] = [];
 const EMPTY_MENTION_CANDIDATES: MentionCandidate[] = [];
+const ROOM_MENTION_CANDIDATE: MentionCandidate = {
+  key: "roomMention",
+  label: "@room",
+  searchText: "room @room notify the whole room",
+  target: { kind: "roomMention", display_label: "room" }
+};
 
 let cachedForwardRooms: DesktopSnapshot["state"]["domain"]["rooms"] | null = null;
 let cachedForwardDestinations: TimelineForwardDestination[] = EMPTY_FORWARD_DESTINATIONS;
@@ -204,13 +210,16 @@ export function selectMentionCandidates(
     return cachedMentionCandidates;
   }
   cachedMentionUsers = users;
-  cachedMentionCandidates = Object.values(users)
-    .map((profile) => mentionCandidateFromProfile(profile))
-    .sort(
-      (a, b) =>
-        a.label.localeCompare(b.label, undefined, { sensitivity: "base" }) ||
-        a.key.localeCompare(b.key)
-    );
+  cachedMentionCandidates = [
+    ...Object.values(users)
+      .map((profile) => mentionCandidateFromProfile(profile))
+      .sort(
+        (a, b) =>
+          a.label.localeCompare(b.label, undefined, { sensitivity: "base" }) ||
+          a.key.localeCompare(b.key)
+      ),
+    ROOM_MENTION_CANDIDATE
+  ];
   return cachedMentionCandidates;
 }
 
@@ -224,6 +233,7 @@ function mentionCandidateFromProfile(profile: UserProfile): MentionCandidate {
         ? profile.mention_search_terms.join(" ")
         : `${label} ${profile.user_id}`
     ).toLowerCase(),
+    avatar: profile.avatar,
     target: {
       kind: "user",
       user_id: profile.user_id,

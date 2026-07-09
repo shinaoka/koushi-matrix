@@ -5,6 +5,7 @@ import {
   type MouseEvent,
   memo,
   useEffect,
+  useId,
   useRef,
   useState
 } from "react";
@@ -45,11 +46,13 @@ import {
   mentionDraftToken,
   mentionTargetKey,
   mentionPillLabel,
+  initials,
   defaultScheduleDateTimeValue,
   scheduledSendTimestampFromInput,
   type MentionCandidate,
   type ComposerModeProp
 } from "../app/uiShared";
+import { EntityAvatar } from "./Shell";
 
 export const Composer = memo(function Composer({
   composerMode,
@@ -93,18 +96,43 @@ export const Composer = memo(function Composer({
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const [scheduleValue, setScheduleValue] = useState(() => defaultScheduleDateTimeValue());
   const [localValue, setLocalValue] = useState(value);
+  const [activeMentionIndex, setActiveMentionIndex] = useState(0);
+  const [dismissedMentionKey, setDismissedMentionKey] = useState<string | null>(null);
+  const autocompleteListboxId = useId();
   const activeMention = activeMentionQuery(localValue);
+  const activeMentionKey =
+    activeMention === null ? null : `${activeMention.start}:${activeMention.query.toLowerCase()}`;
   const activeMentionSuggestions =
-    activeMention === null
+    activeMention === null || activeMentionKey === dismissedMentionKey
       ? []
       : mentionCandidates
           .filter((candidate) => candidate.searchText.includes(activeMention.query.toLowerCase()))
-          .slice(0, 5);
+          .slice(0, 8);
   const autocompleteOpen = activeMentionSuggestions.length > 0;
+  const mentionSuggestionSections = mentionSections(activeMentionSuggestions);
+  const activeMentionOption = autocompleteOpen
+    ? activeMentionSuggestions[Math.min(activeMentionIndex, activeMentionSuggestions.length - 1)]
+    : undefined;
+  const activeMentionOptionId =
+    autocompleteOpen && activeMentionOption
+      ? `${autocompleteListboxId}-option-${Math.min(activeMentionIndex, activeMentionSuggestions.length - 1)}`
+      : undefined;
 
   useEffect(() => {
     setLocalValue(value);
   }, [draftKey, value]);
+
+  useEffect(() => {
+    setActiveMentionIndex(0);
+  }, [activeMentionKey]);
+
+  useEffect(() => {
+    setActiveMentionIndex((current) =>
+      activeMentionSuggestions.length === 0
+        ? 0
+        : Math.min(current, activeMentionSuggestions.length - 1)
+    );
+  }, [activeMentionSuggestions.length]);
 
   function updateLocalValue(nextValue: string) {
     setLocalValue(nextValue);
@@ -124,6 +152,20 @@ export const Composer = memo(function Composer({
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(cursor, cursor);
     });
+  }
+
+  function closeAutocompleteForCurrentQuery() {
+    if (activeMentionKey) {
+      setDismissedMentionKey(activeMentionKey);
+    }
+  }
+
+  function acceptActiveMention() {
+    const candidate =
+      activeMentionSuggestions[Math.min(activeMentionIndex, activeMentionSuggestions.length - 1)];
+    if (candidate) {
+      acceptMention(candidate);
+    }
   }
 
   function selectionRange(): { start: number; end: number } {
@@ -266,6 +308,21 @@ export const Composer = memo(function Composer({
         return;
       }
     }
+    if (autocompleteOpen) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const direction = event.key === "ArrowDown" ? 1 : -1;
+        setActiveMentionIndex((current) =>
+          (current + direction + activeMentionSuggestions.length) % activeMentionSuggestions.length
+        );
+        return;
+      }
+      if (event.key === "Tab") {
+        event.preventDefault();
+        acceptActiveMention();
+        return;
+      }
+    }
     if (!shouldResolveComposerKeyEvent(event)) {
       return;
     }
@@ -303,10 +360,11 @@ export const Composer = memo(function Composer({
           return;
         }
         if (action === "acceptAutocomplete") {
-          const firstSuggestion = activeMentionSuggestions[0];
-          if (firstSuggestion) {
-            acceptMention(firstSuggestion);
-          }
+          acceptActiveMention();
+          return;
+        }
+        if (action === "closeAutocomplete") {
+          closeAutocompleteForCurrentQuery();
           return;
         }
         if (action === "cancel" && composerMode.kind === "reply") {
@@ -389,30 +447,26 @@ export const Composer = memo(function Composer({
       ) : null}
       {autocompleteOpen ? (
         <div
+          id={autocompleteListboxId}
           className="composer-autocomplete"
           role="listbox"
           aria-label={t("composer.mentionSuggestions")}
+          aria-activedescendant={activeMentionOptionId}
         >
-          {activeMentionSuggestions.map((candidate) => (
-            <button
-              className="composer-autocomplete-option"
-              key={candidate.key}
-              type="button"
-              role="option"
-              aria-label={candidate.label}
-              aria-selected="false"
-              onMouseDown={keepComposerFocus}
-              onClick={() => acceptMention(candidate)}
-            >
-              <span className="mention-option-label" dir="auto">
-                {candidate.label}
-              </span>
-              {candidate.target.kind === "user" ? (
-                <span className="mention-option-meta" dir="auto" aria-hidden="true">
-                  {candidate.target.user_id}
-                </span>
-              ) : null}
-            </button>
+          {mentionSuggestionSections.map((section) => (
+            <div className="composer-autocomplete-section" key={section.key} role="presentation">
+              <div className="composer-autocomplete-section-heading">{section.label}</div>
+              {section.candidates.map(({ candidate, index }) => (
+                <MentionOption
+                  active={index === activeMentionIndex}
+                  candidate={candidate}
+                  id={`${autocompleteListboxId}-option-${index}`}
+                  key={candidate.key}
+                  onAccept={acceptMention}
+                  onMouseDown={keepComposerFocus}
+                />
+              ))}
+            </div>
           ))}
         </div>
       ) : null}
@@ -548,6 +602,99 @@ export const Composer = memo(function Composer({
     </section>
   );
 });
+
+type MentionSection = {
+  key: "users" | "room";
+  label: string;
+  candidates: Array<{ candidate: MentionCandidate; index: number }>;
+};
+
+function mentionSections(candidates: MentionCandidate[]): MentionSection[] {
+  const users: MentionSection["candidates"] = [];
+  const roomMentions: MentionSection["candidates"] = [];
+  candidates.forEach((candidate, index) => {
+    const item = { candidate, index };
+    if (candidate.target.kind === "roomMention") {
+      roomMentions.push(item);
+    } else {
+      users.push(item);
+    }
+  });
+  return [
+    ...(users.length ? [{ key: "users" as const, label: t("composer.mentionUsers"), candidates: users }] : []),
+    ...(roomMentions.length
+      ? [
+          {
+            key: "room" as const,
+            label: t("composer.mentionRoomNotification"),
+            candidates: roomMentions
+          }
+        ]
+      : [])
+  ];
+}
+
+function MentionOption({
+  active,
+  candidate,
+  id,
+  onAccept,
+  onMouseDown
+}: {
+  active: boolean;
+  candidate: MentionCandidate;
+  id: string;
+  onAccept: (candidate: MentionCandidate) => void;
+  onMouseDown: (event: MouseEvent<HTMLButtonElement>) => void;
+}) {
+  const meta = mentionOptionMeta(candidate);
+  return (
+    <button
+      id={id}
+      className={`composer-autocomplete-option ${active ? "is-active" : ""}`}
+      key={candidate.key}
+      type="button"
+      role="option"
+      aria-label={mentionOptionAriaLabel(candidate)}
+      aria-selected={active ? "true" : "false"}
+      onMouseDown={onMouseDown}
+      onClick={() => onAccept(candidate)}
+    >
+      <EntityAvatar
+        avatar={candidate.avatar ?? null}
+        className={`mention-option-avatar ${
+          candidate.target.kind === "roomMention" ? "is-room-mention" : "is-user"
+        }`}
+        colorSeed={mentionTargetKey(candidate.target)}
+        fallback={candidate.target.kind === "roomMention" ? "@" : initials(candidate.label)}
+      />
+      <span className="mention-option-main">
+        <span className="mention-option-label" dir="auto">
+          {candidate.label}
+        </span>
+        <span className="mention-option-meta" dir="auto" aria-hidden="true">
+          {meta}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+function mentionOptionMeta(candidate: MentionCandidate): string {
+  switch (candidate.target.kind) {
+    case "user":
+      return candidate.target.user_id;
+    case "room":
+      return candidate.target.room_id;
+    case "roomMention":
+      return t("composer.mentionRoomNotificationDescription");
+  }
+}
+
+function mentionOptionAriaLabel(candidate: MentionCandidate): string {
+  const meta = mentionOptionMeta(candidate);
+  return meta ? `${candidate.label} ${meta}` : candidate.label;
+}
 
 function ThreadComposer({
   canEdit,

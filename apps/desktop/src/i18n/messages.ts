@@ -81,7 +81,10 @@ export type MessageId =
   | "composer.link"
   | "composer.list"
   | "composer.mention"
+  | "composer.mentionRoomNotification"
+  | "composer.mentionRoomNotificationDescription"
   | "composer.mentionSuggestions"
+  | "composer.mentionUsers"
   | "composer.messageComposer"
   | "composer.imageCompressionCompressed"
   | "composer.imageCompressionOriginal"
@@ -1035,7 +1038,10 @@ const en: Catalog = {
   "composer.link": "Link",
   "composer.list": "List",
   "composer.mention": "Mention",
+  "composer.mentionRoomNotification": "Room Notification",
+  "composer.mentionRoomNotificationDescription": "Notify the whole room",
   "composer.mentionSuggestions": "Mention suggestions",
+  "composer.mentionUsers": "Users",
   "composer.messageComposer": "Message composer",
   "composer.imageCompressionCompressed": "Compressed",
   "composer.imageCompressionOriginal": "Original",
@@ -1892,7 +1898,10 @@ const ja: Catalog = {
   "composer.link": "リンク",
   "composer.list": "リスト",
   "composer.mention": "メンション",
+  "composer.mentionRoomNotification": "ルーム通知",
+  "composer.mentionRoomNotificationDescription": "ルーム全体に通知",
   "composer.mentionSuggestions": "メンション候補",
+  "composer.mentionUsers": "ユーザー",
   "composer.messageComposer": "メッセージ入力欄",
   "composer.placeholder": "{roomName}にメッセージ",
   "composer.replying": "返信中",
