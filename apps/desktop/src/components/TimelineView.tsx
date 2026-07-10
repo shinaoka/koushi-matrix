@@ -145,10 +145,15 @@ import type {
   ResolveComposerKeyAction,
   TimelineScrollAnchor,
   TimelineMediaDownloadState,
+  TimelineThreadRootOrder,
   UserProfile
 } from "../domain/types";
 import type { TimelineLinkRange } from "../domain/coreEvents";
 import type { TimelineForwardDestination } from "../domain/projectionTypes";
+import {
+  projectTimelineDisplayRows,
+  type TimelineDisplayRow
+} from "../domain/timelineDisplayProjection";
 
 export type { TimelineForwardDestination } from "../domain/projectionTypes";
 
@@ -612,7 +617,7 @@ type TimelineItemIndexRange = {
 };
 
 type TimelineVirtualWindow = TimelineVirtualRangeState & {
-  items: readonly TimelineItem[];
+  items: readonly TimelineDisplayRow[];
 };
 
 const EMPTY_TIMELINE_RANGE: TimelineVirtualRangeState = {
@@ -627,6 +632,8 @@ const EMPTY_TIMELINE_ITEM_INDEX_RANGE: TimelineItemIndexRange = {
   startIndex: 0,
   endIndex: 0
 };
+
+const ROOT_EVENT_THREAD_ORDER: TimelineThreadRootOrder = { kind: "rootEvent" };
 
 type ViewportIntent = { kind: "free-scroll" } | { kind: "live-edge" };
 
@@ -695,21 +702,20 @@ function scheduleTimelineFrame(callback: FrameRequestCallback): TimelineSchedule
 }
 
 function buildTimelineHeightModel(
-  items: readonly TimelineItem[],
+  rows: readonly TimelineDisplayRow[],
   measuredHeights: ReadonlyMap<string, number>,
   fallbackHeight: number
 ): TimelineHeightModel {
   const fallback = estimatedItemHeight(fallbackHeight);
-  const offsets = new Array<number>(items.length + 1);
+  const offsets = new Array<number>(rows.length + 1);
   offsets[0] = 0;
-  for (const [index, item] of items.entries()) {
-    const domId = timelineItemDomId(item.id);
-    offsets[index + 1] = offsets[index] + (measuredHeights.get(domId) ?? fallback);
+  for (const [index, row] of rows.entries()) {
+    offsets[index + 1] = offsets[index] + (measuredHeights.get(row.row_id) ?? fallback);
   }
   return {
     fallbackHeight: fallback,
     offsets,
-    totalHeight: offsets[items.length] ?? 0
+    totalHeight: offsets[rows.length] ?? 0
   };
 }
 
@@ -1950,6 +1956,7 @@ export const TimelineView = memo(function TimelineView({
   isAnchored = false,
   onReturnToLive,
   autoLoadOlderMessages = false,
+  threadRootOrder = ROOT_EVENT_THREAD_ORDER,
   codeBlockWrap = true,
   searchQuery = "",
   mediaDownloads = {},
@@ -1991,6 +1998,8 @@ export const TimelineView = memo(function TimelineView({
   isAnchored?: boolean;
   onReturnToLive?: () => void;
   autoLoadOlderMessages?: boolean;
+  /** Presentation-only Room order; the canonical store remains SDK ordered. */
+  threadRootOrder?: TimelineThreadRootOrder;
   codeBlockWrap?: boolean;
   searchQuery?: string;
   mediaDownloads?: Record<string, TimelineMediaDownloadState>;
@@ -2857,27 +2866,36 @@ export const TimelineView = memo(function TimelineView({
     relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(items, profileUsers);
   }, [items, profileUsers]);
   const visibleItems = useMemo(() => items.filter((item) => !item.is_hidden), [items]);
+  // The SDK-owned store stays canonical. Only these presentation rows feed
+  // rendering, measuring, and virtualization for an opt-in Room projection.
+  const visibleRows = useMemo(
+    () =>
+      projectTimelineDisplayRows(items, timelineKey, threadRootOrder).filter(
+        (row) => !row.item.is_hidden
+      ),
+    [items, threadRootOrder, timelineKey]
+  );
   const visibleItemDomIds = useMemo(
-    () => new Set(visibleItems.map((item) => timelineItemDomId(item.id))),
-    [visibleItems]
+    () => new Set(visibleRows.map((row) => row.row_id)),
+    [visibleRows]
   );
   visibleItemDomIdsRef.current = visibleItemDomIds;
   const timelineHeightModel = useMemo(
     () =>
       buildTimelineHeightModel(
-        visibleItems,
+        visibleRows,
         itemHeightByDomIdRef.current,
         virtualItemHeight
       ),
-    [measuredHeightVersion, visibleItems, virtualItemHeight]
+    [measuredHeightVersion, visibleRows, virtualItemHeight]
   );
   useLayoutEffect(() => {
     rangeModelEpochRef.current += 1;
-  }, [timelineHeightModel, visibleItems]);
+  }, [timelineHeightModel, visibleRows]);
   const commitVirtualRangeForMetrics = useCallback(
     (metrics: TimelineViewportMetrics) => {
       const nextAvatarRequestRange = calculateTimelineItemIndexRange({
-        visibleItemsLength: visibleItems.length,
+        visibleItemsLength: visibleRows.length,
         metrics,
         model: timelineHeightModel,
         overscanItems: TIMELINE_AVATAR_THUMBNAIL_OVERSCAN_ITEMS
@@ -2893,7 +2911,7 @@ export const TimelineView = memo(function TimelineView({
       }
 
       const nextLinkPreviewRequestRange = calculateTimelineItemIndexRange({
-        visibleItemsLength: visibleItems.length,
+        visibleItemsLength: visibleRows.length,
         metrics,
         model: timelineHeightModel,
         overscanItems: TIMELINE_LINK_PREVIEW_OVERSCAN_ITEMS
@@ -2909,7 +2927,7 @@ export const TimelineView = memo(function TimelineView({
       }
 
       const next = calculateTimelineVirtualRange({
-        visibleItemsLength: visibleItems.length,
+        visibleItemsLength: visibleRows.length,
         metrics,
         model: timelineHeightModel
       });
@@ -2921,7 +2939,7 @@ export const TimelineView = memo(function TimelineView({
       setVirtualRange(next);
       return next;
     },
-    [timelineHeightModel, updateScrollDiagnostics, visibleItems.length]
+    [timelineHeightModel, updateScrollDiagnostics, visibleRows.length]
   );
   const updateViewportMetrics = useCallback(() => {
     const metrics = readViewportMetrics();
@@ -2929,11 +2947,11 @@ export const TimelineView = memo(function TimelineView({
   }, [commitVirtualRangeForMetrics, readViewportMetrics]);
   const virtualWindow = useMemo<TimelineVirtualWindow>(() => {
     const range =
-      visibleItems.length <= TIMELINE_VIRTUALIZATION_THRESHOLD
+      visibleRows.length <= TIMELINE_VIRTUALIZATION_THRESHOLD
         ? {
             virtualized: false,
             startIndex: 0,
-            endIndex: visibleItems.length,
+            endIndex: visibleRows.length,
             paddingTop: 0,
             paddingBottom: 0
           }
@@ -2941,9 +2959,9 @@ export const TimelineView = memo(function TimelineView({
 
     return {
       ...range,
-      items: visibleItems.slice(range.startIndex, range.endIndex)
+      items: visibleRows.slice(range.startIndex, range.endIndex)
     };
-  }, [virtualRange, visibleItems]);
+  }, [virtualRange, visibleRows]);
   useLayoutEffect(() => {
     commitVirtualRangeForMetrics(readViewportMetrics());
   }, [commitVirtualRangeForMetrics, readViewportMetrics]);
@@ -2975,15 +2993,22 @@ export const TimelineView = memo(function TimelineView({
     virtualWindow.startIndex,
     virtualWindow.virtualized
   ]);
-  const sideEffectItems =
-    visibleItems.length > TIMELINE_VIRTUALIZATION_THRESHOLD ? virtualWindow.items : visibleItems;
+  const sideEffectRows =
+    visibleRows.length > TIMELINE_VIRTUALIZATION_THRESHOLD ? virtualWindow.items : visibleRows;
+  const sideEffectItems = useMemo(
+    () => sideEffectRows.map((row) => row.item),
+    [sideEffectRows]
+  );
   const avatarSideEffectItems = useMemo(
-    () => visibleItems.slice(avatarRequestRange.startIndex, avatarRequestRange.endIndex),
-    [avatarRequestRange.endIndex, avatarRequestRange.startIndex, visibleItems]
+    () =>
+      visibleRows
+        .slice(avatarRequestRange.startIndex, avatarRequestRange.endIndex)
+        .map((row) => row.item),
+    [avatarRequestRange.endIndex, avatarRequestRange.startIndex, visibleRows]
   );
   useEffect(() => {
     const avatarDiagnostics = timelineAvatarDiagnostics(
-      visibleItems,
+      visibleRows.map((row) => row.item),
       profileUsers,
       avatarThumbnails
     );
@@ -2993,7 +3018,7 @@ export const TimelineView = memo(function TimelineView({
       }
     }
     const diagnostics = {
-      visibleItems: visibleItems.length,
+      visibleItems: visibleRows.length,
       downloadedItems: downloadedEventIdsRef.current.size,
       backfill: paginationStateDiagnosticLabel(getPaginationState(store, timelineKey, "Backward")),
       ...avatarDiagnostics,
@@ -3023,7 +3048,7 @@ export const TimelineView = memo(function TimelineView({
     profileUsers,
     store,
     timelineKeyHash,
-    visibleItems
+    visibleRows
   ]);
   useEffect(() => {
     // #116 perf gate: skip avatar downloads when disabled (default).
@@ -4135,7 +4160,7 @@ export const TimelineView = memo(function TimelineView({
       data-end-reached={endReached || undefined}
       data-timeline-generation={generation}
       data-virtualized={virtualWindow.virtualized || undefined}
-      data-total-items={visibleItems.length}
+      data-total-items={visibleRows.length}
       data-rendered-items={virtualWindow.items.length}
       ref={containerRef}
       style={{ overflowY: "auto", height: "100%" }}
@@ -4245,19 +4270,24 @@ export const TimelineView = memo(function TimelineView({
             style={{ blockSize: virtualWindow.paddingTop }}
           />
         ) : null}
-        {virtualWindow.items.map((item, windowIndex) => {
-          const itemDomId = timelineItemDomId(item.id);
+        {virtualWindow.items.map((row, windowIndex) => {
+          const { item } = row;
           const visibleIndex = virtualWindow.startIndex + windowIndex;
-          const eventId = "Event" in item.id ? item.id.Event.event_id : null;
-          const isUnreadMarker = Boolean(eventId && unreadMarkerEventId === eventId);
+          const contentEventId = row.content_event_id;
+          const activityEventId = row.activity_event_id;
+          const isUnreadMarker = Boolean(
+            activityEventId && unreadMarkerEventId === activityEventId
+          );
           const isReadMarker = Boolean(
-            eventId && readMarkerDisplayEventId === eventId && !unreadMarkerEventId
+            activityEventId &&
+              readMarkerDisplayEventId === activityEventId &&
+              !unreadMarkerEventId
           );
           return (
             <div
               className="timeline-item-frame"
-              key={itemDomId}
-              data-frame-item-id={itemDomId}
+              key={row.row_id}
+              data-frame-item-id={row.row_id}
             >
               {isUnreadMarker ? (
                 <div className="read-marker" role="separator" aria-label={t("timeline.unreadMarker")}>
@@ -4266,6 +4296,10 @@ export const TimelineView = memo(function TimelineView({
               ) : null}
               <TimelineItemRow
                 item={item}
+                rowId={row.row_id}
+                contentEventId={contentEventId}
+                activityEventId={activityEventId}
+                contentTimestampMs={row.content_timestamp_ms}
                 roomId={roomId}
                 codeBlockWrap={codeBlockWrap}
                 searchQuery={searchQuery}
@@ -4277,7 +4311,7 @@ export const TimelineView = memo(function TimelineView({
                 onRedactReaction={onRedactReaction}
                 onEdit={onEdit}
                 onRedact={onRedact}
-                isPinned={eventId ? pinnedEventIds.includes(eventId) : false}
+                isPinned={contentEventId ? pinnedEventIds.includes(contentEventId) : false}
                 onPin={onPin}
                 onUnpin={onUnpin}
                 onDownloadMedia={onDownloadMedia}
@@ -4305,13 +4339,21 @@ export const TimelineView = memo(function TimelineView({
                 onOpenContextMenu={onOpenContextMenu}
                 mentionProfileUsers={profileUsers}
                 threadAttention={threadAttention}
-                mediaDownload={eventId ? mediaDownloads[eventId] : undefined}
-                receipts={eventId ? roomSignals?.receipts_by_event[eventId]?.readers ?? [] : []}
+                mediaDownload={contentEventId ? mediaDownloads[contentEventId] : undefined}
+                receipts={
+                  contentEventId
+                    ? roomSignals?.receipts_by_event[contentEventId]?.readers ?? []
+                    : []
+                }
                 receiptTotalCount={
-                  eventId ? roomSignals?.receipts_by_event[eventId]?.total_count ?? 0 : 0
+                  contentEventId
+                    ? roomSignals?.receipts_by_event[contentEventId]?.total_count ?? 0
+                    : 0
                 }
                 receiptOverflowCount={
-                  eventId ? roomSignals?.receipts_by_event[eventId]?.overflow_count ?? 0 : 0
+                  contentEventId
+                    ? roomSignals?.receipts_by_event[contentEventId]?.overflow_count ?? 0
+                    : 0
                 }
               />
               {isReadMarker ? (
@@ -4386,6 +4428,10 @@ export const TimelineView = memo(function TimelineView({
 
 export function TimelineItemRow({
   item,
+  rowId,
+  contentEventId,
+  activityEventId,
+  contentTimestampMs,
   roomId,
   codeBlockWrap = true,
   searchQuery = "",
@@ -4428,6 +4474,14 @@ export function TimelineItemRow({
   mediaDownload
 }: {
   item: TimelineItem;
+  /** Stable presentation identity used by DOM/virtualization rows. */
+  rowId?: string;
+  /** Root/content identity for every message action. */
+  contentEventId?: string | null;
+  /** Latest-activity identity for Room viewport observation. */
+  activityEventId?: string | null;
+  /** The content event timestamp, independent of presentation placement. */
+  contentTimestampMs?: number | null;
   roomId: string;
   codeBlockWrap?: boolean;
   searchQuery?: string;
@@ -4476,7 +4530,8 @@ export function TimelineItemRow({
   threadAttention?: TimelineThreadAttention | null;
   mediaDownload?: TimelineMediaDownloadState;
 }) {
-  const domId = timelineItemDomId(item.id);
+  const itemDomId = timelineItemDomId(item.id);
+  const domId = rowId ?? itemDomId;
   const syntheticId = "Synthetic" in item.id ? item.id.Synthetic.synthetic_id : null;
   const dateDividerTimestampMs = syntheticDateDividerTimestampMs(syntheticId, item.timestamp_ms);
   if (dateDividerTimestampMs !== null) {
@@ -4490,7 +4545,9 @@ export function TimelineItemRow({
     return null;
   }
   const transactionId = "Transaction" in item.id ? item.id.Transaction.transaction_id : null;
-  const eventId = "Event" in item.id ? item.id.Event.event_id : null;
+  const itemEventId = "Event" in item.id ? item.id.Event.event_id : null;
+  const eventId = contentEventId ?? itemEventId;
+  const activityId = activityEventId ?? eventId;
   const isRedacted = item.is_redacted;
   const sendState = item.send_state ?? null;
   const sendStateKind = sendState?.kind ?? null;
@@ -5074,8 +5131,11 @@ export function TimelineItemRow({
     <article
       className="message"
       data-item-id={domId}
+      data-row-id={domId}
+      data-content-event-id={eventId ?? undefined}
+      data-activity-event-id={activityId ?? undefined}
       data-send-state={sendStateKind ?? undefined}
-      data-event-id={eventId ?? undefined}
+      data-event-id={activityId ?? undefined}
       data-redacted={isRedacted || undefined}
       data-reply={item.in_reply_to_event_id ? "true" : undefined}
       data-message-kind={messageKind}
@@ -5096,7 +5156,7 @@ export function TimelineItemRow({
         <div className="message-heading">
           <MessageMeta
             senderDisplayLabel={senderDisplayLabel}
-            timestampMs={item.timestamp_ms ?? null}
+            timestampMs={contentTimestampMs ?? item.timestamp_ms ?? null}
             isEdited={item.is_edited}
             isRedacted={isRedacted}
             sendStateKind={sendStateKind}

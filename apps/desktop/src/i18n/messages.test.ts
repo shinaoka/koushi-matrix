@@ -65,6 +65,12 @@ describe("i18n message catalog", () => {
   test("Japanese catalog provides representative localized labels", () => {
     expect(t("composer.replying", {}, "ja")).toBe("返信中");
     expect(t("action.send", {}, "ja")).toBe("送信");
+    expect(t("settings.threadRootLatestReply")).toBe(
+      "Place threaded conversations at their latest reply"
+    );
+    expect(t("settings.threadRootLatestReply", {}, "ja")).toBe(
+      "スレッドを最新の返信位置に表示する"
+    );
   });
 
   test("pseudo locale expands labels while preserving interpolation placeholders", () => {

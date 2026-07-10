@@ -360,6 +360,47 @@ describe("UserSettingsPanel", () => {
     });
   });
 
+  test("keeps thread-root latest placement off by default and patches the full timeline setting", () => {
+    const onUpdateSettings = vi.fn();
+    render(
+      <UserSettingsPanel
+        currentSession={{
+          homeserver: "https://matrix.org",
+          user_id: "@demo-user:example.invalid",
+          device_id: "FAKEDEVICE"
+        }}
+        e2eeTrust={idleE2eeTrust}
+        localEncryption={{ kind: "healthy" }}
+        platform="linux"
+        deviceSessions={idleDeviceSessions}
+        accountManagement={idleAccountManagement}
+        accountManagementCapabilities={idleAccountManagementCapabilities}
+        savedSessions={[]}
+        profile={profile}
+        settings={settings}
+        {...handlers}
+        onUpdateSettings={onUpdateSettings}
+      />
+    );
+
+    const control = screen.getByRole("switch", {
+      name: "Place threaded conversations at their latest reply"
+    });
+    expect(control.getAttribute("aria-checked")).toBe("false");
+    expect(
+      screen.getByText("Move each root message and its reply summary to the time of its latest reply")
+    ).toBeTruthy();
+
+    fireEvent.click(control);
+
+    expect(onUpdateSettings).toHaveBeenCalledWith({
+      timeline: {
+        ...settings.values.timeline,
+        thread_root_order: { kind: "latestReply" }
+      }
+    });
+  });
+
   test("shows active crawler progress copy and raw counts in the activity section", () => {
     const rooms = [
       {

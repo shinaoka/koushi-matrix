@@ -871,6 +871,7 @@ export function TimelinePane({
               currentUserId={currentUserId}
               ignoredUserIds={snapshot.state.domain.profile.ignored_user_ids}
               autoLoadOlderMessages={snapshot.state.domain.settings.values.timeline.auto_load_older_messages}
+              threadRootOrder={snapshot.state.domain.settings.values.timeline.thread_root_order}
               codeBlockWrap={snapshot.state.domain.settings.values.display.code_block_wrap}
               searchQuery={searchQuery}
               mediaDownloads={mediaDownloads}
