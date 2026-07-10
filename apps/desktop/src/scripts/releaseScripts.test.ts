@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { relative, sep } from "node:path";
 import { describe, expect, test } from "vitest";
 
 const repoRoot = new URL("../../../../", import.meta.url).pathname;
@@ -21,7 +22,383 @@ function gitTrackedFiles(): string[] {
     .filter(Boolean);
 }
 
+type DiagnosticSource = {
+  relativePath: string;
+  source: string;
+};
+
+type DiagnosticGateFinding = {
+  relativePath: string;
+  line: number;
+  location: string;
+  reason: string;
+};
+
+type SourceScope = {
+  name: string;
+  start: number;
+  end: number;
+};
+
+const DIAGNOSTIC_ENV_PATTERN = /KOUSHI_[A-Z0-9_]*(?:TRACE|DIAGNOST)/;
+
+function runtimeRustSources(): DiagnosticSource[] {
+  const roots = ["crates/koushi-sdk/src", "crates/koushi-core/src", "apps/desktop/src-tauri/src"];
+  const sources: DiagnosticSource[] = [];
+
+  function visit(directory: string): void {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const file = `${directory}/${entry.name}`;
+      const fileParts = relative(repoRoot, file).split(sep);
+      if (fileParts.some((part) => ["bin", "build", "generated", "target"].includes(part))) {
+        continue;
+      }
+      if (entry.isDirectory()) {
+        visit(file);
+      } else if (entry.isFile() && file.endsWith(".rs")) {
+        sources.push({
+          relativePath: fileParts.join("/"),
+          source: readFileSync(file, "utf8")
+        });
+      }
+    }
+  }
+
+  for (const root of roots) {
+    visit(`${repoRoot}${root}`);
+  }
+  return sources;
+}
+
+function productionRustLines(source: string): string[] {
+  const lines = source.split("\n");
+  const testSection = lines.findIndex((line) => /^\s*#\[cfg\((?:test|all\(.*\btest\b)/.test(line));
+  return (testSection === -1 ? lines : lines.slice(0, testSection)).map((line) => line);
+}
+
+function structuralRustLine(line: string): string {
+  let result = "";
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    const next = line[index + 1];
+    if (!inString && character === "/" && next === "/") {
+      break;
+    }
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      result += " ";
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      result += " ";
+      continue;
+    }
+    result += character;
+  }
+  return result;
+}
+
+function braceDelta(line: string): number {
+  return [...structuralRustLine(line)].reduce(
+    (delta, character) => delta + (character === "{" ? 1 : character === "}" ? -1 : 0),
+    0
+  );
+}
+
+function blockEnd(lines: readonly string[], start: number): number {
+  let depth = 0;
+  let opened = false;
+  for (let index = start; index < lines.length; index += 1) {
+    const delta = braceDelta(lines[index]);
+    if (delta > 0) {
+      opened = true;
+    }
+    depth += delta;
+    if (opened && depth <= 0) {
+      return index;
+    }
+  }
+  return lines.length - 1;
+}
+
+function sourceScopes(lines: readonly string[]): SourceScope[] {
+  const scopes: SourceScope[] = [];
+  const declarations = [
+    /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z0-9_]+)/,
+    /^\s*macro_rules!\s+([A-Za-z0-9_]+)/
+  ];
+  for (let index = 0; index < lines.length; index += 1) {
+    const declaration = declarations
+      .map((pattern) => pattern.exec(lines[index]))
+      .find((match) => match !== null);
+    if (declaration) {
+      scopes.push({
+        name: declaration[1],
+        start: index,
+        end: blockEnd(lines, index)
+      });
+    }
+  }
+  return scopes;
+}
+
+function envConstants(lines: readonly string[]): Set<string> {
+  const constants = new Set<string>();
+  for (const line of lines) {
+    const match = /\bconst\s+([A-Z][A-Z0-9_]*)\s*:\s*&str\s*=\s*"([^"]+)"/.exec(line);
+    if (match && DIAGNOSTIC_ENV_PATTERN.test(match[2])) {
+      constants.add(match[1]);
+    }
+  }
+  return constants;
+}
+
+function directDiagnosticEnvCheck(line: string, constants: Set<string>): boolean {
+  if (!/std::env::(?:var_os|var)\s*\(/.test(line)) {
+    return false;
+  }
+  if (DIAGNOSTIC_ENV_PATTERN.test(line)) {
+    return true;
+  }
+  return [...constants].some((constant) => new RegExp(`\\b${constant}\\b`).test(line));
+}
+
+function namesWithDirectEnvChecks(
+  lines: readonly string[],
+  scopes: readonly SourceScope[],
+  constants: Set<string>
+): Set<string> {
+  return new Set(
+    scopes
+      .filter((scope) =>
+        lines
+          .slice(scope.start, scope.end + 1)
+          .some((line) => directDiagnosticEnvCheck(line, constants))
+      )
+      .map((scope) => scope.name)
+  );
+}
+
+function structuredDiagnosticHelpers(
+  lines: readonly string[],
+  scopes: readonly SourceScope[]
+): Set<string> {
+  return new Set(
+    scopes
+      .filter((scope) =>
+        lines
+          .slice(scope.start, scope.end + 1)
+          .some((line) => /(?:koushi_diagnostics::)?record\s*\(/.test(line))
+      )
+      .map((scope) => scope.name)
+  );
+}
+
+function stderrHelpers(lines: readonly string[], scopes: readonly SourceScope[]): Set<string> {
+  return new Set(
+    scopes
+      .filter((scope) =>
+        lines.slice(scope.start, scope.end + 1).some((line) => /\beprintln!\s*\(/.test(line))
+      )
+      .map((scope) => scope.name)
+  );
+}
+
+function diagnosticGateLine(
+  line: string,
+  constants: Set<string>,
+  envHelpers: Set<string>,
+  localAliases: Set<string>
+): boolean {
+  if (!/\bif\b/.test(line)) {
+    return false;
+  }
+  if (directDiagnosticEnvCheck(line, constants)) {
+    return true;
+  }
+  if ([...envHelpers].some((name) => new RegExp(`\\b${name}\\s*\\(`).test(line))) {
+    return true;
+  }
+  return [...localAliases].some((name) => new RegExp(`\\b${name}\\b`).test(line));
+}
+
+function hasStructuredCollection(
+  lines: readonly string[],
+  start: number,
+  end: number,
+  helpers: Set<string>,
+  currentScopeName: string
+): boolean {
+  const text = lines.slice(start, end + 1).join("\n");
+  if (/(?:koushi_diagnostics::)?record\s*\(/.test(text)) {
+    return true;
+  }
+  return [...helpers]
+    .filter((name) => name !== currentScopeName)
+    .some((name) => new RegExp(`\\b${name}\\s*\\(`).test(text));
+}
+
+function hasDiagnosticSideEffect(
+  lines: readonly string[],
+  start: number,
+  end: number,
+  stderr: Set<string>
+): boolean {
+  const text = lines.slice(start, end + 1).join("\n");
+  if (/\beprintln!\s*\(/.test(text)) {
+    return true;
+  }
+  return [...stderr].some((name) => new RegExp(`\\b${name}\\s*\\(`).test(text));
+}
+
+function scanDiagnosticSources(sources: readonly DiagnosticSource[]): DiagnosticGateFinding[] {
+  const findings: DiagnosticGateFinding[] = [];
+  for (const { relativePath, source } of sources) {
+    const lines = productionRustLines(source);
+    const scopes = sourceScopes(lines);
+    const constants = envConstants(lines);
+    const envHelpers = namesWithDirectEnvChecks(lines, scopes, constants);
+    const structuredHelpers = structuredDiagnosticHelpers(lines, scopes);
+    const stderr = stderrHelpers(lines, scopes);
+
+    for (const scope of scopes) {
+      const scopeLines = lines.slice(scope.start, scope.end + 1);
+      const localAliases = new Set<string>();
+      for (const line of scopeLines) {
+        const alias = /\blet\s+(\w+)\s*=\s*([^;]+)/.exec(line);
+        if (
+          alias &&
+          (directDiagnosticEnvCheck(alias[2], constants) ||
+            [...envHelpers].some((name) => new RegExp(`\\b${name}\\s*\\(`).test(alias[2])))
+        ) {
+          localAliases.add(alias[1]);
+        }
+      }
+
+      for (let offset = 0; offset < scopeLines.length; offset += 1) {
+        const line = scopeLines[offset];
+        if (!diagnosticGateLine(line, constants, envHelpers, localAliases)) {
+          continue;
+        }
+        const lineIndex = scope.start + offset;
+        const end = Math.min(blockEnd(lines, lineIndex), scope.end);
+        if (!hasDiagnosticSideEffect(lines, lineIndex, end, stderr)) {
+          continue;
+        }
+        if (
+          !hasStructuredCollection(lines, scope.start, lineIndex - 1, structuredHelpers, scope.name)
+        ) {
+          findings.push({
+            relativePath,
+            line: lineIndex + 1,
+            location: `${relativePath}:${lineIndex + 1}`,
+            reason: "env-gated stderr diagnostic has no structured collection before the gate"
+          });
+        }
+      }
+    }
+  }
+  return findings;
+}
+
 describe("desktop release scripts", () => {
+  test("always-on diagnostic collection rejects trace-only producers and accepts stderr mirrors", () => {
+    const badFixture = `
+fn gated_only() {
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "gated"));
+    eprintln!("synthetic stderr mirror");
+  }
+}
+`;
+    const goodFixture = `
+fn collected_first() {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "collected"));
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    eprintln!("synthetic stderr mirror");
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  fn test_only_environment_probe() {
+    if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+      eprintln!("test-only");
+    }
+  }
+}
+`;
+    const helperAndAliasFixture = `
+const SYNTHETIC_TRACE_ENV: &str = "KOUSHI_SYNTH_TRACE";
+
+fn stderr_enabled() -> bool {
+  std::env::var_os(SYNTHETIC_TRACE_ENV).is_some()
+}
+
+fn helper_gated_only() {
+  if stderr_enabled() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "helper"));
+    eprintln!("synthetic helper stderr mirror");
+  }
+}
+
+fn boolean_alias_gated_only() {
+  let trace = std::env::var_os("KOUSHI_SYNTH_TRACE").is_some();
+  if trace {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "alias"));
+    eprintln!("synthetic alias stderr mirror");
+  }
+}
+`;
+
+    const badFindings = scanDiagnosticSources([
+      { relativePath: "fixtures/bad.rs", source: badFixture }
+    ]);
+    expect(badFindings).toHaveLength(1);
+    expect(badFindings[0]).toMatchObject({
+      relativePath: "fixtures/bad.rs",
+      line: 3,
+      location: "fixtures/bad.rs:3"
+    });
+    expect(badFindings[0].reason).toContain("structured collection");
+
+    const helperAndAliasFindings = scanDiagnosticSources([
+      {
+        relativePath: "fixtures/helper-and-alias.rs",
+        source: helperAndAliasFixture
+      }
+    ]);
+    expect(helperAndAliasFindings).toHaveLength(2);
+    expect(
+      helperAndAliasFindings.every((finding) => finding.relativePath.includes("fixtures/"))
+    ).toBe(true);
+    expect(helperAndAliasFindings.every((finding) => finding.line > 0)).toBe(true);
+    expect(helperAndAliasFindings.every((finding) => finding.location.includes(":"))).toBe(true);
+    expect(
+      helperAndAliasFindings.every(
+        (finding) =>
+          finding.reason ===
+          "env-gated stderr diagnostic has no structured collection before the gate"
+      )
+    ).toBe(true);
+
+    expect(
+      scanDiagnosticSources([{ relativePath: "fixtures/good.rs", source: goodFixture }])
+    ).toEqual([]);
+
+    const runtimeFindings = scanDiagnosticSources(runtimeRustSources());
+    expect(runtimeFindings).toEqual([]);
+  });
+
   test("tracked text artifacts contain no previous branding residue", () => {
     const oldLatinBrand = "Ru" + "ri";
     const oldLowerBrand = oldLatinBrand.toLowerCase();
