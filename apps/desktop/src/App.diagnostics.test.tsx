@@ -109,9 +109,12 @@ describe("App diagnostics lifecycle", () => {
 
     await act(async () => {
       tauriEventListeners.get("koushi-desktop://state")?.({ payload: "stateChanged" });
-      await new Promise((resolve) => window.setTimeout(resolve, 300));
     });
-    expect(getSnapshot).toHaveBeenCalledTimes(2);
+    await waitFor(() => {
+      expect(getSnapshot).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+    expect(screen.getByRole("button", { name: "Open diagnostics" })).toBeTruthy();
 
     const dialog = await openDiagnostics();
     expect(dialog.textContent).toContain("snapshot schema_mismatch");
