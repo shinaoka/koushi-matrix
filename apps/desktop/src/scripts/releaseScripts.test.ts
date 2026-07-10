@@ -1396,17 +1396,31 @@ function scanDiagnosticSources(sources: readonly DiagnosticSource[]): Diagnostic
 function runtimeDiagnosticStderrFindings(
   sources: DiagnosticSource[]
 ): DiagnosticGateFinding[] {
-  return sources.flatMap(({ relativePath, source }) =>
-    productionRustLines(source).flatMap((line, index) => {
-      const reason = /\beprintln!\s*\(/.test(line)
+  return sources.flatMap(({ relativePath, source }) => {
+    const rawLines = productionRustLines(source);
+    const codeLines = lexicalRustView(rawLines.join("\n")).code.split("\n");
+    return rawLines.flatMap((rawLine, index) => {
+      const codeLine = codeLines[index];
+      const reason = /\beprintln!\s*\(/.test(codeLine)
         ? "runtime diagnostic writes to stderr"
-        : REMOVED_DIAGNOSTIC_ENV_LITERALS.some((literal) => line.includes(literal))
+        : removedDiagnosticEnvironmentLiteralInSyntax(codeLine, rawLine)
           ? "runtime diagnostic environment gate remains"
           : null;
       return reason
         ? [{ relativePath, line: index + 1, location: `${relativePath}:${index + 1}`, reason }]
         : [];
-    })
+    });
+  });
+}
+
+function removedDiagnosticEnvironmentLiteralInSyntax(codeLine: string, rawLine: string): boolean {
+  const includesRemovedLiteral = lexicalRustView(rawLine).stringValues.some((value) =>
+    REMOVED_DIAGNOSTIC_ENV_LITERALS.includes(value)
+  );
+  return (
+    includesRemovedLiteral &&
+    (/\bconst\s+[A-Z][A-Z0-9_]*\s*:\s*&str\s*=/.test(codeLine) ||
+      /\bstd::env::(?:var_os|var)\s*\(/.test(codeLine))
   );
 }
 
@@ -2519,6 +2533,45 @@ fn production_after_tests() {
 
   test("application runtime has no diagnostic stderr mirror or trace environment gate", () => {
     expect(runtimeDiagnosticStderrFindings(runtimeRustSources())).toEqual([]);
+  });
+
+  test("runtime stderr scanner ignores comments and strings but catches real syntax", () => {
+    const fixture = `// eprintln!("comment")
+const PRINTED = "eprintln!(not a macro)";
+const LITERAL = "KOUSHI_SYNC_TRACE";
+const TRACE: &str = "KOUSHI_SYNC_TRACE";
+fn warning() { eprintln!("real"); }
+fn gate() {
+  if std::env::var_os("KOUSHI_SEARCH_TRACE").is_some() {}
+}
+#[cfg(test)]
+fn test_only() {
+  eprintln!("test only");
+  let literal = "KOUSHI_UNREAD_TRACE";
+}`;
+
+    expect(
+      runtimeDiagnosticStderrFindings([{ relativePath: "fixtures/runtime-stderr.rs", source: fixture }])
+    ).toEqual([
+      {
+        relativePath: "fixtures/runtime-stderr.rs",
+        line: 4,
+        location: "fixtures/runtime-stderr.rs:4",
+        reason: "runtime diagnostic environment gate remains"
+      },
+      {
+        relativePath: "fixtures/runtime-stderr.rs",
+        line: 5,
+        location: "fixtures/runtime-stderr.rs:5",
+        reason: "runtime diagnostic writes to stderr"
+      },
+      {
+        relativePath: "fixtures/runtime-stderr.rs",
+        line: 7,
+        location: "fixtures/runtime-stderr.rs:7",
+        reason: "runtime diagnostic environment gate remains"
+      }
+    ]);
   });
 
   test("tracked text artifacts contain no previous branding residue", () => {
