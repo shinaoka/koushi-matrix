@@ -4,12 +4,63 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
 use koushi_state::RoomSummary;
 
 const ENV_VAR: &str = "KOUSHI_UNREAD_TRACE";
 
 pub(crate) fn enabled() -> bool {
     std::env::var_os(ENV_VAR).is_some()
+}
+
+fn unread_diagnostic_token(value: &str) -> &'static str {
+    match value {
+        "room_list_snapshot" => "room_list_snapshot",
+        "room_list_applied" => "room_list_applied",
+        "activity_recent_event" => "activity_recent_event",
+        "activity_placeholder" => "activity_placeholder",
+        "mark_read_success" => "mark_read_success",
+        "unread" => "unread",
+        "plain_unread_only" => "plain_unread_only",
+        _ => "other",
+    }
+}
+
+fn record_room_metrics(
+    stage: &str,
+    room: &RoomSummary,
+    emitted: Option<bool>,
+    reason: Option<&str>,
+) {
+    let mut event = DiagnosticEvent::new(
+        DiagnosticLevel::Debug,
+        "core.unread",
+        unread_diagnostic_token(stage),
+    )
+    .field(DiagnosticField::count("unread", room.unread_count))
+    .field(DiagnosticField::count(
+        "notifications",
+        room.notification_count,
+    ))
+    .field(DiagnosticField::count("highlights", room.highlight_count))
+    .field(DiagnosticField::boolean(
+        "marked_unread",
+        room.marked_unread,
+    ))
+    .field(DiagnosticField::boolean(
+        "latest_event_present",
+        room.latest_event.is_some(),
+    ));
+    if let Some(emitted) = emitted {
+        event = event.field(DiagnosticField::boolean("emitted", emitted));
+    }
+    if let Some(reason) = reason {
+        event = event.field(DiagnosticField::token(
+            "reason",
+            unread_diagnostic_token(reason),
+        ));
+    }
+    koushi_diagnostics::record(event);
 }
 
 fn id_token(value: &str) -> String {
@@ -54,6 +105,9 @@ fn room_has_unread_metrics(room: &RoomSummary) -> bool {
 }
 
 pub(crate) fn trace_room_list_snapshot(rooms: &[RoomSummary]) {
+    for room in rooms.iter().filter(|room| room_has_unread_metrics(room)) {
+        record_room_metrics("room_list_snapshot", room, None, None);
+    }
     if !enabled() {
         return;
     }
@@ -81,11 +135,20 @@ fn room_list_applied_lines(
 }
 
 pub(crate) fn trace_room_list_applied(raw_rooms: &[RoomSummary], applied_rooms: &[RoomSummary]) {
-    if !enabled() {
-        return;
+    let raw_unread_room_ids = raw_rooms
+        .iter()
+        .filter(|room| room_has_unread_metrics(room))
+        .map(|room| room.room_id.as_str())
+        .collect::<BTreeSet<_>>();
+    for room in applied_rooms.iter().filter(|room| {
+        raw_unread_room_ids.contains(room.room_id.as_str()) || room_has_unread_metrics(room)
+    }) {
+        record_room_metrics("room_list_applied", room, None, None);
     }
-    for line in room_list_applied_lines(raw_rooms, applied_rooms) {
-        eprintln!("{line}");
+    if enabled() {
+        for line in room_list_applied_lines(raw_rooms, applied_rooms) {
+            eprintln!("{line}");
+        }
     }
 }
 
@@ -120,12 +183,13 @@ fn dedupe_activity_trace_line(seen: &mut BTreeSet<String>, line: String) -> Opti
 }
 
 pub(crate) fn trace_activity_room(stage: &str, room: &RoomSummary, emitted: bool, reason: &str) {
-    if !enabled() {
-        return;
-    }
     let Some(line) = activity_room_line(stage, room, emitted, reason) else {
         return;
     };
+    record_room_metrics(stage, room, Some(emitted), Some(reason));
+    if !enabled() {
+        return;
+    }
     let Ok(mut seen) = activity_trace_seen_lines().lock() else {
         eprintln!("{line}");
         return;
@@ -145,6 +209,22 @@ fn mark_read_line(stage: &str, request_id: u64, room_id: &str, event_id: Option<
 }
 
 pub(crate) fn trace_mark_read(stage: &str, request_id: u64, room_id: &str, event_id: Option<&str>) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.unread",
+            unread_diagnostic_token(stage),
+        )
+        .field(DiagnosticField::count("request_id", request_id))
+        .field(DiagnosticField::boolean(
+            "room_present",
+            !room_id.trim().is_empty(),
+        ))
+        .field(DiagnosticField::boolean(
+            "event_present",
+            event_id.is_some_and(|event_id| !event_id.trim().is_empty()),
+        )),
+    );
     if enabled() {
         eprintln!("{}", mark_read_line(stage, request_id, room_id, event_id));
     }
@@ -263,5 +343,51 @@ mod tests {
             dedupe_activity_trace_line(&mut seen, different_reason.clone()).as_deref(),
             Some(different_reason.as_str())
         );
+    }
+
+    #[test]
+    fn unread_helpers_collect_typed_records_without_trace_env() {
+        let room = private_room();
+        trace_room_list_snapshot(std::slice::from_ref(&room));
+        trace_room_list_applied(std::slice::from_ref(&room), std::slice::from_ref(&room));
+        trace_activity_room("activity_recent_event", &room, true, "unread");
+        trace_mark_read(
+            "mark_read_success",
+            77,
+            "!private-room:example.invalid",
+            Some("$private-event:example.invalid"),
+        );
+
+        let records = koushi_diagnostics::snapshot().records;
+        for stage in [
+            "room_list_snapshot",
+            "room_list_applied",
+            "activity_recent_event",
+            "mark_read_success",
+        ] {
+            let event = records
+                .iter()
+                .find(|record| record.event.source == "core.unread" && record.event.stage == stage)
+                .expect("typed unread diagnostic");
+            assert!(
+                event
+                    .event
+                    .fields
+                    .iter()
+                    .any(|field| matches!(field.key, "unread" | "request_id"))
+            );
+            let serialized = serde_json::to_string(&event.event).expect("serialize diagnostic");
+            for private_value in [
+                "!private-room:example.invalid",
+                "$private-event:example.invalid",
+                "@private-sender:example.invalid",
+                "private body",
+            ] {
+                assert!(
+                    !serialized.contains(private_value),
+                    "leaked {private_value}"
+                );
+            }
+        }
     }
 }

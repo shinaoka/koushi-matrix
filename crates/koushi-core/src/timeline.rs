@@ -51,8 +51,9 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
 use koushi_sdk::MatrixClientSession;
 use koushi_search::{AttachmentDocument, SensitiveString};
 use koushi_state::{
@@ -670,6 +671,7 @@ impl TimelineManagerActor {
                 event_id,
                 reaction_key,
             } => {
+                trace_timeline_route("manager_received", "send_reaction", request_id, &key);
                 self.route_to_actor_or_fail(
                     request_id,
                     &key,
@@ -688,6 +690,7 @@ impl TimelineManagerActor {
                 reaction_key,
                 reaction_event_id,
             } => {
+                trace_timeline_route("manager_received", "redact_reaction", request_id, &key);
                 self.route_to_actor_or_fail(
                     request_id,
                     &key,
@@ -705,6 +708,7 @@ impl TimelineManagerActor {
                 key,
                 event_id,
             } => {
+                trace_timeline_route("manager_received", "send_read_receipt", request_id, &key);
                 self.route_to_actor_or_fail(
                     request_id,
                     &key,
@@ -720,6 +724,7 @@ impl TimelineManagerActor {
                 key,
                 event_id,
             } => {
+                trace_timeline_route("manager_received", "set_fully_read", request_id, &key);
                 self.route_to_actor_or_fail(
                     request_id,
                     &key,
@@ -998,7 +1003,7 @@ impl TimelineManagerActor {
         };
 
         trace("build_begin");
-        let build_started = startup_trace::now_if_enabled();
+        let build_started = Some(startup_trace::now());
         let timeline_result = koushi_timeline_builder(&room, focus).build().await;
         startup_trace::trace_phase(StartupPhase::TimelineBuild, build_started);
         trace("build_done");
@@ -1556,6 +1561,153 @@ fn timeline_key_trace_kind(key: &TimelineKey) -> &'static str {
     }
 }
 
+fn timeline_diagnostic_token(value: &str) -> &'static str {
+    match value {
+        "actor_start" => "actor_start",
+        "actor_finish" => "actor_finish",
+        "sdk_done" => "sdk_done",
+        "target_scan" => "target_scan",
+        "manager_received" => "manager_received",
+        "sdk_finish" => "sdk_finish",
+        "gate_acquired" => "gate_acquired",
+        "start" => "start",
+        "complete" => "complete",
+        "lookup_miss" => "lookup_miss",
+        "no_previews" => "no_previews",
+        "cache_diff" => "cache_diff",
+        "initial" => "initial",
+        "cache_initial" => "cache_initial",
+        "cache_update" => "cache_update",
+        "diff_batch" => "diff_batch",
+        "replay_initial" => "replay_initial",
+        "send_queue_lagged_initial" => "send_queue_lagged_initial",
+        "overflow_initial" => "overflow_initial",
+        "pending" => "pending",
+        "success" => "success",
+        "invalid_target" => "invalid_target",
+        "target_missing" => "target_missing",
+        "invalid_state" => "invalid_state",
+        "sent" => "sent",
+        "sdk_error" => "sdk_error",
+        "cancelled" => "cancelled",
+        "loaded" => "loaded",
+        "missing" => "missing",
+        "ready" => "ready",
+        "failed" => "failed",
+        _ => match value {
+            "send_reaction" => "send_reaction",
+            "redact_reaction" => "redact_reaction",
+            "send_read_receipt" => "send_read_receipt",
+            "set_fully_read" => "set_fully_read",
+            "paginate" => "paginate",
+            "link_preview" => "link_preview",
+            "push_front" => "push_front",
+            "push_back" => "push_back",
+            "insert" => "insert",
+            "set" => "set",
+            "append" => "append",
+            "append_item" => "append_item",
+            "reset" => "reset",
+            "reset_item" => "reset_item",
+            "remove" => "remove",
+            "truncate" => "truncate",
+            "clear" => "clear",
+            "pop_front" => "pop_front",
+            "pop_back" => "pop_back",
+            "item" => "item",
+            _ => "other",
+        },
+    }
+}
+
+fn record_timeline_event(stage: &str, kind: &str, fields: Vec<DiagnosticField>) {
+    let mut event = DiagnosticEvent::new(
+        DiagnosticLevel::Debug,
+        "core.timeline",
+        timeline_diagnostic_token(stage),
+    )
+    .field(DiagnosticField::token(
+        "kind",
+        timeline_diagnostic_token(kind),
+    ));
+    for field in fields {
+        event = event.field(field);
+    }
+    koushi_diagnostics::record(event);
+}
+
+fn trace_timeline_actor_operation(
+    stage: &str,
+    kind: &str,
+    request_id: RequestId,
+    key: &TimelineKey,
+    elapsed_ms: Option<u128>,
+    outcome: Option<&str>,
+) {
+    record_timeline_event(
+        stage,
+        kind,
+        vec![
+            DiagnosticField::token("timeline", timeline_key_trace_kind(key)),
+            DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence,
+            ),
+            DiagnosticField::milliseconds("duration", elapsed_ms.unwrap_or(0)),
+            DiagnosticField::token(
+                "outcome",
+                outcome.map(timeline_diagnostic_token).unwrap_or("pending"),
+            ),
+        ],
+    );
+    if timeline_trace_enabled() {
+        eprintln!(
+            "koushi.timeline stage={stage} kind={kind} timeline={} request_id={}/{} elapsed_ms={} outcome={}",
+            timeline_key_trace_kind(key),
+            request_id.connection_id.0,
+            request_id.sequence,
+            elapsed_ms.unwrap_or(0),
+            outcome.unwrap_or("pending")
+        );
+    }
+}
+
+fn trace_timeline_actor_scan(
+    stage: &str,
+    kind: &str,
+    request_id: RequestId,
+    key: &TimelineKey,
+    item_count: usize,
+    elapsed_ms: u128,
+    found: bool,
+) {
+    record_timeline_event(
+        stage,
+        kind,
+        vec![
+            DiagnosticField::token("timeline", timeline_key_trace_kind(key)),
+            DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence,
+            ),
+            DiagnosticField::count("count", item_count as u64),
+            DiagnosticField::milliseconds("duration", elapsed_ms),
+            DiagnosticField::boolean("found", found),
+        ],
+    );
+    if timeline_trace_enabled() {
+        eprintln!(
+            "koushi.timeline stage={stage} kind={kind} timeline={} request_id={}/{} items={} elapsed_ms={elapsed_ms} found={found}",
+            timeline_key_trace_kind(key),
+            request_id.connection_id.0,
+            request_id.sequence,
+            item_count
+        );
+    }
+}
+
 fn timeline_item_trace_enabled() -> bool {
     std::env::var_os("KOUSHI_TIMELINE_ITEM_TRACE").is_some()
 }
@@ -1638,11 +1790,85 @@ fn timeline_item_trace_line(
     )
 }
 
+fn record_timeline_item(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    item: &TimelineItem,
+) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.timeline_item",
+            timeline_diagnostic_token(stage),
+        )
+        .field(DiagnosticField::token(
+            "kind",
+            timeline_diagnostic_token(op),
+        ))
+        .field(DiagnosticField::token(
+            "timeline",
+            timeline_key_trace_kind(key),
+        ))
+        .field(DiagnosticField::count("count", 1))
+        .field(DiagnosticField::count("index", index.unwrap_or(0) as u64))
+        .field(DiagnosticField::boolean("index_present", index.is_some()))
+        .field(DiagnosticField::boolean(
+            "timestamp_present",
+            item.timestamp_ms.is_some(),
+        ))
+        .field(DiagnosticField::boolean("hidden", item.is_hidden))
+        .field(DiagnosticField::boolean(
+            "thread_root_present",
+            item.thread_root.is_some(),
+        ))
+        .field(DiagnosticField::boolean(
+            "reply_present",
+            item.in_reply_to_event_id.is_some(),
+        ))
+        .field(DiagnosticField::boolean(
+            "body_present",
+            item.body.is_some(),
+        ))
+        .field(DiagnosticField::boolean(
+            "formatted_present",
+            item.formatted.is_some(),
+        ))
+        .field(DiagnosticField::boolean(
+            "media_present",
+            item.media.is_some(),
+        ))
+        .field(DiagnosticField::boolean("redacted", item.is_redacted))
+        .field(DiagnosticField::boolean(
+            "unable_to_decrypt",
+            item.unable_to_decrypt.is_some(),
+        )),
+    );
+}
+
 fn trace_timeline_items(stage: &str, key: &TimelineKey, items: &[TimelineItem]) {
+    let hidden = items.iter().filter(|item| item.is_hidden).count();
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.timeline_item",
+            timeline_diagnostic_token(stage),
+        )
+        .field(DiagnosticField::token("kind", "batch"))
+        .field(DiagnosticField::token(
+            "timeline",
+            timeline_key_trace_kind(key),
+        ))
+        .field(DiagnosticField::count("count", items.len() as u64))
+        .field(DiagnosticField::count("hidden", hidden as u64)),
+    );
+    for (index, item) in items.iter().enumerate() {
+        record_timeline_item(stage, key, "item", Some(index), item);
+    }
     if !timeline_item_trace_enabled() {
         return;
     }
-    let hidden = items.iter().filter(|item| item.is_hidden).count();
     eprintln!(
         "koushi.timeline_items stage={stage} timeline={} count={} visible={} hidden={}",
         timeline_key_trace_kind(key),
@@ -1658,6 +1884,33 @@ fn trace_timeline_items(stage: &str, key: &TimelineKey, items: &[TimelineItem]) 
     }
 }
 
+fn record_timeline_diff_without_item(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    length: Option<usize>,
+) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.timeline_item",
+            timeline_diagnostic_token(stage),
+        )
+        .field(DiagnosticField::token(
+            "kind",
+            timeline_diagnostic_token(op),
+        ))
+        .field(DiagnosticField::token(
+            "timeline",
+            timeline_key_trace_kind(key),
+        ))
+        .field(DiagnosticField::count("count", length.unwrap_or(0) as u64))
+        .field(DiagnosticField::count("index", index.unwrap_or(0) as u64))
+        .field(DiagnosticField::boolean("index_present", index.is_some())),
+    );
+}
+
 fn trace_timeline_diff_without_item(
     stage: &str,
     key: &TimelineKey,
@@ -1665,6 +1918,7 @@ fn trace_timeline_diff_without_item(
     index: Option<usize>,
     length: Option<usize>,
 ) {
+    record_timeline_diff_without_item(stage, key, op, index, length);
     eprintln!(
         "koushi.timeline_diff stage={stage} timeline={} op={op} index={} length={}",
         timeline_key_trace_kind(key),
@@ -1674,6 +1928,50 @@ fn trace_timeline_diff_without_item(
 }
 
 fn trace_timeline_diffs(stage: &str, key: &TimelineKey, diffs: &[TimelineDiff]) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.timeline_item",
+            timeline_diagnostic_token(stage),
+        )
+        .field(DiagnosticField::token("kind", "batch"))
+        .field(DiagnosticField::token(
+            "timeline",
+            timeline_key_trace_kind(key),
+        ))
+        .field(DiagnosticField::count("count", diffs.len() as u64)),
+    );
+    for diff in diffs {
+        match diff {
+            TimelineDiff::PushFront { item } => {
+                record_timeline_item(stage, key, "push_front", Some(0), item)
+            }
+            TimelineDiff::PushBack { item } => {
+                record_timeline_item(stage, key, "push_back", None, item)
+            }
+            TimelineDiff::Insert { index, item } => {
+                record_timeline_item(stage, key, "insert", Some(*index), item)
+            }
+            TimelineDiff::Set { index, item } => {
+                record_timeline_item(stage, key, "set", Some(*index), item)
+            }
+            TimelineDiff::Remove { index } => {
+                record_timeline_diff_without_item(stage, key, "remove", Some(*index), None)
+            }
+            TimelineDiff::Truncate { length } => {
+                record_timeline_diff_without_item(stage, key, "truncate", None, Some(*length))
+            }
+            TimelineDiff::Clear => {
+                record_timeline_diff_without_item(stage, key, "clear", None, None)
+            }
+            TimelineDiff::Reset { items } => {
+                record_timeline_diff_without_item(stage, key, "reset", None, Some(items.len()));
+                for (index, item) in items.iter().enumerate() {
+                    record_timeline_item(stage, key, "reset_item", Some(index), item);
+                }
+            }
+        }
+    }
     if !timeline_item_trace_enabled() {
         return;
     }
@@ -1918,11 +2216,76 @@ fn event_cache_trace_line(
     )
 }
 
+fn event_cache_relation_kind(event: &matrix_sdk_base::event_cache::Event) -> &'static str {
+    let content = event
+        .raw()
+        .get_field::<serde_json::Value>("content")
+        .ok()
+        .flatten();
+    let rel_type = content
+        .as_ref()
+        .and_then(|content| content.get("m.relates_to"))
+        .and_then(|relates_to| relates_to.get("rel_type"))
+        .and_then(serde_json::Value::as_str);
+    relation_type_trace_token(rel_type)
+}
+
+fn record_event_cache_item(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    item: &matrix_sdk_base::event_cache::Event,
+) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.event_cache",
+            timeline_diagnostic_token(stage),
+        )
+        .field(DiagnosticField::token(
+            "kind",
+            timeline_diagnostic_token(op),
+        ))
+        .field(DiagnosticField::token(
+            "timeline",
+            timeline_key_trace_kind(key),
+        ))
+        .field(DiagnosticField::count("count", 1))
+        .field(DiagnosticField::count("index", index.unwrap_or(0) as u64))
+        .field(DiagnosticField::boolean("index_present", index.is_some()))
+        .field(DiagnosticField::boolean(
+            "timestamp_present",
+            item.timestamp().is_some(),
+        ))
+        .field(DiagnosticField::token(
+            "relation",
+            event_cache_relation_kind(item),
+        )),
+    );
+}
+
 fn trace_event_cache_items(
     stage: &str,
     key: &TimelineKey,
     items: &[matrix_sdk_base::event_cache::Event],
 ) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.event_cache",
+            timeline_diagnostic_token(stage),
+        )
+        .field(DiagnosticField::token("kind", "batch"))
+        .field(DiagnosticField::token(
+            "timeline",
+            timeline_key_trace_kind(key),
+        ))
+        .field(DiagnosticField::count("count", items.len() as u64)),
+    );
+    for (index, item) in items.iter().enumerate() {
+        trace_event_cache_item(stage, key, "item", Some(index), item);
+    }
     if !timeline_item_trace_enabled() {
         return;
     }
@@ -1931,9 +2294,6 @@ fn trace_event_cache_items(
         timeline_key_trace_kind(key),
         items.len()
     );
-    for (index, item) in items.iter().enumerate() {
-        trace_event_cache_item(stage, key, "item", Some(index), item);
-    }
 }
 
 fn trace_event_cache_item(
@@ -1943,6 +2303,10 @@ fn trace_event_cache_item(
     index: Option<usize>,
     item: &matrix_sdk_base::event_cache::Event,
 ) {
+    record_event_cache_item(stage, key, op, index, item);
+    if !timeline_item_trace_enabled() {
+        return;
+    }
     let event_id = item.event_id().map(|event_id| event_id.to_string());
     let sender = item.sender().map(|sender| sender.to_string());
     let timestamp_ms = item.timestamp().map(|timestamp| timestamp.0.into());
@@ -1969,6 +2333,24 @@ fn trace_event_cache_diff_without_item(
     index: Option<usize>,
     length: Option<usize>,
 ) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.event_cache",
+            timeline_diagnostic_token(stage),
+        )
+        .field(DiagnosticField::token(
+            "kind",
+            timeline_diagnostic_token(op),
+        ))
+        .field(DiagnosticField::token(
+            "timeline",
+            timeline_key_trace_kind(key),
+        ))
+        .field(DiagnosticField::count("count", length.unwrap_or(0) as u64))
+        .field(DiagnosticField::count("index", index.unwrap_or(0) as u64))
+        .field(DiagnosticField::boolean("index_present", index.is_some())),
+    );
     eprintln!(
         "koushi.event_cache_diff stage={stage} timeline={} op={op} index={} length={}",
         timeline_key_trace_kind(key),
@@ -1991,6 +2373,23 @@ fn trace_event_cache_diffs(
     origin: &matrix_sdk::event_cache::EventsOrigin,
     diffs: &[eyeball_im::VectorDiff<matrix_sdk_base::event_cache::Event>],
 ) {
+    koushi_diagnostics::record(
+        DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.event_cache",
+            timeline_diagnostic_token(stage),
+        )
+        .field(DiagnosticField::token("kind", "batch"))
+        .field(DiagnosticField::token(
+            "timeline",
+            timeline_key_trace_kind(key),
+        ))
+        .field(DiagnosticField::token(
+            "origin",
+            event_cache_origin_trace_token(origin),
+        ))
+        .field(DiagnosticField::count("count", diffs.len() as u64)),
+    );
     if !timeline_item_trace_enabled() {
         return;
     }
@@ -2053,6 +2452,18 @@ fn pagination_direction_trace_token(direction: PaginationDirection) -> &'static 
 }
 
 fn trace_timeline_route(stage: &str, kind: &str, request_id: RequestId, key: &TimelineKey) {
+    record_timeline_event(
+        stage,
+        kind,
+        vec![
+            DiagnosticField::token("timeline", timeline_key_trace_kind(key)),
+            DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence,
+            ),
+        ],
+    );
     if timeline_trace_enabled() {
         eprintln!(
             "koushi.timeline stage={stage} kind={kind} timeline={} request_id={}/{}",
@@ -2073,6 +2484,26 @@ fn trace_timeline_paginate(
     gate_ms: Option<u128>,
     outcome: Option<&'static str>,
 ) {
+    record_timeline_event(
+        stage,
+        "paginate",
+        vec![
+            DiagnosticField::token("timeline", timeline_key_trace_kind(key)),
+            DiagnosticField::token("direction", pagination_direction_trace_token(direction)),
+            DiagnosticField::count("count", event_count as u64),
+            DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence,
+            ),
+            DiagnosticField::milliseconds("duration", elapsed_ms.unwrap_or(0)),
+            DiagnosticField::milliseconds("gate_wait", gate_ms.unwrap_or(0)),
+            DiagnosticField::token(
+                "outcome",
+                outcome.map(timeline_diagnostic_token).unwrap_or("pending"),
+            ),
+        ],
+    );
     if timeline_trace_enabled() {
         eprintln!(
             "koushi.timeline stage={stage} kind=paginate timeline={} direction={} event_count={} request_id={}/{} elapsed_ms={} gate_ms={} outcome={}",
@@ -2098,6 +2529,26 @@ fn trace_timeline_link_preview(
     elapsed_ms: Option<u128>,
     outcome: Option<&'static str>,
 ) {
+    record_timeline_event(
+        stage,
+        "link_preview",
+        vec![
+            DiagnosticField::token("timeline", timeline_key_trace_kind(key)),
+            DiagnosticField::count("pending", pending_count as u64),
+            DiagnosticField::count("ready", ready_count as u64),
+            DiagnosticField::count("failed", failed_count as u64),
+            DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence,
+            ),
+            DiagnosticField::milliseconds("duration", elapsed_ms.unwrap_or(0)),
+            DiagnosticField::token(
+                "outcome",
+                outcome.map(timeline_diagnostic_token).unwrap_or("pending"),
+            ),
+        ],
+    );
     if timeline_trace_enabled() {
         eprintln!(
             "koushi.timeline stage={stage} kind=link_preview timeline={} pending={} ready={} failed={} request_id={}/{} elapsed_ms={} outcome={}",
@@ -2368,18 +2819,15 @@ impl TimelineActor {
     ) -> TimelineActorHandle {
         let mut auxiliary_tasks: Vec<executor::JoinHandle<()>> = Vec::new();
 
-        // Env-gated event-cache observer. Subscribe the event cache BEFORE the
-        // timeline load so the initial load's provenance (store=cache vs
-        // network) is observed via the updates stream. Zero cost unless
-        // KOUSHI_STARTUP_TRACE or KOUSHI_TIMELINE_ITEM_TRACE is set.
-        let startup_origin_trace = startup_trace::enabled();
-        let event_cache_item_trace = timeline_item_trace_enabled();
-        if startup_origin_trace || event_cache_item_trace {
+        // Subscribe the event cache BEFORE the timeline load so the initial
+        // load's provenance (store=cache vs network) is observed. The helper
+        // decides whether to mirror the observation to stderr.
+        {
             if let Ok(parsed_room_id) = matrix_sdk::ruma::RoomId::parse(key.room_id()) {
                 if let Some(observer_room) = session.client().get_room(&parsed_room_id) {
                     if let Ok((cache, drop_guards)) = observer_room.event_cache().await {
                         if let Ok((initial, mut updates)) = cache.subscribe().await {
-                            if startup_origin_trace && !initial.is_empty() {
+                            if !initial.is_empty() {
                                 // Cache already had events at restore: warm initial state.
                                 startup_trace::trace_origin("cache");
                             }
@@ -2391,11 +2839,9 @@ impl TimelineActor {
                                 loop {
                                     match updates.recv().await {
                                         Ok(RoomEventCacheUpdate::UpdateTimelineEvents(diffs)) => {
-                                            if startup_origin_trace {
-                                                startup_trace::trace_origin(
-                                                    event_cache_origin_trace_token(&diffs.origin),
-                                                );
-                                            }
+                                            startup_trace::trace_origin(
+                                                event_cache_origin_trace_token(&diffs.origin),
+                                            );
                                             trace_event_cache_diffs(
                                                 "cache_update",
                                                 &trace_key,
@@ -2416,7 +2862,7 @@ impl TimelineActor {
         }
 
         // Subscribe to the SDK timeline to get initial items + diff stream.
-        let subscribe_started = startup_trace::now_if_enabled();
+        let subscribe_started = Some(startup_trace::now());
         let (mut initial_sdk_items, mut diff_stream) = timeline.subscribe().await;
         startup_trace::trace_phase_items(
             StartupPhase::TimelineSubscribe,
@@ -2424,8 +2870,7 @@ impl TimelineActor {
             initial_sdk_items.len(),
         );
         if should_hydrate_empty_initial_room_timeline(&key.kind, initial_sdk_items.len()) {
-            let gate_started = (startup_trace::enabled() || timeline_trace_enabled())
-                .then(std::time::Instant::now);
+            let gate_started = Some(std::time::Instant::now());
             let hydrate_result = {
                 let _permit = messages_backpressure.acquire_timeline().await;
                 let gate_wait = gate_started.map(|started| started.elapsed());
@@ -2439,8 +2884,8 @@ impl TimelineActor {
                     gate_wait.map(|duration| duration.as_millis()),
                     None,
                 );
-                let paginate_started = startup_trace::now_if_enabled();
-                let trace_started = timeline_trace_enabled().then(std::time::Instant::now);
+                let paginate_started = Some(startup_trace::now());
+                let trace_started = Some(std::time::Instant::now());
                 let outcome = timeline
                     .paginate_backwards(INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT)
                     .await;
@@ -2467,7 +2912,7 @@ impl TimelineActor {
                 outcome
             };
             if hydrate_result.is_ok() {
-                let resubscribe_started = startup_trace::now_if_enabled();
+                let resubscribe_started = Some(startup_trace::now());
                 let (hydrated_items, hydrated_stream) = timeline.subscribe().await;
                 startup_trace::trace_phase_items(
                     StartupPhase::TimelineSubscribe,
@@ -3013,8 +3458,7 @@ impl TimelineActor {
             state: PaginationState::Paginating,
         }));
 
-        let gate_started =
-            (startup_trace::enabled() || timeline_trace_enabled()).then(std::time::Instant::now);
+        let gate_started = Some(std::time::Instant::now());
         let result = {
             let _permit = messages_backpressure.acquire_timeline().await;
             let gate_wait = gate_started.map(|t| t.elapsed());
@@ -3029,8 +3473,8 @@ impl TimelineActor {
                 gate_ms,
                 None,
             );
-            let paginate_started = startup_trace::now_if_enabled();
-            let trace_started = timeline_trace_enabled().then(std::time::Instant::now);
+            let paginate_started = Some(startup_trace::now());
+            let trace_started = Some(std::time::Instant::now());
             let outcome = match direction {
                 PaginationDirection::Backward => timeline.paginate_backwards(event_count).await,
                 PaginationDirection::Forward => timeline.paginate_forwards(event_count).await,
@@ -4293,32 +4737,118 @@ impl TimelineActor {
         event_id: String,
         reaction_key: String,
     ) {
+        let started = Instant::now();
+        trace_timeline_actor_operation(
+            "actor_start",
+            "send_reaction",
+            request_id,
+            &self.key,
+            None,
+            None,
+        );
         if reaction_key.trim().is_empty() {
+            trace_timeline_actor_operation(
+                "actor_finish",
+                "send_reaction",
+                request_id,
+                &self.key,
+                Some(started.elapsed().as_millis()),
+                Some("invalid_target"),
+            );
             self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidReactionTarget);
             return;
         }
 
-        let Some(target) = self.reaction_target_state(&event_id, &reaction_key).await else {
+        let Some(target) = self
+            .reaction_target_state(request_id, "send_reaction", &event_id, &reaction_key)
+            .await
+        else {
+            trace_timeline_actor_operation(
+                "actor_finish",
+                "send_reaction",
+                request_id,
+                &self.key,
+                Some(started.elapsed().as_millis()),
+                Some("target_missing"),
+            );
             self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidReactionTarget);
             return;
         };
         if let Err(kind) =
             validate_send_reaction(target.can_react, target.my_reaction_event_id.as_deref())
         {
+            trace_timeline_actor_operation(
+                "actor_finish",
+                "send_reaction",
+                request_id,
+                &self.key,
+                Some(started.elapsed().as_millis()),
+                Some("invalid_state"),
+            );
             self.emit_timeline_failure(request_id, kind);
             return;
         }
 
+        let sdk_started = Instant::now();
         match self
             .timeline
             .toggle_reaction(&target.item_id, &reaction_key)
             .await
         {
-            Ok(true) => {}
+            Ok(true) => {
+                trace_timeline_actor_operation(
+                    "sdk_done",
+                    "send_reaction",
+                    request_id,
+                    &self.key,
+                    Some(sdk_started.elapsed().as_millis()),
+                    Some("sent"),
+                );
+                trace_timeline_actor_operation(
+                    "actor_finish",
+                    "send_reaction",
+                    request_id,
+                    &self.key,
+                    Some(started.elapsed().as_millis()),
+                    Some("success"),
+                );
+            }
             Ok(false) => {
+                trace_timeline_actor_operation(
+                    "sdk_done",
+                    "send_reaction",
+                    request_id,
+                    &self.key,
+                    Some(sdk_started.elapsed().as_millis()),
+                    Some("invalid_state"),
+                );
+                trace_timeline_actor_operation(
+                    "actor_finish",
+                    "send_reaction",
+                    request_id,
+                    &self.key,
+                    Some(started.elapsed().as_millis()),
+                    Some("invalid_state"),
+                );
                 self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidReactionState);
             }
             Err(error) => {
+                trace_timeline_actor_operation(
+                    "sdk_done",
+                    "send_reaction",
+                    request_id,
+                    &self.key,
+                    Some(sdk_started.elapsed().as_millis()),
+                    Some("sdk_error"),
+                );
+                trace_timeline_actor_operation(
+                    "actor_finish",
+                    "send_reaction",
+                    request_id,
+                    &self.key,
+                    Some(started.elapsed().as_millis()),
+                    Some("sdk_error"),
+                );
                 self.emit_timeline_failure(request_id, classify_reaction_error(&error));
             }
         }
@@ -4331,12 +4861,40 @@ impl TimelineActor {
         reaction_key: String,
         reaction_event_id: String,
     ) {
+        let started = Instant::now();
+        trace_timeline_actor_operation(
+            "actor_start",
+            "redact_reaction",
+            request_id,
+            &self.key,
+            None,
+            None,
+        );
         if reaction_key.trim().is_empty() || reaction_event_id.trim().is_empty() {
+            trace_timeline_actor_operation(
+                "actor_finish",
+                "redact_reaction",
+                request_id,
+                &self.key,
+                Some(started.elapsed().as_millis()),
+                Some("invalid_target"),
+            );
             self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidReactionTarget);
             return;
         }
 
-        let Some(target) = self.reaction_target_state(&event_id, &reaction_key).await else {
+        let Some(target) = self
+            .reaction_target_state(request_id, "redact_reaction", &event_id, &reaction_key)
+            .await
+        else {
+            trace_timeline_actor_operation(
+                "actor_finish",
+                "redact_reaction",
+                request_id,
+                &self.key,
+                Some(started.elapsed().as_millis()),
+                Some("target_missing"),
+            );
             self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidReactionTarget);
             return;
         };
@@ -4345,29 +4903,104 @@ impl TimelineActor {
             target.my_reaction_event_id.as_deref(),
             &reaction_event_id,
         ) {
+            trace_timeline_actor_operation(
+                "actor_finish",
+                "redact_reaction",
+                request_id,
+                &self.key,
+                Some(started.elapsed().as_millis()),
+                Some("invalid_state"),
+            );
             self.emit_timeline_failure(request_id, kind);
             return;
         }
 
+        let sdk_started = Instant::now();
         match self
             .timeline
             .toggle_reaction(&target.item_id, &reaction_key)
             .await
         {
-            Ok(false) => {}
+            Ok(false) => {
+                trace_timeline_actor_operation(
+                    "sdk_done",
+                    "redact_reaction",
+                    request_id,
+                    &self.key,
+                    Some(sdk_started.elapsed().as_millis()),
+                    Some("redacted"),
+                );
+                trace_timeline_actor_operation(
+                    "actor_finish",
+                    "redact_reaction",
+                    request_id,
+                    &self.key,
+                    Some(started.elapsed().as_millis()),
+                    Some("success"),
+                );
+            }
             Ok(true) => {
+                trace_timeline_actor_operation(
+                    "sdk_done",
+                    "redact_reaction",
+                    request_id,
+                    &self.key,
+                    Some(sdk_started.elapsed().as_millis()),
+                    Some("invalid_state"),
+                );
+                trace_timeline_actor_operation(
+                    "actor_finish",
+                    "redact_reaction",
+                    request_id,
+                    &self.key,
+                    Some(started.elapsed().as_millis()),
+                    Some("invalid_state"),
+                );
                 self.emit_timeline_failure(request_id, TimelineFailureKind::InvalidReactionState);
             }
             Err(error) => {
+                trace_timeline_actor_operation(
+                    "sdk_done",
+                    "redact_reaction",
+                    request_id,
+                    &self.key,
+                    Some(sdk_started.elapsed().as_millis()),
+                    Some("sdk_error"),
+                );
+                trace_timeline_actor_operation(
+                    "actor_finish",
+                    "redact_reaction",
+                    request_id,
+                    &self.key,
+                    Some(started.elapsed().as_millis()),
+                    Some("sdk_error"),
+                );
                 self.emit_timeline_failure(request_id, classify_reaction_error(&error));
             }
         }
     }
 
     async fn handle_send_read_receipt(&mut self, request_id: RequestId, event_id: String) {
+        let started = Instant::now();
+        trace_timeline_actor_operation(
+            "actor_start",
+            "send_read_receipt",
+            request_id,
+            &self.key,
+            None,
+            None,
+        );
         let parsed_event_id = match matrix_sdk::ruma::EventId::parse(event_id.as_str()) {
             Ok(event_id) => event_id,
             Err(_) => {
+                trace_timeline_actor_operation(
+                    "actor_finish",
+                    "send_read_receipt",
+                    request_id,
+                    &self.key,
+                    Some(started.elapsed().as_millis()),
+                    Some("invalid_event"),
+                );
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -4384,6 +5017,14 @@ impl TimelineActor {
                     match matrix_sdk::ruma::EventId::parse(root_event_id.as_str()) {
                         Ok(event_id) => event_id,
                         Err(_) => {
+                            trace_timeline_actor_operation(
+                                "actor_finish",
+                                "send_read_receipt",
+                                request_id,
+                                &self.key,
+                                Some(started.elapsed().as_millis()),
+                                Some("invalid_thread_root"),
+                            );
                             self.emit_failure(
                                 request_id,
                                 CoreFailure::TimelineOperationFailed {
@@ -4410,6 +5051,14 @@ impl TimelineActor {
 
         match result {
             Ok(_) => {
+                trace_timeline_actor_operation(
+                    "actor_finish",
+                    "send_read_receipt",
+                    request_id,
+                    &self.key,
+                    Some(started.elapsed().as_millis()),
+                    Some("success"),
+                );
                 self.emit(CoreEvent::LiveSignals(LiveSignalsEvent::ReadReceiptSent {
                     request_id,
                     key: self.key.clone(),
@@ -4417,6 +5066,14 @@ impl TimelineActor {
                 }));
             }
             Err(_) => {
+                trace_timeline_actor_operation(
+                    "actor_finish",
+                    "send_read_receipt",
+                    request_id,
+                    &self.key,
+                    Some(started.elapsed().as_millis()),
+                    Some("sdk_error"),
+                );
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -4428,6 +5085,15 @@ impl TimelineActor {
     }
 
     async fn handle_set_fully_read(&mut self, request_id: RequestId, event_id: String) {
+        let started = Instant::now();
+        trace_timeline_actor_operation(
+            "actor_start",
+            "set_fully_read",
+            request_id,
+            &self.key,
+            None,
+            None,
+        );
         let room_id_for_trace = timeline_room_id(&self.key);
         if let Some(room_id) = &room_id_for_trace {
             unread_trace::trace_mark_read(
@@ -4440,6 +5106,14 @@ impl TimelineActor {
         let parsed_event_id = match matrix_sdk::ruma::EventId::parse(event_id.as_str()) {
             Ok(event_id) => event_id,
             Err(_) => {
+                trace_timeline_actor_operation(
+                    "actor_finish",
+                    "set_fully_read",
+                    request_id,
+                    &self.key,
+                    Some(started.elapsed().as_millis()),
+                    Some("invalid_event"),
+                );
                 if let Some(room_id) = &room_id_for_trace {
                     unread_trace::trace_mark_read(
                         "set_fully_read_failed",
@@ -4474,6 +5148,14 @@ impl TimelineActor {
             match matrix_sdk::ruma::EventId::parse(private_read_receipt_event_id.as_str()) {
                 Ok(event_id) => event_id,
                 Err(_) => {
+                    trace_timeline_actor_operation(
+                        "actor_finish",
+                        "set_fully_read",
+                        request_id,
+                        &self.key,
+                        Some(started.elapsed().as_millis()),
+                        Some("invalid_private_receipt"),
+                    );
                     if let Some(room_id) = &room_id_for_trace {
                         unread_trace::trace_mark_read(
                             "set_fully_read_failed",
@@ -4498,6 +5180,14 @@ impl TimelineActor {
 
         match self.timeline.room().send_multiple_receipts(receipts).await {
             Ok(_) => {
+                trace_timeline_actor_operation(
+                    "actor_finish",
+                    "set_fully_read",
+                    request_id,
+                    &self.key,
+                    Some(started.elapsed().as_millis()),
+                    Some("success"),
+                );
                 self.fully_read_event_id = Some(event_id.clone());
                 if let Some(room_id) = room_id_for_trace {
                     unread_trace::trace_mark_read(
@@ -4525,6 +5215,14 @@ impl TimelineActor {
                 self.emit_navigation_if_changed();
             }
             Err(_) => {
+                trace_timeline_actor_operation(
+                    "actor_finish",
+                    "set_fully_read",
+                    request_id,
+                    &self.key,
+                    Some(started.elapsed().as_millis()),
+                    Some("sdk_error"),
+                );
                 if let Some(room_id) = &room_id_for_trace {
                     unread_trace::trace_mark_read(
                         "set_fully_read_failed",
@@ -4780,7 +5478,7 @@ impl TimelineActor {
     }
 
     async fn handle_load_link_previews(&mut self, request_id: RequestId, event_id: String) {
-        let trace_started = timeline_trace_enabled().then(std::time::Instant::now);
+        let trace_started = Some(std::time::Instant::now());
         let Some(index) = self.navigation_items.iter().position(
             |item| matches!(&item.id, TimelineItemId::Event { event_id: id } if id == &event_id),
         ) else {
@@ -5464,11 +6162,29 @@ impl TimelineActor {
 
     async fn reaction_target_state(
         &self,
+        request_id: RequestId,
+        trace_kind: &'static str,
         event_id: &str,
         reaction_key: &str,
     ) -> Option<ReactionTargetState> {
-        let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).ok()?;
+        let started = Instant::now();
+        let parsed_event_id = match matrix_sdk::ruma::EventId::parse(event_id) {
+            Ok(event_id) => event_id,
+            Err(_) => {
+                trace_timeline_actor_scan(
+                    "target_scan",
+                    trace_kind,
+                    request_id,
+                    &self.key,
+                    0,
+                    started.elapsed().as_millis(),
+                    false,
+                );
+                return None;
+            }
+        };
         let items = self.timeline.items().await;
+        let item_count = items.len();
         for item in items.iter().rev() {
             let TimelineItemKind::Event(event_item) = item.kind() else {
                 continue;
@@ -5487,12 +6203,30 @@ impl TimelineActor {
                 .iter()
                 .find(|reaction| reaction.key == reaction_key)
                 .and_then(|reaction| reaction.my_reaction_event_id.clone());
+            trace_timeline_actor_scan(
+                "target_scan",
+                trace_kind,
+                request_id,
+                &self.key,
+                item_count,
+                started.elapsed().as_millis(),
+                true,
+            );
             return Some(ReactionTargetState {
                 item_id: TimelineEventItemId::EventId(parsed_event_id),
                 can_react: projected.can_react,
                 my_reaction_event_id,
             });
         }
+        trace_timeline_actor_scan(
+            "target_scan",
+            trace_kind,
+            request_id,
+            &self.key,
+            item_count,
+            started.elapsed().as_millis(),
+            false,
+        );
         None
     }
 
@@ -9334,6 +10068,148 @@ mod tests {
     }
 
     #[test]
+    fn timeline_diagnostic_helpers_collect_typed_records_without_trace_env() {
+        let key = room_key();
+        let request_id = fake_rid(7001);
+
+        trace_timeline_actor_operation(
+            "actor_finish",
+            "send_reaction",
+            request_id,
+            &key,
+            Some(12),
+            Some("success"),
+        );
+        trace_timeline_actor_scan("target_scan", "send_reaction", request_id, &key, 3, 4, true);
+        trace_timeline_route("manager_received", "send_reaction", request_id, &key);
+        trace_timeline_paginate(
+            "sdk_finish",
+            request_id,
+            &key,
+            PaginationDirection::Backward,
+            8,
+            Some(15),
+            Some(2),
+            Some("success"),
+        );
+        trace_timeline_link_preview(
+            "complete",
+            request_id,
+            &key,
+            1,
+            2,
+            3,
+            Some(9),
+            Some("success"),
+        );
+        trace_timeline_items(
+            "initial",
+            &key,
+            &[timeline_item(
+                "$private-event:test",
+                Some("private body"),
+                "@private-sender:test",
+                true,
+            )],
+        );
+        trace_event_cache_diff_without_item("cache_diff", &key, "append", None, Some(2));
+
+        let records = koushi_diagnostics::snapshot().records;
+        let expected = [
+            ("core.timeline", "actor_finish"),
+            ("core.timeline", "target_scan"),
+            ("core.timeline", "manager_received"),
+            ("core.timeline", "sdk_finish"),
+            ("core.timeline", "complete"),
+            ("core.timeline_item", "initial"),
+            ("core.event_cache", "cache_diff"),
+        ];
+        for (source, stage) in expected {
+            let event = records
+                .iter()
+                .find(|record| record.event.source == source && record.event.stage == stage)
+                .map(|record| &record.event)
+                .unwrap_or_else(|| panic!("missing {source}/{stage}"));
+            assert!(event.fields.iter().any(|field| field.key == "kind"));
+            assert!(
+                event
+                    .fields
+                    .iter()
+                    .any(|field| { matches!(field.key, "duration" | "count" | "request_id") })
+            );
+            let serialized = serde_json::to_string(event).expect("diagnostic event serializes");
+            for private_value in [
+                "!r:test",
+                "$private-event:test",
+                "@private-sender:test",
+                "private body",
+            ] {
+                assert!(
+                    !serialized.contains(private_value),
+                    "leaked {private_value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reaction_and_read_signal_collector_fields_are_typed_and_private() {
+        let key = room_key();
+        let request_id = fake_rid(7002);
+        trace_timeline_actor_operation(
+            "actor_start",
+            "redact_reaction",
+            request_id,
+            &key,
+            None,
+            None,
+        );
+        trace_timeline_actor_operation(
+            "actor_finish",
+            "send_read_receipt",
+            request_id,
+            &key,
+            Some(6),
+            Some("sdk_error"),
+        );
+        trace_timeline_actor_operation(
+            "actor_finish",
+            "set_fully_read",
+            request_id,
+            &key,
+            Some(7),
+            Some("success"),
+        );
+        let records = koushi_diagnostics::snapshot().records;
+        for kind in ["redact_reaction", "send_read_receipt", "set_fully_read"] {
+            let event = records
+                .iter()
+                .find(|record| {
+                    record.event.source == "core.timeline"
+                        && record.event.fields.iter().any(|field| {
+                            field.key == "kind"
+                                && field.value == koushi_diagnostics::DiagnosticValue::Token(kind)
+                        })
+                })
+                .expect("typed reaction/read diagnostic");
+            assert!(
+                event
+                    .event
+                    .fields
+                    .iter()
+                    .any(|field| field.key == "request_id")
+            );
+            assert!(event.event.fields.iter().all(|field| {
+                !matches!(
+                    field.value,
+                    koushi_diagnostics::DiagnosticValue::Token(value)
+                        if value.contains("private") || value.contains("!r")
+                )
+            }));
+        }
+    }
+
+    #[test]
     fn sender_profile_projects_display_name_and_avatar_mxc() {
         let profile = TimelineDetails::Ready(Profile {
             display_name: Some("kamohara".to_owned()),
@@ -10974,6 +11850,37 @@ mod tests {
     }
 
     #[test]
+    fn reaction_and_read_signal_handlers_emit_private_latency_traces() {
+        let source = include_str!("timeline.rs");
+        for kind in [
+            "send_reaction",
+            "redact_reaction",
+            "send_read_receipt",
+            "set_fully_read",
+        ] {
+            assert!(
+                source.contains(&format!(
+                    "trace_timeline_actor_operation(\n            \"actor_start\",\n            \"{kind}\""
+                )),
+                "{kind} should trace actor start"
+            );
+            assert!(
+                source.contains(&format!(
+                    "trace_timeline_actor_operation(\n                    \"actor_finish\",\n                    \"{kind}\""
+                )) || source.contains(&format!(
+                    "trace_timeline_actor_operation(\n                \"actor_finish\",\n                \"{kind}\""
+                )),
+                "{kind} should trace actor completion"
+            );
+        }
+        assert!(
+            source.contains("trace_timeline_actor_scan(\n                    \"target_scan\"")
+                || source.contains("trace_timeline_actor_scan(\n                \"target_scan\""),
+            "reaction target scan should expose item count and elapsed time"
+        );
+    }
+
+    #[test]
     fn timeline_item_can_redact_requires_own_renderable_event_content() {
         assert!(timeline_item_can_redact(true, true, false, true));
         assert!(!timeline_item_can_redact(false, true, false, true));
@@ -11193,7 +12100,7 @@ mod tests {
     }
 
     #[test]
-    fn timeline_subscribe_spawns_env_gated_origin_observer() {
+    fn timeline_subscribe_spawns_always_on_origin_observer() {
         let source = include_str!("timeline.rs");
         // Search production code only; excluding the test module prevents the
         // assertion strings below from satisfying themselves (include_str! pulls in
@@ -11202,8 +12109,8 @@ mod tests {
         // The observer lives in TimelineActor::spawn alongside other auxiliary
         // tasks. Assert whole-source presence without forcing a code location.
         assert!(
-            production.contains("startup_trace::enabled()"),
-            "origin observer must be gated on KOUSHI_STARTUP_TRACE so production is unaffected"
+            production.contains("startup_trace::trace_origin"),
+            "origin observer must always record structured startup provenance"
         );
         assert!(
             production.contains("event_cache()"),

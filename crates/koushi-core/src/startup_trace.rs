@@ -44,16 +44,6 @@ pub(crate) fn stderr_enabled() -> bool {
     std::env::var_os("KOUSHI_STARTUP_TRACE").is_some()
 }
 
-// Compatibility for the protected timeline module; timeline diagnostics are
-// migrated separately.
-pub(crate) fn enabled() -> bool {
-    stderr_enabled()
-}
-
-pub(crate) fn now_if_enabled() -> Option<std::time::Instant> {
-    stderr_enabled().then(std::time::Instant::now)
-}
-
 pub(crate) fn now() -> std::time::Instant {
     std::time::Instant::now()
 }
