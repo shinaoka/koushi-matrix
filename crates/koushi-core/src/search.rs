@@ -113,6 +113,8 @@ fn trace_search_start(
     request_id: RequestId,
     scope: &SearchScope,
     queued_ms: u128,
+    query_bytes: usize,
+    query_chars: usize,
     variants: usize,
     normalized_diff: bool,
 ) {
@@ -128,9 +130,61 @@ fn trace_search_start(
                 search_scope_trace_label(scope),
             ))
             .field(DiagnosticField::milliseconds("queued", queued_ms))
+            .field(DiagnosticField::count("query_bytes", query_bytes as u64))
+            .field(DiagnosticField::count("query_chars", query_chars as u64))
             .field(DiagnosticField::count("variants", variants as u64))
             .field(DiagnosticField::boolean("normalized_diff", normalized_diff)),
     );
+}
+
+fn search_verify_diagnostic_event(
+    request_id: RequestId,
+    sdk_unique: usize,
+    sdk_rooms: usize,
+    store_docs: usize,
+    sdk_total_ms: u128,
+    project_ms: u128,
+    stats: &koushi_search::SearchWithCandidatesStats,
+) -> DiagnosticEvent {
+    DiagnosticEvent::new(DiagnosticLevel::Debug, "core.search", "verify")
+        .field(DiagnosticField::request_id(
+            "request_id",
+            request_id.connection_id.0,
+            request_id.sequence,
+        ))
+        .field(DiagnosticField::count("sdk_unique", sdk_unique as u64))
+        .field(DiagnosticField::count("sdk_rooms", sdk_rooms as u64))
+        .field(DiagnosticField::count(
+            "sdk_in_scope",
+            stats.sdk_candidates_in_scope as u64,
+        ))
+        .field(DiagnosticField::count(
+            "verified_sdk",
+            stats.verified_sdk_count as u64,
+        ))
+        .field(DiagnosticField::count("store_docs", store_docs as u64))
+        .field(DiagnosticField::count(
+            "scan_visited",
+            stats.scan.documents_visited as u64,
+        ))
+        .field(DiagnosticField::count(
+            "scan_in_scope",
+            stats.scan.documents_in_scope as u64,
+        ))
+        .field(DiagnosticField::count(
+            "scan_matches",
+            stats.scan.matches_before_limit as u64,
+        ))
+        .field(DiagnosticField::count(
+            "scan_returned",
+            stats.scan.returned as u64,
+        ))
+        .field(DiagnosticField::milliseconds("sdk_total_ms", sdk_total_ms))
+        .field(DiagnosticField::milliseconds("project_ms", project_ms))
+        .field(DiagnosticField::milliseconds(
+            "scan_ms",
+            stats.scan_elapsed_ms,
+        ))
 }
 
 fn current_epoch_ms() -> u64 {
@@ -707,6 +761,8 @@ impl SearchActor {
             request_id,
             &scope,
             queued_ms,
+            query.len(),
+            query.chars().count(),
             variants.len(),
             variants.iter().any(|variant| variant != query),
         );
@@ -828,35 +884,15 @@ impl SearchActor {
             SEARCH_CANDIDATE_LIMIT,
         );
         let projection_elapsed_ms = projection_started.elapsed().as_millis();
-        record(
-            DiagnosticEvent::new(DiagnosticLevel::Debug, "core.search", "verify")
-                .field(DiagnosticField::request_id(
-                    "request_id",
-                    request_id.connection_id.0,
-                    request_id.sequence,
-                ))
-                .field(DiagnosticField::count(
-                    "sdk_unique",
-                    sdk_candidates.len() as u64,
-                ))
-                .field(DiagnosticField::count("sdk_rooms", sdk_room_count as u64))
-                .field(DiagnosticField::count(
-                    "sdk_in_scope",
-                    projection.stats.sdk_candidates_in_scope as u64,
-                ))
-                .field(DiagnosticField::count(
-                    "verified_sdk",
-                    projection.stats.verified_sdk_count as u64,
-                ))
-                .field(DiagnosticField::count(
-                    "store_docs",
-                    self.document_store.document_count() as u64,
-                ))
-                .field(DiagnosticField::milliseconds(
-                    "duration",
-                    projection_elapsed_ms,
-                )),
-        );
+        record(search_verify_diagnostic_event(
+            request_id,
+            sdk_candidates.len(),
+            sdk_room_count,
+            self.document_store.document_count(),
+            sdk_total_ms,
+            projection_elapsed_ms,
+            &projection.stats,
+        ));
         if trace {
             eprintln!(
                 "koushi.search stage=verify request={} sdk_unique={} sdk_rooms={} sdk_in_scope={} verified_sdk={} store_docs={} scan_visited={} scan_in_scope={} scan_matches={} scan_returned={} sdk_total_ms={} project_ms={} scan_ms={}",
@@ -1435,6 +1471,8 @@ mod tests {
             },
             &SearchScope::AllRooms,
             5,
+            9,
+            3,
             2,
             true,
         );
@@ -1444,19 +1482,121 @@ mod tests {
             .rev()
             .find(|record| record.event.source == "core.search" && record.event.stage == "start")
             .expect("search producer should record");
-        assert!(
+        assert_eq!(
             record
                 .event
                 .fields
                 .iter()
-                .any(|field| field.key == "request_id")
+                .map(|field| (field.key, field.value.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "request_id",
+                    koushi_diagnostics::DiagnosticValue::RequestId {
+                        connection_id: 8,
+                        sequence: 13,
+                    },
+                ),
+                (
+                    "scope",
+                    koushi_diagnostics::DiagnosticValue::Token("all_rooms"),
+                ),
+                (
+                    "queued",
+                    koushi_diagnostics::DiagnosticValue::Milliseconds(5),
+                ),
+                ("query_bytes", koushi_diagnostics::DiagnosticValue::Count(9)),
+                ("query_chars", koushi_diagnostics::DiagnosticValue::Count(3)),
+                ("variants", koushi_diagnostics::DiagnosticValue::Count(2)),
+                (
+                    "normalized_diff",
+                    koushi_diagnostics::DiagnosticValue::Boolean(true),
+                ),
+            ]
         );
-        assert!(
-            record
-                .event
+    }
+
+    #[test]
+    fn search_verify_event_preserves_private_data_free_scan_and_duration_fields() {
+        let event = search_verify_diagnostic_event(
+            RequestId {
+                connection_id: RuntimeConnectionId(21),
+                sequence: 34,
+            },
+            5,
+            2,
+            89,
+            13,
+            17,
+            &koushi_search::SearchWithCandidatesStats {
+                sdk_candidates_in_scope: 3,
+                verified_sdk_count: 2,
+                scan_elapsed_ms: 19,
+                scan: koushi_search::SearchScanStats {
+                    documents_visited: 55,
+                    documents_in_scope: 44,
+                    matches_before_limit: 8,
+                    returned: 7,
+                },
+                results_before_limit: 9,
+                returned: 7,
+            },
+        );
+
+        assert_eq!(
+            event
                 .fields
                 .iter()
-                .any(|field| field.key == "variants")
+                .map(|field| (field.key, field.value.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "request_id",
+                    koushi_diagnostics::DiagnosticValue::RequestId {
+                        connection_id: 21,
+                        sequence: 34,
+                    },
+                ),
+                ("sdk_unique", koushi_diagnostics::DiagnosticValue::Count(5)),
+                ("sdk_rooms", koushi_diagnostics::DiagnosticValue::Count(2)),
+                (
+                    "sdk_in_scope",
+                    koushi_diagnostics::DiagnosticValue::Count(3)
+                ),
+                (
+                    "verified_sdk",
+                    koushi_diagnostics::DiagnosticValue::Count(2)
+                ),
+                ("store_docs", koushi_diagnostics::DiagnosticValue::Count(89)),
+                (
+                    "scan_visited",
+                    koushi_diagnostics::DiagnosticValue::Count(55)
+                ),
+                (
+                    "scan_in_scope",
+                    koushi_diagnostics::DiagnosticValue::Count(44)
+                ),
+                (
+                    "scan_matches",
+                    koushi_diagnostics::DiagnosticValue::Count(8)
+                ),
+                (
+                    "scan_returned",
+                    koushi_diagnostics::DiagnosticValue::Count(7)
+                ),
+                (
+                    "sdk_total_ms",
+                    koushi_diagnostics::DiagnosticValue::Milliseconds(13),
+                ),
+                (
+                    "project_ms",
+                    koushi_diagnostics::DiagnosticValue::Milliseconds(17),
+                ),
+                (
+                    "scan_ms",
+                    koushi_diagnostics::DiagnosticValue::Milliseconds(19),
+                ),
+            ]
         );
     }
 

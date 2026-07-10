@@ -127,6 +127,20 @@ fn app_loop_trace(arm: &'static str, count: u32, clone_ms: u128, total: std::tim
     }
 }
 
+fn reduce_with_unread_diagnostics(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
+    let room_list_trace = match &action {
+        AppAction::RoomListUpdated { rooms, .. } => {
+            Some(unread_trace::capture_room_list_applied(rooms))
+        }
+        _ => None,
+    };
+    let effects = reduce(state, action);
+    if let Some(input) = room_list_trace {
+        unread_trace::trace_room_list_applied(&input, &state.rooms);
+    }
+    effects
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CommandSubmitError {
     #[error("core runtime is closed")]
@@ -1238,17 +1252,7 @@ impl AppActor {
         let previous_navigation = self.state.navigation.clone();
         let previous_scheduled_session = scheduled_send_session_key(&self.state);
         let previous_scheduled_sends = self.state.scheduled_sends.clone();
-        let raw_room_list_trace = if unread_trace::enabled()
-            && let AppAction::RoomListUpdated { rooms, .. } = &action
-        {
-            Some(rooms.clone())
-        } else {
-            None
-        };
-        let effects = reduce(&mut self.state, action);
-        if let Some(raw_rooms) = raw_room_list_trace {
-            unread_trace::trace_room_list_applied(&raw_rooms, &self.state.rooms);
-        }
+        let effects = reduce_with_unread_diagnostics(&mut self.state, action);
         if previous_navigation != self.state.navigation {
             let target_session =
                 navigation_session_key(&self.state).or(previous_navigation_session);
@@ -3337,6 +3341,111 @@ mod tests {
         RoomLatestEventSummary, RoomNotificationModeOperation, RoomNotificationSettings,
         RoomSummary, RoomTags, SessionInfo, SettingsPatch, UserProfile, reduce,
     };
+
+    fn unread_diagnostic_room(room_id: &str) -> RoomSummary {
+        RoomSummary {
+            room_id: room_id.to_owned(),
+            display_name: "Synthetic room".to_owned(),
+            display_label: "Synthetic room".to_owned(),
+            original_display_label: "Synthetic room".to_owned(),
+            avatar: None,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: RoomTags::default(),
+            unread_count: 3,
+            notification_count: 2,
+            highlight_count: 1,
+            marked_unread: true,
+            last_activity_ms: 42,
+            latest_event: None,
+            parent_space_ids: Vec::new(),
+            dm_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 2,
+        }
+    }
+
+    #[test]
+    fn room_list_applied_records_through_real_reducer_with_trace_env_unset() {
+        let child = std::process::Command::new(
+            std::env::current_exe().expect("current test executable should be available"),
+        )
+        .args([
+            "--exact",
+            "runtime::tests::room_list_applied_records_without_trace_environment",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env_remove("KOUSHI_UNREAD_TRACE")
+        .status()
+        .expect("env-unset room-list diagnostic child should start");
+        assert!(
+            child.success(),
+            "env-unset diagnostic child failed: {child}"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn room_list_applied_records_without_trace_environment() {
+        assert!(std::env::var_os("KOUSHI_UNREAD_TRACE").is_none());
+        let mut state = AppState {
+            session: SessionState::Ready(SessionInfo {
+                homeserver: "https://example.invalid".to_owned(),
+                user_id: "@synthetic:example.invalid".to_owned(),
+                device_id: "SYNTHETIC".to_owned(),
+            }),
+            ..AppState::default()
+        };
+        let private_room_id = "!private-room:example.invalid";
+
+        reduce_with_unread_diagnostics(
+            &mut state,
+            AppAction::RoomListUpdated {
+                spaces: Vec::new(),
+                rooms: vec![unread_diagnostic_room(private_room_id)],
+            },
+        );
+
+        assert_eq!(state.rooms.len(), 1, "the real reducer path should run");
+        let event = koushi_diagnostics::snapshot()
+            .records
+            .into_iter()
+            .rev()
+            .find(|record| {
+                record.event.source == "core.unread" && record.event.stage == "room_list_applied"
+            })
+            .expect("room-list applied metrics should be collected without an env switch")
+            .event;
+        assert_eq!(
+            event
+                .fields
+                .iter()
+                .map(|field| (field.key, field.value.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("unread", koushi_diagnostics::DiagnosticValue::Count(3)),
+                (
+                    "notifications",
+                    koushi_diagnostics::DiagnosticValue::Count(2),
+                ),
+                ("highlights", koushi_diagnostics::DiagnosticValue::Count(1)),
+                (
+                    "marked_unread",
+                    koushi_diagnostics::DiagnosticValue::Boolean(true),
+                ),
+                (
+                    "latest_event_present",
+                    koushi_diagnostics::DiagnosticValue::Boolean(false),
+                ),
+            ]
+        );
+        assert!(
+            !serde_json::to_string(&event)
+                .unwrap()
+                .contains(private_room_id)
+        );
+    }
 
     #[test]
     fn app_loop_trace_ignores_subthreshold_iterations() {

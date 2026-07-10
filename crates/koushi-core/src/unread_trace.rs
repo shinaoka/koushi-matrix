@@ -120,6 +120,20 @@ fn room_has_unread_metrics(room: &RoomSummary) -> bool {
         || room.marked_unread
 }
 
+pub(crate) struct RoomListAppliedTraceInput {
+    raw_unread_room_ids: BTreeSet<String>,
+}
+
+pub(crate) fn capture_room_list_applied(rooms: &[RoomSummary]) -> RoomListAppliedTraceInput {
+    RoomListAppliedTraceInput {
+        raw_unread_room_ids: rooms
+            .iter()
+            .filter(|room| room_has_unread_metrics(room))
+            .map(|room| room.room_id.clone())
+            .collect(),
+    }
+}
+
 pub(crate) fn trace_room_list_snapshot(rooms: &[RoomSummary]) {
     for room in rooms.iter().filter(|room| room_has_unread_metrics(room)) {
         record_room_metrics("room_list_snapshot", room, None, None);
@@ -133,36 +147,30 @@ pub(crate) fn trace_room_list_snapshot(rooms: &[RoomSummary]) {
 }
 
 fn room_list_applied_lines(
-    raw_rooms: &[RoomSummary],
+    input: &RoomListAppliedTraceInput,
     applied_rooms: &[RoomSummary],
 ) -> Vec<String> {
-    let raw_unread_room_ids = raw_rooms
-        .iter()
-        .filter(|room| room_has_unread_metrics(room))
-        .map(|room| room.room_id.as_str())
-        .collect::<BTreeSet<_>>();
     applied_rooms
         .iter()
         .filter(|room| {
-            raw_unread_room_ids.contains(room.room_id.as_str()) || room_has_unread_metrics(room)
+            input.raw_unread_room_ids.contains(room.room_id.as_str())
+                || room_has_unread_metrics(room)
         })
         .map(|room| room_metrics("room_list_applied", room))
         .collect()
 }
 
-pub(crate) fn trace_room_list_applied(raw_rooms: &[RoomSummary], applied_rooms: &[RoomSummary]) {
-    let raw_unread_room_ids = raw_rooms
-        .iter()
-        .filter(|room| room_has_unread_metrics(room))
-        .map(|room| room.room_id.as_str())
-        .collect::<BTreeSet<_>>();
+pub(crate) fn trace_room_list_applied(
+    input: &RoomListAppliedTraceInput,
+    applied_rooms: &[RoomSummary],
+) {
     for room in applied_rooms.iter().filter(|room| {
-        raw_unread_room_ids.contains(room.room_id.as_str()) || room_has_unread_metrics(room)
+        input.raw_unread_room_ids.contains(room.room_id.as_str()) || room_has_unread_metrics(room)
     }) {
         record_room_metrics("room_list_applied", room, None, None);
     }
     if enabled() {
-        for line in room_list_applied_lines(raw_rooms, applied_rooms) {
+        for line in room_list_applied_lines(input, applied_rooms) {
             eprintln!("{line}");
         }
     }
@@ -328,7 +336,8 @@ mod tests {
         applied.highlight_count = 0;
         applied.marked_unread = false;
 
-        let lines = room_list_applied_lines(&[raw], &[applied]);
+        let input = capture_room_list_applied(&[raw]);
+        let lines = room_list_applied_lines(&input, &[applied]);
 
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("stage=room_list_applied"));
@@ -365,7 +374,8 @@ mod tests {
     fn unread_helpers_collect_typed_records_without_trace_env() {
         let room = private_room();
         trace_room_list_snapshot(std::slice::from_ref(&room));
-        trace_room_list_applied(std::slice::from_ref(&room), std::slice::from_ref(&room));
+        let input = capture_room_list_applied(std::slice::from_ref(&room));
+        trace_room_list_applied(&input, std::slice::from_ref(&room));
         trace_activity_room("activity_recent_event", &room, true, "unread");
         trace_mark_read(
             "mark_read_success",

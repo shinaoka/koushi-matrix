@@ -1869,6 +1869,28 @@ fn timeline_item_diagnostic_event(
     index: Option<usize>,
     item: &TimelineItem,
 ) -> DiagnosticEvent {
+    let (id_kind, _) = timeline_item_id_for_trace(item);
+    let sender_present = item
+        .sender
+        .as_deref()
+        .is_some_and(|sender| !sender.trim().is_empty());
+    let thread_root_present = item
+        .thread_root
+        .as_deref()
+        .is_some_and(|thread_root| !thread_root.trim().is_empty());
+    let reply_present = item
+        .in_reply_to_event_id
+        .as_deref()
+        .is_some_and(|event_id| !event_id.trim().is_empty());
+    let body_present = item
+        .body
+        .as_deref()
+        .is_some_and(|body| !body.trim().is_empty());
+    let formatted_present = item
+        .formatted
+        .as_ref()
+        .is_some_and(timeline_formatted_body_is_renderable);
+
     DiagnosticEvent::new(
         DiagnosticLevel::Debug,
         "core.timeline_item",
@@ -1879,29 +1901,29 @@ fn timeline_item_diagnostic_event(
         "timeline",
         timeline_key_trace_kind(key),
     ))
+    .field(DiagnosticField::token("id_kind", id_kind))
     .field(DiagnosticField::count("count", 1))
     .field(DiagnosticField::count("index", index.unwrap_or(0) as u64))
     .field(DiagnosticField::boolean("index_present", index.is_some()))
+    .field(DiagnosticField::count(
+        "timestamp_minute",
+        item.timestamp_ms.unwrap_or(0) / 60_000,
+    ))
     .field(DiagnosticField::boolean(
         "timestamp_present",
         item.timestamp_ms.is_some(),
     ))
+    .field(DiagnosticField::boolean("sender_present", sender_present))
     .field(DiagnosticField::boolean("hidden", item.is_hidden))
     .field(DiagnosticField::boolean(
         "thread_root_present",
-        item.thread_root.is_some(),
+        thread_root_present,
     ))
-    .field(DiagnosticField::boolean(
-        "reply_present",
-        item.in_reply_to_event_id.is_some(),
-    ))
-    .field(DiagnosticField::boolean(
-        "body_present",
-        item.body.is_some(),
-    ))
+    .field(DiagnosticField::boolean("reply_present", reply_present))
+    .field(DiagnosticField::boolean("body_present", body_present))
     .field(DiagnosticField::boolean(
         "formatted_present",
-        item.formatted.is_some(),
+        formatted_present,
     ))
     .field(DiagnosticField::boolean(
         "media_present",
@@ -1911,6 +1933,10 @@ fn timeline_item_diagnostic_event(
     .field(DiagnosticField::boolean(
         "unable_to_decrypt",
         item.unable_to_decrypt.is_some(),
+    ))
+    .field(DiagnosticField::boolean(
+        "send_state_present",
+        item.send_state.is_some(),
     ))
 }
 
@@ -2361,20 +2387,6 @@ fn event_cache_trace_line(
     )
 }
 
-fn event_cache_relation_kind(event: &matrix_sdk_base::event_cache::Event) -> &'static str {
-    let content = event
-        .raw()
-        .get_field::<serde_json::Value>("content")
-        .ok()
-        .flatten();
-    let rel_type = content
-        .as_ref()
-        .and_then(|content| content.get("m.relates_to"))
-        .and_then(|relates_to| relates_to.get("rel_type"))
-        .and_then(serde_json::Value::as_str);
-    relation_type_trace_token(rel_type)
-}
-
 fn event_cache_item_diagnostic_event(
     stage: &str,
     key: &TimelineKey,
@@ -2382,6 +2394,25 @@ fn event_cache_item_diagnostic_event(
     index: Option<usize>,
     item: &matrix_sdk_base::event_cache::Event,
 ) -> DiagnosticEvent {
+    let event_id_present = item.event_id().is_some();
+    let sender_present = item
+        .sender()
+        .is_some_and(|sender| !sender.as_str().trim().is_empty());
+    let timestamp_ms = item.timestamp().map(|timestamp| timestamp.0.into());
+    let relation = event_cache_relation_trace(item);
+    let relation_event_present = relation
+        .relation_event_id
+        .as_deref()
+        .is_some_and(|event_id| !event_id.trim().is_empty());
+    let reply_present = relation
+        .reply_event_id
+        .as_deref()
+        .is_some_and(|event_id| !event_id.trim().is_empty());
+    let thread_root_present = relation
+        .thread_root_event_id
+        .as_deref()
+        .is_some_and(|event_id| !event_id.trim().is_empty());
+
     DiagnosticEvent::new(
         DiagnosticLevel::Debug,
         "core.event_cache",
@@ -2396,12 +2427,31 @@ fn event_cache_item_diagnostic_event(
     .field(DiagnosticField::count("index", index.unwrap_or(0) as u64))
     .field(DiagnosticField::boolean("index_present", index.is_some()))
     .field(DiagnosticField::boolean(
-        "timestamp_present",
-        item.timestamp().is_some(),
+        "event_id_present",
+        event_id_present,
     ))
-    .field(DiagnosticField::token(
-        "relation",
-        event_cache_relation_kind(item),
+    .field(DiagnosticField::boolean("sender_present", sender_present))
+    .field(DiagnosticField::count(
+        "timestamp_minute",
+        timestamp_ms.unwrap_or(0) / 60_000,
+    ))
+    .field(DiagnosticField::boolean(
+        "timestamp_present",
+        timestamp_ms.is_some(),
+    ))
+    .field(DiagnosticField::token("relation", relation.rel_type))
+    .field(DiagnosticField::boolean(
+        "relates_to_present",
+        relation.relates_to_present,
+    ))
+    .field(DiagnosticField::boolean(
+        "relation_event_present",
+        relation_event_present,
+    ))
+    .field(DiagnosticField::boolean("reply_present", reply_present))
+    .field(DiagnosticField::boolean(
+        "thread_root_present",
+        thread_root_present,
     ))
 }
 
@@ -9133,6 +9183,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::time::Duration;
 
+    use koushi_diagnostics::DiagnosticValue;
     use koushi_state::{
         AppAction, MentionIntent, MentionTarget, SessionInfo, SessionState,
         TimelineMediaKind as GalleryTimelineMediaKind,
@@ -10384,6 +10435,123 @@ mod tests {
                 !line.contains(private_value),
                 "trace leaked {private_value}: {line}"
             );
+        }
+    }
+
+    #[test]
+    fn timeline_item_structured_fields_match_private_legacy_semantics() {
+        let key = room_key();
+        let mut item = timeline_item("$private-event:test", Some("   "), "   ", true);
+        item.timestamp_ms = Some(1_783_076_820_000);
+        item.thread_root = Some("   ".to_owned());
+        item.in_reply_to_event_id = Some("   ".to_owned());
+        item.formatted = Some(crate::event::TimelineFormattedBody {
+            html: "<br>".to_owned(),
+            plain_text: "   ".to_owned(),
+            code_blocks: Vec::new(),
+        });
+
+        let event = timeline_item_diagnostic_event("initial", &key, "item", Some(7), &item);
+
+        assert_eq!(
+            event
+                .fields
+                .iter()
+                .map(|field| (field.key, field.value.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("kind", DiagnosticValue::Token("item")),
+                ("timeline", DiagnosticValue::Token("room")),
+                ("id_kind", DiagnosticValue::Token("event")),
+                ("count", DiagnosticValue::Count(1)),
+                ("index", DiagnosticValue::Count(7)),
+                ("index_present", DiagnosticValue::Boolean(true)),
+                (
+                    "timestamp_minute",
+                    DiagnosticValue::Count(1_783_076_820_000 / 60_000),
+                ),
+                ("timestamp_present", DiagnosticValue::Boolean(true)),
+                ("sender_present", DiagnosticValue::Boolean(false)),
+                ("hidden", DiagnosticValue::Boolean(true)),
+                ("thread_root_present", DiagnosticValue::Boolean(false)),
+                ("reply_present", DiagnosticValue::Boolean(false)),
+                ("body_present", DiagnosticValue::Boolean(false)),
+                ("formatted_present", DiagnosticValue::Boolean(false)),
+                ("media_present", DiagnosticValue::Boolean(false)),
+                ("redacted", DiagnosticValue::Boolean(false)),
+                ("unable_to_decrypt", DiagnosticValue::Boolean(false)),
+                ("send_state_present", DiagnosticValue::Boolean(false)),
+            ]
+        );
+        let serialized = serde_json::to_string(&event).expect("diagnostic event serializes");
+        for private_value in ["$private-event:test", "!r:test"] {
+            assert!(!serialized.contains(private_value));
+        }
+    }
+
+    #[test]
+    fn event_cache_structured_fields_include_relation_presence_without_ids() {
+        let key = room_key();
+        let item = matrix_sdk_base::event_cache::Event::from_plaintext(
+            matrix_sdk::ruma::serde::Raw::new(&serde_json::json!({
+                "type": "m.room.message",
+                "event_id": "$private-cache-event:test",
+                "room_id": "!private-room:test",
+                "sender": "@private-sender:test",
+                "origin_server_ts": 1_783_076_820_000_u64,
+                "content": {
+                    "msgtype": "m.text",
+                    "body": "private body",
+                    "m.relates_to": {
+                        "rel_type": "m.thread",
+                        "event_id": "$private-thread-root:test",
+                        "m.in_reply_to": { "event_id": "$private-reply:test" }
+                    }
+                }
+            }))
+            .expect("synthetic cache event")
+            .cast_unchecked(),
+        );
+
+        let event =
+            event_cache_item_diagnostic_event("cache_initial", &key, "item", Some(4), &item);
+
+        assert_eq!(
+            event
+                .fields
+                .iter()
+                .map(|field| (field.key, field.value.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("kind", DiagnosticValue::Token("item")),
+                ("timeline", DiagnosticValue::Token("room")),
+                ("count", DiagnosticValue::Count(1)),
+                ("index", DiagnosticValue::Count(4)),
+                ("index_present", DiagnosticValue::Boolean(true)),
+                ("event_id_present", DiagnosticValue::Boolean(true)),
+                ("sender_present", DiagnosticValue::Boolean(true)),
+                (
+                    "timestamp_minute",
+                    DiagnosticValue::Count(1_783_076_820_000 / 60_000),
+                ),
+                ("timestamp_present", DiagnosticValue::Boolean(true)),
+                ("relation", DiagnosticValue::Token("m.thread")),
+                ("relates_to_present", DiagnosticValue::Boolean(true)),
+                ("relation_event_present", DiagnosticValue::Boolean(true)),
+                ("reply_present", DiagnosticValue::Boolean(true)),
+                ("thread_root_present", DiagnosticValue::Boolean(true)),
+            ]
+        );
+        let serialized = serde_json::to_string(&event).expect("diagnostic event serializes");
+        for private_value in [
+            "$private-cache-event:test",
+            "!private-room:test",
+            "@private-sender:test",
+            "$private-thread-root:test",
+            "$private-reply:test",
+            "private body",
+        ] {
+            assert!(!serialized.contains(private_value));
         }
     }
 
