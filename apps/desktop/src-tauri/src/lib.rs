@@ -1733,14 +1733,14 @@ mod tests {
                 EventCacheFailureReasonClass, EventCacheSubscribeStatus, IntentNoOpReason,
                 IntentOutcome, LinkPreview, LinkPreviewImage, LinkPreviewState, LiveSignalsEvent,
                 LocalEncryptionEvent, NativeAttentionEvent, PaginationDirection, PaginationState,
-                ReactionGroup, RoomEvent, SearchEvent, SyncEvent, ThreadSummaryDto,
-                ThreadsListEvent, TimelineAnchorRestoreStatus, TimelineCodeBlock,
-                TimelineDisplayLabelUpdate, TimelineEvent, TimelineFormattedBody, TimelineItem,
-                TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
-                TimelineMediaThumbnail, TimelineMessageActions, TimelineMessageKind,
-                TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
-                TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
-                TimelineUnreadPosition,
+                ReactionGroup, RoomEvent, SearchEvent, SyncEvent, ThreadRootProjectionDto,
+                ThreadRootProjectionStateDto, ThreadSummaryDto, ThreadsListEvent,
+                TimelineAnchorRestoreStatus, TimelineCodeBlock, TimelineDisplayLabelUpdate,
+                TimelineEvent, TimelineFormattedBody, TimelineItem, TimelineItemId, TimelineMedia,
+                TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
+                TimelineMessageActions, TimelineMessageKind, TimelineMessageSource,
+                TimelineNavigationSnapshot, TimelineResyncReason, TimelineSendFailureReason,
+                TimelineSendState, TimelineSpoilerSpan, TimelineUnreadPosition,
             },
             failure::{CoreFailure, TimelineFailureKind},
             ids::{RequestId, RuntimeConnectionId, TimelineBatchId, TimelineGeneration},
@@ -2119,6 +2119,22 @@ mod tests {
         assert_eq!(diffs[1], json!({ "Remove": { "index": 2 } }));
         assert_eq!(diffs[2], json!("Clear"));
         assert_eq!(updated["event"]["ItemsUpdated"]["batch_id"], json!(9));
+
+        let thread_root_projection =
+            serialize_core_event(&CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                key: key.clone(),
+                projection: ThreadRootProjectionDto {
+                    root_event_id: "$e1".to_owned(),
+                    activity_event_id: "$thread-reply:example.test".to_owned(),
+                    activity_timestamp_ms: Some(124),
+                    state: ThreadRootProjectionStateDto::Pending,
+                },
+            }))
+            .expect("serialize thread-root projection");
+        assert_eq!(
+            thread_root_projection["event"]["ThreadRootProjection"]["projection"]["state"]["kind"],
+            json!("pending")
+        );
 
         let media_initial =
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
@@ -2971,6 +2987,7 @@ mod tests {
             "timelineDisplayPolicyUpdated": display_policy_updated,
             "timelineInitialItems": initial,
             "timelineItemsUpdated": updated,
+            "timelineThreadRootProjection": thread_root_projection,
             "timelineLinkPreviewInitialItems": link_preview_initial,
             "timelineMediaDownloadCompleted": media_download_completed,
             "timelineMediaDownloadFailed": media_download_failed,
@@ -3085,6 +3102,7 @@ mod tests {
             "timelineDisplayPolicyUpdated",
             "timelineInitialItems",
             "timelineItemsUpdated",
+            "timelineThreadRootProjection",
             "timelineLinkPreviewInitialItems",
             "timelineMediaDownloadCompleted",
             "timelineMediaDownloadFailed",

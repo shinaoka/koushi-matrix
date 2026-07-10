@@ -698,6 +698,8 @@ export type MessageId =
   | "timeline.editMessage"
   | "timeline.editBody"
   | "timeline.loading"
+  | "timeline.threadRootLoading"
+  | "timeline.threadRootUnavailable"
   | "timeline.messagesTab"
   | "timeline.openingThread"
   | "timeline.presenceAway"
@@ -1673,6 +1675,8 @@ const en: Catalog = {
   "timeline.editMessage": "Edit message",
   "timeline.editBody": "Edit message body",
   "timeline.loading": "Loading",
+  "timeline.threadRootLoading": "Loading thread message…",
+  "timeline.threadRootUnavailable": "Thread message is unavailable.",
   "timeline.messagesTab": "Messages",
   "timeline.openingThread": "Opening thread",
   "timeline.presenceAway": "Away",
@@ -2534,6 +2538,8 @@ const ja: Catalog = {
   "timeline.editMessage": "メッセージを編集",
   "timeline.editBody": "メッセージ本文を編集",
   "timeline.loading": "読み込み中",
+  "timeline.threadRootLoading": "スレッドのメッセージを読み込んでいます…",
+  "timeline.threadRootUnavailable": "スレッドのメッセージを利用できません。",
   "timeline.messagesTab": "メッセージ",
   "timeline.openingThread": "スレッドを開いています",
   "timeline.presenceAway": "離席中",

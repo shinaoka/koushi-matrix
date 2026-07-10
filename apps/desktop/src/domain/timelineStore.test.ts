@@ -29,6 +29,7 @@ import {
   applyTimelineEvent,
   batchContainsPrepend,
   createTimelineStore,
+  getThreadRootProjections,
   getMediaUploadProgress,
   getItems,
   getKeyState,
@@ -111,6 +112,57 @@ function itemId(item: TimelineItem): string {
 // ---------------------------------------------------------------------------
 
 describe("timeline store — diff application", () => {
+  test("stores thread-root projection snapshots outside canonical items", () => {
+    let store = createTimelineStore();
+    const canonicalReply = {
+      ...makeMsg("$latest-reply", "reply"),
+      thread_root: "$old-root"
+    };
+    store = applyTimelineEvent(store, {
+      InitialItems: { request_id: null, key: KEY, generation: 1, items: [canonicalReply] }
+    });
+    const canonicalBefore = getItems(store, KEY);
+
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$old-root",
+          activity_event_id: "$latest-reply",
+          activity_timestamp_ms: 1_800_000_010_000,
+          state: { kind: "pending" }
+        }
+      }
+    });
+
+    expect(getItems(store, KEY)).toBe(canonicalBefore);
+    expect(getItems(store, KEY)).toEqual([canonicalReply]);
+    expect(getThreadRootProjections(store, KEY)).toEqual([
+      {
+        root_event_id: "$old-root",
+        activity_event_id: "$latest-reply",
+        activity_timestamp_ms: 1_800_000_010_000,
+        state: { kind: "pending" }
+      }
+    ]);
+
+    const root = makeMsg("$old-root", "old root body");
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$old-root",
+          activity_event_id: "$latest-reply",
+          activity_timestamp_ms: 1_800_000_010_000,
+          state: { kind: "ready", item: root }
+        }
+      }
+    });
+
+    expect(getItems(store, KEY)).toEqual([canonicalReply]);
+    expect(getThreadRootProjections(store, KEY)[0]?.state).toEqual({ kind: "ready", item: root });
+  });
+
   test("InitialItems populates the render list for a key", () => {
     const store = createTimelineStore();
     const items = [makeMsg("$a", "hello"), makeMsg("$b", "world")];
@@ -1228,6 +1280,27 @@ describe("timeline store — retention", () => {
       timelineStoreKeyId(keyA)
     ]);
     expect(getItems(store, keyA).map((item) => itemId(item))).toContain("$a-live");
+  });
+
+  test("evicts out-of-band root projections with their inactive timeline key", () => {
+    let store = createTimelineStore();
+    store = seedTimeline(store, KEY);
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$evicted-root",
+          activity_event_id: "$evicted-reply",
+          activity_timestamp_ms: 1,
+          state: { kind: "pending" }
+        }
+      }
+    });
+
+    store = pruneTimelineStore(store, new Set(), null, 0);
+
+    expect(store.keys.has(timelineStoreKeyId(KEY))).toBe(false);
+    expect(getThreadRootProjections(store, KEY)).toEqual([]);
   });
 });
 

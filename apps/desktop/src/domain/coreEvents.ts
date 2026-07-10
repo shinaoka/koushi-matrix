@@ -234,6 +234,19 @@ export interface ThreadSummaryDto {
   latest_timestamp_ms: number | null;
 }
 
+/** Out-of-band root snapshot for Room latest-reply presentation. Never part of TimelineDiff. */
+export interface ThreadRootProjectionDto {
+  root_event_id: string;
+  activity_event_id: string;
+  activity_timestamp_ms: number | null;
+  state: ThreadRootProjectionStateDto;
+}
+
+export type ThreadRootProjectionStateDto =
+  | { kind: "pending" }
+  | { kind: "ready"; item: TimelineItem }
+  | { kind: "failed"; failure_kind: OperationFailureKind };
+
 /** Stable string id usable as a React key and a `data-item-id` DOM hook. */
 export function timelineItemDomId(id: TimelineItemId): string {
   if ("Event" in id) {
@@ -397,6 +410,12 @@ export type TimelineEvent =
         key: TimelineKey;
         event_id: string;
         kind: TimelineFailureKind;
+      };
+    }
+  | {
+      ThreadRootProjection: {
+        key: TimelineKey;
+        projection: ThreadRootProjectionDto;
       };
     }
   | {

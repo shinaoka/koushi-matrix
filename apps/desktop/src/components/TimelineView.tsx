@@ -111,6 +111,7 @@ import {
   batchContainsPrepend,
   createTimelineStore,
   getItems,
+  getThreadRootProjections,
   getMediaUploadProgress,
   getKeyState,
   getPaginationState,
@@ -2350,6 +2351,14 @@ export const TimelineView = memo(function TimelineView({
   const readSignalThreadRootEventId =
     "Thread" in timelineKey.kind ? timelineKey.kind.Thread.root_event_id : null;
   const items = getItems(store, timelineKey);
+  // The selector returns an array. Memoize it by the separately-owned map so
+  // ordinary scroll/measurement renders keep the existing display-row
+  // identity; otherwise an empty projection source would churn Task 4's
+  // height-model transaction on every render.
+  const threadRootProjections = useMemo(
+    () => getThreadRootProjections(store, timelineKey),
+    [store.threadRootProjections, timelineKey]
+  );
   const timelineKeyState = getKeyState(store, timelineKey);
   const generation = timelineKeyState?.generation ?? 0;
   const emitDiagnosticLog = useCallback(
@@ -2805,7 +2814,9 @@ export const TimelineView = memo(function TimelineView({
                             ? event.MessageSourceLoaded.key
                               : "NavigationUpdated" in event
                                 ? event.NavigationUpdated.key
-                                : event.ResyncRequired.key;
+                                : "ThreadRootProjection" in event
+                                  ? event.ThreadRootProjection.key
+                                  : event.ResyncRequired.key;
       if (!timelineKeyEquals(eventKey, timelineKeyRef.current)) {
         recordTimelineKeyMismatch();
         return;
@@ -3053,10 +3064,10 @@ export const TimelineView = memo(function TimelineView({
   // rendering, measuring, and virtualization for an opt-in Room projection.
   const visibleRows = useMemo(
     () =>
-      projectTimelineDisplayRows(items, timelineKey, threadRootOrder).filter(
+      projectTimelineDisplayRows(items, timelineKey, threadRootOrder, threadRootProjections).filter(
         (row) => !row.item.is_hidden
       ),
-    [items, threadRootOrder, timelineKey]
+    [items, threadRootOrder, threadRootProjections, timelineKey]
   );
   const projectionSnapshot = useMemo<TimelineProjectionSnapshot>(
     () => ({
@@ -4611,7 +4622,13 @@ export const TimelineView = memo(function TimelineView({
                   <span>{t("timeline.unreadMarker")}</span>
                 </div>
               ) : null}
-              <TimelineItemRow
+              {row.kind === "threadRootPending" || row.kind === "threadRootFailed" ? (
+                <ThreadRootProjectionPlaceholder
+                  row={row}
+                  state={row.kind === "threadRootPending" ? "pending" : "failed"}
+                />
+              ) : (
+                <TimelineItemRow
                 item={item}
                 rowId={row.row_id}
                 contentEventId={contentEventId}
@@ -4672,7 +4689,8 @@ export const TimelineView = memo(function TimelineView({
                     ? roomSignals?.receipts_by_event[contentEventId]?.overflow_count ?? 0
                     : 0
                 }
-              />
+                />
+              )}
               {isReadMarker ? (
                 <div className="read-marker" role="separator" aria-label={t("timeline.readMarker")}>
                   <span>{t("timeline.readMarker")}</span>
@@ -4743,6 +4761,44 @@ export const TimelineView = memo(function TimelineView({
     </ProjectionSnapshotBoundary>
   );
 });
+
+/**
+ * A projection-only placeholder for an old root which was intentionally kept
+ * out of canonical SDK items. Its stable row/content/activity identities let
+ * virtual layout and viewport observation continue to use the latest reply
+ * while the bounded root request settles. It has no message actions, so a
+ * pending or terminal failure can never trigger navigation/pagination.
+ */
+function ThreadRootProjectionPlaceholder({
+  row,
+  state
+}: {
+  row: TimelineDisplayRow;
+  state: "pending" | "failed";
+}) {
+  const summary = row.item.thread_summary;
+  const replyCount = summary?.reply_count ?? 0;
+  return (
+    <article
+      className="message thread-root-projection-placeholder"
+      data-item-id={row.row_id}
+      data-row-id={row.row_id}
+      data-content-event-id={row.content_event_id ?? undefined}
+      data-activity-event-id={row.activity_event_id ?? undefined}
+      data-event-id={row.activity_event_id ?? undefined}
+      data-thread-root-projection-state={state}
+    >
+      <p className="timeline-thread-root-projection-status" role="status">
+        {state === "pending"
+          ? t("timeline.threadRootLoading")
+          : t("timeline.threadRootUnavailable")}
+      </p>
+      <span className="thread-reply-count">
+        {replyCount === 1 ? "1 reply" : `${replyCount} replies`}
+      </span>
+    </article>
+  );
+}
 
 export function TimelineItemRow({
   item,

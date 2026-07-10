@@ -5,6 +5,7 @@
 //! typed `AppAction`s (and mirrored as `CoreEvent::ThreadsList` events) so the
 //! reducer owns the UI snapshot.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures_util::StreamExt;
@@ -16,9 +17,137 @@ use matrix_sdk_ui::timeline::thread_list_service::{
 use matrix_sdk_ui::timeline::{ThreadListPaginationState, ThreadListService, TimelineDetails};
 use tokio::sync::{broadcast, mpsc};
 
-use crate::event::{CoreEvent, ThreadsListEvent};
+use crate::event::{CoreEvent, ThreadsListEvent, TimelineItem};
 use crate::executor;
 use crate::ids::RequestId;
+
+/// Exact reply activity that requires a root outside the Room timeline's
+/// canonical window. It is intentionally independent of `ThreadsListState`:
+/// the side-panel service can be closed or paginated without affecting this
+/// bounded room-timeline projection path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ThreadRootProjectionActivity {
+    pub room_id: String,
+    pub root_event_id: String,
+    pub activity_event_id: String,
+    pub activity_timestamp_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ThreadRootProjectionDecision {
+    /// Start exactly one `Room::load_or_fetch_event(root_id, None)` request.
+    StartFetch(ThreadRootProjectionActivity),
+    /// The existing request remains bounded to one fetch, but a newer reply
+    /// changed the presentation activity for the same root.
+    ActivityUpdated(ThreadRootProjectionRecord),
+    /// The keyed attempt is pending, ready, or terminally failed already.
+    AlreadyTracked,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ThreadRootProjectionAttempt {
+    Pending,
+    Ready(TimelineItem),
+    Failed(OperationFailureKind),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ThreadRootProjectionRecord {
+    pub activity: ThreadRootProjectionActivity,
+    attempt: ThreadRootProjectionAttempt,
+}
+
+impl ThreadRootProjectionRecord {
+    pub(crate) fn item(&self) -> Option<&TimelineItem> {
+        match &self.attempt {
+            ThreadRootProjectionAttempt::Ready(item) => Some(item),
+            ThreadRootProjectionAttempt::Pending | ThreadRootProjectionAttempt::Failed(_) => None,
+        }
+    }
+
+    pub(crate) fn failure_kind(&self) -> Option<OperationFailureKind> {
+        match self.attempt {
+            ThreadRootProjectionAttempt::Failed(kind) => Some(kind),
+            ThreadRootProjectionAttempt::Pending | ThreadRootProjectionAttempt::Ready(_) => None,
+        }
+    }
+
+    pub(crate) fn is_pending(&self) -> bool {
+        matches!(self.attempt, ThreadRootProjectionAttempt::Pending)
+    }
+}
+
+/// Per-Room-timeline dedupe and terminal-state service for old thread roots.
+///
+/// This service owns no `Timeline` and has no pagination capability. The
+/// actor that owns it performs the one bounded event-cache/network request
+/// after `StartFetch`, then reports `mark_ready` or `mark_failed` exactly
+/// once. Retaining failed attempts prevents repeated live reply diffs from
+/// creating a fetch loop.
+#[derive(Default)]
+pub(crate) struct ThreadRootProjectionService {
+    attempts: HashMap<(String, String), ThreadRootProjectionRecord>,
+}
+
+impl ThreadRootProjectionService {
+    pub(crate) fn observe(
+        &mut self,
+        activity: ThreadRootProjectionActivity,
+    ) -> ThreadRootProjectionDecision {
+        let key = (activity.room_id.clone(), activity.root_event_id.clone());
+        if let Some(record) = self.attempts.get_mut(&key) {
+            if activity_is_newer(&activity, &record.activity) {
+                record.activity = activity;
+                return ThreadRootProjectionDecision::ActivityUpdated(record.clone());
+            }
+            return ThreadRootProjectionDecision::AlreadyTracked;
+        }
+        self.attempts.insert(
+            key,
+            ThreadRootProjectionRecord {
+                activity: activity.clone(),
+                attempt: ThreadRootProjectionAttempt::Pending,
+            },
+        );
+        ThreadRootProjectionDecision::StartFetch(activity)
+    }
+
+    pub(crate) fn mark_ready(
+        &mut self,
+        activity: &ThreadRootProjectionActivity,
+        item: TimelineItem,
+    ) -> Option<ThreadRootProjectionRecord> {
+        let record = self
+            .attempts
+            .get_mut(&(activity.room_id.clone(), activity.root_event_id.clone()))?;
+        record.attempt = ThreadRootProjectionAttempt::Ready(item);
+        Some(record.clone())
+    }
+
+    pub(crate) fn mark_failed(
+        &mut self,
+        activity: &ThreadRootProjectionActivity,
+        failure_kind: OperationFailureKind,
+    ) -> Option<ThreadRootProjectionRecord> {
+        let record = self
+            .attempts
+            .get_mut(&(activity.room_id.clone(), activity.root_event_id.clone()))?;
+        record.attempt = ThreadRootProjectionAttempt::Failed(failure_kind);
+        Some(record.clone())
+    }
+}
+
+fn activity_is_newer(
+    candidate: &ThreadRootProjectionActivity,
+    existing: &ThreadRootProjectionActivity,
+) -> bool {
+    candidate
+        .activity_timestamp_ms
+        .unwrap_or(0)
+        .cmp(&existing.activity_timestamp_ms.unwrap_or(0))
+        .then_with(|| candidate.activity_event_id.cmp(&existing.activity_event_id))
+        .is_gt()
+}
 
 /// Messages routed to a `ThreadsListActor`.
 pub enum ThreadsListMessage {
@@ -413,6 +542,57 @@ fn body_preview(content: Option<&matrix_sdk_ui::timeline::TimelineItemContent>) 
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        OperationFailureKind, ThreadRootProjectionActivity, ThreadRootProjectionDecision,
+        ThreadRootProjectionService,
+    };
+
+    #[test]
+    fn thread_root_projection_service_emits_one_bounded_fetch_and_never_retries_terminal_failure() {
+        let mut service = ThreadRootProjectionService::default();
+        let activity = ThreadRootProjectionActivity {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$old-root:example.invalid".to_owned(),
+            activity_event_id: "$latest-reply:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(1_700_000_100_000),
+        };
+
+        assert_eq!(
+            service.observe(activity.clone()),
+            ThreadRootProjectionDecision::StartFetch(activity.clone())
+        );
+        assert_eq!(
+            service.observe(activity.clone()),
+            ThreadRootProjectionDecision::AlreadyTracked
+        );
+
+        service.mark_failed(&activity, OperationFailureKind::NotFound);
+        assert_eq!(
+            service.observe(activity),
+            ThreadRootProjectionDecision::AlreadyTracked,
+            "a failed root projection is terminal and must not loop"
+        );
+    }
+
+    #[test]
+    fn thread_root_projection_source_never_uses_room_pagination_or_anchor_materialization() {
+        let source = include_str!("threads_list.rs");
+        let projection_section = source
+            .split("pub struct ThreadRootProjectionService")
+            .nth(1)
+            .expect("thread-root projection service must be present")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("projection production section");
+
+        assert!(
+            !projection_section.contains("paginate_backwards")
+                && !projection_section.contains("PaginateBackward")
+                && !projection_section.contains("RestoreTimelineAnchor"),
+            "root hydration must stay bounded to load_or_fetch_event; it must not page or materialize anchors"
+        );
+    }
+
     #[test]
     fn open_subscription_loads_initial_page_before_emitting_opened() {
         let source = include_str!("threads_list.rs");

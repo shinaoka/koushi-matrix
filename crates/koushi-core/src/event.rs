@@ -947,6 +947,12 @@ pub enum TimelineEvent {
         event_id: String,
         kind: TimelineFailureKind,
     },
+    /// A bounded, out-of-band root snapshot for latest-reply Room
+    /// presentation. This never changes the canonical VectorDiff item list.
+    ThreadRootProjection {
+        key: TimelineKey,
+        projection: ThreadRootProjectionDto,
+    },
     ResyncRequired {
         key: TimelineKey,
         reason: TimelineResyncReason,
@@ -1089,6 +1095,11 @@ impl fmt::Debug for TimelineEvent {
                 .field("key", &"TimelineKey(..)")
                 .field("event_id", &"EventId(..)")
                 .field("kind", kind)
+                .finish(),
+            Self::ThreadRootProjection { projection, .. } => formatter
+                .debug_struct("ThreadRootProjection")
+                .field("key", &"TimelineKey(..)")
+                .field("projection", projection)
                 .finish(),
             Self::ResyncRequired { reason, .. } => formatter
                 .debug_struct("ResyncRequired")
@@ -1739,6 +1750,51 @@ pub struct ThreadSummaryDto {
     pub latest_timestamp_ms: Option<u64>,
 }
 
+/// Root hydration payload keyed by the Room and `root_event_id` carried in
+/// the surrounding `TimelineEvent`. The activity identity is intentionally
+/// distinct from the root/content identity: it places the root block while
+/// actions continue targeting `root_event_id`.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ThreadRootProjectionDto {
+    pub root_event_id: String,
+    pub activity_event_id: String,
+    pub activity_timestamp_ms: Option<u64>,
+    pub state: ThreadRootProjectionStateDto,
+}
+
+impl fmt::Debug for ThreadRootProjectionDto {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ThreadRootProjectionDto")
+            .field("root_event_id", &"EventId(..)")
+            .field("activity_event_id", &"EventId(..)")
+            .field("activity_timestamp_ms", &self.activity_timestamp_ms)
+            .field("state", &self.state)
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ThreadRootProjectionStateDto {
+    Pending,
+    Ready { item: TimelineItem },
+    Failed { failure_kind: OperationFailureKind },
+}
+
+impl fmt::Debug for ThreadRootProjectionStateDto {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pending => formatter.write_str("Pending"),
+            Self::Ready { item } => formatter.debug_struct("Ready").field("item", item).finish(),
+            Self::Failed { failure_kind } => formatter
+                .debug_struct("Failed")
+                .field("failure_kind", failure_kind)
+                .finish(),
+        }
+    }
+}
+
 pub fn project_timeline_event_display_labels(event: &mut TimelineEvent, state: &AppState) {
     match event {
         TimelineEvent::InitialItems { items, .. } => {
@@ -1749,6 +1805,11 @@ pub fn project_timeline_event_display_labels(event: &mut TimelineEvent, state: &
         TimelineEvent::ItemsUpdated { diffs, .. } => {
             for diff in diffs {
                 project_timeline_diff_display_labels(diff, state);
+            }
+        }
+        TimelineEvent::ThreadRootProjection { projection, .. } => {
+            if let ThreadRootProjectionStateDto::Ready { item } = &mut projection.state {
+                project_timeline_item_display_labels(item, state);
             }
         }
         TimelineEvent::PaginationStateChanged { .. }

@@ -527,3 +527,64 @@ pub(crate) fn handle_close_threads_list(state: &mut AppState) -> Vec<AppEffect> 
         AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged),
     ]
 }
+
+pub(crate) fn handle_thread_root_projection_observed(
+    state: &mut AppState,
+    room_id: String,
+    root_event_id: String,
+    activity_event_id: String,
+    activity_timestamp_ms: Option<u64>,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    if !state.thread_root_projections.observe(
+        room_id,
+        root_event_id,
+        activity_event_id,
+        activity_timestamp_ms,
+    ) {
+        return Vec::new();
+    }
+    vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+}
+
+pub(crate) fn handle_thread_root_projection_ready(
+    state: &mut AppState,
+    room_id: String,
+    root_event_id: String,
+    activity_event_id: String,
+    activity_timestamp_ms: Option<u64>,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    state.thread_root_projections.mark_ready(
+        room_id,
+        root_event_id,
+        activity_event_id,
+        activity_timestamp_ms,
+    );
+    vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+}
+
+pub(crate) fn handle_thread_root_projection_failed(
+    state: &mut AppState,
+    room_id: String,
+    root_event_id: String,
+    activity_event_id: String,
+    activity_timestamp_ms: Option<u64>,
+    failure_kind: crate::state::OperationFailureKind,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    state.thread_root_projections.mark_failed(
+        room_id,
+        root_event_id,
+        activity_event_id,
+        activity_timestamp_ms,
+        failure_kind,
+    );
+    vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+}

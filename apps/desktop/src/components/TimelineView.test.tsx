@@ -5197,6 +5197,161 @@ describe("TimelineView", () => {
     expect(paginateBackwards).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps an old-root placeholder at latest activity and replaces it without canonical pagination", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const latestReply = {
+      ...message("$old-root-latest:example.invalid", "standalone old-root reply"),
+      timestamp_ms: 1_800_000_010_000,
+      thread_root: "$old-root:example.invalid"
+    };
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        threadRootOrder={{ kind: "latestReply" }}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key: KEY, generation: 1, items: [latestReply] }
+        }
+      });
+      emit({
+        kind: "Timeline",
+        event: {
+          ThreadRootProjection: {
+            key: KEY,
+            projection: {
+              root_event_id: "$old-root:example.invalid",
+              activity_event_id: "$old-root-latest:example.invalid",
+              activity_timestamp_ms: 1_800_000_010_000,
+              state: { kind: "pending" }
+            }
+          }
+        }
+      });
+    });
+
+    const pending = await screen.findByRole("status");
+    const pendingRow = pending.closest<HTMLElement>("article");
+    expect(pending.textContent).toContain("Loading thread message");
+    expect(pendingRow?.getAttribute("data-row-id")).toBe(
+      "thread-root:$old-root:example.invalid"
+    );
+    expect(pendingRow?.getAttribute("data-content-event-id")).toBe("$old-root:example.invalid");
+    expect(pendingRow?.getAttribute("data-activity-event-id")).toBe(
+      "$old-root-latest:example.invalid"
+    );
+    expect(screen.queryByText("standalone old-root reply")).toBeNull();
+
+    const loadedRoot = {
+      ...message("$old-root:example.invalid", "hydrated original root"),
+      timestamp_ms: 1_700_000_000_000,
+      thread_summary: {
+        reply_count: 1,
+        latest_event_id: "$old-root-latest:example.invalid",
+        latest_sender: null,
+        latest_sender_label: null,
+        latest_body_preview: null,
+        latest_timestamp_ms: 1_800_000_010_000
+      }
+    };
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          ThreadRootProjection: {
+            key: KEY,
+            projection: {
+              root_event_id: "$old-root:example.invalid",
+              activity_event_id: "$old-root-latest:example.invalid",
+              activity_timestamp_ms: 1_800_000_010_000,
+              state: { kind: "ready", item: loadedRoot }
+            }
+          }
+        }
+      });
+    });
+
+    const readyRow = await screen.findByText("hydrated original root").then((node) =>
+      node.closest<HTMLElement>("article")
+    );
+    expect(readyRow?.getAttribute("data-row-id")).toBe(
+      "thread-root:$old-root:example.invalid"
+    );
+    expect(readyRow?.getAttribute("data-activity-event-id")).toBe(
+      "$old-root-latest:example.invalid"
+    );
+  });
+
+  it("keeps a terminal old-root failure visible without restoring a reply row", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const latestReply = {
+      ...message("$failed-root-latest:example.invalid", "reply must remain suppressed"),
+      timestamp_ms: 1_800_000_020_000,
+      thread_root: "$failed-root:example.invalid"
+    };
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        threadRootOrder={{ kind: "latestReply" }}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key: KEY, generation: 1, items: [latestReply] }
+        }
+      });
+      emit({
+        kind: "Timeline",
+        event: {
+          ThreadRootProjection: {
+            key: KEY,
+            projection: {
+              root_event_id: "$failed-root:example.invalid",
+              activity_event_id: "$failed-root-latest:example.invalid",
+              activity_timestamp_ms: 1_800_000_020_000,
+              state: { kind: "failed", failure_kind: "notFound" }
+            }
+          }
+        }
+      });
+    });
+
+    const failed = await screen.findByRole("status");
+    const failedRow = failed.closest<HTMLElement>("article");
+    expect(failed.textContent).toContain("Thread message is unavailable");
+    expect(failedRow?.getAttribute("data-thread-root-projection-state")).toBe("failed");
+    expect(failedRow?.getAttribute("data-row-id")).toBe(
+      "thread-root:$failed-root:example.invalid"
+    );
+    expect(screen.queryByText("reply must remain suppressed")).toBeNull();
+  });
+
   it("moves one Room thread root and its summary to its latest reply while keeping root actions and timestamps", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const onOpenThread = vi.fn();

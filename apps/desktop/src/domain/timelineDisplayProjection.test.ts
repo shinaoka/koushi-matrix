@@ -7,6 +7,7 @@ import {
   timelineItemDomId,
   type TimelineItem
 } from "./coreEvents";
+import type { ThreadRootProjectionDto } from "./coreEvents";
 import { projectTimelineDisplayRows } from "./timelineDisplayProjection";
 import type { TimelineThreadRootOrder } from "./types";
 
@@ -94,6 +95,46 @@ function materialRowIds(rows: ReturnType<typeof projectTimelineDisplayRows>) {
 }
 
 describe("timeline display projection", () => {
+  test("uses one stable summary-only row while an old root is pending, then replaces it in place", () => {
+    const latestReply = reply("$latest", "$old-root", 1_800_000_010_000);
+    const canonical = [event("$normal", 1_800_000_000_000), latestReply];
+    const pending: ThreadRootProjectionDto = {
+      root_event_id: "$old-root",
+      activity_event_id: "$latest",
+      activity_timestamp_ms: 1_800_000_010_000,
+      state: { kind: "pending" }
+    };
+    const ready: ThreadRootProjectionDto = {
+      ...pending,
+      state: { kind: "ready", item: root("$old-root", 1_700_000_000_000, "$latest", 1_800_000_010_000) }
+    };
+    const failed: ThreadRootProjectionDto = {
+      ...pending,
+      state: { kind: "failed", failure_kind: "notFound" }
+    };
+
+    const pendingRows = projectTimelineDisplayRows(canonical, ROOM_KEY, LATEST_REPLY, [pending]);
+    const readyRows = projectTimelineDisplayRows(canonical, ROOM_KEY, LATEST_REPLY, [ready]);
+    const failedRows = projectTimelineDisplayRows(canonical, ROOM_KEY, LATEST_REPLY, [failed]);
+
+    for (const rows of [pendingRows, readyRows, failedRows]) {
+      expect(materialRowIds(rows)).toEqual(["$normal", "thread-root:$old-root"]);
+      expect(rows.find((row) => row.row_id === "thread-root:$old-root")?.activity_event_id).toBe(
+        "$latest"
+      );
+    }
+    expect(pendingRows.find((row) => row.row_id === "thread-root:$old-root")?.kind).toBe(
+      "threadRootPending"
+    );
+    expect(readyRows.find((row) => row.row_id === "thread-root:$old-root")?.item.body).toBe(
+      "$old-root"
+    );
+    expect(failedRows.find((row) => row.row_id === "thread-root:$old-root")?.kind).toBe(
+      "threadRootFailed"
+    );
+    expect(canonical).toEqual([event("$normal", 1_800_000_000_000), latestReply]);
+  });
+
   test("RootEvent preserves the exact canonical presentation and item references", () => {
     const threadRoot = root("$root", 1_800_000_000_000, "$reply", 1_800_000_020_000);
     const latestReply = reply("$reply", "$root", 1_800_000_020_000);

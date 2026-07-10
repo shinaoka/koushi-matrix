@@ -6,7 +6,7 @@
  * rendering; it must never be used as a VectorDiff target.
  */
 
-import type { TimelineItem, TimelineKey } from "./coreEvents";
+import type { ThreadRootProjectionDto, TimelineItem, TimelineKey } from "./coreEvents";
 import { timelineItemDomId } from "./coreEvents";
 import type { TimelineThreadRootOrder } from "./types";
 
@@ -23,7 +23,7 @@ export type TimelineDisplayRow = {
   content_timestamp_ms: number | null;
   /** Timestamp used for presentation placement and date grouping. */
   display_timestamp_ms: number | null;
-  kind: "event" | "threadRoot" | "dateDivider";
+  kind: "event" | "threadRoot" | "threadRootPending" | "threadRootFailed" | "dateDivider";
 };
 
 type CanonicalEntry = {
@@ -56,16 +56,20 @@ type MoveCandidate = {
 export function projectTimelineDisplayRows(
   canonicalItems: readonly TimelineItem[],
   key: TimelineKey,
-  order: TimelineThreadRootOrder
+  order: TimelineThreadRootOrder,
+  threadRootProjections: readonly ThreadRootProjectionDto[] = []
 ): TimelineDisplayRow[] {
   if (!("Room" in key.kind) || order.kind !== "latestReply") {
     return canonicalItems.map((item) => canonicalRow(item));
   }
 
-  return projectLatestReplyRoomRows(canonicalItems);
+  return projectLatestReplyRoomRows(canonicalItems, threadRootProjections);
 }
 
-function projectLatestReplyRoomRows(canonicalItems: readonly TimelineItem[]): TimelineDisplayRow[] {
+function projectLatestReplyRoomRows(
+  canonicalItems: readonly TimelineItem[],
+  threadRootProjections: readonly ThreadRootProjectionDto[]
+): TimelineDisplayRow[] {
   const entries = canonicalItems.map((item, index) => ({
     index,
     item,
@@ -91,6 +95,11 @@ function projectLatestReplyRoomRows(canonicalItems: readonly TimelineItem[]): Ti
   }
 
   const movedRootByActivityIndex = chooseMoves(rootsByIndex, entries);
+  const hydratedRootByActivityIndex = chooseHydratedRoots(
+    entries,
+    rootIds,
+    threadRootProjections
+  );
   const movedRootIndexes = new Set(
     [...movedRootByActivityIndex.values()].map((candidate) => candidate.root.index)
   );
@@ -109,6 +118,11 @@ function projectLatestReplyRoomRows(canonicalItems: readonly TimelineItem[]): Ti
       const moved = movedRootByActivityIndex.get(entry.index);
       if (moved !== undefined) {
         projectedRows.push(movedRootRow(moved));
+      } else {
+        const hydrated = hydratedRootByActivityIndex.get(entry.index);
+        if (hydrated !== undefined) {
+          projectedRows.push(hydrated);
+        }
       }
       // Room presentation represents a thread by its root/summary block, not
       // by any standalone reply row, including an unmatched stale reply.
@@ -123,6 +137,39 @@ function projectLatestReplyRoomRows(canonicalItems: readonly TimelineItem[]): Ti
   }
 
   return rebuildDateDividers(projectedRows);
+}
+
+function chooseHydratedRoots(
+  entries: readonly CanonicalEntry[],
+  loadedRootIds: ReadonlySet<string>,
+  projections: readonly ThreadRootProjectionDto[]
+): Map<number, TimelineDisplayRow> {
+  const selected = new Map<number, TimelineDisplayRow>();
+  const canonicalEventIds = new Set(
+    entries.flatMap((entry) => (entry.eventId === null ? [] : [entry.eventId]))
+  );
+
+  for (const projection of projections) {
+    if (loadedRootIds.has(projection.root_event_id) || canonicalEventIds.has(projection.root_event_id)) {
+      continue;
+    }
+    const activity = entries.find(
+      (entry) =>
+        entry.eventId === projection.activity_event_id &&
+        entry.item.thread_root === projection.root_event_id
+    );
+    if (activity === undefined || selected.has(activity.index)) {
+      continue;
+    }
+    const displayTimestampMs =
+      finiteTimestamp(activity.item.timestamp_ms) ??
+      finiteTimestamp(projection.activity_timestamp_ms);
+    if (displayTimestampMs === null) {
+      continue;
+    }
+    selected.set(activity.index, hydratedRootRow(projection, displayTimestampMs));
+  }
+  return selected;
 }
 
 function chooseMoves(
@@ -226,6 +273,53 @@ function movedRootRow(candidate: MoveCandidate): TimelineDisplayRow {
     activity_event_id: candidate.activityEventId,
     content_timestamp_ms: finiteTimestamp(candidate.root.item.timestamp_ms),
     display_timestamp_ms: candidate.displayTimestampMs
+  };
+}
+
+function hydratedRootRow(
+  projection: ThreadRootProjectionDto,
+  displayTimestampMs: number
+): TimelineDisplayRow {
+  const state = projection.state;
+  const item = state.kind === "ready" ? state.item : hydratedPlaceholderItem(projection);
+  return {
+    row_id: `thread-root:${projection.root_event_id}`,
+    item,
+    kind:
+      state.kind === "pending"
+        ? "threadRootPending"
+        : state.kind === "failed"
+          ? "threadRootFailed"
+          : "threadRoot",
+    content_event_id: projection.root_event_id,
+    activity_event_id: projection.activity_event_id,
+    content_timestamp_ms: finiteTimestamp(item.timestamp_ms),
+    display_timestamp_ms: displayTimestampMs
+  };
+}
+
+function hydratedPlaceholderItem(projection: ThreadRootProjectionDto): TimelineItem {
+  return {
+    id: { Event: { event_id: projection.root_event_id } },
+    sender: null,
+    body: null,
+    timestamp_ms: null,
+    in_reply_to_event_id: null,
+    thread_root: null,
+    thread_summary: {
+      reply_count: 1,
+      latest_event_id: projection.activity_event_id,
+      latest_sender: null,
+      latest_body_preview: null,
+      latest_timestamp_ms: projection.activity_timestamp_ms
+    },
+    reactions: [],
+    can_react: false,
+    is_redacted: false,
+    is_hidden: false,
+    can_redact: false,
+    is_edited: false,
+    can_edit: false
   };
 }
 

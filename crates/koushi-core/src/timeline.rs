@@ -95,12 +95,13 @@ use crate::command::{
 };
 use crate::event::{
     CoreEvent, LinkPreview, LinkPreviewState, LiveSignalsEvent, PaginationDirection,
-    PaginationState, ThreadSummaryDto, TimelineAnchorRestoreStatus, TimelineDiff, TimelineEvent,
-    TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource,
-    TimelineMediaThumbnail, TimelineMessageActions, TimelineMessageKind, TimelineMessageSource,
-    TimelineNavigationSnapshot, TimelineResyncReason, TimelineSendFailureReason, TimelineSendState,
-    TimelineSpoilerSpan, TimelineUnableToDecrypt, TimelineUnableToDecryptReason,
-    TimelineUnreadPosition, TimelineViewportObservation, message_actions_for_timeline_item,
+    PaginationState, ThreadRootProjectionDto, ThreadRootProjectionStateDto, ThreadSummaryDto,
+    TimelineAnchorRestoreStatus, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId,
+    TimelineMedia, TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
+    TimelineMessageActions, TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot,
+    TimelineResyncReason, TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
+    TimelineUnableToDecrypt, TimelineUnableToDecryptReason, TimelineUnreadPosition,
+    TimelineViewportObservation, message_actions_for_timeline_item,
     message_source_for_timeline_item,
 };
 use crate::executor;
@@ -112,6 +113,10 @@ use crate::link_preview::{LinkPreviewContext, extract_link_ranges};
 use crate::messages_backpressure::MessagesBackpressure;
 use crate::search::SearchIndexMessage;
 use crate::startup_trace::{self, StartupPhase};
+use crate::threads_list::{
+    ThreadRootProjectionActivity, ThreadRootProjectionDecision, ThreadRootProjectionRecord,
+    ThreadRootProjectionService,
+};
 use crate::unread_trace;
 
 /// Bounded diff queue capacity per subscribed timeline (overview.md, Async rule 10).
@@ -972,7 +977,7 @@ impl TimelineManagerActor {
 
         let focus = match &key.kind {
             TimelineKind::Room { .. } => TimelineFocus::Live {
-                hide_threaded_events: true,
+                hide_threaded_events: false,
             },
             TimelineKind::Thread { root_event_id, .. } => {
                 match matrix_sdk::ruma::EventId::parse(root_event_id.as_str()) {
@@ -1436,6 +1441,10 @@ enum TimelineActorMessage {
     },
     ReplyDetailsFetchFinished {
         event_id: String,
+    },
+    ThreadRootProjectionFetchFinished {
+        activity: ThreadRootProjectionActivity,
+        result: Result<TimelineItem, OperationFailureKind>,
     },
     RequestRoomKey {
         request_id: RequestId,
@@ -2176,6 +2185,213 @@ fn spawn_reply_detail_fetch(
     })
 }
 
+/// Starts the only allowed old-root hydration operation. It performs one
+/// cache-first `load_or_fetch_event` call and reports a typed terminal outcome
+/// back to the owning Room actor. It intentionally has no access to the SDK
+/// `Timeline`, so backward pagination and anchor materialization are not
+/// possible from this path.
+fn spawn_thread_root_projection_fetch(
+    session: Arc<MatrixClientSession>,
+    key: TimelineKey,
+    own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
+    msg_tx: mpsc::Sender<TimelineActorMessage>,
+    activity: ThreadRootProjectionActivity,
+) {
+    executor::spawn(async move {
+        let result =
+            load_thread_root_projection_item(&session, &key, own_user_id.as_deref(), &activity)
+                .await;
+        let _ = msg_tx
+            .send(TimelineActorMessage::ThreadRootProjectionFetchFinished { activity, result })
+            .await;
+    });
+}
+
+async fn load_thread_root_projection_item(
+    session: &MatrixClientSession,
+    key: &TimelineKey,
+    own_user_id: Option<&matrix_sdk::ruma::UserId>,
+    activity: &ThreadRootProjectionActivity,
+) -> Result<TimelineItem, OperationFailureKind> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(activity.room_id.as_str())
+        .map_err(|_| OperationFailureKind::Invalid)?;
+    let root_event_id = matrix_sdk::ruma::EventId::parse(activity.root_event_id.as_str())
+        .map_err(|_| OperationFailureKind::Invalid)?;
+    let room = session
+        .client()
+        .get_room(&room_id)
+        .ok_or(OperationFailureKind::NotFound)?;
+    let loaded = room
+        .load_or_fetch_event(&root_event_id, None)
+        .await
+        .map_err(|_| OperationFailureKind::Network)?;
+    let raw: serde_json::Value =
+        serde_json::from_str(loaded.raw().json().get()).map_err(|_| OperationFailureKind::Sdk)?;
+    thread_root_projection_item_from_raw(key, own_user_id, activity, raw)
+        .ok_or(OperationFailureKind::Sdk)
+}
+
+fn thread_root_projection_activity_from_item(
+    room_id: &str,
+    item: &TimelineItem,
+) -> Option<ThreadRootProjectionActivity> {
+    let TimelineItemId::Event { event_id } = &item.id else {
+        return None;
+    };
+    let root_event_id = item.thread_root.as_ref()?.trim();
+    (!root_event_id.is_empty()).then(|| ThreadRootProjectionActivity {
+        room_id: room_id.to_owned(),
+        root_event_id: root_event_id.to_owned(),
+        activity_event_id: event_id.clone(),
+        activity_timestamp_ms: item.timestamp_ms,
+    })
+}
+
+/// Convert the cache/network event payload into a self-contained root DTO
+/// without inserting it into the SDK timeline. The raw event is already the
+/// SDK's decrypted/cache-aware representation. This intentionally projects
+/// only event-local data; relations such as reactions stay in the canonical
+/// timeline when available rather than causing an unbounded relation fetch.
+fn thread_root_projection_item_from_raw(
+    key: &TimelineKey,
+    own_user_id: Option<&matrix_sdk::ruma::UserId>,
+    activity: &ThreadRootProjectionActivity,
+    raw: serde_json::Value,
+) -> Option<TimelineItem> {
+    let event_id = raw.get("event_id")?.as_str()?.to_owned();
+    if event_id != activity.root_event_id {
+        return None;
+    }
+    let sender = raw
+        .get("sender")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let timestamp_ms = raw
+        .get("origin_server_ts")
+        .and_then(serde_json::Value::as_u64);
+    let content = raw.get("content").unwrap_or(&serde_json::Value::Null);
+    let is_redacted = raw
+        .get("unsigned")
+        .and_then(|unsigned| unsigned.get("redacted_because"))
+        .is_some();
+    let body = content
+        .get("body")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            (raw.get("type").and_then(serde_json::Value::as_str) == Some("m.room.encrypted"))
+                .then(|| "Unable to decrypt message".to_owned())
+        });
+    let message_kind = match content.get("msgtype").and_then(serde_json::Value::as_str) {
+        Some("m.emote") => TimelineMessageKind::Emote,
+        Some("m.notice") => TimelineMessageKind::Notice,
+        _ => TimelineMessageKind::Text,
+    };
+    let id = TimelineItemId::Event {
+        event_id: event_id.clone(),
+    };
+    let actionable_body = (!is_redacted).then_some(body.as_deref()).flatten();
+    let mut thread_summary = thread_summary_from_loaded_root_raw(&raw);
+    let summary = thread_summary.get_or_insert(ThreadSummaryDto {
+        reply_count: 1,
+        latest_event_id: None,
+        latest_sender: None,
+        latest_sender_label: None,
+        latest_body_preview: None,
+        latest_timestamp_ms: None,
+    });
+    summary.reply_count = summary.reply_count.max(1);
+    summary.latest_event_id = Some(activity.activity_event_id.clone());
+    summary.latest_timestamp_ms = activity.activity_timestamp_ms;
+
+    Some(TimelineItem {
+        id,
+        sender: sender.clone(),
+        sender_label: None,
+        sender_avatar: None,
+        body: body.clone(),
+        notice_i18n_key: None,
+        message_kind,
+        spoiler_spans: Vec::new(),
+        timestamp_ms,
+        in_reply_to_event_id: content
+            .get("m.relates_to")
+            .and_then(|relation| relation.get("m.in_reply_to"))
+            .and_then(|reply| reply.get("event_id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        formatted: None,
+        reply_quote: None,
+        thread_root: None,
+        thread_summary,
+        media: None,
+        link_previews: None,
+        link_ranges: extract_link_ranges(body.as_deref().unwrap_or("")),
+        reactions: Vec::new(),
+        can_react: !is_redacted && body.is_some(),
+        is_redacted,
+        // A loaded old root is deliberately visible even if it is a
+        // non-message event; the terminal state must be observable rather
+        // than triggering another history fetch.
+        is_hidden: false,
+        can_redact: !is_redacted
+            && body.is_some()
+            && own_user_id
+                .zip(sender.as_deref())
+                .is_some_and(|(own, event_sender)| own.as_str() == event_sender),
+        is_edited: false,
+        can_edit: !is_redacted
+            && body.is_some()
+            && own_user_id
+                .zip(sender.as_deref())
+                .is_some_and(|(own, event_sender)| own.as_str() == event_sender),
+        unable_to_decrypt: (raw.get("type").and_then(serde_json::Value::as_str)
+            == Some("m.room.encrypted"))
+        .then_some(TimelineUnableToDecrypt {
+            session_id: None,
+            reason: TimelineUnableToDecryptReason::Unknown,
+            can_request_keys: false,
+        }),
+        actions: message_actions_for_timeline_item(
+            key.room_id(),
+            &TimelineItemId::Event { event_id },
+            actionable_body,
+            false,
+            is_redacted,
+        ),
+        send_state: None,
+    })
+}
+
+fn thread_summary_from_loaded_root_raw(raw: &serde_json::Value) -> Option<ThreadSummaryDto> {
+    let summary = raw.get("unsigned")?.get("m.relations")?.get("m.thread")?;
+    let latest = summary.get("latest_event");
+    Some(ThreadSummaryDto {
+        reply_count: summary
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|count| u32::try_from(count).ok())
+            .unwrap_or(0),
+        latest_event_id: latest
+            .and_then(|event| event.get("event_id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        latest_sender: latest
+            .and_then(|event| event.get("sender"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        latest_sender_label: None,
+        latest_body_preview: latest
+            .and_then(|event| event.get("content"))
+            .and_then(|content| content.get("body"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        latest_timestamp_ms: latest
+            .and_then(|event| event.get("origin_server_ts"))
+            .and_then(serde_json::Value::as_u64),
+    })
+}
+
 struct TimelineActorHandle {
     tx: mpsc::Sender<TimelineActorMessage>,
     task: executor::JoinHandle<()>,
@@ -2286,6 +2502,9 @@ struct TimelineActor {
     link_preview_fetches: HashMap<String, executor::JoinHandle<()>>,
     /// In-flight reply detail fetch workers keyed by the reply event_id.
     reply_detail_fetches: HashMap<String, executor::JoinHandle<()>>,
+    /// Dedicated bounded hydration state for roots outside canonical Room
+    /// timeline items. This is not a `Timeline` and cannot paginate.
+    thread_root_projection_service: ThreadRootProjectionService,
     /// Reply event IDs already handed to the SDK for replied-to details during
     /// this actor lifetime. This avoids retry loops on every viewport tick.
     reply_detail_fetch_attempted_event_ids: HashSet<String>,
@@ -2590,7 +2809,7 @@ impl TimelineActor {
             }
         }
 
-        let actor = TimelineActor {
+        let mut actor = TimelineActor {
             key: key.clone(),
             timeline,
             session,
@@ -2619,6 +2838,7 @@ impl TimelineActor {
             link_preview_policy,
             link_preview_fetches: HashMap::new(),
             reply_detail_fetches: HashMap::new(),
+            thread_root_projection_service: ThreadRootProjectionService::default(),
             reply_detail_fetch_attempted_event_ids: HashSet::new(),
             pagination_task: None,
             next_pagination_serial: 0,
@@ -2633,6 +2853,7 @@ impl TimelineActor {
         actor
             .forward_initial_items_to_search(initial_sdk_items.iter().cloned())
             .await;
+        actor.maybe_hydrate_missing_thread_roots();
         let task = executor::spawn(actor.run());
 
         TimelineActorHandle {
@@ -2737,6 +2958,9 @@ impl TimelineActor {
             }
             TimelineActorMessage::ReplyDetailsFetchFinished { event_id } => {
                 self.reply_detail_fetches.remove(&event_id);
+            }
+            TimelineActorMessage::ThreadRootProjectionFetchFinished { activity, result } => {
+                self.handle_thread_root_projection_fetch_finished(activity, result);
             }
             TimelineActorMessage::RequestRoomKey {
                 request_id,
@@ -4675,6 +4899,7 @@ impl TimelineActor {
                 }]);
         }
         apply_timeline_diffs_to_items(&mut self.navigation_items, &core_diffs);
+        self.maybe_hydrate_missing_thread_roots();
         self.maybe_fetch_visible_reply_details();
         self.emit_media_gallery_if_changed().await;
 
@@ -4718,6 +4943,130 @@ impl TimelineActor {
             }));
             self.emit_navigation_if_changed();
         }
+    }
+
+    /// Detect Room thread replies whose root is not present in the canonical
+    /// SDK item window. The projection service is deliberately out-of-band:
+    /// this method never creates a VectorDiff, calls Room pagination, or
+    /// asks the viewport/anchor path to materialize an event.
+    fn maybe_hydrate_missing_thread_roots(&mut self) {
+        if !matches!(self.key.kind, TimelineKind::Room { .. }) {
+            return;
+        }
+
+        let activities = self
+            .navigation_items
+            .iter()
+            .filter_map(|item| thread_root_projection_activity_from_item(self.key.room_id(), item))
+            .filter(|activity| !self.timeline_contains_event_id(&activity.root_event_id))
+            .collect::<Vec<_>>();
+
+        for activity in activities {
+            match self.thread_root_projection_service.observe(activity) {
+                ThreadRootProjectionDecision::StartFetch(activity) => {
+                    self.emit_thread_root_projection_pending(&activity);
+                    let _ =
+                        self.action_tx
+                            .try_send(vec![AppAction::ThreadRootProjectionObserved {
+                                room_id: activity.room_id.clone(),
+                                root_event_id: activity.root_event_id.clone(),
+                                activity_event_id: activity.activity_event_id.clone(),
+                                activity_timestamp_ms: activity.activity_timestamp_ms,
+                            }]);
+                    spawn_thread_root_projection_fetch(
+                        Arc::clone(&self.session),
+                        self.key.clone(),
+                        self.own_user_id.clone(),
+                        self.msg_tx.clone(),
+                        activity,
+                    );
+                }
+                ThreadRootProjectionDecision::ActivityUpdated(record) => {
+                    self.emit_thread_root_projection_record(&record);
+                }
+                ThreadRootProjectionDecision::AlreadyTracked => {}
+            }
+        }
+    }
+
+    fn handle_thread_root_projection_fetch_finished(
+        &mut self,
+        activity: ThreadRootProjectionActivity,
+        result: Result<TimelineItem, OperationFailureKind>,
+    ) {
+        match result {
+            Ok(item) => {
+                let Some(record) = self
+                    .thread_root_projection_service
+                    .mark_ready(&activity, item)
+                else {
+                    return;
+                };
+                if self.timeline_contains_event_id(&record.activity.root_event_id) {
+                    return;
+                }
+                let _ = self
+                    .action_tx
+                    .try_send(vec![AppAction::ThreadRootProjectionReady {
+                        room_id: record.activity.room_id.clone(),
+                        root_event_id: record.activity.root_event_id.clone(),
+                        activity_event_id: record.activity.activity_event_id.clone(),
+                        activity_timestamp_ms: record.activity.activity_timestamp_ms,
+                    }]);
+                self.emit_thread_root_projection_record(&record);
+            }
+            Err(failure_kind) => {
+                let Some(record) = self
+                    .thread_root_projection_service
+                    .mark_failed(&activity, failure_kind)
+                else {
+                    return;
+                };
+                let _ = self
+                    .action_tx
+                    .try_send(vec![AppAction::ThreadRootProjectionFailed {
+                        room_id: record.activity.room_id.clone(),
+                        root_event_id: record.activity.root_event_id.clone(),
+                        activity_event_id: record.activity.activity_event_id.clone(),
+                        activity_timestamp_ms: record.activity.activity_timestamp_ms,
+                        failure_kind,
+                    }]);
+                self.emit_thread_root_projection_record(&record);
+            }
+        }
+    }
+
+    fn emit_thread_root_projection_pending(&self, activity: &ThreadRootProjectionActivity) {
+        self.emit(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+            key: self.key.clone(),
+            projection: ThreadRootProjectionDto {
+                root_event_id: activity.root_event_id.clone(),
+                activity_event_id: activity.activity_event_id.clone(),
+                activity_timestamp_ms: activity.activity_timestamp_ms,
+                state: ThreadRootProjectionStateDto::Pending,
+            },
+        }));
+    }
+
+    fn emit_thread_root_projection_record(&self, record: &ThreadRootProjectionRecord) {
+        let state = if record.is_pending() {
+            ThreadRootProjectionStateDto::Pending
+        } else if let Some(item) = record.item() {
+            ThreadRootProjectionStateDto::Ready { item: item.clone() }
+        } else if let Some(failure_kind) = record.failure_kind() {
+            ThreadRootProjectionStateDto::Failed { failure_kind }
+        } else {
+            return;
+        };
+        self.emit(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+            key: self.key.clone(),
+            projection: ThreadRootProjectionDto {
+                root_event_id: record.activity.root_event_id.clone(),
+                activity_event_id: record.activity.activity_event_id.clone(),
+                activity_timestamp_ms: record.activity.activity_timestamp_ms,
+                state,
+            },
+        }));
     }
 
     async fn handle_ignored_users_updated(&mut self, user_ids: std::collections::BTreeSet<String>) {
@@ -9748,8 +10097,95 @@ mod tests {
             .expect("thread timeline focus arm should follow room arm");
 
         assert!(
-            room_focus.contains("hide_threaded_events: true"),
-            "room live timelines must hide threaded replies and surface them through root summaries"
+            room_focus.contains("hide_threaded_events: false"),
+            "room live timelines must keep threaded replies in canonical SDK items so the display projection can represent them"
+        );
+    }
+
+    #[test]
+    fn old_root_reply_reaches_bounded_room_projection_hydration_without_pagination() {
+        let mut reply = timeline_item(
+            "$latest-reply:test",
+            Some("new reply"),
+            "@alice:test",
+            false,
+        );
+        reply.timestamp_ms = Some(1_700_000_100_000);
+        reply.thread_root = Some("$old-root:test".to_owned());
+
+        let activity = thread_root_projection_activity_from_item("!room:test", &reply)
+            .expect("a canonical Room reply must be observable for root hydration");
+        assert_eq!(activity.root_event_id, "$old-root:test");
+        assert_eq!(activity.activity_event_id, "$latest-reply:test");
+        assert_eq!(activity.activity_timestamp_ms, Some(1_700_000_100_000));
+
+        let source = include_str!("timeline.rs");
+        let hydration = source
+            .split("fn maybe_hydrate_missing_thread_roots")
+            .nth(1)
+            .expect("Room root hydration detection must exist")
+            .split("fn handle_thread_root_projection_fetch_finished")
+            .next()
+            .expect("root hydration handler boundary");
+        assert!(
+            hydration.contains("ThreadRootProjectionDecision::StartFetch")
+                && hydration.contains("spawn_thread_root_projection_fetch"),
+            "an absent root must issue one dedicated bounded fetch"
+        );
+        assert!(
+            !hydration.contains("paginate_backwards(")
+                && !hydration.contains("handle_restore_timeline_anchor("),
+            "root hydration must not initiate Room pagination or anchor materialization"
+        );
+    }
+
+    #[test]
+    fn loaded_old_root_raw_event_projects_renderable_snapshot_with_latest_activity_identity() {
+        let activity = ThreadRootProjectionActivity {
+            room_id: "!room:test".to_owned(),
+            root_event_id: "$old-root:test".to_owned(),
+            activity_event_id: "$latest-reply:test".to_owned(),
+            activity_timestamp_ms: Some(1_700_000_100_000),
+        };
+        let raw = serde_json::json!({
+            "type": "m.room.message",
+            "event_id": "$old-root:test",
+            "sender": "@alice:test",
+            "origin_server_ts": 1_700_000_000_000_u64,
+            "content": { "msgtype": "m.text", "body": "old root body" },
+            "unsigned": {
+                "m.relations": {
+                    "m.thread": {
+                        "count": 3,
+                        "latest_event": {
+                            "event_id": "$stale-latest:test",
+                            "sender": "@bob:test",
+                            "origin_server_ts": 1_700_000_050_000_u64,
+                            "content": { "body": "stale preview" }
+                        }
+                    }
+                }
+            }
+        });
+
+        let item = thread_root_projection_item_from_raw(&room_key(), None, &activity, raw)
+            .expect("valid loaded root must yield a renderable snapshot");
+        assert_eq!(timeline_item_event_id(&item), Some("$old-root:test"));
+        assert_eq!(item.body.as_deref(), Some("old root body"));
+        assert_eq!(item.timestamp_ms, Some(1_700_000_000_000));
+        assert_eq!(item.thread_root, None);
+        assert_eq!(
+            item.thread_summary
+                .as_ref()
+                .and_then(|summary| summary.latest_event_id.as_deref()),
+            Some("$latest-reply:test"),
+            "activity placement identity must come from the live reply, never stale bundled metadata"
+        );
+        assert_eq!(
+            item.thread_summary
+                .as_ref()
+                .and_then(|summary| summary.latest_timestamp_ms),
+            Some(1_700_000_100_000)
         );
     }
 

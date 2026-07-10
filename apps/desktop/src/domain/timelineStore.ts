@@ -38,7 +38,8 @@ import type {
   TimelineDiff,
   TimelineEvent,
   TimelineItem,
-  TimelineKey
+  TimelineKey,
+  ThreadRootProjectionDto
 } from "./coreEvents";
 import { timelineItemDomId, timelineKeyEquals } from "./coreEvents";
 
@@ -71,6 +72,8 @@ export interface TimelineKeyState {
 export interface TimelineStoreState {
   /** Keyed by JSON.stringify(TimelineKey) for simple equality. */
   keys: Map<string, TimelineKeyState>;
+  /** Bounded root snapshots, keyed independently from canonical SDK items. */
+  threadRootProjections: Map<string, ThreadRootProjectionDto>;
 }
 
 export const TIMELINE_STORE_INACTIVE_RETAIN_LIMIT = 8;
@@ -98,7 +101,28 @@ function emptyKeyState(): TimelineKeyState {
 }
 
 export function createTimelineStore(): TimelineStoreState {
-  return { keys: new Map() };
+  return { keys: new Map(), threadRootProjections: new Map() };
+}
+
+function withKeys(store: TimelineStoreState, keys: Map<string, TimelineKeyState>): TimelineStoreState {
+  return { ...store, keys };
+}
+
+function withRetainedKeys(
+  store: TimelineStoreState,
+  keys: Map<string, TimelineKeyState>
+): TimelineStoreState {
+  const retainedPrefixes = [...keys.keys()].map((key) => `${key}\u0000`);
+  const threadRootProjections = new Map(
+    [...store.threadRootProjections].filter(([projectionKey]) =>
+      retainedPrefixes.some((prefix) => projectionKey.startsWith(prefix))
+    )
+  );
+  return { ...store, keys, threadRootProjections };
+}
+
+function threadRootProjectionStoreKey(key: TimelineKey, rootEventId: string): string {
+  return `${keyStr(key)}\u0000${rootEventId}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +138,9 @@ export function applyTimelineEvent(
   }
   if ("ItemsUpdated" in event) {
     return applyItemsUpdated(store, event.ItemsUpdated);
+  }
+  if ("ThreadRootProjection" in event) {
+    return applyThreadRootProjection(store, event.ThreadRootProjection);
   }
   if ("DisplayLabelsUpdated" in event) {
     return applyDisplayLabelsUpdated(store, event.DisplayLabelsUpdated);
@@ -162,7 +189,7 @@ export function applyGlobalResync(store: TimelineStoreState): TimelineStoreState
       mediaUploadProgress: new Map()
     });
   }
-  return { keys: next };
+  return withRetainedKeys(store, next);
 }
 
 export function pruneTimelineStore(
@@ -188,7 +215,7 @@ export function pruneTimelineStore(
     }
   }
   if (inactiveCount <= retainLimit) {
-    return movedTouchedKey ? { keys: next } : store;
+    return movedTouchedKey ? withKeys(store, next) : store;
   }
 
   let evictCount = inactiveCount - retainLimit;
@@ -202,7 +229,7 @@ export function pruneTimelineStore(
     next.delete(keyId);
     evictCount -= 1;
   }
-  return { keys: next };
+  return withRetainedKeys(store, next);
 }
 
 function timelineEventKeyId(event: TimelineEvent): string | null {
@@ -242,6 +269,9 @@ function timelineEventKeyId(event: TimelineEvent): string | null {
   if ("MediaDownloadFailed" in event) {
     return keyStr(event.MediaDownloadFailed.key);
   }
+  if ("ThreadRootProjection" in event) {
+    return keyStr(event.ThreadRootProjection.key);
+  }
   if ("ResyncRequired" in event) {
     return keyStr(event.ResyncRequired.key);
   }
@@ -251,6 +281,24 @@ function timelineEventKeyId(event: TimelineEvent): string | null {
 // ---------------------------------------------------------------------------
 // Internal reducers
 // ---------------------------------------------------------------------------
+
+function applyThreadRootProjection(
+  store: TimelineStoreState,
+  payload: Extract<TimelineEvent, { ThreadRootProjection: unknown }>[
+    "ThreadRootProjection"
+  ]
+): TimelineStoreState {
+  if (!("Room" in payload.key.kind)) {
+    return store;
+  }
+  const projections = new Map(store.threadRootProjections);
+  projections.set(
+    threadRootProjectionStoreKey(payload.key, payload.projection.root_event_id),
+    payload.projection
+  );
+  // Deliberately does not touch `keys`, canonical items, or either index.
+  return { ...store, threadRootProjections: projections };
+}
 
 function applyInitialItems(
   store: TimelineStoreState,
@@ -269,7 +317,7 @@ function applyInitialItems(
     lastAppliedBatchId: null,
     awaitingResync: false
   });
-  return { keys: next };
+  return withKeys(store, next);
 }
 
 function applyMediaUploadProgress(
@@ -282,7 +330,7 @@ function applyMediaUploadProgress(
   progress.set(payload.transaction_id, payload.progress);
   const next = new Map(store.keys);
   next.set(k, { ...existing, mediaUploadProgress: progress });
-  return { keys: next };
+  return withKeys(store, next);
 }
 
 function applySendCompleted(
@@ -298,7 +346,7 @@ function applySendCompleted(
   progress.delete(payload.transaction_id);
   const next = new Map(store.keys);
   next.set(k, { ...existing, mediaUploadProgress: progress });
-  return { keys: next };
+  return withKeys(store, next);
 }
 
 function applyItemsUpdated(
@@ -327,7 +375,7 @@ function applyItemsUpdated(
       itemIndexById: updated.itemIndexById,
       itemIdsByTimestamp: updated.itemIdsByTimestamp
     });
-    return { keys: next };
+    return withKeys(store, next);
   }
 
   // Stale generation: discard silently.
@@ -358,7 +406,7 @@ function applyItemsUpdated(
     itemIdsByTimestamp: updated.itemIdsByTimestamp,
     lastAppliedBatchId: payload.batch_id
   });
-  return { keys: next };
+  return withKeys(store, next);
 }
 
 function applyPaginationStateChanged(
@@ -376,7 +424,7 @@ function applyPaginationStateChanged(
       ? { ...existing, paginationBackward: payload.state }
       : { ...existing, paginationForward: payload.state };
   next.set(k, updated);
-  return { keys: next };
+  return withKeys(store, next);
 }
 
 function applyResyncRequired(
@@ -397,7 +445,7 @@ function applyResyncRequired(
     awaitingResync: true,
     mediaUploadProgress: new Map()
   });
-  return { keys: next };
+  return withKeys(store, next);
 }
 
 function applyDisplayPolicyUpdated(
@@ -429,7 +477,7 @@ function applyDisplayPolicyUpdated(
     }
   }
 
-  return changed ? { keys: next } : store;
+  return changed ? withKeys(store, next) : store;
 }
 
 function applyDisplayLabelsUpdated(
@@ -467,7 +515,7 @@ function applyDisplayLabelsUpdated(
     }
   }
 
-  return changed ? { keys: next } : store;
+  return changed ? withKeys(store, next) : store;
 }
 
 function applyDisplayLabelUpdateToItem(
@@ -797,6 +845,24 @@ export function getItems(
   key: TimelineKey
 ): TimelineItem[] {
   return store.keys.get(keyStr(key))?.items ?? [];
+}
+
+/**
+ * Returns the separately-owned old-root snapshots for one Room timeline.
+ * Callers must use these only as display-projection input; they are never
+ * canonical diff items and cannot be applied back to `TimelineKeyState`.
+ */
+export function getThreadRootProjections(
+  store: TimelineStoreState,
+  key: TimelineKey
+): ThreadRootProjectionDto[] {
+  if (!("Room" in key.kind)) {
+    return [];
+  }
+  const prefix = `${keyStr(key)}\u0000`;
+  return [...store.threadRootProjections.entries()]
+    .filter(([projectionKey]) => projectionKey.startsWith(prefix))
+    .map(([, projection]) => projection);
 }
 
 export function getMediaUploadProgress(

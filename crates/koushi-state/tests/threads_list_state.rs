@@ -1,6 +1,6 @@
 use koushi_state::{
     AppAction, AppEffect, AppState, OperationFailureKind, RoomSummary, RoomTags, SessionInfo,
-    SessionState, ThreadsListItem, ThreadsListState, UiEvent, reduce,
+    SessionState, ThreadRootProjectionStatus, ThreadsListItem, ThreadsListState, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -75,6 +75,67 @@ fn thread_item(root_event_id: &str) -> ThreadsListItem {
 fn default_threads_list_is_closed() {
     let state = AppState::default();
     assert_eq!(state.threads_list, ThreadsListState::Closed);
+}
+
+#[test]
+fn thread_root_projection_is_keyed_by_room_and_root_and_terminal_failures_do_not_retry() {
+    let mut state = selected_room_state("room-a");
+
+    let first_effects = reduce(
+        &mut state,
+        AppAction::ThreadRootProjectionObserved {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$old-root:example.invalid".to_owned(),
+            activity_event_id: "$latest-reply:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(1_700_000_100_000),
+        },
+    );
+    assert_eq!(
+        first_effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+    );
+    assert_eq!(
+        state
+            .thread_root_projections
+            .get("room-a", "$old-root:example.invalid"),
+        Some(&ThreadRootProjectionStatus::Pending {
+            activity_event_id: "$latest-reply:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(1_700_000_100_000),
+        })
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ThreadRootProjectionFailed {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$old-root:example.invalid".to_owned(),
+            activity_event_id: "$latest-reply:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(1_700_000_100_000),
+            failure_kind: OperationFailureKind::NotFound,
+        },
+    );
+    let duplicate_effects = reduce(
+        &mut state,
+        AppAction::ThreadRootProjectionObserved {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$old-root:example.invalid".to_owned(),
+            activity_event_id: "$latest-reply:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(1_700_000_100_000),
+        },
+    );
+    assert!(
+        duplicate_effects.is_empty(),
+        "terminal projection must not loop"
+    );
+    assert!(matches!(
+        state
+            .thread_root_projections
+            .get("room-a", "$old-root:example.invalid"),
+        Some(ThreadRootProjectionStatus::Failed {
+            failure_kind: OperationFailureKind::NotFound,
+            ..
+        })
+    ));
 }
 
 #[test]

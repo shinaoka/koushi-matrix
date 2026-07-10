@@ -900,6 +900,27 @@ pub enum AppAction {
         room_id: String,
     },
     CloseThreadsList,
+    /// A Room timeline observed thread reply activity whose root is outside
+    /// its canonical loaded items. This is not a pagination request.
+    ThreadRootProjectionObserved {
+        room_id: String,
+        root_event_id: String,
+        activity_event_id: String,
+        activity_timestamp_ms: Option<u64>,
+    },
+    ThreadRootProjectionReady {
+        room_id: String,
+        root_event_id: String,
+        activity_event_id: String,
+        activity_timestamp_ms: Option<u64>,
+    },
+    ThreadRootProjectionFailed {
+        room_id: String,
+        root_event_id: String,
+        activity_event_id: String,
+        activity_timestamp_ms: Option<u64>,
+        failure_kind: crate::OperationFailureKind,
+    },
     ClearError {
         code: String,
     },
