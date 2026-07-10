@@ -13,15 +13,31 @@ pub(crate) fn enabled() -> bool {
     std::env::var_os(ENV_VAR).is_some()
 }
 
-fn unread_diagnostic_token(value: &str) -> &'static str {
+fn unread_stage_token(value: &str) -> &'static str {
     match value {
         "room_list_snapshot" => "room_list_snapshot",
         "room_list_applied" => "room_list_applied",
         "activity_recent_event" => "activity_recent_event",
         "activity_placeholder" => "activity_placeholder",
+        "mark_read_requested" => "mark_read_requested",
         "mark_read_success" => "mark_read_success",
+        "mark_read_failed" => "mark_read_failed",
+        "set_fully_read_requested" => "set_fully_read_requested",
+        "set_fully_read_failed" => "set_fully_read_failed",
+        "set_fully_read_private_receipt_target" => "set_fully_read_private_receipt_target",
+        "set_fully_read_success" => "set_fully_read_success",
+        _ => "other",
+    }
+}
+
+fn unread_reason_token(value: &str) -> &'static str {
+    match value {
         "unread" => "unread",
         "plain_unread_only" => "plain_unread_only",
+        "fully_read_latest" => "fully_read_latest",
+        "cleared_latest" => "cleared_latest",
+        "cleared_local" => "cleared_local",
+        "room_metrics" => "room_metrics",
         _ => "other",
     }
 }
@@ -35,7 +51,7 @@ fn record_room_metrics(
     let mut event = DiagnosticEvent::new(
         DiagnosticLevel::Debug,
         "core.unread",
-        unread_diagnostic_token(stage),
+        unread_stage_token(stage),
     )
     .field(DiagnosticField::count("unread", room.unread_count))
     .field(DiagnosticField::count(
@@ -57,7 +73,7 @@ fn record_room_metrics(
     if let Some(reason) = reason {
         event = event.field(DiagnosticField::token(
             "reason",
-            unread_diagnostic_token(reason),
+            unread_reason_token(reason),
         ));
     }
     koushi_diagnostics::record(event);
@@ -213,7 +229,7 @@ pub(crate) fn trace_mark_read(stage: &str, request_id: u64, room_id: &str, event
         DiagnosticEvent::new(
             DiagnosticLevel::Debug,
             "core.unread",
-            unread_diagnostic_token(stage),
+            unread_stage_token(stage),
         )
         .field(DiagnosticField::count("request_id", request_id))
         .field(DiagnosticField::boolean(
@@ -358,6 +374,27 @@ mod tests {
             Some("$private-event:example.invalid"),
         );
 
+        for stage in [
+            "mark_read_requested",
+            "mark_read_failed",
+            "set_fully_read_requested",
+            "set_fully_read_failed",
+            "set_fully_read_private_receipt_target",
+            "set_fully_read_success",
+        ] {
+            trace_mark_read(stage, 78, "!private-room:example.invalid", None);
+        }
+        for reason in [
+            "plain_unread_only",
+            "unread",
+            "fully_read_latest",
+            "cleared_latest",
+            "cleared_local",
+            "room_metrics",
+        ] {
+            trace_activity_room("activity_recent_event", &room, true, reason);
+        }
+
         let records = koushi_diagnostics::snapshot().records;
         for stage in [
             "room_list_snapshot",
@@ -387,6 +424,21 @@ mod tests {
                     !serialized.contains(private_value),
                     "leaked {private_value}"
                 );
+            }
+        }
+
+        let records = koushi_diagnostics::snapshot().records;
+        for record in records
+            .iter()
+            .filter(|record| record.event.source == "core.unread")
+        {
+            for field in &record.event.fields {
+                if matches!(
+                    field.value,
+                    koushi_diagnostics::DiagnosticValue::Token("other")
+                ) {
+                    panic!("live unread diagnostic collapsed to other: {record:?}");
+                }
             }
         }
     }
