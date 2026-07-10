@@ -17,7 +17,7 @@
 - The collector is telemetry-only: no `AppState`, reducer, or product-success decisions may depend on it.
 - Do not capture arbitrary stdout/stderr and do not modify QA-only binary progress logging.
 - Use test-driven development: add and run each focused failing test before production code.
-- Luna implements one task at a time without committing; Terra reviews the task diff; the main integrator runs verification and commits only the reviewed files.
+- Luna implements one task at a time, self-reviews, runs the focused tests, and commits only that task's named files. Terra reviews the resulting commit range; the main integrator independently verifies accepted work.
 
 ---
 
@@ -208,11 +208,11 @@ cargo fmt --all -- --check
 
 Expected: PASS.
 
-- [ ] **Step 5: Terra review, then main-integrator commit**
+- [ ] **Step 5: Luna task commit, then Terra review**
 
 Review criteria: no arbitrary `String` diagnostic payload, no panic on poisoned lock/clock failure, capacity and drop count are exact.
 
-Commit after review:
+Commit after Luna's self-review and focused verification, then send this commit range to Terra:
 
 ```bash
 git add Cargo.toml Cargo.lock crates/koushi-diagnostics
@@ -344,9 +344,9 @@ cargo test -p koushi-core --lib diagnostic
 
 Expected: PASS with stderr compatibility tests unchanged.
 
-- [ ] **Step 6: Terra review, then main-integrator commit**
+- [ ] **Step 6: Luna task commit, then Terra review**
 
-Review every `record(` call for private inputs and confirm environment checks wrap only `eprintln!`, never `record`.
+Luna commits the task files below. Terra then reviews every `record(` call for private inputs and confirms environment checks wrap only `eprintln!`, never `record`.
 
 ```bash
 git add crates/koushi-sdk crates/koushi-core Cargo.lock
@@ -411,9 +411,9 @@ cargo fmt --all -- --check
 
 Expected: PASS.
 
-- [ ] **Step 5: Terra review, then main-integrator commit**
+- [ ] **Step 5: Luna task commit, then Terra review**
 
-Review against the pre-task dirty diff to prove all pre-existing latency additions remain present.
+Luna commits the task files below. Terra then reviews against the pre-task dirty diff to prove all pre-existing latency additions remain present.
 
 ```bash
 git add crates/koushi-core/src/timeline.rs crates/koushi-core/src/unread_trace.rs
@@ -526,9 +526,9 @@ npm --prefix apps/desktop run typecheck
 
 Expected: PASS.
 
-- [ ] **Step 5: Terra review, then main-integrator commit**
+- [ ] **Step 5: Luna task commit, then Terra review**
 
-Review for camelCase contract accuracy, no product state mutation, and no raw structured values formatted in Tauri.
+Luna commits the task files below. Terra then reviews for camelCase contract accuracy, no product state mutation, and no raw structured values formatted in Tauri.
 
 ```bash
 git add apps/desktop/src-tauri apps/desktop/src/backend apps/desktop/src/domain/diagnostics.ts Cargo.lock
@@ -639,9 +639,9 @@ npm --prefix apps/desktop run lint
 
 Expected: PASS.
 
-- [ ] **Step 5: Terra review, then main-integrator commit**
+- [ ] **Step 5: Luna task commit, then Terra review**
 
-Review that the dialog opens after both success and failure, raw caught errors are not recorded, and security diagnostics are present without Vite environment state.
+Luna commits the task files below. Terra then reviews that the dialog opens after both success and failure, raw caught errors are not recorded, and security diagnostics are present without Vite environment state.
 
 ```bash
 git add apps/desktop/src/domain/diagnostics.ts apps/desktop/src/domain/diagnostics.test.ts apps/desktop/src/App.tsx apps/desktop/src/App.test.tsx apps/desktop/src/vite-env.d.ts
@@ -705,10 +705,11 @@ Expected: every command exits 0 with no privacy leak output.
 
 Review against `REPOSITORY_RULES.md`, `docs/architecture/overview.md`, `docs/policies/engineering-rules.md`, and the design spec. Priorities: privacy, environment-independent coverage, no product-lane coupling, preservation of the pre-existing dirty latency changes.
 
-- [ ] **Step 5: Main-integrator final commit**
+- [ ] **Step 5: Luna task commit, Terra review, and main-integrator verification**
 
-Commit the structural inventory test after all earlier task diffs are already
-reviewed and committed:
+Luna commits the structural inventory test after all earlier task diffs are
+already reviewed and committed. Terra reviews it before the main integrator
+runs the final verification:
 
 ```bash
 git add apps/desktop/src/scripts/releaseScripts.test.ts
