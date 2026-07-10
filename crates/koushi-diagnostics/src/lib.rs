@@ -143,6 +143,33 @@ impl DiagnosticBuffer {
         });
     }
 
+    pub fn record_batch(&self, events: impl IntoIterator<Item = DiagnosticEvent>) {
+        self.record_batch_at(timestamp_millis_at(SystemTime::now()), events);
+    }
+
+    pub fn record_batch_at(
+        &self,
+        timestamp_ms: u64,
+        events: impl IntoIterator<Item = DiagnosticEvent>,
+    ) {
+        let mut records = lock_best_effort(&self.records);
+        let mut dropped_records = lock_best_effort(&self.dropped_records);
+        for event in events {
+            if self.capacity == 0 {
+                *dropped_records = dropped_records.saturating_add(1);
+                continue;
+            }
+            if records.len() == self.capacity {
+                records.pop_front();
+                *dropped_records = dropped_records.saturating_add(1);
+            }
+            records.push_back(DiagnosticRecord {
+                timestamp_ms,
+                event,
+            });
+        }
+    }
+
     pub fn snapshot(&self) -> DiagnosticSnapshot {
         let records_guard = lock_best_effort(&self.records);
         let records = records_guard.iter().cloned().collect();
@@ -160,6 +187,12 @@ pub fn record(event: DiagnosticEvent) {
     GLOBAL_BUFFER
         .get_or_init(|| DiagnosticBuffer::new(DEFAULT_DIAGNOSTIC_CAPACITY))
         .record(event);
+}
+
+pub fn record_batch(events: impl IntoIterator<Item = DiagnosticEvent>) {
+    GLOBAL_BUFFER
+        .get_or_init(|| DiagnosticBuffer::new(DEFAULT_DIAGNOSTIC_CAPACITY))
+        .record_batch(events);
 }
 
 pub fn snapshot() -> DiagnosticSnapshot {
@@ -254,6 +287,89 @@ mod tests {
         let snapshot = buffer.snapshot();
         assert_eq!(snapshot.records.len(), 64);
         assert_eq!(snapshot.dropped_records, 736);
+    }
+
+    #[test]
+    fn batch_records_share_timestamp_and_preserve_order() {
+        let buffer = DiagnosticBuffer::new(4);
+
+        buffer.record_batch_at(
+            42,
+            [event("batch_one"), event("batch_two"), event("batch_three")],
+        );
+
+        let snapshot = buffer.snapshot();
+        assert_eq!(snapshot.dropped_records, 0);
+        assert_eq!(
+            snapshot
+                .records
+                .iter()
+                .map(|record| (record.timestamp_ms, record.event.stage))
+                .collect::<Vec<_>>(),
+            vec![(42, "batch_one"), (42, "batch_two"), (42, "batch_three")]
+        );
+    }
+
+    #[test]
+    fn batch_keeps_latest_records_and_counts_every_drop() {
+        let buffer = DiagnosticBuffer::new(2);
+        buffer.record_at(1, event("existing"));
+
+        buffer.record_batch_at(2, [event("one"), event("two"), event("three")]);
+
+        let snapshot = buffer.snapshot();
+        assert_eq!(snapshot.dropped_records, 2);
+        assert_eq!(
+            snapshot
+                .records
+                .iter()
+                .map(|record| (record.timestamp_ms, record.event.stage))
+                .collect::<Vec<_>>(),
+            vec![(2, "two"), (2, "three")]
+        );
+    }
+
+    #[test]
+    fn concurrent_batches_remain_bounded_and_count_drops() {
+        let buffer = Arc::new(DiagnosticBuffer::new(64));
+        let workers = (0..8)
+            .map(|worker| {
+                let buffer = Arc::clone(&buffer);
+                std::thread::spawn(move || {
+                    buffer.record_batch_at(worker, (0..100).map(|_| event("concurrent_batch")));
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let snapshot = buffer.snapshot();
+        assert_eq!(snapshot.records.len(), 64);
+        assert_eq!(snapshot.dropped_records, 736);
+        assert!(
+            snapshot
+                .records
+                .windows(2)
+                .all(|records| { records[0].timestamp_ms == records[1].timestamp_ms })
+        );
+    }
+
+    #[test]
+    fn large_batch_retains_only_the_latest_capacity_without_timing_assumptions() {
+        let buffer = DiagnosticBuffer::new(1_000);
+
+        buffer.record_batch_at(7, (0..25_000).map(|_| event("large_batch")));
+
+        let snapshot = buffer.snapshot();
+        assert_eq!(snapshot.records.len(), 1_000);
+        assert_eq!(snapshot.dropped_records, 24_000);
+        assert!(
+            snapshot
+                .records
+                .iter()
+                .all(|record| record.timestamp_ms == 7)
+        );
     }
 
     #[test]

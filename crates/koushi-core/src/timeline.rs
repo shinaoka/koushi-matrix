@@ -1862,6 +1862,59 @@ fn timeline_item_trace_line(
     )
 }
 
+fn timeline_item_diagnostic_event(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    item: &TimelineItem,
+) -> DiagnosticEvent {
+    DiagnosticEvent::new(
+        DiagnosticLevel::Debug,
+        "core.timeline_item",
+        timeline_stage_token(stage),
+    )
+    .field(DiagnosticField::token("kind", timeline_diff_token(op)))
+    .field(DiagnosticField::token(
+        "timeline",
+        timeline_key_trace_kind(key),
+    ))
+    .field(DiagnosticField::count("count", 1))
+    .field(DiagnosticField::count("index", index.unwrap_or(0) as u64))
+    .field(DiagnosticField::boolean("index_present", index.is_some()))
+    .field(DiagnosticField::boolean(
+        "timestamp_present",
+        item.timestamp_ms.is_some(),
+    ))
+    .field(DiagnosticField::boolean("hidden", item.is_hidden))
+    .field(DiagnosticField::boolean(
+        "thread_root_present",
+        item.thread_root.is_some(),
+    ))
+    .field(DiagnosticField::boolean(
+        "reply_present",
+        item.in_reply_to_event_id.is_some(),
+    ))
+    .field(DiagnosticField::boolean(
+        "body_present",
+        item.body.is_some(),
+    ))
+    .field(DiagnosticField::boolean(
+        "formatted_present",
+        item.formatted.is_some(),
+    ))
+    .field(DiagnosticField::boolean(
+        "media_present",
+        item.media.is_some(),
+    ))
+    .field(DiagnosticField::boolean("redacted", item.is_redacted))
+    .field(DiagnosticField::boolean(
+        "unable_to_decrypt",
+        item.unable_to_decrypt.is_some(),
+    ))
+}
+
+#[allow(dead_code)]
 fn record_timeline_item(
     stage: &str,
     key: &TimelineKey,
@@ -1869,56 +1922,13 @@ fn record_timeline_item(
     index: Option<usize>,
     item: &TimelineItem,
 ) {
-    koushi_diagnostics::record(
-        DiagnosticEvent::new(
-            DiagnosticLevel::Debug,
-            "core.timeline_item",
-            timeline_stage_token(stage),
-        )
-        .field(DiagnosticField::token("kind", timeline_diff_token(op)))
-        .field(DiagnosticField::token(
-            "timeline",
-            timeline_key_trace_kind(key),
-        ))
-        .field(DiagnosticField::count("count", 1))
-        .field(DiagnosticField::count("index", index.unwrap_or(0) as u64))
-        .field(DiagnosticField::boolean("index_present", index.is_some()))
-        .field(DiagnosticField::boolean(
-            "timestamp_present",
-            item.timestamp_ms.is_some(),
-        ))
-        .field(DiagnosticField::boolean("hidden", item.is_hidden))
-        .field(DiagnosticField::boolean(
-            "thread_root_present",
-            item.thread_root.is_some(),
-        ))
-        .field(DiagnosticField::boolean(
-            "reply_present",
-            item.in_reply_to_event_id.is_some(),
-        ))
-        .field(DiagnosticField::boolean(
-            "body_present",
-            item.body.is_some(),
-        ))
-        .field(DiagnosticField::boolean(
-            "formatted_present",
-            item.formatted.is_some(),
-        ))
-        .field(DiagnosticField::boolean(
-            "media_present",
-            item.media.is_some(),
-        ))
-        .field(DiagnosticField::boolean("redacted", item.is_redacted))
-        .field(DiagnosticField::boolean(
-            "unable_to_decrypt",
-            item.unable_to_decrypt.is_some(),
-        )),
-    );
+    koushi_diagnostics::record(timeline_item_diagnostic_event(stage, key, op, index, item));
 }
 
 fn trace_timeline_items(stage: &str, key: &TimelineKey, items: &[TimelineItem]) {
     let hidden = items.iter().filter(|item| item.is_hidden).count();
-    koushi_diagnostics::record(
+    let mut events = Vec::with_capacity(items.len().saturating_add(1));
+    events.push(
         DiagnosticEvent::new(
             DiagnosticLevel::Debug,
             "core.timeline_item",
@@ -1933,8 +1943,15 @@ fn trace_timeline_items(stage: &str, key: &TimelineKey, items: &[TimelineItem]) 
         .field(DiagnosticField::count("hidden", hidden as u64)),
     );
     for (index, item) in items.iter().enumerate() {
-        record_timeline_item(stage, key, "item", Some(index), item);
+        events.push(timeline_item_diagnostic_event(
+            stage,
+            key,
+            "item",
+            Some(index),
+            item,
+        ));
     }
+    koushi_diagnostics::record_batch(events);
     if !timeline_item_trace_enabled() {
         return;
     }
@@ -1953,6 +1970,28 @@ fn trace_timeline_items(stage: &str, key: &TimelineKey, items: &[TimelineItem]) 
     }
 }
 
+fn timeline_diff_without_item_diagnostic_event(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    length: Option<usize>,
+) -> DiagnosticEvent {
+    DiagnosticEvent::new(
+        DiagnosticLevel::Debug,
+        "core.timeline_item",
+        timeline_stage_token(stage),
+    )
+    .field(DiagnosticField::token("kind", timeline_diff_token(op)))
+    .field(DiagnosticField::token(
+        "timeline",
+        timeline_key_trace_kind(key),
+    ))
+    .field(DiagnosticField::count("count", length.unwrap_or(0) as u64))
+    .field(DiagnosticField::count("index", index.unwrap_or(0) as u64))
+    .field(DiagnosticField::boolean("index_present", index.is_some()))
+}
+
 fn record_timeline_diff_without_item(
     stage: &str,
     key: &TimelineKey,
@@ -1960,21 +1999,9 @@ fn record_timeline_diff_without_item(
     index: Option<usize>,
     length: Option<usize>,
 ) {
-    koushi_diagnostics::record(
-        DiagnosticEvent::new(
-            DiagnosticLevel::Debug,
-            "core.timeline_item",
-            timeline_stage_token(stage),
-        )
-        .field(DiagnosticField::token("kind", timeline_diff_token(op)))
-        .field(DiagnosticField::token(
-            "timeline",
-            timeline_key_trace_kind(key),
-        ))
-        .field(DiagnosticField::count("count", length.unwrap_or(0) as u64))
-        .field(DiagnosticField::count("index", index.unwrap_or(0) as u64))
-        .field(DiagnosticField::boolean("index_present", index.is_some())),
-    );
+    koushi_diagnostics::record(timeline_diff_without_item_diagnostic_event(
+        stage, key, op, index, length,
+    ));
 }
 
 #[allow(dead_code)]
@@ -1997,7 +2024,8 @@ fn trace_timeline_diff_without_item(
 }
 
 fn trace_timeline_diffs(stage: &str, key: &TimelineKey, diffs: &[TimelineDiff]) {
-    koushi_diagnostics::record(
+    let mut events = Vec::with_capacity(diffs.len().saturating_add(1));
+    events.push(
         DiagnosticEvent::new(
             DiagnosticLevel::Debug,
             "core.timeline_item",
@@ -2012,35 +2040,76 @@ fn trace_timeline_diffs(stage: &str, key: &TimelineKey, diffs: &[TimelineDiff]) 
     );
     for diff in diffs {
         match diff {
-            TimelineDiff::PushFront { item } => {
-                record_timeline_item(stage, key, "push_front", Some(0), item)
-            }
-            TimelineDiff::PushBack { item } => {
-                record_timeline_item(stage, key, "push_back", None, item)
-            }
-            TimelineDiff::Insert { index, item } => {
-                record_timeline_item(stage, key, "insert", Some(*index), item)
-            }
-            TimelineDiff::Set { index, item } => {
-                record_timeline_item(stage, key, "set", Some(*index), item)
-            }
+            TimelineDiff::PushFront { item } => events.push(timeline_item_diagnostic_event(
+                stage,
+                key,
+                "push_front",
+                Some(0),
+                item,
+            )),
+            TimelineDiff::PushBack { item } => events.push(timeline_item_diagnostic_event(
+                stage,
+                key,
+                "push_back",
+                None,
+                item,
+            )),
+            TimelineDiff::Insert { index, item } => events.push(timeline_item_diagnostic_event(
+                stage,
+                key,
+                "insert",
+                Some(*index),
+                item,
+            )),
+            TimelineDiff::Set { index, item } => events.push(timeline_item_diagnostic_event(
+                stage,
+                key,
+                "set",
+                Some(*index),
+                item,
+            )),
             TimelineDiff::Remove { index } => {
-                record_timeline_diff_without_item(stage, key, "remove", Some(*index), None)
+                events.push(timeline_diff_without_item_diagnostic_event(
+                    stage,
+                    key,
+                    "remove",
+                    Some(*index),
+                    None,
+                ))
             }
             TimelineDiff::Truncate { length } => {
-                record_timeline_diff_without_item(stage, key, "truncate", None, Some(*length))
+                events.push(timeline_diff_without_item_diagnostic_event(
+                    stage,
+                    key,
+                    "truncate",
+                    None,
+                    Some(*length),
+                ))
             }
-            TimelineDiff::Clear => {
-                record_timeline_diff_without_item(stage, key, "clear", None, None)
-            }
+            TimelineDiff::Clear => events.push(timeline_diff_without_item_diagnostic_event(
+                stage, key, "clear", None, None,
+            )),
             TimelineDiff::Reset { items } => {
-                record_timeline_diff_without_item(stage, key, "reset", None, Some(items.len()));
+                events.push(timeline_diff_without_item_diagnostic_event(
+                    stage,
+                    key,
+                    "reset",
+                    None,
+                    Some(items.len()),
+                ));
                 for (index, item) in items.iter().enumerate() {
-                    record_timeline_item(stage, key, "reset_item", Some(index), item);
+                    events.push(timeline_item_diagnostic_event(
+                        stage,
+                        key,
+                        "reset_item",
+                        Some(index),
+                        item,
+                    ));
                 }
             }
         }
     }
+    koushi_diagnostics::record_batch(events);
     if !timeline_item_trace_enabled() {
         return;
     }
@@ -2306,6 +2375,37 @@ fn event_cache_relation_kind(event: &matrix_sdk_base::event_cache::Event) -> &'s
     relation_type_trace_token(rel_type)
 }
 
+fn event_cache_item_diagnostic_event(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    item: &matrix_sdk_base::event_cache::Event,
+) -> DiagnosticEvent {
+    DiagnosticEvent::new(
+        DiagnosticLevel::Debug,
+        "core.event_cache",
+        timeline_stage_token(stage),
+    )
+    .field(DiagnosticField::token("kind", timeline_diff_token(op)))
+    .field(DiagnosticField::token(
+        "timeline",
+        timeline_key_trace_kind(key),
+    ))
+    .field(DiagnosticField::count("count", 1))
+    .field(DiagnosticField::count("index", index.unwrap_or(0) as u64))
+    .field(DiagnosticField::boolean("index_present", index.is_some()))
+    .field(DiagnosticField::boolean(
+        "timestamp_present",
+        item.timestamp().is_some(),
+    ))
+    .field(DiagnosticField::token(
+        "relation",
+        event_cache_relation_kind(item),
+    ))
+}
+
+#[allow(dead_code)]
 fn record_event_cache_item(
     stage: &str,
     key: &TimelineKey,
@@ -2313,29 +2413,9 @@ fn record_event_cache_item(
     index: Option<usize>,
     item: &matrix_sdk_base::event_cache::Event,
 ) {
-    koushi_diagnostics::record(
-        DiagnosticEvent::new(
-            DiagnosticLevel::Debug,
-            "core.event_cache",
-            timeline_stage_token(stage),
-        )
-        .field(DiagnosticField::token("kind", timeline_diff_token(op)))
-        .field(DiagnosticField::token(
-            "timeline",
-            timeline_key_trace_kind(key),
-        ))
-        .field(DiagnosticField::count("count", 1))
-        .field(DiagnosticField::count("index", index.unwrap_or(0) as u64))
-        .field(DiagnosticField::boolean("index_present", index.is_some()))
-        .field(DiagnosticField::boolean(
-            "timestamp_present",
-            item.timestamp().is_some(),
-        ))
-        .field(DiagnosticField::token(
-            "relation",
-            event_cache_relation_kind(item),
-        )),
-    );
+    koushi_diagnostics::record(event_cache_item_diagnostic_event(
+        stage, key, op, index, item,
+    ));
 }
 
 fn trace_event_cache_items(
@@ -2343,7 +2423,8 @@ fn trace_event_cache_items(
     key: &TimelineKey,
     items: &[matrix_sdk_base::event_cache::Event],
 ) {
-    koushi_diagnostics::record(
+    let mut events = Vec::with_capacity(items.len().saturating_add(1));
+    events.push(
         DiagnosticEvent::new(
             DiagnosticLevel::Debug,
             "core.event_cache",
@@ -2357,10 +2438,20 @@ fn trace_event_cache_items(
         .field(DiagnosticField::count("count", items.len() as u64)),
     );
     for (index, item) in items.iter().enumerate() {
-        trace_event_cache_item(stage, key, "item", Some(index), item);
+        events.push(event_cache_item_diagnostic_event(
+            stage,
+            key,
+            "item",
+            Some(index),
+            item,
+        ));
     }
+    koushi_diagnostics::record_batch(events);
     if !timeline_item_trace_enabled() {
         return;
+    }
+    for (index, item) in items.iter().enumerate() {
+        trace_event_cache_item_stderr(stage, key, "item", Some(index), item);
     }
     eprintln!(
         "koushi.event_cache_items stage={stage} timeline={} count={}",
@@ -2369,6 +2460,7 @@ fn trace_event_cache_items(
     );
 }
 
+#[allow(dead_code)]
 fn trace_event_cache_item(
     stage: &str,
     key: &TimelineKey,
@@ -2409,6 +2501,28 @@ fn trace_event_cache_item_stderr(
     );
 }
 
+fn event_cache_diff_without_item_diagnostic_event(
+    stage: &str,
+    key: &TimelineKey,
+    op: &str,
+    index: Option<usize>,
+    length: Option<usize>,
+) -> DiagnosticEvent {
+    DiagnosticEvent::new(
+        DiagnosticLevel::Debug,
+        "core.event_cache",
+        timeline_stage_token(stage),
+    )
+    .field(DiagnosticField::token("kind", timeline_diff_token(op)))
+    .field(DiagnosticField::token(
+        "timeline",
+        timeline_key_trace_kind(key),
+    ))
+    .field(DiagnosticField::count("count", length.unwrap_or(0) as u64))
+    .field(DiagnosticField::count("index", index.unwrap_or(0) as u64))
+    .field(DiagnosticField::boolean("index_present", index.is_some()))
+}
+
 fn record_event_cache_diff_without_item(
     stage: &str,
     key: &TimelineKey,
@@ -2416,21 +2530,9 @@ fn record_event_cache_diff_without_item(
     index: Option<usize>,
     length: Option<usize>,
 ) {
-    koushi_diagnostics::record(
-        DiagnosticEvent::new(
-            DiagnosticLevel::Debug,
-            "core.event_cache",
-            timeline_stage_token(stage),
-        )
-        .field(DiagnosticField::token("kind", timeline_diff_token(op)))
-        .field(DiagnosticField::token(
-            "timeline",
-            timeline_key_trace_kind(key),
-        ))
-        .field(DiagnosticField::count("count", length.unwrap_or(0) as u64))
-        .field(DiagnosticField::count("index", index.unwrap_or(0) as u64))
-        .field(DiagnosticField::boolean("index_present", index.is_some())),
-    );
+    koushi_diagnostics::record(event_cache_diff_without_item_diagnostic_event(
+        stage, key, op, index, length,
+    ));
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -2466,7 +2568,8 @@ fn trace_event_cache_diffs(
     origin: &matrix_sdk::event_cache::EventsOrigin,
     diffs: &[eyeball_im::VectorDiff<matrix_sdk_base::event_cache::Event>],
 ) {
-    koushi_diagnostics::record(
+    let mut events = Vec::with_capacity(diffs.len().saturating_add(1));
+    events.push(
         DiagnosticEvent::new(
             DiagnosticLevel::Debug,
             "core.event_cache",
@@ -2486,52 +2589,117 @@ fn trace_event_cache_diffs(
     for diff in diffs {
         match diff {
             eyeball_im::VectorDiff::PushFront { value } => {
-                record_event_cache_item(stage, key, "push_front", Some(0), value);
+                events.push(event_cache_item_diagnostic_event(
+                    stage,
+                    key,
+                    "push_front",
+                    Some(0),
+                    value,
+                ));
             }
             eyeball_im::VectorDiff::PushBack { value } => {
-                record_event_cache_item(stage, key, "push_back", None, value);
+                events.push(event_cache_item_diagnostic_event(
+                    stage,
+                    key,
+                    "push_back",
+                    None,
+                    value,
+                ));
             }
             eyeball_im::VectorDiff::Insert { index, value } => {
-                record_event_cache_item(stage, key, "insert", Some(*index), value);
+                events.push(event_cache_item_diagnostic_event(
+                    stage,
+                    key,
+                    "insert",
+                    Some(*index),
+                    value,
+                ));
             }
             eyeball_im::VectorDiff::Set { index, value } => {
-                record_event_cache_item(stage, key, "set", Some(*index), value);
+                events.push(event_cache_item_diagnostic_event(
+                    stage,
+                    key,
+                    "set",
+                    Some(*index),
+                    value,
+                ));
             }
             eyeball_im::VectorDiff::Append { values } => {
-                record_event_cache_diff_without_item(
+                events.push(event_cache_diff_without_item_diagnostic_event(
                     stage,
                     key,
                     "append",
                     None,
                     Some(values.len()),
-                );
+                ));
                 for (index, item) in values.iter().enumerate() {
-                    record_event_cache_item(stage, key, "append_item", Some(index), item);
+                    events.push(event_cache_item_diagnostic_event(
+                        stage,
+                        key,
+                        "append_item",
+                        Some(index),
+                        item,
+                    ));
                 }
             }
             eyeball_im::VectorDiff::Reset { values } => {
-                record_event_cache_diff_without_item(stage, key, "reset", None, Some(values.len()));
+                events.push(event_cache_diff_without_item_diagnostic_event(
+                    stage,
+                    key,
+                    "reset",
+                    None,
+                    Some(values.len()),
+                ));
                 for (index, item) in values.iter().enumerate() {
-                    record_event_cache_item(stage, key, "reset_item", Some(index), item);
+                    events.push(event_cache_item_diagnostic_event(
+                        stage,
+                        key,
+                        "reset_item",
+                        Some(index),
+                        item,
+                    ));
                 }
             }
             eyeball_im::VectorDiff::Remove { index } => {
-                record_event_cache_diff_without_item(stage, key, "remove", Some(*index), None);
+                events.push(event_cache_diff_without_item_diagnostic_event(
+                    stage,
+                    key,
+                    "remove",
+                    Some(*index),
+                    None,
+                ));
             }
             eyeball_im::VectorDiff::Truncate { length } => {
-                record_event_cache_diff_without_item(stage, key, "truncate", None, Some(*length));
+                events.push(event_cache_diff_without_item_diagnostic_event(
+                    stage,
+                    key,
+                    "truncate",
+                    None,
+                    Some(*length),
+                ));
             }
             eyeball_im::VectorDiff::Clear => {
-                record_event_cache_diff_without_item(stage, key, "clear", None, None);
+                events.push(event_cache_diff_without_item_diagnostic_event(
+                    stage, key, "clear", None, None,
+                ));
             }
             eyeball_im::VectorDiff::PopFront => {
-                record_event_cache_diff_without_item(stage, key, "pop_front", Some(0), None);
+                events.push(event_cache_diff_without_item_diagnostic_event(
+                    stage,
+                    key,
+                    "pop_front",
+                    Some(0),
+                    None,
+                ));
             }
             eyeball_im::VectorDiff::PopBack => {
-                record_event_cache_diff_without_item(stage, key, "pop_back", None, None);
+                events.push(event_cache_diff_without_item_diagnostic_event(
+                    stage, key, "pop_back", None, None,
+                ));
             }
         }
     }
+    koushi_diagnostics::record_batch(events);
     if timeline_item_trace_enabled() {
         eprintln!(
             "koushi.event_cache_diffs stage={stage} timeline={} origin={} count={}",
