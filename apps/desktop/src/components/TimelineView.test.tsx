@@ -197,6 +197,69 @@ function mockTimelineRects(
   });
 }
 
+/**
+ * Gives every rendered timeline row a deterministic block position based on
+ * its presentation order. Unlike `mockTimelineRects`, this intentionally
+ * follows DOM reordering so a test can observe the viewport correction that a
+ * display-projection transaction must make.
+ */
+function mockPresentationOrderRects(
+  scrollContainerRef: { current: HTMLElement | null },
+  options: { rowHeight?: number; viewportHeight?: number } = {}
+) {
+  const rowHeight = options.rowHeight ?? 100;
+  const viewportHeight = options.viewportHeight ?? 200;
+  return vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    const testId = this.getAttribute("data-testid");
+    if (testId === "timeline-view") {
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: viewportHeight,
+        bottom: viewportHeight,
+        toJSON: () => ({})
+      } as DOMRect;
+    }
+
+    const row = this.matches("article[data-item-id]")
+      ? this
+      : this.querySelector<HTMLElement>("article[data-item-id]");
+    if (!row) {
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        bottom: 0,
+        toJSON: () => ({})
+      } as DOMRect;
+    }
+    const rows = Array.from(document.querySelectorAll<HTMLElement>("article[data-item-id]"));
+    const index = rows.indexOf(row);
+    const top = index * rowHeight - (scrollContainerRef.current?.scrollTop ?? 0);
+    return {
+      x: 0,
+      y: top,
+      top,
+      left: 0,
+      right: 0,
+      width: 0,
+      height: rowHeight,
+      bottom: top + rowHeight,
+      toJSON: () => ({})
+    } as DOMRect;
+  });
+}
+
 function installResizeObserverMock() {
   const originalResizeObserver = window.ResizeObserver;
   const observers: Array<{ trigger: () => void }> = [];
@@ -5137,6 +5200,7 @@ describe("TimelineView", () => {
   it("moves one Room thread root and its summary to its latest reply while keeping root actions and timestamps", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const onOpenThread = vi.fn();
+    const onOpenContextMenu = vi.fn();
     const viewportObservations: Array<{
       roomId: string;
       firstVisibleEventId: string | null;
@@ -5193,6 +5257,7 @@ describe("TimelineView", () => {
         transport={transport}
         onReply={vi.fn()}
         onOpenThread={onOpenThread}
+        onOpenContextMenu={onOpenContextMenu}
         threadRootOrder={{ kind: "latestReply" }}
       />
     );
@@ -5247,6 +5312,15 @@ describe("TimelineView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Open thread, 1 reply/ }));
     expect(onOpenThread).toHaveBeenCalledWith("!room:example.invalid", "$thread-root:example.invalid");
+    fireEvent.contextMenu(rootRow!);
+    expect(onOpenContextMenu).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        kind: "message",
+        message: expect.objectContaining({ event_id: "$thread-root:example.invalid" })
+      }),
+      expect.any(Array)
+    );
     await waitFor(() => {
       expect(
         viewportObservations.some(
@@ -5256,6 +5330,559 @@ describe("TimelineView", () => {
             lastVisibleEventId === "$latest-thread-reply:example.invalid"
         )
       ).toBe(true);
+    });
+    rectMock.mockRestore();
+  });
+
+  it("uses a non-moving row, never the moved root, when latest-reply placement toggles in free scroll", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const onScrollDiagnosticsChange = vi.fn();
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    const rectMock = mockPresentationOrderRects(scrollContainerRef);
+    const root = {
+      ...message("$thread-root:example.invalid", "Thread root"),
+      thread_summary: {
+        reply_count: 1,
+        latest_event_id: "$latest-thread-reply:example.invalid",
+        latest_sender: "@bob:example.invalid",
+        latest_sender_label: "Bob",
+        latest_body_preview: "Latest reply",
+        latest_timestamp_ms: 1_800_000_001_000
+      }
+    };
+    const latestReply = {
+      ...message("$latest-thread-reply:example.invalid", "Standalone reply"),
+      timestamp_ms: 1_800_000_001_000,
+      thread_root: "$thread-root:example.invalid"
+    };
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const renderView = (threadRootOrder: "rootEvent" | "latestReply") => (
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        onScrollDiagnosticsChange={onScrollDiagnosticsChange}
+        threadRootOrder={{ kind: threadRootOrder }}
+      />
+    );
+    const { rerender } = render(renderView("rootEvent"));
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              message("$before:example.invalid", "Before"),
+              root,
+              message("$between:example.invalid", "Between"),
+              latestReply,
+              message("$after:example.invalid", "After")
+            ]
+          }
+        }
+      });
+    });
+
+    await screen.findByText("Between");
+    const timeline = screen.getByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "clientHeight", { value: 200, configurable: true });
+    Object.defineProperty(timeline, "scrollHeight", { value: 1_000, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 190,
+      writable: true,
+      configurable: true
+    });
+    // Let first-entry live-edge initialization finish before the test gives
+    // the viewport back to a user-controlled free-scroll position.
+    act(() => {
+      rerender(renderView("rootEvent"));
+    });
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(800);
+    });
+    timeline.scrollTop = 190;
+    fireEvent.wheel(timeline, { deltaY: -1 });
+    fireEvent.scroll(timeline);
+
+    act(() => {
+      rerender(renderView("latestReply"));
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(90);
+      expect(
+        onScrollDiagnosticsChange.mock.calls.some(
+          ([diagnostics]) => diagnostics.scrollWrites.projectionCompensation > 0
+        )
+      ).toBe(true);
+    });
+    expect(screen.getByText("Between").closest("article")?.getBoundingClientRect().top).toBe(10);
+    rectMock.mockRestore();
+  });
+
+  it("renders an unread latest-reply marker before the root block that represents it", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const root = {
+      ...message("$thread-root:example.invalid", "Thread root"),
+      thread_summary: {
+        reply_count: 1,
+        latest_event_id: "$latest-thread-reply:example.invalid",
+        latest_sender: "@bob:example.invalid",
+        latest_sender_label: "Bob",
+        latest_body_preview: "Latest reply",
+        latest_timestamp_ms: 1_800_000_001_000
+      }
+    };
+    const latestReply = {
+      ...message("$latest-thread-reply:example.invalid", "Standalone reply"),
+      timestamp_ms: 1_800_000_001_000,
+      thread_root: "$thread-root:example.invalid"
+    };
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        threadRootOrder={{ kind: "latestReply" }}
+      />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          NavigationUpdated: {
+            key: KEY,
+            snapshot: navigationSnapshot({
+              first_unread_event_id: "$latest-thread-reply:example.invalid",
+              unread_event_count: 1,
+              unread_position: "insideViewport"
+            })
+          }
+        }
+      });
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [message("$before:example.invalid", "Before"), root, latestReply]
+          }
+        }
+      });
+    });
+
+    const marker = await screen.findByRole("separator", { name: "Unread messages" });
+    const rootRow = marker.nextElementSibling;
+    expect(rootRow?.getAttribute("data-content-event-id")).toBe("$thread-root:example.invalid");
+    expect(rootRow?.getAttribute("data-activity-event-id")).toBe(
+      "$latest-thread-reply:example.invalid"
+    );
+  });
+
+  it("jumps to a moved root by its latest activity identity", async () => {
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      let emit: (payload: CoreEventPayload) => void = () => undefined;
+      const root = {
+        ...message("$thread-root:example.invalid", "Thread root"),
+        thread_summary: {
+          reply_count: 1,
+          latest_event_id: "$latest-thread-reply:example.invalid",
+          latest_sender: "@bob:example.invalid",
+          latest_sender_label: "Bob",
+          latest_body_preview: "Latest reply",
+          latest_timestamp_ms: 1_800_000_001_000
+        }
+      };
+      const latestReply = {
+        ...message("$latest-thread-reply:example.invalid", "Standalone reply"),
+        timestamp_ms: 1_800_000_001_000,
+        thread_root: "$thread-root:example.invalid"
+      };
+      const transport = baseTransport({
+        listenCoreEvents(nextListener) {
+          emit = nextListener;
+          return () => undefined;
+        }
+      });
+
+      render(
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+          threadRootOrder={{ kind: "latestReply" }}
+        />
+      );
+
+      act(() => {
+        emit({
+          kind: "Timeline",
+          event: {
+            NavigationUpdated: {
+              key: KEY,
+              snapshot: navigationSnapshot({
+                first_unread_event_id: "$latest-thread-reply:example.invalid",
+                unread_event_count: 1,
+                unread_position: "belowViewport"
+              })
+            }
+          }
+        });
+        emit({
+          kind: "Timeline",
+          event: {
+            InitialItems: {
+              request_id: null,
+              key: KEY,
+              generation: 1,
+              items: [message("$before:example.invalid", "Before"), root, latestReply]
+            }
+          }
+        });
+      });
+
+      fireEvent.click(await screen.findByRole("button", { name: /Jump to first unread/ }));
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      const jumpedRow = scrollIntoView.mock.instances[0] as HTMLElement | undefined;
+      expect(jumpedRow?.getAttribute("data-content-event-id")).toBe(
+        "$thread-root:example.invalid"
+      );
+    } finally {
+      Element.prototype.scrollIntoView = originalScrollIntoView;
+    }
+  });
+
+  it("keeps live edge pinned when a summary Set relocates its root block", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const oldRoot = {
+      ...message("$thread-root:example.invalid", "Thread root"),
+      thread_summary: {
+        reply_count: 1,
+        latest_event_id: "$older-thread-reply:example.invalid",
+        latest_sender: "@bob:example.invalid",
+        latest_sender_label: "Bob",
+        latest_body_preview: "Older reply",
+        latest_timestamp_ms: 1_800_000_001_000
+      }
+    };
+    const newRoot = {
+      ...oldRoot,
+      thread_summary: {
+        ...oldRoot.thread_summary,
+        latest_event_id: "$newer-thread-reply:example.invalid",
+        latest_body_preview: "Newer reply",
+        latest_timestamp_ms: 1_800_000_003_000
+      }
+    };
+    const olderReply = {
+      ...message("$older-thread-reply:example.invalid", "Older reply"),
+      timestamp_ms: 1_800_000_001_000,
+      thread_root: "$thread-root:example.invalid"
+    };
+    const newerReply = {
+      ...message("$newer-thread-reply:example.invalid", "Newer reply"),
+      timestamp_ms: 1_800_000_003_000,
+      thread_root: "$thread-root:example.invalid"
+    };
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const renderView = () => (
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        threadRootOrder={{ kind: "latestReply" }}
+      />
+    );
+    const { rerender } = render(renderView());
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              oldRoot,
+              olderReply,
+              message("$between:example.invalid", "Between"),
+              newerReply
+            ]
+          }
+        }
+      });
+    });
+
+    await screen.findByText("Thread root");
+    const timeline = screen.getByTestId("timeline-view");
+    Object.defineProperty(timeline, "clientHeight", { value: 200, configurable: true });
+    Object.defineProperty(timeline, "scrollHeight", { value: 1_200, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+    act(() => {
+      rerender(renderView());
+    });
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(1_000);
+    });
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key: KEY,
+            generation: 1,
+            batch_id: 1,
+            diffs: [{ Set: { index: 0, item: newRoot } }]
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      expect(timeline.scrollTop).toBe(1_000);
+    });
+  });
+
+  it("falls back to the virtual height model when a projection anchor unmounts", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const onScrollDiagnosticsChange = vi.fn();
+    const rowHeight = 72;
+    const normalCount = 620;
+    const root = {
+      ...message("$thread-root:example.invalid", "Thread root"),
+      thread_summary: {
+        reply_count: 1,
+        latest_event_id: "$older-thread-reply:example.invalid",
+        latest_sender: "@bob:example.invalid",
+        latest_sender_label: "Bob",
+        latest_body_preview: "Older reply",
+        latest_timestamp_ms: 1_800_000_001_000
+      }
+    };
+    const updatedRoot = {
+      ...root,
+      thread_summary: {
+        ...root.thread_summary,
+        latest_event_id: "$newer-thread-reply:example.invalid",
+        latest_body_preview: "Newer reply",
+        latest_timestamp_ms: 1_800_000_003_000
+      }
+    };
+    const olderReply = {
+      ...message("$older-thread-reply:example.invalid", "Older reply"),
+      timestamp_ms: 1_800_000_001_000,
+      thread_root: "$thread-root:example.invalid"
+    };
+    const newerReply = {
+      ...message("$newer-thread-reply:example.invalid", "Newer reply"),
+      timestamp_ms: 1_800_000_003_000,
+      thread_root: "$thread-root:example.invalid"
+    };
+    const normals = Array.from({ length: normalCount }, (_, index) =>
+      message(`$normal${index}:example.invalid`, `Normal ${index}`)
+    );
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    let rootMovedToNewReply = false;
+    const rectMock = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        const timeline = scrollContainerRef.current;
+        if (this.getAttribute("data-testid") === "timeline-view") {
+          return {
+            x: 0,
+            y: 0,
+            top: 0,
+            left: 0,
+            right: 0,
+            width: 0,
+            height: 200,
+            bottom: 200,
+            toJSON: () => ({})
+          } as DOMRect;
+        }
+        const row = this.matches(".timeline-item-frame")
+          ? this
+          : this.closest<HTMLElement>(".timeline-item-frame");
+        const rowId =
+          row?.dataset["frameItemId"] ??
+          row?.querySelector<HTMLElement>("[data-item-id]")?.dataset["itemId"] ??
+          "";
+        let rowIndex = -1;
+        if (rowId.startsWith("date-divider:")) {
+          rowIndex = 0;
+        } else if (rowId === "thread-root:$thread-root:example.invalid") {
+          rowIndex = rootMovedToNewReply ? normalCount + 1 : 1;
+        } else {
+          const match = /^\$normal(\d+):example\.invalid$/.exec(rowId);
+          if (match) {
+            rowIndex = Number(match[1]) + (rootMovedToNewReply ? 1 : 2);
+          }
+        }
+        const top =
+          rowIndex >= 0 ? rowIndex * rowHeight - (timeline?.scrollTop ?? 0) : 0;
+        return {
+          x: 0,
+          y: top,
+          top,
+          left: 0,
+          right: 0,
+          width: 0,
+          height: rowIndex >= 0 ? rowHeight : 0,
+          bottom: top + (rowIndex >= 0 ? rowHeight : 0),
+          toJSON: () => ({})
+        } as DOMRect;
+      });
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const renderView = () => (
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        onScrollDiagnosticsChange={onScrollDiagnosticsChange}
+        threadRootOrder={{ kind: "latestReply" }}
+      />
+    );
+    const { rerender } = render(renderView());
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [root, olderReply, ...normals, newerReply]
+          }
+        }
+      });
+    });
+
+    await screen.findByText("Thread root");
+    const timeline = screen.getByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "clientHeight", { value: 200, configurable: true });
+    Object.defineProperty(timeline, "scrollHeight", { value: 50_000, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+    act(() => {
+      rerender(renderView());
+    });
+    expect(timeline.getAttribute("data-virtualized")).toBe("true");
+
+    // The previous presentation puts Normal 300 after a date divider and the
+    // root block. Its first-visible offset is +10px.
+    timeline.scrollTop = 302 * rowHeight - 10;
+    fireEvent.wheel(timeline, { deltaY: -1 });
+    fireEvent.scroll(timeline);
+    await waitFor(() => {
+      expect(
+        document.querySelector('[data-content-event-id="$normal300:example.invalid"]')
+      ).not.toBeNull();
+    });
+    vi.useFakeTimers();
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 0;
+    let executedFrameCount = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      nextFrameId += 1;
+      frames.set(nextFrameId, callback);
+      return nextFrameId;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frameId) => {
+      frames.delete(frameId);
+    });
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          ItemsUpdated: {
+            key: KEY,
+            generation: 1,
+            batch_id: 1,
+            diffs: [{ Set: { index: 0, item: updatedRoot } }]
+          }
+        }
+      });
+    });
+    rootMovedToNewReply = true;
+    const transactionFrameScheduled = frames.size > 0;
+
+    // Model a virtual-window turnover between commit and the coalesced frame:
+    // the stable anchor is no longer mounted, so DOM restoration must fail and
+    // the height-model offset is the only valid correction path.
+    document
+      .querySelector('[data-content-event-id="$normal300:example.invalid"]')
+      ?.closest(".timeline-item-frame")
+      ?.remove();
+    act(() => {
+      const queued = [...frames.values()];
+      frames.clear();
+      for (const callback of queued) {
+        executedFrameCount += 1;
+        callback(0);
+      }
+    });
+
+    expect({
+      transactionFrameScheduled,
+      executedFrameCount: executedFrameCount > 0,
+      projectionWriteRecorded: onScrollDiagnosticsChange.mock.calls.some(
+        ([diagnostics]) => diagnostics.scrollWrites.projectionCompensation > 0
+      ),
+      scrollTop: timeline.scrollTop
+    }).toEqual({
+      transactionFrameScheduled: true,
+      executedFrameCount: true,
+      projectionWriteRecorded: true,
+      scrollTop: 301 * rowHeight - 10
     });
     rectMock.mockRestore();
   });
