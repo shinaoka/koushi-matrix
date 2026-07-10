@@ -153,21 +153,29 @@ describe("diagnosticReport", () => {
     expect(report).not.toContain("SDK detail");
   });
 
-  test("includes Element-style timestamped diagnostic log entries in chronological order", async () => {
+  test("merges frontend and runtime diagnostic records chronologically without mutating inputs", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.getSnapshot();
-    const logEntries: DiagnosticLogEntry[] = [
+    const frontendEntries: DiagnosticLogEntry[] = [
       {
         timestampMs: Date.parse("2026-06-20T06:03:02.000Z"),
-        source: "timeline",
+        source: "frontend.timeline",
         message: "avatars ready=1 pending=2 failed=0 missing=3"
-      },
-      {
-        timestampMs: Date.parse("2026-06-20T06:03:01.000Z"),
-        source: "timeline",
-        message: "items visible=12 downloaded=34 backfill=Idle"
       }
     ];
+    const runtimeEntries: DiagnosticLogEntry[] = [
+      {
+        timestampMs: Date.parse("2026-06-20T06:03:01.000Z"),
+        source: "core.timeline",
+        message: "items visible=12 downloaded=34 backfill=Idle"
+      },
+      {
+        timestampMs: Date.parse("2026-06-20T06:03:03.000Z"),
+        source: "core.timeline",
+        message: "avatars ready=2 pending=1 failed=0 missing=2"
+      }
+    ];
+    const mergedEntries = [...frontendEntries, ...runtimeEntries];
 
     const report = diagnosticReport({
       snapshot,
@@ -197,18 +205,42 @@ describe("diagnosticReport", () => {
         maxFrameGapMs: 30,
         longFrameCount: 0
       },
-      logEntries
+      logEntries: mergedEntries,
+      droppedLogEntries: 7
     });
 
-    expect(report).toContain("Timeline log:");
-    expect(report.indexOf("[2026-06-20T06:03:01.000Z] timeline items visible=12"))
-      .toBeLessThan(report.indexOf("[2026-06-20T06:03:02.000Z] timeline avatars ready=1"));
+    expect(report).toContain("Diagnostic log:");
+    expect(report).toContain("Diagnostic records dropped: 7");
+    expect(report.indexOf("[2026-06-20T06:03:01.000Z] core.timeline items visible=12"))
+      .toBeLessThan(report.indexOf("[2026-06-20T06:03:02.000Z] frontend.timeline avatars ready=1"));
+    expect(report.indexOf("[2026-06-20T06:03:02.000Z] frontend.timeline avatars ready=1"))
+      .toBeLessThan(report.indexOf("[2026-06-20T06:03:03.000Z] core.timeline avatars ready=2"));
+    expect(frontendEntries).toEqual([
+      {
+        timestampMs: Date.parse("2026-06-20T06:03:02.000Z"),
+        source: "frontend.timeline",
+        message: "avatars ready=1 pending=2 failed=0 missing=3"
+      }
+    ]);
+    expect(runtimeEntries).toEqual([
+      {
+        timestampMs: Date.parse("2026-06-20T06:03:01.000Z"),
+        source: "core.timeline",
+        message: "items visible=12 downloaded=34 backfill=Idle"
+      },
+      {
+        timestampMs: Date.parse("2026-06-20T06:03:03.000Z"),
+        source: "core.timeline",
+        message: "avatars ready=2 pending=1 failed=0 missing=2"
+      }
+    ]);
+    expect(mergedEntries).toEqual([...frontendEntries, ...runtimeEntries]);
     expect(report).not.toContain("!");
     expect(report).not.toContain("@");
     expect(report).not.toContain("$");
   });
 
-  test("gates verbose security diagnostics behind the explicit diagnostic build flag", async () => {
+  test("always includes supplied security diagnostics without a build flag", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.getSnapshot();
     const baseInput = {
@@ -241,42 +273,64 @@ describe("diagnosticReport", () => {
       }
     };
 
-    const normalReport = diagnosticReport({
+    const report = diagnosticReport({
       ...baseInput,
-      verboseDiagnostics: {
-        enabled: false,
-        security: {
-          secureContext: true,
-          locationProtocol: "http:",
-          locationOrigin: "http://localhost:5173",
-          avatarImageSchemes: { asset: 3 },
-          avatarBrokenImages: 1
-        }
-      }
-    });
-    const verboseReport = diagnosticReport({
-      ...baseInput,
-      verboseDiagnostics: {
-        enabled: true,
-        security: {
-          secureContext: true,
-          locationProtocol: "http:",
-          locationOrigin: "http://localhost:5173",
-          avatarImageSchemes: { asset: 3, data: 1 },
-          avatarBrokenImages: 1
-        }
+      securityDiagnostics: {
+        secureContext: true,
+        locationProtocol: "http:",
+        locationOrigin: "http://localhost:5173",
+        avatarImageSchemes: { asset: 3, data: 1 },
+        avatarBrokenImages: 1
       }
     });
 
-    expect(normalReport).toContain("Verbose diagnostics: disabled");
-    expect(normalReport).not.toContain("Security diagnostics:");
-    expect(verboseReport).toContain("Verbose diagnostics: enabled");
-    expect(verboseReport).toContain("Security diagnostics:");
-    expect(verboseReport).toContain("security.secure_context=true");
-    expect(verboseReport).toContain("security.location_protocol=http:");
-    expect(verboseReport).toContain("security.location_origin=http://localhost:5173");
-    expect(verboseReport).toContain("security.avatar_src_schemes=asset:3,data:1");
-    expect(verboseReport).toContain("security.avatar_broken_images=1");
+    expect(report).toContain("Security diagnostics:");
+    expect(report).toContain("security.secure_context=true");
+    expect(report).toContain("security.location_protocol=http:");
+    expect(report).toContain("security.location_origin=http://localhost:5173");
+    expect(report).toContain("security.avatar_src_schemes=asset:3,data:1");
+    expect(report).toContain("security.avatar_broken_images=1");
+    expect(report).not.toContain("Verbose diagnostics:");
+  });
+
+  test("normalizes invalid dropped diagnostic counts", async () => {
+    const api = createBrowserFakeApi();
+    const snapshot = await api.getSnapshot();
+    const baseInput = {
+      snapshot,
+      panelMode: "closed" as const,
+      sendStatus: "idle" as const,
+      timelineDiagnostics: {
+        visibleItems: 0,
+        downloadedItems: 0,
+        backfill: "Idle" as const,
+        avatarMxcItems: 0,
+        avatarReadyItems: 0,
+        avatarPendingItems: 0,
+        avatarFailedItems: 0,
+        avatarMissingItems: 0,
+        avatarRenderedImages: 0,
+        avatarBrokenImages: 0
+      },
+      domDiagnostics: { screen: "timeline", rootChildren: 1, bodyTextLength: 0 },
+      uiLatencyDiagnostics: {
+        samples: 0,
+        lastFrameGapMs: 0,
+        averageFrameGapMs: 0,
+        maxFrameGapMs: 0,
+        longFrameCount: 0
+      },
+    };
+
+    expect(diagnosticReport({ ...baseInput, droppedLogEntries: -2.8 })).toContain(
+      "Diagnostic records dropped: 0"
+    );
+    expect(diagnosticReport({ ...baseInput, droppedLogEntries: Number.NaN })).toContain(
+      "Diagnostic records dropped: 0"
+    );
+    expect(diagnosticReport({ ...baseInput, droppedLogEntries: 4.9 })).toContain(
+      "Diagnostic records dropped: 4"
+    );
   });
 
   test("includes state-transport delta health tokens when provided", async () => {

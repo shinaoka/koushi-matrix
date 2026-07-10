@@ -85,6 +85,7 @@ import {
   appendDiagnosticLogEntry,
   diagnosticReport,
   type DiagnosticLogEntry,
+  type DiagnosticLogSnapshot,
   type SecurityDiagnostics
 } from "./domain/diagnostics";
 import {
@@ -917,10 +918,6 @@ function qaSendSmokeTargetUserId(): string | null {
   );
 }
 
-function verboseDiagnosticsEnabled(): boolean {
-  return import.meta.env.VITE_KOUSHI_VERBOSE_DIAGNOSTICS === "1";
-}
-
 function qaRenderedDomDiagnostics(): QaDomDiagnostics {
   const root = document.getElementById("root");
   const screen = document.querySelector('[data-testid="boot-error"]')
@@ -1141,6 +1138,8 @@ export function App() {
   const [directorySearchDraft, setDirectorySearchDraft] = useState("");
   const [newDmDialogOpen, setNewDmDialogOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [runtimeDiagnosticSnapshot, setRuntimeDiagnosticSnapshot] =
+    useState<DiagnosticLogSnapshot>({ entries: [], droppedEntries: 0 });
   const [displayDensity, setDisplayDensityState] =
     useState<DisplayDensity>(readDisplayDensity);
   const [spaceLocalOverrides, setSpaceLocalOverrides] =
@@ -1161,7 +1160,6 @@ export function App() {
   const [reportReasonDraft, setReportReasonDraft] = useState("");
   const [timelineStore, setTimelineStore] = useState<TimelineStoreState>(createTimelineStore);
   const uiLatencyDiagnostics = useUiLatencyDiagnostics();
-  const verboseDiagnosticBuild = verboseDiagnosticsEnabled();
   const searchTimer = useRef<number | null>(null);
   const qaSendStarted = useRef(false);
   const qaSendPending = useRef(false);
@@ -2131,6 +2129,26 @@ export function App() {
   function openReportDialog(state: ReportDialogState) {
     setReportDialog(state);
     setReportReasonDraft("");
+  }
+
+  async function openDiagnostics() {
+    let nextSnapshot: DiagnosticLogSnapshot;
+    try {
+      nextSnapshot = await api.getDiagnosticSnapshot();
+    } catch {
+      nextSnapshot = {
+        entries: [
+          {
+            timestampMs: Date.now(),
+            source: "diagnostics.fetch",
+            message: "kind=unavailable"
+          }
+        ],
+        droppedEntries: 0
+      };
+    }
+    setRuntimeDiagnosticSnapshot(nextSnapshot);
+    setDiagnosticsOpen(true);
   }
 
   function closeReportDialog() {
@@ -3507,7 +3525,9 @@ export function App() {
           onOpenKeyboardSettings={() => {
             void setRightPanelModeClosingFocusedContext("keyboardSettings");
           }}
-          onOpenDiagnostics={() => setDiagnosticsOpen(true)}
+          onOpenDiagnostics={() => {
+            void openDiagnostics();
+          }}
           onRestartSync={restartSync}
           onSearchQueryChange={setSearchQuery}
           onSearchScopeChange={setSearchScope}
@@ -4046,11 +4066,9 @@ export function App() {
             stateDeltaStats: getAppStoreDeltaStats(),
             timelineTransportStats: getTimelineTransportStats(),
             jsErrors: getRecentJsErrors(),
-            logEntries: diagnosticLogEntries,
-            verboseDiagnostics: {
-              enabled: verboseDiagnosticBuild,
-              security: verboseDiagnosticBuild ? qaSecurityDiagnostics() : undefined
-            }
+            logEntries: [...diagnosticLogEntries, ...runtimeDiagnosticSnapshot.entries],
+            droppedLogEntries: runtimeDiagnosticSnapshot.droppedEntries,
+            securityDiagnostics: qaSecurityDiagnostics()
           })}
           onClose={() => setDiagnosticsOpen(false)}
         />
