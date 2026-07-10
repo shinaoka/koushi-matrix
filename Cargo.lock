@@ -3077,6 +3077,7 @@ dependencies = [
  "eyeball-im",
  "futures-util",
  "koushi-core",
+ "koushi-diagnostics",
  "koushi-key",
  "koushi-sdk",
  "koushi-search",
@@ -3101,6 +3102,7 @@ dependencies = [
  "dirs",
  "keyring",
  "koushi-core",
+ "koushi-diagnostics",
  "koushi-key",
  "koushi-state",
  "objc2",
@@ -3116,6 +3118,13 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "koushi-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -3138,6 +3147,7 @@ version = "0.1.0"
 dependencies = [
  "eyeball-im",
  "futures-util",
+ "koushi-diagnostics",
  "koushi-state",
  "matrix-sdk",
  "matrix-sdk-base",

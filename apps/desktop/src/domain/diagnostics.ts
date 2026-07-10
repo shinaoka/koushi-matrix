@@ -21,7 +21,16 @@ export interface DiagnosticLogEntry {
   message: string;
 }
 
+export interface DiagnosticLogSnapshot {
+  entries: DiagnosticLogEntry[];
+  droppedEntries: number;
+}
+
 export const DEFAULT_DIAGNOSTIC_LOG_LIMIT = 10_000;
+
+export function schemaMismatchDiagnosticEntry(timestampMs: number): DiagnosticLogEntry {
+  return { timestampMs, source: "snapshot", message: "schema_mismatch" };
+}
 
 export interface SecurityDiagnostics {
   secureContext: boolean;
@@ -29,11 +38,6 @@ export interface SecurityDiagnostics {
   locationOrigin: string;
   avatarImageSchemes: Record<string, number>;
   avatarBrokenImages: number;
-}
-
-export interface VerboseDiagnostics {
-  enabled: boolean;
-  security?: SecurityDiagnostics;
 }
 
 export function appendDiagnosticLogEntry(
@@ -56,7 +60,8 @@ export interface DiagnosticReportInput {
   timelineTransportStats?: TimelineTransportStats;
   jsErrors?: readonly CapturedJsError[];
   logEntries?: readonly DiagnosticLogEntry[];
-  verboseDiagnostics?: VerboseDiagnostics;
+  securityDiagnostics?: SecurityDiagnostics;
+  droppedLogEntries?: number;
 }
 
 export function diagnosticReport({
@@ -70,12 +75,13 @@ export function diagnosticReport({
   timelineTransportStats,
   jsErrors,
   logEntries = [],
-  verboseDiagnostics
+  securityDiagnostics,
+  droppedLogEntries
 }: DiagnosticReportInput): string {
   const crawler = summarizeCrawler(snapshot.state.domain.search_crawler.rooms);
   const roomClassification = summarizeRoomClassification(snapshot);
   const diagnosticLog = formatDiagnosticLog(logEntries);
-  const verboseDiagnosticLog = formatVerboseDiagnostics(verboseDiagnostics);
+  const securityDiagnosticLog = formatSecurityDiagnostics(securityDiagnostics);
   const lines = [
     "Koushi diagnostics",
     `Generated at: ${new Date().toISOString()}`,
@@ -124,13 +130,11 @@ export function diagnosticReport({
           `JS errors: ${jsErrors.length}`,
           ...jsErrors
             .slice(-5)
-            .map(
-              (error) =>
-                `[js-error] kind=${error.kind} source=${error.source} message=${error.message}`
-            )
+            .map((error) => `[js-error] channel=${error.channel} kind=${error.kind}`)
         ]
       : []),
-    ...verboseDiagnosticLog,
+    ...securityDiagnosticLog,
+    `Diagnostic records dropped: ${normalizeDroppedLogEntries(droppedLogEntries)}`,
     ...diagnosticLog,
     `timeline_matches_active=${timelineMatchesActiveRoom(snapshot)}`,
     ...qaSearchCrawlerDiagnosticTokens(snapshot),
@@ -158,26 +162,23 @@ export function diagnosticReport({
   return lines.join("\n");
 }
 
-function formatVerboseDiagnostics(verboseDiagnostics: VerboseDiagnostics | undefined): string[] {
-  if (!verboseDiagnostics?.enabled) {
-    return ["Verbose diagnostics: disabled"];
+function formatSecurityDiagnostics(security: SecurityDiagnostics | undefined): string[] {
+  if (!security) {
+    return [];
   }
 
-  const lines = ["Verbose diagnostics: enabled"];
-  if (!verboseDiagnostics.security) {
-    return lines;
-  }
-
-  const security = verboseDiagnostics.security;
-  lines.push(
+  return [
     "Security diagnostics:",
     `security.secure_context=${security.secureContext}`,
     `security.location_protocol=${safeLogToken(security.locationProtocol)}`,
     `security.location_origin=${safeDiagnosticOrigin(security.locationOrigin)}`,
     `security.avatar_src_schemes=${formatSchemeCounts(security.avatarImageSchemes)}`,
     `security.avatar_broken_images=${Math.max(0, Math.trunc(security.avatarBrokenImages))}`
-  );
-  return lines;
+  ];
+}
+
+function normalizeDroppedLogEntries(value: number | undefined): number {
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value ?? 0)) : 0;
 }
 
 function threadPanelSummary(thread: DiagnosticReportInput["snapshot"]["state"]["ui"]["thread"]): string {
@@ -223,7 +224,7 @@ function formatDiagnosticLog(entries: readonly DiagnosticLogEntry[]): string[] {
     return [];
   }
   return [
-    "Timeline log:",
+    "Diagnostic log:",
     ...[...entries]
       .sort((left, right) => left.timestampMs - right.timestampMs)
       .map((entry) => {

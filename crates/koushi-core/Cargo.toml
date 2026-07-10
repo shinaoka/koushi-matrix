@@ -15,6 +15,7 @@ path = "src/bin/real-homeserver-qa.rs"
 required-features = ["qa-bin"]
 
 [dependencies]
+koushi-diagnostics = { path = "../koushi-diagnostics" }
 koushi-sdk = { path = "../koushi-sdk" }
 koushi-key = { path = "../koushi-key" }
 koushi-search = { path = "../koushi-search" }

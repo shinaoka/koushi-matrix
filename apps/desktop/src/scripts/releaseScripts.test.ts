@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { relative, sep } from "node:path";
 import { describe, expect, test } from "vitest";
 
 const repoRoot = new URL("../../../../", import.meta.url).pathname;
@@ -21,7 +22,2627 @@ function gitTrackedFiles(): string[] {
     .filter(Boolean);
 }
 
+type DiagnosticSource = {
+  relativePath: string;
+  source: string;
+};
+
+type DiagnosticGateFinding = {
+  relativePath: string;
+  line: number;
+  location: string;
+  reason: string;
+};
+
+type SourceScope = {
+  name: string;
+  start: number;
+  end: number;
+};
+
+const DIAGNOSTIC_ENV_PATTERN = /KOUSHI_[A-Z0-9_]*(?:TRACE|DIAGNOST)/;
+const TEST_ATTRIBUTE_PATTERN = /^\s*#\[(?:(?:tokio|async_std)::)?test\]\s*$/;
+const SYNTHETIC_TRACE_ENV = ["KOUSHI", "SYNTH_TRACE"].join("_");
+const SYNTHETIC_TRACE_DECLARATION = `const SYNTHETIC_TRACE_ENV: &str = "${SYNTHETIC_TRACE_ENV}";`;
+const GATED_DIAGNOSTIC_REASON =
+  "env-gated diagnostic producer has no always-on structured collection";
+const REMOVED_DIAGNOSTIC_ENV_LITERALS = [
+  "KOUSHI_STARTUP_TRACE",
+  "KOUSHI_SUBSCRIBE_TRACE",
+  "KOUSHI_TIMELINE_ITEM_TRACE",
+  "KOUSHI_UNREAD_TRACE",
+  "KOUSHI_SEARCH_TRACE",
+  "KOUSHI_SYNC_TRACE",
+  "KOUSHI_CORE_ACTOR_TRACE",
+  "KOUSHI_DEBUG_SDK_ERROR"
+];
+
+function runtimeRustSources(): DiagnosticSource[] {
+  const roots = ["crates/koushi-sdk/src", "crates/koushi-core/src", "apps/desktop/src-tauri/src"];
+  const sources: DiagnosticSource[] = [];
+
+  function visit(directory: string): void {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const file = `${directory}/${entry.name}`;
+      const fileParts = relative(repoRoot, file).split(sep);
+      if (fileParts.some((part) => ["bin", "build", "generated", "target"].includes(part))) {
+        continue;
+      }
+      if (entry.isDirectory()) {
+        visit(file);
+      } else if (entry.isFile() && file.endsWith(".rs")) {
+        sources.push({
+          relativePath: fileParts.join("/"),
+          source: readFileSync(file, "utf8")
+        });
+      }
+    }
+  }
+
+  for (const root of roots) {
+    visit(`${repoRoot}${root}`);
+  }
+  return sources;
+}
+
+function productionRustLines(source: string): string[] {
+  const lines = source.split("\n");
+  const productionLines = [...lines];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!isTestOnlyAttribute(lines[index])) {
+      continue;
+    }
+
+    let itemStart = index + 1;
+    while (itemStart < lines.length && lines[itemStart].trim() === "") {
+      itemStart += 1;
+    }
+    const itemEnd = itemStart < lines.length ? testOnlyItemEnd(lines, itemStart) : index;
+    for (let itemIndex = index; itemIndex <= itemEnd; itemIndex += 1) {
+      productionLines[itemIndex] = "";
+    }
+    index = itemEnd;
+  }
+
+  return productionLines;
+}
+
+function isTestOnlyAttribute(line: string): boolean {
+  if (TEST_ATTRIBUTE_PATTERN.test(line)) {
+    return true;
+  }
+  const match = /^\s*#\[cfg\((.*)\)\]\s*$/.exec(line);
+  return match ? isTestOnlyCfgExpression(match[1]) : false;
+}
+
+function isTestOnlyCfgExpression(expression: string): boolean {
+  const trimmed = expression.trim();
+  if (trimmed === "test") {
+    return true;
+  }
+
+  const open = trimmed.indexOf("(");
+  if (open <= 0 || !trimmed.endsWith(")")) {
+    return false;
+  }
+
+  const name = trimmed.slice(0, open).trim();
+  const argumentsText = trimmed.slice(open + 1, -1);
+  const argumentsList = splitCfgArguments(argumentsText);
+  if (argumentsList === null || argumentsList.length === 0) {
+    return false;
+  }
+
+  if (name === "all") {
+    return argumentsList.some((argument) => isTestOnlyCfgExpression(argument));
+  }
+  if (name === "any") {
+    return argumentsList.every((argument) => isTestOnlyCfgExpression(argument));
+  }
+  return false;
+}
+
+function splitCfgArguments(expression: string): string[] | null {
+  const argumentsList: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < expression.length; index += 1) {
+    const character = expression[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+    } else if (character === "(") {
+      depth += 1;
+    } else if (character === ")") {
+      depth -= 1;
+      if (depth < 0) {
+        return null;
+      }
+    } else if (character === "," && depth === 0) {
+      argumentsList.push(expression.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+
+  if (inString || depth !== 0) {
+    return null;
+  }
+  const last = expression.slice(start).trim();
+  if (last.length > 0) {
+    argumentsList.push(last);
+  }
+  return argumentsList;
+}
+
+function testOnlyItemEnd(lines: readonly string[], start: number): number {
+  let depth = 0;
+  let opened = false;
+  for (let index = start; index < lines.length; index += 1) {
+    const structural = structuralRustLine(lines[index]);
+    const delta = braceDelta(lines[index]);
+    if (delta > 0) {
+      opened = true;
+    }
+    depth += delta;
+    if (opened && depth <= 0) {
+      return index;
+    }
+    if (!opened && (structural.includes(";") || structural.trimEnd().endsWith(","))) {
+      return index;
+    }
+  }
+  return lines.length - 1;
+}
+
+type RustLexicalView = {
+  code: string;
+  stringValues: string[];
+  stringSpans: Array<{ value: string; start: number; end: number }>;
+};
+
+function lexicalRustView(source: string): RustLexicalView {
+  const code = [...source];
+  const stringValues: string[] = [];
+  const stringSpans: Array<{ value: string; start: number; end: number }> = [];
+
+  function blank(start: number, endExclusive: number): void {
+    for (let index = start; index < endExclusive; index += 1) {
+      if (code[index] !== "\n" && code[index] !== "\r") {
+        code[index] = " ";
+      }
+    }
+  }
+
+  function rawStringAt(start: number): { contentStart: number; hashes: number } | null {
+    const previous = source[start - 1];
+    if (previous && /[A-Za-z0-9_]/.test(previous)) {
+      return null;
+    }
+    let cursor = start;
+    if (source[cursor] === "b") {
+      cursor += 1;
+    }
+    if (source[cursor] !== "r") {
+      return null;
+    }
+    cursor += 1;
+    let hashes = 0;
+    while (source[cursor] === "#") {
+      hashes += 1;
+      cursor += 1;
+    }
+    return source[cursor] === '"' ? { contentStart: cursor + 1, hashes } : null;
+  }
+
+  let index = 0;
+  while (index < source.length) {
+    if (source[index] === "/" && source[index + 1] === "/") {
+      const start = index;
+      while (index < source.length && source[index] !== "\n") {
+        index += 1;
+      }
+      blank(start, index);
+      continue;
+    }
+    if (source[index] === "/" && source[index + 1] === "*") {
+      const start = index;
+      let depth = 1;
+      index += 2;
+      while (index < source.length && depth > 0) {
+        if (source[index] === "/" && source[index + 1] === "*") {
+          depth += 1;
+          index += 2;
+        } else if (source[index] === "*" && source[index + 1] === "/") {
+          depth -= 1;
+          index += 2;
+        } else {
+          index += 1;
+        }
+      }
+      blank(start, index);
+      continue;
+    }
+
+    const rawString = rawStringAt(index);
+    if (rawString) {
+      const start = index;
+      const terminator = `"${"#".repeat(rawString.hashes)}`;
+      const end = source.indexOf(terminator, rawString.contentStart);
+      const contentEnd = end === -1 ? source.length : end;
+      const value = source.slice(rawString.contentStart, contentEnd);
+      stringValues.push(value);
+      index = end === -1 ? source.length : end + terminator.length;
+      stringSpans.push({ value, start, end: index });
+      blank(start, index);
+      continue;
+    }
+
+    if (source[index] === '"') {
+      const start = index;
+      let value = "";
+      index += 1;
+      let escaped = false;
+      while (index < source.length) {
+        const character = source[index];
+        if (!escaped && character === '"') {
+          index += 1;
+          break;
+        }
+        value += character;
+        if (escaped) {
+          escaped = false;
+        } else if (character === "\\") {
+          escaped = true;
+        }
+        index += 1;
+      }
+      stringValues.push(value);
+      stringSpans.push({ value, start, end: index });
+      blank(start, index);
+      continue;
+    }
+
+    index += 1;
+  }
+
+  return { code: code.join(""), stringValues, stringSpans };
+}
+
+function structuralRustLine(line: string): string {
+  return lexicalRustView(line).code;
+}
+
+function braceDelta(line: string): number {
+  return [...structuralRustLine(line)].reduce(
+    (delta, character) => delta + (character === "{" ? 1 : character === "}" ? -1 : 0),
+    0
+  );
+}
+
+function braceDepths(lines: readonly string[]): number[] {
+  let depth = 0;
+  return lines.map((line) => {
+    const lineDepth = depth;
+    depth += braceDelta(line);
+    return lineDepth;
+  });
+}
+
+function previousStatementRange(
+  lines: readonly string[],
+  endExclusive: number,
+  parentDepth: number,
+  depths: readonly number[],
+  minimumStart: number
+): [number, number] | null {
+  let end = endExclusive - 1;
+  while (end >= 0 && structuralRustLine(lines[end]).trim() === "") {
+    end -= 1;
+  }
+  if (end < minimumStart || depths[end] < parentDepth) {
+    return null;
+  }
+
+  const endStructural = structuralRustLine(lines[end]);
+  if (endStructural.includes("}") && !endStructural.includes(";")) {
+    const blockStart = matchingBlockStart(lines, end, minimumStart);
+    if (blockStart === null) {
+      return null;
+    }
+    for (let index = blockStart; index >= minimumStart; index -= 1) {
+      if (
+        depths[index] === parentDepth &&
+        /^(?:if|for|match|while|loop)\b/.test(structuralRustLine(lines[index]).trim())
+      ) {
+        return [index, end];
+      }
+    }
+    return [blockStart, end];
+  }
+
+  for (let index = end - 1; index >= minimumStart; index -= 1) {
+    if (
+      depths[index] + braceDelta(lines[index]) === parentDepth &&
+      structuralRustLine(lines[index]).trimEnd().endsWith("}")
+    ) {
+      return [index + 1, end];
+    }
+    if (depths[index] === parentDepth && structuralRustLine(lines[index]).includes(";")) {
+      return [index + 1, end];
+    }
+  }
+  return [minimumStart, end];
+}
+
+function matchingBlockStart(
+  lines: readonly string[],
+  end: number,
+  minimumStart: number
+): number | null {
+  let nestedClosures = 0;
+  for (let index = end; index >= minimumStart; index -= 1) {
+    const structural = structuralRustLine(lines[index]);
+    for (let characterIndex = structural.length - 1; characterIndex >= 0; characterIndex -= 1) {
+      const character = structural[characterIndex];
+      if (character === "}") {
+        nestedClosures += 1;
+      } else if (character === "{") {
+        nestedClosures -= 1;
+        if (nestedClosures === 0) {
+          return index;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function blockEnd(lines: readonly string[], start: number): number {
+  let depth = 0;
+  let opened = false;
+  for (let index = start; index < lines.length; index += 1) {
+    const structural = structuralRustLine(lines[index]);
+    const delta = braceDelta(structural);
+    if (delta > 0) {
+      opened = true;
+    }
+    depth += delta;
+    if (opened && depth <= 0) {
+      return index;
+    }
+    if (!opened && balancedBlockEndsLine(structural)) {
+      return index;
+    }
+  }
+  return lines.length - 1;
+}
+
+function balancedBlockEndsLine(structural: string): boolean {
+  let depth = 0;
+  let opened = false;
+  for (let index = 0; index < structural.length; index += 1) {
+    if (structural[index] === "{") {
+      depth += 1;
+      opened = true;
+    } else if (structural[index] === "}") {
+      depth -= 1;
+      if (opened && depth === 0 && structural.slice(index + 1).trim() === "") {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function sourceScopes(lines: readonly string[]): SourceScope[] {
+  const scopes: SourceScope[] = [];
+  const declarations = [
+    /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z0-9_]+)/,
+    /^\s*macro_rules!\s+([A-Za-z0-9_]+)/
+  ];
+  for (let index = 0; index < lines.length; index += 1) {
+    const declaration = declarations
+      .map((pattern) => pattern.exec(lines[index]))
+      .find((match) => match !== null);
+    if (declaration) {
+      scopes.push({
+        name: declaration[1],
+        start: index,
+        end: blockEnd(lines, index)
+      });
+    }
+  }
+  return scopes;
+}
+
+type DiagnosticSourceAnalysis = {
+  relativePath: string;
+  rawLines: string[];
+  codeLines: string[];
+  depths: number[];
+  scopes: SourceScope[];
+  constants: Set<string>;
+  moduleQualifiers: string[];
+};
+
+type HelperResolution = {
+  localByPath: Map<string, Set<string>>;
+  qualified: Set<string>;
+};
+
+function envConstants(rawLines: readonly string[], codeLines: readonly string[]): Set<string> {
+  const constants = new Set<string>();
+  for (let index = 0; index < codeLines.length; index += 1) {
+    const match = /\bconst\s+([A-Z][A-Z0-9_]*)\s*:\s*&str\s*=/.exec(codeLines[index]);
+    if (
+      match &&
+      lexicalRustView(rawLines[index]).stringValues.some((value) =>
+        DIAGNOSTIC_ENV_PATTERN.test(value)
+      )
+    ) {
+      constants.add(match[1]);
+    }
+  }
+  return constants;
+}
+
+function directDiagnosticEnvCheck(
+  rawText: string,
+  codeText: string,
+  constants: Set<string>
+): boolean {
+  if (!/std::env::(?:var_os|var)\s*\(/.test(codeText)) {
+    return false;
+  }
+  if (lexicalRustView(rawText).stringValues.some((value) => DIAGNOSTIC_ENV_PATTERN.test(value))) {
+    return true;
+  }
+  return [...constants].some((constant) => new RegExp(`\\b${constant}\\b`).test(codeText));
+}
+
+function moduleQualifiers(relativePath: string): string[] {
+  const parts = relativePath.split("/").filter((part) => part.length > 0);
+  if (parts.length === 0) {
+    return [];
+  }
+  parts[parts.length - 1] = parts.at(-1)!.replace(/\.rs$/, "");
+  if (parts.at(-1) === "mod") {
+    parts.pop();
+  }
+  const sourceRoot = Math.max(parts.lastIndexOf("src"), parts.lastIndexOf("fixtures"));
+  const moduleParts = parts.slice(sourceRoot + 1);
+  return moduleParts.map((_, index) => moduleParts.slice(index).join("::"));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizedHelperCode(codeText: string): string {
+  return codeText.replace(/\b(?:crate|self|super|Self)::/g, (prefix) => " ".repeat(prefix.length));
+}
+
+function normalizedHelperName(name: string): string {
+  return name.replace(/^(?:(?:crate|self|super|Self)::)+/, "");
+}
+
+function callArguments(rawText: string, codeText: string, name: string): string[] {
+  const argumentsList: string[] = [];
+  const normalizedCode = normalizedHelperCode(codeText);
+  const pattern = new RegExp(
+    `(?:^|[^A-Za-z0-9_:.])${escapeRegExp(normalizedHelperName(name))}\\s*\\(`,
+    "g"
+  );
+  for (const match of normalizedCode.matchAll(pattern)) {
+    const open = normalizedCode.indexOf("(", match.index);
+    let depth = 0;
+    for (let index = open; index < normalizedCode.length; index += 1) {
+      if (normalizedCode[index] === "(") {
+        depth += 1;
+      } else if (normalizedCode[index] === ")") {
+        depth -= 1;
+        if (depth === 0) {
+          argumentsList.push(rawText.slice(open + 1, index));
+          break;
+        }
+      }
+    }
+  }
+  return argumentsList;
+}
+
+function hasNamedCall(codeText: string, name: string): boolean {
+  return new RegExp(
+    `(?:^|[^A-Za-z0-9_:.])${escapeRegExp(normalizedHelperName(name))}\\s*\\(`
+  ).test(normalizedHelperCode(codeText));
+}
+
+function hasHelperCall(codeText: string, helpers: Set<string>, currentScopeName = ""): boolean {
+  return [...helpers]
+    .filter((name) => name !== currentScopeName)
+    .some((name) => hasNamedCall(codeText, name));
+}
+
+function resolveHelpers(
+  analyses: readonly DiagnosticSourceAnalysis[],
+  directMatch: (analysis: DiagnosticSourceAnalysis, scope: SourceScope) => boolean,
+  transitive: boolean,
+  wrapperMatch: (analysis: DiagnosticSourceAnalysis, scope: SourceScope) => boolean = () => true
+): HelperResolution {
+  const localByPath = new Map<string, Set<string>>();
+  for (const analysis of analyses) {
+    localByPath.set(
+      analysis.relativePath,
+      new Set(
+        analysis.scopes.filter((scope) => directMatch(analysis, scope)).map((scope) => scope.name)
+      )
+    );
+  }
+
+  let changed = transitive;
+  while (changed) {
+    changed = false;
+    const qualified = new Set<string>();
+    for (const analysis of analyses) {
+      for (const name of localByPath.get(analysis.relativePath) ?? []) {
+        for (const qualifier of analysis.moduleQualifiers) {
+          qualified.add(`${qualifier}::${name}`);
+        }
+      }
+    }
+    for (const analysis of analyses) {
+      const local = localByPath.get(analysis.relativePath)!;
+      const visible = new Set([...local, ...qualified]);
+      for (const scope of analysis.scopes) {
+        if (local.has(scope.name) || !wrapperMatch(analysis, scope)) {
+          continue;
+        }
+        const codeText = analysis.codeLines.slice(scope.start, scope.end + 1).join("\n");
+        if (hasHelperCall(codeText, visible, scope.name)) {
+          local.add(scope.name);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  const qualified = new Set<string>();
+  for (const analysis of analyses) {
+    for (const name of localByPath.get(analysis.relativePath) ?? []) {
+      for (const qualifier of analysis.moduleQualifiers) {
+        qualified.add(`${qualifier}::${name}`);
+      }
+    }
+  }
+  return { localByPath, qualified };
+}
+
+function scopeReturnsBool(analysis: DiagnosticSourceAnalysis, scope: SourceScope): boolean {
+  const text = analysis.codeLines.slice(scope.start, scope.end + 1).join("\n");
+  const openingBrace = text.indexOf("{");
+  return /->\s*bool\b/.test(openingBrace === -1 ? text : text.slice(0, openingBrace));
+}
+
+function visibleHelpers(resolution: HelperResolution, relativePath: string): Set<string> {
+  const local = resolution.localByPath.get(relativePath) ?? [];
+  return new Set([...local, ...[...local].map((name) => `Self::${name}`), ...resolution.qualified]);
+}
+
+function statementEnd(
+  codeLines: readonly string[],
+  start: number,
+  maximumEnd: number,
+  depths: readonly number[]
+): number {
+  const parentDepth = depths[start];
+  for (let index = start; index <= maximumEnd; index += 1) {
+    if (depths[index] === parentDepth && codeLines[index].includes(";")) {
+      return index;
+    }
+  }
+  return start;
+}
+
+function bindingInitializer(rawText: string, codeText: string): { raw: string; code: string } {
+  const equals = codeText.indexOf("=");
+  const semicolon = codeText.lastIndexOf(";");
+  const end = semicolon > equals ? semicolon : codeText.length;
+  return equals === -1
+    ? { raw: "", code: "" }
+    : {
+        raw: rawText.slice(equals + 1, end),
+        code: codeText.slice(equals + 1, end)
+      };
+}
+
+function localEnvironmentAliases(
+  analysis: DiagnosticSourceAnalysis,
+  scope: SourceScope,
+  envHelpers: Set<string>
+): Set<string> {
+  const aliases = new Set<string>();
+  const depths = analysis.depths;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let index = scope.start; index <= scope.end; index += 1) {
+      const declaration = /\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=;]+)?=/.exec(
+        analysis.codeLines[index]
+      );
+      if (!declaration || aliases.has(declaration[1])) {
+        continue;
+      }
+      const end = statementEnd(analysis.codeLines, index, scope.end, depths);
+      const rawText = analysis.rawLines.slice(index, end + 1).join("\n");
+      const codeText = analysis.codeLines.slice(index, end + 1).join("\n");
+      const initializer = bindingInitializer(rawText, codeText);
+      if (
+        directDiagnosticEnvCheck(initializer.raw, initializer.code, analysis.constants) ||
+        hasHelperCall(initializer.code, envHelpers) ||
+        [...aliases].some((alias) => new RegExp(`\\b${alias}\\b`).test(initializer.code))
+      ) {
+        aliases.add(declaration[1]);
+        changed = true;
+      }
+      index = end;
+    }
+  }
+  return aliases;
+}
+
+function diagnosticGateLine(
+  rawText: string,
+  codeText: string,
+  constants: Set<string>,
+  envHelpers: Set<string>,
+  localAliases: Set<string>
+): boolean {
+  if (!/\bif\b/.test(codeText)) {
+    return false;
+  }
+  if (directDiagnosticEnvCheck(rawText, codeText, constants)) {
+    return true;
+  }
+  if (hasHelperCall(codeText, envHelpers)) {
+    return true;
+  }
+  const aliasConditionText = /\bif\s+let\b/.test(codeText)
+    ? bindingInitializer(codeText, codeText).code
+    : codeText;
+  return [...localAliases].some((name) =>
+    new RegExp(`\\b${name}\\b`).test(aliasConditionText)
+  );
+}
+
+function gateHeaderEnd(codeLines: readonly string[], start: number, maximumEnd: number): number {
+  const startIf = codeLines[start].search(/\bif\b/);
+  if (startIf !== -1 && codeLines[start].slice(startIf).includes("{")) {
+    return start;
+  }
+  for (let index = start; index <= maximumEnd; index += 1) {
+    if (braceDelta(codeLines[index]) > 0 || codeLines[index].trimEnd().endsWith("{")) {
+      return index;
+    }
+  }
+  return start;
+}
+
+function hasStructuredCollection(
+  rawLines: readonly string[],
+  codeLines: readonly string[],
+  depths: readonly number[],
+  start: number,
+  gateLine: number,
+  gateEnd: number,
+  structuredHelpers: Set<string>,
+  stderrHelpers: Set<string>,
+  currentScopeName: string
+): boolean {
+  if (gateLine <= start) {
+    return false;
+  }
+  const mirrorRawText = rawLines.slice(gateLine, gateEnd + 1).join("\n");
+  const mirrorCodeText = codeLines.slice(gateLine, gateEnd + 1).join("\n");
+  const mirrorHeaderEnd = gateHeaderEnd(codeLines, gateLine, gateEnd);
+  const mirrorHeaderCodeText = codeLines.slice(gateLine, mirrorHeaderEnd + 1).join("\n");
+  const aliases = iteratorAliases(codeLines, depths, start, gateLine, depths[gateLine]);
+  const mirrorTokens = expandSemanticTokensThroughBindings(
+    diagnosticSideEffectTokens(mirrorRawText, mirrorCodeText, stderrHelpers),
+    rawLines,
+    codeLines,
+    depths,
+    start,
+    gateLine,
+    depths[gateLine]
+  );
+  let endExclusive = gateLine;
+  while (endExclusive > start) {
+    const range = previousStatementRange(codeLines, endExclusive, depths[gateLine], depths, start);
+    if (range === null || range[0] < start) {
+      return false;
+    }
+    const rawText = rawLines.slice(range[0], range[1] + 1).join("\n");
+    const codeText = codeLines.slice(range[0], range[1] + 1).join("\n");
+    const structuredProducer = hasStructuredProducer(
+      codeLines,
+      range[0],
+      range[1],
+      structuredHelpers,
+      currentScopeName
+    );
+    if (
+      isAssociationBarrier(codeText) &&
+      (!structuredProducer ||
+        !barrierControlAllowsMirror(codeText, mirrorHeaderCodeText, mirrorCodeText, aliases))
+    ) {
+      return false;
+    }
+    if (structuredProducer) {
+      const collectionTokens = expandSemanticTokensThroughBindings(
+        producerTokens(rawText, codeText, structuredHelpers, currentScopeName),
+        rawLines,
+        codeLines,
+        depths,
+        start,
+        range[0],
+        depths[gateLine]
+      );
+      if (hasSemanticAssociation(collectionTokens, mirrorTokens)) {
+        return true;
+      }
+    }
+    endExclusive = range[0];
+  }
+  return false;
+}
+
+function barrierControlAllowsMirror(
+  barrierText: string,
+  gateHeaderText: string,
+  gateBlockText: string,
+  aliases: ReadonlyMap<string, string>
+): boolean {
+  const firstLine = barrierText
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (firstLine?.startsWith("if ")) {
+    return gateConditionImpliesCollector(barrierText, gateHeaderText);
+  }
+  if (firstLine?.startsWith("for ")) {
+    const collectorIterators = loopIteratorExpressions(barrierText);
+    const mirrorIterators = loopIteratorExpressions(gateBlockText);
+    return (
+      collectorIterators.length > 0 &&
+      collectorIterators.some((collectorIterator) =>
+        mirrorIterators.some((mirrorIterator) =>
+          equivalentIteratorDataFlow(collectorIterator, mirrorIterator, aliases)
+        )
+      )
+    );
+  }
+  return false;
+}
+
+type NormalizedCondition = {
+  hasOr: boolean;
+  terms: Map<string, boolean>;
+  valid: boolean;
+};
+
+function gateConditionImpliesCollector(
+  collectorControlText: string,
+  gateHeaderText: string
+): boolean {
+  const collector = normalizedCondition(collectorControlText);
+  const gate = normalizedCondition(gateHeaderText);
+  if (!collector.valid || !gate.valid || collector.hasOr || gate.hasOr) {
+    return false;
+  }
+  return [...collector.terms].every(
+    ([term, polarity]) => gate.terms.get(term) === polarity
+  );
+}
+
+function normalizedCondition(controlText: string): NormalizedCondition {
+  const lines = controlText.split("\n");
+  const headerEnd = gateHeaderEnd(lines, 0, lines.length - 1);
+  const header = lines.slice(0, headerEnd + 1).join("\n");
+  const ifIndex = header.search(/\bif\b/);
+  const openingBrace = header.lastIndexOf("{");
+  if (ifIndex === -1 || openingBrace === -1 || openingBrace <= ifIndex) {
+    return { hasOr: false, terms: new Map(), valid: false };
+  }
+  const expression = header.slice(ifIndex + 2, openingBrace).trim();
+  const split = splitTopLevelBooleanExpression(expression);
+  const terms = new Map<string, boolean>();
+  let valid = split.parts.length > 0;
+  for (const part of split.parts) {
+    let atom = part.trim();
+    let polarity = true;
+    while (atom.startsWith("!") && !atom.startsWith("!=")) {
+      polarity = !polarity;
+      atom = atom.slice(1).trim();
+    }
+    atom = stripBalancedOuterParentheses(atom).replace(/\s+/g, "");
+    if (atom.length === 0 || (terms.has(atom) && terms.get(atom) !== polarity)) {
+      valid = false;
+      continue;
+    }
+    terms.set(atom, polarity);
+  }
+  return { hasOr: split.hasOr, terms, valid };
+}
+
+function splitTopLevelBooleanExpression(expression: string): {
+  hasOr: boolean;
+  parts: string[];
+} {
+  const parts: string[] = [];
+  let start = 0;
+  let parentheses = 0;
+  let brackets = 0;
+  let braces = 0;
+  let hasOr = false;
+  for (let index = 0; index < expression.length - 1; index += 1) {
+    const character = expression[index];
+    if (character === "(") parentheses += 1;
+    else if (character === ")") parentheses -= 1;
+    else if (character === "[") brackets += 1;
+    else if (character === "]") brackets -= 1;
+    else if (character === "{") braces += 1;
+    else if (character === "}") braces -= 1;
+    if (parentheses !== 0 || brackets !== 0 || braces !== 0) {
+      continue;
+    }
+    const operator = expression.slice(index, index + 2);
+    if (operator === "&&" || operator === "||") {
+      parts.push(expression.slice(start, index));
+      hasOr ||= operator === "||";
+      start = index + 2;
+      index += 1;
+    }
+  }
+  parts.push(expression.slice(start));
+  return { hasOr, parts: parts.filter((part) => part.trim().length > 0) };
+}
+
+function stripBalancedOuterParentheses(value: string): string {
+  let result = value.trim();
+  while (result.startsWith("(") && result.endsWith(")")) {
+    let depth = 0;
+    let wrapsWholeValue = true;
+    for (let index = 0; index < result.length; index += 1) {
+      if (result[index] === "(") depth += 1;
+      else if (result[index] === ")") depth -= 1;
+      if (depth === 0 && index < result.length - 1) {
+        wrapsWholeValue = false;
+        break;
+      }
+    }
+    if (!wrapsWholeValue) break;
+    result = result.slice(1, -1).trim();
+  }
+  return result;
+}
+
+function loopIteratorExpressions(text: string): string[] {
+  const iterators: string[] = [];
+  for (const match of text.matchAll(/\bfor\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s+/g)) {
+    const expressionStart = (match.index ?? 0) + match[0].length;
+    let parentheses = 0;
+    let brackets = 0;
+    for (let index = expressionStart; index < text.length; index += 1) {
+      const character = text[index];
+      if (character === "(") parentheses += 1;
+      else if (character === ")") parentheses -= 1;
+      else if (character === "[") brackets += 1;
+      else if (character === "]") brackets -= 1;
+      else if (character === "{" && parentheses === 0 && brackets === 0) {
+        iterators.push(text.slice(expressionStart, index).replace(/\s+/g, ""));
+        break;
+      }
+    }
+  }
+  return iterators;
+}
+
+function iteratorAliases(
+  codeLines: readonly string[],
+  depths: readonly number[],
+  start: number,
+  end: number,
+  scopeDepth: number
+): Map<string, string> {
+  const aliases = new Map<string, string>();
+  for (let index = start; index < end; index += 1) {
+    if (depths[index] !== scopeDepth) {
+      continue;
+    }
+    const match = /\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*[^=;]+)?\s*=\s*&?\s*([A-Za-z_][A-Za-z0-9_]*)\s*;/.exec(
+      codeLines[index]
+    );
+    if (match) {
+      aliases.set(match[1], resolvedIteratorAlias(match[2], aliases));
+    }
+  }
+  return aliases;
+}
+
+function resolvedIteratorAlias(name: string, aliases: ReadonlyMap<string, string>): string {
+  const seen = new Set<string>();
+  let current = name;
+  while (aliases.has(current) && !seen.has(current)) {
+    seen.add(current);
+    current = aliases.get(current)!;
+  }
+  return current;
+}
+
+function normalizedIteratorExpression(
+  expression: string,
+  aliases: ReadonlyMap<string, string>
+): string {
+  return expression
+    .replace(/\b[A-Za-z_][A-Za-z0-9_]*\b/g, (name) => resolvedIteratorAlias(name, aliases))
+    .replace(/\s+/g, "");
+}
+
+function iteratorDataRoots(
+  expression: string,
+  aliases: ReadonlyMap<string, string>
+): Set<string> {
+  const closureBindings = new Set<string>();
+  for (const closure of expression.matchAll(/\|([^|]*)\|/g)) {
+    for (const binding of closure[1].matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)) {
+      closureBindings.add(binding[0]);
+    }
+  }
+  const ignored = new Set([
+    "as",
+    "async",
+    "await",
+    "const",
+    "else",
+    "false",
+    "for",
+    "if",
+    "in",
+    "let",
+    "loop",
+    "match",
+    "move",
+    "mut",
+    "ref",
+    "return",
+    "static",
+    "true",
+    "unsafe",
+    "while"
+  ]);
+  const roots = new Set<string>();
+  for (const match of expression.matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)) {
+    const name = match[0];
+    const index = match.index ?? 0;
+    const before = expression.slice(0, index).trimEnd();
+    const after = expression.slice(index + name.length).trimStart();
+    if (
+      ignored.has(name) ||
+      closureBindings.has(name) ||
+      before.endsWith(".") ||
+      after.startsWith("::") ||
+      after.startsWith("(")
+    ) {
+      continue;
+    }
+    if (name === "self") {
+      const field = /^\.([A-Za-z_][A-Za-z0-9_]*)/.exec(after);
+      roots.add(field ? `self.${field[1]}` : name);
+    } else {
+      roots.add(resolvedIteratorAlias(name, aliases));
+    }
+  }
+  return roots;
+}
+
+function equivalentIteratorDataFlow(
+  collectorIterator: string,
+  mirrorIterator: string,
+  aliases: ReadonlyMap<string, string>
+): boolean {
+  if (
+    normalizedIteratorExpression(collectorIterator, aliases) ===
+    normalizedIteratorExpression(mirrorIterator, aliases)
+  ) {
+    return true;
+  }
+  const collectorRoots = iteratorDataRoots(collectorIterator, aliases);
+  const mirrorRoots = iteratorDataRoots(mirrorIterator, aliases);
+  const helperIterator = (expression: string): boolean =>
+    /^(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(
+      expression.trim()
+    );
+  return (
+    (helperIterator(collectorIterator) || helperIterator(mirrorIterator)) &&
+    collectorRoots.size > 0 &&
+    collectorRoots.size === mirrorRoots.size &&
+    [...collectorRoots].every((root) => mirrorRoots.has(root))
+  );
+}
+
+function isAssociationBarrier(text: string): boolean {
+  const firstLine = text
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  return firstLine !== undefined && /^(?:if|for|match|while|loop)\b/.test(firstLine);
+}
+
+function isBindingBarrier(text: string): boolean {
+  const firstLine = text
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  return firstLine !== undefined && /^(?:if|match|while|loop)\b/.test(firstLine);
+}
+
+function recordArguments(rawText: string, codeText: string): string[] {
+  return [
+    ...callArguments(rawText, codeText, "record"),
+    ...callArguments(rawText, codeText, "koushi_diagnostics::record"),
+    ...callArguments(rawText, codeText, "record_batch"),
+    ...callArguments(rawText, codeText, "koushi_diagnostics::record_batch")
+  ];
+}
+
+function hasStructuredRecord(codeText: string): boolean {
+  return recordArguments(codeText, codeText).length > 0;
+}
+
+function producerTokens(
+  rawText: string,
+  codeText: string,
+  helpers: Set<string>,
+  currentScopeName: string
+): Set<string> {
+  const tokens = new Set<string>();
+  for (const argumentsText of recordArguments(rawText, codeText)) {
+    addAll(tokens, semanticTokens(argumentsText));
+  }
+  for (const helper of helpers) {
+    if (helper === currentScopeName || !hasNamedCall(codeText, helper)) {
+      continue;
+    }
+    for (const argumentsText of callArguments(rawText, codeText, helper)) {
+      addAll(tokens, semanticTokens(argumentsText));
+    }
+  }
+  return expandInlineLoopBindings(tokens, rawText, codeText);
+}
+
+function expandInlineLoopBindings(
+  initialTokens: Set<string>,
+  rawText: string,
+  codeText: string
+): Set<string> {
+  const tokens = new Set(initialTokens);
+  for (const loop of codeText.matchAll(/\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+/g)) {
+    if (!tokens.has(loop[1])) {
+      continue;
+    }
+    const expressionStart = (loop.index ?? 0) + loop[0].length;
+    const expressionEnd = codeText.indexOf("{", expressionStart);
+    if (expressionEnd !== -1) {
+      addAll(tokens, semanticTokens(rawText.slice(expressionStart, expressionEnd)));
+    }
+  }
+  return tokens;
+}
+
+function semanticTokens(text: string): Set<string> {
+  const tokens = new Set<string>();
+  const lexical = lexicalRustView(text);
+  for (const token of lexical.code.matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)) {
+    tokens.add(token[0]);
+  }
+
+  for (const value of lexical.stringValues) {
+    if (/^[a-z][a-z0-9_]*$/.test(value)) {
+      tokens.add(value);
+    }
+    for (const assignment of value.matchAll(
+      /(?:^|\s)[A-Za-z_][A-Za-z0-9_]*=\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g
+    )) {
+      tokens.add(assignment[1]);
+    }
+    for (const placeholder of value.matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) {
+      tokens.add(placeholder[1]);
+    }
+  }
+
+  return tokens;
+}
+
+function addAll(target: Set<string>, source: Set<string>): void {
+  for (const value of source) {
+    target.add(value);
+  }
+}
+
+function expandSemanticTokensThroughBindings(
+  initialTokens: Set<string>,
+  rawLines: readonly string[],
+  codeLines: readonly string[],
+  depths: readonly number[],
+  minimumStart: number,
+  endExclusive: number,
+  parentDepth: number
+): Set<string> {
+  const tokens = new Set(initialTokens);
+  let cursor = endExclusive;
+  while (cursor > minimumStart) {
+    const range = previousStatementRange(codeLines, cursor, parentDepth, depths, minimumStart);
+    if (range === null || range[0] < minimumStart) {
+      break;
+    }
+    const codeText = codeLines.slice(range[0], range[1] + 1).join("\n");
+    if (isBindingBarrier(codeText)) {
+      break;
+    }
+    const declaration = /\blet\s+([\s\S]*?)=/.exec(codeText);
+    const rawText = rawLines.slice(range[0], range[1] + 1).join("\n");
+    for (const token of [...tokens]) {
+      for (const method of ["push", "extend"]) {
+        for (const argumentsText of callArguments(rawText, codeText, `${token}.${method}`)) {
+          addAll(tokens, semanticTokens(argumentsText));
+        }
+      }
+    }
+    const boundNames = declaration
+      ? [...declaration[1].matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)].map((match) => match[0])
+      : [];
+    if (declaration && boundNames.some((name) => tokens.has(name))) {
+      const equals = codeText.indexOf("=", declaration.index);
+      const semicolon = codeText.lastIndexOf(";");
+      if (equals !== -1 && semicolon > equals) {
+        addAll(tokens, semanticTokens(rawText.slice(equals + 1, semicolon)));
+      }
+    }
+    cursor = range[0];
+  }
+  return tokens;
+}
+
+function diagnosticSideEffectTokens(
+  rawText: string,
+  codeText: string,
+  stderrHelpers: Set<string>
+): Set<string> {
+  const tokens = new Set<string>();
+  for (const argumentsText of callArguments(rawText, codeText, "eprintln!")) {
+    addAll(tokens, semanticTokens(argumentsText));
+  }
+  for (const helper of stderrHelpers) {
+    if (!hasNamedCall(codeText, helper)) {
+      continue;
+    }
+    for (const argumentsText of callArguments(rawText, codeText, helper)) {
+      addAll(tokens, semanticTokens(argumentsText));
+    }
+  }
+  return expandInlineLoopBindings(tokens, rawText, codeText);
+}
+
+function hasSemanticAssociation(collectionTokens: Set<string>, mirrorTokens: Set<string>): boolean {
+  return [...collectionTokens].some((token) => mirrorTokens.has(token));
+}
+
+function hasStructuredProducer(
+  codeLines: readonly string[],
+  start: number,
+  end: number,
+  helpers: Set<string>,
+  currentScopeName: string
+): boolean {
+  if (end < start) {
+    return false;
+  }
+  const text = codeLines.slice(start, end + 1).join("\n");
+  if (hasStructuredRecord(text)) {
+    return true;
+  }
+  return hasHelperCall(text, helpers, currentScopeName);
+}
+
+function hasDiagnosticSideEffect(
+  codeLines: readonly string[],
+  start: number,
+  end: number,
+  stderr: Set<string>,
+  structuredHelpers: Set<string>,
+  currentScopeName: string
+): boolean {
+  const text = codeLines.slice(start, end + 1).join("\n");
+  if (/\beprintln!\s*\(/.test(text)) {
+    return true;
+  }
+  if (hasHelperCall(text, stderr, currentScopeName)) {
+    return true;
+  }
+  return hasStructuredProducer(codeLines, start, end, structuredHelpers, currentScopeName);
+}
+
+function scanDiagnosticSources(sources: readonly DiagnosticSource[]): DiagnosticGateFinding[] {
+  const findings: DiagnosticGateFinding[] = [];
+  const analyses = sources.map(({ relativePath, source }): DiagnosticSourceAnalysis => {
+    const rawLines = productionRustLines(source);
+    const codeLines = lexicalRustView(rawLines.join("\n")).code.split("\n");
+    return {
+      relativePath,
+      rawLines,
+      codeLines,
+      depths: braceDepths(codeLines),
+      scopes: sourceScopes(codeLines),
+      constants: envConstants(rawLines, codeLines),
+      moduleQualifiers: moduleQualifiers(relativePath)
+    };
+  });
+  const envResolution = resolveHelpers(
+    analyses,
+    (analysis, scope) =>
+      scopeReturnsBool(analysis, scope) &&
+      directDiagnosticEnvCheck(
+        analysis.rawLines.slice(scope.start, scope.end + 1).join("\n"),
+        analysis.codeLines.slice(scope.start, scope.end + 1).join("\n"),
+        analysis.constants
+      ),
+    true,
+    scopeReturnsBool
+  );
+  const structuredResolution = resolveHelpers(
+    analyses,
+    (analysis, scope) =>
+      hasStructuredRecord(analysis.codeLines.slice(scope.start, scope.end + 1).join("\n")),
+    true
+  );
+  const stderrResolution = resolveHelpers(
+    analyses,
+    (analysis, scope) =>
+      /\beprintln!\s*\(/.test(analysis.codeLines.slice(scope.start, scope.end + 1).join("\n")),
+    true
+  );
+
+  for (const analysis of analyses) {
+    const envHelpers = visibleHelpers(envResolution, analysis.relativePath);
+    const structuredHelpers = visibleHelpers(structuredResolution, analysis.relativePath);
+    const stderr = visibleHelpers(stderrResolution, analysis.relativePath);
+    for (const scope of analysis.scopes) {
+      const localAliases = localEnvironmentAliases(analysis, scope, envHelpers);
+      for (let lineIndex = scope.start; lineIndex <= scope.end; lineIndex += 1) {
+        if (!/\bif\b/.test(analysis.codeLines[lineIndex])) {
+          continue;
+        }
+        const headerEnd = gateHeaderEnd(analysis.codeLines, lineIndex, scope.end);
+        const headerRawText = analysis.rawLines.slice(lineIndex, headerEnd + 1).join("\n");
+        const headerCodeText = analysis.codeLines.slice(lineIndex, headerEnd + 1).join("\n");
+        if (
+          !diagnosticGateLine(
+            headerRawText,
+            headerCodeText,
+            analysis.constants,
+            envHelpers,
+            localAliases
+          )
+        ) {
+          continue;
+        }
+        const blockGateEnd = Math.min(blockEnd(analysis.codeLines, lineIndex), scope.end);
+        const gateBlockCode = analysis.codeLines.slice(lineIndex, blockGateEnd + 1).join("\n");
+        const negativeEarlyExit =
+          /\bif\s*!/.test(headerCodeText) && /\breturn\b/.test(gateBlockCode);
+        const diagnosticEnd = negativeEarlyExit ? scope.end : blockGateEnd;
+        if (
+          !hasDiagnosticSideEffect(
+            analysis.codeLines,
+            lineIndex,
+            diagnosticEnd,
+            stderr,
+            structuredHelpers,
+            scope.name
+          )
+        ) {
+          continue;
+        }
+        const gatedStructuredProducer = hasStructuredProducer(
+          analysis.codeLines,
+          lineIndex,
+          diagnosticEnd,
+          structuredHelpers,
+          scope.name
+        );
+        const hasCollection = hasStructuredCollection(
+          analysis.rawLines,
+          analysis.codeLines,
+          analysis.depths,
+          scope.start,
+          lineIndex,
+          diagnosticEnd,
+          structuredHelpers,
+          stderr,
+          scope.name
+        );
+        if (gatedStructuredProducer || !hasCollection) {
+          findings.push({
+            relativePath: analysis.relativePath,
+            line: lineIndex + 1,
+            location: `${analysis.relativePath}:${lineIndex + 1}`,
+            reason: GATED_DIAGNOSTIC_REASON
+          });
+        }
+      }
+    }
+  }
+  return findings;
+}
+
+function runtimeDiagnosticStderrFindings(
+  sources: DiagnosticSource[]
+): DiagnosticGateFinding[] {
+  return sources.flatMap(({ relativePath, source }) => {
+    const rawLines = productionRustLines(source);
+    const lexical = lexicalRustView(rawLines.join("\n"));
+    const code = lexical.code;
+    const codeLines = code.split("\n");
+    const lineStarts = [0];
+    for (const line of codeLines.slice(0, -1)) {
+      lineStarts.push(lineStarts.at(-1)! + line.length + 1);
+    }
+    const removedLiteralLines = new Set(
+      lexical.stringSpans
+        .filter(({ value }) => REMOVED_DIAGNOSTIC_ENV_LITERALS.includes(value))
+        .map(({ start }) => lineIndexAtOffset(lineStarts, start))
+    );
+    return rawLines.flatMap((_, index) => {
+      const codeLine = codeLines[index];
+      const reason = /\beprintln!\s*\(/.test(codeLine)
+        ? "runtime diagnostic writes to stderr"
+        : removedDiagnosticEnvironmentLiteralInSyntax(
+              code,
+              lineStarts,
+              index,
+              removedLiteralLines.has(index)
+            )
+          ? "runtime diagnostic environment gate remains"
+          : null;
+      return reason
+        ? [{ relativePath, line: index + 1, location: `${relativePath}:${index + 1}`, reason }]
+        : [];
+    });
+  });
+}
+
+function removedDiagnosticEnvironmentLiteralInSyntax(
+  code: string,
+  lineStarts: readonly number[],
+  lineIndex: number,
+  includesRemovedLiteral: boolean
+): boolean {
+  const codeLineStart = lineStarts[lineIndex];
+  const statementStart =
+    Math.max(
+      code.lastIndexOf(";", codeLineStart),
+      code.lastIndexOf("{", codeLineStart),
+      code.lastIndexOf("}", codeLineStart)
+    ) + 1;
+  const statementEndOffset = code.slice(codeLineStart).search(/[;{}]/);
+  const statementEnd =
+    statementEndOffset === -1 ? code.length : codeLineStart + statementEndOffset + 1;
+  const syntax = code.slice(statementStart, statementEnd);
+  return (
+    includesRemovedLiteral &&
+    (/\bconst\s+[A-Z][A-Z0-9_]*\s*:\s*&str\s*=/.test(syntax) ||
+      /\bstd::env::(?:var_os|var)\s*\(/.test(syntax))
+  );
+}
+
+function lineIndexAtOffset(lineStarts: readonly number[], offset: number): number {
+  let lineIndex = 0;
+  while (lineIndex + 1 < lineStarts.length && lineStarts[lineIndex + 1] <= offset) {
+    lineIndex += 1;
+  }
+  return lineIndex;
+}
+
 describe("desktop release scripts", () => {
+  test("always-on diagnostic collection rejects trace-only producers and accepts stderr mirrors", () => {
+    const badFixture = `
+fn gated_only() {
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "gated"));
+    eprintln!("synthetic stderr mirror");
+  }
+}
+`;
+    const goodFixture = `
+fn collected_first() {
+  let stage = "collected";
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  fn test_only_environment_probe() {
+    if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+      eprintln!("test-only");
+    }
+  }
+}
+`;
+    const helperAndAliasFixture = `
+const SYNTHETIC_TRACE_ENV: &str = "KOUSHI_SYNTH_TRACE";
+
+fn stderr_enabled() -> bool {
+  std::env::var_os(SYNTHETIC_TRACE_ENV).is_some()
+}
+
+fn helper_gated_only() {
+  if stderr_enabled() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "helper"));
+    eprintln!("synthetic helper stderr mirror");
+  }
+}
+
+fn boolean_alias_gated_only() {
+  let trace = std::env::var_os("KOUSHI_SYNTH_TRACE").is_some();
+  if trace {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "alias"));
+    eprintln!("synthetic alias stderr mirror");
+  }
+}
+
+fn collected_helper_mirror(stage: &'static str) {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  if stderr_enabled() {
+    eprintln!("synthetic helper stderr stage={stage}");
+  }
+}
+
+fn collected_alias_mirror() {
+  let trace = std::env::var_os("KOUSHI_SYNTH_TRACE").is_some();
+  let stage = "alias_collected";
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  if trace {
+    eprintln!("synthetic alias stderr stage={stage}");
+  }
+}
+`;
+
+    const badFindings = scanDiagnosticSources([
+      { relativePath: "fixtures/bad.rs", source: badFixture }
+    ]);
+    expect(badFindings).toHaveLength(1);
+    expect(badFindings[0]).toMatchObject({
+      relativePath: "fixtures/bad.rs",
+      line: 3,
+      location: "fixtures/bad.rs:3"
+    });
+    expect(badFindings[0].reason).toContain("structured collection");
+
+    const helperAndAliasFindings = scanDiagnosticSources([
+      {
+        relativePath: "fixtures/helper-and-alias.rs",
+        source: helperAndAliasFixture
+      }
+    ]);
+    expect(helperAndAliasFindings).toHaveLength(2);
+    expect(
+      helperAndAliasFindings.every((finding) => finding.relativePath.includes("fixtures/"))
+    ).toBe(true);
+    expect(helperAndAliasFindings.every((finding) => finding.line > 0)).toBe(true);
+    expect(helperAndAliasFindings.every((finding) => finding.location.includes(":"))).toBe(true);
+    expect(
+      helperAndAliasFindings.every((finding) => finding.reason === GATED_DIAGNOSTIC_REASON)
+    ).toBe(true);
+
+    expect(
+      scanDiagnosticSources([{ relativePath: "fixtures/good.rs", source: goodFixture }])
+    ).toEqual([]);
+
+    const runtimeFindings = scanDiagnosticSources(runtimeRustSources());
+    expect(runtimeFindings).toEqual([]);
+  });
+
+  test("scanner rejects structured producers inside every recognized gate form without stderr", () => {
+    const directGateFixture = `
+fn direct_gate_only() {
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "direct"));
+  }
+}
+`;
+    const helperGateFixture = `
+fn record_helper() {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "helper"));
+}
+
+fn helper_gate_only() {
+  if stderr_enabled() {
+    record_helper();
+  }
+}
+
+fn stderr_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+`;
+    const booleanAliasGateFixture = `
+fn boolean_alias_gate_only() {
+  let trace = std::env::var_os("KOUSHI_SYNTH_TRACE").is_some();
+  if trace {
+    record_helper();
+  }
+}
+
+fn record_helper() {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "alias"));
+}
+`;
+
+    for (const [relativePath, source, line] of [
+      ["fixtures/direct-gate-only.rs", directGateFixture, 3],
+      ["fixtures/helper-gate-only.rs", helperGateFixture, 7],
+      ["fixtures/boolean-alias-gate-only.rs", booleanAliasGateFixture, 4]
+    ] as const) {
+      const findings = scanDiagnosticSources([{ relativePath, source }]);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]).toMatchObject({
+        relativePath,
+        line,
+        location: `${relativePath}:${line}`
+      });
+      expect(findings[0].reason).toContain("structured collection");
+    }
+  });
+
+  test("scanner does not let an unrelated record hide a later gated-only diagnostic", () => {
+    const fixture = `
+${SYNTHETIC_TRACE_DECLARATION}
+
+fn trace_enabled() -> bool {
+  std::env::var_os(SYNTHETIC_TRACE_ENV).is_some()
+}
+
+fn unrelated_canonical_record_before_gate() {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "unrelated"));
+  if trace_enabled() {
+    eprintln!("synthetic stderr mirror");
+  }
+}
+
+fn unrelated_canonical_record_helper() {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "helper_unrelated"));
+}
+
+fn unrelated_canonical_helper_before_gate() {
+  unrelated_canonical_record_helper();
+  if trace_enabled() {
+    eprintln!("synthetic stderr mirror");
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/unrelated-record.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(2);
+    expect(findings.map((finding) => finding.line)).toEqual([10, 21]);
+    expect(findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          relativePath: "fixtures/unrelated-record.rs",
+          location: "fixtures/unrelated-record.rs:10"
+        }),
+        expect.objectContaining({
+          relativePath: "fixtures/unrelated-record.rs",
+          location: "fixtures/unrelated-record.rs:21"
+        })
+      ])
+    );
+  });
+
+  test("scanner association uses producer arguments and stops at control-flow barriers", () => {
+    const reboundStageFixture = `
+${SYNTHETIC_TRACE_DECLARATION}
+
+fn trace_enabled() -> bool {
+  std::env::var_os(SYNTHETIC_TRACE_ENV).is_some()
+}
+
+fn unrelated_then_rebound_stage() {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "unrelated"));
+  let stage = "actual_mirror";
+  if trace_enabled() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+`;
+    const gateNameCollisionFixture = `
+${SYNTHETIC_TRACE_DECLARATION}
+
+fn trace_enabled() -> bool {
+  std::env::var_os(SYNTHETIC_TRACE_ENV).is_some()
+}
+
+fn unrelated_trace_stage() {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "trace"));
+  if trace_enabled() {
+    eprintln!("synthetic stderr mirror");
+  }
+}
+`;
+    const conditionalCollectorFixture = `
+${SYNTHETIC_TRACE_DECLARATION}
+
+fn trace_enabled() -> bool {
+  std::env::var_os(SYNTHETIC_TRACE_ENV).is_some()
+}
+
+fn conditionally_collected(collect: bool) {
+  let stage = "conditional";
+  if collect {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  }
+  if trace_enabled() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      {
+        relativePath: "fixtures/rebound-stage.rs",
+        source: reboundStageFixture
+      },
+      {
+        relativePath: "fixtures/gate-name-collision.rs",
+        source: gateNameCollisionFixture
+      },
+      {
+        relativePath: "fixtures/conditional-collector.rs",
+        source: conditionalCollectorFixture
+      }
+    ]);
+    expect(findings.map((finding) => finding.relativePath)).toEqual([
+      "fixtures/rebound-stage.rs",
+      "fixtures/gate-name-collision.rs",
+      "fixtures/conditional-collector.rs"
+    ]);
+    expect(findings.every((finding) => finding.reason === GATED_DIAGNOSTIC_REASON)).toBe(true);
+  });
+
+  test("scanner rejects opposite-polarity conditional collection", () => {
+    const fixture = `
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn negated_condition(collect: bool) {
+  let stage = "negated";
+  if collect {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  }
+  if !collect && trace_enabled() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/negated-condition.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/negated-condition.rs",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
+  test("scanner rejects disjunctive gates and accepts implied conjunctions", () => {
+    const fixture = `
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn disjunctive_gate(collect: bool) {
+  let stage = "disjunction";
+  if collect {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  }
+  if trace_enabled() || collect {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+
+fn paired_condition(collect: bool, ready: bool) {
+  let stage = "paired_condition";
+  if ready && collect {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  }
+  if trace_enabled() && collect && ready {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/disjunctive-and-implied.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/disjunctive-and-implied.rs",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
+  test("scanner treats collector loops as barriers unless iterators are paired", () => {
+    const fixture = `
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn independent_loop(items: &[&str]) {
+  let stage = "independent_loop";
+  for _item in items {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  }
+  if trace_enabled() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+
+fn paired_loop(items: &[&str]) {
+  let stage = "paired_loop";
+  for item in items {
+    record(make_diagnostic_event(stage, item));
+  }
+  if trace_enabled() {
+    for item in items {
+      eprintln!("synthetic stderr stage={stage} item={item}");
+    }
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/paired-and-independent-loops.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/paired-and-independent-loops.rs",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
+  test("scanner pairs collector loops only through equivalent iterator data flow", () => {
+    const fixture = `
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn different_iterators(collected_items: &[&str], mirrored_items: &[&str]) {
+  let stage = "different_iterators";
+  for item in collected_items.iter() {
+    record(make_diagnostic_event(stage, item));
+  }
+  if trace_enabled() {
+    for item in mirrored_items.iter() {
+      eprintln!("synthetic stderr stage={stage} item={item}");
+    }
+  }
+}
+
+fn same_iterator(items: &[&str]) {
+  let stage = "same_iterator";
+  for item in items.iter() {
+    record(make_diagnostic_event(stage, item));
+  }
+  if trace_enabled() {
+    for item in items.iter() {
+      eprintln!("synthetic stderr stage={stage} item={item}");
+    }
+  }
+}
+
+fn aliased_iterator(collected_items: &[&str]) {
+  let stage = "aliased_iterator";
+  let mirrored_items = collected_items;
+  for item in collected_items.iter() {
+    record(make_diagnostic_event(stage, item));
+  }
+  if trace_enabled() {
+    for item in mirrored_items.iter() {
+      eprintln!("synthetic stderr stage={stage} item={item}");
+    }
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/equivalent-loop-iterators.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/equivalent-loop-iterators.rs",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
+  test("scanner recognizes generic gated record producers without stderr", () => {
+    const fixture = `
+${SYNTHETIC_TRACE_DECLARATION}
+
+fn trace_enabled() -> bool {
+  std::env::var_os(SYNTHETIC_TRACE_ENV).is_some()
+}
+
+fn make_diagnostic_event() -> DiagnosticEvent {
+  todo!()
+}
+
+fn generic_direct_record_only() {
+  if trace_enabled() {
+    record(make_diagnostic_event());
+  }
+}
+
+fn generic_record_helper() {
+  record(make_diagnostic_event());
+}
+
+fn generic_helper_record_only() {
+  if trace_enabled() {
+    generic_record_helper();
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/generic-record-only.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(2);
+    expect(findings.map((finding) => finding.line)).toEqual([13, 23]);
+    expect(findings.every((finding) => finding.reason === GATED_DIAGNOSTIC_REASON)).toBe(true);
+  });
+
+  test("scanner accepts semantically linked generic records, wrappers, and event bindings", () => {
+    const fixture = `
+${SYNTHETIC_TRACE_DECLARATION}
+
+fn trace_enabled() -> bool {
+  std::env::var_os(SYNTHETIC_TRACE_ENV).is_some()
+}
+
+fn make_diagnostic_event(stage: &'static str) -> DiagnosticEvent {
+  todo!()
+}
+
+fn record_generic(stage: &'static str) {
+  record(make_diagnostic_event(stage));
+}
+
+fn record_wrapper(stage: &'static str) {
+  record_generic(stage);
+}
+
+fn direct_generic_mirror() {
+  let stage = "direct_generic";
+  record(make_diagnostic_event(stage));
+  if trace_enabled() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+
+fn wrapped_generic_mirror() {
+  let stage = "wrapped_generic";
+  record_wrapper(stage);
+  if trace_enabled() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+
+fn arbitrary_event_binding_mirror() {
+  let stage = "bound_generic";
+  let diagnostic_entry = make_diagnostic_event(stage);
+  record(diagnostic_entry);
+  if trace_enabled() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+`;
+
+    expect(
+      scanDiagnosticSources([{ relativePath: "fixtures/generic-mirrors.rs", source: fixture }])
+    ).toEqual([]);
+  });
+
+  test("scanner recognizes record batches and event-vector data flow", () => {
+    const goodFixture = `
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn collected_batch_before_early_exit() {
+  let stage = "batch";
+  let mut diagnostic_events = vec![
+    DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage),
+  ];
+  diagnostic_events.push(make_diagnostic_event(stage));
+  record_batch(diagnostic_events);
+  if !trace_enabled() {
+    return;
+  }
+  eprintln!("synthetic stderr stage={stage}");
+}
+`;
+    const badFixture = `
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn gated_batch_only() {
+  let stage = "gated_batch";
+  if trace_enabled() {
+    let diagnostic_events = vec![make_diagnostic_event(stage)];
+    record_batch(diagnostic_events);
+  }
+}
+`;
+
+    expect(
+      scanDiagnosticSources([
+        { relativePath: "fixtures/good-record-batch.rs", source: goodFixture }
+      ])
+    ).toEqual([]);
+    const badFindings = scanDiagnosticSources([
+      { relativePath: "fixtures/bad-record-batch.rs", source: badFixture }
+    ]);
+    expect(badFindings).toHaveLength(1);
+    expect(badFindings[0]).toMatchObject({
+      relativePath: "fixtures/bad-record-batch.rs",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
+  test("stderr helper discovery follows two-hop chains without masking gated-only output", () => {
+    const fixture = `
+fn stderr_leaf(stage: &'static str) {
+  eprintln!("synthetic stderr stage={stage}");
+}
+
+fn stderr_middle(stage: &'static str) {
+  stderr_leaf(stage);
+}
+
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn gated_two_hop_only() {
+  if trace_enabled() {
+    stderr_middle("gated");
+  }
+}
+
+fn collected_two_hop_mirror() {
+  let stage = "collected";
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  if trace_enabled() {
+    stderr_middle(stage);
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/two-hop-stderr.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/two-hop-stderr.rs",
+      line: 15,
+      location: "fixtures/two-hop-stderr.rs:15"
+    });
+  });
+
+  test("scanner recognizes balanced multiline gates and negative early-exit gates", () => {
+    const multilineBadFixture = `
+fn multiline_gate_only() {
+  let stage = "multiline";
+  if std::env::var_os(
+    "KOUSHI_SYNTH_TRACE"
+  ).is_some() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+`;
+    const negativeEprintlnBadFixture = `
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn early_exit_gate_only() {
+  let stage = "early_exit";
+  if !trace_enabled() {
+    return;
+  }
+  eprintln!("synthetic stderr stage={stage}");
+}
+`;
+    const negativeHelperBadFixture = `
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn stderr_leaf(stage: &'static str) {
+  eprintln!("synthetic stderr stage={stage}");
+}
+
+fn early_exit_helper_only() {
+  let stage = "early_exit_helper";
+  if !trace_enabled() {
+    return;
+  }
+  stderr_leaf(stage);
+}
+`;
+    const goodFixture = `
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn stderr_leaf(stage: &'static str) {
+  eprintln!("synthetic stderr stage={stage}");
+}
+
+fn collected_before_multiline_gate() {
+  let stage = "multiline_collected";
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  if std::env::var_os(
+    "KOUSHI_SYNTH_TRACE"
+  ).is_some() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+
+fn collected_before_early_exit() {
+  let stage = "early_exit_collected";
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  if !trace_enabled() {
+    return;
+  }
+  stderr_leaf(stage);
+}
+`;
+
+    const badFindings = scanDiagnosticSources([
+      {
+        relativePath: "fixtures/multiline-gate-only.rs",
+        source: multilineBadFixture
+      },
+      {
+        relativePath: "fixtures/negative-eprintln-gate-only.rs",
+        source: negativeEprintlnBadFixture
+      },
+      {
+        relativePath: "fixtures/negative-helper-gate-only.rs",
+        source: negativeHelperBadFixture
+      }
+    ]);
+    expect(badFindings.map((finding) => finding.relativePath)).toEqual([
+      "fixtures/multiline-gate-only.rs",
+      "fixtures/negative-eprintln-gate-only.rs",
+      "fixtures/negative-helper-gate-only.rs"
+    ]);
+    expect(badFindings.every((finding) => finding.reason === GATED_DIAGNOSTIC_REASON)).toBe(true);
+    expect(
+      scanDiagnosticSources([
+        {
+          relativePath: "fixtures/multiline-and-early-good.rs",
+          source: goodFixture
+        }
+      ])
+    ).toEqual([]);
+  });
+
+  test("scanner resolves module-qualified environment and diagnostic helpers across files", () => {
+    const unreadTraceFixture = `
+const ENV_VAR: &str = "KOUSHI_UNREAD_TRACE";
+
+pub(crate) fn enabled() -> bool {
+  std::env::var_os(ENV_VAR).is_some()
+}
+
+pub(crate) fn trace_room_list_applied(stage: &'static str) {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+}
+`;
+    const runtimeFixture = `
+fn reduce_app_action(action: Action) {
+  let stage = "room_list_applied";
+  let raw_room_list_trace = if unread_trace::enabled()
+    && matches!(action, Action::RoomListUpdated)
+  {
+    Some(stage)
+  } else {
+    None
+  };
+  if let Some(raw_stage) = raw_room_list_trace {
+    unread_trace::trace_room_list_applied(raw_stage);
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/unread_trace.rs", source: unreadTraceFixture },
+      { relativePath: "fixtures/runtime.rs", source: runtimeFixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/runtime.rs",
+      location: "fixtures/runtime.rs:11",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
+  test("scanner follows wrapped environment helpers and two-hop Self record wrappers", () => {
+    const fixture = `
+fn direct_env_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn trace_enabled() -> bool {
+  direct_env_enabled()
+}
+
+fn record_leaf(stage: &'static str) {
+  record(make_diagnostic_event(stage));
+}
+
+fn record_wrapper(stage: &'static str) {
+  Self::record_leaf(stage);
+}
+
+fn wrapped_gate_only() {
+  let stage = "wrapped_gate";
+  if trace_enabled() {
+    Self::record_wrapper(stage);
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/wrapped-helper-chain.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/wrapped-helper-chain.rs",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
+  test("scanner follows arbitrary and transitive environment aliases", () => {
+    const fixture = `
+fn arbitrary_alias_gate_only() {
+  let stage = "arbitrary_alias";
+  let gate = std::env::var_os("KOUSHI_SYNTH_TRACE").is_some();
+  let forwarded = gate;
+  if forwarded {
+    record(make_diagnostic_event(stage));
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/arbitrary-alias-chain.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/arbitrary-alias-chain.rs",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
+  test("scanner normalizes crate-qualified cross-file environment helpers", () => {
+    const crossFileHelperFixture = `
+pub(crate) fn enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+`;
+    const crossFileRuntimeFixture = `
+fn crate_qualified_gate_only() {
+  let stage = "crate_qualified";
+  if crate::trace_gate::enabled() {
+    record(make_diagnostic_event(stage));
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/trace_gate.rs", source: crossFileHelperFixture },
+      { relativePath: "fixtures/qualified-runtime.rs", source: crossFileRuntimeFixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/qualified-runtime.rs",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
+  test("scanner preserves nested module identity for cross-file helpers", () => {
+    const nestedHelperFixture = `
+pub(crate) fn enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+`;
+    const crateNestedRuntimeFixture = `
+fn crate_nested_gate_only() {
+  if crate::diagnostics::trace_gate::enabled() {
+    record(make_diagnostic_event("crate_nested"));
+  }
+}
+`;
+    const selfNestedRuntimeFixture = `
+fn self_nested_gate_only() {
+  if self::diagnostics::trace_gate::enabled() {
+    record(make_diagnostic_event("self_nested"));
+  }
+}
+`;
+    const superNestedRuntimeFixture = `
+fn super_nested_gate_only() {
+  if super::trace_gate::enabled() {
+    record(make_diagnostic_event("super_nested"));
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      {
+        relativePath: "fixtures/diagnostics/trace_gate.rs",
+        source: nestedHelperFixture
+      },
+      { relativePath: "fixtures/crate-runtime.rs", source: crateNestedRuntimeFixture },
+      { relativePath: "fixtures/lib.rs", source: selfNestedRuntimeFixture },
+      {
+        relativePath: "fixtures/diagnostics/super-runtime.rs",
+        source: superNestedRuntimeFixture
+      }
+    ]);
+    expect(findings).toHaveLength(3);
+    expect(findings.every((finding) => finding.reason === GATED_DIAGNOSTIC_REASON)).toBe(true);
+
+    const wrongModuleFindings = scanDiagnosticSources([
+      { relativePath: "fixtures/other/trace_gate.rs", source: nestedHelperFixture },
+      {
+        relativePath: "fixtures/wrong-module-runtime.rs",
+        source: `
+fn wrong_module_gate_only() {
+  if crate::diagnostics::trace_gate::enabled() {
+    record(make_diagnostic_event("wrong_module"));
+  }
+}
+`
+      }
+    ]);
+    expect(wrongModuleFindings).toHaveLength(0);
+  });
+
+  test("scanner keeps balanced one-line scopes from duplicating findings", () => {
+    const fixture = `
+fn trace_enabled() -> bool { std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() }
+fn one_line_gate_only() { if trace_enabled() { record(make_diagnostic_event("one_line")); } }
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/one-line-scopes.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/one-line-scopes.rs",
+      line: 3,
+      location: "fixtures/one-line-scopes.rs:3",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
+  test("scanner ignores record and helper spellings inside comments and strings", () => {
+    const lineCommentFixture = `
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn comment_is_not_collection() {
+  let stage = "comment";
+  // record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  if trace_enabled() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+`;
+    const blockCommentFixture = `
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn block_comment_is_not_collection() {
+  let stage = "block_comment";
+  /* record(DiagnosticEvent::new(
+    DiagnosticLevel::Debug,
+    "synthetic",
+    stage,
+  )); */
+  if trace_enabled() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+`;
+    const stringHelperFixture = `
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn fake_record_helper(stage: &'static str) {
+  let example = "record(DiagnosticEvent::new(DiagnosticLevel::Debug, synthetic, stage))";
+}
+
+fn string_is_not_helper_collection() {
+  let stage = "string_helper";
+  fake_record_helper(stage);
+  if trace_enabled() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      {
+        relativePath: "fixtures/line-comment-record.rs",
+        source: lineCommentFixture
+      },
+      {
+        relativePath: "fixtures/block-comment-record.rs",
+        source: blockCommentFixture
+      },
+      {
+        relativePath: "fixtures/string-helper-record.rs",
+        source: stringHelperFixture
+      }
+    ]);
+    expect(findings.map((finding) => finding.relativePath)).toEqual([
+      "fixtures/line-comment-record.rs",
+      "fixtures/block-comment-record.rs",
+      "fixtures/string-helper-record.rs"
+    ]);
+    expect(findings.every((finding) => finding.reason === GATED_DIAGNOSTIC_REASON)).toBe(true);
+  });
+
+  test("scanner accepts direct, helper, loop, and transformed mirror siblings", () => {
+    const fixture = `
+${SYNTHETIC_TRACE_DECLARATION}
+
+fn trace_enabled() -> bool {
+  std::env::var_os(SYNTHETIC_TRACE_ENV).is_some()
+}
+
+fn record_helper(stage: &'static str) {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+}
+
+fn direct_mirror() {
+  let stage = "direct";
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  if trace_enabled() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+
+fn helper_mirror() {
+  let stage = "helper";
+  record_helper(stage);
+  if trace_enabled() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+
+fn loop_mirror(items: &[&'static str]) {
+  let stage = "loop";
+  for item in items {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  }
+  if trace_enabled() {
+    for item in items {
+      eprintln!("synthetic stderr stage={stage} item={item}");
+    }
+  }
+}
+
+fn transformed_mirror() {
+  let stage = "transformed";
+  let event = make_diagnostic_event(stage);
+  record(event);
+  let line = format!("stage={stage}");
+  if trace_enabled() {
+    eprintln!("{line}");
+  }
+}
+`;
+
+    expect(
+      scanDiagnosticSources([{ relativePath: "fixtures/mirror-shapes.rs", source: fixture }])
+    ).toEqual([]);
+  });
+
+  test("scanner masks only cfg items that are provably test-only", () => {
+    const fixture = `
+#[cfg(test)]
+fn exact_test_only() {
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "exact-test"));
+    eprintln!("test-only");
+  }
+}
+
+#[cfg(all(test, feature = "diagnostic-runtime"))]
+fn all_test_only() {
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "all-test"));
+    eprintln!("test-only");
+  }
+}
+
+#[cfg(any(test, feature = "diagnostic-runtime"))]
+fn conditional_runtime() {
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "conditional"));
+    eprintln!("synthetic stderr mirror");
+  }
+}
+
+#[cfg(all(any(test, feature = "diagnostic-runtime"), test))]
+fn nested_all_test_only() {
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "nested-test"));
+    eprintln!("test-only");
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/cfg-conditions.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/cfg-conditions.rs",
+      line: 20,
+      location: "fixtures/cfg-conditions.rs:20"
+    });
+  });
+
+  test("scanner keeps production code after a balanced test-only module", () => {
+    const fixture = `
+#[cfg(test)]
+mod tests {
+  fn test_only_environment_probe() {
+    if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+      eprintln!("test-only");
+    }
+  }
+}
+
+fn production_after_tests() {
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "after-tests"));
+    eprintln!("synthetic stderr mirror");
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/production-after-tests.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/production-after-tests.rs",
+      line: 12,
+      location: "fixtures/production-after-tests.rs:12"
+    });
+  });
+
+  test("application runtime has no diagnostic stderr mirror or trace environment gate", () => {
+    expect(runtimeDiagnosticStderrFindings(runtimeRustSources())).toEqual([]);
+  });
+
+  test("runtime stderr scanner ignores comments and strings but catches real syntax", () => {
+    const fixture = `// eprintln!("comment")
+const PRINTED = "eprintln!(not a macro)";
+const LITERAL = "KOUSHI_SYNC_TRACE";
+const TRACE: &str = "KOUSHI_SYNC_TRACE";
+fn warning() { eprintln!("real"); }
+fn gate() {
+  if std::env::var_os("KOUSHI_SEARCH_TRACE").is_some() {}
+}
+const MULTILINE_TRACE: &str =
+  "KOUSHI_UNREAD_TRACE";
+fn multiline_gate() {
+  if std::env::var_os(
+    "KOUSHI_STARTUP_TRACE",
+  ).is_some() {}
+}
+fn block_comment_gate() {
+  if std::env::var_os(
+    /*
+     "KOUSHI_STARTUP_TRACE"
+     */
+    "SOME_OTHER_ENV",
+  ).is_some() {}
+}
+#[cfg(test)]
+fn test_only() {
+  eprintln!("test only");
+  let literal = "KOUSHI_UNREAD_TRACE";
+}`;
+
+    expect(
+      runtimeDiagnosticStderrFindings([{ relativePath: "fixtures/runtime-stderr.rs", source: fixture }])
+    ).toEqual([
+      {
+        relativePath: "fixtures/runtime-stderr.rs",
+        line: 4,
+        location: "fixtures/runtime-stderr.rs:4",
+        reason: "runtime diagnostic environment gate remains"
+      },
+      {
+        relativePath: "fixtures/runtime-stderr.rs",
+        line: 5,
+        location: "fixtures/runtime-stderr.rs:5",
+        reason: "runtime diagnostic writes to stderr"
+      },
+      {
+        relativePath: "fixtures/runtime-stderr.rs",
+        line: 7,
+        location: "fixtures/runtime-stderr.rs:7",
+        reason: "runtime diagnostic environment gate remains"
+      },
+      {
+        relativePath: "fixtures/runtime-stderr.rs",
+        line: 10,
+        location: "fixtures/runtime-stderr.rs:10",
+        reason: "runtime diagnostic environment gate remains"
+      },
+      {
+        relativePath: "fixtures/runtime-stderr.rs",
+        line: 13,
+        location: "fixtures/runtime-stderr.rs:13",
+        reason: "runtime diagnostic environment gate remains"
+      }
+    ]);
+  });
+
   test("tracked text artifacts contain no previous branding residue", () => {
     const oldLatinBrand = "Ru" + "ri";
     const oldLowerBrand = oldLatinBrand.toLowerCase();
@@ -894,7 +3515,7 @@ describe("desktop release scripts", () => {
 
     expect(source).toContain("const userSuffix = safeTimestamp();");
     expect(source).toContain("function safeTimestamp()");
-    expect(source).toContain("replaceAll(\"-\", \"_\")");
+    expect(source).toContain('replaceAll("-", "_")');
   });
 
   test("linux GUI smoke real login transport is FIFO and the script avoids password args", () => {
@@ -940,7 +3561,7 @@ describe("desktop release scripts", () => {
     );
 
     expect(source).toContain("webdriverio");
-    expect(source).toContain("createRequire(new URL(\"../apps/desktop/package.json\"");
+    expect(source).toContain('createRequire(new URL("../apps/desktop/package.json"');
     expect(source).toContain("importDesktopWebdriverio");
     expect(source).toContain("remote({");
     expect(source).toContain("screenshots/01-signed-out.png");
@@ -987,8 +3608,8 @@ describe("desktop release scripts", () => {
       "unzstd -f -o /usr/local/bin/tuwunel /tmp/tuwunel.zst",
       "conduit --version",
       "tuwunel --version",
-      "RUSTC=\"$(rustup which rustc)\"",
-      "RUSTDOC=\"$(rustup which rustdoc)\""
+      'RUSTC="$(rustup which rustc)"',
+      'RUSTDOC="$(rustup which rustdoc)"'
     ]) {
       expect(dockerfile).toContain(token);
     }
@@ -1014,9 +3635,11 @@ describe("desktop release scripts", () => {
     expect(agents).toContain("conduit");
     expect(agents).toContain("tuwunel");
     expect(agents).toContain("zstd");
-    expect(agents).toContain("PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
-    expect(agents).toContain("RUSTC=\"$(rustup which rustc)\"");
-    expect(agents).toContain("RUSTDOC=\"$(rustup which rustdoc)\"");
+    expect(agents).toContain(
+      "PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    );
+    expect(agents).toContain('RUSTC="$(rustup which rustc)"');
+    expect(agents).toContain('RUSTDOC="$(rustup which rustdoc)"');
   });
 
   test("linux GUI smoke QA title helpers match the mac runner contract", () => {
@@ -1084,9 +3707,7 @@ describe("desktop release scripts", () => {
     );
 
     expect(source).toContain('completionStatus !== "failed"');
-    expect(source).toMatch(
-      /isTauriRuntime\(\) &&\s*completionStatus !== "failed"[\s\S]*return;/
-    );
+    expect(source).toMatch(/isTauriRuntime\(\) &&\s*completionStatus !== "failed"[\s\S]*return;/);
   });
 
   test("app keeps Tauri send completion listener mounted and gates events with a pending ref", () => {
@@ -1202,10 +3823,8 @@ describe("desktop release scripts", () => {
     expect(usage).toContain("--e2ee-recipient-second-device");
     expect(usage).toContain("--e2ee-pause-sync-before-multi-device-send");
     expect(source).toContain("e2eeRecipientSecondDeviceOption");
-    expect(source).toContain("env.KOUSHI_QA_E2EE_RECIPIENT_SECOND_DEVICE = \"true\"");
-    expect(source).toContain(
-      "env.KOUSHI_QA_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND = \"true\""
-    );
+    expect(source).toContain('env.KOUSHI_QA_E2EE_RECIPIENT_SECOND_DEVICE = "true"');
+    expect(source).toContain('env.KOUSHI_QA_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND = "true"');
     expect(source.indexOf("if (e2eeRecipientSecondDeviceOption)")).toBeGreaterThan(
       source.indexOf("for (const name of [")
     );
@@ -1271,12 +3890,8 @@ describe("desktop release scripts", () => {
   });
 
   test("headless local QA configs bind only to loopback disposable stores", () => {
-    const conduit = runScript("scripts/desktop-headless-local-qa.mjs", [
-      "--print-conduit-config"
-    ]);
-    const tuwunel = runScript("scripts/desktop-headless-local-qa.mjs", [
-      "--print-tuwunel-config"
-    ]);
+    const conduit = runScript("scripts/desktop-headless-local-qa.mjs", ["--print-conduit-config"]);
+    const tuwunel = runScript("scripts/desktop-headless-local-qa.mjs", ["--print-tuwunel-config"]);
 
     expect(conduit).toContain('address = "127.0.0.1"');
     expect(conduit).toContain('database_path = "/tmp/conduit-data"');
@@ -1390,9 +4005,7 @@ describe("desktop release scripts", () => {
   });
 
   test("mac GUI smoke real login uses FIFO transport instead of credential keystrokes", () => {
-    const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--print-real-login-transport"
-    ]);
+    const output = runScript("scripts/desktop-mac-gui-smoke.mjs", ["--print-real-login-transport"]);
     const source = readFileSync(
       new URL("../../../../scripts/desktop-mac-gui-smoke.mjs", import.meta.url),
       "utf8"
@@ -1484,11 +4097,7 @@ describe("desktop release scripts", () => {
       new URL("../../../../apps/desktop/src-tauri/src/lib.rs", import.meta.url),
       "utf8"
     );
-    const setupSource = source
-      .split(".setup(move |app|")
-      .at(1)
-      ?.split(".on_window_event")
-      .at(0);
+    const setupSource = source.split(".setup(move |app|").at(1)?.split(".on_window_event").at(0);
 
     expect(source).toContain("ensure_main_window_visible");
     expect(setupSource).toContain("ensure_main_window_visible(app)");
@@ -1509,11 +4118,7 @@ describe("desktop release scripts", () => {
       new URL("../../../../apps/desktop/src-tauri/src/lib.rs", import.meta.url),
       "utf8"
     );
-    const pageLoadSource = source
-      .split(".on_page_load(")
-      .at(1)
-      ?.split(".on_window_event")
-      .at(0);
+    const pageLoadSource = source.split(".on_page_load(").at(1)?.split(".on_window_event").at(0);
 
     expect(pageLoadSource).toContain("ensure_main_window_visible");
     expect(pageLoadSource).toContain('webview.label() == "main"');
@@ -1560,9 +4165,7 @@ describe("desktop release scripts", () => {
 
     // The control pipe path is threaded through the allow-listed childEnvironment
     // helper, never via process.env passthrough.
-    expect(source).toContain(
-      "childEnvironment(dataDir, qaLoginPipePath, qaControlPipePath)"
-    );
+    expect(source).toContain("childEnvironment(dataDir, qaLoginPipePath, qaControlPipePath)");
     expect(source).toMatch(
       /function childEnvironment\(dataDir, qaLoginPipePath = null, qaControlPipePath = null\)/
     );
@@ -1621,9 +4224,7 @@ describe("desktop release scripts", () => {
     const scriptPath = new URL("../../../../scripts/desktop-build-dmg.mjs", import.meta.url);
     const source = readFileSync(scriptPath, "utf8");
 
-    expect(packageJson.scripts["build:dmg"]).toBe(
-      "node ../../scripts/desktop-build-dmg.mjs"
-    );
+    expect(packageJson.scripts["build:dmg"]).toBe("node ../../scripts/desktop-build-dmg.mjs");
     expect(source).toContain("tauri");
     expect(source).toContain("build");
     expect(source).toContain("--bundles");
@@ -1676,9 +4277,7 @@ describe("desktop release scripts", () => {
       .split("\n")
       .find((line) => line.startsWith("VITE_KOUSHI_QA_SEND_SMOKE_MESSAGE="));
 
-    expect(sendLine).toBe(
-      "VITE_KOUSHI_QA_SEND_SMOKE_MESSAGE=Koushi synthetic QA send"
-    );
+    expect(sendLine).toBe("VITE_KOUSHI_QA_SEND_SMOKE_MESSAGE=Koushi synthetic QA send");
     expect(sendLine).not.toContain("password");
   });
 
@@ -1693,9 +4292,7 @@ describe("desktop release scripts", () => {
       "utf8"
     );
 
-    expect(output).toContain(
-      "VITE_KOUSHI_QA_SEND_SMOKE_USER_ID=@hiroshi.shinaoka:matrix.org"
-    );
+    expect(output).toContain("VITE_KOUSHI_QA_SEND_SMOKE_USER_ID=@hiroshi.shinaoka:matrix.org");
     expect(source).toContain("qaSendSmokeTargetUserId");
     expect(source).toContain("api.startDirectMessage(targetUserId)");
     expect(source).toContain("api.selectRoom(targetRoom.room_id)");
@@ -1739,7 +4336,7 @@ describe("desktop release scripts", () => {
     );
 
     expect(usage).toContain("--verbose");
-    expect(source).toContain("const verbose = args.has(\"--verbose\")");
+    expect(source).toContain('const verbose = args.has("--verbose")');
     expect(source).toContain("qa-diagnostics.log");
     expect(source).toContain("recordQaPoll");
     expect(source).toContain("diagnostics path:");
@@ -1751,9 +4348,9 @@ describe("desktop release scripts", () => {
       "utf8"
     );
 
-    expect(source).toContain("\"target_dm\"");
-    expect(source).toContain("\"target_selected\"");
-    expect(source).toContain("\"target_members\"");
+    expect(source).toContain('"target_dm"');
+    expect(source).toContain('"target_selected"');
+    expect(source).toContain('"target_members"');
   });
 
   test("mac GUI smoke keeps timeline and crawler counters in diagnostics summaries", () => {
@@ -1795,10 +4392,7 @@ describe("desktop release scripts", () => {
       )
     );
     const packageJson = JSON.parse(
-      readFileSync(
-        new URL("../../../../apps/desktop/package.json", import.meta.url),
-        "utf8"
-      )
+      readFileSync(new URL("../../../../apps/desktop/package.json", import.meta.url), "utf8")
     );
     const viteConfig = readFileSync(
       new URL("../../../../apps/desktop/vite.config.ts", import.meta.url),
@@ -1807,14 +4401,11 @@ describe("desktop release scripts", () => {
 
     expect(tauriConfig.build.beforeDevCommand).toBe("npm run dev:tauri");
     expect(packageJson.scripts["dev:tauri"]).toContain("--mode tauri");
-    expect(viteConfig).toContain("mode === \"tauri\"");
+    expect(viteConfig).toContain('mode === "tauri"');
     expect(viteConfig).toContain("hmr: false");
     expect(tauriConfig.app.security.devCsp).toContain("http://127.0.0.1:5173");
     expect(tauriConfig.app.security.devCsp).toContain("ws://127.0.0.1:5173");
-    for (const csp of [
-      tauriConfig.app.security.csp,
-      tauriConfig.app.security.devCsp
-    ]) {
+    for (const csp of [tauriConfig.app.security.csp, tauriConfig.app.security.devCsp]) {
       expect(csp).toContain("img-src");
       expect(csp).toContain("asset:");
       expect(csp).toContain("http://asset.localhost");
@@ -1831,10 +4422,7 @@ describe("desktop release scripts", () => {
     // src-tauri became a pure transport adapter; the compile-time gate lives
     // there now.
     const coreStore = readFileSync(
-      new URL(
-        "../../../../crates/koushi-core/src/store.rs",
-        import.meta.url
-      ),
+      new URL("../../../../crates/koushi-core/src/store.rs", import.meta.url),
       "utf8"
     );
 
@@ -1940,9 +4528,7 @@ describe("desktop release scripts", () => {
   });
 
   test("mac GUI smoke uses whose clauses for variable process names", () => {
-    const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--print-window-query-script"
-    ]);
+    const output = runScript("scripts/desktop-mac-gui-smoke.mjs", ["--print-window-query-script"]);
 
     expect(output).toContain("first process whose name is candidateName");
     expect(output).not.toContain("exists process candidateName");
@@ -1950,9 +4536,7 @@ describe("desktop release scripts", () => {
   });
 
   test("mac GUI smoke captures only the app window bounds", () => {
-    const output = runScript("scripts/desktop-mac-gui-smoke.mjs", [
-      "--print-screenshot-args"
-    ]);
+    const output = runScript("scripts/desktop-mac-gui-smoke.mjs", ["--print-screenshot-args"]);
 
     expect(output).toContain("-R");
     expect(output).toContain("10,20,300,400");
@@ -1983,7 +4567,9 @@ describe("desktop release scripts", () => {
       // The sensitive-payload writer must use a direct node:fs/promises FIFO
       // write so no child process inherits the parent environment.
       expect(source).toContain('import { open } from "node:fs/promises";');
-      expect(source).toContain("async function writeSensitivePayloadToPath(path, payload, timeout)");
+      expect(source).toContain(
+        "async function writeSensitivePayloadToPath(path, payload, timeout)"
+      );
       expect(source).toContain("await open(path, ");
       // No `tee` helper process anywhere (it would inherit the parent env).
       expect(source).not.toContain('spawn("tee"');
@@ -1993,9 +4579,7 @@ describe("desktop release scripts", () => {
 
   test("app icon family is consistent and the SVG avoids an unintended white rounded frame", () => {
     const tauriDir = new URL("../../../../apps/desktop/src-tauri/", import.meta.url);
-    const conf = JSON.parse(
-      readFileSync(new URL("tauri.conf.json", tauriDir), "utf8")
-    ) as {
+    const conf = JSON.parse(readFileSync(new URL("tauri.conf.json", tauriDir), "utf8")) as {
       bundle: { icon: string[] };
     };
 

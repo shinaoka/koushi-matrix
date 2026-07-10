@@ -13,6 +13,15 @@ describe("TauriDesktopApi", () => {
     vi.clearAllMocks();
   });
 
+  test("gets the diagnostic snapshot without private arguments", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+
+    const api = createDesktopApi();
+    await api.getDiagnosticSnapshot();
+
+    expect(invoke).toHaveBeenCalledWith("get_diagnostic_snapshot");
+  });
+
   test("discovers login methods through typed Tauri command", async () => {
     vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
 

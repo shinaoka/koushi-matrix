@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityRowKind,
     ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState, ComposerDraftStore,
@@ -76,28 +77,56 @@ pub const ACTION_QUEUE_CAPACITY: usize = 16384;
 pub const ACTOR_MESSAGE_QUEUE_CAPACITY: usize = 1024;
 pub const COMPOSER_DRAFT_PERSIST_DEBOUNCE: Duration = Duration::from_millis(150);
 const INTERNAL_RUNTIME_CONNECTION_ID: RuntimeConnectionId = RuntimeConnectionId(0);
-const ENV_SYNC_TRACE: &str = "KOUSHI_SYNC_TRACE";
+macro_rules! trace_runtime_sync {
+    ($stage:expr, [$($field:expr),* $(,)?], $($arg:tt)*) => {{
+        let event = DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.runtime",
+            $stage,
+        )$(.field($field))*;
+        record(event);
+    }};
+}
 
-fn trace_runtime_sync(stage: &str, message: &str) {
-    if std::env::var_os(ENV_SYNC_TRACE).is_some() {
-        eprintln!("koushi.sync stage={stage} {message}");
+fn intent_outcome_token(outcome: &IntentOutcome) -> &'static str {
+    match outcome {
+        IntentOutcome::Committed => "committed",
+        IntentOutcome::BenignNoOp(_) => "benign_no_op",
+        IntentOutcome::FailedNoOp(_) => "failed_no_op",
     }
 }
 
-fn runtime_request_id_trace_label(request_id: RequestId) -> String {
-    format!("{}/{}", request_id.connection_id.0, request_id.sequence)
-}
-
-/// Diagnostic-only, private-data-free trace of slow AppActor loop iterations.
-/// Enable with KOUSHI_SUBSCRIBE_TRACE=1. A loop iteration that takes hundreds of
-/// ms (e.g. a full `self.state.clone()` of a 100+ room account) starves the
+/// Diagnostic-only, private-data-free record of slow AppActor loop iterations.
+/// A loop iteration that takes hundreds of ms (e.g. a full `self.state.clone()`
+/// of a 100+ room account) starves the
 /// command arm, which is why `select_room` can time out under large-account
 /// sync. Logs the arm, items handled, the state-clone cost, and total time.
-fn app_loop_trace(arm: &str, count: u32, clone_ms: u128, total: std::time::Duration) {
+fn app_loop_trace(arm: &'static str, count: u32, clone_ms: u128, total: std::time::Duration) {
     let total_ms = total.as_millis();
-    if total_ms >= 100 && std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
-        eprintln!("koushi.apploop arm={arm} count={count} clone_ms={clone_ms} total_ms={total_ms}");
+    if total_ms < 100 {
+        return;
     }
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.runtime", "app_loop")
+            .field(DiagnosticField::token("arm", arm))
+            .field(DiagnosticField::count("count", count as u64))
+            .field(DiagnosticField::milliseconds("clone", clone_ms))
+            .field(DiagnosticField::milliseconds("duration", total_ms)),
+    );
+}
+
+fn reduce_with_unread_diagnostics(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
+    let room_list_trace = match &action {
+        AppAction::RoomListUpdated { rooms, .. } => {
+            Some(unread_trace::capture_room_list_applied(rooms))
+        }
+        _ => None,
+    };
+    let effects = reduce(state, action);
+    if let Some(input) = room_list_trace {
+        unread_trace::trace_room_list_applied(&input, &state.rooms);
+    }
+    effects
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -1098,12 +1127,17 @@ impl AppActor {
                                 // prevent a silent timeout (defensive case).
                                 IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState)
                             };
-                            // Env-gated private-data-free trace (counts/flags only).
-                            if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
-                                eprintln!(
-                                    "koushi.select_reduce found={found} session_ready={session_ready} rooms_len={rooms_len}"
-                                );
-                            }
+                            record(
+                                DiagnosticEvent::new(
+                                    DiagnosticLevel::Debug,
+                                    "core.intent",
+                                    "select_reduce",
+                                )
+                                .field(DiagnosticField::boolean("found", found))
+                                .field(DiagnosticField::boolean("session_ready", session_ready))
+                                .field(DiagnosticField::count("rooms", rooms_len as u64))
+                                .field(DiagnosticField::boolean("committed", committed)),
+                            );
                             let request_id_to_emit = self
                                 .pending_select
                                 .get_mut(&room_id)
@@ -1147,6 +1181,22 @@ impl AppActor {
                                 }
                             }
                             if let Some(request_id) = request_id_to_emit {
+                                record(
+                                    DiagnosticEvent::new(
+                                        DiagnosticLevel::Debug,
+                                        "core.intent",
+                                        "lifecycle",
+                                    )
+                                    .field(DiagnosticField::request_id(
+                                        "request_id",
+                                        request_id.connection_id.0,
+                                        request_id.sequence,
+                                    ))
+                                    .field(DiagnosticField::token(
+                                        "outcome",
+                                        intent_outcome_token(&outcome),
+                                    )),
+                                );
                                 self.emit(CoreEvent::IntentLifecycle { request_id, outcome });
                             }
                         }
@@ -1185,17 +1235,7 @@ impl AppActor {
         let previous_navigation = self.state.navigation.clone();
         let previous_scheduled_session = scheduled_send_session_key(&self.state);
         let previous_scheduled_sends = self.state.scheduled_sends.clone();
-        let raw_room_list_trace = if unread_trace::enabled()
-            && let AppAction::RoomListUpdated { rooms, .. } = &action
-        {
-            Some(rooms.clone())
-        } else {
-            None
-        };
-        let effects = reduce(&mut self.state, action);
-        if let Some(raw_rooms) = raw_room_list_trace {
-            unread_trace::trace_room_list_applied(&raw_rooms, &self.state.rooms);
-        }
+        let effects = reduce_with_unread_diagnostics(&mut self.state, action);
         if previous_navigation != self.state.navigation {
             let target_session =
                 navigation_session_key(&self.state).or(previous_navigation_session);
@@ -1430,12 +1470,19 @@ impl AppActor {
     /// Returns whether `AppState` changed.
     async fn handle_command(&mut self, command: CoreCommand) -> bool {
         if command.requires_ready_session() && !is_ready_session_for_commands(&self.state.session) {
-            trace_runtime_sync(
+            trace_runtime_sync!(
                 "command_rejected",
-                &format!(
-                    "request_id={} reason=session_required action=emit_operation_failed",
-                    runtime_request_id_trace_label(command.request_id())
-                ),
+                [
+                    DiagnosticField::request_id(
+                        "request_id",
+                        command.request_id().connection_id.0,
+                        command.request_id().sequence
+                    ),
+                    DiagnosticField::token("reason", "session_required"),
+                    DiagnosticField::token("action", "emit_operation_failed"),
+                ],
+                "request_id={} reason=session_required action=emit_operation_failed",
+                runtime_request_id_trace_label(command.request_id())
             );
             self.emit(CoreEvent::OperationFailed {
                 request_id: command.request_id(),
@@ -2307,12 +2354,19 @@ impl AppActor {
         for effect in effects {
             match effect {
                 AppEffect::StartSync => {
-                    trace_runtime_sync(
+                    trace_runtime_sync!(
                         "effect_start_sync",
-                        &format!(
-                            "source=command_effect request_id={} action=send_sync_start",
-                            runtime_request_id_trace_label(request_id)
-                        ),
+                        [
+                            DiagnosticField::token("source", "command_effect"),
+                            DiagnosticField::request_id(
+                                "request_id",
+                                request_id.connection_id.0,
+                                request_id.sequence
+                            ),
+                            DiagnosticField::token("action", "send_sync_start"),
+                        ],
+                        "source=command_effect request_id={} action=send_sync_start",
+                        runtime_request_id_trace_label(request_id)
                     );
                     let _ = self
                         .account_actor
@@ -2322,12 +2376,19 @@ impl AppActor {
                         .await;
                 }
                 AppEffect::StopSync => {
-                    trace_runtime_sync(
+                    trace_runtime_sync!(
                         "effect_stop_sync",
-                        &format!(
-                            "source=command_effect request_id={} action=send_sync_stop",
-                            runtime_request_id_trace_label(request_id)
-                        ),
+                        [
+                            DiagnosticField::token("source", "command_effect"),
+                            DiagnosticField::request_id(
+                                "request_id",
+                                request_id.connection_id.0,
+                                request_id.sequence
+                            ),
+                            DiagnosticField::token("action", "send_sync_stop"),
+                        ],
+                        "source=command_effect request_id={} action=send_sync_stop",
+                        runtime_request_id_trace_label(request_id)
                     );
                     let _ = self
                         .account_actor
@@ -2567,12 +2628,19 @@ impl AppActor {
             match effect {
                 AppEffect::StartSync => {
                     let request_id = self.next_internal_request_id();
-                    trace_runtime_sync(
+                    trace_runtime_sync!(
                         "effect_start_sync",
-                        &format!(
-                            "source=actor_projection request_id={} action=send_sync_start",
-                            runtime_request_id_trace_label(request_id)
-                        ),
+                        [
+                            DiagnosticField::token("source", "actor_projection"),
+                            DiagnosticField::request_id(
+                                "request_id",
+                                request_id.connection_id.0,
+                                request_id.sequence
+                            ),
+                            DiagnosticField::token("action", "send_sync_start"),
+                        ],
+                        "source=actor_projection request_id={} action=send_sync_start",
+                        runtime_request_id_trace_label(request_id)
                     );
                     let _ = self
                         .account_actor
@@ -2583,12 +2651,19 @@ impl AppActor {
                 }
                 AppEffect::StopSync => {
                     let request_id = self.next_internal_request_id();
-                    trace_runtime_sync(
+                    trace_runtime_sync!(
                         "effect_stop_sync",
-                        &format!(
-                            "source=actor_projection request_id={} action=send_sync_stop",
-                            runtime_request_id_trace_label(request_id)
-                        ),
+                        [
+                            DiagnosticField::token("source", "actor_projection"),
+                            DiagnosticField::request_id(
+                                "request_id",
+                                request_id.connection_id.0,
+                                request_id.sequence
+                            ),
+                            DiagnosticField::token("action", "send_sync_stop"),
+                        ],
+                        "source=actor_projection request_id={} action=send_sync_stop",
+                        runtime_request_id_trace_label(request_id)
                     );
                     let _ = self
                         .account_actor
@@ -3249,6 +3324,149 @@ mod tests {
         RoomLatestEventSummary, RoomNotificationModeOperation, RoomNotificationSettings,
         RoomSummary, RoomTags, SessionInfo, SettingsPatch, UserProfile, reduce,
     };
+
+    fn unread_diagnostic_room(room_id: &str) -> RoomSummary {
+        RoomSummary {
+            room_id: room_id.to_owned(),
+            display_name: "Synthetic room".to_owned(),
+            display_label: "Synthetic room".to_owned(),
+            original_display_label: "Synthetic room".to_owned(),
+            avatar: None,
+            is_dm: false,
+            dm_user_ids: Vec::new(),
+            tags: RoomTags::default(),
+            unread_count: 3,
+            notification_count: 2,
+            highlight_count: 1,
+            marked_unread: true,
+            last_activity_ms: 42,
+            latest_event: None,
+            parent_space_ids: Vec::new(),
+            dm_space_ids: Vec::new(),
+            is_encrypted: false,
+            joined_members: 2,
+        }
+    }
+
+    #[test]
+    fn room_list_applied_records_through_real_reducer_with_trace_env_unset() {
+        let child = std::process::Command::new(
+            std::env::current_exe().expect("current test executable should be available"),
+        )
+        .args([
+            "--exact",
+            "runtime::tests::room_list_applied_records_without_trace_environment",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env_remove("KOUSHI_UNREAD_TRACE")
+        .status()
+        .expect("env-unset room-list diagnostic child should start");
+        assert!(
+            child.success(),
+            "env-unset diagnostic child failed: {child}"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn room_list_applied_records_without_trace_environment() {
+        assert!(std::env::var_os("KOUSHI_UNREAD_TRACE").is_none());
+        let mut state = AppState {
+            session: SessionState::Ready(SessionInfo {
+                homeserver: "https://example.invalid".to_owned(),
+                user_id: "@synthetic:example.invalid".to_owned(),
+                device_id: "SYNTHETIC".to_owned(),
+            }),
+            ..AppState::default()
+        };
+        let private_room_id = "!private-room:example.invalid";
+
+        reduce_with_unread_diagnostics(
+            &mut state,
+            AppAction::RoomListUpdated {
+                spaces: Vec::new(),
+                rooms: vec![unread_diagnostic_room(private_room_id)],
+            },
+        );
+
+        assert_eq!(state.rooms.len(), 1, "the real reducer path should run");
+        let event = koushi_diagnostics::snapshot()
+            .records
+            .into_iter()
+            .rev()
+            .find(|record| {
+                record.event.source == "core.unread" && record.event.stage == "room_list_applied"
+            })
+            .expect("room-list applied metrics should be collected without an env switch")
+            .event;
+        assert_eq!(
+            event
+                .fields
+                .iter()
+                .map(|field| (field.key, field.value.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("unread", koushi_diagnostics::DiagnosticValue::Count(3)),
+                (
+                    "notifications",
+                    koushi_diagnostics::DiagnosticValue::Count(2),
+                ),
+                ("highlights", koushi_diagnostics::DiagnosticValue::Count(1)),
+                (
+                    "marked_unread",
+                    koushi_diagnostics::DiagnosticValue::Boolean(true),
+                ),
+                (
+                    "latest_event_present",
+                    koushi_diagnostics::DiagnosticValue::Boolean(false),
+                ),
+            ]
+        );
+        assert!(
+            !serde_json::to_string(&event)
+                .unwrap()
+                .contains(private_room_id)
+        );
+    }
+
+    #[test]
+    fn app_loop_trace_ignores_subthreshold_iterations() {
+        let before = koushi_diagnostics::snapshot();
+        app_loop_trace("test_boundary", 1, 2, Duration::from_millis(99));
+        let after = koushi_diagnostics::snapshot();
+        assert_eq!(
+            after
+                .records
+                .iter()
+                .filter(|record| record.event.source == "core.runtime"
+                    && record.event.stage == "app_loop")
+                .count(),
+            before
+                .records
+                .iter()
+                .filter(|record| record.event.source == "core.runtime"
+                    && record.event.stage == "app_loop")
+                .count()
+        );
+    }
+
+    #[test]
+    fn app_loop_trace_records_at_threshold_without_environment_switch() {
+        let before = koushi_diagnostics::snapshot();
+        app_loop_trace("test_boundary", 3, 4, Duration::from_millis(100));
+        let after = koushi_diagnostics::snapshot();
+        assert!(after.records.len() > before.records.len());
+        let record = after
+            .records
+            .iter()
+            .rev()
+            .find(|record| {
+                record.event.source == "core.runtime" && record.event.stage == "app_loop"
+            })
+            .expect("threshold iteration should be collected");
+        assert!(record.event.fields.iter().any(|field| field.key == "count"));
+    }
 
     #[test]
     fn default_data_dir_requires_home() {
@@ -4205,17 +4423,13 @@ mod tests {
             .collect();
 
         assert!(
-            source.contains("const ENV_SYNC_TRACE: &str = \"KOUSHI_SYNC_TRACE\";"),
-            "runtime sync diagnostics must use the same explicit opt-in env as SyncActor"
-        );
-        assert!(
             compact_command_effects
-                .contains("trace_runtime_sync(\"effect_start_sync\",&format!(\"source=command_effectrequest_id={}action=send_sync_start\""),
+                .contains("trace_runtime_sync!(\"effect_start_sync\",[DiagnosticField::token(\"source\",\"command_effect\")"),
             "command-originated StartSync effects should be visible in sync diagnostics"
         );
         assert!(
             compact_actor_projection_effects
-                .contains("trace_runtime_sync(\"effect_start_sync\",&format!(\"source=actor_projectionrequest_id={}action=send_sync_start\""),
+                .contains("trace_runtime_sync!(\"effect_start_sync\",[DiagnosticField::token(\"source\",\"actor_projection\")"),
             "actor-originated restore/login StartSync effects should be visible in sync diagnostics"
         );
     }

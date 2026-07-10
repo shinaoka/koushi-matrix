@@ -6,6 +6,7 @@ members = [
     "crates/koushi-sdk",
     "crates/koushi-backend",
     "crates/koushi-core",
+    "crates/koushi-diagnostics",
     "apps/desktop/src-tauri",
     "spikes/sidebar-composition",
     "spikes/key-management",
@@ -16,6 +17,7 @@ default-members = [
     "crates/koushi-key",
     "crates/koushi-sdk",
     "crates/koushi-core",
+    "crates/koushi-diagnostics",
     "apps/desktop/src-tauri",
 ]
 resolver = "2"

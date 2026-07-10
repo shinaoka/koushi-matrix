@@ -3183,13 +3183,13 @@ export const TimelineView = memo(function TimelineView({
       onDiagnosticLogEntry?.({
         timestampMs: Date.now(),
         source: "e2ee.room_key",
-        message: `request keys room=${targetRoomId} event=${eventId}`
+        message: "operation=request_keys stage=request"
       });
-      void transport.requestRoomKey(targetRoomId, eventId).catch((error) => {
+      void transport.requestRoomKey(targetRoomId, eventId).catch(() => {
         onDiagnosticLogEntry?.({
           timestampMs: Date.now(),
           source: "e2ee.room_key",
-          message: `request keys failed room=${targetRoomId} event=${eventId} error=${String(error)}`
+          message: "operation=request_keys stage=failed kind=transport"
         });
       });
     },

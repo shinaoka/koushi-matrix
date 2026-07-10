@@ -19,6 +19,7 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Key, KeyInit, Nonce,
     aead::{Aead, OsRng, rand_core::RngCore},
 };
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_key::{CredentialStore, LocalUnlockSecret, SessionKeyId};
 use koushi_sdk::{
     MatrixClientStoreConfig, MatrixClientStoreKey, MatrixSearchIndexKey,
@@ -648,7 +649,7 @@ impl CredentialStoreBackend {
         #[cfg(any(debug_assertions, test, feature = "qa-bin"))]
         if let Ok(dir) = std::env::var(ENV_FILE_CREDENTIAL_STORE_DIR) {
             let dir = PathBuf::from(dir);
-            tracing_or_eprintln("file credential store active (debug/test/qa-bin only)");
+            record_file_credential_store_active();
             return Self::FileDir(FileCredentialStore::new(dir));
         }
         Self::InMemory(CredentialStore::with_backend(
@@ -661,7 +662,7 @@ impl CredentialStoreBackend {
         #[cfg(any(debug_assertions, test, feature = "qa-bin"))]
         if let Ok(dir) = std::env::var(ENV_FILE_CREDENTIAL_STORE_DIR) {
             let dir = PathBuf::from(dir);
-            tracing_or_eprintln("file credential store active (debug/test/qa-bin only)");
+            record_file_credential_store_active();
             return Self::FileDir(FileCredentialStore::new(dir));
         }
         Self::OsKeychain(OsCredentialStore::with_backend(os_backend))
@@ -1105,12 +1106,11 @@ fn safe_filename(name: String) -> String {
 /// builds along with its only call site (the file credential store branch in
 /// `CredentialStoreBackend::resolve`).
 #[cfg(any(debug_assertions, test, feature = "qa-bin"))]
-fn tracing_or_eprintln(message: &str) {
-    // Use eprintln as a simple diagnostic; in production the tracing crate
-    // should be wired instead.
-    if std::env::var_os("KOUSHI_DEBUG_SDK_ERROR").is_some() {
-        eprintln!("[koushi-core] {message}");
-    }
+fn record_file_credential_store_active() {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.store", "credential_store")
+            .field(DiagnosticField::token("outcome", "file_backend_active")),
+    );
 }
 
 /// QA/debug structural guard: true only when the env-resolved credential
@@ -1153,6 +1153,26 @@ pub fn account_key_from_info(info: &koushi_state::SessionInfo) -> crate::ids::Ac
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn store_diagnostic_producer_records_typed_outcome_without_environment_switch() {
+        record_file_credential_store_active();
+        let record = koushi_diagnostics::snapshot()
+            .records
+            .into_iter()
+            .rev()
+            .find(|record| {
+                record.event.source == "core.store" && record.event.stage == "credential_store"
+            })
+            .expect("store producer should record");
+        assert!(
+            record
+                .event
+                .fields
+                .iter()
+                .any(|field| field.key == "outcome")
+        );
+    }
 
     fn make_key_id() -> SessionKeyId {
         SessionKeyId {

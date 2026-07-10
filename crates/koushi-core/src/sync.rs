@@ -45,6 +45,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_sdk::MatrixClientSession;
 use koushi_state::{AppAction, SyncLifecycleStatus, SyncMode};
 use tokio::sync::{broadcast, mpsc};
@@ -71,13 +72,14 @@ const SYNC_ACTOR_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_secs(1);
 const SYNC_ACTOR_SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(10);
 const SYNC_SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const LEGACY_SYNC_ROOM_TIMELINE_LIMIT: u32 = 128;
-const ENV_SYNC_TRACE: &str = "KOUSHI_SYNC_TRACE";
-
 macro_rules! trace_sync {
-    ($stage:expr, $($arg:tt)*) => {{
-        if sync_trace_enabled() {
-            eprintln!("koushi.sync stage={} {}", $stage, format_args!($($arg)*));
-        }
+    ($stage:expr, [$($field:expr),* $(,)?], $($arg:tt)*) => {{
+        let event = DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.sync",
+            $stage,
+        )$(.field($field))*;
+        record(event);
     }};
 }
 
@@ -154,21 +156,6 @@ enum ActiveBackend {
     LegacySync,
 }
 
-fn sync_trace_enabled() -> bool {
-    std::env::var_os(ENV_SYNC_TRACE).is_some()
-}
-
-fn request_id_trace_label(request_id: Option<RequestId>) -> String {
-    match request_id {
-        Some(request_id) => format!("{}/{}", request_id.connection_id.0, request_id.sequence),
-        None => "none".to_owned(),
-    }
-}
-
-fn bool_trace_label(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
-}
-
 fn sync_lifecycle_label(lifecycle: SyncLifecycle) -> &'static str {
     match lifecycle {
         SyncLifecycle::Stopped => "stopped",
@@ -211,6 +198,10 @@ async fn send_sync_status(
     let generation = generation.fetch_add(1, Ordering::Relaxed) + 1;
     trace_sync!(
         "status_projected",
+        [
+            DiagnosticField::count("generation", generation),
+            DiagnosticField::token("lifecycle", label),
+        ],
         "generation={} lifecycle={}",
         generation,
         label
@@ -226,6 +217,13 @@ fn sync_command_trace_parts(command: &SyncCommand) -> (&'static str, RequestId) 
         SyncCommand::Stop { request_id } => ("stop", *request_id),
         SyncCommand::Restart { request_id } => ("restart", *request_id),
         SyncCommand::SyncOnce { request_id } => ("sync_once", *request_id),
+    }
+}
+
+fn request_id_trace_parts(request_id: Option<RequestId>) -> (u64, u64, bool) {
+    match request_id {
+        Some(request_id) => (request_id.connection_id.0, request_id.sequence, true),
+        None => (0, 0, false),
     }
 }
 
@@ -483,11 +481,24 @@ impl SyncActor {
         let ended_backend = self.active_backend;
         let request_id = self.active_start_request_id;
         let outcome_label = sync_task_outcome_trace_label(&outcome);
+        let (request_connection_id, request_sequence, request_id_present) =
+            request_id_trace_parts(request_id);
         self.cleanup_ended_backend().await;
         match outcome {
             SyncTaskOutcome::Stopped => {
                 trace_sync!(
                     "task_ended",
+                    [
+                        DiagnosticField::token("outcome", outcome_label),
+                        DiagnosticField::token("backend", active_backend_label(ended_backend)),
+                        DiagnosticField::request_id(
+                            "request_id",
+                            request_connection_id,
+                            request_sequence,
+                        ),
+                        DiagnosticField::boolean("request_id_present", request_id_present),
+                        DiagnosticField::token("fallback", "no"),
+                    ],
                     "outcome={} backend={} request_id={} fallback=no",
                     outcome_label,
                     active_backend_label(ended_backend),
@@ -518,6 +529,19 @@ impl SyncActor {
                 );
                 trace_sync!(
                     "task_ended",
+                    [
+                        DiagnosticField::token("outcome", outcome_label),
+                        DiagnosticField::token("backend", active_backend_label(ended_backend)),
+                        DiagnosticField::request_id(
+                            "request_id",
+                            request_connection_id,
+                            request_sequence,
+                        ),
+                        DiagnosticField::boolean("request_id_present", request_id_present),
+                        DiagnosticField::token("kind", sync_failure_kind_label(kind)),
+                        DiagnosticField::boolean("ever_ran", ever_ran),
+                        DiagnosticField::boolean("fallback", fallback),
+                    ],
                     "outcome={} backend={} request_id={} kind={} ever_ran={} fallback={}",
                     outcome_label,
                     active_backend_label(ended_backend),
@@ -547,6 +571,16 @@ impl SyncActor {
         let (command_kind, request_id) = sync_command_trace_parts(&command);
         trace_sync!(
             "command",
+            [
+                DiagnosticField::token("kind", command_kind),
+                DiagnosticField::request_id(
+                    "request_id",
+                    request_id.connection_id.0,
+                    request_id.sequence
+                ),
+                DiagnosticField::token("lifecycle", sync_lifecycle_label(self.lifecycle)),
+                DiagnosticField::token("active_backend", active_backend_label(self.active_backend)),
+            ],
             "kind={} request_id={} lifecycle={} active_backend={}",
             command_kind,
             request_id_trace_label(Some(request_id)),
@@ -575,6 +609,15 @@ impl SyncActor {
     async fn handle_start(&mut self, request_id: RequestId) {
         trace_sync!(
             "start_begin",
+            [
+                DiagnosticField::request_id(
+                    "request_id",
+                    request_id.connection_id.0,
+                    request_id.sequence
+                ),
+                DiagnosticField::token("lifecycle", sync_lifecycle_label(self.lifecycle)),
+                DiagnosticField::token("active_backend", active_backend_label(self.active_backend)),
+            ],
             "request_id={} lifecycle={} active_backend={}",
             request_id_trace_label(Some(request_id)),
             sync_lifecycle_label(self.lifecycle),
@@ -586,6 +629,15 @@ impl SyncActor {
             let mode = sync_mode_from_backend(backend, false);
             trace_sync!(
                 "start_idempotent",
+                [
+                    DiagnosticField::request_id(
+                        "request_id",
+                        request_id.connection_id.0,
+                        request_id.sequence
+                    ),
+                    DiagnosticField::token("backend", sync_backend_label(backend)),
+                    DiagnosticField::token("action", "reemit_running"),
+                ],
                 "request_id={} backend={} action=reemit_running",
                 request_id_trace_label(Some(request_id)),
                 sync_backend_label(backend)
@@ -610,6 +662,14 @@ impl SyncActor {
         let mode = sync_mode_from_backend(backend_kind, false);
         trace_sync!(
             "probe_done",
+            [
+                DiagnosticField::request_id(
+                    "request_id",
+                    request_id.connection_id.0,
+                    request_id.sequence
+                ),
+                DiagnosticField::token("backend", sync_backend_label(backend_kind)),
+            ],
             "request_id={} backend={}",
             request_id_trace_label(Some(request_id)),
             sync_backend_label(backend_kind)
@@ -645,6 +705,23 @@ impl SyncActor {
         self.lifecycle = SyncLifecycle::Running;
         trace_sync!(
             "backend_running",
+            [
+                DiagnosticField::request_id(
+                    "request_id",
+                    request_id.connection_id.0,
+                    request_id.sequence
+                ),
+                DiagnosticField::token("backend", sync_backend_label(backend_kind)),
+                DiagnosticField::token("lifecycle", sync_lifecycle_label(self.lifecycle)),
+                DiagnosticField::token(
+                    "action",
+                    if backend_kind == SyncBackendKind::LegacySync {
+                        "legacy_started"
+                    } else {
+                        "await_sync_service_running"
+                    }
+                ),
+            ],
             "request_id={} backend={} lifecycle={} action={}",
             request_id_trace_label(Some(request_id)),
             sync_backend_label(backend_kind),
@@ -673,8 +750,17 @@ impl SyncActor {
     }
 
     async fn start_legacy_runtime_fallback(&mut self, request_id: Option<RequestId>) {
+        let (request_connection_id, request_sequence, request_id_present) =
+            request_id_trace_parts(request_id);
         trace_sync!(
             "fallback_start",
+            [
+                DiagnosticField::token("from", "sync_service"),
+                DiagnosticField::token("to", "legacy"),
+                DiagnosticField::request_id("request_id", request_connection_id, request_sequence),
+                DiagnosticField::boolean("request_id_present", request_id_present),
+                DiagnosticField::token("reason", "sync_failed_http"),
+            ],
             "request_id={} from=sync_service to=legacy reason=sync_failed_http",
             request_id_trace_label(request_id)
         );
@@ -707,8 +793,17 @@ impl SyncActor {
 
         self.start_legacy_sync(client).await;
         self.lifecycle = SyncLifecycle::Running;
+        let (request_connection_id, request_sequence, request_id_present) =
+            request_id_trace_parts(request_id);
         trace_sync!(
             "fallback_done",
+            [
+                DiagnosticField::token("backend", "legacy"),
+                DiagnosticField::request_id("request_id", request_connection_id, request_sequence),
+                DiagnosticField::boolean("request_id_present", request_id_present),
+                DiagnosticField::token("lifecycle", sync_lifecycle_label(self.lifecycle)),
+                DiagnosticField::token("action", "legacy_started"),
+            ],
             "request_id={} backend=legacy lifecycle={} action=legacy_started",
             request_id_trace_label(request_id),
             sync_lifecycle_label(self.lifecycle)
@@ -726,20 +821,32 @@ impl SyncActor {
     /// Returns Ok(()) on success, Err(()) when SyncService build fails (caller falls back).
     async fn start_sync_service(&mut self, client: matrix_sdk::Client) -> Result<(), ()> {
         self.register_ignored_user_list_handler(&client);
-        trace_sync!("sync_service_build", "action=begin");
+        trace_sync!(
+            "sync_service_build",
+            [DiagnosticField::token("action", "begin")],
+            "action=begin"
+        );
 
         let service = matrix_sdk_ui::sync_service::SyncService::builder(client.clone())
             .with_offline_mode()
             .build()
             .await
             .map_err(|_| {
-                trace_sync!("sync_service_build", "action=failed");
+                trace_sync!(
+                    "sync_service_build",
+                    [DiagnosticField::token("action", "failed")],
+                    "action=failed"
+                );
                 if let Some(handle) = self.ignored_user_list_handler.take() {
                     client.remove_event_handler(handle);
                 }
                 ()
             })?;
-        trace_sync!("sync_service_build", "action=done");
+        trace_sync!(
+            "sync_service_build",
+            [DiagnosticField::token("action", "done")],
+            "action=done"
+        );
         let service = Arc::new(service);
 
         // Start observing before the SDK service starts so short-lived
@@ -766,10 +873,22 @@ impl SyncActor {
             )
             .await
         });
-        trace_sync!("sync_service_observer", "action=spawned");
-        trace_sync!("sync_service_start", "action=call");
+        trace_sync!(
+            "sync_service_observer",
+            [DiagnosticField::token("action", "spawned")],
+            "action=spawned"
+        );
+        trace_sync!(
+            "sync_service_start",
+            [DiagnosticField::token("action", "call")],
+            "action=call"
+        );
         service.start().await;
-        trace_sync!("sync_service_start", "action=returned");
+        trace_sync!(
+            "sync_service_start",
+            [DiagnosticField::token("action", "returned")],
+            "action=returned"
+        );
 
         self.sync_service = Some(service);
         self.sync_task = Some(task);
@@ -978,6 +1097,14 @@ async fn observe_sync_service_states(
                     Some(SyncServiceObserverDecision::ConnectivityProven) => {
                         trace_sync!(
                             "room_list_state",
+                            [
+                                DiagnosticField::token("state", state_label),
+                                DiagnosticField::boolean(
+                                    "connectivity_proven",
+                                    status.connectivity_proven
+                                ),
+                                DiagnosticField::token("action", "connectivity_proven"),
+                            ],
                             "state={} connectivity_proven={} action=connectivity_proven",
                             state_label,
                             status.connectivity_proven
@@ -986,6 +1113,14 @@ async fn observe_sync_service_states(
                     _ => {
                         trace_sync!(
                             "room_list_state",
+                            [
+                                DiagnosticField::token("state", state_label),
+                                DiagnosticField::boolean(
+                                    "connectivity_proven",
+                                    status.connectivity_proven
+                                ),
+                                DiagnosticField::token("action", "ignore"),
+                            ],
                             "state={} connectivity_proven={} action=ignore",
                             state_label,
                             status.connectivity_proven
@@ -1001,6 +1136,19 @@ async fn observe_sync_service_states(
                     SyncServiceObserverDecision::InitialRunningHandoff => {
                         trace_sync!(
                             "sync_service_state",
+                            [
+                                DiagnosticField::token("state", state_label),
+                                DiagnosticField::boolean(
+                                    "sync_started_emitted",
+                                    status.sync_started_emitted
+                                ),
+                                DiagnosticField::boolean(
+                                    "connectivity_proven",
+                                    status.connectivity_proven
+                                ),
+                                DiagnosticField::boolean("reconnecting", status.reconnecting),
+                                DiagnosticField::token("action", "initial_running_handoff"),
+                            ],
                             "state={} sync_started_emitted={} connectivity_proven={} reconnecting={} action=initial_running_handoff",
                             state_label,
                             status.sync_started_emitted,
@@ -1026,6 +1174,19 @@ async fn observe_sync_service_states(
                         // Recovered from Offline/Reconnecting.
                         trace_sync!(
                             "sync_service_state",
+                            [
+                                DiagnosticField::token("state", state_label),
+                                DiagnosticField::boolean(
+                                    "sync_started_emitted",
+                                    status.sync_started_emitted
+                                ),
+                                DiagnosticField::boolean(
+                                    "connectivity_proven",
+                                    status.connectivity_proven
+                                ),
+                                DiagnosticField::boolean("reconnecting", status.reconnecting),
+                                DiagnosticField::token("action", "recovery_handoff"),
+                            ],
                             "state={} sync_started_emitted={} connectivity_proven={} reconnecting={} action=recovery_handoff",
                             state_label,
                             status.sync_started_emitted,
@@ -1050,6 +1211,19 @@ async fn observe_sync_service_states(
                     SyncServiceObserverDecision::RunningNoop => {
                         trace_sync!(
                             "sync_service_state",
+                            [
+                                DiagnosticField::token("state", state_label),
+                                DiagnosticField::boolean(
+                                    "sync_started_emitted",
+                                    status.sync_started_emitted
+                                ),
+                                DiagnosticField::boolean(
+                                    "connectivity_proven",
+                                    status.connectivity_proven
+                                ),
+                                DiagnosticField::boolean("reconnecting", status.reconnecting),
+                                DiagnosticField::token("action", "running_noop"),
+                            ],
                             "state={} sync_started_emitted={} connectivity_proven={} reconnecting={} action=running_noop",
                             state_label,
                             status.sync_started_emitted,
@@ -1060,6 +1234,19 @@ async fn observe_sync_service_states(
                     SyncServiceObserverDecision::FallbackBeforeConnectivity => {
                         trace_sync!(
                             "sync_service_state",
+                            [
+                                DiagnosticField::token("state", state_label),
+                                DiagnosticField::boolean(
+                                    "sync_started_emitted",
+                                    status.sync_started_emitted
+                                ),
+                                DiagnosticField::boolean(
+                                    "connectivity_proven",
+                                    status.connectivity_proven
+                                ),
+                                DiagnosticField::boolean("reconnecting", status.reconnecting),
+                                DiagnosticField::token("action", "fallback_before_first_running"),
+                            ],
                             "state={} sync_started_emitted={} connectivity_proven={} reconnecting={} action=fallback_before_first_running",
                             state_label,
                             status.sync_started_emitted,
@@ -1088,6 +1275,19 @@ async fn observe_sync_service_states(
                     SyncServiceObserverDecision::WaitRecovery => {
                         trace_sync!(
                             "sync_service_state",
+                            [
+                                DiagnosticField::token("state", state_label),
+                                DiagnosticField::boolean(
+                                    "sync_started_emitted",
+                                    status.sync_started_emitted
+                                ),
+                                DiagnosticField::boolean(
+                                    "connectivity_proven",
+                                    status.connectivity_proven
+                                ),
+                                DiagnosticField::boolean("reconnecting", status.reconnecting),
+                                DiagnosticField::token("action", "wait_recovery"),
+                            ],
                             "state={} sync_started_emitted={} connectivity_proven={} reconnecting={} action=wait_recovery",
                             state_label,
                             status.sync_started_emitted,
@@ -1112,6 +1312,19 @@ async fn observe_sync_service_states(
                     SyncServiceObserverDecision::AlreadyReconnecting => {
                         trace_sync!(
                             "sync_service_state",
+                            [
+                                DiagnosticField::token("state", state_label),
+                                DiagnosticField::boolean(
+                                    "sync_started_emitted",
+                                    status.sync_started_emitted
+                                ),
+                                DiagnosticField::boolean(
+                                    "connectivity_proven",
+                                    status.connectivity_proven
+                                ),
+                                DiagnosticField::boolean("reconnecting", status.reconnecting),
+                                DiagnosticField::token("action", "already_reconnecting"),
+                            ],
                             "state={} sync_started_emitted={} connectivity_proven={} reconnecting={} action=already_reconnecting",
                             state_label,
                             status.sync_started_emitted,
@@ -1122,6 +1335,19 @@ async fn observe_sync_service_states(
                     SyncServiceObserverDecision::Fail => {
                         trace_sync!(
                             "sync_service_state",
+                            [
+                                DiagnosticField::token("state", state_label),
+                                DiagnosticField::boolean(
+                                    "sync_started_emitted",
+                                    status.sync_started_emitted
+                                ),
+                                DiagnosticField::boolean(
+                                    "connectivity_proven",
+                                    status.connectivity_proven
+                                ),
+                                DiagnosticField::boolean("reconnecting", status.reconnecting),
+                                DiagnosticField::token("action", "fail"),
+                            ],
                             "state={} sync_started_emitted={} connectivity_proven={} reconnecting={} action=fail",
                             state_label,
                             status.sync_started_emitted,
@@ -1136,6 +1362,19 @@ async fn observe_sync_service_states(
                     SyncServiceObserverDecision::Ignore => {
                         trace_sync!(
                             "sync_service_state",
+                            [
+                                DiagnosticField::token("state", state_label),
+                                DiagnosticField::boolean(
+                                    "sync_started_emitted",
+                                    status.sync_started_emitted
+                                ),
+                                DiagnosticField::boolean(
+                                    "connectivity_proven",
+                                    status.connectivity_proven
+                                ),
+                                DiagnosticField::boolean("reconnecting", status.reconnecting),
+                                DiagnosticField::token("action", "ignore"),
+                            ],
                             "state={} sync_started_emitted={} connectivity_proven={} reconnecting={} action=ignore",
                             state_label,
                             status.sync_started_emitted,
@@ -1176,6 +1415,12 @@ async fn run_legacy_sync_loop(
             _ = &mut stop_rx => {
                 trace_sync!(
                     "legacy_state",
+                    [
+                        DiagnosticField::token("state", "stopped"),
+                        DiagnosticField::boolean("ever_ran", ever_ran),
+                        DiagnosticField::boolean("reconnecting", reconnecting),
+                        DiagnosticField::token("action", "stop_signal"),
+                    ],
                     "state=stopped ever_ran={} reconnecting={} action=stop_signal",
                     ever_ran,
                     reconnecting
@@ -1187,6 +1432,12 @@ async fn run_legacy_sync_loop(
                     None => {
                         trace_sync!(
                             "legacy_state",
+                            [
+                                DiagnosticField::token("state", "stopped"),
+                                DiagnosticField::boolean("ever_ran", ever_ran),
+                                DiagnosticField::boolean("reconnecting", reconnecting),
+                                DiagnosticField::token("action", "stream_ended"),
+                            ],
                             "state=stopped ever_ran={} reconnecting={} action=stream_ended",
                             ever_ran,
                             reconnecting
@@ -1197,6 +1448,12 @@ async fn run_legacy_sync_loop(
                         if !ever_ran {
                             trace_sync!(
                                 "legacy_state",
+                                [
+                                    DiagnosticField::token("state", "running"),
+                                    DiagnosticField::boolean("ever_ran", ever_ran),
+                                    DiagnosticField::boolean("reconnecting", reconnecting),
+                                    DiagnosticField::token("action", "legacy_started"),
+                                ],
                                 "state=running ever_ran={} reconnecting={} action=legacy_started",
                                 ever_ran,
                                 reconnecting
@@ -1213,6 +1470,12 @@ async fn run_legacy_sync_loop(
                         } else if reconnecting {
                             trace_sync!(
                                 "legacy_state",
+                                [
+                                    DiagnosticField::token("state", "running"),
+                                    DiagnosticField::boolean("ever_ran", ever_ran),
+                                    DiagnosticField::boolean("reconnecting", reconnecting),
+                                    DiagnosticField::token("action", "legacy_recovered"),
+                                ],
                                 "state=running ever_ran={} reconnecting={} action=legacy_recovered",
                                 ever_ran,
                                 reconnecting
@@ -1234,6 +1497,13 @@ async fn run_legacy_sync_loop(
                             // Auth failures are terminal (the SDK will not recover).
                             trace_sync!(
                                 "legacy_state",
+                                [
+                                    DiagnosticField::token("state", "error"),
+                                    DiagnosticField::token("kind", sync_failure_kind_label(kind)),
+                                    DiagnosticField::boolean("ever_ran", ever_ran),
+                                    DiagnosticField::boolean("reconnecting", reconnecting),
+                                    DiagnosticField::token("action", "fail"),
+                                ],
                                 "state=error kind={} ever_ran={} reconnecting={} action=fail",
                                 sync_failure_kind_label(kind),
                                 ever_ran,
@@ -1246,6 +1516,13 @@ async fn run_legacy_sync_loop(
                         if !reconnecting {
                             trace_sync!(
                                 "legacy_state",
+                                [
+                                    DiagnosticField::token("state", "error"),
+                                    DiagnosticField::token("kind", sync_failure_kind_label(kind)),
+                                    DiagnosticField::boolean("ever_ran", ever_ran),
+                                    DiagnosticField::boolean("reconnecting", reconnecting),
+                                    DiagnosticField::token("action", "wait_recovery"),
+                                ],
                                 "state=error kind={} ever_ran={} reconnecting={} action=wait_recovery",
                                 sync_failure_kind_label(kind),
                                 ever_ran,
@@ -1264,6 +1541,13 @@ async fn run_legacy_sync_loop(
                         } else {
                             trace_sync!(
                                 "legacy_state",
+                                [
+                                    DiagnosticField::token("state", "error"),
+                                    DiagnosticField::token("kind", sync_failure_kind_label(kind)),
+                                    DiagnosticField::boolean("ever_ran", ever_ran),
+                                    DiagnosticField::boolean("reconnecting", reconnecting),
+                                    DiagnosticField::token("action", "already_reconnecting"),
+                                ],
                                 "state=error kind={} ever_ran={} reconnecting={} action=already_reconnecting",
                                 sync_failure_kind_label(kind),
                                 ever_ran,
@@ -1397,6 +1681,41 @@ pub mod tests {
     use super::*;
     use crate::event::{CoreEvent, SyncBackendKind, SyncEvent};
     use crate::failure::SyncFailureKind;
+
+    #[test]
+    fn sync_trace_preserves_typed_status_fields_without_environment_switch() {
+        trace_sync!(
+            "test_sync_typed_fields",
+            [
+                DiagnosticField::count("generation", 3),
+                DiagnosticField::token("lifecycle", "running"),
+            ],
+            "generation={} lifecycle={}",
+            3,
+            "running"
+        );
+        let record = koushi_diagnostics::snapshot()
+            .records
+            .into_iter()
+            .rev()
+            .find(|record| record.event.stage == "test_sync_typed_fields")
+            .expect("sync trace should be collected");
+        assert_eq!(record.event.source, "core.sync");
+        assert!(
+            record
+                .event
+                .fields
+                .iter()
+                .any(|field| field.key == "generation")
+        );
+        assert!(
+            record
+                .event
+                .fields
+                .iter()
+                .any(|field| field.key == "lifecycle")
+        );
+    }
 
     #[tokio::test]
     async fn sync_actor_handle_shutdown_aborts_stuck_actor_task() {
@@ -1613,16 +1932,12 @@ pub mod tests {
             sync_command_trace_parts(&SyncCommand::Restart { request_id });
         assert_eq!(kind, "restart");
         assert_eq!(traced_request_id, request_id);
-        assert_eq!(request_id_trace_label(Some(request_id)), "7/42");
-        assert_eq!(request_id_trace_label(None), "none");
     }
 
     #[test]
     fn sync_trace_covers_command_backend_state_and_fallback_decisions() {
         let source = include_str!("sync.rs");
 
-        assert!(source.contains("const ENV_SYNC_TRACE: &str = \"KOUSHI_SYNC_TRACE\""));
-        assert!(source.contains("std::env::var_os(ENV_SYNC_TRACE)"));
         assert!(source.contains("\"command\","));
         assert!(source.contains("\"probe_done\","));
         assert!(source.contains("\"sync_service_state\","));

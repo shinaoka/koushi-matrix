@@ -5254,6 +5254,90 @@ describe("TimelineView", () => {
     expect(requestRoomKey).toHaveBeenCalledWith("!room:example.invalid", "$encrypted");
   });
 
+  it("emits fixed private-data-free diagnostics when a room-key request fails", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const privateEventId = "$private-event:example.invalid";
+    const privateBody = "secret message body";
+    const rawError = [
+      "raw SDK error",
+      "/Users/member/private/store",
+      "https://private.example.invalid/room",
+      "access_token=private-token"
+    ].join(" ");
+    const requestRoomKey = vi.fn(async () => {
+      throw new Error(rawError);
+    });
+    const onDiagnosticLogEntry = vi.fn();
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      },
+      requestRoomKey
+    });
+    const encrypted = {
+      ...message(privateEventId, privateBody),
+      unable_to_decrypt: {
+        session_id: "private-session-id",
+        reason: "missingRoomKey" as const,
+        can_request_keys: true
+      }
+    };
+
+    render(
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        onDiagnosticLogEntry={onDiagnosticLogEntry}
+      />
+    );
+
+    emit({
+      kind: "Timeline",
+      event: {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [encrypted]
+        }
+      }
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Request keys and retry" }));
+
+    await waitFor(() => {
+      expect(onDiagnosticLogEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: "e2ee.room_key",
+          message: "operation=request_keys stage=failed kind=transport"
+        })
+      );
+    });
+    expect(onDiagnosticLogEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "e2ee.room_key",
+        message: "operation=request_keys stage=request"
+      })
+    );
+
+    const diagnosticText = JSON.stringify(onDiagnosticLogEntry.mock.calls);
+    for (const privateValue of [
+      "!room:example.invalid",
+      privateEventId,
+      privateBody,
+      "private-session-id",
+      rawError,
+      "/Users/member/private/store",
+      "private.example.invalid",
+      "private-token"
+    ]) {
+      expect(diagnosticText).not.toContain(privateValue);
+    }
+  });
+
   it("shows visible copy controls in the message source dialog", () => {
     const source: TimelineMessageSource = {
       event_id: "$source:example.invalid",

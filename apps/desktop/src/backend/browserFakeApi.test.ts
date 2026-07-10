@@ -18,6 +18,15 @@ function receipt(
 }
 
 describe("BrowserFakeApi settings preview", () => {
+  test("returns an empty diagnostic snapshot in the browser fake", async () => {
+    const api = createBrowserFakeApi();
+
+    await expect(api.getDiagnosticSnapshot()).resolves.toEqual({
+      entries: [],
+      droppedEntries: 0
+    });
+  });
+
   test("logout clears the active session and session-owned views", async () => {
     const api = createBrowserFakeApi();
 
