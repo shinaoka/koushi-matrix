@@ -41,8 +41,7 @@ type SourceScope = {
 };
 
 const DIAGNOSTIC_ENV_PATTERN = /KOUSHI_[A-Z0-9_]*(?:TRACE|DIAGNOST)/;
-const TEST_ONLY_ATTRIBUTE_PATTERN =
-  /^\s*#\[(?:cfg\((?:test|(?:all|any)\([^)]*\btest\b[^)]*\))\)|(?:(?:tokio|async_std)::)?test)\]\s*$/;
+const TEST_ATTRIBUTE_PATTERN = /^\s*#\[(?:(?:tokio|async_std)::)?test\]\s*$/;
 
 function runtimeRustSources(): DiagnosticSource[] {
   const roots = ["crates/koushi-sdk/src", "crates/koushi-core/src", "apps/desktop/src-tauri/src"];
@@ -77,7 +76,7 @@ function productionRustLines(source: string): string[] {
   const productionLines = [...lines];
 
   for (let index = 0; index < lines.length; index += 1) {
-    if (!TEST_ONLY_ATTRIBUTE_PATTERN.test(lines[index])) {
+    if (!isTestOnlyAttribute(lines[index])) {
       continue;
     }
 
@@ -93,6 +92,85 @@ function productionRustLines(source: string): string[] {
   }
 
   return productionLines;
+}
+
+function isTestOnlyAttribute(line: string): boolean {
+  if (TEST_ATTRIBUTE_PATTERN.test(line)) {
+    return true;
+  }
+  const match = /^\s*#\[cfg\((.*)\)\]\s*$/.exec(line);
+  return match ? isTestOnlyCfgExpression(match[1]) : false;
+}
+
+function isTestOnlyCfgExpression(expression: string): boolean {
+  const trimmed = expression.trim();
+  if (trimmed === "test") {
+    return true;
+  }
+
+  const open = trimmed.indexOf("(");
+  if (open <= 0 || !trimmed.endsWith(")")) {
+    return false;
+  }
+
+  const name = trimmed.slice(0, open).trim();
+  const argumentsText = trimmed.slice(open + 1, -1);
+  const argumentsList = splitCfgArguments(argumentsText);
+  if (argumentsList === null || argumentsList.length === 0) {
+    return false;
+  }
+
+  if (name === "all") {
+    return argumentsList.some((argument) => isTestOnlyCfgExpression(argument));
+  }
+  if (name === "any") {
+    return argumentsList.every((argument) => isTestOnlyCfgExpression(argument));
+  }
+  return false;
+}
+
+function splitCfgArguments(expression: string): string[] | null {
+  const argumentsList: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < expression.length; index += 1) {
+    const character = expression[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+    } else if (character === "(") {
+      depth += 1;
+    } else if (character === ")") {
+      depth -= 1;
+      if (depth < 0) {
+        return null;
+      }
+    } else if (character === "," && depth === 0) {
+      argumentsList.push(expression.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+
+  if (inString || depth !== 0) {
+    return null;
+  }
+  const last = expression.slice(start).trim();
+  if (last.length > 0) {
+    argumentsList.push(last);
+  }
+  return argumentsList;
 }
 
 function testOnlyItemEnd(lines: readonly string[], start: number): number {
@@ -151,6 +229,67 @@ function braceDelta(line: string): number {
     (delta, character) => delta + (character === "{" ? 1 : character === "}" ? -1 : 0),
     0
   );
+}
+
+function braceDepths(lines: readonly string[]): number[] {
+  let depth = 0;
+  return lines.map((line) => {
+    const lineDepth = depth;
+    depth += braceDelta(line);
+    return lineDepth;
+  });
+}
+
+function previousStatementRange(
+  lines: readonly string[],
+  endExclusive: number,
+  parentDepth: number,
+  depths: readonly number[],
+  minimumStart: number
+): [number, number] | null {
+  let end = endExclusive - 1;
+  while (end >= 0 && structuralRustLine(lines[end]).trim() === "") {
+    end -= 1;
+  }
+  if (end < minimumStart || depths[end] < parentDepth) {
+    return null;
+  }
+
+  const endStructural = structuralRustLine(lines[end]);
+  if (endStructural.includes("}")) {
+    const blockStart = matchingBlockStart(lines, end, minimumStart);
+    return blockStart === null ? null : [blockStart, end];
+  }
+
+  for (let index = end - 1; index >= minimumStart; index -= 1) {
+    if (depths[index] === parentDepth && structuralRustLine(lines[index]).includes(";")) {
+      return [index + 1, end];
+    }
+  }
+  return [minimumStart, end];
+}
+
+function matchingBlockStart(
+  lines: readonly string[],
+  end: number,
+  minimumStart: number
+): number | null {
+  let nestedClosures = 0;
+  for (let index = end; index >= minimumStart; index -= 1) {
+    const structural = structuralRustLine(lines[index]);
+    for (let characterIndex = structural.length - 1; characterIndex >= 0; characterIndex -= 1) {
+      const character = structural[characterIndex];
+      if (character === "}") {
+        nestedClosures += 1;
+      } else if (character === "{") {
+        nestedClosures -= 1;
+        if (nestedClosures === 0) {
+          return index;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 function blockEnd(lines: readonly string[], start: number): number {
@@ -234,9 +373,7 @@ function structuredDiagnosticHelpers(
   const helpers = new Set(
     scopes
       .filter((scope) =>
-        lines
-          .slice(scope.start, scope.end + 1)
-          .some((line) => /(?:koushi_diagnostics::)?record\s*\(/.test(line))
+        hasCanonicalStructuredRecord(lines.slice(scope.start, scope.end + 1).join("\n"))
       )
       .map((scope) => scope.name)
   );
@@ -260,13 +397,30 @@ function structuredDiagnosticHelpers(
 }
 
 function stderrHelpers(lines: readonly string[], scopes: readonly SourceScope[]): Set<string> {
-  return new Set(
+  const helpers = new Set(
     scopes
       .filter((scope) =>
         lines.slice(scope.start, scope.end + 1).some((line) => /\beprintln!\s*\(/.test(line))
       )
       .map((scope) => scope.name)
   );
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const scope of scopes) {
+      if (helpers.has(scope.name)) {
+        continue;
+      }
+      const text = lines.slice(scope.start, scope.end + 1).join("\n");
+      if ([...helpers].some((name) => new RegExp(`\\b${name}\\s*\\(`).test(text))) {
+        helpers.add(scope.name);
+        changed = true;
+      }
+    }
+  }
+
+  return helpers;
 }
 
 function diagnosticGateLine(
@@ -290,12 +444,49 @@ function diagnosticGateLine(
 function hasStructuredCollection(
   lines: readonly string[],
   start: number,
-  end: number,
+  gateLine: number,
   helpers: Set<string>,
   currentScopeName: string
 ): boolean {
-  const adjacentStart = Math.max(start, end - 64);
-  return hasStructuredProducer(lines, adjacentStart, end, helpers, currentScopeName);
+  if (gateLine <= start) {
+    return false;
+  }
+  const depths = braceDepths(lines);
+  let endExclusive = gateLine;
+  while (endExclusive > start) {
+    const range = previousStatementRange(
+      lines,
+      endExclusive,
+      depths[gateLine],
+      depths,
+      start
+    );
+    if (range === null || range[0] < start) {
+      return false;
+    }
+    const text = lines.slice(range[0], range[1] + 1).join("\n");
+    if (hasStructuredProducer(lines, range[0], range[1], helpers, currentScopeName)) {
+      return true;
+    }
+    if (/(?:koushi_diagnostics::)?record\s*\(/.test(text) || isControlFlowStatement(text)) {
+      return false;
+    }
+    endExclusive = range[0];
+  }
+  return false;
+}
+
+function isControlFlowStatement(text: string): boolean {
+  const firstLine = text
+    .split("\n")
+    .map((line) => structuralRustLine(line).trim())
+    .find((line) => line.length > 0);
+  return firstLine !== undefined && /^(?:if|match|for|while|loop)\b/.test(firstLine);
+}
+
+function hasCanonicalStructuredRecord(text: string): boolean {
+  return /(?:koushi_diagnostics::)?record\s*\([\s\S]*\bDiagnosticEvent::new\s*\(/.test(text) ||
+    /(?:koushi_diagnostics::)?record\s*\(\s*event\s*\)/.test(text);
 }
 
 function hasStructuredProducer(
@@ -309,7 +500,7 @@ function hasStructuredProducer(
     return false;
   }
   const text = lines.slice(start, end + 1).join("\n");
-  if (/(?:koushi_diagnostics::)?record\s*\(/.test(text)) {
+  if (hasCanonicalStructuredRecord(text)) {
     return true;
   }
   return [...helpers]
@@ -387,7 +578,7 @@ function scanDiagnosticSources(sources: readonly DiagnosticSource[]): Diagnostic
         );
         if (
           gatedStructuredProducer ||
-          !hasStructuredCollection(lines, scope.start, lineIndex - 1, structuredHelpers, scope.name)
+          !hasStructuredCollection(lines, scope.start, lineIndex, structuredHelpers, scope.name)
         ) {
           findings.push({
             relativePath,
@@ -546,9 +737,8 @@ fn record_helper() {
   test("scanner does not let an unrelated record hide a later gated-only diagnostic", () => {
     const fixture = `
 fn unrelated_record_before_gate() {
-  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "unrelated"));
+  record(unrelated_event());
   if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
-    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "gated"));
     eprintln!("synthetic stderr mirror");
   }
 }
@@ -562,6 +752,91 @@ fn unrelated_record_before_gate() {
       relativePath: "fixtures/unrelated-record.rs",
       line: 4,
       location: "fixtures/unrelated-record.rs:4"
+    });
+  });
+
+  test("stderr helper discovery follows two-hop chains without masking gated-only output", () => {
+    const fixture = `
+fn stderr_leaf() {
+  eprintln!("synthetic stderr mirror");
+}
+
+fn stderr_middle() {
+  stderr_leaf();
+}
+
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn gated_two_hop_only() {
+  if trace_enabled() {
+    stderr_middle();
+  }
+}
+
+fn collected_two_hop_mirror() {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "collected"));
+  if trace_enabled() {
+    stderr_middle();
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/two-hop-stderr.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/two-hop-stderr.rs",
+      line: 15,
+      location: "fixtures/two-hop-stderr.rs:15"
+    });
+  });
+
+  test("scanner masks only cfg items that are provably test-only", () => {
+    const fixture = `
+#[cfg(test)]
+fn exact_test_only() {
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "exact-test"));
+    eprintln!("test-only");
+  }
+}
+
+#[cfg(all(test, feature = "diagnostic-runtime"))]
+fn all_test_only() {
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "all-test"));
+    eprintln!("test-only");
+  }
+}
+
+#[cfg(any(test, feature = "diagnostic-runtime"))]
+fn conditional_runtime() {
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "conditional"));
+    eprintln!("synthetic stderr mirror");
+  }
+}
+
+#[cfg(all(any(test, feature = "diagnostic-runtime"), test))]
+fn nested_all_test_only() {
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "nested-test"));
+    eprintln!("test-only");
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/cfg-conditions.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/cfg-conditions.rs",
+      line: 20,
+      location: "fixtures/cfg-conditions.rs:20"
     });
   });
 
