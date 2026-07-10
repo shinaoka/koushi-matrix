@@ -1051,33 +1051,55 @@ impl AccountActor {
             .await;
     }
 
+    fn record_event_cache_repair(
+        request_id: RequestId,
+        stage: &'static str,
+        outcome: &'static str,
+        reason: &'static str,
+    ) {
+        record(
+            DiagnosticEvent::new(DiagnosticLevel::Debug, "core.event_cache_repair", stage)
+                .field(DiagnosticField::request_id(
+                    "request_id",
+                    request_id.connection_id.0,
+                    request_id.sequence,
+                ))
+                .field(DiagnosticField::token("outcome", outcome))
+                .field(DiagnosticField::token("reason", reason)),
+        );
+    }
+
     async fn handle_ensure_room_event_cached(
         &self,
-        _request_id: RequestId,
+        request_id: RequestId,
         room_id: String,
         event_id: String,
     ) {
         let trace = std::env::var_os("KOUSHI_TIMELINE_ITEM_TRACE").is_some()
             || std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some();
         let Some(session) = &self.session else {
+            Self::record_event_cache_repair(request_id, "skip", "skipped", "no_session");
             if trace {
                 eprintln!("koushi.event_cache_repair stage=skip reason=no_session");
             }
             return;
         };
         let Ok(parsed_room_id) = matrix_sdk::ruma::RoomId::parse(room_id.as_str()) else {
+            Self::record_event_cache_repair(request_id, "skip", "skipped", "invalid_room");
             if trace {
                 eprintln!("koushi.event_cache_repair stage=skip reason=invalid_room");
             }
             return;
         };
         let Ok(parsed_event_id) = matrix_sdk::ruma::EventId::parse(event_id.as_str()) else {
+            Self::record_event_cache_repair(request_id, "skip", "skipped", "invalid_event");
             if trace {
                 eprintln!("koushi.event_cache_repair stage=skip reason=invalid_event");
             }
             return;
         };
         let Some(room) = session.client().get_room(&parsed_room_id) else {
+            Self::record_event_cache_repair(request_id, "skip", "skipped", "room_missing");
             if trace {
                 eprintln!("koushi.event_cache_repair stage=skip reason=room_missing");
             }
@@ -1086,11 +1108,13 @@ impl AccountActor {
 
         match room.load_or_fetch_event(&parsed_event_id, None).await {
             Ok(_) => {
+                Self::record_event_cache_repair(request_id, "done", "succeeded", "loaded");
                 if trace {
                     eprintln!("koushi.event_cache_repair stage=done");
                 }
             }
             Err(_) => {
+                Self::record_event_cache_repair(request_id, "failed", "failed", "sdk");
                 if trace {
                     eprintln!("koushi.event_cache_repair stage=failed");
                 }
@@ -5545,7 +5569,7 @@ fn classify_auth_error(error: &koushi_sdk::PasswordLoginError) -> AuthFailureKin
 mod tests {
     use futures_util::stream;
     use tempfile::tempdir;
-    use tokio::sync::{broadcast, mpsc};
+    use tokio::sync::{broadcast, mpsc, oneshot};
 
     use super::*;
     use crate::store::CredentialStoreBackend;
@@ -5586,6 +5610,83 @@ mod tests {
                 .iter()
                 .any(|field| field.key == "action")
         );
+    }
+
+    #[test]
+    fn event_cache_repair_diagnostic_runs_without_trace_environment() {
+        let child = std::process::Command::new(
+            std::env::current_exe().expect("current test executable should be available"),
+        )
+        .arg("--exact")
+        .arg(concat!(
+            "account::tests::",
+            "event_cache_repair_diagnostic_records_without_trace_environment"
+        ))
+        .arg("--ignored")
+        .arg("--nocapture")
+        .env_remove("KOUSHI_TIMELINE_ITEM_TRACE")
+        .env_remove("KOUSHI_SUBSCRIBE_TRACE")
+        .status()
+        .expect("env-unset event-cache-repair child should start");
+        assert!(
+            child.success(),
+            "env-unset event-cache-repair child failed: {child}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn event_cache_repair_diagnostic_records_without_trace_environment() {
+        assert!(std::env::var_os("KOUSHI_TIMELINE_ITEM_TRACE").is_none());
+        assert!(std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_none());
+
+        let cred_dir = tempdir().expect("credential tempdir");
+        let data_dir = tempdir().expect("data tempdir");
+        let (handle, _action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(17),
+            sequence: 23,
+        };
+        let (response_tx, response_rx) = oneshot::channel();
+        assert!(
+            handle
+                .send(AccountMessage::EnsureRoomEventCached {
+                    request_id,
+                    room_id: "!synthetic-room:example.invalid".to_owned(),
+                    event_id: "$synthetic-event:example.invalid".to_owned(),
+                    response_tx,
+                })
+                .await
+        );
+        response_rx.await.expect("cache-repair response");
+
+        let records = koushi_diagnostics::snapshot().records;
+        let repair = records
+            .iter()
+            .rev()
+            .find(|record| {
+                record.event.source == "core.event_cache_repair"
+                    && record.event.stage == "skip"
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "reason"
+                            && field.value
+                                == koushi_diagnostics::DiagnosticValue::Token("no_session")
+                    })
+            })
+            .expect("event-cache repair should be collected without trace environment");
+        assert!(repair.event.fields.iter().any(|field| {
+            field.key == "request_id"
+                && field.value
+                    == koushi_diagnostics::DiagnosticValue::RequestId {
+                        connection_id: 17,
+                        sequence: 23,
+                    }
+        }));
+        assert!(repair.event.fields.iter().any(|field| {
+            field.key == "outcome"
+                && field.value == koushi_diagnostics::DiagnosticValue::Token("skipped")
+        }));
     }
 
     #[test]
