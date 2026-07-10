@@ -1,4 +1,5 @@
 use futures_util::{Stream, StreamExt};
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 pub use koushi_state::E2eeRecoveryState;
 use koushi_state::{
     AuthSecret, CrossSigningStatus, DelegatedAuthLinks, IdentityResetAuthRequest,
@@ -2416,6 +2417,63 @@ fn sdk_unread_snapshot_line(trace: SdkUnreadTrace<'_>) -> String {
 }
 
 fn trace_sdk_unread_snapshot(trace: SdkUnreadTrace<'_>) {
+    let latest_event = trace.latest_event.as_ref();
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "sdk.unread", "sdk_room_snapshot")
+            .field(DiagnosticField::count(
+                "unread_messages",
+                trace.unread_messages,
+            ))
+            .field(DiagnosticField::count("unread_count", trace.unread_count))
+            .field(DiagnosticField::count(
+                "notification_count",
+                trace.notification_count,
+            ))
+            .field(DiagnosticField::count(
+                "highlight_count",
+                trace.highlight_count,
+            ))
+            .field(DiagnosticField::boolean(
+                "marked_unread",
+                trace.marked_unread,
+            ))
+            .field(DiagnosticField::boolean(
+                "latest_event_present",
+                latest_event.is_some(),
+            ))
+            .field(DiagnosticField::boolean(
+                "fully_read_present",
+                trace.fully_read_event_id.is_some(),
+            ))
+            .field(DiagnosticField::boolean(
+                "private_receipt_present",
+                trace.private_read_receipt_event_id.is_some(),
+            ))
+            .field(DiagnosticField::boolean(
+                "latest_event_content_converted",
+                latest_event.is_some_and(|event| event.content_converted),
+            ))
+            .field(DiagnosticField::boolean(
+                "latest_event_threaded",
+                latest_event.is_some_and(|event| event.is_threaded),
+            ))
+            .field(DiagnosticField::boolean(
+                "latest_event_reply",
+                latest_event.is_some_and(|event| event.is_reply),
+            ))
+            .field(DiagnosticField::boolean(
+                "latest_event_thread_summary",
+                latest_event.is_some_and(|event| event.has_thread_summary),
+            ))
+            .field(DiagnosticField::boolean(
+                "latest_event_reactions",
+                latest_event.is_some_and(|event| event.has_reactions),
+            ))
+            .field(DiagnosticField::count(
+                "last_activity_ms",
+                trace.last_activity_ms,
+            )),
+    );
     if unread_trace_enabled() {
         eprintln!("{}", sdk_unread_snapshot_line(trace));
     }
@@ -5730,7 +5788,7 @@ mod tests {
         matrix_room_member_role, moderate_room_member, normalized_local_user_aliases,
         query_public_room_directory, room_settings_snapshot_with_change,
         room_settings_snapshot_with_member_power_level, sdk_unread_snapshot_line,
-        update_room_member_power_level, update_room_setting,
+        trace_sdk_unread_snapshot, update_room_member_power_level, update_room_setting,
     };
 
     #[test]
@@ -6194,6 +6252,54 @@ mod tests {
         );
 
         assert_eq!(room.tags, tags);
+    }
+
+    #[test]
+    fn unread_diagnostic_snapshot_rejects_private_synthetic_inputs() {
+        let latest_event = Some(crate::MatrixRoomLatestEventSummary {
+            event_id: "$event:example.invalid".to_owned(),
+            sender_id: Some("@user:example.invalid".to_owned()),
+            sender_label: None,
+            sender_avatar_mxc_uri: None,
+            preview: Some("secret message".to_owned()),
+            timestamp_ms: 42,
+            event_type: Some("m.room.message".to_owned()),
+            relation_type: None,
+            relation_event_id: None,
+            content_converted: true,
+            is_threaded: false,
+            is_reply: false,
+            has_thread_summary: false,
+            has_reactions: false,
+        });
+        trace_sdk_unread_snapshot(SdkUnreadTrace {
+            room_id: "!room:example.invalid",
+            unread_messages: 2,
+            unread_count: 2,
+            notification_count: 1,
+            highlight_count: 1,
+            marked_unread: true,
+            latest_event: &latest_event,
+            fully_read_event_id: Some("$event:example.invalid"),
+            private_read_receipt_event_id: None,
+            last_activity_ms: 3,
+        });
+
+        let serialized = serde_json::to_string(&koushi_diagnostics::snapshot()).unwrap();
+        for forbidden in [
+            "!room:example.invalid",
+            "@user:example.invalid",
+            "$event:example.invalid",
+            "/Users/alice/private",
+            "secret message",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "serialized diagnostics leaked {forbidden}"
+            );
+        }
+        assert!(serialized.contains("unread_messages"));
+        assert!(serialized.contains("latest_event_present"));
     }
 
     fn test_latest_event(event_id: &str) -> crate::MatrixRoomLatestEventSummary {

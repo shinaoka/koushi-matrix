@@ -45,6 +45,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticLevel, record};
 use koushi_sdk::MatrixClientSession;
 use koushi_state::{AppAction, SyncLifecycleStatus, SyncMode};
 use tokio::sync::{broadcast, mpsc};
@@ -75,6 +76,11 @@ const ENV_SYNC_TRACE: &str = "KOUSHI_SYNC_TRACE";
 
 macro_rules! trace_sync {
     ($stage:expr, $($arg:tt)*) => {{
+        record(DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.sync",
+            $stage,
+        ));
         if sync_trace_enabled() {
             eprintln!("koushi.sync stage={} {}", $stage, format_args!($($arg)*));
         }

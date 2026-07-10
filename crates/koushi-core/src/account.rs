@@ -34,6 +34,7 @@ use std::{
 };
 
 use futures_util::StreamExt;
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_key::{SessionKeyId, StoredMatrixSession};
 use koushi_sdk::{MatrixClientSession, PendingOidcLogin, PersistableMatrixSession};
 use koushi_state::{
@@ -108,7 +109,12 @@ fn state_search_scope(scope: &crate::command::SearchScope) -> koushi_state::Sear
     }
 }
 
-fn trace_restore(stage: &str, message: &str) {
+fn trace_restore(stage: &'static str, message: &str) {
+    record(DiagnosticEvent::new(
+        DiagnosticLevel::Debug,
+        "core.account",
+        stage,
+    ));
     if std::env::var_os(ENV_SYNC_TRACE).is_some() {
         eprintln!("koushi.account stage={stage} {message}");
     }
@@ -122,7 +128,16 @@ fn bool_trace_label(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
 
-fn trace_account_request(stage: &str, request_id: RequestId, action: &str) {
+fn trace_account_request(stage: &'static str, request_id: RequestId, action: &'static str) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.account", stage)
+            .field(DiagnosticField::token("action", action))
+            .field(DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence,
+            )),
+    );
     trace_restore(
         stage,
         &format!(
@@ -4390,7 +4405,7 @@ impl AccountActor {
         key_id: SessionKeyId,
         outcome: RestoreOutcome,
     ) {
-        let restore_started = startup_trace::now_if_enabled();
+        let restore_started = Some(startup_trace::now());
         trace_account_request("restore_account", request_id, "load_session");
         let session_json = match self.store.credential_backend().load_matrix_session(&key_id) {
             Ok(stored) => stored,
@@ -4821,10 +4836,7 @@ impl AccountActor {
     }
 }
 
-fn trace_room_route(stage: &str, command: &RoomCommand) {
-    if std::env::var_os("KOUSHI_CORE_ACTOR_TRACE").is_none() {
-        return;
-    }
+fn trace_room_route(stage: &'static str, command: &RoomCommand) {
     match command {
         RoomCommand::CreateRoom { request_id, .. } => {
             trace_room_route_event(stage, "create_room", *request_id);
@@ -4845,7 +4857,19 @@ fn trace_room_route(stage: &str, command: &RoomCommand) {
     }
 }
 
-fn trace_room_route_event(stage: &str, kind: &str, request_id: RequestId) {
+fn trace_room_route_event(stage: &'static str, kind: &'static str, request_id: RequestId) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.account", stage)
+            .field(DiagnosticField::token("operation", kind))
+            .field(DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence,
+            )),
+    );
+    if std::env::var_os("KOUSHI_CORE_ACTOR_TRACE").is_none() {
+        return;
+    }
     eprintln!(
         "koushi_core actor_trace account_room_route stage={stage} kind={kind} request_id={}/{}",
         request_id.connection_id.0, request_id.sequence
@@ -4853,6 +4877,11 @@ fn trace_room_route_event(stage: &str, kind: &str, request_id: RequestId) {
 }
 
 fn trace_room_route_closed() {
+    record(DiagnosticEvent::new(
+        DiagnosticLevel::Debug,
+        "core.account",
+        "closed",
+    ));
     if std::env::var_os("KOUSHI_CORE_ACTOR_TRACE").is_some() {
         eprintln!("koushi_core actor_trace account_room_route stage=closed");
     }

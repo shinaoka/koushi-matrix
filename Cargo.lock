@@ -3077,6 +3077,7 @@ dependencies = [
  "eyeball-im",
  "futures-util",
  "koushi-core",
+ "koushi-diagnostics",
  "koushi-key",
  "koushi-sdk",
  "koushi-search",
@@ -3145,6 +3146,7 @@ version = "0.1.0"
 dependencies = [
  "eyeball-im",
  "futures-util",
+ "koushi-diagnostics",
  "koushi-state",
  "matrix-sdk",
  "matrix-sdk-base",

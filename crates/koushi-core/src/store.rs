@@ -19,6 +19,7 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Key, KeyInit, Nonce,
     aead::{Aead, OsRng, rand_core::RngCore},
 };
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_key::{CredentialStore, LocalUnlockSecret, SessionKeyId};
 use koushi_sdk::{
     MatrixClientStoreConfig, MatrixClientStoreKey, MatrixSearchIndexKey,
@@ -1105,7 +1106,11 @@ fn safe_filename(name: String) -> String {
 /// builds along with its only call site (the file credential store branch in
 /// `CredentialStoreBackend::resolve`).
 #[cfg(any(debug_assertions, test, feature = "qa-bin"))]
-fn tracing_or_eprintln(message: &str) {
+fn tracing_or_eprintln(message: &'static str) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.store", "credential_store")
+            .field(DiagnosticField::token("outcome", "file_backend_active")),
+    );
     // Use eprintln as a simple diagnostic; in production the tracing crate
     // should be wired instead.
     if std::env::var_os("KOUSHI_DEBUG_SDK_ERROR").is_some() {

@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_search::{AttachmentDocument, SensitiveString};
 use koushi_state::{
     AttachmentKind, SearchCrawlerFailureKind, SearchCrawlerSettings, SearchCrawlerSpeed,
@@ -123,7 +124,7 @@ async fn run_history_crawl_page(
 
     let messages = {
         let permit = messages_backpressure.acquire_crawler().await;
-        let page_started = startup_trace::now_if_enabled();
+        let page_started = Some(startup_trace::now());
         let page_result = tokio::select! {
             biased;
             // A waiting timeline pagination cancels the crawler: yield the gate
@@ -138,6 +139,12 @@ async fn run_history_crawl_page(
         match page_result {
             Ok(messages) => messages,
             Err(_) => {
+                record(
+                    DiagnosticEvent::new(DiagnosticLevel::Warn, "core.startup", "crawler_page")
+                        .field(DiagnosticField::token("outcome", "failed"))
+                        .field(DiagnosticField::count("processed", checkpoint.processed))
+                        .field(DiagnosticField::count("indexed", checkpoint.indexed)),
+                );
                 return HistoryCrawlPageResult::Failed {
                     checkpoint,
                     kind: SearchCrawlerFailureKind::Sdk,
@@ -182,6 +189,17 @@ async fn run_history_crawl_page(
 
     let completed = chunk_len == 0 || messages.end.is_none();
     checkpoint.from_token = messages.end;
+
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.startup", "crawler_page")
+            .field(DiagnosticField::token(
+                "outcome",
+                if completed { "completed" } else { "progress" },
+            ))
+            .field(DiagnosticField::count("processed", checkpoint.processed))
+            .field(DiagnosticField::count("indexed", checkpoint.indexed))
+            .field(DiagnosticField::count("page_items", chunk_len)),
+    );
 
     if !completed && delay_ms > 0 {
         executor::sleep(std::time::Duration::from_millis(delay_ms)).await;

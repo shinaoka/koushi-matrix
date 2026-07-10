@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityRowKind,
     ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState, ComposerDraftStore,
@@ -78,7 +79,12 @@ pub const COMPOSER_DRAFT_PERSIST_DEBOUNCE: Duration = Duration::from_millis(150)
 const INTERNAL_RUNTIME_CONNECTION_ID: RuntimeConnectionId = RuntimeConnectionId(0);
 const ENV_SYNC_TRACE: &str = "KOUSHI_SYNC_TRACE";
 
-fn trace_runtime_sync(stage: &str, message: &str) {
+fn trace_runtime_sync(stage: &'static str, message: &str) {
+    record(DiagnosticEvent::new(
+        DiagnosticLevel::Debug,
+        "core.runtime",
+        stage,
+    ));
     if std::env::var_os(ENV_SYNC_TRACE).is_some() {
         eprintln!("koushi.sync stage={stage} {message}");
     }
@@ -88,13 +94,28 @@ fn runtime_request_id_trace_label(request_id: RequestId) -> String {
     format!("{}/{}", request_id.connection_id.0, request_id.sequence)
 }
 
+fn intent_outcome_token(outcome: &IntentOutcome) -> &'static str {
+    match outcome {
+        IntentOutcome::Committed => "committed",
+        IntentOutcome::BenignNoOp(_) => "benign_no_op",
+        IntentOutcome::FailedNoOp(_) => "failed_no_op",
+    }
+}
+
 /// Diagnostic-only, private-data-free trace of slow AppActor loop iterations.
 /// Enable with KOUSHI_SUBSCRIBE_TRACE=1. A loop iteration that takes hundreds of
 /// ms (e.g. a full `self.state.clone()` of a 100+ room account) starves the
 /// command arm, which is why `select_room` can time out under large-account
 /// sync. Logs the arm, items handled, the state-clone cost, and total time.
-fn app_loop_trace(arm: &str, count: u32, clone_ms: u128, total: std::time::Duration) {
+fn app_loop_trace(arm: &'static str, count: u32, clone_ms: u128, total: std::time::Duration) {
     let total_ms = total.as_millis();
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.runtime", "app_loop")
+            .field(DiagnosticField::token("arm", arm))
+            .field(DiagnosticField::count("count", count as u64))
+            .field(DiagnosticField::milliseconds("clone", clone_ms))
+            .field(DiagnosticField::milliseconds("duration", total_ms)),
+    );
     if total_ms >= 100 && std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
         eprintln!("koushi.apploop arm={arm} count={count} clone_ms={clone_ms} total_ms={total_ms}");
     }
@@ -1098,7 +1119,17 @@ impl AppActor {
                                 // prevent a silent timeout (defensive case).
                                 IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState)
                             };
-                            // Env-gated private-data-free trace (counts/flags only).
+                            record(
+                                DiagnosticEvent::new(
+                                    DiagnosticLevel::Debug,
+                                    "core.intent",
+                                    "select_reduce",
+                                )
+                                .field(DiagnosticField::boolean("found", found))
+                                .field(DiagnosticField::boolean("session_ready", session_ready))
+                                .field(DiagnosticField::count("rooms", rooms_len as u64))
+                                .field(DiagnosticField::boolean("committed", committed)),
+                            );
                             if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
                                 eprintln!(
                                     "koushi.select_reduce found={found} session_ready={session_ready} rooms_len={rooms_len}"
@@ -1147,6 +1178,22 @@ impl AppActor {
                                 }
                             }
                             if let Some(request_id) = request_id_to_emit {
+                                record(
+                                    DiagnosticEvent::new(
+                                        DiagnosticLevel::Debug,
+                                        "core.intent",
+                                        "lifecycle",
+                                    )
+                                    .field(DiagnosticField::request_id(
+                                        "request_id",
+                                        request_id.connection_id.0,
+                                        request_id.sequence,
+                                    ))
+                                    .field(DiagnosticField::token(
+                                        "outcome",
+                                        intent_outcome_token(&outcome),
+                                    )),
+                                );
                                 self.emit(CoreEvent::IntentLifecycle { request_id, outcome });
                             }
                         }
