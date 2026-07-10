@@ -210,11 +210,13 @@ function testOnlyItemEnd(lines: readonly string[], start: number): number {
 type RustLexicalView = {
   code: string;
   stringValues: string[];
+  stringSpans: Array<{ value: string; start: number; end: number }>;
 };
 
 function lexicalRustView(source: string): RustLexicalView {
   const code = [...source];
   const stringValues: string[] = [];
+  const stringSpans: Array<{ value: string; start: number; end: number }> = [];
 
   function blank(start: number, endExclusive: number): void {
     for (let index = start; index < endExclusive; index += 1) {
@@ -280,8 +282,10 @@ function lexicalRustView(source: string): RustLexicalView {
       const terminator = `"${"#".repeat(rawString.hashes)}`;
       const end = source.indexOf(terminator, rawString.contentStart);
       const contentEnd = end === -1 ? source.length : end;
-      stringValues.push(source.slice(rawString.contentStart, contentEnd));
+      const value = source.slice(rawString.contentStart, contentEnd);
+      stringValues.push(value);
       index = end === -1 ? source.length : end + terminator.length;
+      stringSpans.push({ value, start, end: index });
       blank(start, index);
       continue;
     }
@@ -306,6 +310,7 @@ function lexicalRustView(source: string): RustLexicalView {
         index += 1;
       }
       stringValues.push(value);
+      stringSpans.push({ value, start, end: index });
       blank(start, index);
       continue;
     }
@@ -313,7 +318,7 @@ function lexicalRustView(source: string): RustLexicalView {
     index += 1;
   }
 
-  return { code: code.join(""), stringValues };
+  return { code: code.join(""), stringValues, stringSpans };
 }
 
 function structuralRustLine(line: string): string {
@@ -1398,17 +1403,28 @@ function runtimeDiagnosticStderrFindings(
 ): DiagnosticGateFinding[] {
   return sources.flatMap(({ relativePath, source }) => {
     const rawLines = productionRustLines(source);
-    const code = lexicalRustView(rawLines.join("\n")).code;
+    const lexical = lexicalRustView(rawLines.join("\n"));
+    const code = lexical.code;
     const codeLines = code.split("\n");
     const lineStarts = [0];
     for (const line of codeLines.slice(0, -1)) {
       lineStarts.push(lineStarts.at(-1)! + line.length + 1);
     }
-    return rawLines.flatMap((rawLine, index) => {
+    const removedLiteralLines = new Set(
+      lexical.stringSpans
+        .filter(({ value }) => REMOVED_DIAGNOSTIC_ENV_LITERALS.includes(value))
+        .map(({ start }) => lineIndexAtOffset(lineStarts, start))
+    );
+    return rawLines.flatMap((_, index) => {
       const codeLine = codeLines[index];
       const reason = /\beprintln!\s*\(/.test(codeLine)
         ? "runtime diagnostic writes to stderr"
-        : removedDiagnosticEnvironmentLiteralInSyntax(code, lineStarts, index, rawLine)
+        : removedDiagnosticEnvironmentLiteralInSyntax(
+              code,
+              lineStarts,
+              index,
+              removedLiteralLines.has(index)
+            )
           ? "runtime diagnostic environment gate remains"
           : null;
       return reason
@@ -1422,11 +1438,8 @@ function removedDiagnosticEnvironmentLiteralInSyntax(
   code: string,
   lineStarts: readonly number[],
   lineIndex: number,
-  rawLine: string
+  includesRemovedLiteral: boolean
 ): boolean {
-  const includesRemovedLiteral = lexicalRustView(rawLine).stringValues.some((value) =>
-    REMOVED_DIAGNOSTIC_ENV_LITERALS.includes(value)
-  );
   const codeLineStart = lineStarts[lineIndex];
   const statementStart =
     Math.max(
@@ -1443,6 +1456,14 @@ function removedDiagnosticEnvironmentLiteralInSyntax(
     (/\bconst\s+[A-Z][A-Z0-9_]*\s*:\s*&str\s*=/.test(syntax) ||
       /\bstd::env::(?:var_os|var)\s*\(/.test(syntax))
   );
+}
+
+function lineIndexAtOffset(lineStarts: readonly number[], offset: number): number {
+  let lineIndex = 0;
+  while (lineIndex + 1 < lineStarts.length && lineStarts[lineIndex + 1] <= offset) {
+    lineIndex += 1;
+  }
+  return lineIndex;
 }
 
 describe("desktop release scripts", () => {
@@ -2570,6 +2591,14 @@ const MULTILINE_TRACE: &str =
 fn multiline_gate() {
   if std::env::var_os(
     "KOUSHI_STARTUP_TRACE",
+  ).is_some() {}
+}
+fn block_comment_gate() {
+  if std::env::var_os(
+    /*
+     "KOUSHI_STARTUP_TRACE"
+     */
+    "SOME_OTHER_ENV",
   ).is_some() {}
 }
 #[cfg(test)]
