@@ -1,0 +1,327 @@
+/**
+ * Presentation-only room-timeline projection.
+ *
+ * The timeline store owns the SDK VectorDiff order. This module deliberately
+ * receives that order as readonly input and derives a separate row list for
+ * rendering; it must never be used as a VectorDiff target.
+ */
+
+import type { TimelineItem, TimelineKey } from "./coreEvents";
+import { timelineItemDomId } from "./coreEvents";
+import type { TimelineThreadRootOrder } from "./types";
+
+export type TimelineDisplayRow = {
+  /** Stable presentation/virtualization identity, distinct from event identity. */
+  row_id: string;
+  /** The canonical item that supplies content, actions, and metadata. */
+  item: TimelineItem;
+  /** Event identity for content actions. */
+  content_event_id: string | null;
+  /** Event identity for activity placement and viewport facts. */
+  activity_event_id: string | null;
+  /** Timestamp rendered in the message heading. */
+  content_timestamp_ms: number | null;
+  /** Timestamp used for presentation placement and date grouping. */
+  display_timestamp_ms: number | null;
+  kind: "event" | "threadRoot" | "dateDivider";
+};
+
+type CanonicalEntry = {
+  index: number;
+  item: TimelineItem;
+  eventId: string | null;
+};
+
+type ThreadRoot = CanonicalEntry & {
+  eventId: string;
+  latestEventId: string | null;
+  latestTimestampMs: number | null;
+};
+
+type MoveCandidate = {
+  root: ThreadRoot;
+  activityIndex: number;
+  activityEventId: string;
+  displayTimestampMs: number;
+};
+
+/**
+ * Derives render rows from canonical timeline items.
+ *
+ * RootEvent and non-Room keys are identity projections: item order and item
+ * references remain exactly as received. LatestReply replaces a loaded exact
+ * thread-reply slot with the root row, suppresses all Room reply rows, and
+ * regenerates only the presentation date dividers.
+ */
+export function projectTimelineDisplayRows(
+  canonicalItems: readonly TimelineItem[],
+  key: TimelineKey,
+  order: TimelineThreadRootOrder
+): TimelineDisplayRow[] {
+  if (!("Room" in key.kind) || order.kind !== "latestReply") {
+    return canonicalItems.map((item) => canonicalRow(item));
+  }
+
+  return projectLatestReplyRoomRows(canonicalItems);
+}
+
+function projectLatestReplyRoomRows(canonicalItems: readonly TimelineItem[]): TimelineDisplayRow[] {
+  const entries = canonicalItems.map((item, index) => ({
+    index,
+    item,
+    eventId: eventIdFor(item)
+  }));
+  const rootsByIndex = new Map<number, ThreadRoot>();
+  const duplicateRootIndexes = new Set<number>();
+  const rootIds = new Set<string>();
+
+  for (const entry of entries) {
+    const root = asThreadRoot(entry);
+    if (root === null) {
+      continue;
+    }
+    if (rootIds.has(root.eventId)) {
+      // A healthy canonical store deduplicates item IDs. If a malformed input
+      // contains a second root, retain the first canonical occurrence only.
+      duplicateRootIndexes.add(entry.index);
+      continue;
+    }
+    rootIds.add(root.eventId);
+    rootsByIndex.set(entry.index, root);
+  }
+
+  const movedRootByActivityIndex = chooseMoves(rootsByIndex, entries);
+  const movedRootIndexes = new Set(
+    [...movedRootByActivityIndex.values()].map((candidate) => candidate.root.index)
+  );
+  const projectedRows: TimelineDisplayRow[] = [];
+
+  for (const entry of entries) {
+    if (isCanonicalDateDivider(entry.item)) {
+      // SDK dividers describe canonical chronology; presentation dividers are
+      // rebuilt below using a moved root's activity timestamp.
+      continue;
+    }
+    if (duplicateRootIndexes.has(entry.index)) {
+      continue;
+    }
+    if (isThreadReply(entry.item)) {
+      const moved = movedRootByActivityIndex.get(entry.index);
+      if (moved !== undefined) {
+        projectedRows.push(movedRootRow(moved));
+      }
+      // Room presentation represents a thread by its root/summary block, not
+      // by any standalone reply row, including an unmatched stale reply.
+      continue;
+    }
+    if (movedRootIndexes.has(entry.index)) {
+      continue;
+    }
+
+    const root = rootsByIndex.get(entry.index);
+    projectedRows.push(root === undefined ? canonicalRow(entry.item) : rootAtOriginRow(root));
+  }
+
+  return rebuildDateDividers(projectedRows);
+}
+
+function chooseMoves(
+  rootsByIndex: ReadonlyMap<number, ThreadRoot>,
+  entries: readonly CanonicalEntry[]
+): Map<number, MoveCandidate> {
+  const candidatesByActivityIndex = new Map<number, MoveCandidate[]>();
+
+  for (const root of rootsByIndex.values()) {
+    if (root.latestEventId === null) {
+      continue;
+    }
+    const activity = entries.find(
+      (entry) =>
+        entry.eventId === root.latestEventId && entry.item.thread_root === root.eventId
+    );
+    if (activity === undefined) {
+      continue;
+    }
+    const displayTimestampMs = finiteTimestamp(root.latestTimestampMs) ?? finiteTimestamp(activity.item.timestamp_ms);
+    if (displayTimestampMs === null) {
+      // A latest event ID without a usable activity timestamp is incomplete
+      // data. Keeping the root at its origin avoids a partial-summary flicker.
+      continue;
+    }
+    const candidate: MoveCandidate = {
+      root,
+      activityIndex: activity.index,
+      activityEventId: root.latestEventId,
+      displayTimestampMs
+    };
+    const candidates = candidatesByActivityIndex.get(activity.index) ?? [];
+    candidates.push(candidate);
+    candidatesByActivityIndex.set(activity.index, candidates);
+  }
+
+  const selected = new Map<number, MoveCandidate>();
+  for (const [activityIndex, candidates] of candidatesByActivityIndex) {
+    candidates.sort(compareMoveCandidates);
+    selected.set(activityIndex, candidates[0]);
+  }
+  return selected;
+}
+
+function compareMoveCandidates(left: MoveCandidate, right: MoveCandidate): number {
+  return (
+    left.activityIndex - right.activityIndex ||
+    left.displayTimestampMs - right.displayTimestampMs ||
+    left.root.index - right.root.index ||
+    left.root.eventId.localeCompare(right.root.eventId)
+  );
+}
+
+function canonicalRow(item: TimelineItem): TimelineDisplayRow {
+  if (isCanonicalDateDivider(item)) {
+    return {
+      row_id: timelineItemDomId(item.id),
+      item,
+      kind: "dateDivider",
+      content_event_id: null,
+      activity_event_id: null,
+      content_timestamp_ms: null,
+      display_timestamp_ms: finiteTimestamp(item.timestamp_ms)
+    };
+  }
+
+  const eventId = eventIdFor(item);
+  const root = hasThreadSummaryRoot(item, eventId);
+  const timestampMs = finiteTimestamp(item.timestamp_ms);
+  return {
+    row_id: root && eventId !== null ? `thread-root:${eventId}` : timelineItemDomId(item.id),
+    item,
+    kind: root ? "threadRoot" : "event",
+    content_event_id: eventId,
+    activity_event_id: eventId,
+    content_timestamp_ms: timestampMs,
+    display_timestamp_ms: timestampMs
+  };
+}
+
+function rootAtOriginRow(root: ThreadRoot): TimelineDisplayRow {
+  const timestampMs = finiteTimestamp(root.item.timestamp_ms);
+  return {
+    row_id: `thread-root:${root.eventId}`,
+    item: root.item,
+    kind: "threadRoot",
+    content_event_id: root.eventId,
+    activity_event_id: root.eventId,
+    content_timestamp_ms: timestampMs,
+    display_timestamp_ms: timestampMs
+  };
+}
+
+function movedRootRow(candidate: MoveCandidate): TimelineDisplayRow {
+  return {
+    row_id: `thread-root:${candidate.root.eventId}`,
+    item: candidate.root.item,
+    kind: "threadRoot",
+    content_event_id: candidate.root.eventId,
+    activity_event_id: candidate.activityEventId,
+    content_timestamp_ms: finiteTimestamp(candidate.root.item.timestamp_ms),
+    display_timestamp_ms: candidate.displayTimestampMs
+  };
+}
+
+function rebuildDateDividers(rows: readonly TimelineDisplayRow[]): TimelineDisplayRow[] {
+  const rebuilt: TimelineDisplayRow[] = [];
+  let previousDateKey: string | null = null;
+  let dividerOrdinal = 0;
+
+  for (const row of rows) {
+    const timestampMs = row.display_timestamp_ms;
+    if (isDateDividerSource(row) && timestampMs !== null) {
+      const dateKey = localDateKey(timestampMs);
+      if (dateKey !== previousDateKey) {
+        rebuilt.push(dateDividerRow(timestampMs, dividerOrdinal));
+        dividerOrdinal += 1;
+        previousDateKey = dateKey;
+      }
+    }
+    rebuilt.push(row);
+  }
+
+  return rebuilt;
+}
+
+function isDateDividerSource(row: TimelineDisplayRow): boolean {
+  return (
+    row.kind !== "dateDivider" &&
+    !row.item.is_hidden &&
+    ("Event" in row.item.id || "Transaction" in row.item.id)
+  );
+}
+
+function dateDividerRow(timestampMs: number, ordinal: number): TimelineDisplayRow {
+  const item: TimelineItem = {
+    id: { Synthetic: { synthetic_id: `date-divider-${timestampMs}` } },
+    sender: null,
+    body: null,
+    timestamp_ms: timestampMs,
+    in_reply_to_event_id: null,
+    thread_root: null,
+    thread_summary: null,
+    reactions: [],
+    can_react: false,
+    is_redacted: false,
+    is_hidden: false,
+    can_redact: false,
+    is_edited: false,
+    can_edit: false
+  };
+  return {
+    row_id: `date-divider:${localDateKey(timestampMs)}:${ordinal}`,
+    item,
+    kind: "dateDivider",
+    content_event_id: null,
+    activity_event_id: null,
+    content_timestamp_ms: null,
+    display_timestamp_ms: timestampMs
+  };
+}
+
+function asThreadRoot(entry: CanonicalEntry): ThreadRoot | null {
+  if (!hasThreadSummaryRoot(entry.item, entry.eventId) || entry.eventId === null) {
+    return null;
+  }
+  const summary = entry.item.thread_summary;
+  if (summary === null) {
+    return null;
+  }
+  return {
+    ...entry,
+    eventId: entry.eventId,
+    latestEventId: summary.latest_event_id,
+    latestTimestampMs: summary.latest_timestamp_ms
+  };
+}
+
+function hasThreadSummaryRoot(item: TimelineItem, eventId: string | null): boolean {
+  return eventId !== null && item.thread_summary !== null && item.thread_root === null;
+}
+
+function isThreadReply(item: TimelineItem): boolean {
+  return item.thread_root !== null;
+}
+
+function isCanonicalDateDivider(item: TimelineItem): boolean {
+  return "Synthetic" in item.id && item.id.Synthetic.synthetic_id.startsWith("date-divider-");
+}
+
+function eventIdFor(item: TimelineItem): string | null {
+  return "Event" in item.id ? item.id.Event.event_id : null;
+}
+
+function finiteTimestamp(timestampMs: number | null): number | null {
+  return timestampMs !== null && Number.isFinite(timestampMs) ? timestampMs : null;
+}
+
+function localDateKey(timestampMs: number): string {
+  const date = new Date(timestampMs);
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
