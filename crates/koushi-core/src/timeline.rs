@@ -10494,12 +10494,81 @@ mod tests {
             &key,
             &[TimelineDiff::Remove { index: 2 }, TimelineDiff::Clear],
         );
+        let cache_item = matrix_sdk_base::event_cache::Event::from_plaintext(
+            matrix_sdk::ruma::serde::Raw::new(&serde_json::json!({
+                "type": "m.room.message",
+                "event_id": "$private-cache-event:test",
+                "room_id": "!private-room:test",
+                "sender": "@private-sender:test",
+                "origin_server_ts": 1,
+                "content": {"msgtype": "m.text", "body": "private body"}
+            }))
+            .expect("synthetic cache event")
+            .cast_unchecked(),
+        );
         trace_event_cache_diffs(
             "cache_update",
             &key,
             &matrix_sdk::event_cache::EventsOrigin::Cache,
-            &[eyeball_im::VectorDiff::Clear],
+            &[
+                eyeball_im::VectorDiff::PushBack { value: cache_item },
+                eyeball_im::VectorDiff::Remove { index: 2 },
+                eyeball_im::VectorDiff::Clear,
+            ],
         );
+
+        let diff_records = koushi_diagnostics::snapshot().records;
+        for (source, stage) in [
+            ("core.timeline_item", "diff_batch"),
+            ("core.event_cache", "cache_update"),
+        ] {
+            let batch = diff_records
+                .iter()
+                .find(|record| record.event.source == source && record.event.stage == stage)
+                .unwrap_or_else(|| panic!("missing {source}/{stage} batch"));
+            assert!(batch.event.fields.iter().any(|field| {
+                field.key == "kind"
+                    && field.value == koushi_diagnostics::DiagnosticValue::Token("batch")
+            }));
+        }
+        for (source, stage, kind) in [
+            ("core.timeline_item", "diff_batch", "remove"),
+            ("core.timeline_item", "diff_batch", "clear"),
+            ("core.event_cache", "cache_update", "push_back"),
+            ("core.event_cache", "cache_update", "remove"),
+            ("core.event_cache", "cache_update", "clear"),
+        ] {
+            assert!(
+                diff_records.iter().any(|record| {
+                    record.event.source == source
+                        && record.event.stage == stage
+                        && record.event.fields.iter().any(|field| {
+                            field.key == "kind"
+                                && field.value == koushi_diagnostics::DiagnosticValue::Token(kind)
+                        })
+                }),
+                "missing {source}/{stage}/{kind}"
+            );
+        }
+        for record in diff_records.iter().filter(|record| {
+            matches!(
+                (record.event.source, record.event.stage),
+                ("core.timeline_item", "diff_batch") | ("core.event_cache", "cache_update")
+            )
+        }) {
+            let serialized = serde_json::to_string(&record.event).expect("diagnostic serializes");
+            for private_value in [
+                "!private-room:test",
+                "$private-cache-event:test",
+                "@private-sender:test",
+                "private body",
+            ] {
+                assert!(
+                    !serialized.contains(private_value),
+                    "leaked {private_value}: {serialized}"
+                );
+            }
+        }
 
         let (actor_tx, mut actor_rx) = mpsc::channel(8);
         let actor_task = executor::spawn(async move { while actor_rx.recv().await.is_some() {} });
