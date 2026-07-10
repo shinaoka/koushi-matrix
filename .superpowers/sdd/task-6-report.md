@@ -5,7 +5,8 @@
 Complete after the final scanner closure hardening. The scanner rejects the
 reviewed semantic-association, multiline-gate, negative-early-exit,
 comment/string fabrication, batch-record, control-flow implication, loop
-pairing, transitive helper/alias, and cross-file-helper escape paths.
+pairing, transitive helper/alias, iterator-token collision, and nested
+cross-file-helper escape paths.
 It accepts the current always-on runtime collectors, including the batched
 timeline collectors and the cross-file unread collector. The runtime inventory
 returns no findings.
@@ -17,7 +18,9 @@ returns no findings.
 - `da8b82a` — `fix: harden diagnostics scanner parsing`
 - `a394316` — `docs: record final diagnostics scanner verification`
 - `6f63d8d` — `fix: close diagnostics scanner control-flow gaps`
-- This report — `docs: record scanner closure evidence`
+- `3fbc18c` — `docs: record scanner closure evidence`
+- `86bb417` — `fix: resolve scanner iterator and module paths`
+- This report — `docs: finalize scanner path evidence`
 
 The scanner commits change only
 `apps/desktop/src/scripts/releaseScripts.test.ts`. The report commits change
@@ -46,13 +49,17 @@ The scanner now:
 5. Recognizes generic `record(make_diagnostic_event(stage))`, wrapper helpers,
    arbitrary local event bindings, `record_batch(events)`, and vector-built
    events.
-6. Treats collector loops as barriers unless the gated mirror contains a paired
-   iterator over the same source data. Existing timeline and unread loops remain
-   accepted while an independent post-loop trace gate is rejected.
+6. Treats collector loops as barriers unless the gated mirror contains an exact
+   normalized iterator, a proven same-scope iterator alias, or a helper iterator
+   with the same external data roots. A shared method token such as `iter` is
+   insufficient. Existing timeline and unread loops remain accepted while
+   different collection variables are rejected.
 7. Resolves environment, structured, and stderr helpers to a fixed point across
-   scanned files. Arbitrary alias-to-alias chains, two-hop `Self` record
-   wrappers, and normalized `crate::`/`self::`/`super::` qualification are
-   recognized without a file/function allowlist.
+   scanned files. Qualified helper identities are derived from source-relative
+   module paths, including nested canonical suffixes. Arbitrary alias-to-alias
+   chains, two-hop `Self` record wrappers, and nested
+   `crate::`/`self::`/`super::` qualification are recognized without a
+   file/function allowlist or basename collision.
 8. Uses the generic private-data-free finding reason
    `env-gated diagnostic producer has no always-on structured collection`.
 
@@ -96,6 +103,16 @@ command returned exit 1: `3 failed | 135 skipped (138 total)`:
   cross-file helper, and two-hop `Self` record wrapper all returned no findings;
 - the balanced one-line fixture returned two duplicate findings instead of one.
 
+The final iterator/module-path fixtures were added before their implementation.
+Their focused command returned exit 1:
+`2 failed | 142 skipped (144 total)`:
+
+- `collected_items.iter()` and `mirrored_items.iter()` were incorrectly paired
+  through the shared `iter` token, so the bad fixture returned no finding;
+- nested `crate::diagnostics::trace_gate::enabled()` could not be resolved from
+  `diagnostics/trace_gate.rs`, so all three nested qualified cases returned no
+  findings.
+
 ### GREEN
 
 Focused command covering the baseline, gated record-only producers, canonical
@@ -115,7 +132,13 @@ Full release-script file:
 
 ```text
 PASS  npm --prefix apps/desktop test -- src/scripts/releaseScripts.test.ts
-      142 passed (142)
+      144 passed (144)
+```
+
+The final focused iterator/module-path command returned:
+
+```text
+PASS  4 passed | 140 skipped (144 total)
 ```
 
 ## Exact inventory
@@ -128,15 +151,15 @@ rg -n "KOUSHI_[A-Z0-9_]*(TRACE|DIAGNOST)|VITE_KOUSHI_VERBOSE_DIAGNOSTICS" \
   --glob '!**/bin/**'
 ```
 
-Result: exit 0, 88 matches. Classification totals:
+Result: exit 0, 90 matches. Classification totals:
 
 1. Stderr mirror gates with collection first — 15 matches.
 2. Test-only environment/compatibility assertions and synthetic scanner
-   fixtures — 58 matches.
+   fixtures — 60 matches.
 3. Comments, constants, or helpers consumed only by category 1 — 14 matches.
 4. The removed Vite-variable assertion — 1 match.
 
-The totals are `15 + 58 + 14 + 1 = 88`. The runtime scanner assertion returned
+The totals are `15 + 60 + 14 + 1 = 90`. The runtime scanner assertion returned
 an empty finding list.
 
 ## Production gaps
@@ -162,16 +185,17 @@ PASS  room_list_applied_records_through_real_reducer_with_trace_env_unset
 PASS  event_cache_repair_diagnostic_runs_without_trace_environment
       outer 1 passed + env-unset child 1 passed; 423 filtered in each process
 PASS  focused releaseScripts scanner suite — 21 passed, 121 skipped
-PASS  full releaseScripts.test.ts — 142 passed
-PASS  npm --prefix apps/desktop test — 739 passed across 46 files
+PASS  final focused iterator/module-path suite — 4 passed, 140 skipped
+PASS  full releaseScripts.test.ts — 144 passed
+PASS  npm --prefix apps/desktop test — 741 passed across 46 files
 PASS  npm --prefix apps/desktop run typecheck
 PASS  npm --prefix apps/desktop run lint
 PASS  npm --prefix apps/desktop run lint:tauri-boundary
 PASS  npm --prefix apps/desktop run lint:domain-deps
 PASS  npm --prefix apps/desktop run qa:secret-scan
 PASS  npm --prefix apps/desktop run qa:release-gates -- --no-compile
-PASS  exact inventory — 88 matches, classified 15/58/14/1
-PASS  git diff --check 65099a5
+PASS  exact inventory — 90 matches, classified 15/60/14/1
+PASS  git diff --check 3fbc18c..86bb417
 PASS  git diff --check
 PASS  staged scanner scope — releaseScripts.test.ts only
 ```
@@ -184,9 +208,9 @@ PASS  staged scanner scope — releaseScripts.test.ts only
   association.
 - Comments and strings cannot fabricate record or helper discovery.
 - Current direct, helper, paired-loop, transformed, batch, early-exit,
-  polarity/conjunction, transitive alias/helper, normalized qualification,
-  cross-file, one-line, cfg, line-preservation, and runtime-inventory forms are
-  covered.
+  polarity/conjunction, exact/aliased iterator, transitive alias/helper, nested
+  qualification, wrong-module collision, cross-file, one-line, cfg,
+  line-preservation, and runtime-inventory forms are covered.
 - Each scanner commit contains one file; each report commit contains one file;
   Task 3 remains unstaged and unchanged.
 
@@ -195,8 +219,11 @@ PASS  staged scanner scope — releaseScripts.test.ts only
 - The scanner is deliberately conservative text analysis rather than a full
   Rust parser. Its supported lexical, control-flow, local-data-flow, and helper
   forms are locked by adversarial fixtures and the live runtime inventory.
-- Cross-file helper qualification is derived from Rust source module filenames
-  (and parent directory names for `mod.rs`). A future renamed re-export may
-  require an additional generic resolution form.
+- Cross-file helper qualification is derived from canonical source-relative
+  Rust module suffixes. A future renamed re-export may require an additional
+  generic resolution form.
+- Non-identical loop iterators are accepted only for the current proven helper
+  data-root shape. More complex equivalent iterator transformations are
+  conservatively rejected.
 - Boolean implication is intentionally limited to conjunctions of normalized
   atoms. More complex equivalent expressions are conservatively rejected.
