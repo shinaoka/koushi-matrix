@@ -2,245 +2,82 @@
 
 ## Status
 
-Complete. The runtime inventory is clean: the structural scanner reports no
-gated-only diagnostic producers in the SDK, core, or Tauri runtime sources.
+Complete for the second Terra fix wave. The scanner now rejects the three
+reported escape paths, accepts the current runtime collection/mirror forms,
+and reports no findings across the runtime Rust roots. No production runtime
+code or diagnostic behavior changed in this wave.
 
 ## Commits
 
 - `08f60e0` — `fix: collect event cache repair diagnostics without trace gates`
 - `c0b0b45` — `test: enforce always-on diagnostic collection`
+- `0f068b8` — `fix: harden diagnostics gate inventory`
+- `7ba84ab` — `docs: update Task 6 fix evidence`
+- `96c78c7` — `fix: close diagnostics scanner escape paths`
+- This report — `docs: record diagnostics scanner fix evidence`
 
-## Changed files
+The source/tests commit changes only:
 
-- `crates/koushi-core/src/account.rs`
 - `apps/desktop/src/scripts/releaseScripts.test.ts`
-- `.superpowers/sdd/task-6-report.md`
 
 The pre-existing dirty `.superpowers/sdd/task-3-report.md` was not edited or
 staged.
 
-## Exact inventory
+## Terra findings fixed
 
-The required command was run after the fix. It returned 57 matches:
-
-```text
-rg -n "KOUSHI_[A-Z0-9_]*(TRACE|DIAGNOST)|VITE_KOUSHI_VERBOSE_DIAGNOSTICS" \
-  crates/koushi-sdk/src crates/koushi-core/src apps/desktop/src-tauri/src apps/desktop/src \
-  --glob '!**/bin/**'
-```
-
-Classification of every result:
-
-1. Stderr mirror gates with collection first — 15 results:
-
-   - `apps/desktop/src-tauri/src/commands/mod.rs:117,141,696`
-   - `crates/koushi-core/src/room.rs:2745`
-   - `crates/koushi-core/src/account.rs:1078,1079,4946,4961`
-   - `crates/koushi-core/src/timeline.rs:316,885,956,3110,5429`
-   - `crates/koushi-core/src/runtime.rs:125,1139`
-
-   The `account.rs:1078-1079` boolean alias is now followed by structured
-   collection on every cache-repair outcome before the unchanged stderr mirror.
-
-2. Test-only environment or compatibility assertions — 27 results:
-
-   - `apps/desktop/src-tauri/src/commands/mod.rs:7055,7056,7171,7172`
-   - `crates/koushi-core/src/sync.rs:1963`
-   - `crates/koushi-core/src/account.rs:5627,5628,5640,5641,5933`
-   - `crates/koushi-core/src/timeline.rs:10464,10465,10466,10467,10480,10481,10482,10483`
-   - `apps/desktop/src/scripts/releaseScripts.test.ts:317,326,334,341,355,1142,1154,1565`
-   - `crates/koushi-core/src/runtime.rs:4334`
-
-   The first five release-test locations are synthetic scanner fixtures; the
-   remaining three are existing QA/test environment contracts. These are not
-   runtime producers.
-
-3. Comments, constants, or helpers consumed by category 1 — 14 results:
-
-   - `apps/desktop/src-tauri/src/commands/search.rs:6`
-   - `apps/desktop/src-tauri/src/commands/mod.rs:691`
-   - `crates/koushi-sdk/src/lib.rs:55`
-   - `crates/koushi-core/src/search.rs:75`
-   - `crates/koushi-core/src/unread_trace.rs:10`
-   - `crates/koushi-core/src/sync.rs:75`
-   - `crates/koushi-core/src/account.rs:89`
-   - `crates/koushi-core/src/timeline.rs:881,1566,1784`
-   - `crates/koushi-core/src/startup_trace.rs:4,44`
-   - `crates/koushi-core/src/runtime.rs:80,109`
-
-4. Task 5 removed-Vite-variable assertion — 1 result:
-
-   - `apps/desktop/src/App.diagnostics.test.tsx:199`
-
-The scanner separately resolves indirect gate styles not visible as literal
-environment names on the gate line, including `search_trace_enabled()`,
-`stderr_enabled()`, `enabled()`, `let trace = ...`, and trace-module helpers.
-The post-fix runtime scan returned no findings.
+1. Pre-gate collection is associated through preceding structural sibling
+   statements in the same enclosing block, stopping at another record or a
+   control-flow boundary. The arbitrary 64-line lexical window is gone. This
+   retains current direct, helper, loop, and post-record transformation mirror
+   forms while an unrelated `record(unrelated_event())` does not satisfy the
+   gate.
+2. `stderrHelpers` now computes the transitive local helper-call closure, so a
+   gated two-hop stderr helper is detected. A matching always-on collection
+   mirror remains accepted.
+3. Test masking parses nested `cfg(all(...))`/`cfg(any(...))` expressions. It
+   masks exact `test` and expressions provably requiring `test`; it keeps
+   `cfg(any(test, feature = "diagnostic-runtime"))` in the scan. Source lines
+   remain in place, preserving finding line numbers.
 
 ## TDD evidence
 
-### Structural RED
+### RED
 
-The first structural scanner test was run before the production fix:
+After adding the three regression fixture groups and before implementing the
+scanner changes:
 
-```text
-npm --prefix apps/desktop test -- src/scripts/releaseScripts.test.ts -t "always-on diagnostic collection rejects trace-only producers and accepts stderr mirrors"
+```bash
+npm --prefix apps/desktop test -- src/scripts/releaseScripts.test.ts -t "scanner does not let an unrelated record hide a later gated-only diagnostic|stderr helper discovery follows two-hop chains without masking gated-only output|scanner masks only cfg items that are provably test-only"
 ```
 
-Result: exit 1; 1 failed, 121 skipped, 122 total. The scanner reported the six
-gated-only cache-repair branches:
-
-```text
-crates/koushi-core/src/account.rs:1063
-crates/koushi-core/src/account.rs:1069
-crates/koushi-core/src/account.rs:1075
-crates/koushi-core/src/account.rs:1081
-crates/koushi-core/src/account.rs:1089
-crates/koushi-core/src/account.rs:1094
-```
-
-The synthetic bad fixture failed for the same reason, while the good stderr
-mirror fixture and test-only fixture assertions were retained as non-vacuous
-checks.
-
-### Producer RED
-
-The focused producer test was added before the implementation and run with the
-trace variables removed in the child process:
-
-```text
-CARGO_TARGET_DIR=/Users/hiroshi/projects/Element-dev/matrix-desktop/target cargo test -p koushi-core --lib event_cache_repair_diagnostic_runs_without_trace_environment
-```
-
-Result before the fix: exit 101. The child assertion failed because no
-`core.event_cache_repair` record existed.
+Result: exit 1; `3 failed | 124 skipped | 127 total`. The unrelated-record
+and two-hop fixtures each received zero findings where one was required. The
+cfg fixture reported the wrong remaining item (`line 28` instead of the
+conditional runtime gate), proving the masking regression was exercised.
 
 ### GREEN
 
-After the fix, the same focused Rust command passed both the outer child-launch
-test and its ignored env-unset child test. The same structural scanner command
-passed 1 test with 121 skipped tests.
-
-## Production gap found and fixed
-
-`AccountActor::handle_ensure_room_event_cached` had six outcomes whose only
-diagnostic output was behind the combined
-`KOUSHI_TIMELINE_ITEM_TRACE || KOUSHI_SUBSCRIBE_TRACE` boolean alias:
-
-- no session
-- invalid room
-- invalid event
-- missing room
-- SDK load success
-- SDK load failure
-
-The fix adds `core.event_cache_repair` records before each optional stderr
-mirror. Records contain only a typed request ID and fixed `stage`, `outcome`,
-and `reason` tokens. Existing stderr text and environment behavior are
-unchanged. The focused test invokes the actual actor message path with both
-trace variables absent and asserts the typed, private-data-free record.
-
-## Verification
-
-All required commands completed with exit status 0:
+After implementation, the same focused command returned exit 0:
 
 ```text
-PASS  cargo fmt --all -- --check
-PASS  CARGO_TARGET_DIR=/Users/hiroshi/projects/Element-dev/matrix-desktop/target cargo test -p koushi-diagnostics --lib — 8 passed, 0 failed
-PASS  CARGO_TARGET_DIR=/Users/hiroshi/projects/Element-dev/matrix-desktop/target cargo test -p koushi-sdk --lib — 43 passed, 0 failed
-PASS  CARGO_TARGET_DIR=/Users/hiroshi/projects/Element-dev/matrix-desktop/target cargo test -p koushi-core --lib — 418 passed, 1 ignored, 0 failed
-PASS  CARGO_TARGET_DIR=/Users/hiroshi/projects/Element-dev/matrix-desktop/target cargo test -p koushi-desktop — 96 lib tests passed, 5 integration tests passed, 1 ignored; 0 failed
-PASS  npm --prefix apps/desktop test — 46 files passed, 715 tests passed
-PASS  npm --prefix apps/desktop run typecheck
-PASS  npm --prefix apps/desktop run lint
-PASS  npm --prefix apps/desktop run lint:tauri-boundary
-PASS  npm --prefix apps/desktop run lint:domain-deps
-PASS  npm --prefix apps/desktop run qa:secret-scan
-PASS  npm --prefix apps/desktop run qa:release-gates -- --no-compile
-PASS  git diff --check 65099a5..HEAD
+Test Files  1 passed (1)
+Tests       3 passed | 124 skipped (127)
 ```
 
-Focused GREEN checks also passed:
+The complete release-script file then returned exit 0:
+
+```bash
+npm --prefix apps/desktop test -- src/scripts/releaseScripts.test.ts
+```
 
 ```text
-PASS  structural scanner test — 1 passed, 121 skipped
-PASS  event-cache-repair env-unset producer test — outer test and child test passed
+Test Files  1 passed (1)
+Tests       127 passed (127)
 ```
 
-## Self-review
+## Exact inventory
 
-- The scanner recursively reads only `.rs` files below the three required
-  runtime roots and skips `bin`, `build`, `generated`, and `target` path parts.
-- It removes Rust test sections before runtime analysis, detects direct env
-  checks, env constants, helper functions, boolean aliases, and stderr helper
-  calls, and has no production allowlist.
-- Synthetic fixtures prove rejection of direct, helper, and boolean-alias
-  gated-only recorders; acceptance of collection-before-stderr; and exclusion
-  of a test-only environment probe.
-- Scanner findings carry a relative path, one-based line, and fixed
-  private-data-free reason.
-- The only production behavior change is the missing structured collection for
-  cache-repair diagnostics. No QA runner output, product state, diagnostics
-  bridge contract, or unrelated stderr text changed.
-- Commits contain only the intended production/test files; the pre-existing
-  Task 3 report was not staged.
-
-## Residual concerns
-
-- `.superpowers/sdd/task-3-report.md` remains pre-existing dirty worktree state
-  and is intentionally left untouched.
-- The scanner is intentionally conservative text analysis rather than a full
-  Rust parser; its direct/helper/alias coverage is locked by synthetic fixtures
-  and the clean runtime inventory.
-
-## Fix response — Terra Important findings
-
-### Status
-
-Fixed. All four Important findings from the Terra review are covered by
-regression assertions and the focused/full verification gates are green. The
-runtime inventory remains clean, with no new production diagnostic behavior,
-stderr text, source/stage token, or product-state change.
-
-### Commits
-
-- `0f068b8` — `fix: harden diagnostics gate inventory`
-- `docs: update Task 6 fix evidence` — this report update
-
-The pre-existing dirty `.superpowers/sdd/task-3-report.md` was not edited or
-staged.
-
-### Finding fixes
-
-1. The scanner now treats a direct `record(...)` call or a call to a
-   record-containing diagnostic helper inside a recognized direct, helper, or
-   boolean-alias environment gate as a gated diagnostic producer even when no
-   `eprintln!` exists. Record-helper discovery follows the local helper-call
-   chain without a production allowlist. Three separate negative fixtures
-   cover the direct gate, helper gate, and boolean-alias gate forms.
-
-2. A structured producer found inside the recognized gate cannot be satisfied
-   by an unrelated earlier record. The accepted pre-gate collection search is
-   bounded to the adjacent diagnostic shape in the same source scope, and the
-   unrelated unconditional-record fixture now requires a finding for the
-   later gated block.
-
-3. Test-only source is masked item-by-item using balanced braces for
-   `#[cfg(test)]`, `#[cfg(all/any(... test ...))]`, and test attributes while
-   preserving source line positions. A fixture places a production gated
-   function after a test module and verifies that it is still scanned.
-
-4. The env-unset actor test now asserts the exact selected event contract:
-   source `core.event_cache_repair`, stage `skip`, and exactly the typed fields
-   `request_id={connection_id:17,sequence:23}`, `outcome=skipped`, and
-   `reason=no_session`. It serializes the selected event and asserts absence of
-   the supplied synthetic room/event values, a body, URL, path, and
-   raw-error-shaped value. The actual actor route and both removed trace
-   variables remain unchanged.
-
-### Exact inventory
-
-The required inventory command returned 63 matches:
+Command:
 
 ```bash
 rg -n "KOUSHI_[A-Z0-9_]*(TRACE|DIAGNOST)|VITE_KOUSHI_VERBOSE_DIAGNOSTICS" \
@@ -248,119 +85,76 @@ rg -n "KOUSHI_[A-Z0-9_]*(TRACE|DIAGNOST)|VITE_KOUSHI_VERBOSE_DIAGNOSTICS" \
   --glob '!**/bin/**'
 ```
 
-Classification of every result:
+Result: exit 0, 68 matches. Classification totals are:
 
-1. Stderr mirror gates with collection first — 15 results:
+1. Stderr mirror gates with collection first — 15 matches:
+   `apps/desktop/src-tauri/src/commands/mod.rs` (117, 141, 696),
+   `crates/koushi-core/src/room.rs` (2745), `account.rs` (1078, 1079, 4946,
+   4961), `timeline.rs` (316, 885, 956, 3110, 5429), and `runtime.rs` (125,
+   1139).
+2. Test-only environment/compatibility assertions, including synthetic
+   scanner fixtures — 38 matches. This includes the Tauri/core test env
+   removal/assertion lines, the release-script fixtures at lines 600, 609,
+   617, 624, 638, 688, 705, 710, 741, 769, 801, 809, 817, 825, 848, and
+   855, and its existing QA assertions at 1613, 1625, and 2036.
+3. Comments, constants, or helpers consumed by category 1 — 14 matches:
+   `commands/search.rs:6`, `commands/mod.rs:691`, `koushi-sdk/src/lib.rs:55`,
+   `search.rs:75`, `unread_trace.rs:10`, `sync.rs:75`, `account.rs:89`,
+   `timeline.rs:881,1566,1784`, `startup_trace.rs:4,44`, and
+   `runtime.rs:80,109`.
+4. Task 5 removed-Vite-variable assertion — 1 match at
+   `apps/desktop/src/App.diagnostics.test.tsx:199`.
 
-   - `apps/desktop/src-tauri/src/commands/mod.rs:117,141,696`
-   - `crates/koushi-core/src/room.rs:2745`
-   - `crates/koushi-core/src/account.rs:1078,1079,4946,4961`
-   - `crates/koushi-core/src/timeline.rs:316,885,956,3110,5429`
-   - `crates/koushi-core/src/runtime.rs:125,1139`
+The totals are 15 + 38 + 14 + 1 = 68. The scanner's runtime-source assertion
+returned an empty finding list.
 
-2. Test-only environment or compatibility assertions — 33 results:
+## Production gaps
 
-   - `apps/desktop/src-tauri/src/commands/mod.rs:7055,7056,7171,7172`
-   - `crates/koushi-core/src/sync.rs:1963`
-   - `crates/koushi-core/src/account.rs:5627,5628,5640,5641,5949`
-   - `crates/koushi-core/src/timeline.rs:10464,10465,10466,10467,10480,10481,10482,10483`
-   - `apps/desktop/src/scripts/releaseScripts.test.ts:409,418,426,433,447,497,514,519,550,573,580,1338,1350,1761`
-   - `crates/koushi-core/src/runtime.rs:4334`
+No new production gap was exposed by Terra's three scanner findings. The
+previous `AccountActor::handle_ensure_room_event_cached` repair remains the
+only production fix: it records `core.event_cache_repair` with a typed request
+ID and fixed stage/outcome/reason tokens before the unchanged optional stderr
+mirror. The actor env-unset test remains green, and no product state, latency
+instrumentation, privacy boundary, or stderr text changed in this wave.
 
-   The release-test locations are synthetic scanner fixtures or existing test
-   and compatibility assertions; they are not runtime producers.
+## Verification
 
-3. Comments, constants, or helpers consumed by category 1 — 14 results:
-
-   - `apps/desktop/src-tauri/src/commands/search.rs:6`
-   - `apps/desktop/src-tauri/src/commands/mod.rs:691`
-   - `crates/koushi-sdk/src/lib.rs:55`
-   - `crates/koushi-core/src/search.rs:75`
-   - `crates/koushi-core/src/unread_trace.rs:10`
-   - `crates/koushi-core/src/sync.rs:75`
-   - `crates/koushi-core/src/account.rs:89`
-   - `crates/koushi-core/src/timeline.rs:881,1566,1784`
-   - `crates/koushi-core/src/startup_trace.rs:4,44`
-   - `crates/koushi-core/src/runtime.rs:80,109`
-
-4. Task 5 removed-Vite-variable assertion — 1 result:
-
-   - `apps/desktop/src/App.diagnostics.test.tsx:199`
-
-The totals are 15 + 33 + 14 + 1 = 63. The scanner itself reports no
-findings across all runtime Rust sources in the three required roots.
-
-### TDD evidence
-
-The new scanner fixtures were added before the scanner implementation and
-produced the expected RED result:
-
-```bash
-npm --prefix apps/desktop test -- src/scripts/releaseScripts.test.ts -t \
-  "scanner rejects structured producers inside every recognized gate form without stderr|scanner does not let an unrelated record hide a later gated-only diagnostic|scanner keeps production code after a balanced test-only module"
-```
-
-Result before the implementation: exit 1; 3 failed and 122 skipped. Each
-failure received zero findings where the new fixture required one, proving the
-fixtures exercised the three scanner gaps plus the related collection/test
-section gaps.
-
-The strengthened actor privacy assertion was added before its verification.
-The existing producer was already private-data-free, so this assertion had no
-valid RED state without introducing a leak; the env-unset actual actor route
-passed immediately and remains the regression guard.
-
-After implementation, the focused scanner command passed 4 tests with 121
-skipped, and the complete `releaseScripts.test.ts` file passed all 125 tests.
-
-### Production gaps
-
-No new production gap was exposed by the four Terra findings. The prior
-Task 6 production repair in `AccountActor::handle_ensure_room_event_cached`
-remains unchanged. Its structured event continues to use only the typed
-request ID and fixed stage/outcome/reason tokens, while the existing optional
-stderr mirrors, latency behavior, and actor/product state remain unchanged.
-
-### Verification
-
-All requested checks completed with exit status 0:
+All requested commands returned exit status 0:
 
 ```text
-PASS  focused scanner regression — 4 passed, 121 skipped
-PASS  env-unset actual actor test — outer test and ignored child passed
-PASS  npm --prefix apps/desktop test -- src/scripts/releaseScripts.test.ts — 125 passed
-PASS  CARGO_TARGET_DIR=/Users/hiroshi/projects/Element-dev/matrix-desktop/target cargo test -p koushi-core --lib — 417 passed, 2 ignored, 0 failed
 PASS  cargo fmt --all -- --check
+PASS  CARGO_TARGET_DIR=/Users/hiroshi/projects/Element-dev/matrix-desktop/target cargo test -p koushi-core --lib event_cache_repair_diagnostic_runs_without_trace_environment — outer and env-unset child tests passed (1 + 1)
+PASS  npm --prefix apps/desktop test -- src/scripts/releaseScripts.test.ts — 127 passed
 PASS  npm --prefix apps/desktop run typecheck
 PASS  npm --prefix apps/desktop run lint
 PASS  npm --prefix apps/desktop run lint:tauri-boundary
 PASS  npm --prefix apps/desktop run lint:domain-deps
 PASS  npm --prefix apps/desktop run qa:secret-scan
 PASS  npm --prefix apps/desktop run qa:release-gates -- --no-compile
-PASS  exact inventory command — 63 matches
+PASS  exact inventory command — 68 matches
 PASS  git diff --check
+PASS  git diff --cached --check before source/tests commit
 ```
 
-### Self-review
+The focused RED/GREEN commands and full release-script test were run after the
+source/test edit and before the evidence-report edit. The source/tests commit
+was independently checked for staged scope and contains one file only.
 
-- Only `releaseScripts.test.ts`, `account.rs`, and this report changed in the
-  Task 6 fix wave; Task 3 remains untouched.
-- The scanner has no runtime allowlist. It recursively scans the required
-  roots, excludes `bin`/generated/build/target paths, recognizes direct,
-  constant, helper, transitive-helper, and boolean-alias gate forms, and
-  reports only relative path, line, and a fixed private-data-free reason.
-- Test-only masking preserves line numbers and removes balanced items rather
-  than discarding all following source.
-- The actor test checks the exact field set and serialized privacy boundary;
-  no real account data, IDs, bodies, paths, URLs, or raw SDK errors are used.
-- The source/test commit contains no report or unrelated-file changes. The
-  evidence report is committed separately with the required docs message.
+## Self-review
 
-### Residual concerns
+- No production allowlist was added; scanner behavior is syntax/structure
+  driven and covered by positive and negative synthetic fixtures.
+- Direct, helper, boolean-alias, transitive stderr-helper, nested cfg, and
+  balanced test-item paths are covered without logging private data.
+- The scanner still reads only the required runtime roots and skips bin,
+  build, generated, and target path components.
+- The report commit is separate from the source/tests commit, and Task 3
+  remains untouched.
 
-- `.superpowers/sdd/task-3-report.md` remains pre-existing dirty worktree state
-  and is intentionally left untouched.
-- The scanner remains conservative text analysis rather than a full Rust
-  parser. Its recognized gate forms, balanced test-section handling, and
-  bounded pre-gate collection rule are covered by the synthetic fixtures and
-  the clean 63-match runtime inventory.
+## Residual concerns
+
+- The scanner is intentionally conservative text analysis rather than a full
+  Rust parser; its accepted structural forms are locked by the runtime scan
+  and the synthetic adversarial fixtures.
+- `.superpowers/sdd/task-3-report.md` remains pre-existing dirty worktree
+  state and is intentionally left untouched.
