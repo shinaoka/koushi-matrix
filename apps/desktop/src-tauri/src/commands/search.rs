@@ -1,4 +1,5 @@
 use super::*;
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 
 fn search_trace_enabled() -> bool {
     std::env::var_os("KOUSHI_SEARCH_TRACE").is_some()
@@ -32,6 +33,31 @@ pub async fn submit_search(
     let search_scope = resolve_search_scope(scope, state.inner()).await;
     let mut event_conn = state.runtime.attach();
     let request_id = next_request_id(state.inner()).await;
+    let trimmed_query = query.trim();
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "desktop.search", "submit")
+            .field(DiagnosticField::token(
+                "ui_scope",
+                search_scope_kind_trace_label(scope),
+            ))
+            .field(DiagnosticField::token(
+                "resolved_scope",
+                resolved_search_scope_trace_label(&search_scope),
+            ))
+            .field(DiagnosticField::count(
+                "query_bytes",
+                trimmed_query.len() as u64,
+            ))
+            .field(DiagnosticField::count(
+                "query_chars",
+                trimmed_query.chars().count() as u64,
+            ))
+            .field(DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence,
+            )),
+    );
     if search_trace_enabled() {
         eprintln!(
             "koushi.search_cmd stage=submit request={} ui_scope={} resolved_scope={} query_bytes={} query_chars={}",

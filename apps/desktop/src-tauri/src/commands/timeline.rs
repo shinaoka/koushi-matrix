@@ -749,13 +749,22 @@ pub async fn send_reaction(
 
     let account_key = account_key_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
+    let trace_started = std::time::Instant::now();
+    trace_tauri_timeline_command("submit", "send_reaction", request_id);
     if let Some(command) =
         build_send_reaction_command(request_id, account_key, room_id, event_id, reaction_key)
     {
         submit_core_command(state.inner(), command).await?;
     }
     update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
+    let snapshot = current_snapshot(state.inner()).await;
+    trace_tauri_timeline_command_elapsed(
+        "done",
+        "send_reaction",
+        request_id,
+        trace_started.elapsed().as_millis(),
+    );
+    snapshot
 }
 
 #[tauri::command]
@@ -776,6 +785,8 @@ pub async fn redact_reaction(
 
     let account_key = account_key_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
+    let trace_started = std::time::Instant::now();
+    trace_tauri_timeline_command("submit", "redact_reaction", request_id);
     if let Some(command) = build_redact_reaction_command(
         request_id,
         account_key,
@@ -787,7 +798,14 @@ pub async fn redact_reaction(
         submit_core_command(state.inner(), command).await?;
     }
     update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
+    let snapshot = current_snapshot(state.inner()).await;
+    trace_tauri_timeline_command_elapsed(
+        "done",
+        "redact_reaction",
+        request_id,
+        trace_started.elapsed().as_millis(),
+    );
+    snapshot
 }
 
 #[tauri::command]

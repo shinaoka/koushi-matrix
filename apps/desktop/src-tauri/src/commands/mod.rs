@@ -26,6 +26,7 @@ use koushi_core::{
     TimelineKind, TimelineViewportObservation, UploadMediaKind, UploadMediaRequest,
     UploadMediaThumbnail,
 };
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentSort, AuthSecret,
     ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
@@ -58,6 +59,7 @@ const TIMELINE_RESTORE_ANCHOR_MAX_BATCHES: u16 = 6;
 
 pub(crate) mod account;
 pub(crate) mod activity;
+pub(crate) mod diagnostics;
 pub(crate) mod directory;
 pub(crate) mod e2ee;
 pub(crate) mod live_signals;
@@ -96,13 +98,70 @@ async fn next_request_id(state: &CoreRuntimeState) -> koushi_core::RequestId {
     state.connection.lock().await.next_request_id()
 }
 
-pub(crate) fn trace_tauri_timeline_command(stage: &str, kind: &str, request_id: RequestId) {
+pub(crate) fn trace_tauri_timeline_command(
+    stage: &'static str,
+    kind: &'static str,
+    request_id: RequestId,
+) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "desktop.timeline", stage)
+            .field(DiagnosticField::token("operation", kind))
+            .field(DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence,
+            )),
+    );
     if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
         eprintln!(
             "koushi.desktop stage={stage} kind={kind} request_id={}/{}",
             request_id.connection_id.0, request_id.sequence
         );
     }
+}
+
+pub(crate) fn trace_tauri_timeline_command_elapsed(
+    stage: &'static str,
+    kind: &'static str,
+    request_id: RequestId,
+    elapsed_ms: u128,
+) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "desktop.timeline", stage)
+            .field(DiagnosticField::token("operation", kind))
+            .field(DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence,
+            ))
+            .field(DiagnosticField::milliseconds("elapsed_ms", elapsed_ms)),
+    );
+    if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
+        eprintln!(
+            "koushi.desktop stage={stage} kind={kind} request_id={}/{} elapsed_ms={elapsed_ms}",
+            request_id.connection_id.0, request_id.sequence
+        );
+    }
+}
+
+fn record_select_trace(
+    stage: &'static str,
+    events: u32,
+    state_changed: u32,
+    state_delta: u32,
+    active: &'static str,
+) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "desktop.select", stage)
+            .field(DiagnosticField::count("events", events.into()))
+            .field(DiagnosticField::count(
+                "state_changed",
+                state_changed.into(),
+            ))
+            .field(DiagnosticField::count("state_delta", state_delta.into()))
+            .field(DiagnosticField::token("outcome", stage))
+            .field(DiagnosticField::token("active", active)),
+    );
 }
 
 /// Read the latest `AppStateSnapshot` and convert to `FrontendDesktopSnapshot`.
@@ -582,6 +641,7 @@ async fn wait_for_selected_room(
 
     loop {
         if snapshot_has_active_room(&event_conn.snapshot(), selected_room_id) {
+            record_select_trace("ok_watch", events, state_changed, state_delta, "selected");
             if trace {
                 eprintln!(
                     "koushi.select stage=ok_watch events={events} state_changed={state_changed} state_delta={state_delta}"
@@ -593,9 +653,10 @@ async fn wait_for_selected_room(
         let event = match tokio::time::timeout_at(deadline, event_conn.recv_event()).await {
             Ok(event) => event,
             Err(_) => {
+                let active =
+                    select_active_room_trace_label(&event_conn.snapshot(), selected_room_id);
+                record_select_trace("timeout", events, state_changed, state_delta, active);
                 if trace {
-                    let active =
-                        select_active_room_trace_label(&event_conn.snapshot(), selected_room_id);
                     eprintln!(
                         "koushi.select stage=timeout events={events} state_changed={state_changed} state_delta={state_delta} active={active}"
                     );
@@ -608,6 +669,13 @@ async fn wait_for_selected_room(
             Ok(CoreEvent::StateChanged(snapshot)) => {
                 state_changed += 1;
                 if snapshot_has_active_room(&snapshot, selected_room_id) {
+                    record_select_trace(
+                        "ok_statechanged",
+                        events,
+                        state_changed,
+                        state_delta,
+                        "selected",
+                    );
                     if trace {
                         eprintln!("koushi.select stage=ok_statechanged events={events}");
                     }
@@ -621,6 +689,7 @@ async fn wait_for_selected_room(
                 request_id,
                 failure,
             }) if request_id == select_request_id => {
+                record_select_trace("op_failed", events, state_changed, state_delta, "unknown");
                 if trace {
                     eprintln!("koushi.select stage=op_failed events={events}");
                 }
@@ -637,6 +706,13 @@ async fn wait_for_selected_room(
             }) if request_id == select_request_id => {
                 match outcome {
                     IntentOutcome::Committed | IntentOutcome::BenignNoOp(_) => {
+                        record_select_trace(
+                            "ok_intent",
+                            events,
+                            state_changed,
+                            state_delta,
+                            "unknown",
+                        );
                         if trace {
                             eprintln!(
                                 "koushi.select stage=ok_intent events={events} outcome={outcome:?}"
@@ -645,12 +721,26 @@ async fn wait_for_selected_room(
                         return Ok(());
                     }
                     IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState) => {
+                        record_select_trace(
+                            "failed_not_in_state",
+                            events,
+                            state_changed,
+                            state_delta,
+                            "unknown",
+                        );
                         if trace {
                             eprintln!("koushi.select stage=failed_not_in_state events={events}");
                         }
                         return Err("room not yet loaded".to_owned());
                     }
                     IntentOutcome::FailedNoOp(IntentNoOpReason::SessionNotReady) => {
+                        record_select_trace(
+                            "failed_session_not_ready",
+                            events,
+                            state_changed,
+                            state_delta,
+                            "unknown",
+                        );
                         if trace {
                             eprintln!(
                                 "koushi.select stage=failed_session_not_ready events={events}"
@@ -661,6 +751,13 @@ async fn wait_for_selected_room(
                     IntentOutcome::FailedNoOp(IntentNoOpReason::AlreadyActive) => {
                         // AlreadyActive is benign; this arm is unreachable per
                         // the classification logic but handle it defensively.
+                        record_select_trace(
+                            "ok_already_active",
+                            events,
+                            state_changed,
+                            state_delta,
+                            "selected",
+                        );
                         if trace {
                             eprintln!("koushi.select stage=ok_already_active events={events}");
                         }
@@ -670,12 +767,20 @@ async fn wait_for_selected_room(
             }
             Ok(_) => {}
             Err(_) if snapshot_has_active_room(&event_conn.snapshot(), selected_room_id) => {
+                record_select_trace(
+                    "ok_after_lag",
+                    events,
+                    state_changed,
+                    state_delta,
+                    "selected",
+                );
                 if trace {
                     eprintln!("koushi.select stage=ok_after_lag events={events}");
                 }
                 return Ok(());
             }
             Err(_) => {
+                record_select_trace("lag", events, state_changed, state_delta, "unknown");
                 if trace {
                     eprintln!("koushi.select stage=lag events={events}");
                 }
@@ -3066,8 +3171,8 @@ mod tests {
         AccountCommand, AppCommand, CoreCommand, CreateRoomOptions, CreateRoomParentSpace,
         CreateRoomVisibility, ImageUploadCompressionPolicy, ImageUploadCompressionState,
         ImageUploadDimensions, ImageUploadVariantInfo, ImageUploadVariantKind,
-        MediaDownloadSelection, PaginationDirection, RoomCommand, SearchCommand, SearchScope,
-        SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaThumbnail,
+        MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, SearchCommand,
+        SearchScope, SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaThumbnail,
     };
     use koushi_state::{
         ActivityMarkReadTarget, ActivityTab, AppearanceSettings, ImageUploadCompressionMode,
@@ -3123,7 +3228,8 @@ mod tests {
         build_update_room_setting_command, build_update_settings_command,
         build_upload_media_command, parse_qa_control_pipe_line, parse_qa_login_pipe_payload,
         qa_recovery_prompt_is_available, qa_window_title_string,
-        resolve_search_scope_from_active_room,
+        resolve_search_scope_from_active_room, trace_tauri_timeline_command,
+        trace_tauri_timeline_command_elapsed,
     };
     use koushi_state::{
         PresenceKind, RoomHistoryVisibility, RoomJoinRule, RoomModerationAction, RoomSettingChange,
@@ -5303,16 +5409,18 @@ mod tests {
     fn reaction_tauri_command_contracts_are_present() {
         let commands_source = commands_source();
         let lib_source = include_str!("../lib.rs");
-        for (command_name, route_name, registration_name) in [
+        for (command_name, route_name, registration_name, trace_kind) in [
             (
                 "pub async fn send_reaction",
                 "build_send_reaction_command",
                 "commands::timeline::send_reaction",
+                "send_reaction",
             ),
             (
                 "pub async fn redact_reaction",
                 "build_redact_reaction_command",
                 "commands::timeline::redact_reaction",
+                "redact_reaction",
             ),
         ] {
             assert!(
@@ -5326,6 +5434,37 @@ mod tests {
             assert!(
                 lib_source.contains(registration_name),
                 "Tauri command should register {registration_name}"
+            );
+            assert!(
+                commands_source.contains(&format!(
+                    "trace_tauri_timeline_command(\"submit\", \"{trace_kind}\""
+                )),
+                "Tauri command should trace submit for {trace_kind}"
+            );
+            assert!(
+                commands_source.contains(&format!(
+                    "trace_tauri_timeline_command_elapsed(\n        \"done\",\n        \"{trace_kind}\""
+                )),
+                "Tauri command should trace completion latency for {trace_kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_signal_tauri_commands_emit_latency_trace_tokens() {
+        let commands_source = commands_source();
+        for trace_kind in ["send_read_receipt", "set_fully_read"] {
+            assert!(
+                commands_source.contains(&format!(
+                    "trace_tauri_timeline_command(\"submit\", \"{trace_kind}\""
+                )),
+                "read-signal command should trace submit for {trace_kind}"
+            );
+            assert!(
+                commands_source.contains(&format!(
+                    "trace_tauri_timeline_command_elapsed(\n        \"done\",\n        \"{trace_kind}\""
+                )),
+                "read-signal command should trace completion latency for {trace_kind}"
             );
         }
     }
@@ -6668,5 +6807,27 @@ mod tests {
             methods: vec![],
         };
         assert!(super::snapshot_has_authenticated_session(&state));
+    }
+
+    #[test]
+    fn tauri_diagnostics_record_without_stderr_environment_switch() {
+        let request_id = RequestId {
+            connection_id: koushi_core::RuntimeConnectionId(99),
+            sequence: 7,
+        };
+
+        trace_tauri_timeline_command("submit", "diagnostic_test", request_id);
+        trace_tauri_timeline_command_elapsed("done", "diagnostic_test", request_id, 3);
+
+        let records = koushi_diagnostics::snapshot().records;
+        assert!(records.iter().any(|record| {
+            record.event.source == "desktop.timeline"
+                && record.event.stage == "submit"
+                && koushi_diagnostics::format_event(&record.event)
+                    .contains("operation=diagnostic_test")
+        }));
+        assert!(records.iter().any(|record| {
+            record.event.source == "desktop.timeline" && record.event.stage == "done"
+        }));
     }
 }

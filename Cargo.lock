@@ -3102,6 +3102,7 @@ dependencies = [
  "dirs",
  "keyring",
  "koushi-core",
+ "koushi-diagnostics",
  "koushi-key",
  "koushi-state",
  "objc2",

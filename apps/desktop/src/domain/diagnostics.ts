@@ -21,6 +21,11 @@ export interface DiagnosticLogEntry {
   message: string;
 }
 
+export interface DiagnosticLogSnapshot {
+  entries: DiagnosticLogEntry[];
+  droppedEntries: number;
+}
+
 export const DEFAULT_DIAGNOSTIC_LOG_LIMIT = 10_000;
 
 export interface SecurityDiagnostics {
