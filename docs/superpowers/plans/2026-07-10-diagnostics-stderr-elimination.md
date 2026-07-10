@@ -28,11 +28,24 @@
 - Modify `apps/desktop/src/{App.tsx,App.diagnostics.test.tsx}`: append the schema-mismatch entry and prove it appears without console output.
 - Modify `scripts/desktop-real-homeserver-qa.mjs` and `apps/desktop/src/scripts/releaseScripts.test.ts` only if the old startup-trace env is forwarded solely to the removed mirror.
 
-### Task 1: Lock the no-runtime-stderr contract
+### Task 1: Lock and implement the no-runtime-stderr contract
 
 **Files:**
 
 - Modify: `apps/desktop/src/scripts/releaseScripts.test.ts`
+- Modify: `crates/koushi-sdk/src/lib.rs`
+- Modify: `crates/koushi-core/src/startup_trace.rs`
+- Modify: `crates/koushi-core/src/unread_trace.rs`
+- Modify: `crates/koushi-core/src/timeline.rs`
+- Modify: `crates/koushi-core/src/runtime.rs`
+- Modify: `crates/koushi-core/src/sync.rs`
+- Modify: `crates/koushi-core/src/account.rs`
+- Modify: `crates/koushi-core/src/room.rs`
+- Modify: `crates/koushi-core/src/search.rs`
+- Modify: `crates/koushi-core/src/store.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/mod.rs`
+- Modify: `apps/desktop/src-tauri/src/commands/search.rs`
+- Modify: `scripts/desktop-real-homeserver-qa.mjs`
 
 **Interfaces:**
 
@@ -92,48 +105,19 @@ function runtimeDiagnosticStderrFindings(sources: DiagnosticSource[]): Diagnosti
 }
 ```
 
-- [ ] **Step 4: Keep the test red until Task 2 removes the producers**
-
-Run: `npm --prefix apps/desktop test -- src/scripts/releaseScripts.test.ts`
-
-Expected: FAIL with the same production findings, proving the new test guards the required migration.
-
-### Task 2: Remove Rust and Tauri stderr mirrors
-
-**Files:**
-
-- Modify: `crates/koushi-sdk/src/lib.rs`
-- Modify: `crates/koushi-core/src/startup_trace.rs`
-- Modify: `crates/koushi-core/src/unread_trace.rs`
-- Modify: `crates/koushi-core/src/timeline.rs`
-- Modify: `crates/koushi-core/src/runtime.rs`
-- Modify: `crates/koushi-core/src/sync.rs`
-- Modify: `crates/koushi-core/src/account.rs`
-- Modify: `crates/koushi-core/src/room.rs`
-- Modify: `crates/koushi-core/src/search.rs`
-- Modify: `crates/koushi-core/src/store.rs`
-- Modify: `apps/desktop/src-tauri/src/commands/mod.rs`
-- Modify: `apps/desktop/src-tauri/src/commands/search.rs`
-- Modify: `scripts/desktop-real-homeserver-qa.mjs`
-
-**Interfaces:**
-
-- Consumes: existing `record`, `record_batch`, and `koushi_diagnostics::record` calls.
-- Produces: the same structured diagnostic events with no stderr branch and no legacy trace environment variable.
-
-- [ ] **Step 1: Remove the mirror-only code**
+- [ ] **Step 4: Remove the mirror-only code**
 
 For every listed runtime helper, delete only the `if <trace-enabled> { eprintln!(...) }` block, trace boolean, and helper/constant that become unused. Preserve the preceding structured collector call exactly. For item/diff loops, delete the whole stderr-only formatting loop after `record_batch(events)`; do not change event construction.
 
 Remove `KOUSHI_STARTUP_TRACE: "1"` from the real-homeserver QA child environment because its only effect was the deleted startup stderr mirror.
 
-- [ ] **Step 2: Run the red scanner test until all findings are gone**
+- [ ] **Step 5: Verify GREEN**
 
 Run: `npm --prefix apps/desktop test -- src/scripts/releaseScripts.test.ts`
 
 Expected: PASS; the production source contains no `eprintln!` or listed diagnostic environment literal.
 
-- [ ] **Step 3: Run focused Rust verification**
+- [ ] **Step 6: Run focused Rust verification**
 
 Run:
 
@@ -146,7 +130,7 @@ cargo fmt --all -- --check
 
 Expected: PASS, including environment-unset collector tests.
 
-### Task 3: Capture schema mismatches in Diagnostics
+### Task 2: Capture schema mismatches in Diagnostics
 
 **Files:**
 
@@ -210,7 +194,7 @@ npm --prefix apps/desktop run lint
 
 Expected: PASS.
 
-### Task 4: Final release verification and PR preparation
+### Task 3: Final release verification and PR preparation
 
 **Files:**
 
