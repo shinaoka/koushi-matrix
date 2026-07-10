@@ -5,8 +5,17 @@ import {
   appendDiagnosticLogEntry,
   DEFAULT_DIAGNOSTIC_LOG_LIMIT,
   diagnosticReport,
+  schemaMismatchDiagnosticEntry,
   type DiagnosticLogEntry
 } from "./diagnostics";
+
+test("creates a fixed private-data-free schema mismatch diagnostic", () => {
+  expect(schemaMismatchDiagnosticEntry(42)).toEqual({
+    timestampMs: 42,
+    source: "snapshot",
+    message: "schema_mismatch"
+  });
+});
 
 describe("diagnosticReport", () => {
   test("summarizes sync, timeline, and crawler progress without private identifiers or message bodies", async () => {

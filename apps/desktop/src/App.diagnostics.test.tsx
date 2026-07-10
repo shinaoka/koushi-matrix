@@ -6,6 +6,27 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { createBrowserFakeApi, type DesktopApi } from "./backend/browserFakeApi";
 import type { DiagnosticLogSnapshot } from "./domain/diagnostics";
 
+const tauriEventListeners = vi.hoisted(
+  () => new Map<string, (event: { payload: unknown }) => void>()
+);
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (eventName: string, listener: (event: { payload: unknown }) => void) => {
+    tauriEventListeners.set(eventName, listener);
+    return () => tauriEventListeners.delete(eventName);
+  }
+}));
+
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    isFullscreen: async () => false,
+    setFullscreen: async () => undefined,
+    setTitle: async () => undefined,
+    setBadgeCount: async () => undefined,
+    startDragging: async () => undefined
+  })
+}));
+
 async function renderAppWithApi(api: DesktopApi) {
   Object.defineProperty(document.body, "innerText", {
     configurable: true,
@@ -28,6 +49,8 @@ afterEach(async () => {
   cleanup();
   await clearProjectedSnapshot();
   vi.doUnmock("./backend/client");
+  tauriEventListeners.clear();
+  Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
   vi.restoreAllMocks();
   vi.resetModules();
 });
@@ -55,6 +78,47 @@ async function openDiagnostics() {
 }
 
 describe("App diagnostics lifecycle", () => {
+  test("records a schema mismatch without console output and retains the fixed entry after refresh", async () => {
+    const api = createBrowserFakeApi();
+    const compatibleSnapshot = await api.getSnapshot();
+    const incompatibleSchemaVersion = 987654321;
+    const incompatibleSnapshot = {
+      ...compatibleSnapshot,
+      state: {
+        ...compatibleSnapshot.state,
+        schema_version: incompatibleSchemaVersion
+      }
+    };
+    const getSnapshot = vi
+      .spyOn(api, "getSnapshot")
+      .mockResolvedValueOnce(incompatibleSnapshot)
+      .mockResolvedValueOnce(compatibleSnapshot);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {}
+    });
+
+    await renderAppWithApi(api);
+
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(consoleError).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(tauriEventListeners.get("koushi-desktop://state")).toBeDefined()
+    );
+
+    await act(async () => {
+      tauriEventListeners.get("koushi-desktop://state")?.({ payload: "stateChanged" });
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    });
+    expect(getSnapshot).toHaveBeenCalledTimes(2);
+
+    const dialog = await openDiagnostics();
+    expect(dialog.textContent).toContain("snapshot schema_mismatch");
+    expect(dialog.textContent).not.toContain(String(incompatibleSchemaVersion));
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
   test("fetches runtime records on open and displays them with frontend diagnostics", async () => {
     const api = createBrowserFakeApi();
     const getDiagnosticSnapshot = vi

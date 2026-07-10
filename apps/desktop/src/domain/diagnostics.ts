@@ -28,6 +28,10 @@ export interface DiagnosticLogSnapshot {
 
 export const DEFAULT_DIAGNOSTIC_LOG_LIMIT = 10_000;
 
+export function schemaMismatchDiagnosticEntry(timestampMs: number): DiagnosticLogEntry {
+  return { timestampMs, source: "snapshot", message: "schema_mismatch" };
+}
+
 export interface SecurityDiagnostics {
   secureContext: boolean;
   locationProtocol: string;

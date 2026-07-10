@@ -84,6 +84,7 @@ import {
 import {
   appendDiagnosticLogEntry,
   diagnosticReport,
+  schemaMismatchDiagnosticEntry,
   type DiagnosticLogEntry,
   type DiagnosticLogSnapshot,
   type SecurityDiagnostics
@@ -1086,9 +1087,8 @@ export function App() {
   // self-healing rather than latching the app into the recovery screen.
   const setSnapshot = useCallback((next: DesktopSnapshot | null) => {
     if (next && next.state.schema_version !== SNAPSHOT_SCHEMA_VERSION) {
-      console.error(
-        `Koushi snapshot schema_version ${next.state.schema_version} != expected ` +
-          `${SNAPSHOT_SCHEMA_VERSION}: stale or mismatched IPC contract.`
+      setDiagnosticLogEntries((current) =>
+        appendDiagnosticLogEntry(current, schemaMismatchDiagnosticEntry(Date.now()))
       );
       setSchemaMismatchVersion(next.state.schema_version ?? -1);
       return;
