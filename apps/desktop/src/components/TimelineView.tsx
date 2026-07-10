@@ -44,6 +44,7 @@ import {
   XCircle
 } from "lucide-react";
 import {
+  Component,
   Fragment,
   type CSSProperties,
   type FormEvent,
@@ -301,9 +302,38 @@ type PendingProjectionLayoutTransaction = {
   generation: number;
   signature: string;
   revision: number;
+  intentRevision: number;
   mode: "free-scroll" | "live-edge";
   anchor: ScrollAnchor | null;
 };
+
+type ProjectionSnapshotBoundaryProps = {
+  snapshot: TimelineProjectionSnapshot;
+  onBeforeProjectionChange: (
+    previous: TimelineProjectionSnapshot,
+    next: TimelineProjectionSnapshot
+  ) => void;
+  children: ReactNode;
+};
+
+/**
+ * Function components do not expose `getSnapshotBeforeUpdate`. This boundary
+ * provides the commit-safe pre-mutation point needed to capture an old DOM
+ * anchor without allowing an abandoned render to touch scroll transaction
+ * refs. It renders no DOM of its own.
+ */
+class ProjectionSnapshotBoundary extends Component<ProjectionSnapshotBoundaryProps> {
+  override getSnapshotBeforeUpdate(previousProps: ProjectionSnapshotBoundaryProps): null {
+    this.props.onBeforeProjectionChange(previousProps.snapshot, this.props.snapshot);
+    return null;
+  }
+
+  override componentDidUpdate(): void {}
+
+  override render(): ReactNode {
+    return this.props.children;
+  }
+}
 
 type PendingMeasuredHeight = {
   height: number;
@@ -2277,8 +2307,9 @@ export const TimelineView = memo(function TimelineView({
   const projectionLayoutFrameRef = useRef<TimelineScheduledFrame | null>(null);
   const pendingProjectionLayoutRef = useRef<PendingProjectionLayoutTransaction | null>(null);
   const projectionRenderStateRef = useRef<TimelineProjectionSnapshot | null>(null);
-  const committedProjectionSnapshotRef = useRef<TimelineProjectionSnapshot | null>(null);
   const projectionLayoutRevisionRef = useRef(0);
+  /** Invalidates a queued projection correction when viewport ownership changes. */
+  const viewportIntentRevisionRef = useRef(0);
   const scrollFollowUpFramesRef = useRef<Set<TimelineScheduledFrame>>(new Set());
   /** Pagination request currently in flight (suppresses duplicates). */
   const backfillInFlightRef = useRef(false);
@@ -2495,6 +2526,9 @@ export const TimelineView = memo(function TimelineView({
   );
 
   const setViewportIntentToLiveEdge = useCallback(() => {
+    if (viewportIntentRef.current.kind !== "live-edge") {
+      viewportIntentRevisionRef.current += 1;
+    }
     viewportIntentRef.current = { kind: "live-edge" };
     timelineViewportSessionMemory.set(timelineKeyHash, { mode: "live-edge" });
   }, [timelineKeyHash]);
@@ -2624,6 +2658,9 @@ export const TimelineView = memo(function TimelineView({
   }, [flushPendingMeasurements]);
 
   const setViewportIntentToFreeScroll = useCallback(() => {
+    if (viewportIntentRef.current.kind !== "free-scroll") {
+      viewportIntentRevisionRef.current += 1;
+    }
     viewportIntentRef.current = { kind: "free-scroll" };
     stickToBottomAfterMeasurementRef.current = false;
   }, []);
@@ -2634,6 +2671,10 @@ export const TimelineView = memo(function TimelineView({
   }, [setViewportIntentToFreeScroll]);
 
   const markUserScrollInput = useCallback((options: { keepLiveEdgeAtBottom?: boolean } = {}) => {
+    // Input belongs to the user even when it leaves the logical intent kind
+    // unchanged (for example another free-scroll wheel event). A queued
+    // projection frame must never reclaim that viewport position.
+    viewportIntentRevisionRef.current += 1;
     userScrollInputPendingRef.current = true;
     const container = containerRef.current;
     if (
@@ -2972,6 +3013,7 @@ export const TimelineView = memo(function TimelineView({
     }
     pendingProjectionLayoutRef.current = null;
     projectionLayoutRevisionRef.current += 1;
+    viewportIntentRevisionRef.current += 1;
     setMeasuredHeightVersion((current) => current + 1);
     backfillInFlightRef.current = false;
   }, [resetActiveMeasurementDeferral, timelineKeyHash]);
@@ -2998,6 +3040,7 @@ export const TimelineView = memo(function TimelineView({
       }
       pendingProjectionLayoutRef.current = null;
       projectionLayoutRevisionRef.current += 1;
+      viewportIntentRevisionRef.current += 1;
     },
     [resetActiveMeasurementDeferral]
   );
@@ -3024,29 +3067,25 @@ export const TimelineView = memo(function TimelineView({
     }),
     [generation, timelineKeyHash, visibleRows]
   );
-  // React offers no functional equivalent of getSnapshotBeforeUpdate. Capture
-  // this DOM-only scroll snapshot during render while the previous committed
-  // rows are still mounted, then validate it again before an async scroll
-  // write. If React abandons this render, no layout effect runs and a later
-  // render invalidates the pending signature below.
-  const committedProjectionSnapshot = committedProjectionSnapshotRef.current;
-  if (committedProjectionSnapshot !== null) {
-    const sameTimeline =
-      committedProjectionSnapshot.timelineKeyHash === projectionSnapshot.timelineKeyHash &&
-      committedProjectionSnapshot.generation === projectionSnapshot.generation;
-    if (!sameTimeline) {
-      if (projectionLayoutFrameRef.current !== null) {
-        projectionLayoutFrameRef.current.cancel();
-        projectionLayoutFrameRef.current = null;
+  const captureProjectionLayoutTransaction = useCallback(
+    (previous: TimelineProjectionSnapshot, next: TimelineProjectionSnapshot) => {
+      if (!projectionStructureChanged(previous, next)) {
+        return;
       }
-      pendingProjectionLayoutRef.current = null;
-      projectionLayoutRevisionRef.current += 1;
-    } else if (projectionStructureChanged(committedProjectionSnapshot, projectionSnapshot)) {
+      if (
+        next.timelineKeyHash !== previous.timelineKeyHash ||
+        next.generation !== previous.generation
+      ) {
+        if (projectionLayoutFrameRef.current !== null) {
+          projectionLayoutFrameRef.current.cancel();
+          projectionLayoutFrameRef.current = null;
+        }
+        pendingProjectionLayoutRef.current = null;
+        projectionLayoutRevisionRef.current += 1;
+        return;
+      }
       const container = containerRef.current;
-      const stableRowIds = stableProjectionAnchorRowIds(
-        committedProjectionSnapshot.rows,
-        projectionSnapshot.rows
-      );
+      const stableRowIds = stableProjectionAnchorRowIds(previous.rows, next.rows);
       const anchor =
         container && viewportIntentRef.current.kind !== "live-edge"
           ? captureAnchor(container, {
@@ -3060,26 +3099,19 @@ export const TimelineView = memo(function TimelineView({
       const revision = projectionLayoutRevisionRef.current + 1;
       projectionLayoutRevisionRef.current = revision;
       pendingProjectionLayoutRef.current = {
-        timelineKeyHash: projectionSnapshot.timelineKeyHash,
-        generation: projectionSnapshot.generation,
-        signature: projectionSnapshot.signature,
+        timelineKeyHash: next.timelineKeyHash,
+        generation: next.generation,
+        signature: next.signature,
         revision,
+        intentRevision: viewportIntentRevisionRef.current,
         mode: viewportIntentRef.current.kind === "live-edge" ? "live-edge" : "free-scroll",
         anchor
       };
-    } else if (
-      pendingProjectionLayoutRef.current !== null &&
-      pendingProjectionLayoutRef.current.signature !== projectionSnapshot.signature
-    ) {
-      // A render that replaces an abandoned projected state must not inherit
-      // that state's pre-commit anchor or scroll write.
-      pendingProjectionLayoutRef.current = null;
-      projectionLayoutRevisionRef.current += 1;
-    }
-  }
-  projectionRenderStateRef.current = projectionSnapshot;
+    },
+    []
+  );
   useLayoutEffect(() => {
-    committedProjectionSnapshotRef.current = projectionSnapshot;
+    projectionRenderStateRef.current = projectionSnapshot;
   }, [projectionSnapshot]);
   const visibleItemDomIds = useMemo(
     () => new Set(visibleRows.map((row) => row.row_id)),
@@ -3665,9 +3697,14 @@ export const TimelineView = memo(function TimelineView({
       if (
         current === null ||
         projectionLayoutRevisionRef.current !== scheduledTransaction.revision ||
+        viewportIntentRevisionRef.current !== scheduledTransaction.intentRevision ||
         current.timelineKeyHash !== scheduledTransaction.timelineKeyHash ||
         current.generation !== scheduledTransaction.generation ||
-        current.signature !== scheduledTransaction.signature
+        current.signature !== scheduledTransaction.signature ||
+        (scheduledTransaction.mode === "live-edge" &&
+          viewportIntentRef.current.kind !== "live-edge") ||
+        (scheduledTransaction.mode === "free-scroll" &&
+          (viewportIntentRef.current.kind !== "free-scroll" || jumpViewportControlRef.current))
       ) {
         return;
       }
@@ -4319,6 +4356,7 @@ export const TimelineView = memo(function TimelineView({
     (eventId: string) => {
       releaseViewportIntent();
       jumpViewportControlRef.current = true;
+      viewportIntentRevisionRef.current += 1;
       const container = containerRef.current;
       const scrollMountedRowIntoView = () => {
         const row = container ? findTimelineEventNode(container, "activity", eventId) : null;
@@ -4382,6 +4420,7 @@ export const TimelineView = memo(function TimelineView({
     if (activeElement instanceof HTMLElement && container.contains(activeElement)) {
       activeElement.blur();
     }
+    viewportIntentRevisionRef.current += 1;
     setViewportIntentToLiveEdge();
     runWithScrollWriteReason("jumpToBottom", () => {
       scrollContainerToBottom(container);
@@ -4428,22 +4467,26 @@ export const TimelineView = memo(function TimelineView({
     null;
 
   return (
-    <div
-      className="timeline-view"
-      data-testid="timeline-view"
-      data-end-reached={endReached || undefined}
-      data-timeline-generation={generation}
-      data-virtualized={virtualWindow.virtualized || undefined}
-      data-total-items={visibleRows.length}
-      data-rendered-items={virtualWindow.items.length}
-      ref={containerRef}
-      style={{ overflowY: "auto", height: "100%" }}
-      onKeyDown={onTimelineKeyDown}
-      onPointerDown={onTimelinePointerDown}
-      onScroll={onTimelineScroll}
-      onTouchMove={() => markUserScrollInput()}
-      onWheel={(event) => markUserScrollInput({ keepLiveEdgeAtBottom: event.deltaY > 0 })}
+    <ProjectionSnapshotBoundary
+      snapshot={projectionSnapshot}
+      onBeforeProjectionChange={captureProjectionLayoutTransaction}
     >
+      <div
+        className="timeline-view"
+        data-testid="timeline-view"
+        data-end-reached={endReached || undefined}
+        data-timeline-generation={generation}
+        data-virtualized={virtualWindow.virtualized || undefined}
+        data-total-items={visibleRows.length}
+        data-rendered-items={virtualWindow.items.length}
+        ref={containerRef}
+        style={{ overflowY: "auto", height: "100%" }}
+        onKeyDown={onTimelineKeyDown}
+        onPointerDown={onTimelinePointerDown}
+        onScroll={onTimelineScroll}
+        onTouchMove={() => markUserScrollInput()}
+        onWheel={(event) => markUserScrollInput({ keepLiveEdgeAtBottom: event.deltaY > 0 })}
+      >
       {canRenderRoomNavigation ? (
         <div
           className="timeline-navigation-bar"
@@ -4696,7 +4739,8 @@ export const TimelineView = memo(function TimelineView({
           </form>
         </div>
       ) : null}
-    </div>
+      </div>
+    </ProjectionSnapshotBoundary>
   );
 });
 

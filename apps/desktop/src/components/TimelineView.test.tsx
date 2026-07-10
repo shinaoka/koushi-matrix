@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { useState } from "react";
+import { StrictMode, Suspense, startTransition, useEffect, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { openExternalHttpUrl } from "../domain/externalLinks";
@@ -5428,6 +5428,385 @@ describe("TimelineView", () => {
       ).toBe(true);
     });
     expect(screen.getByText("Between").closest("article")?.getBoundingClientRect().top).toBe(10);
+    rectMock.mockRestore();
+  });
+
+  it("keeps a committed projection compensation when StrictMode abandons a later render", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    let controls: {
+      setOrder: (order: "rootEvent" | "latestReply") => void;
+      setShouldSuspend: (shouldSuspend: boolean) => void;
+      refresh: () => void;
+    } | null = null;
+    const suspended = new Promise<never>(() => undefined);
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    const rectMock = mockPresentationOrderRects(scrollContainerRef);
+    const root = {
+      ...message("$thread-root:example.invalid", "Thread root"),
+      thread_summary: {
+        reply_count: 1,
+        latest_event_id: "$latest-thread-reply:example.invalid",
+        latest_sender: "@bob:example.invalid",
+        latest_sender_label: "Bob",
+        latest_body_preview: "Latest reply",
+        latest_timestamp_ms: 1_800_000_001_000
+      }
+    };
+    const latestReply = {
+      ...message("$latest-thread-reply:example.invalid", "Standalone reply"),
+      timestamp_ms: 1_800_000_001_000,
+      thread_root: "$thread-root:example.invalid"
+    };
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    function SuspendsAfterTimeline({ shouldSuspend }: { shouldSuspend: boolean }) {
+      if (shouldSuspend) {
+        throw suspended;
+      }
+      return null;
+    }
+    function Harness() {
+      const [order, setOrder] = useState<"rootEvent" | "latestReply">("rootEvent");
+      const [shouldSuspend, setShouldSuspend] = useState(false);
+      const [, setVersion] = useState(0);
+      useEffect(() => {
+        controls = {
+          setOrder,
+          setShouldSuspend,
+          refresh: () => setVersion((current) => current + 1)
+        };
+      });
+      return (
+        <Suspense fallback={null}>
+          <TimelineView
+            timelineKey={KEY}
+            roomId="!room:example.invalid"
+            transport={transport}
+            onReply={vi.fn()}
+            threadRootOrder={{ kind: order }}
+          />
+          <SuspendsAfterTimeline shouldSuspend={shouldSuspend} />
+        </Suspense>
+      );
+    }
+
+    render(
+      <StrictMode>
+        <Harness />
+      </StrictMode>
+    );
+    await waitFor(() => expect(controls).not.toBeNull());
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              message("$before:example.invalid", "Before"),
+              root,
+              message("$between:example.invalid", "Between"),
+              latestReply,
+              message("$after:example.invalid", "After")
+            ]
+          }
+        }
+      });
+    });
+
+    const timeline = await screen.findByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "clientHeight", { value: 200, configurable: true });
+    Object.defineProperty(timeline, "scrollHeight", { value: 1_000, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+    act(() => {
+      controls!.refresh();
+    });
+    await waitFor(() => expect(timeline.scrollTop).toBe(800));
+    timeline.scrollTop = 190;
+    fireEvent.wheel(timeline, { deltaY: -1 });
+
+    vi.useFakeTimers();
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      nextFrameId += 1;
+      frames.set(nextFrameId, callback);
+      return nextFrameId;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frameId) => {
+      frames.delete(frameId);
+    });
+
+    // B commits and queues its free-scroll correction. C starts afterwards,
+    // but suspends before it can commit; B remains the visible projection.
+    act(() => {
+      controls!.setOrder("latestReply");
+    });
+    expect(
+      document
+        .querySelector('[data-content-event-id="$thread-root:example.invalid"]')
+        ?.getAttribute("data-activity-event-id")
+    ).toBe("$latest-thread-reply:example.invalid");
+    act(() => {
+      startTransition(() => {
+        controls!.setOrder("rootEvent");
+        controls!.setShouldSuspend(true);
+      });
+    });
+    expect(
+      document
+        .querySelector('[data-content-event-id="$thread-root:example.invalid"]')
+        ?.getAttribute("data-activity-event-id")
+    ).toBe("$latest-thread-reply:example.invalid");
+
+    act(() => {
+      const queued = [...frames.values()];
+      frames.clear();
+      for (const callback of queued) {
+        callback(0);
+      }
+    });
+
+    expect(timeline.scrollTop).toBe(90);
+    rectMock.mockRestore();
+  });
+
+  it("does not overwrite a user scroll that happens after projection compensation is queued", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const onScrollDiagnosticsChange = vi.fn();
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    const rectMock = mockPresentationOrderRects(scrollContainerRef);
+    const root = {
+      ...message("$thread-root:example.invalid", "Thread root"),
+      thread_summary: {
+        reply_count: 1,
+        latest_event_id: "$latest-thread-reply:example.invalid",
+        latest_sender: "@bob:example.invalid",
+        latest_sender_label: "Bob",
+        latest_body_preview: "Latest reply",
+        latest_timestamp_ms: 1_800_000_001_000
+      }
+    };
+    const latestReply = {
+      ...message("$latest-thread-reply:example.invalid", "Standalone reply"),
+      timestamp_ms: 1_800_000_001_000,
+      thread_root: "$thread-root:example.invalid"
+    };
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const renderView = (threadRootOrder: "rootEvent" | "latestReply") => (
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        onScrollDiagnosticsChange={onScrollDiagnosticsChange}
+        threadRootOrder={{ kind: threadRootOrder }}
+      />
+    );
+    const { rerender } = render(renderView("rootEvent"));
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              message("$before:example.invalid", "Before"),
+              root,
+              message("$between:example.invalid", "Between"),
+              latestReply,
+              message("$after:example.invalid", "After")
+            ]
+          }
+        }
+      });
+    });
+
+    await screen.findByText("Between");
+    const timeline = screen.getByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "clientHeight", { value: 200, configurable: true });
+    Object.defineProperty(timeline, "scrollHeight", { value: 1_000, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+    act(() => {
+      rerender(renderView("rootEvent"));
+    });
+    await waitFor(() => expect(timeline.scrollTop).toBe(800));
+    timeline.scrollTop = 190;
+    fireEvent.wheel(timeline, { deltaY: -1 });
+
+    vi.useFakeTimers();
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      nextFrameId += 1;
+      frames.set(nextFrameId, callback);
+      return nextFrameId;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frameId) => {
+      frames.delete(frameId);
+    });
+    act(() => {
+      rerender(renderView("latestReply"));
+    });
+
+    // A real user scroll takes ownership while the projection's frame is held.
+    timeline.scrollTop = 250;
+    fireEvent.wheel(timeline, { deltaY: -1 });
+    fireEvent.scroll(timeline);
+    act(() => {
+      const queued = [...frames.values()];
+      frames.clear();
+      for (const callback of queued) {
+        callback(0);
+      }
+    });
+
+    expect(timeline.scrollTop).toBe(250);
+    expect(
+      onScrollDiagnosticsChange.mock.calls.some(
+        ([diagnostics]) => diagnostics.scrollWrites.projectionCompensation > 0
+      )
+    ).toBe(false);
+    rectMock.mockRestore();
+  });
+
+  it("does not apply queued projection compensation after a jump takes viewport ownership", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    let jumpToLatest: (() => void) | null = null;
+    const onScrollDiagnosticsChange = vi.fn();
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    const rectMock = mockPresentationOrderRects(scrollContainerRef);
+    const root = {
+      ...message("$thread-root:example.invalid", "Thread root"),
+      thread_summary: {
+        reply_count: 1,
+        latest_event_id: "$latest-thread-reply:example.invalid",
+        latest_sender: "@bob:example.invalid",
+        latest_sender_label: "Bob",
+        latest_body_preview: "Latest reply",
+        latest_timestamp_ms: 1_800_000_001_000
+      }
+    };
+    const latestReply = {
+      ...message("$latest-thread-reply:example.invalid", "Standalone reply"),
+      timestamp_ms: 1_800_000_001_000,
+      thread_root: "$thread-root:example.invalid"
+    };
+    const transport = baseTransport({
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const renderView = (threadRootOrder: "rootEvent" | "latestReply") => (
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        onRegisterJumpToLatest={(handler) => {
+          jumpToLatest = handler;
+        }}
+        onScrollDiagnosticsChange={onScrollDiagnosticsChange}
+        threadRootOrder={{ kind: threadRootOrder }}
+      />
+    );
+    const { rerender } = render(renderView("rootEvent"));
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [
+              message("$before:example.invalid", "Before"),
+              root,
+              message("$between:example.invalid", "Between"),
+              latestReply,
+              message("$after:example.invalid", "After")
+            ]
+          }
+        }
+      });
+    });
+
+    await screen.findByText("Between");
+    const timeline = screen.getByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "clientHeight", { value: 200, configurable: true });
+    Object.defineProperty(timeline, "scrollHeight", { value: 1_000, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+    act(() => {
+      rerender(renderView("rootEvent"));
+    });
+    await waitFor(() => expect(timeline.scrollTop).toBe(800));
+    timeline.scrollTop = 190;
+    fireEvent.wheel(timeline, { deltaY: -1 });
+
+    vi.useFakeTimers();
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      nextFrameId += 1;
+      frames.set(nextFrameId, callback);
+      return nextFrameId;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frameId) => {
+      frames.delete(frameId);
+    });
+    act(() => {
+      rerender(renderView("latestReply"));
+    });
+
+    act(() => {
+      jumpToLatest?.();
+    });
+    expect(timeline.scrollTop).toBe(800);
+    act(() => {
+      const queued = [...frames.values()];
+      frames.clear();
+      for (const callback of queued) {
+        callback(0);
+      }
+    });
+
+    expect(timeline.scrollTop).toBe(800);
+    expect(
+      onScrollDiagnosticsChange.mock.calls.some(
+        ([diagnostics]) => diagnostics.scrollWrites.projectionCompensation > 0
+      )
+    ).toBe(false);
     rectMock.mockRestore();
   });
 
