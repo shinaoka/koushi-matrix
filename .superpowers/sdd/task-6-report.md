@@ -192,3 +192,175 @@ PASS  event-cache-repair env-unset producer test — outer test and child test p
 - The scanner is intentionally conservative text analysis rather than a full
   Rust parser; its direct/helper/alias coverage is locked by synthetic fixtures
   and the clean runtime inventory.
+
+## Fix response — Terra Important findings
+
+### Status
+
+Fixed. All four Important findings from the Terra review are covered by
+regression assertions and the focused/full verification gates are green. The
+runtime inventory remains clean, with no new production diagnostic behavior,
+stderr text, source/stage token, or product-state change.
+
+### Commits
+
+- `0f068b8` — `fix: harden diagnostics gate inventory`
+- `docs: update Task 6 fix evidence` — this report update
+
+The pre-existing dirty `.superpowers/sdd/task-3-report.md` was not edited or
+staged.
+
+### Finding fixes
+
+1. The scanner now treats a direct `record(...)` call or a call to a
+   record-containing diagnostic helper inside a recognized direct, helper, or
+   boolean-alias environment gate as a gated diagnostic producer even when no
+   `eprintln!` exists. Record-helper discovery follows the local helper-call
+   chain without a production allowlist. Three separate negative fixtures
+   cover the direct gate, helper gate, and boolean-alias gate forms.
+
+2. A structured producer found inside the recognized gate cannot be satisfied
+   by an unrelated earlier record. The accepted pre-gate collection search is
+   bounded to the adjacent diagnostic shape in the same source scope, and the
+   unrelated unconditional-record fixture now requires a finding for the
+   later gated block.
+
+3. Test-only source is masked item-by-item using balanced braces for
+   `#[cfg(test)]`, `#[cfg(all/any(... test ...))]`, and test attributes while
+   preserving source line positions. A fixture places a production gated
+   function after a test module and verifies that it is still scanned.
+
+4. The env-unset actor test now asserts the exact selected event contract:
+   source `core.event_cache_repair`, stage `skip`, and exactly the typed fields
+   `request_id={connection_id:17,sequence:23}`, `outcome=skipped`, and
+   `reason=no_session`. It serializes the selected event and asserts absence of
+   the supplied synthetic room/event values, a body, URL, path, and
+   raw-error-shaped value. The actual actor route and both removed trace
+   variables remain unchanged.
+
+### Exact inventory
+
+The required inventory command returned 63 matches:
+
+```bash
+rg -n "KOUSHI_[A-Z0-9_]*(TRACE|DIAGNOST)|VITE_KOUSHI_VERBOSE_DIAGNOSTICS" \
+  crates/koushi-sdk/src crates/koushi-core/src apps/desktop/src-tauri/src apps/desktop/src \
+  --glob '!**/bin/**'
+```
+
+Classification of every result:
+
+1. Stderr mirror gates with collection first — 15 results:
+
+   - `apps/desktop/src-tauri/src/commands/mod.rs:117,141,696`
+   - `crates/koushi-core/src/room.rs:2745`
+   - `crates/koushi-core/src/account.rs:1078,1079,4946,4961`
+   - `crates/koushi-core/src/timeline.rs:316,885,956,3110,5429`
+   - `crates/koushi-core/src/runtime.rs:125,1139`
+
+2. Test-only environment or compatibility assertions — 33 results:
+
+   - `apps/desktop/src-tauri/src/commands/mod.rs:7055,7056,7171,7172`
+   - `crates/koushi-core/src/sync.rs:1963`
+   - `crates/koushi-core/src/account.rs:5627,5628,5640,5641,5949`
+   - `crates/koushi-core/src/timeline.rs:10464,10465,10466,10467,10480,10481,10482,10483`
+   - `apps/desktop/src/scripts/releaseScripts.test.ts:409,418,426,433,447,497,514,519,550,573,580,1338,1350,1761`
+   - `crates/koushi-core/src/runtime.rs:4334`
+
+   The release-test locations are synthetic scanner fixtures or existing test
+   and compatibility assertions; they are not runtime producers.
+
+3. Comments, constants, or helpers consumed by category 1 — 14 results:
+
+   - `apps/desktop/src-tauri/src/commands/search.rs:6`
+   - `apps/desktop/src-tauri/src/commands/mod.rs:691`
+   - `crates/koushi-sdk/src/lib.rs:55`
+   - `crates/koushi-core/src/search.rs:75`
+   - `crates/koushi-core/src/unread_trace.rs:10`
+   - `crates/koushi-core/src/sync.rs:75`
+   - `crates/koushi-core/src/account.rs:89`
+   - `crates/koushi-core/src/timeline.rs:881,1566,1784`
+   - `crates/koushi-core/src/startup_trace.rs:4,44`
+   - `crates/koushi-core/src/runtime.rs:80,109`
+
+4. Task 5 removed-Vite-variable assertion — 1 result:
+
+   - `apps/desktop/src/App.diagnostics.test.tsx:199`
+
+The totals are 15 + 33 + 14 + 1 = 63. The scanner itself reports no
+findings across all runtime Rust sources in the three required roots.
+
+### TDD evidence
+
+The new scanner fixtures were added before the scanner implementation and
+produced the expected RED result:
+
+```bash
+npm --prefix apps/desktop test -- src/scripts/releaseScripts.test.ts -t \
+  "scanner rejects structured producers inside every recognized gate form without stderr|scanner does not let an unrelated record hide a later gated-only diagnostic|scanner keeps production code after a balanced test-only module"
+```
+
+Result before the implementation: exit 1; 3 failed and 122 skipped. Each
+failure received zero findings where the new fixture required one, proving the
+fixtures exercised the three scanner gaps plus the related collection/test
+section gaps.
+
+The strengthened actor privacy assertion was added before its verification.
+The existing producer was already private-data-free, so this assertion had no
+valid RED state without introducing a leak; the env-unset actual actor route
+passed immediately and remains the regression guard.
+
+After implementation, the focused scanner command passed 4 tests with 121
+skipped, and the complete `releaseScripts.test.ts` file passed all 125 tests.
+
+### Production gaps
+
+No new production gap was exposed by the four Terra findings. The prior
+Task 6 production repair in `AccountActor::handle_ensure_room_event_cached`
+remains unchanged. Its structured event continues to use only the typed
+request ID and fixed stage/outcome/reason tokens, while the existing optional
+stderr mirrors, latency behavior, and actor/product state remain unchanged.
+
+### Verification
+
+All requested checks completed with exit status 0:
+
+```text
+PASS  focused scanner regression — 4 passed, 121 skipped
+PASS  env-unset actual actor test — outer test and ignored child passed
+PASS  npm --prefix apps/desktop test -- src/scripts/releaseScripts.test.ts — 125 passed
+PASS  CARGO_TARGET_DIR=/Users/hiroshi/projects/Element-dev/matrix-desktop/target cargo test -p koushi-core --lib — 417 passed, 2 ignored, 0 failed
+PASS  cargo fmt --all -- --check
+PASS  npm --prefix apps/desktop run typecheck
+PASS  npm --prefix apps/desktop run lint
+PASS  npm --prefix apps/desktop run lint:tauri-boundary
+PASS  npm --prefix apps/desktop run lint:domain-deps
+PASS  npm --prefix apps/desktop run qa:secret-scan
+PASS  npm --prefix apps/desktop run qa:release-gates -- --no-compile
+PASS  exact inventory command — 63 matches
+PASS  git diff --check
+```
+
+### Self-review
+
+- Only `releaseScripts.test.ts`, `account.rs`, and this report changed in the
+  Task 6 fix wave; Task 3 remains untouched.
+- The scanner has no runtime allowlist. It recursively scans the required
+  roots, excludes `bin`/generated/build/target paths, recognizes direct,
+  constant, helper, transitive-helper, and boolean-alias gate forms, and
+  reports only relative path, line, and a fixed private-data-free reason.
+- Test-only masking preserves line numbers and removes balanced items rather
+  than discarding all following source.
+- The actor test checks the exact field set and serialized privacy boundary;
+  no real account data, IDs, bodies, paths, URLs, or raw SDK errors are used.
+- The source/test commit contains no report or unrelated-file changes. The
+  evidence report is committed separately with the required docs message.
+
+### Residual concerns
+
+- `.superpowers/sdd/task-3-report.md` remains pre-existing dirty worktree state
+  and is intentionally left untouched.
+- The scanner remains conservative text analysis rather than a full Rust
+  parser. Its recognized gate forms, balanced test-section handling, and
+  bounded pre-gate collection rule are covered by the synthetic fixtures and
+  the clean 63-match runtime inventory.
