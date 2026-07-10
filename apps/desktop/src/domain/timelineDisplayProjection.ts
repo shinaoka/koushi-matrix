@@ -142,7 +142,8 @@ function chooseMoves(
     if (activity === undefined) {
       continue;
     }
-    const displayTimestampMs = finiteTimestamp(root.latestTimestampMs) ?? finiteTimestamp(activity.item.timestamp_ms);
+    const displayTimestampMs =
+      finiteTimestamp(activity.item.timestamp_ms) ?? finiteTimestamp(root.latestTimestampMs);
     if (displayTimestampMs === null) {
       // A latest event ID without a usable activity timestamp is incomplete
       // data. Keeping the root at its origin avoids a partial-summary flicker.

@@ -312,6 +312,30 @@ describe("timeline display projection", () => {
     expect(rows.map((row) => row.row_id)).not.toContain(`syn:date-divider-${rootTimestamp}`);
   });
 
+  test("prefers a loaded latest reply timestamp over conflicting summary metadata", () => {
+    const rootTimestamp = Date.UTC(2026, 6, 8, 12);
+    const normalTimestamp = Date.UTC(2026, 6, 9, 12);
+    const loadedReplyTimestamp = Date.UTC(2026, 6, 10, 12);
+    const staleSummaryTimestamp = Date.UTC(2026, 6, 11, 12);
+    const threadRoot = root("$root", rootTimestamp, "$reply", staleSummaryTimestamp);
+    const normal = event("$normal", normalTimestamp);
+    const latestReply = reply("$reply", "$root", loadedReplyTimestamp);
+
+    const rows = projectTimelineDisplayRows(
+      [threadRoot, normal, latestReply],
+      ROOM_KEY,
+      LATEST_REPLY
+    );
+    const dates = rows.filter((row) => row.kind === "dateDivider");
+    const rootRow = rows.find((row) => row.row_id === "thread-root:$root");
+
+    expect(rootRow?.display_timestamp_ms).toBe(loadedReplyTimestamp);
+    expect(dates.map((row) => row.display_timestamp_ms)).toEqual([
+      normalTimestamp,
+      loadedReplyTimestamp
+    ]);
+  });
+
   test("does not mutate the canonical array or item objects", () => {
     const threadRoot = root("$root", 100, "$reply", 200);
     const latestReply = reply("$reply", "$root", 200);
