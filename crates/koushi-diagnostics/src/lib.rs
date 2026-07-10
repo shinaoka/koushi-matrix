@@ -124,7 +124,7 @@ impl DiagnosticBuffer {
     }
 
     pub fn record(&self, event: DiagnosticEvent) {
-        self.record_at(timestamp_millis(), event);
+        self.record_at(timestamp_millis_at(SystemTime::now()), event);
     }
 
     pub fn record_at(&self, timestamp_ms: u64, event: DiagnosticEvent) {
@@ -144,7 +144,8 @@ impl DiagnosticBuffer {
     }
 
     pub fn snapshot(&self) -> DiagnosticSnapshot {
-        let records = lock_best_effort(&self.records).iter().cloned().collect();
+        let records_guard = lock_best_effort(&self.records);
+        let records = records_guard.iter().cloned().collect();
         let dropped_records = *lock_best_effort(&self.dropped_records);
         DiagnosticSnapshot {
             records,
@@ -188,9 +189,8 @@ pub fn format_event(event: &DiagnosticEvent) -> String {
     line
 }
 
-fn timestamp_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+fn timestamp_millis_at(now: SystemTime) -> u64 {
+    now.duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
         .unwrap_or(0)
 }
@@ -267,6 +267,67 @@ mod tests {
         assert_eq!(
             line,
             "stage=actor_finish operation=send_reaction elapsed_ms=42 success=true"
+        );
+    }
+
+    #[test]
+    fn recovers_after_records_mutex_poisoning() {
+        let buffer = Arc::new(DiagnosticBuffer::new(1));
+        let poisoned_buffer = Arc::clone(&buffer);
+        let poisoner = std::thread::spawn(move || {
+            let _records = poisoned_buffer.records.lock().unwrap();
+            panic!("poison records mutex");
+        });
+        assert!(poisoner.join().is_err());
+
+        buffer.record_at(7, event("after_records_poison"));
+
+        let snapshot = buffer.snapshot();
+        assert_eq!(snapshot.dropped_records, 0);
+        assert_eq!(snapshot.records.len(), 1);
+        assert_eq!(snapshot.records[0].event.stage, "after_records_poison");
+    }
+
+    #[test]
+    fn recovers_after_dropped_counter_mutex_poisoning() {
+        let buffer = Arc::new(DiagnosticBuffer::new(1));
+        buffer.record_at(1, event("first"));
+
+        let poisoned_buffer = Arc::clone(&buffer);
+        let poisoner = std::thread::spawn(move || {
+            let _dropped_records = poisoned_buffer.dropped_records.lock().unwrap();
+            panic!("poison dropped counter mutex");
+        });
+        assert!(poisoner.join().is_err());
+
+        buffer.record_at(2, event("second"));
+
+        let snapshot = buffer.snapshot();
+        assert_eq!(snapshot.dropped_records, 1);
+        assert_eq!(snapshot.records[0].event.stage, "second");
+    }
+
+    #[test]
+    fn clamps_pre_epoch_timestamp_to_zero() {
+        let before_epoch = UNIX_EPOCH - std::time::Duration::from_millis(1);
+        assert_eq!(timestamp_millis_at(before_epoch), 0);
+    }
+
+    #[test]
+    fn zero_capacity_drops_every_record() {
+        let buffer = DiagnosticBuffer::new(0);
+        buffer.record_at(1, event("dropped"));
+
+        let snapshot = buffer.snapshot();
+        assert!(snapshot.records.is_empty());
+        assert_eq!(snapshot.dropped_records, 1);
+    }
+
+    #[test]
+    fn saturates_maximum_millisecond_duration() {
+        assert_eq!(
+            DiagnosticField::milliseconds("elapsed_ms", u128::MAX).value,
+            DiagnosticValue::Milliseconds(u64::MAX)
         );
     }
 }
