@@ -114,12 +114,6 @@ pub(crate) fn trace_tauri_timeline_command(
                 request_id.sequence,
             )),
     );
-    if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
-        eprintln!(
-            "koushi.desktop stage={stage} kind={kind} request_id={}/{}",
-            request_id.connection_id.0, request_id.sequence
-        );
-    }
 }
 
 pub(crate) fn trace_tauri_timeline_command_elapsed(
@@ -138,12 +132,6 @@ pub(crate) fn trace_tauri_timeline_command_elapsed(
             ))
             .field(DiagnosticField::milliseconds("elapsed_ms", elapsed_ms)),
     );
-    if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
-        eprintln!(
-            "koushi.desktop stage={stage} kind={kind} request_id={}/{} elapsed_ms={elapsed_ms}",
-            request_id.connection_id.0, request_id.sequence
-        );
-    }
 }
 
 fn record_select_trace(
@@ -687,13 +675,6 @@ async fn wait_for_selected_room<S: SelectEventSource + ?Sized>(
     selected_room_id: &str,
     timeout: std::time::Duration,
 ) -> Result<(), String> {
-    // Diagnostic-only, private-data-free probe (no room ids). Enable with
-    // KOUSHI_SUBSCRIBE_TRACE=1 to see WHY select_room times out:
-    //   events=0                      -> runtime/AppActor delivered nothing (hung)
-    //   events>0, active=none         -> deltas flow but the reducer never set
-    //                                    the active room (command unprocessed/rejected)
-    //   events>0, active=other        -> a different room got selected
-    let trace = std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some();
     let deadline = tokio::time::Instant::now() + timeout;
     let mut events: u32 = 0;
     let mut state_changed: u32 = 0;
@@ -709,11 +690,6 @@ async fn wait_for_selected_room<S: SelectEventSource + ?Sized>(
                 state_delta,
                 "selected",
             );
-            if trace {
-                eprintln!(
-                    "koushi.select stage=ok_watch events={events} state_changed={state_changed} state_delta={state_delta}"
-                );
-            }
             return Ok(());
         }
 
@@ -730,11 +706,6 @@ async fn wait_for_selected_room<S: SelectEventSource + ?Sized>(
                     state_delta,
                     active,
                 );
-                if trace {
-                    eprintln!(
-                        "koushi.select stage=timeout events={events} state_changed={state_changed} state_delta={state_delta} active={active}"
-                    );
-                }
                 return Err("room selection did not complete".to_owned());
             }
         };
@@ -751,9 +722,6 @@ async fn wait_for_selected_room<S: SelectEventSource + ?Sized>(
                         state_delta,
                         "selected",
                     );
-                    if trace {
-                        eprintln!("koushi.select stage=ok_statechanged events={events}");
-                    }
                     return Ok(());
                 }
             }
@@ -772,9 +740,6 @@ async fn wait_for_selected_room<S: SelectEventSource + ?Sized>(
                     state_delta,
                     "unknown",
                 );
-                if trace {
-                    eprintln!("koushi.select stage=op_failed events={events}");
-                }
                 return Err(invoke_error_from_core_failure(
                     "room selection failed",
                     failure,
@@ -795,11 +760,6 @@ async fn wait_for_selected_room<S: SelectEventSource + ?Sized>(
                             state_changed,
                             state_delta,
                         );
-                        if trace {
-                            eprintln!(
-                                "koushi.select stage=ok_intent events={events} outcome={outcome:?}"
-                            );
-                        }
                         return Ok(());
                     }
                     IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState) => {
@@ -811,9 +771,6 @@ async fn wait_for_selected_room<S: SelectEventSource + ?Sized>(
                             state_delta,
                             "unknown",
                         );
-                        if trace {
-                            eprintln!("koushi.select stage=failed_not_in_state events={events}");
-                        }
                         return Err("room not yet loaded".to_owned());
                     }
                     IntentOutcome::FailedNoOp(IntentNoOpReason::SessionNotReady) => {
@@ -825,11 +782,6 @@ async fn wait_for_selected_room<S: SelectEventSource + ?Sized>(
                             state_delta,
                             "unknown",
                         );
-                        if trace {
-                            eprintln!(
-                                "koushi.select stage=failed_session_not_ready events={events}"
-                            );
-                        }
                         return Err("session not ready".to_owned());
                     }
                     IntentOutcome::FailedNoOp(IntentNoOpReason::AlreadyActive) => {
@@ -843,9 +795,6 @@ async fn wait_for_selected_room<S: SelectEventSource + ?Sized>(
                             state_delta,
                             "selected",
                         );
-                        if trace {
-                            eprintln!("koushi.select stage=ok_already_active events={events}");
-                        }
                         return Ok(());
                     }
                 }
@@ -860,16 +809,10 @@ async fn wait_for_selected_room<S: SelectEventSource + ?Sized>(
                     state_delta,
                     "selected",
                 );
-                if trace {
-                    eprintln!("koushi.select stage=ok_after_lag events={events}");
-                }
                 return Ok(());
             }
             Err(_) => {
                 record_select_trace("lag", "lag", events, state_changed, state_delta, "unknown");
-                if trace {
-                    eprintln!("koushi.select stage=lag events={events}");
-                }
                 continue;
             }
         }

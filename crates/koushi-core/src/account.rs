@@ -86,8 +86,6 @@ const SERVER_LOGOUT_TIMEOUT: Duration = Duration::from_secs(10);
 const ACCOUNT_HYDRATION_TIMEOUT: Duration = Duration::from_secs(10);
 const IDENTITY_RESET_AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 const OIDC_REDIRECT_URI: &str = "koushi-desktop://auth/callback";
-const ENV_SYNC_TRACE: &str = "KOUSHI_SYNC_TRACE";
-
 /// Redacted message used in reducer error projections (never raw SDK text).
 const RESTORE_FAILED_MESSAGE: &str = "session restore failed";
 const INCOMING_VERIFICATION_FLOW_ID_BASE: u64 = 1 << 63;
@@ -117,9 +115,6 @@ macro_rules! trace_restore {
             $stage,
         )$(.field($field))*;
         record(event);
-        if std::env::var_os(ENV_SYNC_TRACE).is_some() {
-            eprintln!("koushi.account stage={} {}", $stage, format_args!($($arg)*));
-        }
     }};
 }
 
@@ -128,17 +123,6 @@ fn trace_restore_simple(stage: &'static str, action: &'static str) {
         DiagnosticEvent::new(DiagnosticLevel::Debug, "core.account", stage)
             .field(DiagnosticField::token("action", action)),
     );
-    if std::env::var_os(ENV_SYNC_TRACE).is_some() {
-        eprintln!("koushi.account stage={stage} action={action}");
-    }
-}
-
-fn request_id_trace_label(request_id: RequestId) -> String {
-    format!("{}/{}", request_id.connection_id.0, request_id.sequence)
-}
-
-fn bool_trace_label(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
 }
 
 fn trace_account_request(stage: &'static str, request_id: RequestId, action: &'static str) {
@@ -1075,49 +1059,29 @@ impl AccountActor {
         room_id: String,
         event_id: String,
     ) {
-        let trace = std::env::var_os("KOUSHI_TIMELINE_ITEM_TRACE").is_some()
-            || std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some();
         let Some(session) = &self.session else {
             Self::record_event_cache_repair(request_id, "skip", "skipped", "no_session");
-            if trace {
-                eprintln!("koushi.event_cache_repair stage=skip reason=no_session");
-            }
             return;
         };
         let Ok(parsed_room_id) = matrix_sdk::ruma::RoomId::parse(room_id.as_str()) else {
             Self::record_event_cache_repair(request_id, "skip", "skipped", "invalid_room");
-            if trace {
-                eprintln!("koushi.event_cache_repair stage=skip reason=invalid_room");
-            }
             return;
         };
         let Ok(parsed_event_id) = matrix_sdk::ruma::EventId::parse(event_id.as_str()) else {
             Self::record_event_cache_repair(request_id, "skip", "skipped", "invalid_event");
-            if trace {
-                eprintln!("koushi.event_cache_repair stage=skip reason=invalid_event");
-            }
             return;
         };
         let Some(room) = session.client().get_room(&parsed_room_id) else {
             Self::record_event_cache_repair(request_id, "skip", "skipped", "room_missing");
-            if trace {
-                eprintln!("koushi.event_cache_repair stage=skip reason=room_missing");
-            }
             return;
         };
 
         match room.load_or_fetch_event(&parsed_event_id, None).await {
             Ok(_) => {
                 Self::record_event_cache_repair(request_id, "done", "succeeded", "loaded");
-                if trace {
-                    eprintln!("koushi.event_cache_repair stage=done");
-                }
             }
             Err(_) => {
                 Self::record_event_cache_repair(request_id, "failed", "failed", "sdk");
-                if trace {
-                    eprintln!("koushi.event_cache_repair stage=failed");
-                }
             }
         }
     }
@@ -4943,13 +4907,6 @@ fn trace_room_route_event(stage: &'static str, kind: &'static str, request_id: R
                 request_id.sequence,
             )),
     );
-    if std::env::var_os("KOUSHI_CORE_ACTOR_TRACE").is_none() {
-        return;
-    }
-    eprintln!(
-        "koushi_core actor_trace account_room_route stage={stage} kind={kind} request_id={}/{}",
-        request_id.connection_id.0, request_id.sequence
-    );
 }
 
 fn trace_room_route_closed() {
@@ -4958,9 +4915,6 @@ fn trace_room_route_closed() {
         "core.account",
         "closed",
     ));
-    if std::env::var_os("KOUSHI_CORE_ACTOR_TRACE").is_some() {
-        eprintln!("koushi_core actor_trace account_room_route stage=closed");
-    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -5946,10 +5900,6 @@ mod tests {
             .expect("restore_account should precede login handler");
 
         assert!(
-            source.contains("const ENV_SYNC_TRACE: &str = \"KOUSHI_SYNC_TRACE\";"),
-            "restore diagnostics must share the SyncActor opt-in env"
-        );
-        assert!(
             restore_last.contains(
                 "trace_account_request(\"restore_last_session\", request_id, \"load_pointer\")"
             ),
@@ -5980,7 +5930,7 @@ mod tests {
             "restore must log that the SyncActor was spawned"
         );
         assert!(
-            source.contains("fn request_id_trace_label(request_id: RequestId) -> String"),
+            source.contains("DiagnosticField::request_id"),
             "restore diagnostics must include request ids for correlation"
         );
         assert!(

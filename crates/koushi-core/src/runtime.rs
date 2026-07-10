@@ -77,8 +77,6 @@ pub const ACTION_QUEUE_CAPACITY: usize = 16384;
 pub const ACTOR_MESSAGE_QUEUE_CAPACITY: usize = 1024;
 pub const COMPOSER_DRAFT_PERSIST_DEBOUNCE: Duration = Duration::from_millis(150);
 const INTERNAL_RUNTIME_CONNECTION_ID: RuntimeConnectionId = RuntimeConnectionId(0);
-const ENV_SYNC_TRACE: &str = "KOUSHI_SYNC_TRACE";
-
 macro_rules! trace_runtime_sync {
     ($stage:expr, [$($field:expr),* $(,)?], $($arg:tt)*) => {{
         let event = DiagnosticEvent::new(
@@ -87,14 +85,7 @@ macro_rules! trace_runtime_sync {
             $stage,
         )$(.field($field))*;
         record(event);
-        if std::env::var_os(ENV_SYNC_TRACE).is_some() {
-            eprintln!("koushi.sync stage={} {}", $stage, format_args!($($arg)*));
-        }
     }};
-}
-
-fn runtime_request_id_trace_label(request_id: RequestId) -> String {
-    format!("{}/{}", request_id.connection_id.0, request_id.sequence)
 }
 
 fn intent_outcome_token(outcome: &IntentOutcome) -> &'static str {
@@ -105,9 +96,9 @@ fn intent_outcome_token(outcome: &IntentOutcome) -> &'static str {
     }
 }
 
-/// Diagnostic-only, private-data-free trace of slow AppActor loop iterations.
-/// Enable with KOUSHI_SUBSCRIBE_TRACE=1. A loop iteration that takes hundreds of
-/// ms (e.g. a full `self.state.clone()` of a 100+ room account) starves the
+/// Diagnostic-only, private-data-free record of slow AppActor loop iterations.
+/// A loop iteration that takes hundreds of ms (e.g. a full `self.state.clone()`
+/// of a 100+ room account) starves the
 /// command arm, which is why `select_room` can time out under large-account
 /// sync. Logs the arm, items handled, the state-clone cost, and total time.
 fn app_loop_trace(arm: &'static str, count: u32, clone_ms: u128, total: std::time::Duration) {
@@ -122,9 +113,6 @@ fn app_loop_trace(arm: &'static str, count: u32, clone_ms: u128, total: std::tim
             .field(DiagnosticField::milliseconds("clone", clone_ms))
             .field(DiagnosticField::milliseconds("duration", total_ms)),
     );
-    if total_ms >= 100 && std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
-        eprintln!("koushi.apploop arm={arm} count={count} clone_ms={clone_ms} total_ms={total_ms}");
-    }
 }
 
 fn reduce_with_unread_diagnostics(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
@@ -1150,11 +1138,6 @@ impl AppActor {
                                 .field(DiagnosticField::count("rooms", rooms_len as u64))
                                 .field(DiagnosticField::boolean("committed", committed)),
                             );
-                            if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
-                                eprintln!(
-                                    "koushi.select_reduce found={found} session_ready={session_ready} rooms_len={rooms_len}"
-                                );
-                            }
                             let request_id_to_emit = self
                                 .pending_select
                                 .get_mut(&room_id)
@@ -4439,10 +4422,6 @@ mod tests {
             .filter(|character| !character.is_whitespace())
             .collect();
 
-        assert!(
-            source.contains("const ENV_SYNC_TRACE: &str = \"KOUSHI_SYNC_TRACE\";"),
-            "runtime sync diagnostics must use the same explicit opt-in env as SyncActor"
-        );
         assert!(
             compact_command_effects
                 .contains("trace_runtime_sync!(\"effect_start_sync\",[DiagnosticField::token(\"source\",\"command_effect\")"),

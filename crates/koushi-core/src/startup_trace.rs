@@ -1,8 +1,6 @@
 //! Diagnostic-only, private-data-free startup / event-load phase tracing.
 //!
-//! Mirrors `app_loop_trace` (`runtime.rs`) and always records a structured
-//! observation. `KOUSHI_STARTUP_TRACE=1` enables the stderr mirror, emitting stable
-//! `key=value` tokens via `eprintln!`. Tokens carry durations and coarse
+//! Always records a structured observation. Tokens carry durations and coarse
 //! buckets ONLY — never room/event/user ids, message bodies, timestamps,
 //! transaction ids, or raw SDK errors (engineering-rules Secrets / QA
 //! redaction). Phase A adds observation only; it changes no product behavior.
@@ -39,11 +37,6 @@ pub(crate) fn count_bucket(n: usize) -> &'static str {
     }
 }
 
-/// True when startup tracing is enabled. Cheap; checked at each call site.
-pub(crate) fn stderr_enabled() -> bool {
-    std::env::var_os("KOUSHI_STARTUP_TRACE").is_some()
-}
-
 pub(crate) fn now() -> std::time::Instant {
     std::time::Instant::now()
 }
@@ -55,13 +48,6 @@ pub(crate) fn trace_phase(phase: StartupPhase, started: Option<std::time::Instan
         DiagnosticEvent::new(DiagnosticLevel::Debug, "core.startup", phase.as_token())
             .field(DiagnosticField::milliseconds("duration", elapsed_ms)),
     );
-    if stderr_enabled() {
-        eprintln!(
-            "koushi.startup phase={} ms={}",
-            phase.as_token(),
-            elapsed_ms
-        );
-    }
 }
 
 pub(crate) fn trace_phase_items(
@@ -77,14 +63,6 @@ pub(crate) fn trace_phase_items(
             .field(DiagnosticField::milliseconds("duration", elapsed_ms))
             .field(DiagnosticField::token("items", bucket)),
     );
-    if stderr_enabled() {
-        eprintln!(
-            "koushi.startup phase={} ms={} items={}",
-            phase.as_token(),
-            elapsed_ms,
-            bucket
-        );
-    }
 }
 
 pub(crate) fn trace_paginate(
@@ -101,12 +79,6 @@ pub(crate) fn trace_paginate(
             .field(DiagnosticField::milliseconds("gate_wait", gate_ms))
             .field(DiagnosticField::boolean("reached_start", reached_start)),
     );
-    if stderr_enabled() {
-        eprintln!(
-            "koushi.startup phase=paginate ms={} gate_ms={} reached_start={}",
-            elapsed_ms, gate_ms, reached_start
-        );
-    }
 }
 
 /// `origin` must be one of the fixed strings "cache", "network", or "sync"
@@ -117,9 +89,6 @@ pub(crate) fn trace_origin(origin: &'static str) {
         DiagnosticEvent::new(DiagnosticLevel::Debug, "core.startup", "origin")
             .field(DiagnosticField::token("origin", origin)),
     );
-    if stderr_enabled() {
-        eprintln!("koushi.startup phase=origin origin={origin}");
-    }
 }
 
 /// Emitted when a background crawler page yields the /messages gate to a
@@ -130,9 +99,6 @@ pub(crate) fn trace_crawler_preempted() {
         "core.startup",
         "crawler_preempted",
     ));
-    if stderr_enabled() {
-        eprintln!("koushi.startup phase=crawler_preempted");
-    }
 }
 
 #[cfg(test)]

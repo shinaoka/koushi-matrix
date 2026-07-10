@@ -2742,12 +2742,6 @@ fn trace_room_operation(kind: &'static str, stage: &'static str, request_id: Req
                 request_id.sequence,
             )),
     );
-    if std::env::var_os("KOUSHI_CORE_ACTOR_TRACE").is_some() {
-        eprintln!(
-            "koushi_core actor_trace room_actor stage={stage} kind={kind} request_id={}/{}",
-            request_id.connection_id.0, request_id.sequence
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------

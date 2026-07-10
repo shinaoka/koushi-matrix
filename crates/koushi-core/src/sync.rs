@@ -72,8 +72,6 @@ const SYNC_ACTOR_SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_secs(1);
 const SYNC_ACTOR_SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(10);
 const SYNC_SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const LEGACY_SYNC_ROOM_TIMELINE_LIMIT: u32 = 128;
-const ENV_SYNC_TRACE: &str = "KOUSHI_SYNC_TRACE";
-
 macro_rules! trace_sync {
     ($stage:expr, [$($field:expr),* $(,)?], $($arg:tt)*) => {{
         let event = DiagnosticEvent::new(
@@ -82,9 +80,6 @@ macro_rules! trace_sync {
             $stage,
         )$(.field($field))*;
         record(event);
-        if sync_trace_enabled() {
-            eprintln!("koushi.sync stage={} {}", $stage, format_args!($($arg)*));
-        }
     }};
 }
 
@@ -159,21 +154,6 @@ enum ActiveBackend {
     None,
     SyncService,
     LegacySync,
-}
-
-fn sync_trace_enabled() -> bool {
-    std::env::var_os(ENV_SYNC_TRACE).is_some()
-}
-
-fn request_id_trace_label(request_id: Option<RequestId>) -> String {
-    match request_id {
-        Some(request_id) => format!("{}/{}", request_id.connection_id.0, request_id.sequence),
-        None => "none".to_owned(),
-    }
-}
-
-fn bool_trace_label(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
 }
 
 fn sync_lifecycle_label(lifecycle: SyncLifecycle) -> &'static str {
@@ -1952,16 +1932,12 @@ pub mod tests {
             sync_command_trace_parts(&SyncCommand::Restart { request_id });
         assert_eq!(kind, "restart");
         assert_eq!(traced_request_id, request_id);
-        assert_eq!(request_id_trace_label(Some(request_id)), "7/42");
-        assert_eq!(request_id_trace_label(None), "none");
     }
 
     #[test]
     fn sync_trace_covers_command_backend_state_and_fallback_decisions() {
         let source = include_str!("sync.rs");
 
-        assert!(source.contains("const ENV_SYNC_TRACE: &str = \"KOUSHI_SYNC_TRACE\""));
-        assert!(source.contains("std::env::var_os(ENV_SYNC_TRACE)"));
         assert!(source.contains("\"command\","));
         assert!(source.contains("\"probe_done\","));
         assert!(source.contains("\"sync_service_state\","));

@@ -2,10 +2,6 @@ use super::*;
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use std::{future::Future, pin::Pin};
 
-fn search_trace_enabled() -> bool {
-    std::env::var_os("KOUSHI_SEARCH_TRACE").is_some()
-}
-
 fn search_scope_kind_trace_label(scope: SearchScopeKind) -> &'static str {
     match scope {
         SearchScopeKind::CurrentRoom => "current_room",
@@ -91,16 +87,6 @@ pub(crate) async fn submit_search_production_path(
     let mut event_conn = state.runtime.attach();
     let request_id = next_request_id(state).await;
     record_search_trace(scope, &search_scope, &query, request_id);
-    if search_trace_enabled() {
-        eprintln!(
-            "koushi.search_cmd stage=submit request={} ui_scope={} resolved_scope={} query_bytes={} query_chars={}",
-            request_id.sequence,
-            search_scope_kind_trace_label(scope),
-            resolved_search_scope_trace_label(&search_scope),
-            query.trim().len(),
-            query.trim().chars().count()
-        );
-    }
     io.submit(
         state,
         build_submit_search_command(request_id, query, search_scope),

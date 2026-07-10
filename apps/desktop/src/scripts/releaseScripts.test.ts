@@ -46,6 +46,16 @@ const SYNTHETIC_TRACE_ENV = ["KOUSHI", "SYNTH_TRACE"].join("_");
 const SYNTHETIC_TRACE_DECLARATION = `const SYNTHETIC_TRACE_ENV: &str = "${SYNTHETIC_TRACE_ENV}";`;
 const GATED_DIAGNOSTIC_REASON =
   "env-gated diagnostic producer has no always-on structured collection";
+const REMOVED_DIAGNOSTIC_ENV_LITERALS = [
+  "KOUSHI_STARTUP_TRACE",
+  "KOUSHI_SUBSCRIBE_TRACE",
+  "KOUSHI_TIMELINE_ITEM_TRACE",
+  "KOUSHI_UNREAD_TRACE",
+  "KOUSHI_SEARCH_TRACE",
+  "KOUSHI_SYNC_TRACE",
+  "KOUSHI_CORE_ACTOR_TRACE",
+  "KOUSHI_DEBUG_SDK_ERROR"
+];
 
 function runtimeRustSources(): DiagnosticSource[] {
   const roots = ["crates/koushi-sdk/src", "crates/koushi-core/src", "apps/desktop/src-tauri/src"];
@@ -1383,6 +1393,23 @@ function scanDiagnosticSources(sources: readonly DiagnosticSource[]): Diagnostic
   return findings;
 }
 
+function runtimeDiagnosticStderrFindings(
+  sources: DiagnosticSource[]
+): DiagnosticGateFinding[] {
+  return sources.flatMap(({ relativePath, source }) =>
+    productionRustLines(source).flatMap((line, index) => {
+      const reason = /\beprintln!\s*\(/.test(line)
+        ? "runtime diagnostic writes to stderr"
+        : REMOVED_DIAGNOSTIC_ENV_LITERALS.some((literal) => line.includes(literal))
+          ? "runtime diagnostic environment gate remains"
+          : null;
+      return reason
+        ? [{ relativePath, line: index + 1, location: `${relativePath}:${index + 1}`, reason }]
+        : [];
+    })
+  );
+}
+
 describe("desktop release scripts", () => {
   test("always-on diagnostic collection rejects trace-only producers and accepts stderr mirrors", () => {
     const badFixture = `
@@ -2488,6 +2515,10 @@ fn production_after_tests() {
       line: 12,
       location: "fixtures/production-after-tests.rs:12"
     });
+  });
+
+  test("application runtime has no diagnostic stderr mirror or trace environment gate", () => {
+    expect(runtimeDiagnosticStderrFindings(runtimeRustSources())).toEqual([]);
   });
 
   test("tracked text artifacts contain no previous branding residue", () => {
