@@ -194,6 +194,8 @@ pub struct TimelineManagerActor {
     /// URL preview policy broadcast from AppState.
     link_preview_policy: LinkPreviewContext,
     messages_backpressure: MessagesBackpressure,
+    #[cfg(test)]
+    test_session_available: bool,
 }
 
 impl TimelineManagerActor {
@@ -216,6 +218,8 @@ impl TimelineManagerActor {
             data_dir,
             link_preview_policy: LinkPreviewContext::default(),
             messages_backpressure,
+            #[cfg(test)]
+            test_session_available: false,
         };
         executor::spawn(actor.run());
         TimelineManagerHandle { tx }
@@ -245,6 +249,8 @@ impl TimelineManagerActor {
             data_dir,
             link_preview_policy,
             messages_backpressure,
+            #[cfg(test)]
+            test_session_available: false,
         };
         executor::spawn(actor.run());
         TimelineManagerHandle { tx }
@@ -881,7 +887,11 @@ impl TimelineManagerActor {
             }
         };
         trace("start");
-        if self.session.is_none() {
+        #[cfg(test)]
+        let session_missing = self.session.is_none() && !self.test_session_available;
+        #[cfg(not(test))]
+        let session_missing = self.session.is_none();
+        if session_missing {
             self.emit_subscription_failure(request_id, &key, TimelineFailureKind::NotSubscribed)
                 .await;
             return;
@@ -1593,6 +1603,7 @@ fn timeline_stage_token(value: &str) -> &'static str {
         "sync_started_existing_rooms" => "sync_started_existing_rooms",
         "replay_initial_skipped" => "replay_initial_skipped",
         "replay_initial_failed" => "replay_initial_failed",
+        "subscribed_done" => "subscribed_done",
         "subscribe_rooms_begin" => "subscribe_rooms_begin",
         "subscribe_rooms_done" => "subscribe_rooms_done",
         "build_begin" => "build_begin",
@@ -10386,6 +10397,199 @@ mod tests {
                     panic!("live timeline diagnostic collapsed to other: {record:?}");
                 }
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn subscribe_replay_path_records_subscribed_done_stage() {
+        let key = room_key();
+        let (actor_tx, mut actor_rx) = mpsc::channel(1);
+        let actor_task = executor::spawn(async move {
+            let _ = actor_rx.recv().await;
+        });
+        let (action_tx, _action_rx) = mpsc::channel(1);
+        let (event_tx, _event_rx) = broadcast::channel(1);
+        let (manager_tx, manager_rx) = mpsc::channel(1);
+        let mut manager = TimelineManagerActor {
+            session: None,
+            room_list_service: None,
+            timelines: HashMap::from([(
+                key.clone(),
+                TimelineActorHandle {
+                    tx: actor_tx,
+                    task: actor_task,
+                    auxiliary_tasks: Vec::new(),
+                },
+            )]),
+            action_tx,
+            event_tx,
+            msg_rx: manager_rx,
+            search_index_tx: None,
+            ignored_user_ids: Default::default(),
+            data_dir: None,
+            link_preview_policy: LinkPreviewContext::default(),
+            messages_backpressure: MessagesBackpressure::default(),
+            test_session_available: true,
+        };
+
+        manager.handle_subscribe(fake_rid(7100), key, false).await;
+        drop(manager_tx);
+
+        let event = koushi_diagnostics::snapshot()
+            .records
+            .into_iter()
+            .rev()
+            .find(|record| {
+                record.event.source == "core.timeline" && record.event.stage == "subscribed_done"
+            })
+            .expect("replay subscribe path should record subscribed_done");
+        assert!(event.event.fields.iter().any(|field| {
+            field.key == "kind"
+                && field.value == koushi_diagnostics::DiagnosticValue::Token("subscribe")
+        }));
+    }
+
+    #[test]
+    fn diagnostics_producer_paths_run_in_env_unset_child_process() {
+        let child = std::process::Command::new(
+            std::env::current_exe().expect("current test executable should be available"),
+        )
+        .arg("--exact")
+        .arg(concat!(
+            "timeline::tests::",
+            "diagnostics_producer_paths_run_without_trace_environment"
+        ))
+        .arg("--ignored")
+        .arg("--nocapture")
+        .env_remove("KOUSHI_SUBSCRIBE_TRACE")
+        .env_remove("KOUSHI_TIMELINE_ITEM_TRACE")
+        .env_remove("KOUSHI_UNREAD_TRACE")
+        .env_remove("KOUSHI_STARTUP_TRACE")
+        .status()
+        .expect("env-unset diagnostics child should start");
+        assert!(
+            child.success(),
+            "env-unset diagnostics child failed: {child}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn diagnostics_producer_paths_run_without_trace_environment() {
+        for variable in [
+            "KOUSHI_SUBSCRIBE_TRACE",
+            "KOUSHI_TIMELINE_ITEM_TRACE",
+            "KOUSHI_UNREAD_TRACE",
+            "KOUSHI_STARTUP_TRACE",
+        ] {
+            assert!(
+                std::env::var_os(variable).is_none(),
+                "child environment unexpectedly contains {variable}"
+            );
+        }
+
+        let key = room_key();
+        trace_timeline_diffs(
+            "diff_batch",
+            &key,
+            &[TimelineDiff::Remove { index: 2 }, TimelineDiff::Clear],
+        );
+        trace_event_cache_diffs(
+            "cache_update",
+            &key,
+            &matrix_sdk::event_cache::EventsOrigin::Cache,
+            &[eyeball_im::VectorDiff::Clear],
+        );
+
+        let (actor_tx, mut actor_rx) = mpsc::channel(8);
+        let actor_task = executor::spawn(async move { while actor_rx.recv().await.is_some() {} });
+        let (action_tx, _action_rx) = mpsc::channel(8);
+        let (event_tx, _event_rx) = broadcast::channel(8);
+        let (_manager_tx, manager_rx) = mpsc::channel(1);
+        let mut manager = TimelineManagerActor {
+            session: None,
+            room_list_service: None,
+            timelines: HashMap::from([(
+                key.clone(),
+                TimelineActorHandle {
+                    tx: actor_tx,
+                    task: actor_task,
+                    auxiliary_tasks: Vec::new(),
+                },
+            )]),
+            action_tx,
+            event_tx,
+            msg_rx: manager_rx,
+            search_index_tx: None,
+            ignored_user_ids: Default::default(),
+            data_dir: None,
+            link_preview_policy: LinkPreviewContext::default(),
+            messages_backpressure: MessagesBackpressure::default(),
+            test_session_available: true,
+        };
+
+        manager
+            .handle_subscribe(fake_rid(7199), key.clone(), false)
+            .await;
+
+        let commands = [
+            TimelineCommand::SendReaction {
+                request_id: fake_rid(7200),
+                key: key.clone(),
+                event_id: "$event:test".to_owned(),
+                reaction_key: "👍".to_owned(),
+            },
+            TimelineCommand::RedactReaction {
+                request_id: fake_rid(7201),
+                key: key.clone(),
+                event_id: "$event:test".to_owned(),
+                reaction_key: "👍".to_owned(),
+                reaction_event_id: "$reaction:test".to_owned(),
+            },
+            TimelineCommand::SendReadReceipt {
+                request_id: fake_rid(7202),
+                key: key.clone(),
+                event_id: "$event:test".to_owned(),
+            },
+            TimelineCommand::SetFullyRead {
+                request_id: fake_rid(7203),
+                key: key.clone(),
+                event_id: "$event:test".to_owned(),
+            },
+        ];
+        for command in commands {
+            manager.handle_command(command).await;
+        }
+
+        let records = koushi_diagnostics::snapshot().records;
+        for kind in [
+            "send_reaction",
+            "redact_reaction",
+            "send_read_receipt",
+            "set_fully_read",
+        ] {
+            assert!(
+                records.iter().any(|record| {
+                    record.event.source == "core.timeline"
+                        && record.event.stage == "manager_received"
+                        && record.event.fields.iter().any(|field| {
+                            field.key == "kind"
+                                && field.value == koushi_diagnostics::DiagnosticValue::Token(kind)
+                        })
+                }),
+                "missing actual route diagnostic for {kind}"
+            );
+        }
+        assert!(records.iter().any(|record| {
+            record.event.source == "core.timeline" && record.event.stage == "subscribed_done"
+        }));
+        for record in records {
+            assert!(
+                !record.event.fields.iter().any(|field| {
+                    field.value == koushi_diagnostics::DiagnosticValue::Token("other")
+                }),
+                "live diagnostic collapsed to other: {record:?}"
+            );
         }
     }
 
