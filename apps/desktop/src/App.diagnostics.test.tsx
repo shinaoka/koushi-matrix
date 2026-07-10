@@ -36,6 +36,16 @@ function snapshot(entries: DiagnosticLogSnapshot["entries"], droppedEntries = 0)
   return { entries, droppedEntries } satisfies DiagnosticLogSnapshot;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 async function openDiagnostics() {
   const button = await screen.findByRole("button", { name: "Open diagnostics" });
   await act(async () => {
@@ -93,6 +103,73 @@ describe("App diagnostics lifecycle", () => {
     expect(getDiagnosticSnapshot).toHaveBeenCalledTimes(2);
     expect(dialog.textContent).toContain("second-runtime");
     expect(dialog.textContent).not.toContain("first-runtime");
+  });
+
+  test("only the newest overlapping snapshot success can open and update Diagnostics", async () => {
+    const api = createBrowserFakeApi();
+    const first = deferred<DiagnosticLogSnapshot>();
+    const second = deferred<DiagnosticLogSnapshot>();
+    const getDiagnosticSnapshot = vi
+      .spyOn(api, "getDiagnosticSnapshot")
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+
+    await renderAppWithApi(api);
+    const button = await screen.findByRole("button", { name: "Open diagnostics" });
+
+    await act(async () => {
+      fireEvent.click(button);
+      fireEvent.click(button);
+    });
+    expect(getDiagnosticSnapshot).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("dialog", { name: "Diagnostics" })).toBeNull();
+
+    await act(async () => {
+      second.resolve(snapshot([{ timestampMs: 2, source: "core.newest", message: "newest-runtime" }]));
+      await second.promise;
+    });
+    const dialog = await screen.findByRole("dialog", { name: "Diagnostics" });
+    expect(dialog.textContent).toContain("newest-runtime");
+
+    await act(async () => {
+      first.resolve(snapshot([{ timestampMs: 1, source: "core.stale", message: "stale-runtime" }]));
+      await first.promise;
+    });
+    expect(dialog.textContent).toContain("newest-runtime");
+    expect(dialog.textContent).not.toContain("stale-runtime");
+  });
+
+  test("only the newest overlapping snapshot success can survive a stale failure", async () => {
+    const api = createBrowserFakeApi();
+    const first = deferred<DiagnosticLogSnapshot>();
+    const second = deferred<DiagnosticLogSnapshot>();
+    const getDiagnosticSnapshot = vi
+      .spyOn(api, "getDiagnosticSnapshot")
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+
+    await renderAppWithApi(api);
+    const button = await screen.findByRole("button", { name: "Open diagnostics" });
+
+    await act(async () => {
+      fireEvent.click(button);
+      fireEvent.click(button);
+    });
+    expect(getDiagnosticSnapshot).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      second.resolve(snapshot([{ timestampMs: 2, source: "core.newest", message: "newest-runtime" }]));
+      await second.promise;
+    });
+    const dialog = await screen.findByRole("dialog", { name: "Diagnostics" });
+
+    await act(async () => {
+      first.reject(new Error("stale failure"));
+      await first.promise.catch(() => undefined);
+    });
+    expect(dialog.textContent).toContain("newest-runtime");
+    expect(dialog.textContent).not.toContain("kind=unavailable");
+    expect(dialog.textContent).not.toContain("stale failure");
   });
 
   test("opens with only a safe synthetic fetch record when the snapshot rejects", async () => {

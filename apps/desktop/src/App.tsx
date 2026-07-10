@@ -1199,6 +1199,7 @@ export function App() {
   const localComposerDraftsRef = useRef<Record<string, string>>({});
   const threadComposerDraftPersistTimers = useRef<Record<string, number>>({});
   const panelDiagnosticRef = useRef<string | null>(null);
+  const diagnosticSnapshotRequestGenerationRef = useRef(0);
   const typingSignalRef = useRef<{ roomId: string | null; isTyping: boolean }>({
     roomId: null,
     isTyping: false
@@ -2132,6 +2133,7 @@ export function App() {
   }
 
   async function openDiagnostics() {
+    const requestGeneration = ++diagnosticSnapshotRequestGenerationRef.current;
     let nextSnapshot: DiagnosticLogSnapshot;
     try {
       nextSnapshot = await api.getDiagnosticSnapshot();
@@ -2146,6 +2148,9 @@ export function App() {
         ],
         droppedEntries: 0
       };
+    }
+    if (requestGeneration !== diagnosticSnapshotRequestGenerationRef.current) {
+      return;
     }
     setRuntimeDiagnosticSnapshot(nextSnapshot);
     setDiagnosticsOpen(true);
