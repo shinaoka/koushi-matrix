@@ -399,7 +399,8 @@ function blockEnd(lines: readonly string[], start: number): number {
   let depth = 0;
   let opened = false;
   for (let index = start; index < lines.length; index += 1) {
-    const delta = braceDelta(lines[index]);
+    const structural = structuralRustLine(lines[index]);
+    const delta = braceDelta(structural);
     if (delta > 0) {
       opened = true;
     }
@@ -407,8 +408,28 @@ function blockEnd(lines: readonly string[], start: number): number {
     if (opened && depth <= 0) {
       return index;
     }
+    if (!opened && balancedBlockEndsLine(structural)) {
+      return index;
+    }
   }
   return lines.length - 1;
+}
+
+function balancedBlockEndsLine(structural: string): boolean {
+  let depth = 0;
+  let opened = false;
+  for (let index = 0; index < structural.length; index += 1) {
+    if (structural[index] === "{") {
+      depth += 1;
+      opened = true;
+    } else if (structural[index] === "}") {
+      depth -= 1;
+      if (opened && depth === 0 && structural.slice(index + 1).trim() === "") {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function sourceScopes(lines: readonly string[]): SourceScope[] {
@@ -487,16 +508,28 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function normalizedHelperCode(codeText: string): string {
+  return codeText.replace(/\b(?:crate|self|super|Self)::/g, (prefix) => " ".repeat(prefix.length));
+}
+
+function normalizedHelperName(name: string): string {
+  return name.replace(/^(?:(?:crate|self|super|Self)::)+/, "");
+}
+
 function callArguments(rawText: string, codeText: string, name: string): string[] {
   const argumentsList: string[] = [];
-  const pattern = new RegExp(`(?:^|[^A-Za-z0-9_:.])${escapeRegExp(name)}\\s*\\(`, "g");
-  for (const match of codeText.matchAll(pattern)) {
-    const open = codeText.indexOf("(", match.index);
+  const normalizedCode = normalizedHelperCode(codeText);
+  const pattern = new RegExp(
+    `(?:^|[^A-Za-z0-9_:.])${escapeRegExp(normalizedHelperName(name))}\\s*\\(`,
+    "g"
+  );
+  for (const match of normalizedCode.matchAll(pattern)) {
+    const open = normalizedCode.indexOf("(", match.index);
     let depth = 0;
-    for (let index = open; index < codeText.length; index += 1) {
-      if (codeText[index] === "(") {
+    for (let index = open; index < normalizedCode.length; index += 1) {
+      if (normalizedCode[index] === "(") {
         depth += 1;
-      } else if (codeText[index] === ")") {
+      } else if (normalizedCode[index] === ")") {
         depth -= 1;
         if (depth === 0) {
           argumentsList.push(rawText.slice(open + 1, index));
@@ -509,7 +542,9 @@ function callArguments(rawText: string, codeText: string, name: string): string[
 }
 
 function hasNamedCall(codeText: string, name: string): boolean {
-  return new RegExp(`(?:^|[^A-Za-z0-9_:.])${escapeRegExp(name)}\\s*\\(`).test(codeText);
+  return new RegExp(
+    `(?:^|[^A-Za-z0-9_:.])${escapeRegExp(normalizedHelperName(name))}\\s*\\(`
+  ).test(normalizedHelperCode(codeText));
 }
 
 function hasHelperCall(codeText: string, helpers: Set<string>, currentScopeName = ""): boolean {
@@ -521,7 +556,8 @@ function hasHelperCall(codeText: string, helpers: Set<string>, currentScopeName 
 function resolveHelpers(
   analyses: readonly DiagnosticSourceAnalysis[],
   directMatch: (analysis: DiagnosticSourceAnalysis, scope: SourceScope) => boolean,
-  transitive: boolean
+  transitive: boolean,
+  wrapperMatch: (analysis: DiagnosticSourceAnalysis, scope: SourceScope) => boolean = () => true
 ): HelperResolution {
   const localByPath = new Map<string, Set<string>>();
   for (const analysis of analyses) {
@@ -546,7 +582,7 @@ function resolveHelpers(
       const local = localByPath.get(analysis.relativePath)!;
       const visible = new Set([...local, ...qualified]);
       for (const scope of analysis.scopes) {
-        if (local.has(scope.name)) {
+        if (local.has(scope.name) || !wrapperMatch(analysis, scope)) {
           continue;
         }
         const codeText = analysis.codeLines.slice(scope.start, scope.end + 1).join("\n");
@@ -565,6 +601,12 @@ function resolveHelpers(
     }
   }
   return { localByPath, qualified };
+}
+
+function scopeReturnsBool(analysis: DiagnosticSourceAnalysis, scope: SourceScope): boolean {
+  const text = analysis.codeLines.slice(scope.start, scope.end + 1).join("\n");
+  const openingBrace = text.indexOf("{");
+  return /->\s*bool\b/.test(openingBrace === -1 ? text : text.slice(0, openingBrace));
 }
 
 function visibleHelpers(resolution: HelperResolution, relativePath: string): Set<string> {
@@ -587,6 +629,18 @@ function statementEnd(
   return start;
 }
 
+function bindingInitializer(rawText: string, codeText: string): { raw: string; code: string } {
+  const equals = codeText.indexOf("=");
+  const semicolon = codeText.lastIndexOf(";");
+  const end = semicolon > equals ? semicolon : codeText.length;
+  return equals === -1
+    ? { raw: "", code: "" }
+    : {
+        raw: rawText.slice(equals + 1, end),
+        code: codeText.slice(equals + 1, end)
+      };
+}
+
 function localEnvironmentAliases(
   analysis: DiagnosticSourceAnalysis,
   scope: SourceScope,
@@ -598,22 +652,20 @@ function localEnvironmentAliases(
   while (changed) {
     changed = false;
     for (let index = scope.start; index <= scope.end; index += 1) {
-      const declaration = /\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\b/.exec(
+      const declaration = /\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=;]+)?=/.exec(
         analysis.codeLines[index]
       );
-      if (
-        !declaration ||
-        aliases.has(declaration[1]) ||
-        !/(?:trace|diagnost|stderr|debug|verbose|enabled)/i.test(declaration[1])
-      ) {
+      if (!declaration || aliases.has(declaration[1])) {
         continue;
       }
       const end = statementEnd(analysis.codeLines, index, scope.end, depths);
       const rawText = analysis.rawLines.slice(index, end + 1).join("\n");
       const codeText = analysis.codeLines.slice(index, end + 1).join("\n");
+      const initializer = bindingInitializer(rawText, codeText);
       if (
-        directDiagnosticEnvCheck(rawText, codeText, analysis.constants) ||
-        hasHelperCall(codeText, envHelpers)
+        directDiagnosticEnvCheck(initializer.raw, initializer.code, analysis.constants) ||
+        hasHelperCall(initializer.code, envHelpers) ||
+        [...aliases].some((alias) => new RegExp(`\\b${alias}\\b`).test(initializer.code))
       ) {
         aliases.add(declaration[1]);
         changed = true;
@@ -640,7 +692,12 @@ function diagnosticGateLine(
   if (hasHelperCall(codeText, envHelpers)) {
     return true;
   }
-  return [...localAliases].some((name) => new RegExp(`\\b${name}\\b`).test(codeText));
+  const aliasConditionText = /\bif\s+let\b/.test(codeText)
+    ? bindingInitializer(codeText, codeText).code
+    : codeText;
+  return [...localAliases].some((name) =>
+    new RegExp(`\\b${name}\\b`).test(aliasConditionText)
+  );
 }
 
 function gateHeaderEnd(codeLines: readonly string[], start: number, maximumEnd: number): number {
@@ -672,6 +729,8 @@ function hasStructuredCollection(
   }
   const mirrorRawText = rawLines.slice(gateLine, gateEnd + 1).join("\n");
   const mirrorCodeText = codeLines.slice(gateLine, gateEnd + 1).join("\n");
+  const mirrorHeaderEnd = gateHeaderEnd(codeLines, gateLine, gateEnd);
+  const mirrorHeaderCodeText = codeLines.slice(gateLine, mirrorHeaderEnd + 1).join("\n");
   const mirrorTokens = expandSemanticTokensThroughBindings(
     diagnosticSideEffectTokens(mirrorRawText, mirrorCodeText, stderrHelpers),
     rawLines,
@@ -698,7 +757,8 @@ function hasStructuredCollection(
     );
     if (
       isAssociationBarrier(codeText) &&
-      (!structuredProducer || !barrierConditionIncludedInGate(codeText, mirrorCodeText))
+      (!structuredProducer ||
+        !barrierControlAllowsMirror(codeText, mirrorHeaderCodeText, mirrorCodeText))
     ) {
       return false;
     }
@@ -721,18 +781,170 @@ function hasStructuredCollection(
   return false;
 }
 
-function barrierConditionIncludedInGate(barrierText: string, gateText: string): boolean {
-  const openingBrace = barrierText.indexOf("{");
-  const conditionText = openingBrace === -1 ? barrierText : barrierText.slice(0, openingBrace);
-  const conditionTokens = semanticTokens(conditionText);
-  for (const keyword of ["if", "let", "mut", "Some", "None", "Ok", "Err"]) {
-    conditionTokens.delete(keyword);
+function barrierControlAllowsMirror(
+  barrierText: string,
+  gateHeaderText: string,
+  gateBlockText: string
+): boolean {
+  const firstLine = barrierText
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (firstLine?.startsWith("if ")) {
+    return gateConditionImpliesCollector(barrierText, gateHeaderText);
   }
-  const gateTokens = semanticTokens(gateText);
-  return conditionTokens.size > 0 && [...conditionTokens].every((token) => gateTokens.has(token));
+  if (firstLine?.startsWith("for ")) {
+    const collectorIterators = loopIteratorExpressions(barrierText);
+    const mirrorIterators = loopIteratorExpressions(gateBlockText);
+    return (
+      collectorIterators.length > 0 &&
+      collectorIterators.some((collectorIterator) =>
+        mirrorIterators.some(
+          (mirrorIterator) =>
+            collectorIterator === mirrorIterator ||
+            hasSemanticAssociation(
+              semanticTokens(collectorIterator),
+              semanticTokens(mirrorIterator)
+            )
+        )
+      )
+    );
+  }
+  return false;
+}
+
+type NormalizedCondition = {
+  hasOr: boolean;
+  terms: Map<string, boolean>;
+  valid: boolean;
+};
+
+function gateConditionImpliesCollector(
+  collectorControlText: string,
+  gateHeaderText: string
+): boolean {
+  const collector = normalizedCondition(collectorControlText);
+  const gate = normalizedCondition(gateHeaderText);
+  if (!collector.valid || !gate.valid || collector.hasOr || gate.hasOr) {
+    return false;
+  }
+  return [...collector.terms].every(
+    ([term, polarity]) => gate.terms.get(term) === polarity
+  );
+}
+
+function normalizedCondition(controlText: string): NormalizedCondition {
+  const lines = controlText.split("\n");
+  const headerEnd = gateHeaderEnd(lines, 0, lines.length - 1);
+  const header = lines.slice(0, headerEnd + 1).join("\n");
+  const ifIndex = header.search(/\bif\b/);
+  const openingBrace = header.lastIndexOf("{");
+  if (ifIndex === -1 || openingBrace === -1 || openingBrace <= ifIndex) {
+    return { hasOr: false, terms: new Map(), valid: false };
+  }
+  const expression = header.slice(ifIndex + 2, openingBrace).trim();
+  const split = splitTopLevelBooleanExpression(expression);
+  const terms = new Map<string, boolean>();
+  let valid = split.parts.length > 0;
+  for (const part of split.parts) {
+    let atom = part.trim();
+    let polarity = true;
+    while (atom.startsWith("!") && !atom.startsWith("!=")) {
+      polarity = !polarity;
+      atom = atom.slice(1).trim();
+    }
+    atom = stripBalancedOuterParentheses(atom).replace(/\s+/g, "");
+    if (atom.length === 0 || (terms.has(atom) && terms.get(atom) !== polarity)) {
+      valid = false;
+      continue;
+    }
+    terms.set(atom, polarity);
+  }
+  return { hasOr: split.hasOr, terms, valid };
+}
+
+function splitTopLevelBooleanExpression(expression: string): {
+  hasOr: boolean;
+  parts: string[];
+} {
+  const parts: string[] = [];
+  let start = 0;
+  let parentheses = 0;
+  let brackets = 0;
+  let braces = 0;
+  let hasOr = false;
+  for (let index = 0; index < expression.length - 1; index += 1) {
+    const character = expression[index];
+    if (character === "(") parentheses += 1;
+    else if (character === ")") parentheses -= 1;
+    else if (character === "[") brackets += 1;
+    else if (character === "]") brackets -= 1;
+    else if (character === "{") braces += 1;
+    else if (character === "}") braces -= 1;
+    if (parentheses !== 0 || brackets !== 0 || braces !== 0) {
+      continue;
+    }
+    const operator = expression.slice(index, index + 2);
+    if (operator === "&&" || operator === "||") {
+      parts.push(expression.slice(start, index));
+      hasOr ||= operator === "||";
+      start = index + 2;
+      index += 1;
+    }
+  }
+  parts.push(expression.slice(start));
+  return { hasOr, parts: parts.filter((part) => part.trim().length > 0) };
+}
+
+function stripBalancedOuterParentheses(value: string): string {
+  let result = value.trim();
+  while (result.startsWith("(") && result.endsWith(")")) {
+    let depth = 0;
+    let wrapsWholeValue = true;
+    for (let index = 0; index < result.length; index += 1) {
+      if (result[index] === "(") depth += 1;
+      else if (result[index] === ")") depth -= 1;
+      if (depth === 0 && index < result.length - 1) {
+        wrapsWholeValue = false;
+        break;
+      }
+    }
+    if (!wrapsWholeValue) break;
+    result = result.slice(1, -1).trim();
+  }
+  return result;
+}
+
+function loopIteratorExpressions(text: string): string[] {
+  const iterators: string[] = [];
+  for (const match of text.matchAll(/\bfor\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s+/g)) {
+    const expressionStart = (match.index ?? 0) + match[0].length;
+    let parentheses = 0;
+    let brackets = 0;
+    for (let index = expressionStart; index < text.length; index += 1) {
+      const character = text[index];
+      if (character === "(") parentheses += 1;
+      else if (character === ")") parentheses -= 1;
+      else if (character === "[") brackets += 1;
+      else if (character === "]") brackets -= 1;
+      else if (character === "{" && parentheses === 0 && brackets === 0) {
+        iterators.push(text.slice(expressionStart, index).replace(/\s+/g, ""));
+        break;
+      }
+    }
+  }
+  return iterators;
 }
 
 function isAssociationBarrier(text: string): boolean {
+  const firstLine = text
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  return firstLine !== undefined && /^(?:if|for|match|while|loop)\b/.test(firstLine);
+}
+
+function isBindingBarrier(text: string): boolean {
   const firstLine = text
     .split("\n")
     .map((line) => line.trim())
@@ -840,7 +1052,7 @@ function expandSemanticTokensThroughBindings(
       break;
     }
     const codeText = codeLines.slice(range[0], range[1] + 1).join("\n");
-    if (isAssociationBarrier(codeText)) {
+    if (isBindingBarrier(codeText)) {
       break;
     }
     const declaration = /\blet\s+([\s\S]*?)=/.exec(codeText);
@@ -944,17 +1156,14 @@ function scanDiagnosticSources(sources: readonly DiagnosticSource[]): Diagnostic
   const envResolution = resolveHelpers(
     analyses,
     (analysis, scope) =>
-      /->\s*bool\b/.test(
-        analysis.codeLines
-          .slice(scope.start, gateHeaderEnd(analysis.codeLines, scope.start, scope.end) + 1)
-          .join("\n")
-      ) &&
+      scopeReturnsBool(analysis, scope) &&
       directDiagnosticEnvCheck(
         analysis.rawLines.slice(scope.start, scope.end + 1).join("\n"),
         analysis.codeLines.slice(scope.start, scope.end + 1).join("\n"),
         analysis.constants
       ),
-    false
+    true,
+    scopeReturnsBool
   );
   const structuredResolution = resolveHelpers(
     analyses,
@@ -1312,6 +1521,109 @@ fn conditionally_collected(collect: bool) {
     expect(findings.every((finding) => finding.reason === GATED_DIAGNOSTIC_REASON)).toBe(true);
   });
 
+  test("scanner rejects opposite-polarity conditional collection", () => {
+    const fixture = `
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn negated_condition(collect: bool) {
+  let stage = "negated";
+  if collect {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  }
+  if !collect && trace_enabled() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/negated-condition.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/negated-condition.rs",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
+  test("scanner rejects disjunctive gates and accepts implied conjunctions", () => {
+    const fixture = `
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn disjunctive_gate(collect: bool) {
+  let stage = "disjunction";
+  if collect {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  }
+  if trace_enabled() || collect {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+
+fn paired_condition(collect: bool, ready: bool) {
+  let stage = "paired_condition";
+  if ready && collect {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  }
+  if trace_enabled() && collect && ready {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/disjunctive-and-implied.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/disjunctive-and-implied.rs",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
+  test("scanner treats collector loops as barriers unless iterators are paired", () => {
+    const fixture = `
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn independent_loop(items: &[&str]) {
+  let stage = "independent_loop";
+  for _item in items {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  }
+  if trace_enabled() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+
+fn paired_loop(items: &[&str]) {
+  let stage = "paired_loop";
+  for item in items {
+    record(make_diagnostic_event(stage, item));
+  }
+  if trace_enabled() {
+    for item in items {
+      eprintln!("synthetic stderr stage={stage} item={item}");
+    }
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/paired-and-independent-loops.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/paired-and-independent-loops.rs",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
   test("scanner recognizes generic gated record producers without stderr", () => {
     const fixture = `
 ${SYNTHETIC_TRACE_DECLARATION}
@@ -1624,6 +1936,108 @@ fn reduce_app_action(action: Action) {
     expect(findings[0]).toMatchObject({
       relativePath: "fixtures/runtime.rs",
       location: "fixtures/runtime.rs:11",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
+  test("scanner follows wrapped environment helpers and two-hop Self record wrappers", () => {
+    const fixture = `
+fn direct_env_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn trace_enabled() -> bool {
+  direct_env_enabled()
+}
+
+fn record_leaf(stage: &'static str) {
+  record(make_diagnostic_event(stage));
+}
+
+fn record_wrapper(stage: &'static str) {
+  Self::record_leaf(stage);
+}
+
+fn wrapped_gate_only() {
+  let stage = "wrapped_gate";
+  if trace_enabled() {
+    Self::record_wrapper(stage);
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/wrapped-helper-chain.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/wrapped-helper-chain.rs",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
+  test("scanner follows arbitrary and transitive environment aliases", () => {
+    const fixture = `
+fn arbitrary_alias_gate_only() {
+  let stage = "arbitrary_alias";
+  let gate = std::env::var_os("KOUSHI_SYNTH_TRACE").is_some();
+  let forwarded = gate;
+  if forwarded {
+    record(make_diagnostic_event(stage));
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/arbitrary-alias-chain.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/arbitrary-alias-chain.rs",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
+  test("scanner normalizes crate-qualified cross-file environment helpers", () => {
+    const crossFileHelperFixture = `
+pub(crate) fn enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+`;
+    const crossFileRuntimeFixture = `
+fn crate_qualified_gate_only() {
+  let stage = "crate_qualified";
+  if crate::trace_gate::enabled() {
+    record(make_diagnostic_event(stage));
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/trace_gate.rs", source: crossFileHelperFixture },
+      { relativePath: "fixtures/qualified-runtime.rs", source: crossFileRuntimeFixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/qualified-runtime.rs",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
+  test("scanner keeps balanced one-line scopes from duplicating findings", () => {
+    const fixture = `
+fn trace_enabled() -> bool { std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() }
+fn one_line_gate_only() { if trace_enabled() { record(make_diagnostic_event("one_line")); } }
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/one-line-scopes.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/one-line-scopes.rs",
+      line: 3,
+      location: "fixtures/one-line-scopes.rs:3",
       reason: GATED_DIAGNOSTIC_REASON
     });
   });
