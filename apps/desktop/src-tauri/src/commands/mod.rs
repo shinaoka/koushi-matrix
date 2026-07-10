@@ -7147,17 +7147,20 @@ mod tests {
             serde_json::json!({"kind":"token","value":"already_active"}),
             serde_json::json!({"kind":"token","value":"selected"}),
         )));
+        let serialized_snapshot =
+            serde_json::to_string(&snapshot).expect("parsed diagnostic snapshot should serialize");
         for private_value in [
             "synthetic-room-id",
+            "synthetic-query-text",
             "synthetic-event-id",
             "synthetic-user-id",
-            "synthetic-query-text",
             "synthetic-body-text",
+            "https://synthetic.example/path",
             "/synthetic/private/path",
         ] {
             assert!(
-                !stdout.contains(private_value),
-                "leaked {private_value}: {stdout}"
+                !serialized_snapshot.contains(private_value),
+                "diagnostic snapshot leaked {private_value}"
             );
         }
     }
