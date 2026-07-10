@@ -1398,12 +1398,17 @@ function runtimeDiagnosticStderrFindings(
 ): DiagnosticGateFinding[] {
   return sources.flatMap(({ relativePath, source }) => {
     const rawLines = productionRustLines(source);
-    const codeLines = lexicalRustView(rawLines.join("\n")).code.split("\n");
+    const code = lexicalRustView(rawLines.join("\n")).code;
+    const codeLines = code.split("\n");
+    const lineStarts = [0];
+    for (const line of codeLines.slice(0, -1)) {
+      lineStarts.push(lineStarts.at(-1)! + line.length + 1);
+    }
     return rawLines.flatMap((rawLine, index) => {
       const codeLine = codeLines[index];
       const reason = /\beprintln!\s*\(/.test(codeLine)
         ? "runtime diagnostic writes to stderr"
-        : removedDiagnosticEnvironmentLiteralInSyntax(codeLine, rawLine)
+        : removedDiagnosticEnvironmentLiteralInSyntax(code, lineStarts, index, rawLine)
           ? "runtime diagnostic environment gate remains"
           : null;
       return reason
@@ -1413,14 +1418,30 @@ function runtimeDiagnosticStderrFindings(
   });
 }
 
-function removedDiagnosticEnvironmentLiteralInSyntax(codeLine: string, rawLine: string): boolean {
+function removedDiagnosticEnvironmentLiteralInSyntax(
+  code: string,
+  lineStarts: readonly number[],
+  lineIndex: number,
+  rawLine: string
+): boolean {
   const includesRemovedLiteral = lexicalRustView(rawLine).stringValues.some((value) =>
     REMOVED_DIAGNOSTIC_ENV_LITERALS.includes(value)
   );
+  const codeLineStart = lineStarts[lineIndex];
+  const statementStart =
+    Math.max(
+      code.lastIndexOf(";", codeLineStart),
+      code.lastIndexOf("{", codeLineStart),
+      code.lastIndexOf("}", codeLineStart)
+    ) + 1;
+  const statementEndOffset = code.slice(codeLineStart).search(/[;{}]/);
+  const statementEnd =
+    statementEndOffset === -1 ? code.length : codeLineStart + statementEndOffset + 1;
+  const syntax = code.slice(statementStart, statementEnd);
   return (
     includesRemovedLiteral &&
-    (/\bconst\s+[A-Z][A-Z0-9_]*\s*:\s*&str\s*=/.test(codeLine) ||
-      /\bstd::env::(?:var_os|var)\s*\(/.test(codeLine))
+    (/\bconst\s+[A-Z][A-Z0-9_]*\s*:\s*&str\s*=/.test(syntax) ||
+      /\bstd::env::(?:var_os|var)\s*\(/.test(syntax))
   );
 }
 
@@ -2544,6 +2565,13 @@ fn warning() { eprintln!("real"); }
 fn gate() {
   if std::env::var_os("KOUSHI_SEARCH_TRACE").is_some() {}
 }
+const MULTILINE_TRACE: &str =
+  "KOUSHI_UNREAD_TRACE";
+fn multiline_gate() {
+  if std::env::var_os(
+    "KOUSHI_STARTUP_TRACE",
+  ).is_some() {}
+}
 #[cfg(test)]
 fn test_only() {
   eprintln!("test only");
@@ -2569,6 +2597,18 @@ fn test_only() {
         relativePath: "fixtures/runtime-stderr.rs",
         line: 7,
         location: "fixtures/runtime-stderr.rs:7",
+        reason: "runtime diagnostic environment gate remains"
+      },
+      {
+        relativePath: "fixtures/runtime-stderr.rs",
+        line: 10,
+        location: "fixtures/runtime-stderr.rs:10",
+        reason: "runtime diagnostic environment gate remains"
+      },
+      {
+        relativePath: "fixtures/runtime-stderr.rs",
+        line: 13,
+        location: "fixtures/runtime-stderr.rs:13",
         reason: "runtime diagnostic environment gate remains"
       }
     ]);
