@@ -137,6 +137,41 @@ pub(crate) fn handle_scheduled_send_created(
     Vec::new()
 }
 
+pub(crate) fn handle_scheduled_send_dispatch_started(
+    state: &mut AppState,
+    scheduled_id: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    state.scheduled_sends.start_local_dispatch(&scheduled_id);
+    Vec::new()
+}
+
+pub(crate) fn handle_scheduled_send_dispatch_failed(
+    state: &mut AppState,
+    scheduled_id: String,
+    retry_at_ms: u64,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+
+    let Some(item) = state
+        .scheduled_sends
+        .retry_local_dispatch(&scheduled_id, retry_at_ms)
+    else {
+        return Vec::new();
+    };
+    let room_id = item.room_id;
+    if state.timeline.room_id.as_deref() == Some(room_id.as_str()) {
+        refresh_timeline_scheduled_sends(state);
+        return vec![AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id })];
+    }
+    Vec::new()
+}
+
 pub(crate) fn handle_scheduled_send_rescheduled(
     state: &mut AppState,
     scheduled_id: String,

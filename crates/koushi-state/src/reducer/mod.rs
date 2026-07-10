@@ -712,6 +712,13 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::ScheduledSendCreated { item } => {
             timeline::handle_scheduled_send_created(state, item)
         }
+        AppAction::ScheduledSendDispatchStarted { scheduled_id } => {
+            timeline::handle_scheduled_send_dispatch_started(state, scheduled_id)
+        }
+        AppAction::ScheduledSendDispatchFailed {
+            scheduled_id,
+            retry_at_ms,
+        } => timeline::handle_scheduled_send_dispatch_failed(state, scheduled_id, retry_at_ms),
         AppAction::ScheduledSendRescheduled {
             scheduled_id,
             send_at_ms,

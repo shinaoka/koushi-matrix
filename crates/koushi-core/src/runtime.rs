@@ -17,9 +17,9 @@ use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, reco
 use koushi_state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityRowKind,
     ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState, ComposerDraftStore,
-    MentionIntent, ProfileUpdateRequest, RoomNotificationMode, RoomSummary,
-    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchScope as AppSearchScope,
-    SessionState, SpaceSummary, ThreadPaneState, UiEvent, reduce, room_activity_unread_count,
+    ProfileUpdateRequest, RoomNotificationMode, RoomSummary, ScheduledSendCapability,
+    ScheduledSendHandle, ScheduledSendItem, SearchScope as AppSearchScope, SessionState,
+    SpaceSummary, ThreadPaneState, UiEvent, reduce, room_activity_unread_count,
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
@@ -977,25 +977,8 @@ fn current_epoch_ms() -> u64 {
         .unwrap_or_default()
 }
 
-fn scheduled_send_id(request_id: RequestId) -> String {
-    format!(
-        "scheduled-{}-{}",
-        request_id.connection_id.0, request_id.sequence
-    )
-}
-
-fn scheduled_send_transaction_id(scheduled_id: &str) -> String {
-    let sanitized = scheduled_id
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-    format!("desktop-{sanitized}")
+fn scheduled_send_id() -> String {
+    format!("scheduled-{}", matrix_sdk::ruma::TransactionId::new())
 }
 
 impl AppActor {
@@ -1251,9 +1234,18 @@ impl AppActor {
             }
         }
         if previous_scheduled_sends != self.state.scheduled_sends {
-            let target_session =
-                scheduled_send_session_key(&self.state).or(previous_scheduled_session);
-            if let Some(key_id) = target_session {
+            let current_scheduled_session = scheduled_send_session_key(&self.state);
+            let cleared_for_session_transition = self.state.scheduled_sends.items.is_empty()
+                && previous_scheduled_session.is_some()
+                && current_scheduled_session.is_none();
+
+            if cleared_for_session_transition {
+                // `clear_session_views` intentionally clears the in-memory
+                // projection on lock, logout, and account switch. That is not
+                // a user cancellation, so do not overwrite the account's
+                // persisted scheduled sends with an empty store.
+                self.scheduled_sends_loaded_for = None;
+            } else if let Some(key_id) = current_scheduled_session.or(previous_scheduled_session) {
                 self.persist_scheduled_sends(key_id).await;
             }
         }
@@ -1414,6 +1406,9 @@ impl AppActor {
     }
 
     fn scheduled_send_delay(&self) -> Option<Duration> {
+        if !matches!(self.state.session, SessionState::Ready(_)) {
+            return None;
+        }
         let next_send_at_ms = self.state.scheduled_sends.next_local_send_at_ms()?;
         let now_ms = current_epoch_ms();
         Some(Duration::from_millis(
@@ -1422,6 +1417,9 @@ impl AppActor {
     }
 
     async fn dispatch_due_scheduled_send(&mut self) -> bool {
+        if !matches!(self.state.session, SessionState::Ready(_)) {
+            return false;
+        }
         let Some(item) = self
             .state
             .scheduled_sends
@@ -1433,28 +1431,41 @@ impl AppActor {
     }
 
     async fn dispatch_scheduled_send(&mut self, item: ScheduledSendItem) -> bool {
+        let Some(origin_session_key) = scheduled_send_session_key(&self.state) else {
+            return false;
+        };
+        let scheduled_id = item.scheduled_id.clone();
         let effects = self
-            .reduce_app_action(AppAction::ScheduledSendDispatched {
-                scheduled_id: item.scheduled_id.clone(),
+            .reduce_app_action(AppAction::ScheduledSendDispatchStarted {
+                scheduled_id: scheduled_id.clone(),
             })
             .await;
         self.handle_ui_event_effects(&effects).await;
 
-        let Some(account_key) = self.current_account_key() else {
-            return !effects.is_empty();
-        };
         let request_id = self.next_internal_request_id();
-        self.send_timeline_command_or_fail(
-            request_id,
-            TimelineCommand::SendText {
+        if !self
+            .account_actor
+            .send(AccountMessage::DispatchLocalScheduledSend {
                 request_id,
-                key: TimelineKey::room(account_key, item.room_id),
-                transaction_id: scheduled_send_transaction_id(&item.scheduled_id),
+                origin_session_key,
+                scheduled_id: scheduled_id.clone(),
+                room_id: item.room_id,
                 body: item.body,
-                mentions: MentionIntent::default(),
-            },
-        )
-        .await;
+            })
+            .await
+        {
+            self.emit(CoreEvent::OperationFailed {
+                request_id,
+                failure: CoreFailure::ShutdownFailed,
+            });
+            let retry_effects = self
+                .reduce_app_action(AppAction::ScheduledSendDispatchFailed {
+                    scheduled_id,
+                    retry_at_ms: crate::scheduled_send::local_scheduled_send_retry_at_ms(),
+                })
+                .await;
+            self.handle_ui_event_effects(&retry_effects).await;
+        }
         true
     }
 
@@ -1633,7 +1644,7 @@ impl AppActor {
                     if self.state.scheduled_sends.capability
                         != ScheduledSendCapability::LocalFallback
                     {
-                        let scheduled_id = scheduled_send_id(request_id);
+                        let scheduled_id = scheduled_send_id();
                         if !self
                             .account_actor
                             .send(AccountMessage::ScheduleServerDelayedSend {
@@ -1662,11 +1673,12 @@ impl AppActor {
                     self.handle_app_effects(request_id, capability_effects)
                         .await;
                     let item = ScheduledSendItem {
-                        scheduled_id: scheduled_send_id(request_id),
+                        scheduled_id: scheduled_send_id(),
                         room_id,
                         body,
                         send_at_ms,
                         handle: ScheduledSendHandle::Local,
+                        is_dispatching: false,
                     };
                     let effects = self
                         .reduce_app_action(AppAction::ScheduledSendCreated { item })

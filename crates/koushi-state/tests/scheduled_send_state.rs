@@ -58,6 +58,7 @@ fn scheduled_item(id: &str, room_id: &str, send_at_ms: u64) -> ScheduledSendItem
         body: "scheduled body".to_owned(),
         send_at_ms,
         handle: ScheduledSendHandle::Local,
+        is_dispatching: false,
     }
 }
 
@@ -240,6 +241,7 @@ fn scheduled_send_debug_redacts_body_room_and_server_handle() {
         handle: ScheduledSendHandle::Server {
             delay_id: "server-delay-secret".to_owned(),
         },
+        is_dispatching: false,
     };
 
     let debug = format!("{item:?}");

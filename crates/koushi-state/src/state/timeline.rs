@@ -294,6 +294,8 @@ pub struct ScheduledSendItem {
     pub body: String,
     pub send_at_ms: u64,
     pub handle: ScheduledSendHandle,
+    #[serde(skip)]
+    pub is_dispatching: bool,
 }
 
 impl fmt::Debug for ScheduledSendItem {
@@ -376,6 +378,30 @@ impl ScheduledSendStore {
         let item = self.items.get_mut(scheduled_id)?;
         item.send_at_ms = send_at_ms;
         item.handle = handle;
+        item.is_dispatching = false;
+        Some(item.clone())
+    }
+
+    pub fn start_local_dispatch(&mut self, scheduled_id: &str) -> Option<ScheduledSendItem> {
+        let item = self.items.get_mut(scheduled_id)?;
+        if !matches!(item.handle, ScheduledSendHandle::Local) {
+            return None;
+        }
+        item.is_dispatching = true;
+        Some(item.clone())
+    }
+
+    pub fn retry_local_dispatch(
+        &mut self,
+        scheduled_id: &str,
+        retry_at_ms: u64,
+    ) -> Option<ScheduledSendItem> {
+        let item = self.items.get_mut(scheduled_id)?;
+        if !matches!(item.handle, ScheduledSendHandle::Local) {
+            return None;
+        }
+        item.is_dispatching = false;
+        item.send_at_ms = retry_at_ms;
         Some(item.clone())
     }
 
@@ -395,6 +421,7 @@ impl ScheduledSendStore {
         self.items
             .values()
             .filter(|item| matches!(item.handle, ScheduledSendHandle::Local))
+            .filter(|item| !item.is_dispatching)
             .filter(|item| item.send_at_ms <= now_ms)
             .min_by(|left, right| {
                 left.send_at_ms
@@ -412,6 +439,7 @@ impl ScheduledSendStore {
         self.items
             .values()
             .filter(|item| matches!(item.handle, ScheduledSendHandle::Local))
+            .filter(|item| !item.is_dispatching)
             .map(|item| item.send_at_ms)
             .min()
     }

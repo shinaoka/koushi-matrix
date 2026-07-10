@@ -72,7 +72,9 @@ use crate::search::SearchActorHandle;
 use crate::startup_trace::{self, StartupPhase};
 use crate::store::{StoreActor, account_key_from_info, session_key_id_from_info};
 use crate::sync::{SyncActorHandle, SyncMessage};
-use crate::timeline::{TimelineManagerHandle, TimelineMessage};
+use crate::timeline::{
+    TimelineManagerHandle, TimelineMessage, build_room_message_content_from_composer_body,
+};
 
 /// "Credential store healthy, but no stored session for that account"
 /// during restore/switch (canon: `CoreFailure::SessionNotFound`).
@@ -89,6 +91,13 @@ const OIDC_REDIRECT_URI: &str = "koushi-desktop://auth/callback";
 /// Redacted message used in reducer error projections (never raw SDK text).
 const RESTORE_FAILED_MESSAGE: &str = "session restore failed";
 const INCOMING_VERIFICATION_FLOW_ID_BASE: u64 = 1 << 63;
+
+fn scheduled_dispatch_targets_active_session(
+    active_session_key: Option<&SessionKeyId>,
+    origin_session_key: &SessionKeyId,
+) -> bool {
+    active_session_key == Some(origin_session_key)
+}
 
 fn state_search_scope(scope: &crate::command::SearchScope) -> koushi_state::SearchScope {
     match scope {
@@ -154,6 +163,13 @@ pub enum AccountMessage {
         room_id: String,
         body: String,
         send_at_ms: u64,
+    },
+    DispatchLocalScheduledSend {
+        request_id: RequestId,
+        origin_session_key: SessionKeyId,
+        scheduled_id: String,
+        room_id: String,
+        body: String,
     },
     CancelServerDelayedSend {
         request_id: RequestId,
@@ -513,6 +529,22 @@ impl AccountActor {
                     )
                     .await;
                 }
+                AccountMessage::DispatchLocalScheduledSend {
+                    request_id,
+                    origin_session_key,
+                    scheduled_id,
+                    room_id,
+                    body,
+                } => {
+                    self.handle_dispatch_local_scheduled_send(
+                        request_id,
+                        origin_session_key,
+                        scheduled_id,
+                        room_id,
+                        body,
+                    )
+                    .await;
+                }
                 AccountMessage::CancelServerDelayedSend {
                     request_id,
                     scheduled_id,
@@ -833,6 +865,7 @@ impl AccountActor {
                                 body,
                                 send_at_ms,
                                 handle: ScheduledSendHandle::Server { delay_id },
+                                is_dispatching: false,
                             },
                         },
                     ])
@@ -854,9 +887,100 @@ impl AccountActor {
                     body,
                     send_at_ms,
                     handle: ScheduledSendHandle::Local,
+                    is_dispatching: false,
                 },
             },
         ])
+        .await;
+    }
+
+    async fn handle_dispatch_local_scheduled_send(
+        &self,
+        request_id: RequestId,
+        origin_session_key: SessionKeyId,
+        scheduled_id: String,
+        room_id: String,
+        body: String,
+    ) {
+        let retry_at_ms = crate::scheduled_send::local_scheduled_send_retry_at_ms();
+        if !scheduled_dispatch_targets_active_session(
+            self.session_key_id.as_ref(),
+            &origin_session_key,
+        ) {
+            self.retry_local_scheduled_send(scheduled_id, retry_at_ms)
+                .await;
+            return;
+        }
+        let Some(session) = &self.session else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            self.retry_local_scheduled_send(scheduled_id, retry_at_ms)
+                .await;
+            return;
+        };
+        let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id) {
+            Ok(room_id) => room_id,
+            Err(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+                self.retry_local_scheduled_send(scheduled_id, retry_at_ms)
+                    .await;
+                return;
+            }
+        };
+        let Some(room) = session.client().get_room(&room_id) else {
+            self.emit_failure(
+                request_id,
+                CoreFailure::TimelineOperationFailed {
+                    kind: TimelineFailureKind::Sdk,
+                },
+            );
+            self.retry_local_scheduled_send(scheduled_id, retry_at_ms)
+                .await;
+            return;
+        };
+        let content = match build_room_message_content_from_composer_body(
+            &body,
+            koushi_state::MentionIntent::default(),
+        ) {
+            Ok(content) => content,
+            Err(kind) => {
+                self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
+                self.retry_local_scheduled_send(scheduled_id, retry_at_ms)
+                    .await;
+                return;
+            }
+        };
+
+        let transaction_id = matrix_sdk::ruma::OwnedTransactionId::from(
+            crate::scheduled_send::scheduled_send_transaction_id(&scheduled_id),
+        );
+        match room.send(content).with_transaction_id(transaction_id).await {
+            Ok(_) => {
+                self.send_actions(vec![AppAction::ScheduledSendDispatched { scheduled_id }])
+                    .await;
+            }
+            Err(_) => {
+                self.emit_failure(
+                    request_id,
+                    CoreFailure::TimelineOperationFailed {
+                        kind: TimelineFailureKind::Sdk,
+                    },
+                );
+                self.retry_local_scheduled_send(scheduled_id, retry_at_ms)
+                    .await;
+            }
+        }
+    }
+
+    async fn retry_local_scheduled_send(&self, scheduled_id: String, retry_at_ms: u64) {
+        self.send_actions(vec![AppAction::ScheduledSendDispatchFailed {
+            scheduled_id,
+            retry_at_ms,
+        }])
         .await;
     }
 
@@ -5665,6 +5789,30 @@ mod tests {
 
         assert_eq!(request_id.connection_id, RuntimeConnectionId(0));
         assert_eq!(request_id.sequence, INCOMING_VERIFICATION_FLOW_ID_BASE);
+    }
+
+    #[test]
+    fn scheduled_dispatch_targets_its_origin_session() {
+        let origin = SessionKeyId {
+            homeserver: "https://example.test".to_owned(),
+            user_id: "@alice:example.test".to_owned(),
+            device_id: "ALICE".to_owned(),
+        };
+        let switched = SessionKeyId {
+            homeserver: "https://example.test".to_owned(),
+            user_id: "@bob:example.test".to_owned(),
+            device_id: "BOB".to_owned(),
+        };
+
+        assert!(scheduled_dispatch_targets_active_session(
+            Some(&origin),
+            &origin
+        ));
+        assert!(!scheduled_dispatch_targets_active_session(
+            Some(&switched),
+            &origin
+        ));
+        assert!(!scheduled_dispatch_targets_active_session(None, &origin));
     }
 
     /// Network-free: restoring an account with no stored session must emit the

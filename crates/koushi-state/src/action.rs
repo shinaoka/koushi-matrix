@@ -681,6 +681,13 @@ pub enum AppAction {
     ScheduledSendCreated {
         item: ScheduledSendItem,
     },
+    ScheduledSendDispatchStarted {
+        scheduled_id: String,
+    },
+    ScheduledSendDispatchFailed {
+        scheduled_id: String,
+        retry_at_ms: u64,
+    },
     ScheduledSendRescheduled {
         scheduled_id: String,
         send_at_ms: u64,
