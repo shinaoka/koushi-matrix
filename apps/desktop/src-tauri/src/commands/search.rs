@@ -1,5 +1,6 @@
 use super::*;
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
+use std::{future::Future, pin::Pin};
 
 fn search_trace_enabled() -> bool {
     std::env::var_os("KOUSHI_SEARCH_TRACE").is_some()
@@ -64,8 +65,31 @@ pub async fn submit_search(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
     let search_scope = resolve_search_scope(scope, state.inner()).await;
+    submit_search_production_path(
+        query,
+        scope,
+        search_scope,
+        state.inner(),
+        &ProductionSearchPathIo,
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+/// Command-body boundary used by `submit_search` and its Tauri-adapter test.
+/// Keeping the runtime submission and correlated wait here exercises the same
+/// production path without requiring a platform-specific `AppHandle` in the
+/// mock-runtime child.
+pub(crate) async fn submit_search_production_path(
+    query: String,
+    scope: SearchScopeKind,
+    search_scope: SearchScope,
+    state: &CoreRuntimeState,
+    io: &impl SearchPathIo,
+) -> Result<(), String> {
     let mut event_conn = state.runtime.attach();
-    let request_id = next_request_id(state.inner()).await;
+    let request_id = next_request_id(state).await;
     record_search_trace(scope, &search_scope, &query, request_id);
     if search_trace_enabled() {
         eprintln!(
@@ -77,14 +101,51 @@ pub async fn submit_search(
             query.trim().chars().count()
         );
     }
-    submit_core_command(
-        state.inner(),
+    io.submit(
+        state,
         build_submit_search_command(request_id, query, search_scope),
     )
     .await?;
-    wait_for_search_started(&mut event_conn, request_id, SEARCH_EVENT_TIMEOUT).await?;
-    update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
+    io.wait(&mut event_conn, request_id).await?;
+    Ok(())
+}
+
+pub(crate) type SearchPathFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+
+pub(crate) trait SearchPathIo {
+    fn submit<'a>(
+        &'a self,
+        state: &'a CoreRuntimeState,
+        command: CoreCommand,
+    ) -> SearchPathFuture<'a>;
+    fn wait<'a>(
+        &'a self,
+        connection: &'a mut CoreConnection,
+        request_id: RequestId,
+    ) -> SearchPathFuture<'a>;
+}
+
+struct ProductionSearchPathIo;
+
+impl SearchPathIo for ProductionSearchPathIo {
+    fn submit<'a>(
+        &'a self,
+        state: &'a CoreRuntimeState,
+        command: CoreCommand,
+    ) -> SearchPathFuture<'a> {
+        Box::pin(async move { submit_core_command(state, command).await })
+    }
+
+    fn wait<'a>(
+        &'a self,
+        connection: &'a mut CoreConnection,
+        request_id: RequestId,
+    ) -> SearchPathFuture<'a> {
+        Box::pin(async move {
+            wait_for_search_started(connection, request_id, SEARCH_EVENT_TIMEOUT).await
+        })
+    }
 }
 
 #[tauri::command]

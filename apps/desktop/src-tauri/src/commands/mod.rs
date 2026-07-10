@@ -10,16 +10,18 @@
 //! (Secret-bearing QA helpers remain behind `#[cfg(any(debug_assertions, test))]`.)
 
 use std::{
+    future::Future,
     path::PathBuf,
+    pin::Pin,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
 use koushi_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
-    CoreFailure, CreateRoomOptions, ImageUploadCompressionPolicy, ImageUploadCompressionState,
-    ImageUploadDimensions, ImageUploadVariantKind, IntentNoOpReason, IntentOutcome,
-    MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent,
+    CoreFailure, CreateRoomOptions, EventStreamLag, ImageUploadCompressionPolicy,
+    ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantKind, IntentNoOpReason,
+    IntentOutcome, MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent,
     RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand, SearchEvent, SearchScope,
     SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SetAvatarRequest, SyncCommand,
     TimelineCommand, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineKey,
@@ -173,7 +175,7 @@ fn record_select_intent_trace(
     state_delta: u32,
 ) {
     let (outcome_token, active) = match outcome {
-        IntentOutcome::Committed => ("committed", "unknown"),
+        IntentOutcome::Committed => ("committed", "selected"),
         IntentOutcome::BenignNoOp(IntentNoOpReason::AlreadyActive) => {
             ("already_active", "selected")
         }
@@ -201,6 +203,25 @@ fn record_select_intent_trace(
         state_delta,
         active,
     );
+}
+
+trait SelectEventSource {
+    fn snapshot(&self) -> koushi_state::AppState;
+    fn recv_event(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<CoreEvent, EventStreamLag>> + Send + '_>>;
+}
+
+impl SelectEventSource for CoreConnection {
+    fn snapshot(&self) -> koushi_state::AppState {
+        CoreConnection::snapshot(self)
+    }
+
+    fn recv_event(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<CoreEvent, EventStreamLag>> + Send + '_>> {
+        Box::pin(CoreConnection::recv_event(self))
+    }
 }
 
 /// Read the latest `AppStateSnapshot` and convert to `FrontendDesktopSnapshot`.
@@ -660,8 +681,8 @@ async fn wait_for_main_timeline_anchor(
     }
 }
 
-async fn wait_for_selected_room(
-    event_conn: &mut CoreConnection,
+async fn wait_for_selected_room<S: SelectEventSource + ?Sized>(
+    event_conn: &mut S,
     select_request_id: RequestId,
     selected_room_id: &str,
     timeout: std::time::Duration,
@@ -3233,12 +3254,12 @@ mod tests {
     };
     use koushi_core::AccountKey;
     use koushi_core::{
-        AccountCommand, AppCommand, CoreCommand, CreateRoomOptions, CreateRoomParentSpace,
-        CreateRoomVisibility, ImageUploadCompressionPolicy, ImageUploadCompressionState,
-        ImageUploadDimensions, ImageUploadVariantInfo, ImageUploadVariantKind, IntentNoOpReason,
-        IntentOutcome, MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand,
-        SearchCommand, SearchScope, SyncCommand, TimelineCommand, UploadMediaKind,
-        UploadMediaThumbnail,
+        AccountCommand, AppCommand, CoreCommand, CoreConnection, CoreEvent, CreateRoomOptions,
+        CreateRoomParentSpace, CreateRoomVisibility, ImageUploadCompressionPolicy,
+        ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantInfo,
+        ImageUploadVariantKind, IntentNoOpReason, IntentOutcome, MediaDownloadSelection,
+        PaginationDirection, RequestId, RoomCommand, SearchCommand, SearchScope, SyncCommand,
+        TimelineCommand, UploadMediaKind, UploadMediaThumbnail,
     };
     use koushi_state::{
         ActivityMarkReadTarget, ActivityTab, AppearanceSettings, ImageUploadCompressionMode,
@@ -3251,7 +3272,6 @@ mod tests {
 
     use super::QaControlCommand;
     use super::SearchScopeKind;
-    use super::record_select_trace;
     use super::{
         build_accept_invite_command, build_accept_verification_command,
         build_bootstrap_cross_signing_command, build_bootstrap_secure_backup_command,
@@ -3298,6 +3318,66 @@ mod tests {
         resolve_search_scope_from_active_room, trace_tauri_timeline_command,
         trace_tauri_timeline_command_elapsed,
     };
+    use std::collections::VecDeque;
+
+    struct ScriptedSelectSource {
+        snapshot: AppState,
+        events: VecDeque<Result<CoreEvent, koushi_core::EventStreamLag>>,
+    }
+
+    struct ScriptedSearchPathIo;
+
+    const SYNTHETIC_QUERY: &str = "  synthetic-query-text event synthetic-event-id user synthetic-user-id body synthetic-body-text url https://synthetic.example/path absolute /synthetic/private/path  ";
+
+    impl super::search::SearchPathIo for ScriptedSearchPathIo {
+        fn submit<'a>(
+            &'a self,
+            _state: &'a super::CoreRuntimeState,
+            command: CoreCommand,
+        ) -> super::search::SearchPathFuture<'a> {
+            match command {
+                CoreCommand::Search(SearchCommand::Query { query, scope, .. }) => {
+                    assert_eq!(query, SYNTHETIC_QUERY);
+                    assert_eq!(
+                        scope,
+                        SearchScope::CurrentRoom {
+                            room_id: "synthetic-room-id".to_owned()
+                        }
+                    );
+                }
+                other => panic!("unexpected search command: {other:?}"),
+            }
+            Box::pin(std::future::ready(Ok(())))
+        }
+
+        fn wait<'a>(
+            &'a self,
+            _connection: &'a mut CoreConnection,
+            _request_id: RequestId,
+        ) -> super::search::SearchPathFuture<'a> {
+            Box::pin(std::future::ready(Ok(())))
+        }
+    }
+
+    impl super::SelectEventSource for ScriptedSelectSource {
+        fn snapshot(&self) -> AppState {
+            self.snapshot.clone()
+        }
+
+        fn recv_event(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<CoreEvent, koushi_core::EventStreamLag>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(std::future::ready(self.events.pop_front().unwrap_or_else(
+                || Err(koushi_core::EventStreamLag { skipped: 0 }),
+            )))
+        }
+    }
     use koushi_state::{
         PresenceKind, RoomHistoryVisibility, RoomJoinRule, RoomModerationAction, RoomSettingChange,
         RoomSummary, RoomTagKind, RoomTags,
@@ -6296,6 +6376,7 @@ mod tests {
     #[test]
     fn submit_search_returns_after_correlated_search_start_before_result_completion() {
         let source = commands_source();
+        let search_source = include_str!("search.rs");
         let fn_name = "pub async fn submit_search";
 
         let fn_offset = source
@@ -6307,34 +6388,44 @@ mod tests {
             .expect("start_room_crawl command should follow submit_search");
         let command_source = &rest[..end];
 
-        let attach_offset = command_source
+        let helper_offset = search_source
+            .find("pub(crate) async fn submit_search_production_path")
+            .expect("submit_search should use the shared production path");
+        let helper_source = &search_source[helper_offset..];
+        let attach_offset = helper_source
             .find("let mut event_conn = state.runtime.attach()")
-            .expect("submit_search should attach a transient event listener");
-        let request_offset = command_source
-            .find("let request_id = next_request_id(state.inner()).await")
-            .expect("submit_search should allocate request ids from the command connection");
-        let submit_offset = command_source
-            .find("submit_core_command")
-            .expect("submit_search should submit through the command connection");
-        let wait_offset = command_source
-            .find("wait_for_search_started")
-            .expect("submit_search should wait only for the correlated searching state");
+            .expect("production search path should attach a transient event listener");
+        let request_offset = helper_source
+            .find("let request_id = next_request_id(state).await")
+            .expect("production search path should allocate request ids");
+        let submit_offset = helper_source
+            .find("io.submit")
+            .expect("production search path should submit through its internal port");
+        let wait_offset = helper_source
+            .find("io.wait")
+            .expect("production search path should wait for correlated search start");
         let snapshot_offset = command_source
             .find("current_snapshot")
             .expect("submit_search should return a snapshot");
         assert!(
             attach_offset < request_offset
                 && request_offset < submit_offset
-                && submit_offset < wait_offset
-                && wait_offset < snapshot_offset,
-            "submit_search should return the searching snapshot and let results arrive via state events"
+                && submit_offset < wait_offset,
+            "production search path should return after correlated search start"
+        );
+        let call_offset = command_source
+            .find("submit_search_production_path")
+            .expect("submit_search should call the shared production path");
+        assert!(
+            call_offset < snapshot_offset,
+            "submit_search should return the searching snapshot after the production path"
         );
         assert!(
-            !command_source.contains("let request_id = event_conn.next_request_id()"),
+            !helper_source.contains("let request_id = event_conn.next_request_id()"),
             "submit_search must not use transient event-connection sequence numbers for state correlation"
         );
         assert!(
-            !command_source.contains("wait_for_search_completed"),
+            !helper_source.contains("wait_for_search_completed"),
             "submit_search must not block the renderer on search result completion"
         );
     }
@@ -6900,8 +6991,14 @@ mod tests {
 
     #[test]
     fn select_diagnostics_keep_intent_outcomes_distinct() {
-        record_select_trace("ok_intent", "committed", 0, 0, 0, "unknown");
-        record_select_trace("ok_intent", "already_active", 0, 0, 0, "selected");
+        super::record_select_intent_trace("ok_intent", &IntentOutcome::Committed, 0, 0, 0);
+        super::record_select_intent_trace(
+            "ok_intent",
+            &IntentOutcome::BenignNoOp(IntentNoOpReason::AlreadyActive),
+            0,
+            0,
+            0,
+        );
 
         let records = koushi_diagnostics::snapshot().records;
         let select_records = records
@@ -6911,17 +7008,38 @@ mod tests {
             .take(2)
             .collect::<Vec<_>>();
         assert_eq!(select_records.len(), 2);
-        let formatted = select_records
+        let pairs = select_records
             .iter()
-            .map(|record| koushi_diagnostics::format_event(&record.event))
-            .collect::<Vec<_>>();
-        assert!(
-            formatted.iter().any(|line| {
-                line.contains("outcome=committed") && line.contains("active=unknown")
+            .map(|record| {
+                let fields = &record.event.fields;
+                let outcome = fields
+                    .iter()
+                    .find(|field| field.key == "outcome")
+                    .expect("intent record should include outcome");
+                let active = fields
+                    .iter()
+                    .find(|field| field.key == "active")
+                    .expect("intent record should include active");
+                (outcome.value.clone(), active.value.clone())
             })
-        );
-        assert!(formatted.iter().any(|line| {
-            line.contains("outcome=already_active") && line.contains("active=selected")
+            .collect::<Vec<_>>();
+        assert!(pairs.iter().any(|(outcome, active)| {
+            matches!(
+                (outcome, active),
+                (
+                    koushi_diagnostics::DiagnosticValue::Token("committed"),
+                    koushi_diagnostics::DiagnosticValue::Token("selected")
+                )
+            )
+        }));
+        assert!(pairs.iter().any(|(outcome, active)| {
+            matches!(
+                (outcome, active),
+                (
+                    koushi_diagnostics::DiagnosticValue::Token("already_active"),
+                    koushi_diagnostics::DiagnosticValue::Token("selected")
+                )
+            )
         }));
     }
 
@@ -6940,25 +7058,95 @@ mod tests {
             .expect("env-unset diagnostic child should run");
         assert!(output.status.success(), "child failed: {output:?}");
         let stdout = String::from_utf8(output.stdout).expect("child stdout should be utf8");
-        assert!(stdout.contains("\"source\":\"desktop.search\""));
-        assert!(stdout.contains("\"source\":\"desktop.select\""));
-        assert!(
-            stdout.contains("\"key\":\"query_bytes\",\"value\":{\"kind\":\"count\",\"value\":20}")
+        let snapshot: serde_json::Value = serde_json::from_str(
+            stdout
+                .lines()
+                .find(|line| line.starts_with('{'))
+                .expect("child should print one JSON snapshot"),
+        )
+        .expect("child output should be a JSON snapshot");
+        let records = snapshot["records"]
+            .as_array()
+            .expect("records should be an array");
+        let fields = |source: &str, stage: &str| {
+            records
+                .iter()
+                .find(|record| {
+                    record["event"]["source"] == source && record["event"]["stage"] == stage
+                })
+                .and_then(|record| record["event"]["fields"].as_array())
+                .expect("expected diagnostic record")
+        };
+        let field = |fields: &[serde_json::Value], key: &str| {
+            fields
+                .iter()
+                .find(|field| field["key"] == key)
+                .map(|field| field["value"].clone())
+                .expect("expected typed field")
+        };
+        let search_fields = fields("desktop.search", "submit");
+        assert_eq!(
+            field(search_fields, "ui_scope"),
+            serde_json::json!({"kind":"token","value":"current_room"})
         );
-        assert!(
-            stdout.contains("\"key\":\"query_chars\",\"value\":{\"kind\":\"count\",\"value\":20}")
+        assert_eq!(
+            field(search_fields, "resolved_scope"),
+            serde_json::json!({"kind":"token","value":"current_room"})
         );
-        assert!(stdout.contains(
-            "\"key\":\"outcome\",\"value\":{\"kind\":\"token\",\"value\":\"committed\"}"
-        ));
-        assert!(stdout.contains(
-            "\"key\":\"outcome\",\"value\":{\"kind\":\"token\",\"value\":\"already_active\"}"
-        ));
-        assert!(
-            stdout.contains(
-                "\"key\":\"active\",\"value\":{\"kind\":\"token\",\"value\":\"selected\"}"
-            )
+        assert_eq!(
+            field(search_fields, "query_bytes"),
+            serde_json::json!({"kind":"count","value":161})
         );
+        assert_eq!(
+            field(search_fields, "query_chars"),
+            serde_json::json!({"kind":"count","value":161})
+        );
+        assert_eq!(field(search_fields, "request_id")["kind"], "request_id");
+
+        let select_fields = records
+            .iter()
+            .filter(|record| {
+                record["event"]["source"] == "desktop.select"
+                    && record["event"]["stage"] == "ok_intent"
+            })
+            .map(|record| record["event"]["fields"].as_array().expect("select fields"))
+            .collect::<Vec<_>>();
+        assert_eq!(select_fields.len(), 2);
+        for fields in &select_fields {
+            assert_eq!(
+                field(fields, "events"),
+                serde_json::json!({"kind":"count","value":1})
+            );
+            assert_eq!(
+                field(fields, "state_changed"),
+                serde_json::json!({"kind":"count","value":0})
+            );
+            assert_eq!(
+                field(fields, "state_delta"),
+                serde_json::json!({"kind":"count","value":0})
+            );
+            assert_eq!(
+                field(fields, "active"),
+                serde_json::json!({"kind":"token","value":"selected"})
+            );
+        }
+        let outcome_active = select_fields
+            .iter()
+            .map(|fields| {
+                (
+                    field(fields, "outcome").clone(),
+                    field(fields, "active").clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(outcome_active.contains(&(
+            serde_json::json!({"kind":"token","value":"committed"}),
+            serde_json::json!({"kind":"token","value":"selected"}),
+        )));
+        assert!(outcome_active.contains(&(
+            serde_json::json!({"kind":"token","value":"already_active"}),
+            serde_json::json!({"kind":"token","value":"selected"}),
+        )));
         for private_value in [
             "synthetic-room-id",
             "synthetic-event-id",
@@ -6980,18 +7168,6 @@ mod tests {
         assert!(std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_none());
         assert!(std::env::var_os("KOUSHI_SEARCH_TRACE").is_none());
 
-        super::search::record_search_trace(
-            SearchScopeKind::CurrentRoom,
-            &SearchScope::CurrentRoom {
-                room_id: "synthetic-room-id".to_owned(),
-            },
-            "synthetic-query-text",
-            RequestId {
-                connection_id: koushi_core::RuntimeConnectionId(101),
-                sequence: 9,
-            },
-        );
-
         let async_runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
@@ -6999,27 +7175,48 @@ mod tests {
         async_runtime.block_on(async {
             let data_dir = tempfile::tempdir().expect("runtime data dir should be created");
             let runtime = koushi_core::CoreRuntime::start_with_data_dir(data_dir.path().to_owned());
-            let mut connection = runtime.attach();
-            let connection_id = connection.connection_id();
-            let _ = super::wait_for_selected_room(
-                &mut connection,
-                RequestId {
-                    connection_id,
-                    sequence: 1,
+            let connection = runtime.attach();
+            let state = super::CoreRuntimeState {
+                runtime,
+                connection: tokio::sync::Mutex::new(connection),
+                timeline_items_count: std::sync::atomic::AtomicUsize::new(0),
+            };
+            super::search::submit_search_production_path(
+                SYNTHETIC_QUERY.to_owned(),
+                SearchScopeKind::CurrentRoom,
+                SearchScope::CurrentRoom {
+                    room_id: "synthetic-room-id".to_owned(),
                 },
-                "synthetic-room-id",
-                std::time::Duration::from_millis(1),
+                &state,
+                &ScriptedSearchPathIo,
             )
-            .await;
+            .await
+            .expect("production search path should reach searching state");
 
-            super::record_select_intent_trace("ok_intent", &IntentOutcome::Committed, 1, 0, 0);
-            super::record_select_intent_trace(
-                "ok_intent",
-                &IntentOutcome::BenignNoOp(IntentNoOpReason::AlreadyActive),
-                1,
-                0,
-                0,
-            );
+            let request_id = RequestId {
+                connection_id: koushi_core::RuntimeConnectionId(101),
+                sequence: 9,
+            };
+            for outcome in [
+                IntentOutcome::Committed,
+                IntentOutcome::BenignNoOp(IntentNoOpReason::AlreadyActive),
+            ] {
+                let mut source = ScriptedSelectSource {
+                    snapshot: AppState::default(),
+                    events: VecDeque::from([Ok(CoreEvent::IntentLifecycle {
+                        request_id,
+                        outcome,
+                    })]),
+                };
+                super::wait_for_selected_room(
+                    &mut source,
+                    request_id,
+                    "synthetic-room-id",
+                    std::time::Duration::from_millis(10),
+                )
+                .await
+                .expect("scripted intent event should select the room");
+            }
         });
 
         let serialized = serde_json::to_string(&koushi_diagnostics::snapshot())
