@@ -23,16 +23,12 @@ fn resolved_search_scope_trace_label(scope: &SearchScope) -> &'static str {
     }
 }
 
-#[tauri::command]
-pub async fn submit_search(
-    query: String,
+pub(crate) fn record_search_trace(
     scope: SearchScopeKind,
-    app: AppHandle,
-    state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
-    let search_scope = resolve_search_scope(scope, state.inner()).await;
-    let mut event_conn = state.runtime.attach();
-    let request_id = next_request_id(state.inner()).await;
+    search_scope: &SearchScope,
+    query: &str,
+    request_id: koushi_core::RequestId,
+) {
     let trimmed_query = query.trim();
     record(
         DiagnosticEvent::new(DiagnosticLevel::Debug, "desktop.search", "submit")
@@ -42,7 +38,7 @@ pub async fn submit_search(
             ))
             .field(DiagnosticField::token(
                 "resolved_scope",
-                resolved_search_scope_trace_label(&search_scope),
+                resolved_search_scope_trace_label(search_scope),
             ))
             .field(DiagnosticField::count(
                 "query_bytes",
@@ -58,6 +54,19 @@ pub async fn submit_search(
                 request_id.sequence,
             )),
     );
+}
+
+#[tauri::command]
+pub async fn submit_search(
+    query: String,
+    scope: SearchScopeKind,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let search_scope = resolve_search_scope(scope, state.inner()).await;
+    let mut event_conn = state.runtime.attach();
+    let request_id = next_request_id(state.inner()).await;
+    record_search_trace(scope, &search_scope, &query, request_id);
     if search_trace_enabled() {
         eprintln!(
             "koushi.search_cmd stage=submit request={} ui_scope={} resolved_scope={} query_bytes={} query_chars={}",

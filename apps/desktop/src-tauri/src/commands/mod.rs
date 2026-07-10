@@ -146,6 +146,7 @@ pub(crate) fn trace_tauri_timeline_command_elapsed(
 
 fn record_select_trace(
     stage: &'static str,
+    outcome: &'static str,
     events: u32,
     state_changed: u32,
     state_delta: u32,
@@ -159,8 +160,46 @@ fn record_select_trace(
                 state_changed.into(),
             ))
             .field(DiagnosticField::count("state_delta", state_delta.into()))
-            .field(DiagnosticField::token("outcome", stage))
+            .field(DiagnosticField::token("outcome", outcome))
             .field(DiagnosticField::token("active", active)),
+    );
+}
+
+fn record_select_intent_trace(
+    stage: &'static str,
+    outcome: &IntentOutcome,
+    events: u32,
+    state_changed: u32,
+    state_delta: u32,
+) {
+    let (outcome_token, active) = match outcome {
+        IntentOutcome::Committed => ("committed", "unknown"),
+        IntentOutcome::BenignNoOp(IntentNoOpReason::AlreadyActive) => {
+            ("already_active", "selected")
+        }
+        IntentOutcome::BenignNoOp(IntentNoOpReason::RoomNotInState) => {
+            ("room_not_in_state", "unknown")
+        }
+        IntentOutcome::BenignNoOp(IntentNoOpReason::SessionNotReady) => {
+            ("session_not_ready", "unknown")
+        }
+        IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState) => {
+            ("room_not_in_state", "unknown")
+        }
+        IntentOutcome::FailedNoOp(IntentNoOpReason::SessionNotReady) => {
+            ("session_not_ready", "unknown")
+        }
+        IntentOutcome::FailedNoOp(IntentNoOpReason::AlreadyActive) => {
+            ("already_active", "selected")
+        }
+    };
+    record_select_trace(
+        stage,
+        outcome_token,
+        events,
+        state_changed,
+        state_delta,
+        active,
     );
 }
 
@@ -641,7 +680,14 @@ async fn wait_for_selected_room(
 
     loop {
         if snapshot_has_active_room(&event_conn.snapshot(), selected_room_id) {
-            record_select_trace("ok_watch", events, state_changed, state_delta, "selected");
+            record_select_trace(
+                "ok_watch",
+                "ok_watch",
+                events,
+                state_changed,
+                state_delta,
+                "selected",
+            );
             if trace {
                 eprintln!(
                     "koushi.select stage=ok_watch events={events} state_changed={state_changed} state_delta={state_delta}"
@@ -655,7 +701,14 @@ async fn wait_for_selected_room(
             Err(_) => {
                 let active =
                     select_active_room_trace_label(&event_conn.snapshot(), selected_room_id);
-                record_select_trace("timeout", events, state_changed, state_delta, active);
+                record_select_trace(
+                    "timeout",
+                    "timeout",
+                    events,
+                    state_changed,
+                    state_delta,
+                    active,
+                );
                 if trace {
                     eprintln!(
                         "koushi.select stage=timeout events={events} state_changed={state_changed} state_delta={state_delta} active={active}"
@@ -670,6 +723,7 @@ async fn wait_for_selected_room(
                 state_changed += 1;
                 if snapshot_has_active_room(&snapshot, selected_room_id) {
                     record_select_trace(
+                        "ok_statechanged",
                         "ok_statechanged",
                         events,
                         state_changed,
@@ -689,7 +743,14 @@ async fn wait_for_selected_room(
                 request_id,
                 failure,
             }) if request_id == select_request_id => {
-                record_select_trace("op_failed", events, state_changed, state_delta, "unknown");
+                record_select_trace(
+                    "op_failed",
+                    "op_failed",
+                    events,
+                    state_changed,
+                    state_delta,
+                    "unknown",
+                );
                 if trace {
                     eprintln!("koushi.select stage=op_failed events={events}");
                 }
@@ -706,12 +767,12 @@ async fn wait_for_selected_room(
             }) if request_id == select_request_id => {
                 match outcome {
                     IntentOutcome::Committed | IntentOutcome::BenignNoOp(_) => {
-                        record_select_trace(
+                        record_select_intent_trace(
                             "ok_intent",
+                            &outcome,
                             events,
                             state_changed,
                             state_delta,
-                            "unknown",
                         );
                         if trace {
                             eprintln!(
@@ -722,6 +783,7 @@ async fn wait_for_selected_room(
                     }
                     IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState) => {
                         record_select_trace(
+                            "failed_not_in_state",
                             "failed_not_in_state",
                             events,
                             state_changed,
@@ -735,6 +797,7 @@ async fn wait_for_selected_room(
                     }
                     IntentOutcome::FailedNoOp(IntentNoOpReason::SessionNotReady) => {
                         record_select_trace(
+                            "failed_session_not_ready",
                             "failed_session_not_ready",
                             events,
                             state_changed,
@@ -753,6 +816,7 @@ async fn wait_for_selected_room(
                         // the classification logic but handle it defensively.
                         record_select_trace(
                             "ok_already_active",
+                            "already_active",
                             events,
                             state_changed,
                             state_delta,
@@ -769,6 +833,7 @@ async fn wait_for_selected_room(
             Err(_) if snapshot_has_active_room(&event_conn.snapshot(), selected_room_id) => {
                 record_select_trace(
                     "ok_after_lag",
+                    "ok_after_lag",
                     events,
                     state_changed,
                     state_delta,
@@ -780,7 +845,7 @@ async fn wait_for_selected_room(
                 return Ok(());
             }
             Err(_) => {
-                record_select_trace("lag", events, state_changed, state_delta, "unknown");
+                record_select_trace("lag", "lag", events, state_changed, state_delta, "unknown");
                 if trace {
                     eprintln!("koushi.select stage=lag events={events}");
                 }
@@ -3170,9 +3235,10 @@ mod tests {
     use koushi_core::{
         AccountCommand, AppCommand, CoreCommand, CreateRoomOptions, CreateRoomParentSpace,
         CreateRoomVisibility, ImageUploadCompressionPolicy, ImageUploadCompressionState,
-        ImageUploadDimensions, ImageUploadVariantInfo, ImageUploadVariantKind,
-        MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, SearchCommand,
-        SearchScope, SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaThumbnail,
+        ImageUploadDimensions, ImageUploadVariantInfo, ImageUploadVariantKind, IntentNoOpReason,
+        IntentOutcome, MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand,
+        SearchCommand, SearchScope, SyncCommand, TimelineCommand, UploadMediaKind,
+        UploadMediaThumbnail,
     };
     use koushi_state::{
         ActivityMarkReadTarget, ActivityTab, AppearanceSettings, ImageUploadCompressionMode,
@@ -3185,6 +3251,7 @@ mod tests {
 
     use super::QaControlCommand;
     use super::SearchScopeKind;
+    use super::record_select_trace;
     use super::{
         build_accept_invite_command, build_accept_verification_command,
         build_bootstrap_cross_signing_command, build_bootstrap_secure_backup_command,
@@ -6829,5 +6896,134 @@ mod tests {
         assert!(records.iter().any(|record| {
             record.event.source == "desktop.timeline" && record.event.stage == "done"
         }));
+    }
+
+    #[test]
+    fn select_diagnostics_keep_intent_outcomes_distinct() {
+        record_select_trace("ok_intent", "committed", 0, 0, 0, "unknown");
+        record_select_trace("ok_intent", "already_active", 0, 0, 0, "selected");
+
+        let records = koushi_diagnostics::snapshot().records;
+        let select_records = records
+            .iter()
+            .filter(|record| record.event.source == "desktop.select")
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>();
+        assert_eq!(select_records.len(), 2);
+        let formatted = select_records
+            .iter()
+            .map(|record| koushi_diagnostics::format_event(&record.event))
+            .collect::<Vec<_>>();
+        assert!(
+            formatted.iter().any(|line| {
+                line.contains("outcome=committed") && line.contains("active=unknown")
+            })
+        );
+        assert!(formatted.iter().any(|line| {
+            line.contains("outcome=already_active") && line.contains("active=selected")
+        }));
+    }
+
+    #[test]
+    fn env_unset_real_search_and_select_producers_are_private_data_free() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "commands::tests::env_unset_real_search_and_select_producers_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env_remove("KOUSHI_SUBSCRIBE_TRACE")
+            .env_remove("KOUSHI_SEARCH_TRACE")
+            .output()
+            .expect("env-unset diagnostic child should run");
+        assert!(output.status.success(), "child failed: {output:?}");
+        let stdout = String::from_utf8(output.stdout).expect("child stdout should be utf8");
+        assert!(stdout.contains("\"source\":\"desktop.search\""));
+        assert!(stdout.contains("\"source\":\"desktop.select\""));
+        assert!(
+            stdout.contains("\"key\":\"query_bytes\",\"value\":{\"kind\":\"count\",\"value\":20}")
+        );
+        assert!(
+            stdout.contains("\"key\":\"query_chars\",\"value\":{\"kind\":\"count\",\"value\":20}")
+        );
+        assert!(stdout.contains(
+            "\"key\":\"outcome\",\"value\":{\"kind\":\"token\",\"value\":\"committed\"}"
+        ));
+        assert!(stdout.contains(
+            "\"key\":\"outcome\",\"value\":{\"kind\":\"token\",\"value\":\"already_active\"}"
+        ));
+        assert!(
+            stdout.contains(
+                "\"key\":\"active\",\"value\":{\"kind\":\"token\",\"value\":\"selected\"}"
+            )
+        );
+        for private_value in [
+            "synthetic-room-id",
+            "synthetic-event-id",
+            "synthetic-user-id",
+            "synthetic-query-text",
+            "synthetic-body-text",
+            "/synthetic/private/path",
+        ] {
+            assert!(
+                !stdout.contains(private_value),
+                "leaked {private_value}: {stdout}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn env_unset_real_search_and_select_producers_child() {
+        assert!(std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_none());
+        assert!(std::env::var_os("KOUSHI_SEARCH_TRACE").is_none());
+
+        super::search::record_search_trace(
+            SearchScopeKind::CurrentRoom,
+            &SearchScope::CurrentRoom {
+                room_id: "synthetic-room-id".to_owned(),
+            },
+            "synthetic-query-text",
+            RequestId {
+                connection_id: koushi_core::RuntimeConnectionId(101),
+                sequence: 9,
+            },
+        );
+
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime should build");
+        async_runtime.block_on(async {
+            let data_dir = tempfile::tempdir().expect("runtime data dir should be created");
+            let runtime = koushi_core::CoreRuntime::start_with_data_dir(data_dir.path().to_owned());
+            let mut connection = runtime.attach();
+            let connection_id = connection.connection_id();
+            let _ = super::wait_for_selected_room(
+                &mut connection,
+                RequestId {
+                    connection_id,
+                    sequence: 1,
+                },
+                "synthetic-room-id",
+                std::time::Duration::from_millis(1),
+            )
+            .await;
+
+            super::record_select_intent_trace("ok_intent", &IntentOutcome::Committed, 1, 0, 0);
+            super::record_select_intent_trace(
+                "ok_intent",
+                &IntentOutcome::BenignNoOp(IntentNoOpReason::AlreadyActive),
+                1,
+                0,
+                0,
+            );
+        });
+
+        let serialized = serde_json::to_string(&koushi_diagnostics::snapshot())
+            .expect("diagnostic snapshot should serialize");
+        println!("{serialized}");
     }
 }
