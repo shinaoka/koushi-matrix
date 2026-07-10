@@ -172,6 +172,68 @@ describe("App diagnostics lifecycle", () => {
     expect(dialog.textContent).not.toContain("stale failure");
   });
 
+  test("records manual room-key reshare failure with fixed private-data-free tokens", async () => {
+    const api = createBrowserFakeApi();
+    const baseSnapshot = await api.getSnapshot();
+    const roomId = baseSnapshot.state.ui.navigation.active_room_id;
+    expect(roomId).not.toBeNull();
+    const privateRoomId = roomId!;
+    const encryptedSnapshot = {
+      ...baseSnapshot,
+      state: {
+        ...baseSnapshot.state,
+        domain: {
+          ...baseSnapshot.state.domain,
+          rooms: baseSnapshot.state.domain.rooms.map((room) =>
+            room.room_id === privateRoomId ? { ...room, is_encrypted: true } : room
+          )
+        }
+      }
+    };
+    const rawError = [
+      "raw SDK error",
+      "secret message body",
+      "$private-event:example.invalid",
+      "/Users/member/private/store",
+      "https://private.example.invalid/room",
+      "access_token=private-token"
+    ].join(" ");
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(encryptedSnapshot);
+    vi.spyOn(api, "loadRoomSettings").mockResolvedValue(encryptedSnapshot);
+    const reshareRoomKey = vi
+      .spyOn(api, "reshareRoomKey")
+      .mockRejectedValue(new Error(rawError));
+
+    await renderAppWithApi(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Room info" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reshare room keys" }));
+
+    await waitFor(() => {
+      expect(reshareRoomKey).toHaveBeenCalledWith(privateRoomId);
+      expect(screen.getByText("Could not reshare room keys.")).toBeTruthy();
+    });
+    const dialog = await openDiagnostics();
+
+    expect(dialog.textContent).toContain(
+      "e2ee.room_key operation=manual_reshare stage=request"
+    );
+    expect(dialog.textContent).toContain(
+      "e2ee.room_key operation=manual_reshare stage=failed kind=transport"
+    );
+    for (const privateValue of [
+      privateRoomId,
+      rawError,
+      "raw SDK error",
+      "secret message body",
+      "$private-event:example.invalid",
+      "/Users/member/private/store",
+      "private.example.invalid",
+      "private-token"
+    ]) {
+      expect(dialog.textContent).not.toContain(privateValue);
+    }
+  });
+
   test("opens with only a safe synthetic fetch record when the snapshot rejects", async () => {
     const api = createBrowserFakeApi();
     const secretError = "secret error stack /Users/private/path room=!secret:example.invalid";
@@ -186,6 +248,100 @@ describe("App diagnostics lifecycle", () => {
     expect(dialog.textContent).not.toContain(secretError);
     expect(dialog.textContent).not.toContain("secret error stack");
     expect(dialog.textContent).not.toContain("/Users/private/path");
+  });
+
+  test("keeps the latest successful runtime snapshot and dropped count when refresh fails", async () => {
+    const api = createBrowserFakeApi();
+    const rawError = [
+      "raw SDK error",
+      "secret message body",
+      "/Users/member/private/store",
+      "https://private.example.invalid/room",
+      "access_token=private-token"
+    ].join(" ");
+    vi.spyOn(api, "getDiagnosticSnapshot")
+      .mockResolvedValueOnce(
+        snapshot(
+          [{ timestampMs: 1, source: "core.retained", message: "stage=retained" }],
+          7
+        )
+      )
+      .mockRejectedValueOnce(new Error(rawError));
+
+    await renderAppWithApi(api);
+
+    let dialog = await openDiagnostics();
+    expect(dialog.textContent).toContain("core.retained stage=retained");
+    expect(dialog.textContent).toContain("Diagnostic records dropped: 7");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Close {title}" }));
+    });
+    dialog = await openDiagnostics();
+
+    expect(dialog.textContent).toContain("core.retained stage=retained");
+    expect(dialog.textContent).toContain("Diagnostic records dropped: 7");
+    expect(dialog.textContent).toContain("diagnostics.fetch kind=unavailable");
+    for (const privateValue of [
+      rawError,
+      "raw SDK error",
+      "secret message body",
+      "/Users/member/private/store",
+      "private.example.invalid",
+      "private-token"
+    ]) {
+      expect(dialog.textContent).not.toContain(privateValue);
+    }
+  });
+
+  test("newest overlapping failure preserves the prior success and ignores an older late success", async () => {
+    const api = createBrowserFakeApi();
+    const older = deferred<DiagnosticLogSnapshot>();
+    const newest = deferred<DiagnosticLogSnapshot>();
+    const rawError = "raw SDK error /Users/member/private/store access_token=private-token";
+    vi.spyOn(api, "getDiagnosticSnapshot")
+      .mockResolvedValueOnce(
+        snapshot(
+          [{ timestampMs: 1, source: "core.baseline", message: "stage=baseline" }],
+          9
+        )
+      )
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newest.promise);
+
+    await renderAppWithApi(api);
+    await openDiagnostics();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Close {title}" }));
+    });
+
+    const button = screen.getByRole("button", { name: "Open diagnostics" });
+    await act(async () => {
+      fireEvent.click(button);
+      fireEvent.click(button);
+    });
+
+    await act(async () => {
+      newest.reject(new Error(rawError));
+      await newest.promise.catch(() => undefined);
+    });
+    const dialog = await screen.findByRole("dialog", { name: "Diagnostics" });
+    expect(dialog.textContent).toContain("core.baseline stage=baseline");
+    expect(dialog.textContent).toContain("Diagnostic records dropped: 9");
+    expect(dialog.textContent).toContain("diagnostics.fetch kind=unavailable");
+    expect(dialog.textContent).not.toContain(rawError);
+
+    await act(async () => {
+      older.resolve(
+        snapshot([{ timestampMs: 2, source: "core.older", message: "stage=stale" }], 2)
+      );
+      await older.promise;
+    });
+
+    expect(dialog.textContent).toContain("core.baseline stage=baseline");
+    expect(dialog.textContent).toContain("Diagnostic records dropped: 9");
+    expect(dialog.textContent).not.toContain("core.older");
+    expect(dialog.textContent).not.toContain("stage=stale");
   });
 });
 

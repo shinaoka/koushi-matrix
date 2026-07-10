@@ -126,10 +126,7 @@ export function diagnosticReport({
           `JS errors: ${jsErrors.length}`,
           ...jsErrors
             .slice(-5)
-            .map(
-              (error) =>
-                `[js-error] kind=${error.kind} source=${error.source} message=${error.message}`
-            )
+            .map((error) => `[js-error] channel=${error.channel} kind=${error.kind}`)
         ]
       : []),
     ...securityDiagnosticLog,

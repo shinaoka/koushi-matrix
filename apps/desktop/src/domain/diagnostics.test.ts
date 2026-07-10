@@ -390,7 +390,7 @@ describe("diagnosticReport", () => {
     expect(report).toContain("timeline_resync=3");
   });
 
-  test("renders captured JS errors and a count token when provided", async () => {
+  test("renders only coarse captured JS error kinds and channels with a count token", async () => {
     const api = createBrowserFakeApi();
     const snapshot = await api.getSnapshot();
     const report = diagnosticReport({
@@ -418,15 +418,17 @@ describe("diagnosticReport", () => {
         longFrameCount: 0
       },
       jsErrors: [
-        { kind: "TypeError", message: "cannot read kind of undefined", source: "App.tsx:12:3" }
+        { kind: "type_error", channel: "window_error" },
+        { kind: "unknown", channel: "unhandled_rejection" }
       ]
     });
 
-    expect(report).toContain("JS errors: 1");
-    expect(report).toContain(
-      "[js-error] kind=TypeError source=App.tsx:12:3 message=cannot read kind of undefined"
-    );
-    expect(report).toContain("js_error_count=1");
+    expect(report).toContain("JS errors: 2");
+    expect(report).toContain("[js-error] channel=window_error kind=type_error");
+    expect(report).toContain("[js-error] channel=unhandled_rejection kind=unknown");
+    expect(report).toContain("js_error_count=2");
+    expect(report).not.toContain("source=");
+    expect(report).not.toContain("message=");
   });
 
   test("bounds diagnostic log entries while preserving chronological append order", () => {

@@ -2134,25 +2134,22 @@ export function App() {
 
   async function openDiagnostics() {
     const requestGeneration = ++diagnosticSnapshotRequestGenerationRef.current;
-    let nextSnapshot: DiagnosticLogSnapshot;
     try {
-      nextSnapshot = await api.getDiagnosticSnapshot();
+      const nextSnapshot = await api.getDiagnosticSnapshot();
+      if (requestGeneration !== diagnosticSnapshotRequestGenerationRef.current) {
+        return;
+      }
+      setRuntimeDiagnosticSnapshot(nextSnapshot);
     } catch {
-      nextSnapshot = {
-        entries: [
-          {
-            timestampMs: Date.now(),
-            source: "diagnostics.fetch",
-            message: "kind=unavailable"
-          }
-        ],
-        droppedEntries: 0
-      };
+      if (requestGeneration !== diagnosticSnapshotRequestGenerationRef.current) {
+        return;
+      }
+      appendDiagnosticLog({
+        timestampMs: Date.now(),
+        source: "diagnostics.fetch",
+        message: "kind=unavailable"
+      });
     }
-    if (requestGeneration !== diagnosticSnapshotRequestGenerationRef.current) {
-      return;
-    }
-    setRuntimeDiagnosticSnapshot(nextSnapshot);
     setDiagnosticsOpen(true);
   }
 
@@ -2212,20 +2209,20 @@ export function App() {
     appendDiagnosticLog({
       timestampMs: Date.now(),
       source: "e2ee.room_key",
-      message: `manual reshare requested room=${roomId}`
+      message: "operation=manual_reshare stage=request"
     });
     try {
       setSnapshot(await api.reshareRoomKey(roomId));
       appendDiagnosticLog({
         timestampMs: Date.now(),
         source: "e2ee.room_key",
-        message: `manual reshare completed room=${roomId}`
+        message: "operation=manual_reshare stage=completed"
       });
     } catch (error) {
       appendDiagnosticLog({
         timestampMs: Date.now(),
         source: "e2ee.room_key",
-        message: `manual reshare failed room=${roomId} error=${String(error)}`
+        message: "operation=manual_reshare stage=failed kind=transport"
       });
       throw error;
     }
@@ -3851,9 +3848,7 @@ export function App() {
           onUpdateMemberRole={(roomId, targetUserId, powerLevel) => {
             void updateRoomMemberRole(roomId, targetUserId, powerLevel);
           }}
-          onReshareRoomKey={(roomId) => {
-            void reshareRoomKey(roomId);
-          }}
+          onReshareRoomKey={reshareRoomKey}
           onRecoverySecretPresenceChange={setRecoverySecretFilled}
           onReply={(roomId, eventId) => {
             void setComposerReplyTarget(roomId, eventId);
