@@ -460,7 +460,7 @@ type DiagnosticSourceAnalysis = {
   depths: number[];
   scopes: SourceScope[];
   constants: Set<string>;
-  moduleQualifier: string;
+  moduleQualifiers: string[];
 };
 
 type HelperResolution = {
@@ -498,10 +498,18 @@ function directDiagnosticEnvCheck(
   return [...constants].some((constant) => new RegExp(`\\b${constant}\\b`).test(codeText));
 }
 
-function moduleQualifier(relativePath: string): string {
-  const parts = relativePath.split("/");
-  const fileName = parts.at(-1)?.replace(/\.rs$/, "") ?? "";
-  return fileName === "mod" ? (parts.at(-2) ?? fileName) : fileName;
+function moduleQualifiers(relativePath: string): string[] {
+  const parts = relativePath.split("/").filter((part) => part.length > 0);
+  if (parts.length === 0) {
+    return [];
+  }
+  parts[parts.length - 1] = parts.at(-1)!.replace(/\.rs$/, "");
+  if (parts.at(-1) === "mod") {
+    parts.pop();
+  }
+  const sourceRoot = Math.max(parts.lastIndexOf("src"), parts.lastIndexOf("fixtures"));
+  const moduleParts = parts.slice(sourceRoot + 1);
+  return moduleParts.map((_, index) => moduleParts.slice(index).join("::"));
 }
 
 function escapeRegExp(value: string): string {
@@ -575,7 +583,9 @@ function resolveHelpers(
     const qualified = new Set<string>();
     for (const analysis of analyses) {
       for (const name of localByPath.get(analysis.relativePath) ?? []) {
-        qualified.add(`${analysis.moduleQualifier}::${name}`);
+        for (const qualifier of analysis.moduleQualifiers) {
+          qualified.add(`${qualifier}::${name}`);
+        }
       }
     }
     for (const analysis of analyses) {
@@ -597,7 +607,9 @@ function resolveHelpers(
   const qualified = new Set<string>();
   for (const analysis of analyses) {
     for (const name of localByPath.get(analysis.relativePath) ?? []) {
-      qualified.add(`${analysis.moduleQualifier}::${name}`);
+      for (const qualifier of analysis.moduleQualifiers) {
+        qualified.add(`${qualifier}::${name}`);
+      }
     }
   }
   return { localByPath, qualified };
@@ -731,6 +743,7 @@ function hasStructuredCollection(
   const mirrorCodeText = codeLines.slice(gateLine, gateEnd + 1).join("\n");
   const mirrorHeaderEnd = gateHeaderEnd(codeLines, gateLine, gateEnd);
   const mirrorHeaderCodeText = codeLines.slice(gateLine, mirrorHeaderEnd + 1).join("\n");
+  const aliases = iteratorAliases(codeLines, depths, start, gateLine, depths[gateLine]);
   const mirrorTokens = expandSemanticTokensThroughBindings(
     diagnosticSideEffectTokens(mirrorRawText, mirrorCodeText, stderrHelpers),
     rawLines,
@@ -758,7 +771,7 @@ function hasStructuredCollection(
     if (
       isAssociationBarrier(codeText) &&
       (!structuredProducer ||
-        !barrierControlAllowsMirror(codeText, mirrorHeaderCodeText, mirrorCodeText))
+        !barrierControlAllowsMirror(codeText, mirrorHeaderCodeText, mirrorCodeText, aliases))
     ) {
       return false;
     }
@@ -784,7 +797,8 @@ function hasStructuredCollection(
 function barrierControlAllowsMirror(
   barrierText: string,
   gateHeaderText: string,
-  gateBlockText: string
+  gateBlockText: string,
+  aliases: ReadonlyMap<string, string>
 ): boolean {
   const firstLine = barrierText
     .split("\n")
@@ -799,13 +813,8 @@ function barrierControlAllowsMirror(
     return (
       collectorIterators.length > 0 &&
       collectorIterators.some((collectorIterator) =>
-        mirrorIterators.some(
-          (mirrorIterator) =>
-            collectorIterator === mirrorIterator ||
-            hasSemanticAssociation(
-              semanticTokens(collectorIterator),
-              semanticTokens(mirrorIterator)
-            )
+        mirrorIterators.some((mirrorIterator) =>
+          equivalentIteratorDataFlow(collectorIterator, mirrorIterator, aliases)
         )
       )
     );
@@ -934,6 +943,129 @@ function loopIteratorExpressions(text: string): string[] {
     }
   }
   return iterators;
+}
+
+function iteratorAliases(
+  codeLines: readonly string[],
+  depths: readonly number[],
+  start: number,
+  end: number,
+  scopeDepth: number
+): Map<string, string> {
+  const aliases = new Map<string, string>();
+  for (let index = start; index < end; index += 1) {
+    if (depths[index] !== scopeDepth) {
+      continue;
+    }
+    const match = /\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*[^=;]+)?\s*=\s*&?\s*([A-Za-z_][A-Za-z0-9_]*)\s*;/.exec(
+      codeLines[index]
+    );
+    if (match) {
+      aliases.set(match[1], resolvedIteratorAlias(match[2], aliases));
+    }
+  }
+  return aliases;
+}
+
+function resolvedIteratorAlias(name: string, aliases: ReadonlyMap<string, string>): string {
+  const seen = new Set<string>();
+  let current = name;
+  while (aliases.has(current) && !seen.has(current)) {
+    seen.add(current);
+    current = aliases.get(current)!;
+  }
+  return current;
+}
+
+function normalizedIteratorExpression(
+  expression: string,
+  aliases: ReadonlyMap<string, string>
+): string {
+  return expression
+    .replace(/\b[A-Za-z_][A-Za-z0-9_]*\b/g, (name) => resolvedIteratorAlias(name, aliases))
+    .replace(/\s+/g, "");
+}
+
+function iteratorDataRoots(
+  expression: string,
+  aliases: ReadonlyMap<string, string>
+): Set<string> {
+  const closureBindings = new Set<string>();
+  for (const closure of expression.matchAll(/\|([^|]*)\|/g)) {
+    for (const binding of closure[1].matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)) {
+      closureBindings.add(binding[0]);
+    }
+  }
+  const ignored = new Set([
+    "as",
+    "async",
+    "await",
+    "const",
+    "else",
+    "false",
+    "for",
+    "if",
+    "in",
+    "let",
+    "loop",
+    "match",
+    "move",
+    "mut",
+    "ref",
+    "return",
+    "static",
+    "true",
+    "unsafe",
+    "while"
+  ]);
+  const roots = new Set<string>();
+  for (const match of expression.matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)) {
+    const name = match[0];
+    const index = match.index ?? 0;
+    const before = expression.slice(0, index).trimEnd();
+    const after = expression.slice(index + name.length).trimStart();
+    if (
+      ignored.has(name) ||
+      closureBindings.has(name) ||
+      before.endsWith(".") ||
+      after.startsWith("::") ||
+      after.startsWith("(")
+    ) {
+      continue;
+    }
+    if (name === "self") {
+      const field = /^\.([A-Za-z_][A-Za-z0-9_]*)/.exec(after);
+      roots.add(field ? `self.${field[1]}` : name);
+    } else {
+      roots.add(resolvedIteratorAlias(name, aliases));
+    }
+  }
+  return roots;
+}
+
+function equivalentIteratorDataFlow(
+  collectorIterator: string,
+  mirrorIterator: string,
+  aliases: ReadonlyMap<string, string>
+): boolean {
+  if (
+    normalizedIteratorExpression(collectorIterator, aliases) ===
+    normalizedIteratorExpression(mirrorIterator, aliases)
+  ) {
+    return true;
+  }
+  const collectorRoots = iteratorDataRoots(collectorIterator, aliases);
+  const mirrorRoots = iteratorDataRoots(mirrorIterator, aliases);
+  const helperIterator = (expression: string): boolean =>
+    /^(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(
+      expression.trim()
+    );
+  return (
+    (helperIterator(collectorIterator) || helperIterator(mirrorIterator)) &&
+    collectorRoots.size > 0 &&
+    collectorRoots.size === mirrorRoots.size &&
+    [...collectorRoots].every((root) => mirrorRoots.has(root))
+  );
 }
 
 function isAssociationBarrier(text: string): boolean {
@@ -1150,7 +1282,7 @@ function scanDiagnosticSources(sources: readonly DiagnosticSource[]): Diagnostic
       depths: braceDepths(codeLines),
       scopes: sourceScopes(codeLines),
       constants: envConstants(rawLines, codeLines),
-      moduleQualifier: moduleQualifier(relativePath)
+      moduleQualifiers: moduleQualifiers(relativePath)
     };
   });
   const envResolution = resolveHelpers(
@@ -1624,6 +1756,60 @@ fn paired_loop(items: &[&str]) {
     });
   });
 
+  test("scanner pairs collector loops only through equivalent iterator data flow", () => {
+    const fixture = `
+fn trace_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+
+fn different_iterators(collected_items: &[&str], mirrored_items: &[&str]) {
+  let stage = "different_iterators";
+  for item in collected_items.iter() {
+    record(make_diagnostic_event(stage, item));
+  }
+  if trace_enabled() {
+    for item in mirrored_items.iter() {
+      eprintln!("synthetic stderr stage={stage} item={item}");
+    }
+  }
+}
+
+fn same_iterator(items: &[&str]) {
+  let stage = "same_iterator";
+  for item in items.iter() {
+    record(make_diagnostic_event(stage, item));
+  }
+  if trace_enabled() {
+    for item in items.iter() {
+      eprintln!("synthetic stderr stage={stage} item={item}");
+    }
+  }
+}
+
+fn aliased_iterator(collected_items: &[&str]) {
+  let stage = "aliased_iterator";
+  let mirrored_items = collected_items;
+  for item in collected_items.iter() {
+    record(make_diagnostic_event(stage, item));
+  }
+  if trace_enabled() {
+    for item in mirrored_items.iter() {
+      eprintln!("synthetic stderr stage={stage} item={item}");
+    }
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/equivalent-loop-iterators.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/equivalent-loop-iterators.rs",
+      reason: GATED_DIAGNOSTIC_REASON
+    });
+  });
+
   test("scanner recognizes generic gated record producers without stderr", () => {
     const fixture = `
 ${SYNTHETIC_TRACE_DECLARATION}
@@ -2022,6 +2208,65 @@ fn crate_qualified_gate_only() {
       relativePath: "fixtures/qualified-runtime.rs",
       reason: GATED_DIAGNOSTIC_REASON
     });
+  });
+
+  test("scanner preserves nested module identity for cross-file helpers", () => {
+    const nestedHelperFixture = `
+pub(crate) fn enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+`;
+    const crateNestedRuntimeFixture = `
+fn crate_nested_gate_only() {
+  if crate::diagnostics::trace_gate::enabled() {
+    record(make_diagnostic_event("crate_nested"));
+  }
+}
+`;
+    const selfNestedRuntimeFixture = `
+fn self_nested_gate_only() {
+  if self::diagnostics::trace_gate::enabled() {
+    record(make_diagnostic_event("self_nested"));
+  }
+}
+`;
+    const superNestedRuntimeFixture = `
+fn super_nested_gate_only() {
+  if super::trace_gate::enabled() {
+    record(make_diagnostic_event("super_nested"));
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      {
+        relativePath: "fixtures/diagnostics/trace_gate.rs",
+        source: nestedHelperFixture
+      },
+      { relativePath: "fixtures/crate-runtime.rs", source: crateNestedRuntimeFixture },
+      { relativePath: "fixtures/lib.rs", source: selfNestedRuntimeFixture },
+      {
+        relativePath: "fixtures/diagnostics/super-runtime.rs",
+        source: superNestedRuntimeFixture
+      }
+    ]);
+    expect(findings).toHaveLength(3);
+    expect(findings.every((finding) => finding.reason === GATED_DIAGNOSTIC_REASON)).toBe(true);
+
+    const wrongModuleFindings = scanDiagnosticSources([
+      { relativePath: "fixtures/other/trace_gate.rs", source: nestedHelperFixture },
+      {
+        relativePath: "fixtures/wrong-module-runtime.rs",
+        source: `
+fn wrong_module_gate_only() {
+  if crate::diagnostics::trace_gate::enabled() {
+    record(make_diagnostic_event("wrong_module"));
+  }
+}
+`
+      }
+    ]);
+    expect(wrongModuleFindings).toHaveLength(0);
   });
 
   test("scanner keeps balanced one-line scopes from duplicating findings", () => {
