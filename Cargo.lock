@@ -3119,6 +3119,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "koushi-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "koushi-key"
 version = "0.1.0"
 dependencies = [
