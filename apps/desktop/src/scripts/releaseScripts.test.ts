@@ -42,6 +42,8 @@ type SourceScope = {
 
 const DIAGNOSTIC_ENV_PATTERN = /KOUSHI_[A-Z0-9_]*(?:TRACE|DIAGNOST)/;
 const TEST_ATTRIBUTE_PATTERN = /^\s*#\[(?:(?:tokio|async_std)::)?test\]\s*$/;
+const SYNTHETIC_TRACE_ENV = ["KOUSHI", "SYNTH_TRACE"].join("_");
+const SYNTHETIC_TRACE_DECLARATION = `const SYNTHETIC_TRACE_ENV: &str = "${SYNTHETIC_TRACE_ENV}";`;
 
 function runtimeRustSources(): DiagnosticSource[] {
   const roots = ["crates/koushi-sdk/src", "crates/koushi-core/src", "apps/desktop/src-tauri/src"];
@@ -373,6 +375,36 @@ function structuredDiagnosticHelpers(
   const helpers = new Set(
     scopes
       .filter((scope) =>
+        hasStructuredRecord(lines.slice(scope.start, scope.end + 1).join("\n"))
+      )
+      .map((scope) => scope.name)
+  );
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const scope of scopes) {
+      if (helpers.has(scope.name)) {
+        continue;
+      }
+      const text = lines.slice(scope.start, scope.end + 1).join("\n");
+      if ([...helpers].some((name) => new RegExp(`\\b${name}\\s*\\(`).test(text))) {
+        helpers.add(scope.name);
+        changed = true;
+      }
+    }
+  }
+
+  return helpers;
+}
+
+function canonicalStructuredHelpers(
+  lines: readonly string[],
+  scopes: readonly SourceScope[]
+): Set<string> {
+  const helpers = new Set(
+    scopes
+      .filter((scope) =>
         hasCanonicalStructuredRecord(lines.slice(scope.start, scope.end + 1).join("\n"))
       )
       .map((scope) => scope.name)
@@ -445,14 +477,18 @@ function hasStructuredCollection(
   lines: readonly string[],
   start: number,
   gateLine: number,
-  helpers: Set<string>,
+  gateEnd: number,
+  canonicalHelpers: Set<string>,
+  structuredHelpers: Set<string>,
   currentScopeName: string
 ): boolean {
   if (gateLine <= start) {
     return false;
   }
   const depths = braceDepths(lines);
+  const mirrorText = lines.slice(gateLine, gateEnd + 1).join("\n");
   let endExclusive = gateLine;
+  let bridgeText = "";
   while (endExclusive > start) {
     const range = previousStatementRange(
       lines,
@@ -465,15 +501,73 @@ function hasStructuredCollection(
       return false;
     }
     const text = lines.slice(range[0], range[1] + 1).join("\n");
-    if (hasStructuredProducer(lines, range[0], range[1], helpers, currentScopeName)) {
+    const leadingText = precedingBindingText(
+      lines,
+      range[0],
+      depths[gateLine],
+      depths,
+      start,
+      text,
+      structuredHelpers,
+      currentScopeName
+    );
+    const candidateText = [leadingText, text, bridgeText]
+      .filter((part) => part.length > 0)
+      .join("\n");
+    if (
+      hasCanonicalStructuredProducer(
+        lines,
+        range[0],
+        range[1],
+        canonicalHelpers,
+        currentScopeName
+      ) &&
+      hasSemanticAssociation(candidateText, mirrorText)
+    ) {
       return true;
     }
-    if (/(?:koushi_diagnostics::)?record\s*\(/.test(text) || isControlFlowStatement(text)) {
+    if (
+      hasStructuredProducer(lines, range[0], range[1], structuredHelpers, currentScopeName) ||
+      isControlFlowStatement(text)
+    ) {
       return false;
     }
+    bridgeText = [text, bridgeText].filter((part) => part.length > 0).join("\n");
     endExclusive = range[0];
   }
   return false;
+}
+
+function precedingBindingText(
+  lines: readonly string[],
+  endExclusive: number,
+  parentDepth: number,
+  depths: readonly number[],
+  minimumStart: number,
+  candidateText: string,
+  structuredHelpers: Set<string>,
+  currentScopeName: string
+): string {
+  const range = previousStatementRange(
+    lines,
+    endExclusive,
+    parentDepth,
+    depths,
+    minimumStart
+  );
+  if (range === null || range[0] < minimumStart) {
+    return "";
+  }
+  const text = lines.slice(range[0], range[1] + 1).join("\n");
+  if (
+    hasStructuredProducer(lines, range[0], range[1], structuredHelpers, currentScopeName) ||
+    isControlFlowStatement(text)
+  ) {
+    return "";
+  }
+  const candidateTokens = semanticTokens(candidateText);
+  const declarations = [...text.matchAll(/\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)/g)];
+  return declarations.some((declaration) => candidateTokens.has(declaration[1])) ? text : "";
 }
 
 function isControlFlowStatement(text: string): boolean {
@@ -484,9 +578,67 @@ function isControlFlowStatement(text: string): boolean {
   return firstLine !== undefined && /^(?:if|match|for|while|loop)\b/.test(firstLine);
 }
 
+function hasStructuredRecord(text: string): boolean {
+  return /(?:koushi_diagnostics::)?record\s*\(/.test(text);
+}
+
 function hasCanonicalStructuredRecord(text: string): boolean {
   return /(?:koushi_diagnostics::)?record\s*\([\s\S]*\bDiagnosticEvent::new\s*\(/.test(text) ||
     /(?:koushi_diagnostics::)?record\s*\(\s*event\s*\)/.test(text);
+}
+
+function hasCanonicalStructuredProducer(
+  lines: readonly string[],
+  start: number,
+  end: number,
+  helpers: Set<string>,
+  currentScopeName: string
+): boolean {
+  if (end < start) {
+    return false;
+  }
+  const text = lines.slice(start, end + 1).join("\n");
+  if (hasCanonicalStructuredRecord(text)) {
+    return true;
+  }
+  return [...helpers]
+    .filter((name) => name !== currentScopeName)
+    .some((name) => new RegExp(`\\b${name}\\s*\\(`).test(text));
+}
+
+function semanticTokens(text: string): Set<string> {
+  const tokens = new Set<string>();
+  for (const line of text.split("\n")) {
+    for (const token of structuralRustLine(line).matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)) {
+      tokens.add(token[0]);
+      const parts = token[0].split("_");
+      for (let index = 1; index < parts.length; index += 1) {
+        tokens.add(parts.slice(0, index).join("_"));
+      }
+    }
+  }
+
+  for (const literal of text.matchAll(/"((?:\\.|[^"\\])*)"/g)) {
+    const value = literal[1];
+    if (/^[a-z][a-z0-9_]*$/.test(value)) {
+      tokens.add(value);
+    }
+    for (const assignment of value.matchAll(
+      /(?:^|\s)[A-Za-z_][A-Za-z0-9_]*=\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g
+    )) {
+      tokens.add(assignment[1]);
+    }
+    for (const placeholder of value.matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) {
+      tokens.add(placeholder[1]);
+    }
+  }
+
+  return tokens;
+}
+
+function hasSemanticAssociation(collectionText: string, mirrorText: string): boolean {
+  const mirrorTokens = semanticTokens(mirrorText);
+  return [...semanticTokens(collectionText)].some((token) => mirrorTokens.has(token));
 }
 
 function hasStructuredProducer(
@@ -500,7 +652,7 @@ function hasStructuredProducer(
     return false;
   }
   const text = lines.slice(start, end + 1).join("\n");
-  if (hasCanonicalStructuredRecord(text)) {
+  if (hasStructuredRecord(text)) {
     return true;
   }
   return [...helpers]
@@ -534,6 +686,7 @@ function scanDiagnosticSources(sources: readonly DiagnosticSource[]): Diagnostic
     const constants = envConstants(lines);
     const envHelpers = namesWithDirectEnvChecks(lines, scopes, constants);
     const structuredHelpers = structuredDiagnosticHelpers(lines, scopes);
+    const canonicalHelpers = canonicalStructuredHelpers(lines, scopes);
     const stderr = stderrHelpers(lines, scopes);
 
     for (const scope of scopes) {
@@ -578,7 +731,15 @@ function scanDiagnosticSources(sources: readonly DiagnosticSource[]): Diagnostic
         );
         if (
           gatedStructuredProducer ||
-          !hasStructuredCollection(lines, scope.start, lineIndex, structuredHelpers, scope.name)
+          !hasStructuredCollection(
+            lines,
+            scope.start,
+            lineIndex,
+            end,
+            canonicalHelpers,
+            structuredHelpers,
+            scope.name
+          )
         ) {
           findings.push({
             relativePath,
@@ -605,9 +766,10 @@ fn gated_only() {
 `;
     const goodFixture = `
 fn collected_first() {
-  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "collected"));
+  let stage = "collected";
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
   if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
-    eprintln!("synthetic stderr mirror");
+    eprintln!("synthetic stderr stage={stage}");
   }
 }
 
@@ -639,6 +801,22 @@ fn boolean_alias_gated_only() {
   if trace {
     record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "alias"));
     eprintln!("synthetic alias stderr mirror");
+  }
+}
+
+fn collected_helper_mirror(stage: &'static str) {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  if stderr_enabled() {
+    eprintln!("synthetic helper stderr stage={stage}");
+  }
+}
+
+fn collected_alias_mirror() {
+  let trace = std::env::var_os("KOUSHI_SYNTH_TRACE").is_some();
+  let stage = "alias_collected";
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  if trace {
+    eprintln!("synthetic alias stderr stage={stage}");
   }
 }
 `;
@@ -736,9 +914,26 @@ fn record_helper() {
 
   test("scanner does not let an unrelated record hide a later gated-only diagnostic", () => {
     const fixture = `
-fn unrelated_record_before_gate() {
-  record(unrelated_event());
-  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+${SYNTHETIC_TRACE_DECLARATION}
+
+fn trace_enabled() -> bool {
+  std::env::var_os(SYNTHETIC_TRACE_ENV).is_some()
+}
+
+fn unrelated_canonical_record_before_gate() {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "unrelated"));
+  if trace_enabled() {
+    eprintln!("synthetic stderr mirror");
+  }
+}
+
+fn unrelated_canonical_record_helper() {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "helper_unrelated"));
+}
+
+fn unrelated_canonical_helper_before_gate() {
+  unrelated_canonical_record_helper();
+  if trace_enabled() {
     eprintln!("synthetic stderr mirror");
   }
 }
@@ -747,22 +942,69 @@ fn unrelated_record_before_gate() {
     const findings = scanDiagnosticSources([
       { relativePath: "fixtures/unrelated-record.rs", source: fixture }
     ]);
-    expect(findings).toHaveLength(1);
-    expect(findings[0]).toMatchObject({
-      relativePath: "fixtures/unrelated-record.rs",
-      line: 4,
-      location: "fixtures/unrelated-record.rs:4"
-    });
+    expect(findings).toHaveLength(2);
+    expect(findings.map((finding) => finding.line)).toEqual([10, 21]);
+    expect(findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          relativePath: "fixtures/unrelated-record.rs",
+          location: "fixtures/unrelated-record.rs:10"
+        }),
+        expect.objectContaining({
+          relativePath: "fixtures/unrelated-record.rs",
+          location: "fixtures/unrelated-record.rs:21"
+        })
+      ])
+    );
+  });
+
+  test("scanner recognizes generic gated record producers without stderr", () => {
+    const fixture = `
+${SYNTHETIC_TRACE_DECLARATION}
+
+fn trace_enabled() -> bool {
+  std::env::var_os(SYNTHETIC_TRACE_ENV).is_some()
+}
+
+fn make_diagnostic_event() -> DiagnosticEvent {
+  todo!()
+}
+
+fn generic_direct_record_only() {
+  if trace_enabled() {
+    record(make_diagnostic_event());
+  }
+}
+
+fn generic_record_helper() {
+  record(make_diagnostic_event());
+}
+
+fn generic_helper_record_only() {
+  if trace_enabled() {
+    generic_record_helper();
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/generic-record-only.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(2);
+    expect(findings.map((finding) => finding.line)).toEqual([13, 23]);
+    expect(findings.every((finding) => finding.reason.includes("structured collection"))).toBe(
+      true
+    );
   });
 
   test("stderr helper discovery follows two-hop chains without masking gated-only output", () => {
     const fixture = `
-fn stderr_leaf() {
-  eprintln!("synthetic stderr mirror");
+fn stderr_leaf(stage: &'static str) {
+  eprintln!("synthetic stderr stage={stage}");
 }
 
-fn stderr_middle() {
-  stderr_leaf();
+fn stderr_middle(stage: &'static str) {
+  stderr_leaf(stage);
 }
 
 fn trace_enabled() -> bool {
@@ -771,14 +1013,15 @@ fn trace_enabled() -> bool {
 
 fn gated_two_hop_only() {
   if trace_enabled() {
-    stderr_middle();
+    stderr_middle("gated");
   }
 }
 
 fn collected_two_hop_mirror() {
-  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "collected"));
+  let stage = "collected";
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
   if trace_enabled() {
-    stderr_middle();
+    stderr_middle(stage);
   }
 }
 `;
@@ -792,6 +1035,62 @@ fn collected_two_hop_mirror() {
       line: 15,
       location: "fixtures/two-hop-stderr.rs:15"
     });
+  });
+
+  test("scanner accepts direct, helper, loop, and transformed mirror siblings", () => {
+    const fixture = `
+${SYNTHETIC_TRACE_DECLARATION}
+
+fn trace_enabled() -> bool {
+  std::env::var_os(SYNTHETIC_TRACE_ENV).is_some()
+}
+
+fn record_helper(stage: &'static str) {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+}
+
+fn direct_mirror() {
+  let stage = "direct";
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  if trace_enabled() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+
+fn helper_mirror() {
+  let stage = "helper";
+  record_helper(stage);
+  if trace_enabled() {
+    eprintln!("synthetic stderr stage={stage}");
+  }
+}
+
+fn loop_mirror(items: &[&'static str]) {
+  let stage = "loop";
+  for item in items {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", stage));
+  }
+  if trace_enabled() {
+    for item in items {
+      eprintln!("synthetic stderr stage={stage} item={item}");
+    }
+  }
+}
+
+fn transformed_mirror() {
+  let stage = "transformed";
+  let event = make_diagnostic_event(stage);
+  record(event);
+  let line = format!("stage={stage}");
+  if trace_enabled() {
+    eprintln!("{line}");
+  }
+}
+`;
+
+    expect(
+      scanDiagnosticSources([{ relativePath: "fixtures/mirror-shapes.rs", source: fixture }])
+    ).toEqual([]);
   });
 
   test("scanner masks only cfg items that are provably test-only", () => {
