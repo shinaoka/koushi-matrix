@@ -5644,6 +5644,8 @@ mod tests {
         let data_dir = tempdir().expect("data tempdir");
         let (handle, _action_rx, _event_rx) =
             spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let synthetic_room_id = "!synthetic-room:example.invalid";
+        let synthetic_event_id = "$synthetic-event:example.invalid";
         let request_id = RequestId {
             connection_id: RuntimeConnectionId(17),
             sequence: 23,
@@ -5653,8 +5655,8 @@ mod tests {
             handle
                 .send(AccountMessage::EnsureRoomEventCached {
                     request_id,
-                    room_id: "!synthetic-room:example.invalid".to_owned(),
-                    event_id: "$synthetic-event:example.invalid".to_owned(),
+                    room_id: synthetic_room_id.to_owned(),
+                    event_id: synthetic_event_id.to_owned(),
                     response_tx,
                 })
                 .await
@@ -5675,18 +5677,32 @@ mod tests {
                     })
             })
             .expect("event-cache repair should be collected without trace environment");
-        assert!(repair.event.fields.iter().any(|field| {
-            field.key == "request_id"
-                && field.value
-                    == koushi_diagnostics::DiagnosticValue::RequestId {
-                        connection_id: 17,
-                        sequence: 23,
-                    }
-        }));
-        assert!(repair.event.fields.iter().any(|field| {
-            field.key == "outcome"
-                && field.value == koushi_diagnostics::DiagnosticValue::Token("skipped")
-        }));
+        assert_eq!(repair.event.source, "core.event_cache_repair");
+        assert_eq!(repair.event.stage, "skip");
+        assert_eq!(
+            repair.event.fields,
+            vec![
+                koushi_diagnostics::DiagnosticField::request_id("request_id", 17, 23),
+                koushi_diagnostics::DiagnosticField::token("outcome", "skipped"),
+                koushi_diagnostics::DiagnosticField::token("reason", "no_session"),
+            ]
+        );
+
+        let serialized = serde_json::to_string(&repair.event)
+            .expect("event-cache repair event should serialize for privacy assertions");
+        for forbidden in [
+            synthetic_room_id,
+            synthetic_event_id,
+            "synthetic-body-value",
+            "https://example.invalid/synthetic",
+            "/tmp/synthetic-path",
+            "raw sdk error: synthetic",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "serialized event must not contain forbidden diagnostic data: {forbidden}"
+            );
+        }
     }
 
     #[test]

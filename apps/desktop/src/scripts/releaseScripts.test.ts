@@ -41,6 +41,8 @@ type SourceScope = {
 };
 
 const DIAGNOSTIC_ENV_PATTERN = /KOUSHI_[A-Z0-9_]*(?:TRACE|DIAGNOST)/;
+const TEST_ONLY_ATTRIBUTE_PATTERN =
+  /^\s*#\[(?:cfg\((?:test|(?:all|any)\([^)]*\btest\b[^)]*\))\)|(?:(?:tokio|async_std)::)?test)\]\s*$/;
 
 function runtimeRustSources(): DiagnosticSource[] {
   const roots = ["crates/koushi-sdk/src", "crates/koushi-core/src", "apps/desktop/src-tauri/src"];
@@ -72,8 +74,45 @@ function runtimeRustSources(): DiagnosticSource[] {
 
 function productionRustLines(source: string): string[] {
   const lines = source.split("\n");
-  const testSection = lines.findIndex((line) => /^\s*#\[cfg\((?:test|all\(.*\btest\b)/.test(line));
-  return (testSection === -1 ? lines : lines.slice(0, testSection)).map((line) => line);
+  const productionLines = [...lines];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!TEST_ONLY_ATTRIBUTE_PATTERN.test(lines[index])) {
+      continue;
+    }
+
+    let itemStart = index + 1;
+    while (itemStart < lines.length && lines[itemStart].trim() === "") {
+      itemStart += 1;
+    }
+    const itemEnd = itemStart < lines.length ? testOnlyItemEnd(lines, itemStart) : index;
+    for (let itemIndex = index; itemIndex <= itemEnd; itemIndex += 1) {
+      productionLines[itemIndex] = "";
+    }
+    index = itemEnd;
+  }
+
+  return productionLines;
+}
+
+function testOnlyItemEnd(lines: readonly string[], start: number): number {
+  let depth = 0;
+  let opened = false;
+  for (let index = start; index < lines.length; index += 1) {
+    const structural = structuralRustLine(lines[index]);
+    const delta = braceDelta(lines[index]);
+    if (delta > 0) {
+      opened = true;
+    }
+    depth += delta;
+    if (opened && depth <= 0) {
+      return index;
+    }
+    if (!opened && structural.includes(";")) {
+      return index;
+    }
+  }
+  return lines.length - 1;
 }
 
 function structuralRustLine(line: string): string {
@@ -192,7 +231,7 @@ function structuredDiagnosticHelpers(
   lines: readonly string[],
   scopes: readonly SourceScope[]
 ): Set<string> {
-  return new Set(
+  const helpers = new Set(
     scopes
       .filter((scope) =>
         lines
@@ -201,6 +240,23 @@ function structuredDiagnosticHelpers(
       )
       .map((scope) => scope.name)
   );
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const scope of scopes) {
+      if (helpers.has(scope.name)) {
+        continue;
+      }
+      const text = lines.slice(scope.start, scope.end + 1).join("\n");
+      if ([...helpers].some((name) => new RegExp(`\\b${name}\\s*\\(`).test(text))) {
+        helpers.add(scope.name);
+        changed = true;
+      }
+    }
+  }
+
+  return helpers;
 }
 
 function stderrHelpers(lines: readonly string[], scopes: readonly SourceScope[]): Set<string> {
@@ -238,6 +294,20 @@ function hasStructuredCollection(
   helpers: Set<string>,
   currentScopeName: string
 ): boolean {
+  const adjacentStart = Math.max(start, end - 64);
+  return hasStructuredProducer(lines, adjacentStart, end, helpers, currentScopeName);
+}
+
+function hasStructuredProducer(
+  lines: readonly string[],
+  start: number,
+  end: number,
+  helpers: Set<string>,
+  currentScopeName: string
+): boolean {
+  if (end < start) {
+    return false;
+  }
   const text = lines.slice(start, end + 1).join("\n");
   if (/(?:koushi_diagnostics::)?record\s*\(/.test(text)) {
     return true;
@@ -251,13 +321,18 @@ function hasDiagnosticSideEffect(
   lines: readonly string[],
   start: number,
   end: number,
-  stderr: Set<string>
+  stderr: Set<string>,
+  structuredHelpers: Set<string>,
+  currentScopeName: string
 ): boolean {
   const text = lines.slice(start, end + 1).join("\n");
   if (/\beprintln!\s*\(/.test(text)) {
     return true;
   }
-  return [...stderr].some((name) => new RegExp(`\\b${name}\\s*\\(`).test(text));
+  if ([...stderr].some((name) => new RegExp(`\\b${name}\\s*\\(`).test(text))) {
+    return true;
+  }
+  return hasStructuredProducer(lines, start, end, structuredHelpers, currentScopeName);
 }
 
 function scanDiagnosticSources(sources: readonly DiagnosticSource[]): DiagnosticGateFinding[] {
@@ -291,10 +366,27 @@ function scanDiagnosticSources(sources: readonly DiagnosticSource[]): Diagnostic
         }
         const lineIndex = scope.start + offset;
         const end = Math.min(blockEnd(lines, lineIndex), scope.end);
-        if (!hasDiagnosticSideEffect(lines, lineIndex, end, stderr)) {
+        if (
+          !hasDiagnosticSideEffect(
+            lines,
+            lineIndex,
+            end,
+            stderr,
+            structuredHelpers,
+            scope.name
+          )
+        ) {
           continue;
         }
+        const gatedStructuredProducer = hasStructuredProducer(
+          lines,
+          lineIndex,
+          end,
+          structuredHelpers,
+          scope.name
+        );
         if (
+          gatedStructuredProducer ||
           !hasStructuredCollection(lines, scope.start, lineIndex - 1, structuredHelpers, scope.name)
         ) {
           findings.push({
@@ -397,6 +489,110 @@ fn boolean_alias_gated_only() {
 
     const runtimeFindings = scanDiagnosticSources(runtimeRustSources());
     expect(runtimeFindings).toEqual([]);
+  });
+
+  test("scanner rejects structured producers inside every recognized gate form without stderr", () => {
+    const directGateFixture = `
+fn direct_gate_only() {
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "direct"));
+  }
+}
+`;
+    const helperGateFixture = `
+fn record_helper() {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "helper"));
+}
+
+fn helper_gate_only() {
+  if stderr_enabled() {
+    record_helper();
+  }
+}
+
+fn stderr_enabled() -> bool {
+  std::env::var_os("KOUSHI_SYNTH_TRACE").is_some()
+}
+`;
+    const booleanAliasGateFixture = `
+fn boolean_alias_gate_only() {
+  let trace = std::env::var_os("KOUSHI_SYNTH_TRACE").is_some();
+  if trace {
+    record_helper();
+  }
+}
+
+fn record_helper() {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "alias"));
+}
+`;
+
+    for (const [relativePath, source, line] of [
+      ["fixtures/direct-gate-only.rs", directGateFixture, 3],
+      ["fixtures/helper-gate-only.rs", helperGateFixture, 7],
+      ["fixtures/boolean-alias-gate-only.rs", booleanAliasGateFixture, 4]
+    ] as const) {
+      const findings = scanDiagnosticSources([{ relativePath, source }]);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]).toMatchObject({
+        relativePath,
+        line,
+        location: `${relativePath}:${line}`
+      });
+      expect(findings[0].reason).toContain("structured collection");
+    }
+  });
+
+  test("scanner does not let an unrelated record hide a later gated-only diagnostic", () => {
+    const fixture = `
+fn unrelated_record_before_gate() {
+  record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "unrelated"));
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "gated"));
+    eprintln!("synthetic stderr mirror");
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/unrelated-record.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/unrelated-record.rs",
+      line: 4,
+      location: "fixtures/unrelated-record.rs:4"
+    });
+  });
+
+  test("scanner keeps production code after a balanced test-only module", () => {
+    const fixture = `
+#[cfg(test)]
+mod tests {
+  fn test_only_environment_probe() {
+    if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+      eprintln!("test-only");
+    }
+  }
+}
+
+fn production_after_tests() {
+  if std::env::var_os("KOUSHI_SYNTH_TRACE").is_some() {
+    record(DiagnosticEvent::new(DiagnosticLevel::Debug, "synthetic", "after-tests"));
+    eprintln!("synthetic stderr mirror");
+  }
+}
+`;
+
+    const findings = scanDiagnosticSources([
+      { relativePath: "fixtures/production-after-tests.rs", source: fixture }
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      relativePath: "fixtures/production-after-tests.rs",
+      line: 12,
+      location: "fixtures/production-after-tests.rs:12"
+    });
   });
 
   test("tracked text artifacts contain no previous branding residue", () => {
