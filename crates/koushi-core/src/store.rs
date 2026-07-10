@@ -1159,6 +1159,26 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    #[test]
+    fn store_diagnostic_producer_records_typed_outcome_without_environment_switch() {
+        tracing_or_eprintln("synthetic store diagnostic");
+        let record = koushi_diagnostics::snapshot()
+            .records
+            .into_iter()
+            .rev()
+            .find(|record| {
+                record.event.source == "core.store" && record.event.stage == "credential_store"
+            })
+            .expect("store producer should record");
+        assert!(
+            record
+                .event
+                .fields
+                .iter()
+                .any(|field| field.key == "outcome")
+        );
+    }
+
     fn make_key_id() -> SessionKeyId {
         SessionKeyId {
             homeserver: "https://test.example.com".to_owned(),

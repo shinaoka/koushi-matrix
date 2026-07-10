@@ -79,15 +79,18 @@ pub const COMPOSER_DRAFT_PERSIST_DEBOUNCE: Duration = Duration::from_millis(150)
 const INTERNAL_RUNTIME_CONNECTION_ID: RuntimeConnectionId = RuntimeConnectionId(0);
 const ENV_SYNC_TRACE: &str = "KOUSHI_SYNC_TRACE";
 
-fn trace_runtime_sync(stage: &'static str, message: &str) {
-    record(DiagnosticEvent::new(
-        DiagnosticLevel::Debug,
-        "core.runtime",
-        stage,
-    ));
-    if std::env::var_os(ENV_SYNC_TRACE).is_some() {
-        eprintln!("koushi.sync stage={stage} {message}");
-    }
+macro_rules! trace_runtime_sync {
+    ($stage:expr, [$($field:expr),* $(,)?], $($arg:tt)*) => {{
+        let event = DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.runtime",
+            $stage,
+        )$(.field($field))*;
+        record(event);
+        if std::env::var_os(ENV_SYNC_TRACE).is_some() {
+            eprintln!("koushi.sync stage={} {}", $stage, format_args!($($arg)*));
+        }
+    }};
 }
 
 fn runtime_request_id_trace_label(request_id: RequestId) -> String {
@@ -109,6 +112,9 @@ fn intent_outcome_token(outcome: &IntentOutcome) -> &'static str {
 /// sync. Logs the arm, items handled, the state-clone cost, and total time.
 fn app_loop_trace(arm: &'static str, count: u32, clone_ms: u128, total: std::time::Duration) {
     let total_ms = total.as_millis();
+    if total_ms < 100 {
+        return;
+    }
     record(
         DiagnosticEvent::new(DiagnosticLevel::Debug, "core.runtime", "app_loop")
             .field(DiagnosticField::token("arm", arm))
@@ -1477,12 +1483,19 @@ impl AppActor {
     /// Returns whether `AppState` changed.
     async fn handle_command(&mut self, command: CoreCommand) -> bool {
         if command.requires_ready_session() && !is_ready_session_for_commands(&self.state.session) {
-            trace_runtime_sync(
+            trace_runtime_sync!(
                 "command_rejected",
-                &format!(
-                    "request_id={} reason=session_required action=emit_operation_failed",
-                    runtime_request_id_trace_label(command.request_id())
-                ),
+                [
+                    DiagnosticField::request_id(
+                        "request_id",
+                        command.request_id().connection_id.0,
+                        command.request_id().sequence
+                    ),
+                    DiagnosticField::token("reason", "session_required"),
+                    DiagnosticField::token("action", "emit_operation_failed"),
+                ],
+                "request_id={} reason=session_required action=emit_operation_failed",
+                runtime_request_id_trace_label(command.request_id())
             );
             self.emit(CoreEvent::OperationFailed {
                 request_id: command.request_id(),
@@ -2354,12 +2367,19 @@ impl AppActor {
         for effect in effects {
             match effect {
                 AppEffect::StartSync => {
-                    trace_runtime_sync(
+                    trace_runtime_sync!(
                         "effect_start_sync",
-                        &format!(
-                            "source=command_effect request_id={} action=send_sync_start",
-                            runtime_request_id_trace_label(request_id)
-                        ),
+                        [
+                            DiagnosticField::token("source", "command_effect"),
+                            DiagnosticField::request_id(
+                                "request_id",
+                                request_id.connection_id.0,
+                                request_id.sequence
+                            ),
+                            DiagnosticField::token("action", "send_sync_start"),
+                        ],
+                        "source=command_effect request_id={} action=send_sync_start",
+                        runtime_request_id_trace_label(request_id)
                     );
                     let _ = self
                         .account_actor
@@ -2369,12 +2389,19 @@ impl AppActor {
                         .await;
                 }
                 AppEffect::StopSync => {
-                    trace_runtime_sync(
+                    trace_runtime_sync!(
                         "effect_stop_sync",
-                        &format!(
-                            "source=command_effect request_id={} action=send_sync_stop",
-                            runtime_request_id_trace_label(request_id)
-                        ),
+                        [
+                            DiagnosticField::token("source", "command_effect"),
+                            DiagnosticField::request_id(
+                                "request_id",
+                                request_id.connection_id.0,
+                                request_id.sequence
+                            ),
+                            DiagnosticField::token("action", "send_sync_stop"),
+                        ],
+                        "source=command_effect request_id={} action=send_sync_stop",
+                        runtime_request_id_trace_label(request_id)
                     );
                     let _ = self
                         .account_actor
@@ -2614,12 +2641,19 @@ impl AppActor {
             match effect {
                 AppEffect::StartSync => {
                     let request_id = self.next_internal_request_id();
-                    trace_runtime_sync(
+                    trace_runtime_sync!(
                         "effect_start_sync",
-                        &format!(
-                            "source=actor_projection request_id={} action=send_sync_start",
-                            runtime_request_id_trace_label(request_id)
-                        ),
+                        [
+                            DiagnosticField::token("source", "actor_projection"),
+                            DiagnosticField::request_id(
+                                "request_id",
+                                request_id.connection_id.0,
+                                request_id.sequence
+                            ),
+                            DiagnosticField::token("action", "send_sync_start"),
+                        ],
+                        "source=actor_projection request_id={} action=send_sync_start",
+                        runtime_request_id_trace_label(request_id)
                     );
                     let _ = self
                         .account_actor
@@ -2630,12 +2664,19 @@ impl AppActor {
                 }
                 AppEffect::StopSync => {
                     let request_id = self.next_internal_request_id();
-                    trace_runtime_sync(
+                    trace_runtime_sync!(
                         "effect_stop_sync",
-                        &format!(
-                            "source=actor_projection request_id={} action=send_sync_stop",
-                            runtime_request_id_trace_label(request_id)
-                        ),
+                        [
+                            DiagnosticField::token("source", "actor_projection"),
+                            DiagnosticField::request_id(
+                                "request_id",
+                                request_id.connection_id.0,
+                                request_id.sequence
+                            ),
+                            DiagnosticField::token("action", "send_sync_stop"),
+                        ],
+                        "source=actor_projection request_id={} action=send_sync_stop",
+                        runtime_request_id_trace_label(request_id)
                     );
                     let _ = self
                         .account_actor
@@ -3296,6 +3337,44 @@ mod tests {
         RoomLatestEventSummary, RoomNotificationModeOperation, RoomNotificationSettings,
         RoomSummary, RoomTags, SessionInfo, SettingsPatch, UserProfile, reduce,
     };
+
+    #[test]
+    fn app_loop_trace_ignores_subthreshold_iterations() {
+        let before = koushi_diagnostics::snapshot();
+        app_loop_trace("test_boundary", 1, 2, Duration::from_millis(99));
+        let after = koushi_diagnostics::snapshot();
+        assert_eq!(
+            after
+                .records
+                .iter()
+                .filter(|record| record.event.source == "core.runtime"
+                    && record.event.stage == "app_loop")
+                .count(),
+            before
+                .records
+                .iter()
+                .filter(|record| record.event.source == "core.runtime"
+                    && record.event.stage == "app_loop")
+                .count()
+        );
+    }
+
+    #[test]
+    fn app_loop_trace_records_at_threshold_without_environment_switch() {
+        let before = koushi_diagnostics::snapshot();
+        app_loop_trace("test_boundary", 3, 4, Duration::from_millis(100));
+        let after = koushi_diagnostics::snapshot();
+        assert!(after.records.len() > before.records.len());
+        let record = after
+            .records
+            .iter()
+            .rev()
+            .find(|record| {
+                record.event.source == "core.runtime" && record.event.stage == "app_loop"
+            })
+            .expect("threshold iteration should be collected");
+        assert!(record.event.fields.iter().any(|field| field.key == "count"));
+    }
 
     #[test]
     fn default_data_dir_requires_home() {
@@ -4257,12 +4336,12 @@ mod tests {
         );
         assert!(
             compact_command_effects
-                .contains("trace_runtime_sync(\"effect_start_sync\",&format!(\"source=command_effectrequest_id={}action=send_sync_start\""),
+                .contains("trace_runtime_sync!(\"effect_start_sync\",[DiagnosticField::token(\"source\",\"command_effect\")"),
             "command-originated StartSync effects should be visible in sync diagnostics"
         );
         assert!(
             compact_actor_projection_effects
-                .contains("trace_runtime_sync(\"effect_start_sync\",&format!(\"source=actor_projectionrequest_id={}action=send_sync_start\""),
+                .contains("trace_runtime_sync!(\"effect_start_sync\",[DiagnosticField::token(\"source\",\"actor_projection\")"),
             "actor-originated restore/login StartSync effects should be visible in sync diagnostics"
         );
     }

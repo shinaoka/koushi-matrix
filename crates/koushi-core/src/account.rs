@@ -109,14 +109,27 @@ fn state_search_scope(scope: &crate::command::SearchScope) -> koushi_state::Sear
     }
 }
 
-fn trace_restore(stage: &'static str, message: &str) {
-    record(DiagnosticEvent::new(
-        DiagnosticLevel::Debug,
-        "core.account",
-        stage,
-    ));
+macro_rules! trace_restore {
+    ($stage:expr, [$($field:expr),* $(,)?], $($arg:tt)*) => {{
+        let event = DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.account",
+            $stage,
+        )$(.field($field))*;
+        record(event);
+        if std::env::var_os(ENV_SYNC_TRACE).is_some() {
+            eprintln!("koushi.account stage={} {}", $stage, format_args!($($arg)*));
+        }
+    }};
+}
+
+fn trace_restore_simple(stage: &'static str, action: &'static str) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.account", stage)
+            .field(DiagnosticField::token("action", action)),
+    );
     if std::env::var_os(ENV_SYNC_TRACE).is_some() {
-        eprintln!("koushi.account stage={stage} {message}");
+        eprintln!("koushi.account stage={stage} action={action}");
     }
 }
 
@@ -129,22 +142,19 @@ fn bool_trace_label(value: bool) -> &'static str {
 }
 
 fn trace_account_request(stage: &'static str, request_id: RequestId, action: &'static str) {
-    record(
-        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.account", stage)
-            .field(DiagnosticField::token("action", action))
-            .field(DiagnosticField::request_id(
+    trace_restore!(
+        stage,
+        [
+            DiagnosticField::token("action", action),
+            DiagnosticField::request_id(
                 "request_id",
                 request_id.connection_id.0,
-                request_id.sequence,
-            )),
-    );
-    trace_restore(
-        stage,
-        &format!(
-            "request_id={} action={}",
-            request_id_trace_label(request_id),
-            action
-        ),
+                request_id.sequence
+            ),
+        ],
+        "request_id={} action={}",
+        request_id_trace_label(request_id),
+        action
     );
 }
 
@@ -1263,45 +1273,68 @@ impl AccountActor {
             SyncCommand::Restart { request_id } => ("restart", *request_id),
             SyncCommand::SyncOnce { request_id } => ("sync_once", *request_id),
         };
-        trace_restore(
+        trace_restore!(
             "route_sync_command",
-            &format!(
-                "request_id={} kind={} session={} sync_actor={} action=begin",
-                request_id_trace_label(request_id),
-                command_kind,
-                if self.session.is_some() { "yes" } else { "no" },
-                if self.sync_actor.is_some() {
-                    "yes"
-                } else {
-                    "no"
-                }
-            ),
+            [
+                DiagnosticField::request_id(
+                    "request_id",
+                    request_id.connection_id.0,
+                    request_id.sequence
+                ),
+                DiagnosticField::token("kind", command_kind),
+                DiagnosticField::boolean("session", self.session.is_some()),
+                DiagnosticField::boolean("sync_actor", self.sync_actor.is_some()),
+                DiagnosticField::token("action", "begin"),
+            ],
+            "request_id={} kind={} session={} sync_actor={} action=begin",
+            request_id_trace_label(request_id),
+            command_kind,
+            if self.session.is_some() { "yes" } else { "no" },
+            if self.sync_actor.is_some() {
+                "yes"
+            } else {
+                "no"
+            }
         );
 
         if self.sync_actor.is_none()
             && !matches!(command, SyncCommand::Stop { .. })
             && let Some(session) = &self.session
         {
-            trace_restore(
+            trace_restore!(
                 "route_sync_command",
-                &format!(
-                    "request_id={} kind={} action=spawn_sync_actor",
-                    request_id_trace_label(request_id),
-                    command_kind
-                ),
+                [
+                    DiagnosticField::request_id(
+                        "request_id",
+                        request_id.connection_id.0,
+                        request_id.sequence
+                    ),
+                    DiagnosticField::token("kind", command_kind),
+                    DiagnosticField::token("action", "spawn_sync_actor"),
+                ],
+                "request_id={} kind={} action=spawn_sync_actor",
+                request_id_trace_label(request_id),
+                command_kind
             );
             self.spawn_sync_actor(session.clone()).await;
         }
 
         match &self.sync_actor {
             Some(handle) => {
-                trace_restore(
+                trace_restore!(
                     "route_sync_command",
-                    &format!(
-                        "request_id={} kind={} action=send_to_sync_actor",
-                        request_id_trace_label(request_id),
-                        command_kind
-                    ),
+                    [
+                        DiagnosticField::request_id(
+                            "request_id",
+                            request_id.connection_id.0,
+                            request_id.sequence
+                        ),
+                        DiagnosticField::token("kind", command_kind),
+                        DiagnosticField::token("action", "send_to_sync_actor"),
+                    ],
+                    "request_id={} kind={} action=send_to_sync_actor",
+                    request_id_trace_label(request_id),
+                    command_kind
                 );
                 // The SyncActor notifies the RoomActor itself on start/stop/
                 // restart: only it knows the selected backend and owns the
@@ -1309,26 +1342,40 @@ impl AccountActor {
                 let _ = handle.send(SyncMessage::Command(command)).await;
             }
             None if self.session.is_none() => {
-                trace_restore(
+                trace_restore!(
                     "route_sync_command",
-                    &format!(
-                        "request_id={} kind={} action=session_required",
-                        request_id_trace_label(request_id),
-                        command_kind
-                    ),
+                    [
+                        DiagnosticField::request_id(
+                            "request_id",
+                            request_id.connection_id.0,
+                            request_id.sequence
+                        ),
+                        DiagnosticField::token("kind", command_kind),
+                        DiagnosticField::token("action", "session_required"),
+                    ],
+                    "request_id={} kind={} action=session_required",
+                    request_id_trace_label(request_id),
+                    command_kind
                 );
                 // Session not yet ready — gate is enforced in AppActor but be
                 // defensive here too.
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
             }
             None => {
-                trace_restore(
+                trace_restore!(
                     "route_sync_command",
-                    &format!(
-                        "request_id={} kind={} action=no_sync_actor",
-                        request_id_trace_label(request_id),
-                        command_kind
-                    ),
+                    [
+                        DiagnosticField::request_id(
+                            "request_id",
+                            request_id.connection_id.0,
+                            request_id.sequence
+                        ),
+                        DiagnosticField::token("kind", command_kind),
+                        DiagnosticField::token("action", "no_sync_actor"),
+                    ],
+                    "request_id={} kind={} action=no_sync_actor",
+                    request_id_trace_label(request_id),
+                    command_kind
                 );
             }
         }
@@ -1339,7 +1386,7 @@ impl AccountActor {
     /// Also replace the TimelineManagerActor with one that holds the session.
     /// Also spawn the SearchActor (Phase 6).
     async fn spawn_sync_actor(&mut self, session: Arc<MatrixClientSession>) {
-        trace_restore("spawn_sync_actor", "action=begin");
+        trace_restore_simple("spawn_sync_actor", "begin");
         // Give the RoomActor the session so room ops work even before sync
         // starts. The room-list observation starts later, on the SyncActor's
         // RoomMessage::SyncStarted (which carries the live RoomListService on
@@ -1393,7 +1440,7 @@ impl AccountActor {
             self.timeline_manager.sender(),
         );
         self.sync_actor = Some(handle);
-        trace_restore("spawn_sync_actor", "action=done");
+        trace_restore_simple("spawn_sync_actor", "done");
         self.start_scheduled_send_capability_probe(session);
     }
 
@@ -1521,9 +1568,14 @@ impl AccountActor {
     }
 
     async fn handle_session_invalidated(&mut self, soft_logout: bool) {
-        trace_restore(
+        trace_restore!(
             "session_invalidated",
-            &format!("soft_logout={} action=lock", bool_trace_label(soft_logout)),
+            [
+                DiagnosticField::boolean("soft_logout", soft_logout),
+                DiagnosticField::token("action", "lock"),
+            ],
+            "soft_logout={} action=lock",
+            bool_trace_label(soft_logout)
         );
         if self.session.is_none() {
             return;
@@ -5497,6 +5549,44 @@ mod tests {
 
     use super::*;
     use crate::store::CredentialStoreBackend;
+
+    #[test]
+    fn account_trace_preserves_typed_request_fields_without_environment_switch() {
+        trace_account_request(
+            "test_account_typed_fields",
+            RequestId {
+                connection_id: RuntimeConnectionId(7),
+                sequence: 11,
+            },
+            "restore_session",
+        );
+        let records = koushi_diagnostics::snapshot()
+            .records
+            .into_iter()
+            .filter(|record| record.event.stage == "test_account_typed_fields")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            records.len(),
+            1,
+            "one account request must produce one collector event"
+        );
+        let record = &records[0];
+        assert_eq!(record.event.source, "core.account");
+        assert!(
+            record
+                .event
+                .fields
+                .iter()
+                .any(|field| field.key == "request_id")
+        );
+        assert!(
+            record
+                .event
+                .fields
+                .iter()
+                .any(|field| field.key == "action")
+        );
+    }
 
     #[test]
     fn incoming_verification_flow_ids_use_reserved_internal_namespace() {

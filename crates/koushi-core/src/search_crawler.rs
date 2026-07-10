@@ -72,6 +72,22 @@ pub(crate) enum HistoryCrawlPageResult {
     Preempted { checkpoint: HistoryCrawlCheckpoint },
 }
 
+fn trace_crawler_page(
+    level: DiagnosticLevel,
+    outcome: &'static str,
+    processed: u64,
+    indexed: u64,
+    page_items: u64,
+) {
+    record(
+        DiagnosticEvent::new(level, "core.startup", "crawler_page")
+            .field(DiagnosticField::token("outcome", outcome))
+            .field(DiagnosticField::count("processed", processed))
+            .field(DiagnosticField::count("indexed", indexed))
+            .field(DiagnosticField::count("page_items", page_items)),
+    );
+}
+
 pub(crate) fn spawn_history_crawl_page(
     session: Arc<koushi_sdk::MatrixClientSession>,
     messages_backpressure: MessagesBackpressure,
@@ -139,11 +155,12 @@ async fn run_history_crawl_page(
         match page_result {
             Ok(messages) => messages,
             Err(_) => {
-                record(
-                    DiagnosticEvent::new(DiagnosticLevel::Warn, "core.startup", "crawler_page")
-                        .field(DiagnosticField::token("outcome", "failed"))
-                        .field(DiagnosticField::count("processed", checkpoint.processed))
-                        .field(DiagnosticField::count("indexed", checkpoint.indexed)),
+                trace_crawler_page(
+                    DiagnosticLevel::Warn,
+                    "failed",
+                    checkpoint.processed,
+                    checkpoint.indexed,
+                    0,
                 );
                 return HistoryCrawlPageResult::Failed {
                     checkpoint,
@@ -190,15 +207,12 @@ async fn run_history_crawl_page(
     let completed = chunk_len == 0 || messages.end.is_none();
     checkpoint.from_token = messages.end;
 
-    record(
-        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.startup", "crawler_page")
-            .field(DiagnosticField::token(
-                "outcome",
-                if completed { "completed" } else { "progress" },
-            ))
-            .field(DiagnosticField::count("processed", checkpoint.processed))
-            .field(DiagnosticField::count("indexed", checkpoint.indexed))
-            .field(DiagnosticField::count("page_items", chunk_len)),
+    trace_crawler_page(
+        DiagnosticLevel::Debug,
+        if completed { "completed" } else { "progress" },
+        checkpoint.processed,
+        checkpoint.indexed,
+        chunk_len,
     );
 
     if !completed && delay_ms > 0 {
@@ -456,6 +470,33 @@ fn thumbnail_source(info: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crawler_page_producer_records_typed_progress_without_environment_switch() {
+        trace_crawler_page(DiagnosticLevel::Debug, "test_progress", 12, 9, 4);
+        let record = koushi_diagnostics::snapshot()
+            .records
+            .into_iter()
+            .rev()
+            .find(|record| {
+                record.event.source == "core.startup" && record.event.stage == "crawler_page"
+            })
+            .expect("crawler producer should record");
+        assert!(
+            record
+                .event
+                .fields
+                .iter()
+                .any(|field| field.key == "processed")
+        );
+        assert!(
+            record
+                .event
+                .fields
+                .iter()
+                .any(|field| field.key == "indexed")
+        );
+    }
 
     #[test]
     fn crawler_indexes_text_message_without_attachment_bytes() {

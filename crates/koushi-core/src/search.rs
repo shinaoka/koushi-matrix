@@ -109,6 +109,30 @@ fn search_scope_trace_label(scope: &SearchScope) -> &'static str {
     }
 }
 
+fn trace_search_start(
+    request_id: RequestId,
+    scope: &SearchScope,
+    queued_ms: u128,
+    variants: usize,
+    normalized_diff: bool,
+) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.search", "start")
+            .field(DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence,
+            ))
+            .field(DiagnosticField::token(
+                "scope",
+                search_scope_trace_label(scope),
+            ))
+            .field(DiagnosticField::milliseconds("queued", queued_ms))
+            .field(DiagnosticField::count("variants", variants as u64))
+            .field(DiagnosticField::boolean("normalized_diff", normalized_diff)),
+    );
+}
+
 fn current_epoch_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -679,23 +703,12 @@ impl SearchActor {
         let query_started = Instant::now();
         let queued_ms = enqueued_at.elapsed().as_millis();
         let variants = cjk_search_query_variants(query);
-        record(
-            DiagnosticEvent::new(DiagnosticLevel::Debug, "core.search", "start")
-                .field(DiagnosticField::request_id(
-                    "request_id",
-                    request_id.connection_id.0,
-                    request_id.sequence,
-                ))
-                .field(DiagnosticField::token(
-                    "scope",
-                    search_scope_trace_label(&scope),
-                ))
-                .field(DiagnosticField::milliseconds("queued", queued_ms))
-                .field(DiagnosticField::count("variants", variants.len() as u64))
-                .field(DiagnosticField::boolean(
-                    "normalized_diff",
-                    variants.iter().any(|variant| variant != query),
-                )),
+        trace_search_start(
+            request_id,
+            &scope,
+            queued_ms,
+            variants.len(),
+            variants.iter().any(|variant| variant != query),
         );
         if trace {
             eprintln!(
@@ -1406,9 +1419,46 @@ fn search_failure_message(kind: SearchFailureKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::command::SearchScope;
+    use crate::ids::{RequestId, RuntimeConnectionId};
     use koushi_search::{
         SearchCandidate, SearchDocumentStore, SearchEdit, SearchableEvent, SensitiveString,
     };
+
+    #[test]
+    fn search_producer_records_typed_start_fields_without_environment_switch() {
+        trace_search_start(
+            RequestId {
+                connection_id: RuntimeConnectionId(8),
+                sequence: 13,
+            },
+            &SearchScope::AllRooms,
+            5,
+            2,
+            true,
+        );
+        let record = koushi_diagnostics::snapshot()
+            .records
+            .into_iter()
+            .rev()
+            .find(|record| record.event.source == "core.search" && record.event.stage == "start")
+            .expect("search producer should record");
+        assert!(
+            record
+                .event
+                .fields
+                .iter()
+                .any(|field| field.key == "request_id")
+        );
+        assert!(
+            record
+                .event
+                .fields
+                .iter()
+                .any(|field| field.key == "variants")
+        );
+    }
 
     // Helper constructors
     fn make_event(room_id: &str, event_id: &str, body: &str) -> SearchableEvent {
