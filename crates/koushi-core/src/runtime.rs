@@ -3710,6 +3710,7 @@ mod tests {
                 thread_root: None,
                 thread_summary: Some(ThreadSummaryDto {
                     reply_count: 1,
+                    latest_event_id: Some("$latest:example.invalid".to_owned()),
                     latest_sender: Some("@carol:example.invalid".to_owned()),
                     latest_sender_label: None,
                     latest_body_preview: Some("latest".to_owned()),

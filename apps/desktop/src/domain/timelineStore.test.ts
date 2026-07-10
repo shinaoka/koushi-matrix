@@ -1030,6 +1030,7 @@ describe("DisplayLabelsUpdated", () => {
       thread_root: "$b",
       thread_summary: {
         reply_count: 3,
+        latest_event_id: "$latest-thread-reply:example.invalid",
         latest_sender: "@dave:example.invalid",
         latest_sender_label: null,
         latest_body_preview: "latest reply text",

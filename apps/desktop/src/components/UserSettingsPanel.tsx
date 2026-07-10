@@ -2920,7 +2920,7 @@ function TimelineToggle({
 }: {
   label: string;
   description?: string;
-  settingKey: keyof TimelineSettings;
+  settingKey: "auto_load_older_messages";
   current: TimelineSettings;
   onSelect: (patch: SettingsPatch) => void;
 }) {

@@ -6830,6 +6830,7 @@ fn unable_to_decrypt_from_content(
 fn thread_summary_from_sdk(summary: matrix_sdk_ui::timeline::ThreadSummary) -> ThreadSummaryDto {
     let mut dto = ThreadSummaryDto {
         reply_count: summary.num_replies,
+        latest_event_id: None,
         latest_sender: None,
         latest_sender_label: None,
         latest_body_preview: None,
@@ -6837,6 +6838,10 @@ fn thread_summary_from_sdk(summary: matrix_sdk_ui::timeline::ThreadSummary) -> T
     };
 
     if let matrix_sdk_ui::timeline::TimelineDetails::Ready(latest_event) = summary.latest_event {
+        dto.latest_event_id = match &latest_event.identifier {
+            TimelineEventItemId::EventId(event_id) => Some(event_id.to_string()),
+            TimelineEventItemId::TransactionId(_) => None,
+        };
         dto.latest_sender = Some(latest_event.sender.to_string());
         dto.latest_sender_label = None;
         dto.latest_body_preview = latest_event
@@ -10065,6 +10070,34 @@ mod tests {
         assert!(
             compact_projection_source.contains("content().thread_summary()"),
             "timeline item projection must read SDK thread_summary"
+        );
+    }
+
+    #[test]
+    fn thread_summary_projection_preserves_ready_latest_event_id() {
+        use matrix_sdk::ruma::{MilliSecondsSinceUnixEpoch, OwnedEventId};
+        use matrix_sdk_ui::timeline::{EmbeddedEvent, MsgLikeContent, ThreadSummary};
+
+        let latest_event_id =
+            OwnedEventId::try_from("$latest-thread-reply:test").expect("event id");
+        let summary = ThreadSummary {
+            latest_event: TimelineDetails::Ready(Box::new(EmbeddedEvent {
+                content: TimelineItemContent::MsgLike(MsgLikeContent::redacted()),
+                sender: OwnedUserId::try_from("@latest:test").expect("user id"),
+                sender_profile: TimelineDetails::Unavailable,
+                timestamp: MilliSecondsSinceUnixEpoch(uint!(42)),
+                identifier: TimelineEventItemId::EventId(latest_event_id.clone()),
+            })),
+            num_replies: 1,
+            public_read_receipt_event_id: None,
+            private_read_receipt_event_id: None,
+        };
+
+        let dto = thread_summary_from_sdk(summary);
+
+        assert_eq!(
+            dto.latest_event_id.as_deref(),
+            Some(latest_event_id.as_str())
         );
     }
 

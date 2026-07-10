@@ -5147,6 +5147,7 @@ describe("TimelineView", () => {
       ...message("$thread-root:example.invalid", "Thread root"),
       thread_summary: {
         reply_count: 4,
+        latest_event_id: "$latest-thread-reply:example.invalid",
         latest_sender: "@bob:example.invalid",
         latest_sender_label: "Bob",
         latest_body_preview: "latest reply",

@@ -249,6 +249,7 @@ describe("ContextualRightPanel", () => {
           thread_root: null,
           thread_summary: {
             reply_count: 3,
+            latest_event_id: "$latest-thread-reply:example.invalid",
             latest_sender: "@bob:example.invalid",
             latest_body_preview: "Latest thread reply",
             latest_timestamp_ms: 1_800_000_100_000
@@ -1931,6 +1932,7 @@ describe("Timeline item row rendering", () => {
             thread_root: null,
             thread_summary: {
               reply_count: 2,
+              latest_event_id: "$latest-thread-reply:example.invalid",
               latest_sender: "@carol:example.invalid",
               latest_sender_label: "Carol Alias",
               latest_body_preview: "latest reply",

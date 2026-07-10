@@ -61,7 +61,7 @@ pub use settings::{
     RoomNotificationMode, RoomNotificationModeOperation, RoomNotificationSettings, RoomPreference,
     RoomPreferencesState, RoomUrlPreviews, SettingsPatch, SettingsPersistenceState, SettingsState,
     SettingsValues, TextDirectionPreference, ThemePreference, ThreadListOrder, TimelineSettings,
-    TypographySettings,
+    TimelineThreadRootOrder, TypographySettings,
 };
 
 // ── Re-exports: profile ─────────────────────────────────────────────────────

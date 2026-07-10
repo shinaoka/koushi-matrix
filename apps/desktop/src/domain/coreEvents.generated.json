@@ -740,7 +740,14 @@
               }
             ],
             "thread_root": null,
-            "thread_summary": null,
+            "thread_summary": {
+              "latest_body_preview": "thread reply",
+              "latest_event_id": "$thread-reply:example.test",
+              "latest_sender": "@thread:example.test",
+              "latest_sender_label": null,
+              "latest_timestamp_ms": 124,
+              "reply_count": 2
+            },
             "timestamp_ms": 123
           }
         ],
@@ -820,7 +827,14 @@
                   }
                 ],
                 "thread_root": null,
-                "thread_summary": null,
+                "thread_summary": {
+                  "latest_body_preview": "thread reply",
+                  "latest_event_id": "$thread-reply:example.test",
+                  "latest_sender": "@thread:example.test",
+                  "latest_sender_label": null,
+                  "latest_timestamp_ms": 124,
+                  "reply_count": 2
+                },
                 "timestamp_ms": 123
               }
             }

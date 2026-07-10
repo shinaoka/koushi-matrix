@@ -227,6 +227,7 @@ export type TimelineUnableToDecryptReason =
 
 export interface ThreadSummaryDto {
   reply_count: number;
+  latest_event_id: string | null;
   latest_sender: string | null;
   latest_sender_label?: string | null;
   latest_body_preview: string | null;

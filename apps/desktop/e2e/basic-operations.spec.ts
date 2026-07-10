@@ -5892,7 +5892,8 @@ test("timeline auto-load setting dispatches a Rust-owned update_settings patch",
     .toEqual({
       patch: {
         timeline: {
-          auto_load_older_messages: false
+          auto_load_older_messages: false,
+          thread_root_order: { kind: "rootEvent" }
         }
       }
     });

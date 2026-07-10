@@ -225,7 +225,8 @@ function defaultSettingsState(): DesktopSnapshot["state"]["domain"]["settings"] 
         }
       },
       timeline: {
-        auto_load_older_messages: true
+        auto_load_older_messages: true,
+        thread_root_order: { kind: "rootEvent" }
       },
       search_crawler: {
         speed: "standard",
@@ -2252,6 +2253,7 @@ async function boot() {
     thread_root: null,
     thread_summary: {
       reply_count: 2,
+      latest_event_id: "$thread-panel-reply:example.invalid",
       latest_sender: "@thread-user:example.invalid",
       latest_body_preview: "Thread panel reply from keyed event stream",
       latest_timestamp_ms: 1_800_000_000_200

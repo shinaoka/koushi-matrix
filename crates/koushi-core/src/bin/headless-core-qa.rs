@@ -12936,6 +12936,7 @@ mod tests {
     fn thread_summary_helper_requires_root_item_with_reply_count() {
         let summary = ThreadSummaryDto {
             reply_count: 1,
+            latest_event_id: None,
             latest_sender: None,
             latest_sender_label: None,
             latest_body_preview: None,
@@ -12975,6 +12976,7 @@ mod tests {
             None,
             Some(ThreadSummaryDto {
                 reply_count: 1,
+                latest_event_id: None,
                 latest_sender: None,
                 latest_sender_label: None,
                 latest_body_preview: None,
@@ -13040,6 +13042,7 @@ mod tests {
             None,
             Some(ThreadSummaryDto {
                 reply_count: 1,
+                latest_event_id: None,
                 latest_sender: None,
                 latest_sender_label: None,
                 latest_body_preview: None,

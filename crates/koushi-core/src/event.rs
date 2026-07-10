@@ -1731,6 +1731,7 @@ impl fmt::Debug for LinkPreview {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ThreadSummaryDto {
     pub reply_count: u32,
+    pub latest_event_id: Option<String>,
     pub latest_sender: Option<String>,
     #[serde(default)]
     pub latest_sender_label: Option<String>,
@@ -2120,6 +2121,7 @@ mod tests {
             thread_root: Some("$root:test".to_owned()),
             thread_summary: Some(ThreadSummaryDto {
                 reply_count: 2,
+                latest_event_id: Some("$latest-reply:test".to_owned()),
                 latest_sender: Some("@bob:example.invalid".to_owned()),
                 latest_sender_label: None,
                 latest_body_preview: Some("latest reply".to_owned()),
@@ -2170,6 +2172,7 @@ mod tests {
             value["thread_summary"],
             json!({
                 "reply_count": 2,
+                "latest_event_id": "$latest-reply:test",
                 "latest_sender": "@bob:example.invalid",
                 "latest_sender_label": null,
                 "latest_body_preview": "latest reply",

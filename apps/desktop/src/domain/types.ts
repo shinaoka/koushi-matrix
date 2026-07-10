@@ -146,6 +146,9 @@ export interface SettingsPatch {
 // Rust ThreadListOrder is #[serde(tag = "kind", rename_all = "camelCase")].
 export type ThreadListOrder = { kind: "latestReply" } | { kind: "rootChronology" };
 
+// Rust TimelineThreadRootOrder is #[serde(tag = "kind", rename_all = "camelCase")].
+export type TimelineThreadRootOrder = { kind: "rootEvent" } | { kind: "latestReply" };
+
 // Rust RoomListSort is #[serde(tag = "kind", rename_all = "camelCase")].
 export type RoomListSort =
   | { kind: "activity" }
@@ -230,6 +233,7 @@ export interface MediaSettings {
 
 export interface TimelineSettings {
   auto_load_older_messages: boolean;
+  thread_root_order: TimelineThreadRootOrder;
 }
 
 export type ImageUploadCompressionMode = "always" | "ask" | "never";
