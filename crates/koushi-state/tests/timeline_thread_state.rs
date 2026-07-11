@@ -851,6 +851,26 @@ fn thread_reply_submit_sets_thread_pending_reply_and_leaves_main_composer_alone(
 }
 
 #[test]
+fn duplicate_thread_submission_id_is_accepted_once() {
+    let mut state = open_thread_state("room-a", "$root");
+    let submission_id = SubmissionId::new("thread-submission");
+    let action = || AppAction::ThreadSubmissionAccepted {
+        submission_id: submission_id.clone(),
+        room_id: "room-a".to_owned(),
+        root_event_id: "$root".to_owned(),
+        transaction_id: "txn-thread".to_owned(),
+        body: "reply".to_owned(),
+    };
+
+    assert_eq!(reduce(&mut state, action()).len(), 1);
+    assert!(reduce(&mut state, action()).is_empty());
+    assert_eq!(
+        open_thread_composer(&state).pending_submission_id,
+        Some(submission_id)
+    );
+}
+
+#[test]
 fn thread_reply_submit_is_ignored_unless_ready_matching_open_and_idle() {
     let mut state = open_thread_state("room-a", "$root");
     reduce(

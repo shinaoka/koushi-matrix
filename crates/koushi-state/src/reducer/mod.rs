@@ -810,6 +810,19 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             transaction_id,
             body: _,
         } => thread::handle_thread_reply_submitted(state, room_id, root_event_id, transaction_id),
+        AppAction::ThreadSubmissionAccepted {
+            submission_id,
+            room_id,
+            root_event_id,
+            transaction_id,
+            body: _,
+        } => thread::handle_thread_submission_accepted(
+            state,
+            submission_id,
+            room_id,
+            root_event_id,
+            transaction_id,
+        ),
         AppAction::ThreadReplyFinished {
             room_id,
             root_event_id,

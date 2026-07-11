@@ -1,3 +1,4 @@
+use crate::SubmissionId;
 use crate::{
     effect::{AppEffect, UiEvent},
     state::{
@@ -5,6 +6,28 @@ use crate::{
         ThreadPaneState, ThreadsListState, sort_threads_list_items,
     },
 };
+
+pub(crate) fn handle_thread_submission_accepted(
+    state: &mut AppState,
+    submission_id: SubmissionId,
+    room_id: String,
+    root_event_id: String,
+    transaction_id: String,
+) -> Vec<AppEffect> {
+    let ThreadPaneState::Open { composer, .. } = &mut state.thread else {
+        return Vec::new();
+    };
+    if composer.pending_submission_id.is_some()
+        || composer.accepted_submission_ids.contains(&submission_id)
+    {
+        return Vec::new();
+    }
+    composer
+        .accepted_submission_ids
+        .insert(submission_id.clone());
+    composer.pending_submission_id = Some(submission_id);
+    handle_thread_reply_submitted(state, room_id, root_event_id, transaction_id)
+}
 
 use super::is_session_ready;
 
@@ -90,6 +113,7 @@ pub(crate) fn handle_thread_reply_finished(
             && composer.pending_transaction_id.as_deref() == Some(transaction_id.as_str()) =>
         {
             composer.pending_transaction_id = None;
+            composer.pending_submission_id = None;
             composer.pending_send_kind = None;
             vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
         }
@@ -119,6 +143,7 @@ pub(crate) fn handle_thread_reply_failed(
             && composer.pending_transaction_id.as_deref() == Some(transaction_id.as_str()) =>
         {
             composer.pending_transaction_id = None;
+            composer.pending_submission_id = None;
             composer.pending_send_kind = None;
             state.errors.push(AppError {
                 code: "send_text_failed".to_owned(),

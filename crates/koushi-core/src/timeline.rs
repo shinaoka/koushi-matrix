@@ -1996,6 +1996,19 @@ impl TimelineManagerActor {
                     body,
                 })
             }
+            (
+                SendComposerProjection::ThreadReply,
+                TimelineKind::Thread {
+                    room_id,
+                    root_event_id,
+                },
+            ) => Some(AppAction::ThreadSubmissionAccepted {
+                submission_id: submission_id.clone(),
+                room_id: room_id.clone(),
+                root_event_id: root_event_id.clone(),
+                transaction_id: transaction_id.clone(),
+                body,
+            }),
             _ => send_submitted_action(key, projection, transaction_id.clone(), body),
         };
         if let Some(action) = action {

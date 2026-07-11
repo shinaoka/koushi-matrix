@@ -768,6 +768,13 @@ pub enum AppAction {
         transaction_id: String,
         body: String,
     },
+    ThreadSubmissionAccepted {
+        submission_id: SubmissionId,
+        room_id: String,
+        root_event_id: String,
+        transaction_id: String,
+        body: String,
+    },
     ThreadReplyFinished {
         room_id: String,
         root_event_id: String,
