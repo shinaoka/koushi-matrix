@@ -8,6 +8,7 @@ import { Composer, ThreadComposer } from "./composer";
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
 });
 
 describe("Composer", () => {
@@ -117,6 +118,93 @@ describe("Composer", () => {
 
     expect(onSend).not.toHaveBeenCalled();
     expect(resolveComposerKeyAction).not.toHaveBeenCalled();
+  });
+
+  it("does not let composition A's deferred end clear composition B", async () => {
+    vi.useFakeTimers();
+    const onSend = vi.fn();
+    const resolveComposerKeyAction = vi.fn(async () => "send" as const);
+    const { container } = render(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        roomName="Direct room"
+        value="日本語"
+        resolveComposerKeyAction={resolveComposerKeyAction}
+        onCancelReply={() => undefined}
+        onSend={onSend}
+        onValueChange={() => undefined}
+      />
+    );
+    const textarea = container.querySelector("textarea")!;
+
+    fireEvent.compositionStart(textarea);
+    fireEvent.compositionEnd(textarea);
+    fireEvent.compositionStart(textarea);
+    vi.runAllTimers();
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 13 });
+    await Promise.resolve();
+
+    expect(resolveComposerKeyAction).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("finishes old DOM ownership and syncs a switched draft exactly once", async () => {
+    vi.useFakeTimers();
+    const onSend = vi.fn();
+    const onValueChange = vi.fn();
+    const resolveComposerKeyAction = vi.fn(async () => "send" as const);
+    const props = {
+      composerMode: { kind: "plain" as const },
+      isSending: false,
+      roomName: "Room A",
+      value: "old draft",
+      draftKey: "room-a",
+      resolveComposerKeyAction,
+      onCancelReply: () => undefined,
+      onSend,
+      onValueChange
+    };
+    const { container, rerender } = render(<Composer {...props} />);
+    const textarea = container.querySelector("textarea")!;
+    fireEvent.compositionStart(textarea);
+    fireEvent.change(textarea, { target: { value: "旧変換中" } });
+    fireEvent.compositionEnd(textarea);
+
+    const valueDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )!;
+    let imperativeWrites = 0;
+    Object.defineProperty(textarea, "value", {
+      configurable: true,
+      get: () => valueDescriptor.get!.call(textarea),
+      set: (value: string) => {
+        imperativeWrites += 1;
+        valueDescriptor.set!.call(textarea, value);
+      }
+    });
+    rerender(
+      <Composer
+        {...props}
+        draftKey="room-b"
+        roomName="Room B"
+        value="new room draft"
+      />
+    );
+
+    expect(textarea.value).toBe("new room draft");
+    expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([14, 14]);
+    expect(imperativeWrites).toBe(1);
+    expect(onValueChange).toHaveBeenCalledTimes(1);
+
+    vi.runAllTimers();
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 13 });
+    await Promise.resolve();
+    expect(resolveComposerKeyAction).toHaveBeenCalledTimes(1);
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(imperativeWrites).toBe(1);
+    expect(onValueChange).toHaveBeenCalledTimes(1);
   });
 
   it("keeps typed text local and sends it before parent state catches up", () => {
