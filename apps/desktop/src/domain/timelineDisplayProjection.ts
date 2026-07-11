@@ -150,6 +150,9 @@ function chooseHydratedRoots(
   );
 
   for (const projection of projections) {
+    if (projection.state.kind === "cleared") {
+      continue;
+    }
     if (loadedRootIds.has(projection.root_event_id) || canonicalEventIds.has(projection.root_event_id)) {
       continue;
     }

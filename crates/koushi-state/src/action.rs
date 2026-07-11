@@ -925,7 +925,12 @@ pub enum AppAction {
     /// carries no canonical timeline items and cannot trigger pagination.
     ThreadRootProjectionsReconciled {
         room_id: String,
-        active_root_event_ids: Vec<String>,
+        activities: Vec<crate::state::ThreadRootProjectionActivity>,
+    },
+    /// The Room timeline was unsubscribed, so no retained/pending root
+    /// projection may survive into a future actor lifetime for that Room.
+    ThreadRootProjectionsCleared {
+        room_id: String,
     },
     ClearError {
         code: String,

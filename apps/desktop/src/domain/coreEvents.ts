@@ -245,7 +245,8 @@ export interface ThreadRootProjectionDto {
 export type ThreadRootProjectionStateDto =
   | { kind: "pending" }
   | { kind: "ready"; item: TimelineItem }
-  | { kind: "failed"; failure_kind: OperationFailureKind };
+  | { kind: "failed"; failure_kind: OperationFailureKind }
+  | { kind: "cleared" };
 
 /** Stable string id usable as a React key and a `data-item-id` DOM hook. */
 export function timelineItemDomId(id: TimelineItemId): string {

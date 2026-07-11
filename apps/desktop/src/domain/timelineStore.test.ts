@@ -23,6 +23,8 @@ import { describe, expect, test } from "vitest";
 
 import type { TimelineItem, TimelineKey } from "./coreEvents";
 import { roomTimelineKey, timelineItemDomId } from "./coreEvents";
+import { projectTimelineDisplayRows } from "./timelineDisplayProjection";
+import type { TimelineThreadRootOrder } from "./types";
 import {
   applyDiffs,
   applyGlobalResync,
@@ -49,6 +51,7 @@ import { TauriIpcMock } from "../test/tauriIpcMock";
 
 const ACCOUNT_KEY = "@qa-user:example.invalid";
 const KEY: TimelineKey = roomTimelineKey(ACCOUNT_KEY, "!room:example.invalid");
+const LATEST_REPLY: TimelineThreadRootOrder = { kind: "latestReply" };
 
 function makeMsg(id: string, body: string): TimelineItem {
   return {
@@ -186,6 +189,19 @@ describe("timeline store — diff application", () => {
 
     expect(getItems(store, KEY)).toEqual([canonicalReply]);
     expect(getThreadRootProjections(store, KEY)[0]?.state).toEqual({ kind: "ready", item: root });
+
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$old-root",
+          activity_event_id: "$latest-reply",
+          activity_timestamp_ms: 1_800_000_010_000,
+          state: { kind: "cleared" }
+        }
+      }
+    });
+    expect(getThreadRootProjections(store, KEY)).toEqual([]);
   });
 
   test("retains an active terminal root projection then evicts it after its reply leaves the canonical window", () => {
@@ -813,6 +829,45 @@ describe("timeline store — generation handling", () => {
     expect(isAwaitingResync(store, KEY)).toBe(true);
     expect(isAwaitingResync(store, keyB)).toBe(true);
   });
+
+  test("global ResyncMarker keeps an active terminal root projection through InitialItems replay", () => {
+    const reply = { ...makeMsg("$reply", "reply"), thread_root: "$old-root" };
+    const root = makeMsg("$old-root", "old root");
+    for (const [state, expectedKind] of [
+      [{ kind: "ready" as const, item: root }, "threadRoot"],
+      [{ kind: "failed" as const, failure_kind: "notFound" as const }, "threadRootFailed"]
+    ] as const) {
+      let store = applyTimelineEvent(createTimelineStore(), {
+        InitialItems: { request_id: null, key: KEY, generation: 1, items: [reply] }
+      });
+      store = applyTimelineEvent(store, {
+        ThreadRootProjection: {
+          key: KEY,
+          projection: {
+            root_event_id: "$old-root",
+            activity_event_id: "$reply",
+            activity_timestamp_ms: reply.timestamp_ms,
+            state
+          }
+        }
+      });
+
+      store = applyGlobalResync(store);
+      expect(getThreadRootProjections(store, KEY)).toHaveLength(1);
+
+      store = applyTimelineEvent(store, {
+        InitialItems: { request_id: null, key: KEY, generation: 1, items: [reply] }
+      });
+      const rows = projectTimelineDisplayRows(
+        getItems(store, KEY),
+        KEY,
+        LATEST_REPLY,
+        getThreadRootProjections(store, KEY)
+      );
+      expect(rows.find((row) => row.row_id === "thread-root:$old-root")?.kind).toBe(expectedKind);
+      expect(rows.some((row) => row.row_id === "$reply")).toBe(false);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1417,6 +1472,34 @@ describe("timeline store — retention", () => {
 
     expect(store.keys.has(timelineStoreKeyId(KEY))).toBe(false);
     expect(getThreadRootProjections(store, KEY)).toEqual([]);
+  });
+
+  test("keeps the projection map identity when pruning only an unrelated timeline key", () => {
+    const retainedKey = roomTimelineKey(ACCOUNT_KEY, "!retained:example.invalid");
+    const evictedKey = roomTimelineKey(ACCOUNT_KEY, "!evicted:example.invalid");
+    let store = seedTimeline(createTimelineStore(), retainedKey);
+    store = seedTimeline(store, evictedKey);
+    const retainedReply = { ...makeMsg("$retained-reply", "reply"), thread_root: "$retained-root" };
+    store = applyTimelineEvent(store, {
+      InitialItems: { request_id: null, key: retainedKey, generation: 2, items: [retainedReply] }
+    });
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: retainedKey,
+        projection: {
+          root_event_id: "$retained-root",
+          activity_event_id: "$retained-reply",
+          activity_timestamp_ms: 2,
+          state: { kind: "pending" }
+        }
+      }
+    });
+    const projectionsBeforePrune = store.threadRootProjections;
+
+    store = pruneTimelineStore(store, new Set([timelineStoreKeyId(retainedKey)]), null, 0);
+
+    expect(store.keys.has(timelineStoreKeyId(evictedKey))).toBe(false);
+    expect(store.threadRootProjections).toBe(projectionsBeforePrune);
   });
 });
 

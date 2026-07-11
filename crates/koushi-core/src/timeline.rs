@@ -59,9 +59,10 @@ use koushi_state::{
     ActivityRow, AppAction, AttachmentKind, AvatarImage, AvatarThumbnailState, ComposerSendIntent,
     FormattedMessageDraft, LiveEventReceipts, LiveReadReceipt, MediaTransferProgress,
     MentionIntent, OperationFailureKind, ReplyQuote, ReplyQuoteState, SlashCommandIntent,
-    TimelineMediaDownloadState, TimelineMediaGalleryItem, TimelineMediaGalleryMedia,
-    TimelineMediaGallerySource, TimelineMediaGalleryThumbnail,
-    TimelineMediaKind as GalleryTimelineMediaKind, resolve_composer_send_intent,
+    ThreadRootProjectionActivity as ThreadRootProjectionActivityState, TimelineMediaDownloadState,
+    TimelineMediaGalleryItem, TimelineMediaGalleryMedia, TimelineMediaGallerySource,
+    TimelineMediaGalleryThumbnail, TimelineMediaKind as GalleryTimelineMediaKind,
+    resolve_composer_send_intent,
 };
 use matrix_sdk::attachment::{
     AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo, Thumbnail,
@@ -116,7 +117,7 @@ use crate::search::SearchIndexMessage;
 use crate::startup_trace::{self, StartupPhase};
 use crate::threads_list::{
     ThreadRootProjectionActivity, ThreadRootProjectionDecision, ThreadRootProjectionRecord,
-    ThreadRootProjectionService,
+    ThreadRootProjectionService, activity_is_newer,
 };
 use crate::unread_trace;
 
@@ -157,12 +158,85 @@ pub enum TimelineMessage {
     IgnoredUsersUpdated {
         user_ids: std::collections::BTreeSet<String>,
     },
+    /// A Room actor observed an absent thread root and has already committed
+    /// its pending state transition. The manager owns the resulting worker so
+    /// unsubscribe/shutdown can cancel it deterministically.
+    StartThreadRootProjectionFetch {
+        key: TimelineKey,
+        own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
+        activity: ThreadRootProjectionActivity,
+    },
+    /// Terminal result of the manager-owned bounded root lookup. It returns to
+    /// the manager mailbox rather than publishing state/frontend changes from
+    /// an unowned detached task.
+    ThreadRootProjectionFetchFinished {
+        key: TimelineKey,
+        activity: ThreadRootProjectionActivity,
+        result: Result<TimelineItem, OperationFailureKind>,
+    },
     Shutdown,
 }
 
 /// Handle to the timeline manager task (owned by `AccountActor`).
 pub struct TimelineManagerHandle {
     tx: mpsc::Sender<TimelineMessage>,
+}
+
+/// Manager-owned tasks for bounded root hydration. Removing a task before a
+/// queued completion is handled makes the completion stale by construction.
+#[derive(Default)]
+struct ThreadRootProjectionFetchRegistry {
+    tasks: HashMap<(String, String), executor::JoinHandle<()>>,
+}
+
+impl ThreadRootProjectionFetchRegistry {
+    fn contains(&self, room_id: &str, root_event_id: &str) -> bool {
+        self.tasks
+            .contains_key(&(room_id.to_owned(), root_event_id.to_owned()))
+    }
+
+    fn insert(&mut self, room_id: String, root_event_id: String, task: executor::JoinHandle<()>) {
+        if let Some(previous) = self.tasks.insert((room_id, root_event_id), task) {
+            // This is defensive: start handling gates duplicates, but a future
+            // caller must never leak the prior worker if it violates that
+            // invariant.
+            previous.abort();
+            debug_assert!(
+                false,
+                "a root hydration worker must be unique per room/root"
+            );
+        }
+    }
+
+    /// Returns false when unsubscribe/shutdown already cancelled this worker;
+    /// callers must then ignore its late terminal message.
+    fn take_completion(&mut self, room_id: &str, root_event_id: &str) -> bool {
+        self.tasks
+            .remove(&(room_id.to_owned(), root_event_id.to_owned()))
+            .is_some()
+    }
+
+    fn abort_room(&mut self, room_id: &str) -> usize {
+        let keys = self
+            .tasks
+            .keys()
+            .filter(|(entry_room_id, _)| entry_room_id == room_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let count = keys.len();
+        for key in keys {
+            if let Some(task) = self.tasks.remove(&key) {
+                task.abort();
+            }
+        }
+        count
+    }
+
+    fn abort_all(&mut self) {
+        for (_, task) in self.tasks.drain() {
+            task.abort();
+        }
+    }
 }
 
 impl TimelineManagerHandle {
@@ -188,6 +262,7 @@ pub struct TimelineManagerActor {
     timelines: HashMap<TimelineKey, TimelineActorHandle>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
+    msg_tx: mpsc::Sender<TimelineMessage>,
     msg_rx: mpsc::Receiver<TimelineMessage>,
     /// Search index mutation sender. Forwarded to individual `TimelineActor`s
     /// so they can push `SearchIndexMessage`s on each diff. `None` when there
@@ -202,6 +277,7 @@ pub struct TimelineManagerActor {
     /// Room-root hydration is shared across replacement actors so SyncStarted
     /// cannot restart a failed/pending bounded lookup.
     thread_root_projection_service: Arc<Mutex<ThreadRootProjectionService>>,
+    thread_root_projection_fetches: ThreadRootProjectionFetchRegistry,
 }
 
 impl TimelineManagerActor {
@@ -218,6 +294,7 @@ impl TimelineManagerActor {
             timelines: HashMap::new(),
             action_tx,
             event_tx,
+            msg_tx: tx.clone(),
             msg_rx,
             search_index_tx: None,
             ignored_user_ids: std::collections::BTreeSet::new(),
@@ -227,6 +304,7 @@ impl TimelineManagerActor {
             thread_root_projection_service: Arc::new(Mutex::new(
                 ThreadRootProjectionService::default(),
             )),
+            thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
         };
         executor::spawn(actor.run());
         TimelineManagerHandle { tx }
@@ -250,6 +328,7 @@ impl TimelineManagerActor {
             timelines: HashMap::new(),
             action_tx,
             event_tx,
+            msg_tx: tx.clone(),
             msg_rx,
             search_index_tx: Some(search_index_tx),
             ignored_user_ids: std::collections::BTreeSet::new(),
@@ -259,6 +338,7 @@ impl TimelineManagerActor {
             thread_root_projection_service: Arc::new(Mutex::new(
                 ThreadRootProjectionService::default(),
             )),
+            thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
         };
         executor::spawn(actor.run());
         TimelineManagerHandle { tx }
@@ -274,13 +354,142 @@ impl TimelineManagerActor {
                 TimelineMessage::IgnoredUsersUpdated { user_ids } => {
                     self.handle_ignored_users_updated(user_ids).await;
                 }
+                TimelineMessage::StartThreadRootProjectionFetch {
+                    key,
+                    own_user_id,
+                    activity,
+                } => {
+                    self.handle_thread_root_projection_fetch_start(key, own_user_id, activity)
+                        .await;
+                }
+                TimelineMessage::ThreadRootProjectionFetchFinished {
+                    key,
+                    activity,
+                    result,
+                } => {
+                    self.handle_thread_root_projection_fetch_finished(key, activity, result)
+                        .await;
+                }
                 TimelineMessage::Command(command) => {
                     self.handle_command(command).await;
                 }
             }
         }
+        let room_keys = self
+            .timelines
+            .keys()
+            .filter(|key| matches!(key.kind, TimelineKind::Room { .. }))
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in room_keys {
+            self.clear_thread_root_projections_for_room(&key).await;
+        }
+        self.thread_root_projection_fetches.abort_all();
         // Drop all timeline handles — this cancels relay tasks and drops SDK handles.
         self.timelines.clear();
+    }
+
+    async fn handle_thread_root_projection_fetch_start(
+        &mut self,
+        key: TimelineKey,
+        own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
+        activity: ThreadRootProjectionActivity,
+    ) {
+        if !matches!(key.kind, TimelineKind::Room { .. })
+            || !self.timelines.contains_key(&key)
+            || self
+                .thread_root_projection_fetches
+                .contains(&activity.room_id, &activity.root_event_id)
+        {
+            return;
+        }
+        let should_start = self
+            .thread_root_projection_service
+            .lock()
+            .expect("thread-root projection service lock must not be poisoned")
+            .has_pending_attempt(&activity);
+        if !should_start {
+            return;
+        }
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let task = spawn_thread_root_projection_fetch(
+            session,
+            key.clone(),
+            own_user_id,
+            self.msg_tx.clone(),
+            activity.clone(),
+        );
+        self.thread_root_projection_fetches
+            .insert(activity.room_id, activity.root_event_id, task);
+    }
+
+    async fn handle_thread_root_projection_fetch_finished(
+        &mut self,
+        key: TimelineKey,
+        activity: ThreadRootProjectionActivity,
+        result: Result<TimelineItem, OperationFailureKind>,
+    ) {
+        if !self
+            .thread_root_projection_fetches
+            .take_completion(&activity.room_id, &activity.root_event_id)
+            || !self.timelines.contains_key(&key)
+        {
+            return;
+        }
+        let record = {
+            let mut service = self
+                .thread_root_projection_service
+                .lock()
+                .expect("thread-root projection service lock must not be poisoned");
+            match result {
+                Ok(item) => service.mark_ready(&activity, item),
+                Err(failure_kind) => service.mark_failed(&activity, failure_kind),
+            }
+        };
+        let Some(record) = record else {
+            return;
+        };
+        if !self
+            .emit_action_reliable(thread_root_projection_action_from_record(&record))
+            .await
+        {
+            return;
+        }
+        self.emit(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+            key,
+            projection: thread_root_projection_dto_from_record(&record),
+        }));
+    }
+
+    async fn clear_thread_root_projections_for_room(&mut self, key: &TimelineKey) {
+        if !matches!(key.kind, TimelineKind::Room { .. }) {
+            return;
+        }
+        let room_id = key.room_id();
+        self.thread_root_projection_fetches.abort_room(room_id);
+        let records = self
+            .thread_root_projection_service
+            .lock()
+            .expect("thread-root projection service lock must not be poisoned")
+            .clear_room(room_id);
+        let _ = self
+            .emit_action_reliable(AppAction::ThreadRootProjectionsCleared {
+                room_id: room_id.to_owned(),
+            })
+            .await;
+        for record in records {
+            self.emit(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                key: key.clone(),
+                projection: ThreadRootProjectionDto {
+                    root_event_id: record.activity.root_event_id,
+                    activity_event_id: record.activity.activity_event_id,
+                    activity_timestamp_ms: record.activity.activity_timestamp_ms,
+                    state: ThreadRootProjectionStateDto::Cleared,
+                },
+            }));
+        }
     }
 
     async fn handle_sync_started(
@@ -386,6 +595,9 @@ impl TimelineManagerActor {
                 trace_timeline_route("manager_received", "unsubscribe", request_id, &key);
                 // Drop the actor handle, which cancels its relay task and drops
                 // the SDK Timeline handle — no dedicated success event per spec.
+                if matches!(key.kind, TimelineKind::Room { .. }) {
+                    self.clear_thread_root_projections_for_room(&key).await;
+                }
                 self.timelines.remove(&key);
             }
             TimelineCommand::Paginate {
@@ -1037,6 +1249,7 @@ impl TimelineManagerActor {
             self.link_preview_policy.for_room(key.room_id()),
             self.messages_backpressure.clone(),
             Arc::clone(&self.thread_root_projection_service),
+            self.msg_tx.clone(),
         )
         .await;
         trace("spawn_done");
@@ -1106,6 +1319,10 @@ impl TimelineManagerActor {
             },
         };
         let _ = self.action_tx.send(vec![action]).await;
+    }
+
+    async fn emit_action_reliable(&self, action: AppAction) -> bool {
+        emit_app_action_reliable(&self.action_tx, action).await
     }
 }
 
@@ -2129,6 +2346,16 @@ fn trace_timeline_link_preview(
     }
 }
 
+/// Ordered delivery for projection state-machine actions. These transitions
+/// must wait for reducer capacity; `try_send` would let Core/frontend retain a
+/// root snapshot while AppState permanently misses its matching transition.
+async fn emit_app_action_reliable(
+    action_tx: &mpsc::Sender<Vec<AppAction>>,
+    action: AppAction,
+) -> bool {
+    action_tx.send(vec![action]).await.is_ok()
+}
+
 fn spawn_link_preview_fetch(
     session: Arc<MatrixClientSession>,
     msg_tx: mpsc::Sender<TimelineActorMessage>,
@@ -2194,44 +2421,28 @@ fn spawn_reply_detail_fetch(
 
 /// Starts the only allowed old-root hydration operation. It performs one
 /// cache-first `load_or_fetch_event` call and reports a typed terminal outcome
-/// back to the owning Room actor. It intentionally has no access to the SDK
+/// back to the owning manager. It intentionally has no access to the SDK
 /// `Timeline`, so backward pagination and anchor materialization are not
 /// possible from this path.
 fn spawn_thread_root_projection_fetch(
     session: Arc<MatrixClientSession>,
     key: TimelineKey,
     own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
-    service: Arc<Mutex<ThreadRootProjectionService>>,
-    action_tx: mpsc::Sender<Vec<AppAction>>,
-    event_tx: broadcast::Sender<CoreEvent>,
+    manager_tx: mpsc::Sender<TimelineMessage>,
     activity: ThreadRootProjectionActivity,
-) {
+) -> executor::JoinHandle<()> {
     executor::spawn(async move {
         let result =
             load_thread_root_projection_item(&session, &key, own_user_id.as_deref(), &activity)
                 .await;
-        let record = {
-            let mut service = service
-                .lock()
-                .expect("thread-root projection service lock must not be poisoned");
-            match result {
-                Ok(item) => service.mark_ready(&activity, item),
-                Err(failure_kind) => service.mark_failed(&activity, failure_kind),
-            }
-        };
-        let Some(record) = record else {
-            // The reply left the bounded canonical window while this sole
-            // worker was running. Its result is intentionally discarded, not
-            // retried.
-            return;
-        };
-
-        let _ = action_tx.try_send(vec![thread_root_projection_action_from_record(&record)]);
-        let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
-            key,
-            projection: thread_root_projection_dto_from_record(&record),
-        }));
-    });
+        let _ = manager_tx
+            .send(TimelineMessage::ThreadRootProjectionFetchFinished {
+                key,
+                activity,
+                result,
+            })
+            .await;
+    })
 }
 
 fn thread_root_projection_dto_from_record(
@@ -2799,6 +3010,9 @@ struct TimelineActor {
     /// Manager-owned bounded hydration state shared by replacement Room
     /// actors. This is not a `Timeline` and cannot paginate.
     thread_root_projection_service: Arc<Mutex<ThreadRootProjectionService>>,
+    /// Bounded root hydration workers are manager-owned so their completion is
+    /// ordered with unsubscribe/shutdown lifecycle commands.
+    manager_tx: mpsc::Sender<TimelineMessage>,
     /// Reply event IDs already handed to the SDK for replied-to details during
     /// this actor lifetime. This avoids retry loops on every viewport tick.
     reply_detail_fetch_attempted_event_ids: HashSet<String>,
@@ -2879,6 +3093,7 @@ impl TimelineActor {
         link_preview_policy: LinkPreviewContext,
         messages_backpressure: MessagesBackpressure,
         thread_root_projection_service: Arc<Mutex<ThreadRootProjectionService>>,
+        manager_tx: mpsc::Sender<TimelineMessage>,
     ) -> TimelineActorHandle {
         let mut auxiliary_tasks: Vec<executor::JoinHandle<()>> = Vec::new();
 
@@ -3134,6 +3349,7 @@ impl TimelineActor {
             link_preview_fetches: HashMap::new(),
             reply_detail_fetches: HashMap::new(),
             thread_root_projection_service,
+            manager_tx,
             reply_detail_fetch_attempted_event_ids: HashSet::new(),
             pagination_task: None,
             next_pagination_serial: 0,
@@ -3148,7 +3364,7 @@ impl TimelineActor {
         actor
             .forward_initial_items_to_search(initial_sdk_items.iter().cloned())
             .await;
-        actor.maybe_hydrate_missing_thread_roots();
+        actor.maybe_hydrate_missing_thread_roots().await;
         let task = executor::spawn(actor.run());
 
         TimelineActorHandle {
@@ -5191,7 +5407,7 @@ impl TimelineActor {
                 }]);
         }
         apply_timeline_diffs_to_items(&mut self.navigation_items, &core_diffs);
-        self.maybe_hydrate_missing_thread_roots();
+        self.maybe_hydrate_missing_thread_roots().await;
         self.maybe_fetch_visible_reply_details();
         self.emit_media_gallery_if_changed().await;
 
@@ -5241,35 +5457,50 @@ impl TimelineActor {
     /// SDK item window. The projection service is deliberately out-of-band:
     /// this method never creates a VectorDiff, calls Room pagination, or
     /// asks the viewport/anchor path to materialize an event.
-    fn maybe_hydrate_missing_thread_roots(&mut self) {
+    async fn maybe_hydrate_missing_thread_roots(&mut self) {
         if !matches!(self.key.kind, TimelineKind::Room { .. }) {
             return;
         }
 
-        let activities = self
+        let activities_by_root = self
             .navigation_items
             .iter()
             .filter_map(|item| thread_root_projection_activity_from_item(self.key.room_id(), item))
-            .collect::<Vec<_>>();
-        let active_root_event_ids = activities
-            .iter()
-            .map(|activity| activity.root_event_id.clone())
-            .collect::<HashSet<_>>();
+            .fold(HashMap::new(), |mut selected, activity| {
+                let should_replace = selected
+                    .get(&activity.root_event_id)
+                    .is_none_or(|existing| activity_is_newer(&activity, existing));
+                if should_replace {
+                    selected.insert(activity.root_event_id.clone(), activity);
+                }
+                selected
+            });
         {
             let mut service = self
                 .thread_root_projection_service
                 .lock()
                 .expect("thread-root projection service lock must not be poisoned");
-            service.reconcile_room(self.key.room_id(), &active_root_event_ids);
+            service.reconcile_room_activities(self.key.room_id(), &activities_by_root);
         }
-        let _ = self
-            .action_tx
-            .try_send(vec![AppAction::ThreadRootProjectionsReconciled {
+        if !self
+            .emit_action_reliable(AppAction::ThreadRootProjectionsReconciled {
                 room_id: self.key.room_id().to_owned(),
-                active_root_event_ids: active_root_event_ids.into_iter().collect(),
-            }]);
+                activities: activities_by_root
+                    .values()
+                    .map(|activity| ThreadRootProjectionActivityState {
+                        root_event_id: activity.root_event_id.clone(),
+                        activity_event_id: activity.activity_event_id.clone(),
+                        activity_timestamp_ms: activity.activity_timestamp_ms,
+                    })
+                    .collect(),
+            })
+            .await
+        {
+            return;
+        }
 
-        for activity in activities
+        for activity in activities_by_root
+            .into_values()
             .into_iter()
             .filter(|activity| !self.timeline_contains_event_id(&activity.root_event_id))
         {
@@ -5280,30 +5511,39 @@ impl TimelineActor {
                 .observe(activity);
             match decision {
                 ThreadRootProjectionDecision::StartFetch(activity) => {
+                    if !self
+                        .emit_action_reliable(AppAction::ThreadRootProjectionObserved {
+                            room_id: activity.room_id.clone(),
+                            root_event_id: activity.root_event_id.clone(),
+                            activity_event_id: activity.activity_event_id.clone(),
+                            activity_timestamp_ms: activity.activity_timestamp_ms,
+                        })
+                        .await
+                    {
+                        return;
+                    }
                     self.emit_thread_root_projection_pending(&activity);
-                    let _ =
-                        self.action_tx
-                            .try_send(vec![AppAction::ThreadRootProjectionObserved {
-                                room_id: activity.room_id.clone(),
-                                root_event_id: activity.root_event_id.clone(),
-                                activity_event_id: activity.activity_event_id.clone(),
-                                activity_timestamp_ms: activity.activity_timestamp_ms,
-                            }]);
-                    spawn_thread_root_projection_fetch(
-                        Arc::clone(&self.session),
-                        self.key.clone(),
-                        self.own_user_id.clone(),
-                        Arc::clone(&self.thread_root_projection_service),
-                        self.action_tx.clone(),
-                        self.event_tx.clone(),
-                        activity,
-                    );
+                    if self
+                        .manager_tx
+                        .send(TimelineMessage::StartThreadRootProjectionFetch {
+                            key: self.key.clone(),
+                            own_user_id: self.own_user_id.clone(),
+                            activity,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
                 }
                 ThreadRootProjectionDecision::ActivityUpdated(record)
                 | ThreadRootProjectionDecision::Existing(record) => {
-                    let _ = self
-                        .action_tx
-                        .try_send(vec![thread_root_projection_action_from_record(&record)]);
+                    if !self
+                        .emit_action_reliable(thread_root_projection_action_from_record(&record))
+                        .await
+                    {
+                        return;
+                    }
                     self.emit_thread_root_projection_record(&record);
                 }
             }
@@ -6383,7 +6623,7 @@ impl TimelineActor {
     /// dropped action would leave the UI stuck in a pending/inconsistent state
     /// (REPOSITORY_RULES L124-128).
     async fn emit_action_reliable(&self, action: AppAction) -> bool {
-        self.action_tx.send(vec![action]).await.is_ok()
+        emit_app_action_reliable(&self.action_tx, action).await
     }
 
     fn emit_failure(&self, request_id: RequestId, failure: CoreFailure) {
@@ -10384,22 +10624,124 @@ mod tests {
         assert_eq!(activity.activity_timestamp_ms, Some(1_700_000_100_000));
 
         let source = include_str!("timeline.rs");
-        let hydration = source
+        let production = source
+            .split("\nmod tests")
+            .next()
+            .expect("production source before tests");
+        let hydration = production
             .split("fn maybe_hydrate_missing_thread_roots")
             .nth(1)
             .expect("Room root hydration detection must exist")
-            .split("fn handle_thread_root_projection_fetch_finished")
+            .split("fn emit_thread_root_projection_pending")
             .next()
             .expect("root hydration handler boundary");
         assert!(
             hydration.contains("ThreadRootProjectionDecision::StartFetch")
-                && hydration.contains("spawn_thread_root_projection_fetch"),
-            "an absent root must issue one dedicated bounded fetch"
+                && hydration.contains("TimelineMessage::StartThreadRootProjectionFetch"),
+            "an absent root must request one manager-owned bounded fetch"
+        );
+        assert!(
+            hydration.contains("emit_action_reliable") && !hydration.contains("try_send"),
+            "projection state transitions must not be dropped when the reducer channel is full"
         );
         assert!(
             !hydration.contains("paginate_backwards(")
                 && !hydration.contains("handle_restore_timeline_anchor("),
             "root hydration must not initiate Room pagination or anchor materialization"
+        );
+    }
+
+    #[tokio::test]
+    async fn root_projection_actions_wait_for_reducer_capacity_instead_of_dropping() {
+        let (action_tx, mut action_rx) = mpsc::channel(1);
+        action_tx
+            .try_send(vec![AppAction::ThreadRootProjectionsCleared {
+                room_id: "!already-buffered:test".to_owned(),
+            }])
+            .expect("fill the reducer channel");
+
+        let reliable_tx = action_tx.clone();
+        let delivery = tokio::spawn(async move {
+            emit_app_action_reliable(
+                &reliable_tx,
+                AppAction::ThreadRootProjectionsCleared {
+                    room_id: "!must-arrive:test".to_owned(),
+                },
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !delivery.is_finished(),
+            "the reliable sender must wait behind a full channel, not discard the projection transition"
+        );
+        let _ = action_rx.recv().await.expect("drain buffered action");
+        assert!(delivery.await.expect("delivery task"));
+        assert!(matches!(
+            action_rx.recv().await,
+            Some(actions) if matches!(
+                actions.as_slice(),
+                [AppAction::ThreadRootProjectionsCleared { room_id }]
+                    if room_id == "!must-arrive:test"
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn root_projection_fetch_registry_aborts_room_workers_and_rejects_late_completion() {
+        struct CancellationProbe(Option<tokio::sync::oneshot::Sender<()>>);
+
+        impl Drop for CancellationProbe {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+
+        let (cancelled_tx, cancelled_rx) = tokio::sync::oneshot::channel();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task = executor::spawn(async move {
+            let _probe = CancellationProbe(Some(cancelled_tx));
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        let mut registry = ThreadRootProjectionFetchRegistry::default();
+        registry.insert("!room:test".to_owned(), "$root:test".to_owned(), task);
+        started_rx
+            .await
+            .expect("worker must be in flight before cancellation");
+
+        assert_eq!(registry.abort_room("!room:test"), 1);
+        tokio::time::timeout(Duration::from_secs(1), cancelled_rx)
+            .await
+            .expect("abort must end the in-flight hydration worker")
+            .expect("worker cancellation probe should be delivered");
+        assert!(
+            !registry.take_completion("!room:test", "$root:test"),
+            "a completion queued before unsubscribe must not publish a stale terminal state"
+        );
+    }
+
+    #[test]
+    fn room_unsubscribe_clears_projection_service_before_dropping_the_actor() {
+        let source = include_str!("timeline.rs");
+        let unsubscribe = source
+            .split("TimelineCommand::Unsubscribe { request_id, key } => {")
+            .nth(1)
+            .expect("unsubscribe manager arm")
+            .split("TimelineCommand::Paginate")
+            .next()
+            .expect("paginate should follow unsubscribe");
+        let clear_index = unsubscribe
+            .find("self.clear_thread_root_projections_for_room(&key).await")
+            .expect("Room unsubscribe must clear projection lifecycle state");
+        let remove_index = unsubscribe
+            .find("self.timelines.remove(&key)")
+            .expect("unsubscribe must still drop its Room actor");
+        assert!(
+            clear_index < remove_index,
+            "abort/cleanup must precede actor drop so late worker completion cannot publish stale state"
         );
     }
 

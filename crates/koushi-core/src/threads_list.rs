@@ -26,7 +26,7 @@ use crate::ids::RequestId;
 /// the side-panel service can be closed or paginated without affecting this
 /// bounded room-timeline projection path.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ThreadRootProjectionActivity {
+pub struct ThreadRootProjectionActivity {
     pub room_id: String,
     pub root_event_id: String,
     pub activity_event_id: String,
@@ -146,6 +146,50 @@ impl ThreadRootProjectionService {
         self.cleanup_empty_room_tracking(room_id);
     }
 
+    /// Reconcile the Room's current selected reply for every root. Unlike
+    /// [`Self::observe`], this may move a retained terminal record backwards:
+    /// a newer reply can leave the bounded SDK window while an older reply for
+    /// the same root remains. The bounded lookup is still exactly-once because
+    /// only the activity metadata changes; the attempt state is preserved.
+    pub(crate) fn reconcile_room_activities(
+        &mut self,
+        room_id: &str,
+        activities_by_root: &HashMap<String, ThreadRootProjectionActivity>,
+    ) {
+        let active_root_event_ids = activities_by_root.keys().cloned().collect::<HashSet<_>>();
+        self.reconcile_room(room_id, &active_root_event_ids);
+        for (root_event_id, activity) in activities_by_root {
+            if let Some(record) = self
+                .attempts
+                .get_mut(&(room_id.to_owned(), root_event_id.clone()))
+            {
+                record.activity = activity.clone();
+            }
+        }
+    }
+
+    /// Remove all state for a Room when its Room timeline is unsubscribed.
+    /// Returning the records lets the owner clear matching frontend snapshots
+    /// before a later actor for the same room can be created.
+    pub(crate) fn clear_room(&mut self, room_id: &str) -> Vec<ThreadRootProjectionRecord> {
+        self.active_root_event_ids.remove(room_id);
+        let keys = self
+            .attempts
+            .keys()
+            .filter(|(entry_room_id, _)| entry_room_id == room_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.into_iter()
+            .filter_map(|key| self.attempts.remove(&key))
+            .collect()
+    }
+
+    pub(crate) fn has_pending_attempt(&self, activity: &ThreadRootProjectionActivity) -> bool {
+        self.attempts
+            .get(&(activity.room_id.clone(), activity.root_event_id.clone()))
+            .is_some_and(ThreadRootProjectionRecord::is_pending)
+    }
+
     pub(crate) fn mark_ready(
         &mut self,
         activity: &ThreadRootProjectionActivity,
@@ -208,7 +252,7 @@ impl ThreadRootProjectionService {
     }
 }
 
-fn activity_is_newer(
+pub(crate) fn activity_is_newer(
     candidate: &ThreadRootProjectionActivity,
     existing: &ThreadRootProjectionActivity,
 ) -> bool {
@@ -613,7 +657,7 @@ fn body_preview(content: Option<&matrix_sdk_ui::timeline::TimelineItemContent>) 
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
 
     use crate::event::{TimelineItem, TimelineItemId, TimelineMessageActions};
@@ -622,6 +666,40 @@ mod tests {
         OperationFailureKind, ThreadRootProjectionActivity, ThreadRootProjectionDecision,
         ThreadRootProjectionService,
     };
+
+    fn test_timeline_item(event_id: &str) -> TimelineItem {
+        TimelineItem {
+            id: TimelineItemId::Event {
+                event_id: event_id.to_owned(),
+            },
+            sender: None,
+            sender_label: None,
+            sender_avatar: None,
+            body: Some("old root".to_owned()),
+            notice_i18n_key: None,
+            message_kind: Default::default(),
+            spoiler_spans: Vec::new(),
+            timestamp_ms: None,
+            in_reply_to_event_id: None,
+            formatted: None,
+            reply_quote: None,
+            thread_root: None,
+            thread_summary: None,
+            media: None,
+            link_previews: None,
+            link_ranges: Vec::new(),
+            reactions: Vec::new(),
+            can_react: false,
+            is_redacted: false,
+            is_hidden: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
+            unable_to_decrypt: None,
+            actions: TimelineMessageActions::default(),
+            send_state: None,
+        }
+    }
 
     #[test]
     fn thread_root_projection_service_emits_one_bounded_fetch_and_never_retries_terminal_failure() {
@@ -757,6 +835,81 @@ mod tests {
             ThreadRootProjectionDecision::ActivityUpdated(record)
                 if record.failure_kind() == Some(OperationFailureKind::NotFound)
                     && record.activity.activity_event_id == "$newest-reply:example.invalid"
+        ));
+    }
+
+    #[test]
+    fn reconciliation_moves_ready_and_failed_records_to_the_remaining_older_reply_without_fetching()
+    {
+        for failure_kind in [None, Some(OperationFailureKind::NotFound)] {
+            let mut service = ThreadRootProjectionService::default();
+            let newer = ThreadRootProjectionActivity {
+                room_id: "!room:example.invalid".to_owned(),
+                root_event_id: "$old-root:example.invalid".to_owned(),
+                activity_event_id: "$newer-reply:example.invalid".to_owned(),
+                activity_timestamp_ms: Some(200),
+                activity_sender: None,
+                activity_sender_label: None,
+                activity_body_preview: None,
+            };
+            let older = ThreadRootProjectionActivity {
+                activity_event_id: "$older-reply:example.invalid".to_owned(),
+                activity_timestamp_ms: Some(100),
+                ..newer.clone()
+            };
+            assert!(matches!(
+                service.observe(newer.clone()),
+                ThreadRootProjectionDecision::StartFetch(_)
+            ));
+            service.reconcile_room_activities(
+                &newer.room_id,
+                &HashMap::from([(newer.root_event_id.clone(), newer.clone())]),
+            );
+            match failure_kind {
+                Some(failure_kind) => {
+                    service.mark_failed(&newer, failure_kind);
+                }
+                None => {
+                    service.mark_ready(&newer, test_timeline_item(&newer.root_event_id));
+                }
+            }
+
+            // The newest reply is no longer canonical. Reconciliation, rather
+            // than observe(), is allowed to move the representative backward.
+            service.reconcile_room_activities(
+                &older.room_id,
+                &HashMap::from([(older.root_event_id.clone(), older.clone())]),
+            );
+            assert!(matches!(
+                service.observe(older.clone()),
+                ThreadRootProjectionDecision::Existing(record)
+                    if record.activity == older
+                        && record.failure_kind() == failure_kind
+                        && (failure_kind.is_some() || record.item().is_some())
+            ));
+        }
+    }
+
+    #[test]
+    fn clearing_an_unsubscribed_room_allows_a_later_room_actor_to_start_a_fresh_attempt() {
+        let mut service = ThreadRootProjectionService::default();
+        let activity = ThreadRootProjectionActivity {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$old-root:example.invalid".to_owned(),
+            activity_event_id: "$reply:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(100),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        assert!(matches!(
+            service.observe(activity.clone()),
+            ThreadRootProjectionDecision::StartFetch(_)
+        ));
+        assert_eq!(service.clear_room(&activity.room_id).len(), 1);
+        assert!(matches!(
+            service.observe(activity),
+            ThreadRootProjectionDecision::StartFetch(_)
         ));
     }
 

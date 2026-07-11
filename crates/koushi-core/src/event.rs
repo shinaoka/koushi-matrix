@@ -1778,8 +1778,15 @@ impl fmt::Debug for ThreadRootProjectionDto {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ThreadRootProjectionStateDto {
     Pending,
-    Ready { item: TimelineItem },
-    Failed { failure_kind: OperationFailureKind },
+    Ready {
+        item: TimelineItem,
+    },
+    Failed {
+        failure_kind: OperationFailureKind,
+    },
+    /// Explicit owner-lifecycle cleanup. The projection is not renderable and
+    /// frontend stores must delete the keyed snapshot immediately.
+    Cleared,
 }
 
 impl fmt::Debug for ThreadRootProjectionStateDto {
@@ -1791,6 +1798,7 @@ impl fmt::Debug for ThreadRootProjectionStateDto {
                 .debug_struct("Failed")
                 .field("failure_kind", failure_kind)
                 .finish(),
+            Self::Cleared => formatter.write_str("Cleared"),
         }
     }
 }

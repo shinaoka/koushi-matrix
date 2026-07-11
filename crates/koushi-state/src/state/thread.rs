@@ -128,6 +128,16 @@ pub enum ThreadRootProjectionStatus {
     },
 }
 
+/// The selected canonical reply currently representing a root in the bounded
+/// Room timeline window. Reconciliation owns this selection, so it can move
+/// backwards when the newest reply leaves the window.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ThreadRootProjectionActivity {
+    pub root_event_id: String,
+    pub activity_event_id: String,
+    pub activity_timestamp_ms: Option<u64>,
+}
+
 /// Rust-owned record of bounded root hydration attempts, keyed by the exact
 /// `(room_id, root_event_id)` pair. Failed entries are terminal for this room
 /// timeline lifetime, so repeated reply diffs cannot start a fetch loop.
@@ -262,8 +272,16 @@ impl ThreadRootProjectionState {
     /// Reconcile terminal records with the current bounded canonical Room
     /// window. Pending workers are allowed to settle, but ready/failed records
     /// disappear as soon as their reply root is no longer active.
-    pub fn reconcile_room(&mut self, room_id: String, active_root_event_ids: Vec<String>) {
-        let active = active_root_event_ids.into_iter().collect::<BTreeSet<_>>();
+    pub fn reconcile_room(
+        &mut self,
+        room_id: String,
+        activities: Vec<ThreadRootProjectionActivity>,
+    ) {
+        let activities_by_root = activities
+            .into_iter()
+            .map(|activity| (activity.root_event_id.clone(), activity))
+            .collect::<BTreeMap<_, _>>();
+        let active = activities_by_root.keys().cloned().collect::<BTreeSet<_>>();
         self.active_root_event_ids
             .insert(room_id.clone(), active.clone());
         self.entries
@@ -272,7 +290,42 @@ impl ThreadRootProjectionState {
                     || active.contains(root_event_id)
                     || matches!(status, ThreadRootProjectionStatus::Pending { .. })
             });
+        for (root_event_id, activity) in activities_by_root {
+            let key = (room_id.clone(), root_event_id);
+            let Some(existing) = self.entries.get(&key).cloned() else {
+                continue;
+            };
+            let updated = match existing {
+                ThreadRootProjectionStatus::Pending { .. } => ThreadRootProjectionStatus::Pending {
+                    activity_event_id: activity.activity_event_id,
+                    activity_timestamp_ms: activity.activity_timestamp_ms,
+                },
+                ThreadRootProjectionStatus::Ready { .. } => ThreadRootProjectionStatus::Ready {
+                    activity_event_id: activity.activity_event_id,
+                    activity_timestamp_ms: activity.activity_timestamp_ms,
+                },
+                ThreadRootProjectionStatus::Failed { failure_kind, .. } => {
+                    ThreadRootProjectionStatus::Failed {
+                        activity_event_id: activity.activity_event_id,
+                        activity_timestamp_ms: activity.activity_timestamp_ms,
+                        failure_kind,
+                    }
+                }
+            };
+            self.entries.insert(key, updated);
+        }
         self.cleanup_empty_room_tracking(&room_id);
+    }
+
+    /// Forget all projection lifecycle state for an unsubscribed Room. This is
+    /// deliberately distinct from reconciliation: inactive pending attempts
+    /// are retained only while their Room actor remains subscribed.
+    pub fn clear_room(&mut self, room_id: &str) -> bool {
+        self.active_root_event_ids.remove(room_id);
+        let before = self.entries.len();
+        self.entries
+            .retain(|(entry_room_id, _), _| entry_room_id != room_id);
+        before != self.entries.len()
     }
 
     fn is_active_or_unreported(&self, room_id: &str, root_event_id: &str) -> bool {

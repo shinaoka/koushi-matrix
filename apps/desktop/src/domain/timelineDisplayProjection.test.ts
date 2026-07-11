@@ -135,6 +135,28 @@ describe("timeline display projection", () => {
     expect(canonical).toEqual([event("$normal", 1_800_000_000_000), latestReply]);
   });
 
+  test("uses the remaining older reply when a ready or failed root activity moves backward", () => {
+    const olderReply = reply("$older", "$old-root", 1_800_000_005_000);
+    const canonical = [event("$normal", 1_800_000_000_000), olderReply];
+    for (const state of [
+      { kind: "ready" as const, item: root("$old-root", 1_700_000_000_000, "$older", 1_800_000_005_000) },
+      { kind: "failed" as const, failure_kind: "notFound" as const }
+    ]) {
+      const rows = projectTimelineDisplayRows(canonical, ROOM_KEY, LATEST_REPLY, [
+        {
+          root_event_id: "$old-root",
+          activity_event_id: "$older",
+          activity_timestamp_ms: 1_800_000_005_000,
+          state
+        }
+      ]);
+      expect(materialRowIds(rows)).toEqual(["$normal", "thread-root:$old-root"]);
+      expect(rows.find((row) => row.row_id === "thread-root:$old-root")?.activity_event_id).toBe(
+        "$older"
+      );
+    }
+  });
+
   test("RootEvent preserves the exact canonical presentation and item references", () => {
     const threadRoot = root("$root", 1_800_000_000_000, "$reply", 1_800_000_020_000);
     const latestReply = reply("$reply", "$root", 1_800_000_020_000);

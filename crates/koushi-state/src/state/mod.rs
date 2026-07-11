@@ -159,8 +159,8 @@ pub use timeline::{
 
 // ── Re-exports: thread ──────────────────────────────────────────────────────
 pub use thread::{
-    ThreadAttentionState, ThreadPaneState, ThreadRootProjectionState, ThreadRootProjectionStatus,
-    ThreadsListItem, ThreadsListState, sort_threads_list_items,
+    ThreadAttentionState, ThreadPaneState, ThreadRootProjectionActivity, ThreadRootProjectionState,
+    ThreadRootProjectionStatus, ThreadsListItem, ThreadsListState, sort_threads_list_items,
 };
 
 // ── Re-exports: search ──────────────────────────────────────────────────────

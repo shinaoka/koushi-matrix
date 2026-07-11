@@ -122,7 +122,18 @@ function withRetainedKeys(
       retainedPrefixes.some((prefix) => projectionKey.startsWith(prefix))
     )
   );
-  return withKeys({ ...store, threadRootProjections }, keys);
+  // Pruning an unrelated timeline must not invalidate TimelineView's display
+  // projection memo for a room whose root snapshots were all retained.
+  return withKeys(
+    {
+      ...store,
+      threadRootProjections:
+        threadRootProjections.size === store.threadRootProjections.size
+          ? store.threadRootProjections
+          : threadRootProjections
+    },
+    keys
+  );
 }
 
 function threadRootProjectionStoreKey(key: TimelineKey, rootEventId: string): string {
@@ -225,7 +236,11 @@ export function applyGlobalResync(store: TimelineStoreState): TimelineStoreState
       mediaUploadProgress: new Map()
     });
   }
-  return withRetainedKeys(store, next);
+  // EventStreamLag temporarily clears canonical rows while already-subscribed
+  // actors replay InitialItems. It is not a canonical-window transition, so
+  // retained terminal root snapshots must survive until that replay restores
+  // their reply activity. True window exits still flow through `withKeys`.
+  return { ...store, keys: next };
 }
 
 export function pruneTimelineStore(
@@ -329,6 +344,12 @@ function applyThreadRootProjection(
   }
   const projectionKey = threadRootProjectionStoreKey(payload.key, payload.projection.root_event_id);
   const projections = new Map(store.threadRootProjections);
+  if (payload.projection.state.kind === "cleared") {
+    if (!projections.delete(projectionKey)) {
+      return store;
+    }
+    return { ...store, threadRootProjections: projections };
+  }
   // Delete before set so a changed terminal result is the most-recent record
   // should future bounded retention diagnostics need map order.
   projections.delete(projectionKey);

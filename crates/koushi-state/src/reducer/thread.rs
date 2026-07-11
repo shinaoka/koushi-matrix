@@ -592,7 +592,7 @@ pub(crate) fn handle_thread_root_projection_failed(
 pub(crate) fn handle_thread_root_projections_reconciled(
     state: &mut AppState,
     room_id: String,
-    active_root_event_ids: Vec<String>,
+    activities: Vec<crate::state::ThreadRootProjectionActivity>,
 ) -> Vec<AppEffect> {
     if !is_session_ready(state) {
         return Vec::new();
@@ -600,8 +600,23 @@ pub(crate) fn handle_thread_root_projections_reconciled(
     let before = state.thread_root_projections.clone();
     state
         .thread_root_projections
-        .reconcile_room(room_id, active_root_event_ids);
+        .reconcile_room(room_id, activities);
     (before != state.thread_root_projections)
+        .then_some(AppEffect::EmitUiEvent(UiEvent::ThreadChanged))
+        .into_iter()
+        .collect()
+}
+
+pub(crate) fn handle_thread_root_projections_cleared(
+    state: &mut AppState,
+    room_id: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    state
+        .thread_root_projections
+        .clear_room(&room_id)
         .then_some(AppEffect::EmitUiEvent(UiEvent::ThreadChanged))
         .into_iter()
         .collect()
