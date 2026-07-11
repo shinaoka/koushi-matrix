@@ -2593,8 +2593,88 @@ enum TimelineActorMessage {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TimelineRelayControl {
-    Overflow { generation: TimelineGeneration },
-    StreamEnded { generation: TimelineGeneration },
+    Overflow {
+        generation: TimelineGeneration,
+    },
+    StreamEnded {
+        generation: TimelineGeneration,
+    },
+    RestartDue {
+        generation: TimelineGeneration,
+        serial: u64,
+    },
+}
+
+const RELAY_RESTART_BASE_DELAY: Duration = Duration::from_millis(100);
+const RELAY_RESTART_MAX_DELAY: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Copy)]
+struct RelayRestartSchedule {
+    generation: TimelineGeneration,
+    serial: u64,
+    delay: Duration,
+}
+
+struct RelayRestartBackoff {
+    base: Duration,
+    cap: Duration,
+    attempts: u32,
+    next_serial: u64,
+    active: Option<(TimelineGeneration, u64)>,
+}
+
+impl RelayRestartBackoff {
+    fn new(base: Duration, cap: Duration) -> Self {
+        Self {
+            base,
+            cap,
+            attempts: 0,
+            next_serial: 0,
+            active: None,
+        }
+    }
+
+    fn schedule(&mut self, generation: TimelineGeneration) -> RelayRestartSchedule {
+        self.next_serial = self.next_serial.wrapping_add(1);
+        let factor = 1_u32.checked_shl(self.attempts.min(30)).unwrap_or(u32::MAX);
+        let delay = self.base.saturating_mul(factor).min(self.cap);
+        self.attempts = self.attempts.saturating_add(1);
+        self.active = Some((generation, self.next_serial));
+        RelayRestartSchedule {
+            generation,
+            serial: self.next_serial,
+            delay,
+        }
+    }
+
+    fn accept_due(&mut self, generation: TimelineGeneration, serial: u64) -> bool {
+        if self.active != Some((generation, serial)) {
+            return false;
+        }
+        self.active = None;
+        true
+    }
+
+    fn reset_after_live_batch(&mut self) {
+        self.attempts = 0;
+        self.active = None;
+    }
+}
+
+fn spawn_relay_restart_timer(
+    control_tx: mpsc::Sender<TimelineRelayControl>,
+    schedule: RelayRestartSchedule,
+    delay: impl std::future::Future<Output = ()> + Send + 'static,
+) -> executor::JoinHandle<()> {
+    executor::spawn(async move {
+        delay.await;
+        let _ = control_tx
+            .send(TimelineRelayControl::RestartDue {
+                generation: schedule.generation,
+                serial: schedule.serial,
+            })
+            .await;
+    })
 }
 
 struct TimelineRelayBatch {
@@ -4538,8 +4618,10 @@ struct TimelineActor {
     msg_rx: mpsc::Receiver<TimelineActorMessage>,
     relay_control_tx: mpsc::Sender<TimelineRelayControl>,
     relay_control_rx: mpsc::Receiver<TimelineRelayControl>,
-    relay_data_rx: mpsc::Receiver<TimelineRelayBatch>,
+    relay_data_rx: Option<mpsc::Receiver<TimelineRelayBatch>>,
     relay_task: Option<executor::JoinHandle<()>>,
+    relay_restart_backoff: RelayRestartBackoff,
+    relay_restart_task: Option<executor::JoinHandle<()>>,
     generation: TimelineGeneration,
     next_batch_id: TimelineBatchId,
     /// Correlates send queue completions across the enqueue / SentEvent race.
@@ -4657,6 +4739,9 @@ struct ThreadAttentionCounters {
 impl Drop for TimelineActor {
     fn drop(&mut self) {
         if let Some(task) = self.relay_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.relay_restart_task.take() {
             task.abort();
         }
         for task in self.link_preview_fetches.values() {
@@ -4929,8 +5014,13 @@ impl TimelineActor {
             msg_rx: actor_rx,
             relay_control_tx,
             relay_control_rx,
-            relay_data_rx,
+            relay_data_rx: Some(relay_data_rx),
             relay_task,
+            relay_restart_backoff: RelayRestartBackoff::new(
+                RELAY_RESTART_BASE_DELAY,
+                RELAY_RESTART_MAX_DELAY,
+            ),
+            relay_restart_task: None,
             generation,
             next_batch_id: TimelineBatchId(0),
             send_completion: SendCompletionTracker::default(),
@@ -4991,9 +5081,15 @@ impl TimelineActor {
                     let Some(control) = control else { break };
                     self.handle_relay_control(control).await;
                 }
-                batch = self.relay_data_rx.recv() => {
+                batch = async {
+                    match self.relay_data_rx.as_mut() {
+                        Some(receiver) => receiver.recv().await,
+                        None => futures_util::future::pending().await,
+                    }
+                } => {
                     if let Some(TimelineRelayBatch { generation, diffs }) = batch {
                         if let Some(diffs) = accepted_relay_batch(self.generation, generation, diffs) {
+                            self.relay_restart_backoff.reset_after_live_batch();
                             self.handle_diff_batch(diffs).await;
                         }
                     }
@@ -5013,10 +5109,41 @@ impl TimelineActor {
                     .await;
             }
             TimelineRelayControl::StreamEnded { generation } => {
-                self.handle_relay_overflow(generation, TimelineResyncReason::SubscriptionRestarted)
+                self.schedule_relay_restart(generation);
+            }
+            TimelineRelayControl::RestartDue { generation, serial } => {
+                if accept_relay_generation(self.generation, generation)
+                    && self.relay_restart_backoff.accept_due(generation, serial)
+                {
+                    self.relay_restart_task = None;
+                    self.handle_relay_overflow(
+                        generation,
+                        TimelineResyncReason::SubscriptionRestarted,
+                    )
                     .await;
+                }
             }
         }
+    }
+
+    fn schedule_relay_restart(&mut self, generation: TimelineGeneration) {
+        if !accept_relay_generation(self.generation, generation) {
+            return;
+        }
+        if let Some(task) = self.relay_task.take() {
+            task.abort();
+        }
+        self.relay_data_rx = None;
+        if let Some(task) = self.relay_restart_task.take() {
+            task.abort();
+        }
+        let schedule = self.relay_restart_backoff.schedule(generation);
+        let control_tx = self.relay_control_tx.clone();
+        self.relay_restart_task = Some(spawn_relay_restart_timer(
+            control_tx,
+            schedule,
+            executor::sleep(schedule.delay),
+        ));
     }
 
     async fn handle_msg(&mut self, msg: TimelineActorMessage) {
@@ -8505,6 +8632,9 @@ impl TimelineActor {
         if !accept_relay_generation(self.generation, overflow_generation) {
             return;
         }
+        if let Some(task) = self.relay_restart_task.take() {
+            task.abort();
+        }
         if let Some(task) = self.relay_task.take() {
             task.abort();
         }
@@ -8589,7 +8719,7 @@ impl TimelineActor {
             replay_known_candidates,
         );
         let (relay_data_tx, relay_data_rx) = mpsc::channel(256);
-        self.relay_data_rx = relay_data_rx;
+        self.relay_data_rx = Some(relay_data_rx);
         self.relay_task = Some(executor::spawn(run_diff_relay(
             relay_data_tx,
             self.relay_control_tx.clone(),
@@ -18018,6 +18148,70 @@ mod tests {
         assert!(matches!(
             command_rx.try_recv(),
             Ok(TimelineActorMessage::ReplayInitialItems { .. })
+        ));
+        assert!(matches!(
+            control_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn relay_restart_backoff_grows_caps_resets_and_rejects_stale_due_tokens() {
+        let mut backoff =
+            RelayRestartBackoff::new(Duration::from_millis(10), Duration::from_millis(40));
+        let first = backoff.schedule(TimelineGeneration(3));
+        let second = backoff.schedule(TimelineGeneration(3));
+        let third = backoff.schedule(TimelineGeneration(3));
+        let capped = backoff.schedule(TimelineGeneration(3));
+        assert_eq!(first.delay, Duration::from_millis(10));
+        assert_eq!(second.delay, Duration::from_millis(20));
+        assert_eq!(third.delay, Duration::from_millis(40));
+        assert_eq!(capped.delay, Duration::from_millis(40));
+        assert!(!backoff.accept_due(first.generation, first.serial));
+        assert!(backoff.accept_due(capped.generation, capped.serial));
+        assert!(!backoff.accept_due(capped.generation, capped.serial));
+
+        backoff.reset_after_live_batch();
+        let reset = backoff.schedule(TimelineGeneration(4));
+        assert_eq!(reset.delay, Duration::from_millis(10));
+        assert!(!backoff.accept_due(TimelineGeneration(3), reset.serial));
+    }
+
+    #[tokio::test]
+    async fn relay_restart_timer_does_not_block_commands_and_emits_one_due_after_delay() {
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        command_tx
+            .try_send(TimelineActorMessage::ReplayInitialItems {
+                request_id: fake_rid(89),
+            })
+            .expect("command queued during restart delay");
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let schedule = RelayRestartSchedule {
+            generation: TimelineGeneration(5),
+            serial: 11,
+            delay: Duration::ZERO,
+        };
+        let timer = spawn_relay_restart_timer(control_tx, schedule, async move {
+            let _ = release_rx.await;
+        });
+
+        assert!(matches!(
+            control_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(TimelineActorMessage::ReplayInitialItems { .. })
+        ));
+        release_tx.send(()).expect("release timer");
+        timer.await.expect("timer task");
+        assert!(matches!(
+            control_rx.recv().await,
+            Some(TimelineRelayControl::RestartDue {
+                generation: TimelineGeneration(5),
+                serial: 11,
+            })
         ));
         assert!(matches!(
             control_rx.try_recv(),

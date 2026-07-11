@@ -393,12 +393,16 @@ next live diff is therefore emitted as an ordinary `ItemsUpdated`. Send-queue
 broadcast lag recovery is a separate state machine and does not satisfy this
 relay recovery contract.
 
-Unexpected SDK diff-stream completion is handled through the same generation-
-guarded resubscription protocol with reason `SubscriptionRestarted`. The relay
-emits exactly one lossless `StreamEnded(generation)` control before terminating;
-the actor replaces the closed data lane, so a permanently-ready closed receiver
-cannot busy-spin or starve queued actor commands. A stale end signal from an old
-generation is ignored.
+Unexpected SDK diff-stream completion schedules the same generation-guarded
+resubscription protocol with reason `SubscriptionRestarted`. The relay emits
+exactly one lossless `StreamEnded(generation)` control before terminating. The
+actor disables the closed data receiver immediately, then schedules one
+actor-owned `RestartDue(generation, serial)` timer with bounded exponential
+backoff (100 ms base, 5 s cap). Commands remain serviceable during the delay;
+stale or duplicate due tokens are ignored, and actor shutdown aborts the timer.
+Each immediately-ending replacement increases the delay, preventing a hot
+subscribe/Resync loop. The first accepted live diff batch resets backoff to the
+base delay. Queue overflow recovery remains immediate.
 
 The replacement snapshot also reconciles actor-owned auxiliary projections
 before the replacement relay becomes live: media-source cache and media gallery
