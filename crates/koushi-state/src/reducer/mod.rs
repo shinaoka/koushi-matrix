@@ -995,6 +995,12 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             activity_timestamp_ms,
             failure_kind,
         ),
+        AppAction::ThreadRootProjectionsReconciled {
+            room_id,
+            active_root_event_ids,
+        } => {
+            thread::handle_thread_root_projections_reconciled(state, room_id, active_root_event_ids)
+        }
         AppAction::ClearError { code } => basic_operation::handle_clear_error(state, code),
         AppAction::BasicOperationRequested {
             request_id,

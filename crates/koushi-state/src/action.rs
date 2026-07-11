@@ -921,6 +921,12 @@ pub enum AppAction {
         activity_timestamp_ms: Option<u64>,
         failure_kind: crate::OperationFailureKind,
     },
+    /// Bounded Room-window lifecycle for out-of-band root projections. This
+    /// carries no canonical timeline items and cannot trigger pagination.
+    ThreadRootProjectionsReconciled {
+        room_id: String,
+        active_root_event_ids: Vec<String>,
+    },
     ClearError {
         code: String,
     },

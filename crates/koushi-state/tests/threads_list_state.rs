@@ -136,6 +136,104 @@ fn thread_root_projection_is_keyed_by_room_and_root_and_terminal_failures_do_not
             ..
         })
     ));
+
+    let updated_effects = reduce(
+        &mut state,
+        AppAction::ThreadRootProjectionObserved {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$old-root:example.invalid".to_owned(),
+            activity_event_id: "$newer-reply:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(1_700_000_200_000),
+        },
+    );
+    assert_eq!(
+        updated_effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+    );
+    assert!(matches!(
+        state
+            .thread_root_projections
+            .get("room-a", "$old-root:example.invalid"),
+        Some(ThreadRootProjectionStatus::Failed {
+            activity_event_id,
+            activity_timestamp_ms: Some(1_700_000_200_000),
+            failure_kind: OperationFailureKind::NotFound,
+        }) if activity_event_id == "$newer-reply:example.invalid"
+    ));
+
+    let stale_effects = reduce(
+        &mut state,
+        AppAction::ThreadRootProjectionObserved {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$old-root:example.invalid".to_owned(),
+            activity_event_id: "$stale-reply:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(1_700_000_050_000),
+        },
+    );
+    assert!(stale_effects.is_empty());
+    assert!(matches!(
+        state
+            .thread_root_projections
+            .get("room-a", "$old-root:example.invalid"),
+        Some(ThreadRootProjectionStatus::Failed { activity_event_id, .. })
+            if activity_event_id == "$newer-reply:example.invalid"
+    ));
+}
+
+#[test]
+fn thread_root_projection_cleanup_keeps_active_terminal_records_and_evicts_inactive_ones() {
+    let mut state = selected_room_state("room-a");
+    let root_event_id = "$old-root:example.invalid".to_owned();
+
+    reduce(
+        &mut state,
+        AppAction::ThreadRootProjectionObserved {
+            room_id: "room-a".to_owned(),
+            root_event_id: root_event_id.clone(),
+            activity_event_id: "$latest-reply:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(1_700_000_100_000),
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::ThreadRootProjectionFailed {
+            room_id: "room-a".to_owned(),
+            root_event_id: root_event_id.clone(),
+            activity_event_id: "$latest-reply:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(1_700_000_100_000),
+            failure_kind: OperationFailureKind::NotFound,
+        },
+    );
+
+    reduce(
+        &mut state,
+        AppAction::ThreadRootProjectionsReconciled {
+            room_id: "room-a".to_owned(),
+            active_root_event_ids: vec![root_event_id.clone()],
+        },
+    );
+    assert!(matches!(
+        state.thread_root_projections.get("room-a", &root_event_id),
+        Some(ThreadRootProjectionStatus::Failed { .. })
+    ));
+
+    reduce(
+        &mut state,
+        AppAction::ThreadRootProjectionsReconciled {
+            room_id: "room-a".to_owned(),
+            active_root_event_ids: Vec::new(),
+        },
+    );
+    assert_eq!(
+        state.thread_root_projections.get("room-a", &root_event_id),
+        None
+    );
+    assert_eq!(
+        serde_json::to_value(&state.thread_root_projections)
+            .expect("projection state must serialize")["active_root_event_ids"],
+        serde_json::json!({}),
+        "empty room activity markers must not grow for the session lifetime"
+    );
 }
 
 #[test]

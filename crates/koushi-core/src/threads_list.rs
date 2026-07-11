@@ -5,7 +5,7 @@
 //! typed `AppAction`s (and mirrored as `CoreEvent::ThreadsList` events) so the
 //! reducer owns the UI snapshot.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
@@ -31,6 +31,11 @@ pub(crate) struct ThreadRootProjectionActivity {
     pub root_event_id: String,
     pub activity_event_id: String,
     pub activity_timestamp_ms: Option<u64>,
+    /// Live reply metadata is authoritative over a potentially stale bundled
+    /// root summary when rendering the moved root's thread preview.
+    pub activity_sender: Option<String>,
+    pub activity_sender_label: Option<String>,
+    pub activity_body_preview: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,8 +45,10 @@ pub(crate) enum ThreadRootProjectionDecision {
     /// The existing request remains bounded to one fetch, but a newer reply
     /// changed the presentation activity for the same root.
     ActivityUpdated(ThreadRootProjectionRecord),
-    /// The keyed attempt is pending, ready, or terminally failed already.
-    AlreadyTracked,
+    /// A retained request/result belongs to the currently active canonical
+    /// reply window. Re-emitting it lets a replacement Room actor restore its
+    /// pending/ready/failed display state without another fetch.
+    Existing(ThreadRootProjectionRecord),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -87,6 +94,7 @@ impl ThreadRootProjectionRecord {
 #[derive(Default)]
 pub(crate) struct ThreadRootProjectionService {
     attempts: HashMap<(String, String), ThreadRootProjectionRecord>,
+    active_root_event_ids: HashMap<String, HashSet<String>>,
 }
 
 impl ThreadRootProjectionService {
@@ -97,10 +105,14 @@ impl ThreadRootProjectionService {
         let key = (activity.room_id.clone(), activity.root_event_id.clone());
         if let Some(record) = self.attempts.get_mut(&key) {
             if activity_is_newer(&activity, &record.activity) {
+                // A failed root stays terminal while its reply remains in the
+                // active Room window. We still advance its activity identity
+                // so the unavailable placeholder follows the latest reply,
+                // but must never turn it into another fetch attempt.
                 record.activity = activity;
                 return ThreadRootProjectionDecision::ActivityUpdated(record.clone());
             }
-            return ThreadRootProjectionDecision::AlreadyTracked;
+            return ThreadRootProjectionDecision::Existing(record.clone());
         }
         self.attempts.insert(
             key,
@@ -112,16 +124,47 @@ impl ThreadRootProjectionService {
         ThreadRootProjectionDecision::StartFetch(activity)
     }
 
+    /// Keep only projection data that still has a representation in the
+    /// bounded canonical Room window. Pending requests are retained until
+    /// their one worker completes; terminal records are dropped as soon as the
+    /// corresponding root has no live reply. Thus a reconnect can dedupe a
+    /// currently-active failure, while a later observation after cleanup is a
+    /// new bounded attempt rather than a retry loop.
+    pub(crate) fn reconcile_room(
+        &mut self,
+        room_id: &str,
+        active_root_event_ids: &HashSet<String>,
+    ) {
+        self.active_root_event_ids
+            .insert(room_id.to_owned(), active_root_event_ids.clone());
+        self.attempts
+            .retain(|(entry_room_id, root_event_id), record| {
+                entry_room_id != room_id
+                    || active_root_event_ids.contains(root_event_id)
+                    || record.is_pending()
+            });
+        self.cleanup_empty_room_tracking(room_id);
+    }
+
     pub(crate) fn mark_ready(
         &mut self,
         activity: &ThreadRootProjectionActivity,
         item: TimelineItem,
     ) -> Option<ThreadRootProjectionRecord> {
-        let record = self
-            .attempts
-            .get_mut(&(activity.room_id.clone(), activity.root_event_id.clone()))?;
+        let key = (activity.room_id.clone(), activity.root_event_id.clone());
+        let is_active = self.is_active_or_unreported(&activity.room_id, &activity.root_event_id);
+        let record = self.attempts.get_mut(&key)?;
         record.attempt = ThreadRootProjectionAttempt::Ready(item);
-        Some(record.clone())
+        let completed = record.clone();
+        if !is_active {
+            // The UI/state still need this one terminal notification to clear
+            // their pending placeholder. The returned snapshot is never
+            // retained by this service because its reply already left the
+            // canonical window.
+            self.attempts.remove(&key);
+            self.cleanup_empty_room_tracking(&activity.room_id);
+        }
+        Some(completed)
     }
 
     pub(crate) fn mark_failed(
@@ -129,11 +172,39 @@ impl ThreadRootProjectionService {
         activity: &ThreadRootProjectionActivity,
         failure_kind: OperationFailureKind,
     ) -> Option<ThreadRootProjectionRecord> {
-        let record = self
-            .attempts
-            .get_mut(&(activity.room_id.clone(), activity.root_event_id.clone()))?;
+        let key = (activity.room_id.clone(), activity.root_event_id.clone());
+        let is_active = self.is_active_or_unreported(&activity.room_id, &activity.root_event_id);
+        let record = self.attempts.get_mut(&key)?;
         record.attempt = ThreadRootProjectionAttempt::Failed(failure_kind);
-        Some(record.clone())
+        let completed = record.clone();
+        if !is_active {
+            // See `mark_ready`: terminal completion doubles as the explicit
+            // cleanup signal for the independent state/frontend maps.
+            self.attempts.remove(&key);
+            self.cleanup_empty_room_tracking(&activity.room_id);
+        }
+        Some(completed)
+    }
+
+    fn is_active_or_unreported(&self, room_id: &str, root_event_id: &str) -> bool {
+        self.active_root_event_ids
+            .get(room_id)
+            .is_none_or(|active| active.contains(root_event_id))
+    }
+
+    fn cleanup_empty_room_tracking(&mut self, room_id: &str) {
+        let has_pending_or_active_record = self
+            .attempts
+            .keys()
+            .any(|(entry_room_id, _)| entry_room_id == room_id);
+        if self
+            .active_root_event_ids
+            .get(room_id)
+            .is_some_and(HashSet::is_empty)
+            && !has_pending_or_active_record
+        {
+            self.active_root_event_ids.remove(room_id);
+        }
     }
 }
 
@@ -542,6 +613,11 @@ fn body_preview(content: Option<&matrix_sdk_ui::timeline::TimelineItemContent>) 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+    use std::sync::{Arc, Mutex};
+
+    use crate::event::{TimelineItem, TimelineItemId, TimelineMessageActions};
+
     use super::{
         OperationFailureKind, ThreadRootProjectionActivity, ThreadRootProjectionDecision,
         ThreadRootProjectionService,
@@ -555,6 +631,9 @@ mod tests {
             root_event_id: "$old-root:example.invalid".to_owned(),
             activity_event_id: "$latest-reply:example.invalid".to_owned(),
             activity_timestamp_ms: Some(1_700_000_100_000),
+            activity_sender: Some("@user-b:example.invalid".to_owned()),
+            activity_sender_label: Some("User B".to_owned()),
+            activity_body_preview: Some("Latest preview".to_owned()),
         };
 
         assert_eq!(
@@ -563,15 +642,223 @@ mod tests {
         );
         assert_eq!(
             service.observe(activity.clone()),
-            ThreadRootProjectionDecision::AlreadyTracked
+            ThreadRootProjectionDecision::Existing(
+                service
+                    .attempts
+                    .get(&(activity.room_id.clone(), activity.root_event_id.clone()))
+                    .expect("pending record")
+                    .clone()
+            )
         );
 
         service.mark_failed(&activity, OperationFailureKind::NotFound);
         assert_eq!(
             service.observe(activity),
-            ThreadRootProjectionDecision::AlreadyTracked,
+            ThreadRootProjectionDecision::Existing(
+                service
+                    .attempts
+                    .get(&(
+                        "!room:example.invalid".to_owned(),
+                        "$old-root:example.invalid".to_owned()
+                    ))
+                    .expect("failed record")
+                    .clone()
+            ),
             "a failed root projection is terminal and must not loop"
         );
+    }
+
+    #[test]
+    fn active_failed_root_survives_recreated_actor_but_is_eligible_after_active_window_cleanup() {
+        let shared = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let activity = ThreadRootProjectionActivity {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$old-root:example.invalid".to_owned(),
+            activity_event_id: "$latest-reply:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(1_700_000_100_000),
+            activity_sender: Some("@user-b:example.invalid".to_owned()),
+            activity_sender_label: Some("User B".to_owned()),
+            activity_body_preview: Some("Latest preview".to_owned()),
+        };
+
+        // First Room actor starts and fails the sole bounded attempt.
+        {
+            let mut service = shared.lock().expect("test service lock");
+            assert!(matches!(
+                service.observe(activity.clone()),
+                ThreadRootProjectionDecision::StartFetch(_)
+            ));
+            service.mark_failed(&activity, OperationFailureKind::NotFound);
+            service.reconcile_room(
+                &activity.room_id,
+                &HashSet::from([activity.root_event_id.clone()]),
+            );
+        }
+
+        // SyncStarted replaces the Room actor, but it must consult the same
+        // Room-scoped service and emit the retained terminal record instead of
+        // issuing a second load_or_fetch_event.
+        {
+            let mut replacement_actor_service = shared.lock().expect("test service lock");
+            let decision = replacement_actor_service.observe(activity.clone());
+            assert!(matches!(
+                decision,
+                ThreadRootProjectionDecision::Existing(record)
+                    if record.failure_kind() == Some(OperationFailureKind::NotFound)
+            ));
+        }
+
+        // Once the canonical reply window no longer contains this root, the
+        // terminal state is evicted. A later observation is a new bounded
+        // attempt rather than an automatic retry of an active failed reply.
+        {
+            let mut service = shared.lock().expect("test service lock");
+            service.reconcile_room(&activity.room_id, &HashSet::new());
+            assert!(matches!(
+                service.observe(activity),
+                ThreadRootProjectionDecision::StartFetch(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn active_failed_root_updates_to_newest_reply_without_starting_a_second_fetch() {
+        let mut service = ThreadRootProjectionService::default();
+        let first_activity = ThreadRootProjectionActivity {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$old-root:example.invalid".to_owned(),
+            activity_event_id: "$first-reply:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(1_700_000_100_000),
+            activity_sender: Some("@user-a:example.invalid".to_owned()),
+            activity_sender_label: Some("User A".to_owned()),
+            activity_body_preview: Some("First preview".to_owned()),
+        };
+        assert!(matches!(
+            service.observe(first_activity.clone()),
+            ThreadRootProjectionDecision::StartFetch(_)
+        ));
+        service.reconcile_room(
+            &first_activity.room_id,
+            &HashSet::from([first_activity.root_event_id.clone()]),
+        );
+        service.mark_failed(&first_activity, OperationFailureKind::NotFound);
+
+        let newest_activity = ThreadRootProjectionActivity {
+            activity_event_id: "$newest-reply:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(1_700_000_200_000),
+            activity_sender: Some("@user-b:example.invalid".to_owned()),
+            activity_sender_label: Some("User B".to_owned()),
+            activity_body_preview: Some("Newest preview".to_owned()),
+            ..first_activity
+        };
+
+        assert!(matches!(
+            service.observe(newest_activity),
+            ThreadRootProjectionDecision::ActivityUpdated(record)
+                if record.failure_kind() == Some(OperationFailureKind::NotFound)
+                    && record.activity.activity_event_id == "$newest-reply:example.invalid"
+        ));
+    }
+
+    #[test]
+    fn inactive_pending_completion_returns_terminal_snapshot_for_state_cleanup_then_evicts_core_record()
+     {
+        let mut service = ThreadRootProjectionService::default();
+        let activity = ThreadRootProjectionActivity {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$old-root:example.invalid".to_owned(),
+            activity_event_id: "$latest-reply:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(1_700_000_100_000),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        assert!(matches!(
+            service.observe(activity.clone()),
+            ThreadRootProjectionDecision::StartFetch(_)
+        ));
+        service.reconcile_room(&activity.room_id, &HashSet::new());
+
+        let completed = service
+            .mark_failed(&activity, OperationFailureKind::NotFound)
+            .expect(
+                "the terminal result must reach state/frontend cleanup even after activity leaves",
+            );
+        assert_eq!(
+            completed.failure_kind(),
+            Some(OperationFailureKind::NotFound)
+        );
+        assert!(
+            !service
+                .active_root_event_ids
+                .contains_key(&activity.room_id),
+            "an inactive room with no pending records must not leave a session-long empty marker"
+        );
+        assert!(matches!(
+            service.observe(activity),
+            ThreadRootProjectionDecision::StartFetch(_)
+        ));
+    }
+
+    #[test]
+    fn ready_snapshot_remains_reemittable_after_temporary_canonical_root_overlap() {
+        let mut service = ThreadRootProjectionService::default();
+        let activity = ThreadRootProjectionActivity {
+            room_id: "!room:example.invalid".to_owned(),
+            root_event_id: "$old-root:example.invalid".to_owned(),
+            activity_event_id: "$latest-reply:example.invalid".to_owned(),
+            activity_timestamp_ms: Some(1_700_000_100_000),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        assert!(matches!(
+            service.observe(activity.clone()),
+            ThreadRootProjectionDecision::StartFetch(_)
+        ));
+        service.reconcile_room(
+            &activity.room_id,
+            &HashSet::from([activity.root_event_id.clone()]),
+        );
+        let item = TimelineItem {
+            id: TimelineItemId::Event {
+                event_id: activity.root_event_id.clone(),
+            },
+            sender: None,
+            sender_label: None,
+            sender_avatar: None,
+            body: Some("old root".to_owned()),
+            notice_i18n_key: None,
+            message_kind: Default::default(),
+            spoiler_spans: Vec::new(),
+            timestamp_ms: None,
+            in_reply_to_event_id: None,
+            formatted: None,
+            reply_quote: None,
+            thread_root: None,
+            thread_summary: None,
+            media: None,
+            link_previews: None,
+            link_ranges: Vec::new(),
+            reactions: Vec::new(),
+            can_react: false,
+            is_redacted: false,
+            is_hidden: false,
+            can_redact: false,
+            is_edited: false,
+            can_edit: false,
+            unable_to_decrypt: None,
+            actions: TimelineMessageActions::default(),
+            send_state: None,
+        };
+        service
+            .mark_ready(&activity, item)
+            .expect("the reply remains active even while its root is canonical");
+
+        assert!(matches!(
+            service.observe(activity),
+            ThreadRootProjectionDecision::Existing(record) if record.item().is_some()
+        ));
     }
 
     #[test]

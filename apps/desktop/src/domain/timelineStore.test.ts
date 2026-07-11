@@ -112,6 +112,31 @@ function itemId(item: TimelineItem): string {
 // ---------------------------------------------------------------------------
 
 describe("timeline store — diff application", () => {
+  test("preserves an unchanged thread-root projection map identity across canonical-only updates", () => {
+    let store = createTimelineStore();
+    const emptyProjections = store.threadRootProjections;
+
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [makeMsg("$latest", "Latest")]
+      }
+    });
+    expect(store.threadRootProjections).toBe(emptyProjections);
+
+    store = applyTimelineEvent(store, {
+      PaginationStateChanged: {
+        request_id: null,
+        key: KEY,
+        direction: "Backward",
+        state: "Idle"
+      }
+    });
+    expect(store.threadRootProjections).toBe(emptyProjections);
+  });
+
   test("stores thread-root projection snapshots outside canonical items", () => {
     let store = createTimelineStore();
     const canonicalReply = {
@@ -161,6 +186,97 @@ describe("timeline store — diff application", () => {
 
     expect(getItems(store, KEY)).toEqual([canonicalReply]);
     expect(getThreadRootProjections(store, KEY)[0]?.state).toEqual({ kind: "ready", item: root });
+  });
+
+  test("retains an active terminal root projection then evicts it after its reply leaves the canonical window", () => {
+    const reply = { ...makeMsg("$latest-reply", "reply"), thread_root: "$old-root" };
+    let store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: { request_id: null, key: KEY, generation: 1, items: [reply] }
+    });
+    const canonicalBefore = getItems(store, KEY);
+
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$old-root",
+          activity_event_id: "$latest-reply",
+          activity_timestamp_ms: 1,
+          state: { kind: "failed", failure_kind: "notFound" }
+        }
+      }
+    });
+    expect(getItems(store, KEY)).toBe(canonicalBefore);
+    expect(getThreadRootProjections(store, KEY)).toHaveLength(1);
+
+    store = applyTimelineEvent(store, {
+      InitialItems: { request_id: null, key: KEY, generation: 2, items: [] }
+    });
+    expect(getItems(store, KEY)).toEqual([]);
+    expect(getThreadRootProjections(store, KEY)).toEqual([]);
+  });
+
+  test("keeps a ready root snapshot through temporary canonical overlap for the later absent-root projection", () => {
+    const root = makeMsg("$old-root", "old root body");
+    const reply = { ...makeMsg("$latest-reply", "reply"), thread_root: "$old-root" };
+    let store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: { request_id: null, key: KEY, generation: 1, items: [root, reply] }
+    });
+
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$old-root",
+          activity_event_id: "$latest-reply",
+          activity_timestamp_ms: 2,
+          state: { kind: "ready", item: root }
+        }
+      }
+    });
+    expect(getThreadRootProjections(store, KEY)).toHaveLength(1);
+
+    store = applyTimelineEvent(store, {
+      InitialItems: { request_id: null, key: KEY, generation: 2, items: [reply] }
+    });
+    expect(getItems(store, KEY)).toEqual([reply]);
+    expect(getThreadRootProjections(store, KEY)[0]?.state).toEqual({ kind: "ready", item: root });
+  });
+
+  test("retains an inactive pending root only until its terminal completion clears the out-of-band map", () => {
+    const reply = { ...makeMsg("$latest-reply", "reply"), thread_root: "$old-root" };
+    let store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: { request_id: null, key: KEY, generation: 1, items: [reply] }
+    });
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$old-root",
+          activity_event_id: "$latest-reply",
+          activity_timestamp_ms: 1,
+          state: { kind: "pending" }
+        }
+      }
+    });
+    store = applyTimelineEvent(store, {
+      InitialItems: { request_id: null, key: KEY, generation: 2, items: [] }
+    });
+    expect(getThreadRootProjections(store, KEY)).toHaveLength(1);
+
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$old-root",
+          activity_event_id: "$latest-reply",
+          activity_timestamp_ms: 1,
+          state: { kind: "failed", failure_kind: "notFound" }
+        }
+      }
+    });
+    expect(getItems(store, KEY)).toEqual([]);
+    expect(getThreadRootProjections(store, KEY)).toEqual([]);
   });
 
   test("InitialItems populates the render list for a key", () => {

@@ -105,7 +105,11 @@ export function createTimelineStore(): TimelineStoreState {
 }
 
 function withKeys(store: TimelineStoreState, keys: Map<string, TimelineKeyState>): TimelineStoreState {
-  return { ...store, keys };
+  return {
+    ...store,
+    keys,
+    threadRootProjections: retainActiveThreadRootProjections(store.threadRootProjections, keys)
+  };
 }
 
 function withRetainedKeys(
@@ -118,11 +122,43 @@ function withRetainedKeys(
       retainedPrefixes.some((prefix) => projectionKey.startsWith(prefix))
     )
   );
-  return { ...store, keys, threadRootProjections };
+  return withKeys({ ...store, threadRootProjections }, keys);
 }
 
 function threadRootProjectionStoreKey(key: TimelineKey, rootEventId: string): string {
   return `${keyStr(key)}\u0000${rootEventId}`;
+}
+
+/**
+ * A root projection is useful only while its reply is in the bounded canonical
+ * Room window. Pending entries remain until their one worker settles; ready
+ * and failed terminal entries are removed deterministically once that reply
+ * leaves. This mirrors the Core service without ever mutating canonical items.
+ */
+function retainActiveThreadRootProjections(
+  projections: Map<string, ThreadRootProjectionDto>,
+  keys: ReadonlyMap<string, TimelineKeyState>
+): Map<string, ThreadRootProjectionDto> {
+  const retained = new Map<string, ThreadRootProjectionDto>();
+  for (const [projectionKey, projection] of projections) {
+    const separator = projectionKey.lastIndexOf("\u0000");
+    const timelineKeyId = separator < 0 ? projectionKey : projectionKey.slice(0, separator);
+    const state = keys.get(timelineKeyId);
+    if (!state) {
+      continue;
+    }
+    if (projection.state.kind === "pending") {
+      retained.set(projectionKey, projection);
+      continue;
+    }
+    if (state.items.some((item) => item.thread_root === projection.root_event_id)) {
+      retained.set(projectionKey, projection);
+    }
+  }
+  // Preserve the reference when no projection lifecycle changed. TimelineView
+  // memoizes display rows by this map, so cloning an unchanged empty map on a
+  // pagination-only event would schedule a spurious projection transaction.
+  return retained.size === projections.size ? projections : retained;
 }
 
 // ---------------------------------------------------------------------------
@@ -291,13 +327,17 @@ function applyThreadRootProjection(
   if (!("Room" in payload.key.kind)) {
     return store;
   }
+  const projectionKey = threadRootProjectionStoreKey(payload.key, payload.projection.root_event_id);
   const projections = new Map(store.threadRootProjections);
-  projections.set(
-    threadRootProjectionStoreKey(payload.key, payload.projection.root_event_id),
-    payload.projection
-  );
+  // Delete before set so a changed terminal result is the most-recent record
+  // should future bounded retention diagnostics need map order.
+  projections.delete(projectionKey);
+  projections.set(projectionKey, payload.projection);
   // Deliberately does not touch `keys`, canonical items, or either index.
-  return { ...store, threadRootProjections: projections };
+  return {
+    ...store,
+    threadRootProjections: retainActiveThreadRootProjections(projections, store.keys)
+  };
 }
 
 function applyInitialItems(
