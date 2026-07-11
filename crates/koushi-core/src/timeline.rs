@@ -5242,7 +5242,7 @@ impl TimelineActor {
                 .await;
             }
             TimelineActorMessage::DiffBatch { generation, diffs } => {
-                if generation == self.generation {
+                if let Some(diffs) = accepted_relay_batch(self.generation, generation, diffs) {
                     self.handle_diff_batch(diffs).await;
                 }
             }
@@ -8444,26 +8444,29 @@ impl TimelineActor {
     }
 
     async fn handle_relay_overflow(&mut self, overflow_generation: TimelineGeneration) {
-        if overflow_generation != self.generation {
+        if !accept_relay_generation(self.generation, overflow_generation) {
             return;
         }
         if let Some(task) = self.relay_task.take() {
             task.abort();
         }
-        // Overflow protocol (canon decision B):
-        // 1. Bump generation.
-        self.generation = TimelineGeneration(self.generation.0 + 1);
+        let timeline = self.timeline.clone();
+        let Some(prepared) =
+            prepare_relay_recovery(self.generation, overflow_generation, move || async move {
+                timeline.subscribe().await
+            })
+            .await
+        else {
+            return;
+        };
+        self.generation = prepared.generation;
         // 2. Reset batch_id to 0.
         self.next_batch_id = TimelineBatchId(0);
 
         // 3. Acquire the authoritative snapshot and its matching replacement
         //    stream from one SDK subscription boundary.
-        let (current_items, diff_stream) = self.timeline.subscribe().await;
-        // 4. Announce the generation reset before publishing its snapshot.
-        self.emit(CoreEvent::Timeline(TimelineEvent::ResyncRequired {
-            key: self.key.clone(),
-            reason: TimelineResyncReason::QueueOverflow,
-        }));
+        let current_items = prepared.snapshot;
+        let diff_stream = prepared.stream;
 
         // 5. Emit fresh InitialItems for the new generation.
         let link_preview_context = self.link_preview_policy.for_room(self.key.room_id());
@@ -8500,14 +8503,13 @@ impl TimelineActor {
             &self.navigation_items,
             &self.replay_known_display_items,
         );
-        let _ = emit_initial_items_and_reconcile_replay_known_for_generation(
+        emit_relay_recovery_snapshot(
             &self.event_tx,
             &self.replay_known_thread_root_projections,
             &self.thread_root_projection_service,
             &self.timeline_actor_generations,
             &self.key,
             self.actor_generation,
-            None,
             self.generation,
             items,
             replay_known_candidates,
@@ -8733,6 +8735,82 @@ fn koushi_timeline_builder(
     matrix_sdk_ui::timeline::TimelineBuilder::new(room)
         .with_focus(focus)
         .track_read_marker_and_receipts(TimelineReadReceiptTracking::AllEvents)
+}
+
+struct PreparedRelayRecovery<Snapshot, Stream> {
+    generation: TimelineGeneration,
+    snapshot: Snapshot,
+    stream: Stream,
+}
+
+async fn prepare_relay_recovery<Subscribe, SubscribeFuture, Snapshot, Stream>(
+    current_generation: TimelineGeneration,
+    overflow_generation: TimelineGeneration,
+    subscribe: Subscribe,
+) -> Option<PreparedRelayRecovery<Snapshot, Stream>>
+where
+    Subscribe: FnOnce() -> SubscribeFuture,
+    SubscribeFuture: std::future::Future<Output = (Snapshot, Stream)>,
+{
+    if !accept_relay_generation(current_generation, overflow_generation) {
+        return None;
+    }
+    let (snapshot, stream) = subscribe().await;
+    Some(PreparedRelayRecovery {
+        generation: TimelineGeneration(current_generation.0 + 1),
+        snapshot,
+        stream,
+    })
+}
+
+fn accept_relay_generation(
+    current_generation: TimelineGeneration,
+    incoming_generation: TimelineGeneration,
+) -> bool {
+    current_generation == incoming_generation
+}
+
+fn accepted_relay_batch<T>(
+    current_generation: TimelineGeneration,
+    incoming_generation: TimelineGeneration,
+    batch: T,
+) -> Option<T> {
+    accept_relay_generation(current_generation, incoming_generation).then_some(batch)
+}
+
+fn emit_relay_recovery_snapshot(
+    event_tx: &broadcast::Sender<CoreEvent>,
+    replay_known_thread_root_projections: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    generation: TimelineGeneration,
+    items: Vec<TimelineItem>,
+    replay_known_candidates: Vec<ThreadRootProjectionDto>,
+) {
+    let _ = emit_timeline_events_for_generation(
+        event_tx,
+        timeline_actor_generations,
+        key,
+        actor_generation,
+        vec![TimelineEvent::ResyncRequired {
+            key: key.clone(),
+            reason: TimelineResyncReason::QueueOverflow,
+        }],
+    );
+    let _ = emit_initial_items_and_reconcile_replay_known_for_generation(
+        event_tx,
+        replay_known_thread_root_projections,
+        thread_root_projection_service,
+        timeline_actor_generations,
+        key,
+        actor_generation,
+        None,
+        generation,
+        items,
+        replay_known_candidates,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -14096,7 +14174,9 @@ mod tests {
                 .next()
                 .expect("actor lifecycle helper boundary");
             assert!(
-                section.contains("emit_initial_items_and_reconcile_replay_known_for_generation"),
+                section.contains("emit_initial_items_and_reconcile_replay_known_for_generation")
+                    || (name == "queue_overflow"
+                        && section.contains("emit_relay_recovery_snapshot")),
                 "{name} must publish InitialItems and replay-known ownership in one group"
             );
         }
@@ -17725,38 +17805,131 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn relay_overflow_resubscribes_before_ordered_resync_events_and_restarts_the_relay() {
-        let source = include_str!("timeline.rs");
-        let handler = source
-            .split("async fn handle_relay_overflow")
-            .nth(1)
-            .expect("overflow handler must exist")
-            .split("fn emit(&self")
-            .next()
-            .expect("emit helper must follow overflow handler");
-        let subscribe = handler
-            .find("self.timeline.subscribe().await")
-            .expect("overflow recovery must obtain a new snapshot and stream");
-        let resync = handler
-            .find("TimelineEvent::ResyncRequired")
-            .expect("overflow recovery must announce the new generation");
-        let initial = handler
-            .find("emit_initial_items_and_reconcile_replay_known_for_generation")
-            .expect("overflow recovery must publish the authoritative snapshot");
-        let restart = handler
-            .rfind("run_diff_relay(")
-            .expect("overflow recovery must start a replacement relay");
+    #[tokio::test]
+    async fn relay_overflow_recovery_subscribes_once_emits_snapshot_then_next_live_update() {
+        let key = room_key();
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let actor_generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        let replay_registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let projection_service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let subscribe_count = Arc::new(AtomicU64::new(0));
+        let subscribe_count_for_fake = subscribe_count.clone();
 
-        assert!(
-            subscribe < resync,
-            "subscribe boundary must precede resync events"
+        let prepared = prepare_relay_recovery(
+            TimelineGeneration(7),
+            TimelineGeneration(7),
+            move || async move {
+                subscribe_count_for_fake.fetch_add(1, Ordering::SeqCst);
+                (
+                    Vec::<TimelineItem>::new(),
+                    futures_util::stream::iter([vec![
+                        eyeball_im::VectorDiff::<Arc<SdkTimelineItem>>::Clear,
+                    ]]),
+                )
+            },
+        )
+        .await
+        .expect("matching overflow generation must recover");
+        assert_eq!(subscribe_count.load(Ordering::SeqCst), 1);
+        assert_eq!(prepared.generation, TimelineGeneration(8));
+
+        let PreparedRelayRecovery {
+            generation,
+            snapshot,
+            stream,
+        } = prepared;
+        emit_relay_recovery_snapshot(
+            &event_tx,
+            &replay_registry,
+            &projection_service,
+            &actor_generations,
+            &key,
+            actor_generation,
+            generation,
+            snapshot,
+            Vec::new(),
         );
-        assert!(resync < initial, "ResyncRequired must precede InitialItems");
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::ResyncRequired { .. }))
+        ));
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::InitialItems {
+                generation: TimelineGeneration(8),
+                ..
+            }))
+        ));
+
+        let (actor_tx, mut actor_rx) = mpsc::channel(1);
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        run_diff_relay(actor_tx, control_tx, generation, stream).await;
+        let Some(TimelineActorMessage::DiffBatch {
+            generation: batch_generation,
+            diffs,
+        }) = actor_rx.recv().await
+        else {
+            panic!("replacement stream must produce a generation-tagged batch");
+        };
+        let diffs = accepted_relay_batch(generation, batch_generation, diffs)
+            .expect("replacement generation must be accepted")
+            .into_iter()
+            .map(|diff| sdk_vector_diff_to_timeline_diff(diff, &key, None, &HashMap::new()))
+            .collect();
         assert!(
-            initial < restart,
-            "replacement relay starts after InitialItems"
+            emit_items_updated_and_reconcile_replay_known_for_generation(
+                &event_tx,
+                &replay_registry,
+                &projection_service,
+                &actor_generations,
+                &key,
+                actor_generation,
+                generation,
+                TimelineBatchId(0),
+                diffs,
+                &[],
+                &[],
+            )
         );
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                generation: TimelineGeneration(8),
+                diffs,
+                ..
+            })) if matches!(diffs.as_slice(), [TimelineDiff::Clear])
+        ));
+    }
+
+    #[test]
+    fn relay_overflow_stale_generation_is_rejected_without_state_or_event_change() {
+        let next_batch_id = TimelineBatchId(4);
+        let (event_tx, mut event_rx) = broadcast::channel::<CoreEvent>(1);
+        let stale = accepted_relay_batch(
+            TimelineGeneration(8),
+            TimelineGeneration(7),
+            vec![TimelineDiff::Clear],
+        );
+        if stale.is_some() {
+            let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: room_key(),
+                generation: TimelineGeneration(7),
+                batch_id: next_batch_id,
+                diffs: vec![TimelineDiff::Clear],
+            }));
+        }
+        assert!(stale.is_none());
+        assert_eq!(next_batch_id, TimelineBatchId(4));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
     }
 
     #[tokio::test]
