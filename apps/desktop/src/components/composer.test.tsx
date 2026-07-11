@@ -263,6 +263,65 @@ describe("Composer", () => {
     expect(onSend).toHaveBeenCalledWith("intent snapshot");
   });
 
+  it.each([
+    { initial: "", visible: "visible", sendEnabled: true },
+    { initial: "stale local", visible: "", sendEnabled: false }
+  ])("derives main send_enabled from the intent snapshot", async ({ initial, visible, sendEnabled }) => {
+    const resolveComposerKeyAction = vi.fn(async () => "noop" as const);
+    const { container } = render(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        roomName="Room"
+        value={initial}
+        resolveComposerKeyAction={resolveComposerKeyAction}
+        onCancelReply={() => undefined}
+        onSend={vi.fn()}
+        onValueChange={vi.fn()}
+      />
+    );
+    const textarea = container.querySelector("textarea")!;
+    textarea.value = visible;
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 13 });
+    await Promise.resolve();
+
+    expect(resolveComposerKeyAction).toHaveBeenCalledWith(
+      "main",
+      expect.anything(),
+      expect.objectContaining({ send_enabled: sendEnabled })
+    );
+  });
+
+  it.each(["insertNewline", "send"] as const)(
+    "discards deferred %s after the thread composer unmounts",
+    async (resolvedAction) => {
+      let resolveAction!: (action: typeof resolvedAction) => void;
+      const action = new Promise<typeof resolvedAction>((resolve) => {
+        resolveAction = resolve;
+      });
+      const onDraftChange = vi.fn();
+      const onSend = vi.fn();
+      const { unmount } = render(
+        <ThreadComposer
+          canEdit
+          draft="captured"
+          draftKey="!room-a:$root-a"
+          isSending={false}
+          resolveComposerKeyAction={() => action}
+          onDraftChange={onDraftChange}
+          onSend={onSend}
+        />
+      );
+      const textarea = screen.getByRole("textbox", { name: /thread/i }) as HTMLTextAreaElement;
+      fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 13 });
+      unmount();
+      await act(async () => resolveAction(resolvedAction));
+
+      expect(onDraftChange).not.toHaveBeenCalled();
+      expect(onSend).not.toHaveBeenCalled();
+    }
+  );
+
   it("sends the thread value captured when deferred Enter was pressed", async () => {
     let resolveAction!: (action: "send") => void;
     const action = new Promise<"send">((resolve) => {

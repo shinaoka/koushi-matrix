@@ -17,6 +17,13 @@ describe("composition lifecycle", () => {
     vi.useRealTimers();
   });
 
+  it("invalidates the lifecycle generation when disposed", () => {
+    const lifecycle = createCompositionLifecycle();
+    const generation = lifecycle.generation();
+    lifecycle.dispose();
+    expect(lifecycle.generation()).toBeGreaterThan(generation);
+  });
+
   it.each([
     [{ epochActive: true, nativeIsComposing: false, keyCode: 13 }, true],
     [{ epochActive: false, nativeIsComposing: true, keyCode: 13 }, true],

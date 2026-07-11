@@ -5161,6 +5161,9 @@ export function TimelineItemRow({
       void resolveComposerKeyAction("edit", keyEvent, resolverOptions)
         .then((action) => {
           if (action === "send") {
+            if (!intent.isValidForResult()) {
+              return;
+            }
             if (eventId && intent.value.trim()) {
               onEdit(roomId, eventId, intent.value.trim());
               closeEditForm();

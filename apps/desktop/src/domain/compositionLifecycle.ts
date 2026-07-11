@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 
 export interface CompositionLifecycle {
   start(): number;
@@ -50,6 +50,7 @@ export function createCompositionLifecycle(): CompositionLifecycle {
     },
     dispose() {
       cancelDeferredEnd();
+      epoch += 1;
       isActive = false;
     }
   };
@@ -60,32 +61,36 @@ export interface ComposerKeyIntentSnapshot {
   readonly selectionStart: number;
   readonly selectionEnd: number;
   readonly intentGeneration: number;
+  isValidForResult(): boolean;
   isCurrentForMutation(): boolean;
 }
 
 export function useComposerKeyIntentSnapshot(lifecycle: CompositionLifecycle) {
   const intentGenerationRef = useRef(0);
 
-  return (textarea: HTMLTextAreaElement): ComposerKeyIntentSnapshot => {
+  return useCallback((textarea: HTMLTextAreaElement): ComposerKeyIntentSnapshot => {
     intentGenerationRef.current += 1;
     const intentGeneration = intentGenerationRef.current;
     const compositionGeneration = lifecycle.generation();
     const value = textarea.value;
     const selectionStart = textarea.selectionStart;
     const selectionEnd = textarea.selectionEnd;
+    const isValidForResult = () =>
+      intentGenerationRef.current === intentGeneration &&
+      lifecycle.generation() === compositionGeneration;
     return {
       value,
       selectionStart,
       selectionEnd,
       intentGeneration,
+      isValidForResult,
       isCurrentForMutation: () =>
-        intentGenerationRef.current === intentGeneration &&
-        lifecycle.generation() === compositionGeneration &&
+        isValidForResult() &&
         textarea.value === value &&
         textarea.selectionStart === selectionStart &&
         textarea.selectionEnd === selectionEnd
     };
-  };
+  }, [lifecycle]);
 }
 
 export function isComposerImeEnter(

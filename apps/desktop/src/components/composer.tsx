@@ -348,7 +348,7 @@ export const Composer = memo(function Composer({
     });
     const resolverOptions = {
       autocomplete_open: autocompleteOpen,
-      send_enabled: !isSending && (localValue.trim().length > 0 || hasStagedUploads)
+      send_enabled: !isSending && (intent.value.trim().length > 0 || hasStagedUploads)
     };
     if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
       void resolveComposerKeyAction("main", keyEvent, resolverOptions).catch(() => undefined);
@@ -359,6 +359,9 @@ export const Composer = memo(function Composer({
     void resolveComposerKeyAction("main", keyEvent, resolverOptions)
       .then((action) => {
         if (action === "send") {
+          if (!intent.isValidForResult()) {
+            return;
+          }
           void onSend(intent.value);
           return;
         }
@@ -802,6 +805,9 @@ function ThreadComposer({
     void resolveComposerKeyAction("thread", keyEvent, resolverOptions)
       .then((action) => {
         if (action === "send") {
+          if (!intent.isValidForResult()) {
+            return;
+          }
           void onSend(intent.value);
           return;
         }
