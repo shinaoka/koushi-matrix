@@ -6,7 +6,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::composer_shortcuts::FormattedMessageDraft;
-use crate::submission::SubmissionId;
+use crate::submission::{ComposerSubmissionTarget, SubmissionId};
 
 use super::media_download::TimelineMediaDownloadState;
 use super::settings::ImageUploadCompressionMode;
@@ -31,17 +31,57 @@ pub struct TimelinePaneState {
 pub struct ComposerSubmissionRegistry {
     pub accepted_submission_ids: VecDeque<SubmissionId>,
     pub settled_submission_ids: VecDeque<SubmissionId>,
+    #[serde(skip)]
+    pub active_submissions: VecDeque<ComposerSubmissionRecord>,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ComposerSubmissionRecord {
+    pub submission_id: SubmissionId,
+    pub transaction_id: String,
+    pub target: ComposerSubmissionTarget,
+}
+
+impl fmt::Debug for ComposerSubmissionRecord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ComposerSubmissionRecord(..)")
+    }
 }
 
 impl ComposerSubmissionRegistry {
-    pub(crate) fn remember_accepted(&mut self, id: SubmissionId) {
+    pub(crate) fn remember_accepted(
+        &mut self,
+        id: SubmissionId,
+        transaction_id: String,
+        target: ComposerSubmissionTarget,
+    ) {
         if !self.accepted_submission_ids.contains(&id) {
-            self.accepted_submission_ids.push_back(id);
+            self.accepted_submission_ids.push_back(id.clone());
+            self.active_submissions.push_back(ComposerSubmissionRecord {
+                submission_id: id,
+                transaction_id,
+                target,
+            });
         }
+    }
+
+    pub(crate) fn active_matches(
+        &self,
+        id: &SubmissionId,
+        transaction_id: &str,
+        target: &ComposerSubmissionTarget,
+    ) -> bool {
+        self.active_submissions.iter().any(|active| {
+            &active.submission_id == id
+                && active.transaction_id == transaction_id
+                && &active.target == target
+        })
     }
 
     pub(crate) fn remember_settled(&mut self, id: SubmissionId) {
         self.accepted_submission_ids.retain(|active| active != &id);
+        self.active_submissions
+            .retain(|active| active.submission_id != id);
         remember_bounded_id(&mut self.settled_submission_ids, id);
     }
 }

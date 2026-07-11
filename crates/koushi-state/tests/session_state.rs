@@ -923,12 +923,34 @@ fn lock_preserves_global_submission_registry_and_records_terminal() {
         session: SessionState::Ready(session_info()),
         ..AppState::default()
     };
-    state
-        .timeline
-        .submission_registry
-        .accepted_submission_ids
-        .push_back(id.clone());
+    reduce(
+        &mut state,
+        AppAction::ComposerSubmissionAccepted {
+            submission_id: id.clone(),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn".to_owned(),
+            body: "body".to_owned(),
+        },
+    );
     reduce(&mut state, AppAction::SessionLocked);
+    assert!(
+        state
+            .timeline
+            .submission_registry
+            .accepted_submission_ids
+            .contains(&id)
+    );
+    reduce(
+        &mut state,
+        AppAction::ComposerSubmissionSettled {
+            submission_id: id.clone(),
+            transaction_id: "wrong-txn".to_owned(),
+            target: ComposerSubmissionTarget::Main {
+                room_id: "room-a".to_owned(),
+            },
+            outcome: ComposerSubmissionTerminalOutcome::Succeeded,
+        },
+    );
     assert!(
         state
             .timeline

@@ -1207,22 +1207,21 @@ impl TimelineManagerActor {
                 }
             }
         }
-        self.timelines.clear();
-        if let Some(acknowledged) = shutdown_acknowledgement {
-            let _ = acknowledged.send(());
-        }
         let room_keys = self
             .timelines
             .keys()
             .filter(|key| matches!(key.kind, TimelineKind::Room { .. }))
             .cloned()
             .collect::<Vec<_>>();
+        // Drop child handles first so relay/SDK work cannot race cleanup or acknowledgement.
+        self.timelines.clear();
         for key in room_keys {
             self.clear_thread_root_projections_for_room(&key).await;
         }
         self.thread_root_projection_fetches.abort_all();
-        // Drop all timeline handles — this cancels relay tasks and drops SDK handles.
-        self.timelines.clear();
+        if let Some(acknowledged) = shutdown_acknowledgement {
+            let _ = acknowledged.send(());
+        }
     }
 
     async fn handle_thread_root_projection_fetch_start(
@@ -15661,6 +15660,87 @@ mod tests {
             .await
             .expect("shutdown acknowledgement must not hang")
             .expect("timeline manager acknowledges shutdown");
+    }
+
+    #[tokio::test]
+    async fn shutdown_cleans_captured_room_keys_before_acknowledging() {
+        struct DropSignal(Option<oneshot::Sender<()>>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                if let Some(signal) = self.0.take() {
+                    let _ = signal.send(());
+                }
+            }
+        }
+
+        let key = room_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        generations.activate_after_quiescence(&key).await;
+        let (dropped_tx, dropped_rx) = oneshot::channel();
+        let child = executor::spawn(async move {
+            let _signal = DropSignal(Some(dropped_tx));
+            std::future::pending::<()>().await;
+        });
+        let (actor_tx, _actor_rx) = mpsc::channel(1);
+        let (action_tx, mut action_rx) = mpsc::channel(4);
+        let (event_tx, _) = broadcast::channel(4);
+        let (msg_tx, msg_rx) = mpsc::channel(4);
+        let manager = TimelineManagerActor {
+            session: None,
+            room_list_service: None,
+            timelines: HashMap::from([(
+                key.clone(),
+                TimelineActorHandle {
+                    tx: actor_tx,
+                    task: child,
+                    auxiliary_tasks: Vec::new(),
+                },
+            )]),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
+            action_tx,
+            event_tx,
+            msg_tx: msg_tx.clone(),
+            msg_rx,
+            search_index_tx: None,
+            ignored_user_ids: Default::default(),
+            data_dir: None,
+            link_preview_policy: LinkPreviewContext::default(),
+            messages_backpressure: MessagesBackpressure::default(),
+            thread_root_projection_service: Arc::new(Mutex::new(
+                ThreadRootProjectionService::default(),
+            )),
+            thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
+            replay_known_thread_root_projections: Arc::new(Mutex::new(
+                ReplayKnownThreadRootProjectionRegistry::default(),
+            )),
+            timeline_actor_generations: generations.clone(),
+            test_session_available: true,
+        };
+        let run = executor::spawn(async move { manager.run().await });
+        let (ack_tx, ack_rx) = oneshot::channel();
+        msg_tx
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(ack_tx),
+            })
+            .await
+            .expect("shutdown command");
+        ack_rx.await.expect("shutdown acknowledgement");
+        dropped_rx
+            .await
+            .expect("child dropped before acknowledgement");
+        assert!(matches!(
+            action_rx.recv().await,
+            Some(actions) if matches!(actions.as_slice(), [AppAction::ThreadRootProjectionsCleared { room_id }] if room_id == key.room_id())
+        ));
+        assert!(
+            !generations
+                .state
+                .lock()
+                .expect("generation gate")
+                .entries
+                .contains_key(&key)
+        );
+        run.await.expect("manager shutdown");
     }
 
     #[tokio::test]

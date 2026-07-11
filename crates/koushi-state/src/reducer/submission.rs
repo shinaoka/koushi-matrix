@@ -15,10 +15,43 @@ pub(crate) fn handle_settled(
     if !state
         .timeline
         .submission_registry
-        .accepted_submission_ids
-        .contains(&submission_id)
+        .active_matches(&submission_id, &transaction_id, &target)
     {
         return Vec::new();
+    }
+    if is_session_ready(state) {
+        match &target {
+            ComposerSubmissionTarget::Main { room_id }
+                if state.timeline.room_id.as_deref() == Some(room_id.as_str()) =>
+            {
+                if state.timeline.composer.pending_submission_id.as_ref() != Some(&submission_id)
+                    || state.timeline.composer.pending_transaction_id.as_deref()
+                        != Some(transaction_id.as_str())
+                {
+                    return Vec::new();
+                }
+            }
+            ComposerSubmissionTarget::Thread {
+                room_id,
+                root_event_id,
+            } => {
+                if let ThreadPaneState::Open {
+                    room_id: open_room_id,
+                    root_event_id: open_root_event_id,
+                    composer,
+                    ..
+                } = &state.thread
+                    && open_room_id == room_id
+                    && open_root_event_id == root_event_id
+                    && (composer.pending_submission_id.as_ref() != Some(&submission_id)
+                        || composer.pending_transaction_id.as_deref()
+                            != Some(transaction_id.as_str()))
+                {
+                    return Vec::new();
+                }
+            }
+            _ => {}
+        }
     }
     state
         .timeline
@@ -29,11 +62,7 @@ pub(crate) fn handle_settled(
     }
     let changed = match target {
         ComposerSubmissionTarget::Main { room_id } => {
-            if state.timeline.room_id.as_deref() != Some(room_id.as_str())
-                || state.timeline.composer.pending_submission_id.as_ref() != Some(&submission_id)
-                || state.timeline.composer.pending_transaction_id.as_deref()
-                    != Some(transaction_id.as_str())
-            {
+            if state.timeline.room_id.as_deref() != Some(room_id.as_str()) {
                 return Vec::new();
             }
             let pending_kind = state.timeline.composer.pending_send_kind.take();
@@ -68,11 +97,7 @@ pub(crate) fn handle_settled(
             else {
                 return Vec::new();
             };
-            if open_room_id != &room_id
-                || open_root_event_id != &root_event_id
-                || composer.pending_submission_id.as_ref() != Some(&submission_id)
-                || composer.pending_transaction_id.as_deref() != Some(transaction_id.as_str())
-            {
+            if open_room_id != &room_id || open_root_event_id != &root_event_id {
                 return Vec::new();
             }
             composer.pending_submission_id = None;

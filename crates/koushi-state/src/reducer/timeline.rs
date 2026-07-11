@@ -433,10 +433,13 @@ pub(crate) fn handle_composer_submission_accepted(
     if current_session_info(state).is_none() {
         return Vec::new();
     }
-    state
-        .timeline
-        .submission_registry
-        .remember_accepted(submission_id.clone());
+    state.timeline.submission_registry.remember_accepted(
+        submission_id.clone(),
+        transaction_id.clone(),
+        crate::ComposerSubmissionTarget::Main {
+            room_id: room_id.clone(),
+        },
+    );
     if !is_session_ready(state) {
         return Vec::new();
     }

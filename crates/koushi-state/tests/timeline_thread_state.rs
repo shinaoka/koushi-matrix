@@ -415,9 +415,14 @@ fn terminal_submission_requires_matching_id_and_transaction() {
             body: "draft".to_owned(),
         },
     );
-    for (submission_id, transaction_id) in [
-        (SubmissionId::new("stale-submission"), "txn-active"),
-        (active.clone(), "txn-collision"),
+    for (submission_id, transaction_id, room_id) in [
+        (
+            SubmissionId::new("stale-submission"),
+            "txn-active",
+            "room-a",
+        ),
+        (active.clone(), "txn-collision", "room-a"),
+        (active.clone(), "txn-active", "wrong-room"),
     ] {
         assert!(
             reduce(
@@ -426,7 +431,7 @@ fn terminal_submission_requires_matching_id_and_transaction() {
                     submission_id,
                     transaction_id: transaction_id.to_owned(),
                     target: ComposerSubmissionTarget::Main {
-                        room_id: "room-a".to_owned(),
+                        room_id: room_id.to_owned(),
                     },
                     outcome: ComposerSubmissionTerminalOutcome::Succeeded,
                 },
@@ -437,7 +442,34 @@ fn terminal_submission_requires_matching_id_and_transaction() {
             state.timeline.composer.pending_submission_id,
             Some(active.clone())
         );
+        assert!(
+            state
+                .timeline
+                .submission_registry
+                .accepted_submission_ids
+                .contains(&active)
+        );
     }
+    let effects = reduce(
+        &mut state,
+        AppAction::ComposerSubmissionSettled {
+            submission_id: active.clone(),
+            transaction_id: "txn-active".to_owned(),
+            target: ComposerSubmissionTarget::Main {
+                room_id: "room-a".to_owned(),
+            },
+            outcome: ComposerSubmissionTerminalOutcome::Succeeded,
+        },
+    );
+    assert_eq!(effects.len(), 1);
+    assert_eq!(state.timeline.composer.pending_submission_id, None);
+    assert!(
+        !state
+            .timeline
+            .submission_registry
+            .accepted_submission_ids
+            .contains(&active)
+    );
 }
 
 #[test]

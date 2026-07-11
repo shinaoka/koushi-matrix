@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 #[serde(transparent)]
 pub struct SubmissionId(String);
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ComposerSubmissionTarget {
     Main {
         room_id: String,
@@ -15,6 +16,17 @@ pub enum ComposerSubmissionTarget {
         room_id: String,
         root_event_id: String,
     },
+}
+
+impl fmt::Debug for ComposerSubmissionTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Main { .. } => formatter.write_str("Main { room_id: RoomId(..) }"),
+            Self::Thread { .. } => {
+                formatter.write_str("Thread { room_id: RoomId(..), root_event_id: EventId(..) }")
+            }
+        }
+    }
 }
 
 #[derive(Clone, Eq, PartialEq)]

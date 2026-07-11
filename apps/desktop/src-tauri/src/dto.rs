@@ -1601,6 +1601,7 @@ mod tests {
                 settled_submission_ids: [koushi_state::SubmissionId::new("global-settled")]
                     .into_iter()
                     .collect(),
+                active_submissions: Default::default(),
             },
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
