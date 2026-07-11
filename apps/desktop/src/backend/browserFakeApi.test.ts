@@ -70,7 +70,11 @@ describe("BrowserFakeApi settings preview", () => {
     for (let index = 0; index < 129; index += 1) {
       await api.sendText(`bounded-${index}`, roomId, `body-${index}`);
     }
-    const before = (await api.getSnapshot()).timeline.length;
+    const bounded = await api.getSnapshot();
+    const before = bounded.timeline.length;
+    expect(bounded.state.ui.timeline.submission_registry.accepted_submission_ids).toHaveLength(128);
+    expect(bounded.state.ui.timeline.submission_registry.settled_submission_ids).toHaveLength(128);
+    expect(bounded.state.ui.timeline.submission_registry.accepted_submission_ids).not.toContain("bounded-0");
     await api.sendText("bounded-1", roomId, "deduped");
     expect((await api.getSnapshot()).timeline).toHaveLength(before);
     await api.sendText("bounded-0", roomId, "evicted");

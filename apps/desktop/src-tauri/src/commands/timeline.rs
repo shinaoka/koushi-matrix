@@ -71,17 +71,12 @@ async fn wait_for_submission_outcome<S: SubmissionEventSource>(
     if matches!(outcome, SubmissionOutcome::Accepted) {
         loop {
             let snapshot = source.snapshot();
-            let main_accepted = snapshot
+            if snapshot
                 .timeline
-                .composer
+                .submission_registry
                 .accepted_submission_ids
-                .contains(submission_id);
-            let thread_accepted = matches!(
-                &snapshot.thread,
-                koushi_state::ThreadPaneState::Open { composer, .. }
-                    if composer.accepted_submission_ids.contains(submission_id)
-            );
-            if main_accepted || thread_accepted {
+                .contains(submission_id)
+            {
                 break;
             }
             tokio::time::timeout_at(deadline, source.recv_event())
@@ -1092,7 +1087,7 @@ mod submission_settlement_tests {
                 if let Some(accepted_id) = accepted_id {
                     self.state
                         .timeline
-                        .composer
+                        .submission_registry
                         .accepted_submission_ids
                         .push_back(accepted_id);
                 }
@@ -1118,10 +1113,12 @@ mod submission_settlement_tests {
     }
 
     #[tokio::test]
-    async fn ignores_unrelated_events_and_waits_for_reducer_acceptance() {
+    async fn waits_for_global_reducer_acceptance_after_active_room_switch() {
         let expected = SubmissionId::new("expected");
+        let mut switched_state = koushi_state::AppState::default();
+        switched_state.timeline.room_id = Some("!room-b:test".to_owned());
         let mut source = ScriptedSource {
-            state: koushi_state::AppState::default(),
+            state: switched_state,
             events: VecDeque::from([
                 (Ok(accepted(SubmissionId::new("other"), 1)), None),
                 (Ok(accepted(expected.clone(), 2)), None),

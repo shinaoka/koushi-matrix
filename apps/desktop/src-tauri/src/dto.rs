@@ -1594,6 +1594,14 @@ mod tests {
             is_subscribed: true,
             is_paginating_backwards: false,
             composer,
+            submission_registry: koushi_state::ComposerSubmissionRegistry {
+                accepted_submission_ids: [koushi_state::SubmissionId::new("global-accepted")]
+                    .into_iter()
+                    .collect(),
+                settled_submission_ids: [koushi_state::SubmissionId::new("global-settled")]
+                    .into_iter()
+                    .collect(),
+            },
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),

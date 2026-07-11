@@ -17,12 +17,40 @@ pub struct TimelinePaneState {
     pub is_subscribed: bool,
     pub is_paginating_backwards: bool,
     pub composer: ComposerState,
+    #[serde(default)]
+    pub submission_registry: ComposerSubmissionRegistry,
     pub scheduled_send_capability: ScheduledSendCapability,
     pub scheduled_sends: Vec<ScheduledSendItem>,
     pub staged_uploads: Vec<StagedUploadItem>,
     pub media_gallery: Vec<TimelineMediaGalleryItem>,
     #[serde(default)]
     pub media_downloads: std::collections::BTreeMap<String, TimelineMediaDownloadState>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ComposerSubmissionRegistry {
+    pub accepted_submission_ids: VecDeque<SubmissionId>,
+    pub settled_submission_ids: VecDeque<SubmissionId>,
+}
+
+impl ComposerSubmissionRegistry {
+    pub(crate) fn remember_accepted(&mut self, id: SubmissionId) {
+        remember_bounded_id(&mut self.accepted_submission_ids, id);
+    }
+
+    pub(crate) fn remember_settled(&mut self, id: SubmissionId) {
+        remember_bounded_id(&mut self.settled_submission_ids, id);
+    }
+}
+
+fn remember_bounded_id(ids: &mut VecDeque<SubmissionId>, id: SubmissionId) {
+    if ids.contains(&id) {
+        return;
+    }
+    while ids.len() >= MAX_ACCEPTED_SUBMISSION_TOMBSTONES {
+        ids.pop_front();
+    }
+    ids.push_back(id);
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]

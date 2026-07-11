@@ -15,6 +15,10 @@ pub(crate) fn handle_settled(
     if !is_session_ready(state) {
         return Vec::new();
     }
+    state
+        .timeline
+        .submission_registry
+        .remember_settled(submission_id.clone());
     let changed = match target {
         ComposerSubmissionTarget::Main { room_id } => {
             if state.timeline.room_id.as_deref() != Some(room_id.as_str())

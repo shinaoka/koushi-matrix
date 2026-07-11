@@ -308,6 +308,7 @@ function snapshotForPanelMode(
           is_subscribed: false,
           is_paginating_backwards: false,
           composer: { accepted_submission_ids: [], pending_transaction_id: null, draft: "", mode: "Plain" },
+          submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] },
           scheduled_send_capability: "unknown",
           scheduled_sends: [],
           staged_uploads: [],

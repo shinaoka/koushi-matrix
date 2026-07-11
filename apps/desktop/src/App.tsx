@@ -25,30 +25,23 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import { createDesktopApi } from "./backend/client";
 import {
   classifySubmissionFailure,
-  createComposerSubmissionController,
+  createComposerSubmissionControllerRegistry,
   createSubmissionId,
-  type ComposerSubmissionController
+  mainSubmissionTarget,
+  threadSubmissionTarget,
+  type ComposerSubmissionControllerRegistry
 } from "./domain/composerSubmission";
-import type { ComposerState } from "./domain/types";
+import type { TimelinePaneState } from "./domain/types";
 import { setActiveLocaleProfile, t } from "./i18n/messages";
 
 export function reconcileComposerSubmissionSnapshot(
-  controller: ComposerSubmissionController,
-  composer: ComposerState
+  registry: ComposerSubmissionControllerRegistry,
+  timeline: TimelinePaneState
 ): void {
-  const submissionId = controller.active();
-  if (!submissionId) return;
-  controller.observeSnapshot(
-    submissionId,
-    composer.accepted_submission_ids,
-    composer.pending_submission_id
+  registry.reconcile(
+    timeline.submission_registry.accepted_submission_ids,
+    timeline.submission_registry.settled_submission_ids
   );
-  if (
-    composer.pending_transaction_id === null &&
-    composer.pending_submission_id !== submissionId
-  ) {
-    controller.releaseTerminal(submissionId);
-  }
 }
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
 import {
@@ -1127,13 +1120,9 @@ export function App() {
   const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
   const [localThreadComposerDrafts, setLocalThreadComposerDrafts] = useState<Record<string, string>>({});
   const stagedUploadFilesRef = useRef<Map<string, File>>(new Map());
-  const composerSubmissionRef = useRef<ComposerSubmissionController | null>(null);
-  const threadSubmissionRef = useRef<ComposerSubmissionController | null>(null);
-  if (composerSubmissionRef.current === null) {
-    composerSubmissionRef.current = createComposerSubmissionController();
-  }
-  if (threadSubmissionRef.current === null) {
-    threadSubmissionRef.current = createComposerSubmissionController();
+  const submissionRegistryRef = useRef<ComposerSubmissionControllerRegistry | null>(null);
+  if (submissionRegistryRef.current === null) {
+    submissionRegistryRef.current = createComposerSubmissionControllerRegistry();
   }
   const [imageCompressionDialog, setImageCompressionDialog] =
     useState<ImageCompressionDialogState | null>(null);
@@ -1416,13 +1405,6 @@ export function App() {
       void tauriTimelineTransport.downloadAvatarThumbnail(mxcUri).catch(() => {
         requestedAvatarMxcsRef.current.delete(mxcUri);
       });
-    }
-  }, [snapshot]);
-
-  useEffect(() => {
-    const thread = snapshot?.state.ui.thread;
-    if (threadSubmissionRef.current && thread?.kind === "open" && thread.composer) {
-      reconcileComposerSubmissionSnapshot(threadSubmissionRef.current, thread.composer);
     }
   }, [snapshot]);
 
@@ -2764,19 +2746,20 @@ export function App() {
     // Reply semantics are Rust-owned: dispatch sendReply when the composer is
     // in reply mode, otherwise plain sendText.
     const composerMode = snapshot?.state.ui.timeline.composer.mode ?? "Plain";
-    const submissionId = composerSubmissionRef.current!.begin();
+    const submissionController = submissionRegistryRef.current!.forTarget(mainSubmissionTarget(roomId));
+    const submissionId = submissionController.begin();
     if (submissionId === null) {
       return;
     }
 
     const mentions = pruneMentionIntentForDraft(composerMentions, body);
-    composerSubmissionRef.current!.capture(submissionId, {
+    submissionController.capture(submissionId, {
       roomId,
       body,
       mentions,
       composerMode
     });
-    const captured = composerSubmissionRef.current!.payload<{
+    const captured = submissionController.payload<{
       roomId: string;
       body: string;
       mentions: MentionIntent;
@@ -2807,11 +2790,11 @@ export function App() {
               captured.mentions
             );
       if (nextSnapshot.submissionId !== submissionId || nextSnapshot.outcome !== "accepted") {
-        composerSubmissionRef.current!.reject(submissionId);
+        submissionController.reject(submissionId);
         setSnapshot(nextSnapshot.snapshot);
         return;
       }
-      composerSubmissionRef.current!.accept(submissionId);
+      submissionController.accept(submissionId);
       cancelComposerDraftPersist();
       clearLocalComposerDraft(roomId);
       setSnapshot(nextSnapshot.snapshot);
@@ -2828,9 +2811,9 @@ export function App() {
     } catch (error) {
       const disposition = classifySubmissionFailure(error);
       if (disposition.kind === "unknown") {
-        composerSubmissionRef.current!.markUnknown(submissionId, disposition.reason);
+        submissionController.markUnknown(submissionId, disposition.reason);
       } else {
-        composerSubmissionRef.current!.reject(submissionId);
+        submissionController.reject(submissionId);
       }
       qaSendPending.current = false;
       setQaSendStatus("failed");
@@ -2840,10 +2823,10 @@ export function App() {
   }
 
   useEffect(() => {
-    if (composerSubmissionRef.current && snapshot) {
+    if (submissionRegistryRef.current && snapshot) {
       reconcileComposerSubmissionSnapshot(
-        composerSubmissionRef.current,
-        snapshot.state.ui.timeline.composer
+        submissionRegistryRef.current,
+        snapshot.state.ui.timeline
       );
     }
   }, [snapshot]);
@@ -3153,12 +3136,15 @@ export function App() {
   }
 
   async function sendThreadReply(roomId: string, rootEventId: string, body: string) {
-    const submissionId = threadSubmissionRef.current!.begin();
+    const submissionController = submissionRegistryRef.current!.forTarget(
+      threadSubmissionTarget(roomId, rootEventId)
+    );
+    const submissionId = submissionController.begin();
     if (submissionId === null) {
       return;
     }
-    threadSubmissionRef.current!.capture(submissionId, { roomId, rootEventId, body });
-    const captured = threadSubmissionRef.current!.payload<{
+    submissionController.capture(submissionId, { roomId, rootEventId, body });
+    const captured = submissionController.payload<{
       roomId: string;
       rootEventId: string;
       body: string;
@@ -3174,18 +3160,18 @@ export function App() {
     } catch (error) {
       const disposition = classifySubmissionFailure(error);
       if (disposition.kind === "unknown") {
-        threadSubmissionRef.current!.markUnknown(submissionId, disposition.reason);
+        submissionController.markUnknown(submissionId, disposition.reason);
       } else {
-        threadSubmissionRef.current!.reject(submissionId);
+        submissionController.reject(submissionId);
       }
       return;
     }
     if (response.submissionId !== submissionId || response.outcome !== "accepted") {
-      threadSubmissionRef.current!.reject(submissionId);
+      submissionController.reject(submissionId);
       setSnapshot(response.snapshot);
       return;
     }
-    threadSubmissionRef.current!.accept(submissionId);
+    submissionController.accept(submissionId);
     cancelThreadComposerDraftPersist(roomId, rootEventId);
     clearLocalThreadComposerDraft(roomId, rootEventId);
     setSnapshot(response.snapshot);

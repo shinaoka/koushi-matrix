@@ -47,6 +47,7 @@ fn ready_selected_room_state() -> AppState {
                 },
                 ..ComposerState::default()
             },
+            submission_registry: Default::default(),
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),

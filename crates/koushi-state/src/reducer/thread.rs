@@ -14,6 +14,10 @@ pub(crate) fn handle_thread_submission_accepted(
     root_event_id: String,
     transaction_id: String,
 ) -> Vec<AppEffect> {
+    state
+        .timeline
+        .submission_registry
+        .remember_accepted(submission_id.clone());
     let ThreadPaneState::Open { composer, .. } = &mut state.thread else {
         return Vec::new();
     };

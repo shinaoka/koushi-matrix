@@ -455,6 +455,15 @@ stateDiagram-v2
   ID plus the original target/payload and retries only on explicit user action
   with those exact captured values. Later accepted/terminal observation may
   settle the guard without a retry.
+- Acceptance and settlement tombstones live in one Rust-owned global timeline
+  submission registry, independent of the selected room or open thread. Both
+  lists are bounded to 128 opaque IDs and are serialized in snapshots. Tauri
+  confirms acceptance from this registry, so room navigation cannot hide an
+  admitted submission. Frontend submission controllers are keyed by stable
+  main-room or thread-room/root targets; navigation to another target creates a
+  distinct controller while the original Unknown submission remains retryable
+  only from its original target. Every snapshot reconciles all controllers
+  against the global accepted and settled lists.
 - The timeline actor carries the submission ID beside the client transaction
   through its send-completion tracker. Success, failure, and cancellation emit
   one `ComposerSubmissionSettled` action containing both values and the main or

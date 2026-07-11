@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { classifySubmissionFailure, createComposerSubmissionController } from "./composerSubmission";
+import {
+  classifySubmissionFailure,
+  createComposerSubmissionController,
+  createComposerSubmissionControllerRegistry,
+  mainSubmissionTarget,
+  threadSubmissionTarget
+} from "./composerSubmission";
 
 describe("composer submission controller", () => {
   it("admits one submission synchronously", () => {
@@ -101,5 +107,51 @@ describe("composer submission controller", () => {
     controller.capture(next, { body: "current draft" });
     expect(next).toBe("submission-2");
     expect(controller.payload<{ body: string }>(next)?.body).toBe("current draft");
+  });
+
+  it("scopes unknown main submissions across room navigation", () => {
+    const ids = ["room-a-1", "room-b-1", "room-a-2"];
+    const registry = createComposerSubmissionControllerRegistry(
+      () => createComposerSubmissionController(() => ids.shift()!)
+    );
+    const roomA = registry.forTarget(mainSubmissionTarget("room-a"));
+    const a1 = roomA.begin()!;
+    roomA.capture(a1, { roomId: "room-a", body: "A original" });
+    roomA.markUnknown(a1, "timeout");
+    const roomB = registry.forTarget(mainSubmissionTarget("room-b"));
+    const b1 = roomB.begin()!;
+    roomB.capture(b1, { roomId: "room-b", body: "B current" });
+    expect(b1).toBe("room-b-1");
+    expect(roomB.payload<{ roomId: string }>(b1)?.roomId).toBe("room-b");
+    registry.reconcile([a1], [a1]);
+    const returnedA = registry.forTarget(mainSubmissionTarget("room-a"));
+    expect(returnedA.begin()).toBe("room-a-2");
+  });
+
+  it("scopes unknown thread submissions by room and root", () => {
+    const ids = ["thread-a", "thread-b"];
+    const registry = createComposerSubmissionControllerRegistry(
+      () => createComposerSubmissionController(() => ids.shift()!)
+    );
+    const a = registry.forTarget(threadSubmissionTarget("room", "root-a"));
+    const aId = a.begin()!;
+    a.markUnknown(aId, "timeout");
+    const b = registry.forTarget(threadSubmissionTarget("room", "root-b"));
+    expect(b.begin()).toBe("thread-b");
+    expect(a.begin()).toBe(aId);
+  });
+
+  it("does not release an active unknown controller when unrelated tombstones evict", () => {
+    const registry = createComposerSubmissionControllerRegistry(
+      () => createComposerSubmissionController(() => "active-unknown")
+    );
+    const controller = registry.forTarget(mainSubmissionTarget("room-a"));
+    const id = controller.begin()!;
+    controller.markUnknown(id, "timeout");
+    registry.reconcile(
+      Array.from({ length: 128 }, (_, index) => `accepted-${index}`),
+      Array.from({ length: 128 }, (_, index) => `settled-${index}`)
+    );
+    expect(controller.begin()).toBe(id);
   });
 });

@@ -3,7 +3,11 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
 
 import { createBrowserFakeApi } from "./backend/browserFakeApi";
-import { createComposerSubmissionController } from "./domain/composerSubmission";
+import {
+  createComposerSubmissionController,
+  createComposerSubmissionControllerRegistry,
+  mainSubmissionTarget
+} from "./domain/composerSubmission";
 import { MessageSourceDialog, TimelineItemRow } from "./components/TimelineView";
 import type { TimelineItem } from "./domain/coreEvents";
 import type { DesktopSnapshot } from "./domain/types";
@@ -16,21 +20,24 @@ describe("ContextualRightPanel", () => {
     vi.stubGlobal("window", { location: { search: "" } });
     const { reconcileComposerSubmissionSnapshot } = await import("./App");
     const ids = ["submission-1", "submission-2"];
-    const controller = createComposerSubmissionController(() => ids.shift()!);
+    const registry = createComposerSubmissionControllerRegistry(
+      () => createComposerSubmissionController(() => ids.shift()!)
+    );
+    const controller = registry.forTarget(mainSubmissionTarget("room-a"));
     const first = controller.begin()!;
     controller.capture(first, { body: "original" });
     controller.markUnknown(first, "timeout");
-    reconcileComposerSubmissionSnapshot(controller, {
+    const snapshot = await createBrowserFakeApi().getSnapshot();
+    snapshot.state.ui.timeline.submission_registry = {
       accepted_submission_ids: [first],
-      pending_submission_id: null,
-      pending_transaction_id: null,
-      draft: "current draft",
-      mode: "Plain"
-    });
-    const next = controller.begin()!;
-    controller.capture(next, { body: "current draft" });
+      settled_submission_ids: [first]
+    };
+    reconcileComposerSubmissionSnapshot(registry, snapshot.state.ui.timeline);
+    const nextController = registry.forTarget(mainSubmissionTarget("room-a"));
+    const next = nextController.begin()!;
+    nextController.capture(next, { body: "current draft" });
     expect(next).toBe("submission-2");
-    expect(controller.payload<{ body: string }>(next)?.body).toBe("current draft");
+    expect(nextController.payload<{ body: string }>(next)?.body).toBe("current draft");
   });
   const trustPanelHandlers = {
     onAcceptVerification: () => undefined,

@@ -158,6 +158,7 @@ pub(crate) fn handle_room_list_updated(
                 is_subscribed: false,
                 is_paginating_backwards: false,
                 composer: state.composer_drafts.composer_for_room(&room_id),
+                submission_registry: state.timeline.submission_registry.clone(),
                 scheduled_send_capability: state.scheduled_sends.capability.clone(),
                 scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
                 staged_uploads: state.upload_staging.items_for_room(&room_id),

@@ -257,6 +257,7 @@ function defaultSnapshotResponse() {
           draft: "",
           mode: "Plain"
         },
+        submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] },
         scheduled_send_capability: "unknown",
         scheduled_sends: [],
         staged_uploads: [],

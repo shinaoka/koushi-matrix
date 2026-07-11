@@ -290,6 +290,7 @@ fn timeline_pane_snapshot_contains_only_selected_room_scheduled_sends() {
         is_subscribed: true,
         is_paginating_backwards: false,
         composer: ComposerState::default(),
+        submission_registry: Default::default(),
         scheduled_send_capability: ScheduledSendCapability::Unknown,
         scheduled_sends: state.timeline.scheduled_sends.clone(),
         staged_uploads: Vec::new(),

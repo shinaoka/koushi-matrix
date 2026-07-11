@@ -46,8 +46,10 @@ pub(crate) fn handle_timeline_back_pagination_requested(
     state: &mut AppState,
     room_id: String,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state)
-        || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    if state.timeline.room_id.as_deref() != Some(room_id.as_str())
         || state.timeline.is_paginating_backwards
     {
         return Vec::new();
@@ -66,8 +68,10 @@ pub(crate) fn handle_timeline_back_pagination_finished(
     state: &mut AppState,
     room_id: String,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state)
-        || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    if state.timeline.room_id.as_deref() != Some(room_id.as_str())
         || !state.timeline.is_paginating_backwards
     {
         return Vec::new();
@@ -426,8 +430,14 @@ pub(crate) fn handle_composer_submission_accepted(
     transaction_id: String,
     body: String,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state)
-        || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    state
+        .timeline
+        .submission_registry
+        .remember_accepted(submission_id.clone());
+    if state.timeline.room_id.as_deref() != Some(room_id.as_str())
         || state.timeline.composer.pending_submission_id.is_some()
         || state.timeline.composer.pending_transaction_id.is_some()
         || state

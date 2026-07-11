@@ -289,6 +289,10 @@ class BrowserFakeApi implements DesktopApi {
       this.submissionLedger.delete(oldest);
     }
     this.submissionLedger.set(submissionId, transactionId);
+    this.rememberSubmissionRegistryId(
+      this.snapshot.state.ui.timeline.submission_registry.accepted_submission_ids,
+      submissionId
+    );
     composer.accepted_submission_ids = [
       ...(composer.accepted_submission_ids ?? []).filter((id) => id !== submissionId),
       submissionId
@@ -299,8 +303,21 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   private terminalSubmission(composer: ComposerState): void {
+    const submissionId = composer.pending_submission_id;
     composer.pending_submission_id = null;
     composer.pending_transaction_id = null;
+    if (submissionId) {
+      this.rememberSubmissionRegistryId(
+        this.snapshot.state.ui.timeline.submission_registry.settled_submission_ids,
+        submissionId
+      );
+    }
+  }
+
+  private rememberSubmissionRegistryId(ids: string[], id: string): void {
+    if (ids.includes(id)) return;
+    while (ids.length >= 128) ids.shift();
+    ids.push(id);
   }
 
   constructor(options: BrowserFakeApiOptions) {
@@ -2923,6 +2940,7 @@ class BrowserFakeApi implements DesktopApi {
         draft: "",
         mode: "Plain"
       },
+      submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] },
       scheduled_send_capability: this.snapshot.state.ui.timeline.scheduled_send_capability,
       scheduled_sends: [],
       staged_uploads: [],
@@ -3006,6 +3024,7 @@ class BrowserFakeApi implements DesktopApi {
         draft: "",
         mode: "Plain"
       },
+      submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] },
       scheduled_send_capability: "unknown",
       scheduled_sends: [],
         staged_uploads: [],
@@ -3189,6 +3208,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
             draft: "",
             mode: "Plain"
           },
+          submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] },
           scheduled_send_capability: "unknown",
           scheduled_sends: [],
           staged_uploads: [],
@@ -3311,6 +3331,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
             draft: "",
             mode: "Plain"
           },
+          submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] },
           scheduled_send_capability: "unknown",
           scheduled_sends: [],
           staged_uploads: [],

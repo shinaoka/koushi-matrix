@@ -64,6 +64,12 @@ automatically. Explicit `SubmissionRejected` is the only safe pre-acceptance
 release. Browser fakes implement the same accepted/replay/terminal ledger for
 main sends, replies, and thread replies.
 
+Accepted and settled IDs are also projected into a bounded Rust-owned global
+submission registry that survives selected-room and thread navigation. Tauri
+and the frontend reconcile against that registry rather than the visible
+composer. Frontend guards are keyed by main room or thread room/root, so an
+Unknown send from one target can never be retried with another target's draft.
+
 Diagnostics expose only generation/epoch/request tokens, fixed outcomes,
 counts, and durations. They never expose message bodies or Matrix identifiers.
 

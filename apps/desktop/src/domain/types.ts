@@ -968,11 +968,17 @@ export interface TimelinePaneState {
   is_subscribed: boolean;
   is_paginating_backwards: boolean;
   composer: ComposerState;
+  submission_registry: ComposerSubmissionRegistry;
   scheduled_send_capability: ScheduledSendCapability;
   scheduled_sends: ScheduledSendItem[];
   staged_uploads: StagedUploadItem[];
   media_gallery: TimelineMediaGalleryItem[];
   media_downloads: Record<string, TimelineMediaDownloadState>;
+}
+
+export interface ComposerSubmissionRegistry {
+  accepted_submission_ids: string[];
+  settled_submission_ids: string[];
 }
 
 export type ScheduledSendCapability = "unknown" | "serverDelayedEvents" | "localFallback";

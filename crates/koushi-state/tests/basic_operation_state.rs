@@ -35,6 +35,7 @@ fn ready_state() -> AppState {
             is_subscribed: true,
             is_paginating_backwards: false,
             composer: ComposerState::default(),
+            submission_registry: Default::default(),
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),
