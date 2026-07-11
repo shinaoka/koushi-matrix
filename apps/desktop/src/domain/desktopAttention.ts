@@ -47,7 +47,7 @@ export interface DesktopAttentionTransientLike {
   playAttentionSound?(): Promise<NativeAttentionSoundOutcome>;
   requestUserAttention?(requestType: typeof DESKTOP_ATTENTION_REQUEST_TYPE): Promise<void>;
 }
-export type NativeAttentionSoundOutcome = "played" | "unsupported" | "failed";
+export type NativeAttentionSoundOutcome = "played" | "unsupported" | "failed" | "skipped";
 
 export type DesktopAttentionTransientPolicy = Pick<NotificationSettings, "sound">;
 

@@ -351,6 +351,7 @@ pub enum NativeAttentionSoundOutcome {
     Played,
     Unsupported,
     Failed,
+    Skipped,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

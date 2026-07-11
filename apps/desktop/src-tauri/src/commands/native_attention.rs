@@ -2,10 +2,11 @@ use super::*;
 use koushi_state::{NativeAttentionDispatchId, NativeAttentionSoundOutcome};
 
 trait NativeAttentionSoundBackend {
-    fn play(&self) -> NativeAttentionSoundOutcome;
+    async fn play(&self) -> NativeAttentionSoundOutcome;
 }
 
 struct PlatformNativeAttentionSoundBackend;
+static NATIVE_ATTENTION_SOUND_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tauri::command]
 pub(crate) async fn play_native_attention_sound(
@@ -25,7 +26,21 @@ async fn dispatch_native_attention_sound(
     NativeAttentionSoundOutcome,
     Option<NativeAttentionDispatchId>,
 ) {
-    let connection = runtime.attach();
+    dispatch_native_attention_sound_with_lock(runtime, backend, &NATIVE_ATTENTION_SOUND_LOCK).await
+}
+
+async fn dispatch_native_attention_sound_with_lock(
+    runtime: &koushi_core::CoreRuntime,
+    backend: &impl NativeAttentionSoundBackend,
+    lock: &tokio::sync::Mutex<()>,
+) -> (
+    NativeAttentionSoundOutcome,
+    Option<NativeAttentionDispatchId>,
+) {
+    let Ok(_guard) = lock.try_lock() else {
+        return (NativeAttentionSoundOutcome::Skipped, None);
+    };
+    let mut connection = runtime.attach();
     let start_request = connection.next_request_id();
     let dispatch_id =
         NativeAttentionDispatchId::new(start_request.connection_id.0, start_request.sequence);
@@ -39,7 +54,28 @@ async fn dispatch_native_attention_sound(
     {
         return (NativeAttentionSoundOutcome::Failed, None);
     }
-    let outcome = backend.play();
+    let admitted = koushi_core::executor::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if let CoreEvent::NativeAttention(
+                koushi_core::NativeAttentionEvent::DispatchAdmission {
+                    dispatch_id: observed,
+                    accepted,
+                },
+            ) = connection.recv_event().await.ok()?
+                && observed == dispatch_id
+            {
+                return Some(accepted);
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(false);
+    if !admitted {
+        return (NativeAttentionSoundOutcome::Skipped, Some(dispatch_id));
+    }
+    let outcome = backend.play().await;
     let settle_request = connection.next_request_id();
     let _ = connection
         .command(CoreCommand::App(
@@ -55,7 +91,7 @@ async fn dispatch_native_attention_sound(
 
 #[cfg(target_os = "macos")]
 impl NativeAttentionSoundBackend for PlatformNativeAttentionSoundBackend {
-    fn play(&self) -> NativeAttentionSoundOutcome {
+    async fn play(&self) -> NativeAttentionSoundOutcome {
         #[link(name = "AudioToolbox", kind = "framework")]
         unsafe extern "C" {
             fn AudioServicesPlaySystemSound(sound_id: u32);
@@ -68,7 +104,7 @@ impl NativeAttentionSoundBackend for PlatformNativeAttentionSoundBackend {
 
 #[cfg(target_os = "windows")]
 impl NativeAttentionSoundBackend for PlatformNativeAttentionSoundBackend {
-    fn play(&self) -> NativeAttentionSoundOutcome {
+    async fn play(&self) -> NativeAttentionSoundOutcome {
         #[link(name = "user32")]
         unsafe extern "system" {
             fn MessageBeep(kind: u32) -> i32;
@@ -83,7 +119,7 @@ impl NativeAttentionSoundBackend for PlatformNativeAttentionSoundBackend {
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 impl NativeAttentionSoundBackend for PlatformNativeAttentionSoundBackend {
-    fn play(&self) -> NativeAttentionSoundOutcome {
+    async fn play(&self) -> NativeAttentionSoundOutcome {
         NativeAttentionSoundOutcome::Unsupported
     }
 }
@@ -97,27 +133,44 @@ mod tests {
         NativeAttentionState, NativeAttentionSummary, RoomAttentionKind,
     };
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
+    use tokio::sync::Notify;
 
     struct FakeBackend {
         calls: Cell<u32>,
         outcome: NativeAttentionSoundOutcome,
     }
 
+    struct ControlledBackend {
+        calls: AtomicU32,
+        entered: Notify,
+        release: Notify,
+    }
+
+    impl NativeAttentionSoundBackend for ControlledBackend {
+        async fn play(&self) -> NativeAttentionSoundOutcome {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.entered.notify_one();
+            self.release.notified().await;
+            NativeAttentionSoundOutcome::Played
+        }
+    }
+
     impl NativeAttentionSoundBackend for FakeBackend {
-        fn play(&self) -> NativeAttentionSoundOutcome {
+        async fn play(&self) -> NativeAttentionSoundOutcome {
             self.calls.set(self.calls.get() + 1);
             self.outcome
         }
     }
 
-    #[test]
-    fn available_backend_is_invoked_once_and_returns_typed_outcome() {
+    #[tokio::test]
+    async fn available_backend_is_invoked_once_and_returns_typed_outcome() {
         let backend = FakeBackend {
             calls: Cell::new(0),
             outcome: NativeAttentionSoundOutcome::Played,
         };
-        assert_eq!(backend.play(), NativeAttentionSoundOutcome::Played);
+        assert_eq!(backend.play().await, NativeAttentionSoundOutcome::Played);
         assert_eq!(backend.calls.get(), 1);
     }
 
@@ -134,10 +187,10 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[test]
-    fn actual_linux_platform_adapter_is_explicitly_unsupported() {
+    #[tokio::test]
+    async fn actual_linux_platform_adapter_is_explicitly_unsupported() {
         assert_eq!(
-            PlatformNativeAttentionSoundBackend.play(),
+            PlatformNativeAttentionSoundBackend.play().await,
             NativeAttentionSoundOutcome::Unsupported
         );
     }
@@ -200,5 +253,51 @@ mod tests {
             NativeAttentionDispatchState::Delivered { dispatch_id }
         );
         assert_eq!(backend.calls.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_command_helpers_admit_only_one_native_backend_call() {
+        let runtime = CoreRuntime::start();
+        let seeder = runtime.attach();
+        let request_id = seeder.next_request_id();
+        seeder
+            .command(CoreCommand::App(AppCommand::UpdateNativeAttentionState {
+                request_id,
+                attention: NativeAttentionState {
+                    summary: NativeAttentionSummary {
+                        unread_count: 1,
+                        highlight_count: 0,
+                        badge_count: 1,
+                        candidate: Some(NativeAttentionCandidate {
+                            room_display_name: "Room".to_owned(),
+                            kind: RoomAttentionKind::Message,
+                            unread_count: 1,
+                            highlight_count: 0,
+                        }),
+                        capabilities: NativeAttentionCapabilities::default(),
+                    },
+                    dispatch: NativeAttentionDispatchState::Idle,
+                },
+            }))
+            .await
+            .expect("seed candidate");
+        let backend = ControlledBackend {
+            calls: AtomicU32::new(0),
+            entered: Notify::new(),
+            release: Notify::new(),
+        };
+
+        let lock = tokio::sync::Mutex::new(());
+        let first = dispatch_native_attention_sound_with_lock(&runtime, &backend, &lock);
+        let second = dispatch_native_attention_sound_with_lock(&runtime, &backend, &lock);
+        let release = async {
+            backend.entered.notified().await;
+            backend.release.notify_one();
+        };
+        let (first, second, ()) = tokio::join!(first, second, release);
+
+        assert_eq!(first.0, NativeAttentionSoundOutcome::Played);
+        assert_eq!(second, (NativeAttentionSoundOutcome::Skipped, None));
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
     }
 }

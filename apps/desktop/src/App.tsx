@@ -403,7 +403,7 @@ const tauriNotificationTransport = isTauriRuntime()
   : null;
 const tauriAttentionTransientTransport = isTauriRuntime()
   ? createTauriDesktopAttentionTransientTransport(() =>
-      invoke<"played" | "unsupported" | "failed">("play_native_attention_sound")
+        invoke<"played" | "unsupported" | "failed" | "skipped">("play_native_attention_sound")
     )
   : null;
 const desktopAttentionTransientDispatcher = createDesktopAttentionTransientDispatcher();

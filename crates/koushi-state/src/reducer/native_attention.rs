@@ -10,6 +10,13 @@ pub(crate) fn handle_dispatch_started(
     if state.native_attention.summary.candidate.is_none() {
         return Vec::new();
     }
+    if matches!(
+        state.native_attention.dispatch,
+        crate::state::NativeAttentionDispatchState::Dispatching { .. }
+            | crate::state::NativeAttentionDispatchState::Suppressed { .. }
+    ) {
+        return Vec::new();
+    }
     state.native_attention.dispatch =
         crate::state::NativeAttentionDispatchState::Dispatching { dispatch_id };
     vec![AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged)]
@@ -38,6 +45,7 @@ pub(crate) fn handle_dispatch_settled(
                 kind: crate::state::OperationFailureKind::Sdk,
             }
         }
+        crate::state::NativeAttentionSoundOutcome::Skipped => return Vec::new(),
     };
     vec![AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged)]
 }
@@ -49,6 +57,7 @@ pub(crate) fn handle_native_attention_updated(
     if !state.settings.values.notifications.badges {
         attention.summary.badge_count = 0;
     }
+    attention.dispatch = state.native_attention.dispatch.clone();
     if state.native_attention == attention {
         return Vec::new();
     }

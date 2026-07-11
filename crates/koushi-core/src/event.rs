@@ -7,10 +7,10 @@ use koushi_state::{
     ActivityStream, ActivityTab, AppState, AttachmentResult, AvatarImage, AvatarThumbnailState,
     CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, IdentityResetState,
     InviteDestinationResult, JapaneseCatalogProfile, KeyBackupStatus, LocalEncryptionHealth,
-    MediaTransferProgress, NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind,
-    ProfileState, ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind,
-    SessionState, SubmissionId, SyncMode, ThreadsListItem, VerificationFlowState,
-    resolve_user_display_name,
+    MediaTransferProgress, NativeAttentionDispatchId, NativeAttentionSummary, OperationFailureKind,
+    PinnedEvent, PresenceKind, ProfileState, ReplyQuote, RoomModerationAction,
+    RoomSettingsSnapshot, RoomTagKind, SessionState, SubmissionId, SyncMode, ThreadsListItem,
+    VerificationFlowState, resolve_user_display_name,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -210,7 +210,13 @@ pub enum EventCacheFailureReasonClass {
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum NativeAttentionEvent {
-    SummaryUpdated { summary: NativeAttentionSummary },
+    SummaryUpdated {
+        summary: NativeAttentionSummary,
+    },
+    DispatchAdmission {
+        dispatch_id: NativeAttentionDispatchId,
+        accepted: bool,
+    },
 }
 
 impl fmt::Debug for NativeAttentionEvent {
@@ -225,6 +231,11 @@ impl fmt::Debug for NativeAttentionEvent {
                     "candidate",
                     &summary.candidate.as_ref().map(|_| "AttentionCandidate(..)"),
                 )
+                .finish(),
+            Self::DispatchAdmission { accepted, .. } => formatter
+                .debug_struct("DispatchAdmission")
+                .field("dispatch_id", &"NativeAttentionDispatchId(..)")
+                .field("accepted", accepted)
                 .finish(),
         }
     }

@@ -2230,7 +2230,11 @@ stateDiagram-v2
 - Native sound dispatch starts and settles through typed core commands and the
   Rust reducer. Its opaque dispatch identity contains both runtime connection
   identity and sequence, preventing separately attached Tauri commands from
-  colliding at the same sequence. Completions are request-correlated; stale results are ignored,
+  colliding at the same sequence. Tauri waits for a typed matching Rust
+  admission before invoking the native backend; an already-dispatching request
+  is rejected and skipped. A process-local adapter lock is secondary protection.
+  Attention projection updates replace summary/candidate/capabilities while
+  preserving an active dispatch lifecycle. Completions are request-correlated; stale results are ignored,
   `Played` settles as delivered, and adapter failures settle as
   private-data-free `Failed(kind)` or `Unsupported` states that can be cleared
   by read/focus transitions. React diagnostics are secondary observability and
