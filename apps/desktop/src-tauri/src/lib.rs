@@ -3146,6 +3146,8 @@ mod tests {
             "timelineReplyQuoteInitialItems",
             "timelineResyncRequired",
             "timelineSendStateInitialItems",
+            "timelineSubmissionAccepted",
+            "timelineSubmissionRejected",
         ]
         .iter()
         .copied()

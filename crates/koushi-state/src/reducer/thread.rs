@@ -96,6 +96,12 @@ pub(crate) fn handle_thread_reply_finished(
     root_event_id: String,
     transaction_id: String,
 ) -> Vec<AppEffect> {
+    if matches!(
+        &state.thread,
+        ThreadPaneState::Open { composer, .. } if composer.pending_submission_id.is_some()
+    ) {
+        return Vec::new();
+    }
     if !is_session_ready(state) {
         return Vec::new();
     }
@@ -125,6 +131,12 @@ pub(crate) fn handle_thread_reply_failed(
     transaction_id: String,
     message: String,
 ) -> Vec<AppEffect> {
+    if matches!(
+        &state.thread,
+        ThreadPaneState::Open { composer, .. } if composer.pending_submission_id.is_some()
+    ) {
+        return Vec::new();
+    }
     if !is_session_ready(state) {
         return Vec::new();
     }

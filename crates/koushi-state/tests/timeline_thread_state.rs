@@ -374,10 +374,13 @@ fn duplicate_submission_id_is_accepted_once_and_stale_completion_is_ignored() {
     );
     let finished = reduce(
         &mut state,
-        AppAction::ComposerSubmissionFinished {
+        AppAction::ComposerSubmissionSettled {
             submission_id: submission_id.clone(),
-            room_id: "room-a".to_owned(),
             transaction_id: "txn1".to_owned(),
+            target: ComposerSubmissionTarget::Main {
+                room_id: "room-a".to_owned(),
+            },
+            outcome: ComposerSubmissionTerminalOutcome::Succeeded,
         },
     );
     let replay = reduce(
@@ -514,6 +517,100 @@ fn thread_terminal_submission_requires_matching_id_and_transaction() {
         open_thread_composer(&state).pending_submission_id,
         Some(active)
     );
+}
+
+#[test]
+fn legacy_main_terminals_are_noop_during_submission_owned_pending() {
+    let mut state = selected_room_state("room-a");
+    let submission_id = SubmissionId::new("submission-main");
+    reduce(
+        &mut state,
+        AppAction::ComposerSubmissionAccepted {
+            submission_id: submission_id.clone(),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-main".to_owned(),
+            body: "body".to_owned(),
+        },
+    );
+    for action in [
+        AppAction::SendTextFinished {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-main".to_owned(),
+        },
+        AppAction::SendTextFailed {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-main".to_owned(),
+            message: "legacy failure".to_owned(),
+        },
+    ] {
+        let before = state.clone();
+        assert!(reduce(&mut state, action).is_empty());
+        assert_eq!(state, before);
+    }
+    assert!(
+        !reduce(
+            &mut state,
+            AppAction::ComposerSubmissionSettled {
+                submission_id,
+                transaction_id: "txn-main".to_owned(),
+                target: ComposerSubmissionTarget::Main {
+                    room_id: "room-a".to_owned(),
+                },
+                outcome: ComposerSubmissionTerminalOutcome::Succeeded,
+            },
+        )
+        .is_empty()
+    );
+    assert!(state.timeline.composer.pending_submission_id.is_none());
+}
+
+#[test]
+fn legacy_thread_terminals_are_noop_during_submission_owned_pending() {
+    let mut state = open_thread_state("room-a", "$root");
+    let submission_id = SubmissionId::new("submission-thread");
+    reduce(
+        &mut state,
+        AppAction::ThreadSubmissionAccepted {
+            submission_id: submission_id.clone(),
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+            body: "body".to_owned(),
+        },
+    );
+    for action in [
+        AppAction::ThreadReplyFinished {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+        },
+        AppAction::ThreadReplyFailed {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+            message: "legacy failure".to_owned(),
+        },
+    ] {
+        let before = state.clone();
+        assert!(reduce(&mut state, action).is_empty());
+        assert_eq!(state, before);
+    }
+    assert!(
+        !reduce(
+            &mut state,
+            AppAction::ComposerSubmissionSettled {
+                submission_id,
+                transaction_id: "txn-thread".to_owned(),
+                target: ComposerSubmissionTarget::Thread {
+                    room_id: "room-a".to_owned(),
+                    root_event_id: "$root".to_owned(),
+                },
+                outcome: ComposerSubmissionTerminalOutcome::Succeeded,
+            },
+        )
+        .is_empty()
+    );
+    assert!(open_thread_composer(&state).pending_submission_id.is_none());
 }
 
 #[test]

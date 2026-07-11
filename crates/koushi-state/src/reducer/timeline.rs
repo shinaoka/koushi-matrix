@@ -467,6 +467,9 @@ pub(crate) fn handle_send_text_finished(
     room_id: String,
     transaction_id: String,
 ) -> Vec<AppEffect> {
+    if state.timeline.composer.pending_submission_id.is_some() {
+        return Vec::new();
+    }
     if !is_session_ready(state)
         || state.timeline.room_id.as_deref() != Some(room_id.as_str())
         || state.timeline.composer.pending_transaction_id.as_deref()
@@ -498,6 +501,9 @@ pub(crate) fn handle_send_text_failed(
     transaction_id: String,
     message: String,
 ) -> Vec<AppEffect> {
+    if state.timeline.composer.pending_submission_id.is_some() {
+        return Vec::new();
+    }
     if !is_session_ready(state)
         || state.timeline.room_id.as_deref() != Some(room_id.as_str())
         || state.timeline.composer.pending_transaction_id.as_deref()
