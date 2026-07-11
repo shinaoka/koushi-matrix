@@ -1006,6 +1006,7 @@ pub struct TimelineManagerActor {
     session: Option<Arc<MatrixClientSession>>,
     room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
     timelines: HashMap<TimelineKey, TimelineActorHandle>,
+    accepted_submissions: HashMap<koushi_state::SubmissionId, (TimelineKey, String)>,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_tx: mpsc::Sender<TimelineMessage>,
@@ -1046,6 +1047,7 @@ impl TimelineManagerActor {
             session: None,
             room_list_service: None,
             timelines: HashMap::new(),
+            accepted_submissions: HashMap::new(),
             action_tx,
             event_tx,
             msg_tx: tx.clone(),
@@ -1086,6 +1088,7 @@ impl TimelineManagerActor {
             session: Some(session),
             room_list_service: None,
             timelines: HashMap::new(),
+            accepted_submissions: HashMap::new(),
             action_tx,
             event_tx,
             msg_tx: tx.clone(),
@@ -1505,6 +1508,39 @@ impl TimelineManagerActor {
                 )
                 .await;
             }
+            TimelineCommand::SubmitText {
+                request_id,
+                submission_id,
+                key,
+                transaction_id,
+                body,
+                mentions,
+            } => {
+                if let Err(kind) = validate_composer_body_for_timeline_send(&body) {
+                    self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                        request_id,
+                        key,
+                        submission_id,
+                        kind,
+                    }));
+                    return;
+                }
+                self.route_submission_to_actor(
+                    request_id,
+                    submission_id,
+                    &key,
+                    transaction_id.clone(),
+                    body.clone(),
+                    SendComposerProjection::for_send_text(&key),
+                    TimelineActorMessage::SendText {
+                        request_id,
+                        transaction_id,
+                        body,
+                        mentions,
+                    },
+                )
+                .await;
+            }
             TimelineCommand::SendReply {
                 request_id,
                 key,
@@ -1519,6 +1555,41 @@ impl TimelineManagerActor {
                 }
                 self.route_send_to_actor_or_fail(
                     request_id,
+                    &key,
+                    transaction_id.clone(),
+                    body.clone(),
+                    SendComposerProjection::for_send_reply(&key),
+                    TimelineActorMessage::SendReply {
+                        request_id,
+                        transaction_id,
+                        in_reply_to_event_id,
+                        body,
+                        mentions,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::SubmitReply {
+                request_id,
+                submission_id,
+                key,
+                transaction_id,
+                in_reply_to_event_id,
+                body,
+                mentions,
+            } => {
+                if let Err(kind) = validate_composer_body_for_timeline_send(&body) {
+                    self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                        request_id,
+                        key,
+                        submission_id,
+                        kind,
+                    }));
+                    return;
+                }
+                self.route_submission_to_actor(
+                    request_id,
+                    submission_id,
                     &key,
                     transaction_id.clone(),
                     body.clone(),
@@ -1884,6 +1955,77 @@ impl TimelineManagerActor {
                 },
             );
         }
+    }
+
+    async fn route_submission_to_actor(
+        &mut self,
+        request_id: RequestId,
+        submission_id: koushi_state::SubmissionId,
+        key: &TimelineKey,
+        transaction_id: String,
+        body: String,
+        projection: SendComposerProjection,
+        msg: TimelineActorMessage,
+    ) {
+        if let Some((accepted_key, accepted_transaction_id)) =
+            self.accepted_submissions.get(&submission_id)
+        {
+            self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionAccepted {
+                request_id,
+                key: accepted_key.clone(),
+                submission_id,
+                transaction_id: accepted_transaction_id.clone(),
+            }));
+            return;
+        }
+        let Some(handle) = self.timelines.get(key) else {
+            self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                request_id,
+                key: key.clone(),
+                submission_id,
+                kind: TimelineFailureKind::NotSubscribed,
+            }));
+            return;
+        };
+        let action = match (projection, &key.kind) {
+            (SendComposerProjection::Room, TimelineKind::Room { room_id }) => {
+                Some(AppAction::ComposerSubmissionAccepted {
+                    submission_id: submission_id.clone(),
+                    room_id: room_id.clone(),
+                    transaction_id: transaction_id.clone(),
+                    body,
+                })
+            }
+            _ => send_submitted_action(key, projection, transaction_id.clone(), body),
+        };
+        if let Some(action) = action {
+            if self.action_tx.send(vec![action]).await.is_err() {
+                self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                    request_id,
+                    key: key.clone(),
+                    submission_id,
+                    kind: TimelineFailureKind::QueueOverflow,
+                }));
+                return;
+            }
+        }
+        if !handle.send(msg).await {
+            self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                request_id,
+                key: key.clone(),
+                submission_id,
+                kind: TimelineFailureKind::QueueOverflow,
+            }));
+            return;
+        }
+        self.accepted_submissions
+            .insert(submission_id.clone(), (key.clone(), transaction_id.clone()));
+        self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionAccepted {
+            request_id,
+            key: key.clone(),
+            submission_id,
+            transaction_id,
+        }));
     }
 
     async fn handle_replay_subscribed(&mut self, request_id: RequestId) {
@@ -11457,7 +11599,7 @@ mod tests {
 
     use koushi_diagnostics::DiagnosticValue;
     use koushi_state::{
-        AppAction, MentionIntent, MentionTarget, SessionInfo, SessionState,
+        AppAction, MentionIntent, MentionTarget, SessionInfo, SessionState, SubmissionId,
         TimelineMediaKind as GalleryTimelineMediaKind,
     };
     use matrix_sdk::ruma::events::room::message::{
@@ -13208,6 +13350,7 @@ mod tests {
             session: None,
             room_list_service: None,
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
+            accepted_submissions: HashMap::new(),
             action_tx,
             event_tx,
             msg_tx,
@@ -14555,6 +14698,7 @@ mod tests {
             session: None,
             room_list_service: None,
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
+            accepted_submissions: HashMap::new(),
             action_tx,
             event_tx,
             msg_tx,
@@ -15018,6 +15162,71 @@ mod tests {
             task,
             auxiliary_tasks: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn duplicate_submission_routes_one_actor_message() {
+        let key = room_key();
+        let (actor_tx, mut actor_rx) = mpsc::channel(4);
+        let actor_task = executor::spawn(std::future::pending());
+        let (action_tx, mut action_rx) = mpsc::channel(4);
+        let (event_tx, _event_rx) = broadcast::channel(4);
+        let (msg_tx, msg_rx) = mpsc::channel(1);
+        let mut manager = TimelineManagerActor {
+            session: None,
+            room_list_service: None,
+            timelines: HashMap::from([(
+                key.clone(),
+                TimelineActorHandle {
+                    tx: actor_tx,
+                    task: actor_task,
+                    auxiliary_tasks: Vec::new(),
+                },
+            )]),
+            accepted_submissions: HashMap::new(),
+            action_tx,
+            event_tx,
+            msg_tx,
+            msg_rx,
+            search_index_tx: None,
+            ignored_user_ids: Default::default(),
+            data_dir: None,
+            link_preview_policy: LinkPreviewContext::default(),
+            messages_backpressure: MessagesBackpressure::default(),
+            thread_root_projection_service: Arc::new(Mutex::new(
+                ThreadRootProjectionService::default(),
+            )),
+            thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
+            replay_known_thread_root_projections: Arc::new(Mutex::new(
+                ReplayKnownThreadRootProjectionRegistry::default(),
+            )),
+            timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+            test_session_available: true,
+        };
+        let submission_id = SubmissionId::new("opaque-submission");
+        for request_id in [fake_rid(7300), fake_rid(7301)] {
+            manager
+                .handle_command(TimelineCommand::SubmitText {
+                    request_id,
+                    submission_id: submission_id.clone(),
+                    key: key.clone(),
+                    transaction_id: "txn-once".to_owned(),
+                    body: "body".to_owned(),
+                    mentions: MentionIntent::default(),
+                })
+                .await;
+        }
+
+        assert!(matches!(
+            actor_rx.try_recv(),
+            Ok(TimelineActorMessage::SendText { .. })
+        ));
+        assert!(actor_rx.try_recv().is_err());
+        assert!(matches!(
+            action_rx.try_recv(),
+            Ok(actions) if matches!(actions.as_slice(), [AppAction::ComposerSubmissionAccepted { submission_id: accepted, .. }] if accepted == &submission_id)
+        ));
+        assert!(action_rx.try_recv().is_err());
     }
 
     #[test]
@@ -16070,6 +16279,7 @@ mod tests {
                     auxiliary_tasks: Vec::new(),
                 },
             )]),
+            accepted_submissions: HashMap::new(),
             action_tx,
             event_tx,
             msg_tx: manager_tx.clone(),
@@ -16244,6 +16454,7 @@ mod tests {
                     auxiliary_tasks: Vec::new(),
                 },
             )]),
+            accepted_submissions: HashMap::new(),
             action_tx,
             event_tx,
             msg_tx: _manager_tx,

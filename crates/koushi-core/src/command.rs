@@ -9,8 +9,8 @@ use koushi_state::{
     ImageUploadCompressionMode, InviteScopeSelection, JapaneseCatalogProfile,
     LocalEncryptionHealth, LoginRequest, MentionIntent, NativeAttentionState, PresenceKind,
     RecoveryRequest, RoomListFilter, RoomModerationAction, RoomSettingChange, RoomTagKind,
-    SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem, TimelineScrollAnchor,
-    VerificationCancelReason, VerificationTarget,
+    SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem, SubmissionId,
+    TimelineScrollAnchor, VerificationCancelReason, VerificationTarget,
 };
 use serde::{Deserialize, Serialize};
 
@@ -170,7 +170,9 @@ impl CoreCommand {
                 | TimelineCommand::RestoreTimelineAnchor { request_id, .. }
                 | TimelineCommand::ObserveViewport { request_id, .. }
                 | TimelineCommand::SendText { request_id, .. }
+                | TimelineCommand::SubmitText { request_id, .. }
                 | TimelineCommand::SendReply { request_id, .. }
+                | TimelineCommand::SubmitReply { request_id, .. }
                 | TimelineCommand::ForwardMessage { request_id, .. }
                 | TimelineCommand::LoadMessageSource { request_id, .. }
                 | TimelineCommand::RequestRoomKey { request_id, .. }
@@ -2058,8 +2060,25 @@ pub enum TimelineCommand {
         body: String,
         mentions: MentionIntent,
     },
+    SubmitText {
+        request_id: RequestId,
+        submission_id: SubmissionId,
+        key: TimelineKey,
+        transaction_id: String,
+        body: String,
+        mentions: MentionIntent,
+    },
     SendReply {
         request_id: RequestId,
+        key: TimelineKey,
+        transaction_id: String,
+        in_reply_to_event_id: String,
+        body: String,
+        mentions: MentionIntent,
+    },
+    SubmitReply {
+        request_id: RequestId,
+        submission_id: SubmissionId,
         key: TimelineKey,
         transaction_id: String,
         in_reply_to_event_id: String,
@@ -2262,6 +2281,35 @@ impl fmt::Debug for TimelineCommand {
                 .debug_struct("SendReply")
                 .field("request_id", request_id)
                 .field("key", key)
+                .field("transaction_id", transaction_id)
+                .field("in_reply_to_event_id", &"EventId(..)")
+                .field("body", &"MessageBody(..)")
+                .field("mentions", &"MentionIntent(..)")
+                .finish(),
+            Self::SubmitText {
+                request_id,
+                submission_id,
+                transaction_id,
+                ..
+            } => formatter
+                .debug_struct("SubmitText")
+                .field("request_id", request_id)
+                .field("submission_id", submission_id)
+                .field("key", &"TimelineKey(..)")
+                .field("transaction_id", transaction_id)
+                .field("body", &"MessageBody(..)")
+                .field("mentions", &"MentionIntent(..)")
+                .finish(),
+            Self::SubmitReply {
+                request_id,
+                submission_id,
+                transaction_id,
+                ..
+            } => formatter
+                .debug_struct("SubmitReply")
+                .field("request_id", request_id)
+                .field("submission_id", submission_id)
+                .field("key", &"TimelineKey(..)")
                 .field("transaction_id", transaction_id)
                 .field("in_reply_to_event_id", &"EventId(..)")
                 .field("body", &"MessageBody(..)")

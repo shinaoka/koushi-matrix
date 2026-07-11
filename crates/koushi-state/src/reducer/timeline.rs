@@ -478,6 +478,7 @@ pub(crate) fn handle_send_text_finished(
 
     let pending_send_kind = state.timeline.composer.pending_send_kind.take();
     state.timeline.composer.pending_transaction_id = None;
+    state.timeline.composer.pending_submission_id = None;
     if let Some(PendingComposerSendKind::Reply {
         in_reply_to_event_id,
     }) = pending_send_kind
@@ -508,6 +509,7 @@ pub(crate) fn handle_send_text_failed(
     }
 
     state.timeline.composer.pending_transaction_id = None;
+    state.timeline.composer.pending_submission_id = None;
     state.timeline.composer.pending_send_kind = None;
     state.errors.push(AppError {
         code: "send_text_failed".to_owned(),
