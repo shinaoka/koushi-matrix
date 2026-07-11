@@ -136,10 +136,10 @@ pub use local_encryption::{LocalEncryptionHealth, LocalEncryptionState};
 // ── Re-exports: native_attention ─────────────────────────────────────────────
 pub use native_attention::{
     NativeAttentionCandidate, NativeAttentionCapabilities, NativeAttentionCapability,
-    NativeAttentionDispatchState, NativeAttentionObservationKind, NativeAttentionProjectionInput,
-    NativeAttentionSoundOutcome, NativeAttentionState, NativeAttentionSummary,
-    NativeAttentionSuppressionReason, native_attention_capabilities_for_platform,
-    native_attention_state_from_rooms,
+    NativeAttentionDispatchId, NativeAttentionDispatchState, NativeAttentionObservationKind,
+    NativeAttentionProjectionInput, NativeAttentionSoundOutcome, NativeAttentionState,
+    NativeAttentionSummary, NativeAttentionSuppressionReason,
+    native_attention_capabilities_for_platform, native_attention_state_from_rooms,
 };
 
 // ── Re-exports: cjk ─────────────────────────────────────────────────────────

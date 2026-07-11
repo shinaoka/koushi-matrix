@@ -2247,7 +2247,7 @@ impl AppActor {
                 } => {
                     let effects = self
                         .reduce_app_action(AppAction::NativeAttentionDispatchStarted {
-                            request_id: dispatch_id,
+                            dispatch_id,
                         })
                         .await;
                     self.handle_app_effects(request_id, effects).await;
@@ -2260,7 +2260,7 @@ impl AppActor {
                 } => {
                     let effects = self
                         .reduce_app_action(AppAction::NativeAttentionDispatchSettled {
-                            request_id: dispatch_id,
+                            dispatch_id,
                             outcome,
                         })
                         .await;

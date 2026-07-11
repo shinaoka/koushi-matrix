@@ -174,23 +174,27 @@ export function createDesktopAttentionTransientDispatcher(
   cooldownMs = DESKTOP_ATTENTION_SOUND_COOLDOWN_MS
 ): DesktopAttentionTransientDispatcher {
   let lastSoundAt = Number.NEGATIVE_INFINITY;
+  let soundInFlight = false;
   return {
     async dispatch(transport, candidate, capabilities, policy, diagnostic) {
       const timestamp = now();
-      const soundAllowed = timestamp - lastSoundAt >= cooldownMs;
+      const soundAllowed = !soundInFlight && timestamp - lastSoundAt >= cooldownMs;
       if (
         candidate && policy.sound && capabilities.sound === "available" &&
         soundAllowed && transport.playAttentionSound
       ) {
+        soundInFlight = true;
         try {
           const outcome = await transport.playAttentionSound();
           if (outcome === "played") {
-            lastSoundAt = timestamp;
+            lastSoundAt = now();
           } else if (outcome === "failed") {
             diagnostic?.("attention_sound_failed");
           }
         } catch {
           diagnostic?.("attention_sound_failed");
+        } finally {
+          soundInFlight = false;
         }
       }
       await dispatchDesktopAttentionTransientEffects(

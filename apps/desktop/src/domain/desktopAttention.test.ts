@@ -420,6 +420,37 @@ describe("desktop notification candidate", () => {
     expect(transport.playAttentionSound).toHaveBeenCalledTimes(2);
   });
 
+  test("reserves sound synchronously while native playback is in flight", async () => {
+    let resolveFirst!: (outcome: "failed") => void;
+    const firstPlayback = new Promise<"failed">((resolve) => { resolveFirst = resolve; });
+    const playAttentionSound = vi.fn()
+      .mockReturnValueOnce(firstPlayback)
+      .mockResolvedValueOnce("played" as const);
+    const dispatcher = createDesktopAttentionTransientDispatcher(() => 1_000, 3_000);
+    const capabilities = {
+      notifications: "available", badge: "available", overlay_icon: "unavailable",
+      sound: "available", tray: "unavailable", activation: "unavailable"
+    } as const;
+    const candidate = { roomDisplayName: "Room", kind: "message", unreadCount: 1, highlightCount: 0 } as const;
+
+    const first = dispatcher.dispatch({ playAttentionSound }, candidate, capabilities, { sound: true });
+    const concurrent = dispatcher.dispatch(
+      { playAttentionSound }, { ...candidate, unreadCount: 2 }, capabilities, { sound: true }
+    );
+    expect(playAttentionSound).toHaveBeenCalledOnce();
+
+    resolveFirst("failed");
+    await Promise.all([first, concurrent]);
+    await dispatcher.dispatch(
+      { playAttentionSound }, { ...candidate, unreadCount: 3 }, capabilities, { sound: true }
+    );
+    expect(playAttentionSound).toHaveBeenCalledTimes(2);
+    await dispatcher.dispatch(
+      { playAttentionSound }, { ...candidate, unreadCount: 4 }, capabilities, { sound: true }
+    );
+    expect(playAttentionSound).toHaveBeenCalledTimes(2);
+  });
+
   test.each(["failed", "unsupported"] as const)(
     "%s native outcome does not consume the sound cooldown",
     async (firstOutcome) => {
@@ -439,6 +470,25 @@ describe("desktop notification candidate", () => {
       if (firstOutcome === "failed") expect(diagnostic).toHaveBeenCalledWith("attention_sound_failed");
     }
   );
+
+  test("clears the in-flight reservation when native playback throws", async () => {
+    const dispatcher = createDesktopAttentionTransientDispatcher(() => 1_000, 3_000);
+    const playAttentionSound = vi.fn()
+      .mockRejectedValueOnce(new Error("private native error"))
+      .mockResolvedValueOnce("played" as const);
+    const diagnostic = vi.fn();
+    const capabilities = {
+      notifications: "available", badge: "available", overlay_icon: "unavailable",
+      sound: "available", tray: "unavailable", activation: "unavailable"
+    } as const;
+    const candidate = { roomDisplayName: "Room", kind: "message", unreadCount: 1, highlightCount: 0 } as const;
+
+    await dispatcher.dispatch({ playAttentionSound }, candidate, capabilities, { sound: true }, diagnostic);
+    await dispatcher.dispatch({ playAttentionSound }, { ...candidate, unreadCount: 2 }, capabilities, { sound: true }, diagnostic);
+
+    expect(playAttentionSound).toHaveBeenCalledTimes(2);
+    expect(diagnostic).toHaveBeenCalledWith("attention_sound_failed");
+  });
 
   test("bundled Tauri sound adapter plays through the platform boundary", async () => {
     const invokeNative = vi.fn().mockResolvedValue("played" as const);

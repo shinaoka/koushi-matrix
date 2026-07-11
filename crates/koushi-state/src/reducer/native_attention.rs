@@ -3,35 +3,38 @@ use crate::{
     state::AppState,
 };
 
-pub(crate) fn handle_dispatch_started(state: &mut AppState, request_id: u64) -> Vec<AppEffect> {
+pub(crate) fn handle_dispatch_started(
+    state: &mut AppState,
+    dispatch_id: crate::state::NativeAttentionDispatchId,
+) -> Vec<AppEffect> {
     if state.native_attention.summary.candidate.is_none() {
         return Vec::new();
     }
     state.native_attention.dispatch =
-        crate::state::NativeAttentionDispatchState::Dispatching { request_id };
+        crate::state::NativeAttentionDispatchState::Dispatching { dispatch_id };
     vec![AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged)]
 }
 
 pub(crate) fn handle_dispatch_settled(
     state: &mut AppState,
-    request_id: u64,
+    dispatch_id: crate::state::NativeAttentionDispatchId,
     outcome: crate::state::NativeAttentionSoundOutcome,
 ) -> Vec<AppEffect> {
     if state.native_attention.dispatch
-        != (crate::state::NativeAttentionDispatchState::Dispatching { request_id })
+        != (crate::state::NativeAttentionDispatchState::Dispatching { dispatch_id })
     {
         return Vec::new();
     }
     state.native_attention.dispatch = match outcome {
         crate::state::NativeAttentionSoundOutcome::Played => {
-            crate::state::NativeAttentionDispatchState::Delivered { request_id }
+            crate::state::NativeAttentionDispatchState::Delivered { dispatch_id }
         }
         crate::state::NativeAttentionSoundOutcome::Unsupported => {
-            crate::state::NativeAttentionDispatchState::Unsupported { request_id }
+            crate::state::NativeAttentionDispatchState::Unsupported { dispatch_id }
         }
         crate::state::NativeAttentionSoundOutcome::Failed => {
             crate::state::NativeAttentionDispatchState::Failed {
-                request_id,
+                dispatch_id,
                 kind: crate::state::OperationFailureKind::Sdk,
             }
         }

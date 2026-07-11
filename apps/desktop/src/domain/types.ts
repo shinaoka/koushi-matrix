@@ -1301,12 +1301,18 @@ export interface NativeAttentionCapabilities {
 
 export type NativeAttentionCapability = "available" | "unavailable" | "unknown";
 
+export interface NativeAttentionDispatchId {
+  connection_id: number;
+  sequence: number;
+}
+
 export type NativeAttentionDispatchState =
   | { kind: "idle" }
-  | { kind: "dispatching"; request_id: number }
-  | { kind: "delivered"; request_id: number }
+  | { kind: "dispatching"; dispatch_id: NativeAttentionDispatchId }
+  | { kind: "delivered"; dispatch_id: NativeAttentionDispatchId }
+  | { kind: "unsupported"; dispatch_id: NativeAttentionDispatchId }
   | { kind: "suppressed"; reason: NativeAttentionSuppressionReason }
-  | { kind: "failed"; request_id: number; failureKind: OperationFailureKind };
+  | { kind: "failed"; dispatch_id: NativeAttentionDispatchId; failureKind: OperationFailureKind };
 
 export type NativeAttentionSuppressionReason =
   | "initialSync"

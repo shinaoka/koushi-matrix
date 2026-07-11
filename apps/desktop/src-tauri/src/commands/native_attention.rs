@@ -1,5 +1,5 @@
 use super::*;
-use koushi_state::NativeAttentionSoundOutcome;
+use koushi_state::{NativeAttentionDispatchId, NativeAttentionSoundOutcome};
 
 trait NativeAttentionSoundBackend {
     fn play(&self) -> NativeAttentionSoundOutcome;
@@ -21,10 +21,14 @@ pub(crate) async fn play_native_attention_sound(
 async fn dispatch_native_attention_sound(
     runtime: &koushi_core::CoreRuntime,
     backend: &impl NativeAttentionSoundBackend,
-) -> (NativeAttentionSoundOutcome, Option<u64>) {
+) -> (
+    NativeAttentionSoundOutcome,
+    Option<NativeAttentionDispatchId>,
+) {
     let connection = runtime.attach();
     let start_request = connection.next_request_id();
-    let dispatch_id = start_request.sequence;
+    let dispatch_id =
+        NativeAttentionDispatchId::new(start_request.connection_id.0, start_request.sequence);
     if connection
         .command(CoreCommand::App(AppCommand::StartNativeAttentionDispatch {
             request_id: start_request,
@@ -193,9 +197,7 @@ mod tests {
 
         assert_eq!(
             snapshot.native_attention.dispatch,
-            NativeAttentionDispatchState::Delivered {
-                request_id: dispatch_id
-            }
+            NativeAttentionDispatchState::Delivered { dispatch_id }
         );
         assert_eq!(backend.calls.get(), 1);
     }

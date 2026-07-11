@@ -1,10 +1,10 @@
 use koushi_state::{
     AppAction, AppState, DisplayPlatform, NativeAttentionCandidate, NativeAttentionCapabilities,
-    NativeAttentionCapability, NativeAttentionDispatchState, NativeAttentionObservationKind,
-    NativeAttentionProjectionInput, NativeAttentionSoundOutcome, NativeAttentionSuppressionReason,
-    NotificationSettings, RoomAttentionKind, RoomSummary, RoomTagInfo, RoomTags, SettingsPatch,
-    native_attention_capabilities_for_platform, native_attention_state_from_rooms, reduce,
-    room_attention_summary,
+    NativeAttentionCapability, NativeAttentionDispatchId, NativeAttentionDispatchState,
+    NativeAttentionObservationKind, NativeAttentionProjectionInput, NativeAttentionSoundOutcome,
+    NativeAttentionSuppressionReason, NotificationSettings, RoomAttentionKind, RoomSummary,
+    RoomTagInfo, RoomTags, SettingsPatch, native_attention_capabilities_for_platform,
+    native_attention_state_from_rooms, reduce, room_attention_summary,
 };
 use serde_json::json;
 
@@ -441,16 +441,20 @@ fn native_sound_dispatch_outcomes_are_correlated_and_stale_safe() {
             unread_count: 1,
             highlight_count: 0,
         });
+        let current_id = NativeAttentionDispatchId::new(2, 9);
+        let stale_same_sequence = NativeAttentionDispatchId::new(1, 9);
         reduce(
             &mut state,
-            AppAction::NativeAttentionDispatchStarted { request_id: 9 },
+            AppAction::NativeAttentionDispatchStarted {
+                dispatch_id: current_id,
+            },
         );
         let before = state.clone();
         assert!(
             reduce(
                 &mut state,
                 AppAction::NativeAttentionDispatchSettled {
-                    request_id: 8,
+                    dispatch_id: stale_same_sequence,
                     outcome,
                 }
             )
@@ -460,7 +464,7 @@ fn native_sound_dispatch_outcomes_are_correlated_and_stale_safe() {
         reduce(
             &mut state,
             AppAction::NativeAttentionDispatchSettled {
-                request_id: 9,
+                dispatch_id: current_id,
                 outcome,
             },
         );

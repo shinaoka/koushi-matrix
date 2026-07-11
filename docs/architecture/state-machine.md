@@ -2204,8 +2204,11 @@ stateDiagram-v2
   adapter (macOS AudioToolbox, Windows User32; Linux explicitly unsupported).
   No WebView audio or external process fallback is allowed. A deterministic
   three-second dispatcher cooldown coalesces successfully played candidate
-  bursts independently of Rust candidate dedupe. `Failed` and `Unsupported`
-  outcomes do not consume the cooldown, so a later candidate can retry.
+  bursts independently of Rust candidate dedupe. Playback is synchronously
+  reserved before awaiting the native adapter, so concurrent React dispatches
+  cannot start duplicate sounds. `Failed`, `Unsupported`, and thrown outcomes
+  release that reservation without consuming the cooldown, so a later
+  candidate can retry.
 - Numeric badge, overlay, and tray APIs are called only for `Available`
   capabilities; `Unknown` and `Unavailable` never trigger substitute surfaces.
   Native failures are nonfatal but emit fixed `attention_*_failed` diagnostic
@@ -2225,7 +2228,9 @@ stateDiagram-v2
   best-effort side effect. Adapter clear failures do not feed back into Matrix
   state and cannot change read/focus semantics.
 - Native sound dispatch starts and settles through typed core commands and the
-  Rust reducer. Completions are request-correlated; stale results are ignored,
+  Rust reducer. Its opaque dispatch identity contains both runtime connection
+  identity and sequence, preventing separately attached Tauri commands from
+  colliding at the same sequence. Completions are request-correlated; stale results are ignored,
   `Played` settles as delivered, and adapter failures settle as
   private-data-free `Failed(kind)` or `Unsupported` states that can be cleared
   by read/focus transitions. React diagnostics are secondary observability and

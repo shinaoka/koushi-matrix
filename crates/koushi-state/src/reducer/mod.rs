@@ -637,13 +637,13 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::NativeAttentionUpdated { attention } => {
             native_attention::handle_native_attention_updated(state, attention)
         }
-        AppAction::NativeAttentionDispatchStarted { request_id } => {
-            native_attention::handle_dispatch_started(state, request_id)
+        AppAction::NativeAttentionDispatchStarted { dispatch_id } => {
+            native_attention::handle_dispatch_started(state, dispatch_id)
         }
         AppAction::NativeAttentionDispatchSettled {
-            request_id,
+            dispatch_id,
             outcome,
-        } => native_attention::handle_dispatch_settled(state, request_id, outcome),
+        } => native_attention::handle_dispatch_settled(state, dispatch_id, outcome),
         AppAction::JapaneseCatalogProfileChanged { profile } => {
             native_attention::handle_japanese_catalog_profile_changed(state, profile)
         }

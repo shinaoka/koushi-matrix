@@ -7,10 +7,11 @@ use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentScope, AttachmentSort,
     DirectoryQuery, FilesViewScope, FormattedMessageDraft, IdentityResetAuthRequest,
     ImageUploadCompressionMode, InviteScopeSelection, JapaneseCatalogProfile,
-    LocalEncryptionHealth, LoginRequest, MentionIntent, NativeAttentionSoundOutcome,
-    NativeAttentionState, PresenceKind, RecoveryRequest, RoomListFilter, RoomModerationAction,
-    RoomSettingChange, RoomTagKind, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem,
-    SubmissionId, TimelineScrollAnchor, VerificationCancelReason, VerificationTarget,
+    LocalEncryptionHealth, LoginRequest, MentionIntent, NativeAttentionDispatchId,
+    NativeAttentionSoundOutcome, NativeAttentionState, PresenceKind, RecoveryRequest,
+    RoomListFilter, RoomModerationAction, RoomSettingChange, RoomTagKind, SettingsPatch,
+    StagedUploadCompressionChoice, StagedUploadItem, SubmissionId, TimelineScrollAnchor,
+    VerificationCancelReason, VerificationTarget,
 };
 use serde::{Deserialize, Serialize};
 
@@ -422,11 +423,11 @@ pub enum AppCommand {
     },
     StartNativeAttentionDispatch {
         request_id: RequestId,
-        dispatch_id: u64,
+        dispatch_id: NativeAttentionDispatchId,
     },
     SettleNativeAttentionDispatch {
         request_id: RequestId,
-        dispatch_id: u64,
+        dispatch_id: NativeAttentionDispatchId,
         outcome: NativeAttentionSoundOutcome,
     },
     UpdateJapaneseCatalogProfile {

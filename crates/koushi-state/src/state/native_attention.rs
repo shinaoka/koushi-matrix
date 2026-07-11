@@ -19,6 +19,27 @@ pub struct NativeAttentionState {
     pub dispatch: NativeAttentionDispatchState,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NativeAttentionDispatchId {
+    connection_id: u64,
+    sequence: u64,
+}
+
+impl NativeAttentionDispatchId {
+    pub fn new(connection_id: u64, sequence: u64) -> Self {
+        Self {
+            connection_id,
+            sequence,
+        }
+    }
+}
+
+impl fmt::Debug for NativeAttentionDispatchId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NativeAttentionDispatchId(..)")
+    }
+}
+
 impl NativeAttentionState {
     pub fn kind(&self) -> &'static str {
         self.dispatch.kind()
@@ -293,19 +314,19 @@ pub enum NativeAttentionDispatchState {
     #[default]
     Idle,
     Dispatching {
-        request_id: u64,
+        dispatch_id: NativeAttentionDispatchId,
     },
     Delivered {
-        request_id: u64,
+        dispatch_id: NativeAttentionDispatchId,
     },
     Unsupported {
-        request_id: u64,
+        dispatch_id: NativeAttentionDispatchId,
     },
     Suppressed {
         reason: NativeAttentionSuppressionReason,
     },
     Failed {
-        request_id: u64,
+        dispatch_id: NativeAttentionDispatchId,
         #[serde(rename = "failureKind")]
         kind: OperationFailureKind,
     },
