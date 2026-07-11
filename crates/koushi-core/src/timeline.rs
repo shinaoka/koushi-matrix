@@ -2576,11 +2576,6 @@ enum TimelineActorMessage {
         encrypted_global_enabled: bool,
         room_enabled: Option<bool>,
     },
-    /// Internal: diff batch from the relay task.
-    DiffBatch {
-        generation: TimelineGeneration,
-        diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
-    },
     /// Internal: send completed (from send queue monitor task).
     SendQueueUpdate(RoomSendQueueUpdate),
     /// Internal: send queue broadcast lagged and the actor must resync the
@@ -2599,6 +2594,11 @@ enum TimelineActorMessage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TimelineRelayControl {
     Overflow { generation: TimelineGeneration },
+}
+
+struct TimelineRelayBatch {
+    generation: TimelineGeneration,
+    diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
 }
 
 fn timeline_key_trace_kind(key: &TimelineKey) -> &'static str {
@@ -4537,6 +4537,7 @@ struct TimelineActor {
     msg_rx: mpsc::Receiver<TimelineActorMessage>,
     relay_control_tx: mpsc::Sender<TimelineRelayControl>,
     relay_control_rx: mpsc::Receiver<TimelineRelayControl>,
+    relay_data_rx: mpsc::Receiver<TimelineRelayBatch>,
     relay_task: Option<executor::JoinHandle<()>>,
     generation: TimelineGeneration,
     next_batch_id: TimelineBatchId,
@@ -4828,6 +4829,7 @@ impl TimelineActor {
 
         let (actor_tx, actor_rx) = mpsc::channel(256);
         let (relay_control_tx, relay_control_rx) = mpsc::channel(1);
+        let (relay_data_tx, relay_data_rx) = mpsc::channel(256);
         let mut send_statuses = HashMap::new();
         let mut send_handles = HashMap::new();
 
@@ -4864,7 +4866,7 @@ impl TimelineActor {
 
         // Spawn the diff relay task: converts SDK VectorDiff stream into actor messages.
         let relay_task = Some(executor::spawn(run_diff_relay(
-            actor_tx.clone(),
+            relay_data_tx,
             relay_control_tx.clone(),
             generation,
             diff_stream,
@@ -4926,6 +4928,7 @@ impl TimelineActor {
             msg_rx: actor_rx,
             relay_control_tx,
             relay_control_rx,
+            relay_data_rx,
             relay_task,
             generation,
             next_batch_id: TimelineBatchId(0),
@@ -4986,6 +4989,13 @@ impl TimelineActor {
                 control = self.relay_control_rx.recv() => {
                     let Some(control) = control else { break };
                     self.handle_relay_control(control).await;
+                }
+                batch = self.relay_data_rx.recv() => {
+                    if let Some(TimelineRelayBatch { generation, diffs }) = batch {
+                        if let Some(diffs) = accepted_relay_batch(self.generation, generation, diffs) {
+                            self.handle_diff_batch(diffs).await;
+                        }
+                    }
                 }
                 msg = self.msg_rx.recv() => {
                     let Some(msg) = msg else { break };
@@ -5240,11 +5250,6 @@ impl TimelineActor {
                     room_enabled,
                 )
                 .await;
-            }
-            TimelineActorMessage::DiffBatch { generation, diffs } => {
-                if let Some(diffs) = accepted_relay_batch(self.generation, generation, diffs) {
-                    self.handle_diff_batch(diffs).await;
-                }
             }
             TimelineActorMessage::SendQueueUpdate(update) => {
                 self.handle_send_queue_update(update).await;
@@ -8514,8 +8519,10 @@ impl TimelineActor {
             items,
             replay_known_candidates,
         );
+        let (relay_data_tx, relay_data_rx) = mpsc::channel(256);
+        self.relay_data_rx = relay_data_rx;
         self.relay_task = Some(executor::spawn(run_diff_relay(
-            self.msg_tx.clone(),
+            relay_data_tx,
             self.relay_control_tx.clone(),
             self.generation,
             diff_stream,
@@ -8818,7 +8825,7 @@ fn emit_relay_recovery_snapshot(
 // ---------------------------------------------------------------------------
 
 async fn run_diff_relay(
-    actor_tx: mpsc::Sender<TimelineActorMessage>,
+    actor_tx: mpsc::Sender<TimelineRelayBatch>,
     control_tx: mpsc::Sender<TimelineRelayControl>,
     generation: TimelineGeneration,
     mut diff_stream: impl futures_util::Stream<Item = Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>>
@@ -8831,7 +8838,7 @@ async fn run_diff_relay(
             break;
         };
 
-        match actor_tx.try_send(TimelineActorMessage::DiffBatch { generation, diffs }) {
+        match actor_tx.try_send(TimelineRelayBatch { generation, diffs }) {
             Ok(_) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
                 // Overflow control must not compete for capacity with data.
@@ -17755,12 +17762,20 @@ mod tests {
 
     #[tokio::test]
     async fn relay_overflow_control_is_delivered_when_data_inbox_is_full() {
-        let (actor_tx, mut actor_rx) = mpsc::channel::<TimelineActorMessage>(1);
+        let (actor_tx, mut actor_rx) = mpsc::channel::<TimelineRelayBatch>(1);
+        let (command_tx, mut command_rx) = mpsc::channel::<TimelineActorMessage>(1);
         let (control_tx, mut control_rx) = mpsc::channel::<TimelineRelayControl>(1);
 
-        actor_tx
+        command_tx
             .try_send(TimelineActorMessage::ReplayInitialItems {
                 request_id: fake_rid(1),
+            })
+            .expect("command must queue independently of relay data");
+
+        actor_tx
+            .try_send(TimelineRelayBatch {
+                generation: TimelineGeneration(7),
+                diffs: Vec::new(),
             })
             .expect("test must fill the data inbox");
 
@@ -17798,10 +17813,14 @@ mod tests {
         .await;
         assert!(matches!(
             actor_rx.recv().await,
-            Some(TimelineActorMessage::DiffBatch {
+            Some(TimelineRelayBatch {
                 generation: TimelineGeneration(8),
                 diffs
             }) if diffs.is_empty()
+        ));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(TimelineActorMessage::ReplayInitialItems { .. })
         ));
     }
 
@@ -17870,7 +17889,7 @@ mod tests {
         let (actor_tx, mut actor_rx) = mpsc::channel(1);
         let (control_tx, _control_rx) = mpsc::channel(1);
         run_diff_relay(actor_tx, control_tx, generation, stream).await;
-        let Some(TimelineActorMessage::DiffBatch {
+        let Some(TimelineRelayBatch {
             generation: batch_generation,
             diffs,
         }) = actor_rx.recv().await
