@@ -1,5 +1,69 @@
 use super::*;
 
+const SUBMISSION_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn wait_for_submission_settlement(
+    event_conn: &mut CoreConnection,
+    submission_id: SubmissionId,
+) -> Result<SubmissionResponse, SubmissionFailure> {
+    let deadline = tokio::time::Instant::now() + SUBMISSION_SETTLEMENT_TIMEOUT;
+    let (outcome, transaction_id) = loop {
+        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+            .await
+            .map_err(|_| SubmissionFailure::Timeout)?;
+        match event {
+            Ok(CoreEvent::Timeline(TimelineEvent::SubmissionAccepted {
+                submission_id: accepted_id,
+                transaction_id,
+                ..
+            })) if accepted_id == submission_id => {
+                break (SubmissionOutcome::Accepted, Some(transaction_id));
+            }
+            Ok(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                submission_id: rejected_id,
+                kind,
+                ..
+            })) if rejected_id == submission_id => {
+                break (SubmissionOutcome::Rejected { kind }, None);
+            }
+            Ok(_) => {}
+            Err(EventStreamLag { skipped: 0 }) => return Err(SubmissionFailure::Disconnected),
+            Err(_) => {}
+        }
+    };
+
+    if matches!(outcome, SubmissionOutcome::Accepted) {
+        loop {
+            if event_conn
+                .snapshot()
+                .timeline
+                .composer
+                .accepted_submission_ids
+                .contains(&submission_id)
+            {
+                break;
+            }
+            tokio::time::timeout_at(deadline, event_conn.recv_event())
+                .await
+                .map_err(|_| SubmissionFailure::Timeout)?
+                .map_err(|lag| {
+                    if lag.skipped == 0 {
+                        SubmissionFailure::Disconnected
+                    } else {
+                        SubmissionFailure::Timeout
+                    }
+                })?;
+        }
+    }
+    let snapshot = event_conn.versioned_snapshot();
+    Ok(SubmissionResponse {
+        outcome,
+        submission_id,
+        transaction_id,
+        snapshot: FrontendDesktopSnapshot::from_versioned(snapshot.state, snapshot.generation),
+    })
+}
+
 #[tauri::command]
 pub async fn resolve_composer_key_action(
     surface: ComposerSurface,
@@ -114,34 +178,42 @@ pub async fn paginate_thread_timeline_backwards(
 
 #[tauri::command]
 pub async fn send_text(
+    submission_id: String,
     room_id: String,
     body: String,
     mentions: Option<koushi_state::MentionIntent>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
+) -> Result<SubmissionResponse, SubmissionFailure> {
     if body.trim().is_empty() {
-        return current_snapshot(state.inner()).await;
+        return Err(SubmissionFailure::Invalid);
     }
 
     let transaction_id = format!(
         "desktop-{}",
         NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
     );
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
     let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_send_text_command(
+    let submission_id = SubmissionId::new(submission_id);
+    if let Some(command) = build_submit_text_command(
         request_id,
+        submission_id.clone(),
         account_key,
         room_id,
         transaction_id,
         body,
         mentions.unwrap_or_default(),
     ) {
-        submit_core_command(state.inner(), command).await?;
+        event_conn
+            .command(command)
+            .await
+            .map_err(|_| SubmissionFailure::SubmitFailed)?;
     }
+    let response = wait_for_submission_settlement(&mut event_conn, submission_id).await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
+    Ok(response)
 }
 
 #[tauri::command]
@@ -881,25 +953,29 @@ pub async fn set_thread_composer_draft(
 
 #[tauri::command]
 pub async fn send_reply(
+    submission_id: String,
     room_id: String,
     in_reply_to_event_id: String,
     body: String,
     mentions: Option<koushi_state::MentionIntent>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
+) -> Result<SubmissionResponse, SubmissionFailure> {
     if body.trim().is_empty() {
-        return current_snapshot(state.inner()).await;
+        return Err(SubmissionFailure::Invalid);
     }
 
     let transaction_id = format!(
         "desktop-{}",
         NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
     );
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
     let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_send_reply_command(
+    let submission_id = SubmissionId::new(submission_id);
+    if let Some(command) = build_submit_reply_command(
         request_id,
+        submission_id.clone(),
         account_key,
         room_id,
         transaction_id,
@@ -907,10 +983,14 @@ pub async fn send_reply(
         body,
         mentions.unwrap_or_default(),
     ) {
-        submit_core_command(state.inner(), command).await?;
+        event_conn
+            .command(command)
+            .await
+            .map_err(|_| SubmissionFailure::SubmitFailed)?;
     }
+    let response = wait_for_submission_settlement(&mut event_conn, submission_id).await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
+    Ok(response)
 }
 
 #[tauri::command]
