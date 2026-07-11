@@ -39,6 +39,7 @@ import {
 import { EmojiPicker } from "./EmojiPicker";
 import {
   isComposerImeEnter,
+  useComposerKeyIntentSnapshot,
   useCompositionOwnedTextarea
 } from "../domain/compositionLifecycle";
 import {
@@ -106,6 +107,7 @@ export const Composer = memo(function Composer({
     onCompositionStart,
     onCompositionEnd
   } = useCompositionOwnedTextarea(value, draftKey);
+  const captureKeyIntent = useComposerKeyIntentSnapshot(imeComposition);
   const autocompleteListboxId = useId();
   const activeMention = activeMentionQuery(localValue);
   const activeMentionKey =
@@ -339,11 +341,10 @@ export const Composer = memo(function Composer({
     }
 
     const textarea = event.currentTarget;
-    const selectionStart = textarea.selectionStart;
-    const selectionEnd = textarea.selectionEnd;
+    const intent = captureKeyIntent(textarea);
     const keyEvent = composerKeyEventFromDom(event, {
-      start: selectionStart,
-      end: selectionEnd
+      start: intent.selectionStart,
+      end: intent.selectionEnd
     });
     const resolverOptions = {
       autocomplete_open: autocompleteOpen,
@@ -358,11 +359,18 @@ export const Composer = memo(function Composer({
     void resolveComposerKeyAction("main", keyEvent, resolverOptions)
       .then((action) => {
         if (action === "send") {
-          void onSend(localValue);
+          void onSend(intent.value);
           return;
         }
         if (action === "insertNewline") {
-          const nextValue = insertNewlineAtSelection(localValue, selectionStart, selectionEnd);
+          if (!intent.isCurrentForMutation()) {
+            return;
+          }
+          const nextValue = insertNewlineAtSelection(
+            intent.value,
+            intent.selectionStart,
+            intent.selectionEnd
+          );
           updateLocalValue(nextValue.value);
           requestAnimationFrame(() => {
             textarea.selectionStart = nextValue.cursor;
@@ -727,6 +735,7 @@ function ThreadComposer({
     onCompositionStart,
     onCompositionEnd
   } = useCompositionOwnedTextarea(draft, draftKey);
+  const captureKeyIntent = useComposerKeyIntentSnapshot(imeComposition);
 
   useEffect(() => {
     if (!imeComposition.active()) {
@@ -775,16 +784,14 @@ function ThreadComposer({
     }
 
     const textarea = event.currentTarget;
-    const visibleValue = textarea.value;
-    const selectionStart = textarea.selectionStart;
-    const selectionEnd = textarea.selectionEnd;
+    const intent = captureKeyIntent(textarea);
     const keyEvent = composerKeyEventFromDom(event, {
-      start: selectionStart,
-      end: selectionEnd
+      start: intent.selectionStart,
+      end: intent.selectionEnd
     });
     const resolverOptions = {
       autocomplete_open: false,
-      send_enabled: canEdit && !isSending && visibleValue.trim().length > 0
+      send_enabled: canEdit && !isSending && intent.value.trim().length > 0
     };
     if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
       void resolveComposerKeyAction("thread", keyEvent, resolverOptions).catch(() => undefined);
@@ -795,14 +802,17 @@ function ThreadComposer({
     void resolveComposerKeyAction("thread", keyEvent, resolverOptions)
       .then((action) => {
         if (action === "send") {
-          void onSend(visibleValue);
+          void onSend(intent.value);
           return;
         }
         if (action === "insertNewline") {
+          if (!intent.isCurrentForMutation()) {
+            return;
+          }
           const nextDraft = insertNewlineAtSelection(
-            textarea.value,
-            selectionStart,
-            selectionEnd
+            intent.value,
+            intent.selectionStart,
+            intent.selectionEnd
           );
           updateVisibleDraft(nextDraft.value);
           requestAnimationFrame(() => {

@@ -97,6 +97,7 @@ import { openExternalHttpUrl, toExternalHttpUrl } from "../domain/externalLinks"
 import { mediaSourceUrl } from "../domain/mediaUrl";
 import {
   isComposerImeEnter,
+  useComposerKeyIntentSnapshot,
   useCompositionOwnedTextarea
 } from "../domain/compositionLifecycle";
 import {
@@ -4954,6 +4955,7 @@ export function TimelineItemRow({
     onCompositionStart: onEditCompositionStart,
     onCompositionEnd: onEditCompositionEnd
   } = useCompositionOwnedTextarea(editDraft, eventId ?? "edit");
+  const captureEditKeyIntent = useComposerKeyIntentSnapshot(editImeComposition);
   const editMacKillRingRef = useRef<string>("");
   const requestedLinkPreviewsRef = useRef<Set<string>>(new Set());
 
@@ -5141,15 +5143,14 @@ export function TimelineItemRow({
       }
 
       const textarea = event.currentTarget;
-      const selectionStart = textarea.selectionStart;
-      const selectionEnd = textarea.selectionEnd;
+      const intent = captureEditKeyIntent(textarea);
       const keyEvent = composerKeyEventFromDom(event, {
-        start: selectionStart,
-        end: selectionEnd
+        start: intent.selectionStart,
+        end: intent.selectionEnd
       });
       const resolverOptions = {
         autocomplete_open: false,
-        send_enabled: Boolean(eventId && textarea.value.trim())
+        send_enabled: Boolean(eventId && intent.value.trim())
       };
       if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
         void resolveComposerKeyAction("edit", keyEvent, resolverOptions).catch(() => undefined);
@@ -5160,17 +5161,20 @@ export function TimelineItemRow({
       void resolveComposerKeyAction("edit", keyEvent, resolverOptions)
         .then((action) => {
           if (action === "send") {
-            if (eventId && textarea.value.trim()) {
-              onEdit(roomId, eventId, textarea.value.trim());
+            if (eventId && intent.value.trim()) {
+              onEdit(roomId, eventId, intent.value.trim());
               closeEditForm();
             }
             return;
           }
           if (action === "insertNewline") {
+            if (!intent.isCurrentForMutation()) {
+              return;
+            }
             const nextDraft = insertNewlineAtSelection(
-              textarea.value,
-              selectionStart,
-              selectionEnd
+              intent.value,
+              intent.selectionStart,
+              intent.selectionEnd
             );
             setEditDraft(nextDraft.value);
             requestAnimationFrame(() => {
@@ -5185,7 +5189,7 @@ export function TimelineItemRow({
         })
         .catch(() => undefined);
     },
-    [closeEditForm, editImeComposition, eventId, onEdit, resolveComposerKeyAction, roomId]
+    [captureEditKeyIntent, closeEditForm, editImeComposition, eventId, onEdit, resolveComposerKeyAction, roomId]
   );
 
   const submitReaction = useCallback(

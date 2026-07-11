@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { MentionCandidate } from "../domain/projectionTypes";
@@ -178,6 +178,114 @@ describe("Composer", () => {
 
     expect(onSend).toHaveBeenCalledTimes(1);
     expect(onSend).toHaveBeenCalledWith("visible keyboard reply");
+  });
+
+  it("discards a stale deferred thread newline after newer DOM input", async () => {
+    let resolveAction!: (action: "insertNewline") => void;
+    const action = new Promise<"insertNewline">((resolve) => {
+      resolveAction = resolve;
+    });
+    const onDraftChange = vi.fn();
+    render(
+      <ThreadComposer
+        canEdit
+        draft="captured"
+        draftKey="!room-a:$root-a"
+        isSending={false}
+        resolveComposerKeyAction={() => action}
+        onDraftChange={onDraftChange}
+        onSend={vi.fn()}
+      />
+    );
+    const textarea = screen.getByRole("textbox", { name: /thread/i }) as HTMLTextAreaElement;
+    textarea.setSelectionRange(8, 8);
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 13 });
+    fireEvent.change(textarea, { target: { value: "newer input" } });
+    await act(async () => resolveAction("insertNewline"));
+
+    expect(textarea.value).toBe("newer input");
+    expect(onDraftChange).toHaveBeenCalledTimes(1);
+    expect(onDraftChange).toHaveBeenLastCalledWith("newer input");
+  });
+
+  it("discards a stale deferred main newline after newer DOM input", async () => {
+    let resolveAction!: (action: "insertNewline") => void;
+    const action = new Promise<"insertNewline">((resolve) => {
+      resolveAction = resolve;
+    });
+    const onValueChange = vi.fn();
+    const { container } = render(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        roomName="Room"
+        value="captured"
+        resolveComposerKeyAction={() => action}
+        onCancelReply={() => undefined}
+        onSend={vi.fn()}
+        onValueChange={onValueChange}
+      />
+    );
+    const textarea = container.querySelector("textarea")!;
+    textarea.setSelectionRange(8, 8);
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 13 });
+    fireEvent.change(textarea, { target: { value: "newer input" } });
+    await act(async () => resolveAction("insertNewline"));
+
+    expect(textarea.value).toBe("newer input");
+    expect(onValueChange).toHaveBeenCalledTimes(1);
+    expect(onValueChange).toHaveBeenLastCalledWith("newer input");
+  });
+
+  it("sends the main value captured when deferred Enter was pressed", async () => {
+    let resolveAction!: (action: "send") => void;
+    const action = new Promise<"send">((resolve) => {
+      resolveAction = resolve;
+    });
+    const onSend = vi.fn();
+    const { container } = render(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        roomName="Room"
+        value="intent snapshot"
+        resolveComposerKeyAction={() => action}
+        onCancelReply={() => undefined}
+        onSend={onSend}
+        onValueChange={vi.fn()}
+      />
+    );
+    const textarea = container.querySelector("textarea")!;
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 13 });
+    fireEvent.change(textarea, { target: { value: "later input" } });
+    await act(async () => resolveAction("send"));
+
+    expect(onSend).toHaveBeenCalledWith("intent snapshot");
+  });
+
+  it("sends the thread value captured when deferred Enter was pressed", async () => {
+    let resolveAction!: (action: "send") => void;
+    const action = new Promise<"send">((resolve) => {
+      resolveAction = resolve;
+    });
+    const onSend = vi.fn();
+    render(
+      <ThreadComposer
+        canEdit
+        draft="intent snapshot"
+        draftKey="!room-a:$root-a"
+        isSending={false}
+        resolveComposerKeyAction={() => action}
+        onDraftChange={vi.fn()}
+        onSend={onSend}
+      />
+    );
+    const textarea = screen.getByRole("textbox", { name: /thread/i }) as HTMLTextAreaElement;
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 13 });
+    fireEvent.change(textarea, { target: { value: "later input" } });
+    await act(async () => resolveAction("send"));
+
+    expect(onSend).toHaveBeenCalledWith("intent snapshot");
   });
 
   it("does not submit while an IME composition is being confirmed with Enter", async () => {

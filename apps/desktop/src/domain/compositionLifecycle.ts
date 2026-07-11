@@ -5,6 +5,7 @@ export interface CompositionLifecycle {
   end(epoch?: number): void;
   finish(): void;
   active(): boolean;
+  generation(): number;
   dispose(): void;
 }
 
@@ -44,10 +45,46 @@ export function createCompositionLifecycle(): CompositionLifecycle {
     active() {
       return isActive;
     },
+    generation() {
+      return epoch;
+    },
     dispose() {
       cancelDeferredEnd();
       isActive = false;
     }
+  };
+}
+
+export interface ComposerKeyIntentSnapshot {
+  readonly value: string;
+  readonly selectionStart: number;
+  readonly selectionEnd: number;
+  readonly intentGeneration: number;
+  isCurrentForMutation(): boolean;
+}
+
+export function useComposerKeyIntentSnapshot(lifecycle: CompositionLifecycle) {
+  const intentGenerationRef = useRef(0);
+
+  return (textarea: HTMLTextAreaElement): ComposerKeyIntentSnapshot => {
+    intentGenerationRef.current += 1;
+    const intentGeneration = intentGenerationRef.current;
+    const compositionGeneration = lifecycle.generation();
+    const value = textarea.value;
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    return {
+      value,
+      selectionStart,
+      selectionEnd,
+      intentGeneration,
+      isCurrentForMutation: () =>
+        intentGenerationRef.current === intentGeneration &&
+        lifecycle.generation() === compositionGeneration &&
+        textarea.value === value &&
+        textarea.selectionStart === selectionStart &&
+        textarea.selectionEnd === selectionEnd
+    };
   };
 }
 

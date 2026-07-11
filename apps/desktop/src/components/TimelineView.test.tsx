@@ -339,6 +339,87 @@ describe("TimelineView", () => {
     expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([3, 5]);
   });
 
+  it("discards a stale deferred edit newline after newer DOM input", async () => {
+    let resolveAction!: (action: "insertNewline") => void;
+    const action = new Promise<"insertNewline">((resolve) => {
+      resolveAction = resolve;
+    });
+    const editMessage = vi.fn(async () => undefined);
+    const editable = { ...message("$edit-deferred", "captured"), can_edit: true };
+    const store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [editable]
+      }
+    });
+    render(
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={baseTransport({ editMessage })}
+          resolveComposerKeyAction={() => action}
+          onReply={vi.fn()}
+        />
+      </TimelineStoreContext.Provider>
+    );
+    fireEvent.click(screen.getByRole("button", { name: /edit message/i }));
+    const textarea = screen.getByRole("textbox", { name: /edit.*body/i }) as HTMLTextAreaElement;
+    textarea.setSelectionRange(8, 8);
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 13 });
+    fireEvent.change(textarea, { target: { value: "newer edit input" } });
+    await act(async () => resolveAction("insertNewline"));
+    fireEvent.click(screen.getByRole("button", { name: /save edit/i }));
+
+    expect(textarea.value).toBe("newer edit input");
+    expect(editMessage).toHaveBeenCalledWith(
+      "!room:example.invalid",
+      "$edit-deferred",
+      "newer edit input"
+    );
+  });
+
+  it("sends the edit value captured when deferred Enter was pressed", async () => {
+    let resolveAction!: (action: "send") => void;
+    const action = new Promise<"send">((resolve) => {
+      resolveAction = resolve;
+    });
+    const editMessage = vi.fn(async () => undefined);
+    const editable = { ...message("$edit-send-snapshot", "intent snapshot"), can_edit: true };
+    const store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [editable]
+      }
+    });
+    render(
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={baseTransport({ editMessage })}
+          resolveComposerKeyAction={() => action}
+          onReply={vi.fn()}
+        />
+      </TimelineStoreContext.Provider>
+    );
+    fireEvent.click(screen.getByRole("button", { name: /edit message/i }));
+    const textarea = screen.getByRole("textbox", { name: /edit.*body/i }) as HTMLTextAreaElement;
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 13 });
+    fireEvent.change(textarea, { target: { value: "later edit input" } });
+    await act(async () => resolveAction("send"));
+
+    expect(editMessage).toHaveBeenCalledWith(
+      "!room:example.invalid",
+      "$edit-send-snapshot",
+      "intent snapshot"
+    );
+  });
+
   it("computes a stable clamped media box for known image dimensions", () => {
     expect(timelineMediaDisplayBoxForTests(2048, 1188)).toEqual({
       inlineSize: 420,
