@@ -70,6 +70,7 @@ describe("Composer", () => {
     const props = {
       canEdit: true,
       draft: "before",
+      draftKey: "!room-a:$root-a",
       isSending: false,
       resolveComposerKeyAction: vi.fn(async () => "noop" as const),
       onDraftChange: vi.fn(),
@@ -85,6 +86,98 @@ describe("Composer", () => {
 
     expect(textarea.value).toBe("日本語変換中");
     expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([3, 5]);
+  });
+
+  it("releases the old thread DOM when the room/root draft key switches", () => {
+    vi.useFakeTimers();
+    const props = {
+      canEdit: true,
+      draft: "thread A draft",
+      draftKey: "!room-a:$root-a",
+      isSending: false,
+      resolveComposerKeyAction: vi.fn(async () => "noop" as const),
+      onDraftChange: vi.fn(),
+      onSend: vi.fn()
+    };
+    const { rerender } = render(<ThreadComposer {...props} />);
+    const textarea = screen.getByRole("textbox", { name: /thread/i }) as HTMLTextAreaElement;
+    fireEvent.compositionStart(textarea);
+    fireEvent.change(textarea, { target: { value: "private thread A conversion" } });
+    fireEvent.compositionEnd(textarea);
+
+    const valueDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )!;
+    let imperativeWrites = 0;
+    Object.defineProperty(textarea, "value", {
+      configurable: true,
+      get: () => valueDescriptor.get!.call(textarea),
+      set: (value: string) => {
+        imperativeWrites += 1;
+        valueDescriptor.set!.call(textarea, value);
+      }
+    });
+    rerender(
+      <ThreadComposer
+        {...props}
+        draftKey="!room-b:$root-b"
+        draft="thread B draft"
+      />
+    );
+    vi.runAllTimers();
+
+    expect(textarea.value).toBe("thread B draft");
+    expect(imperativeWrites).toBe(1);
+  });
+
+  it("sends the visible thread DOM draft after a stale parent rerender", () => {
+    const onSend = vi.fn();
+    const props = {
+      canEdit: true,
+      draft: "",
+      draftKey: "!room-a:$root-a",
+      isSending: false,
+      resolveComposerKeyAction: vi.fn(async () => "send" as const),
+      onDraftChange: vi.fn(),
+      onSend
+    };
+    const { rerender } = render(<ThreadComposer {...props} />);
+    const textarea = screen.getByRole("textbox", { name: /thread/i }) as HTMLTextAreaElement;
+    fireEvent.compositionStart(textarea);
+    fireEvent.change(textarea, { target: { value: "visible reply" } });
+    rerender(<ThreadComposer {...props} draft="" />);
+    fireEvent.compositionEnd(textarea);
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend).toHaveBeenCalledWith("visible reply");
+  });
+
+  it("passes the visible thread DOM draft through keyboard send", async () => {
+    vi.useFakeTimers();
+    const onSend = vi.fn();
+    const props = {
+      canEdit: true,
+      draft: "",
+      draftKey: "!room-a:$root-a",
+      isSending: false,
+      resolveComposerKeyAction: vi.fn(async () => "send" as const),
+      onDraftChange: vi.fn(),
+      onSend
+    };
+    const { rerender } = render(<ThreadComposer {...props} />);
+    const textarea = screen.getByRole("textbox", { name: /thread/i }) as HTMLTextAreaElement;
+    fireEvent.compositionStart(textarea);
+    fireEvent.change(textarea, { target: { value: "visible keyboard reply" } });
+    rerender(<ThreadComposer {...props} draft="" />);
+    fireEvent.compositionEnd(textarea);
+    vi.runAllTimers();
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 13 });
+    await Promise.resolve();
+
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend).toHaveBeenCalledWith("visible keyboard reply");
   });
 
   it("does not submit while an IME composition is being confirmed with Enter", async () => {

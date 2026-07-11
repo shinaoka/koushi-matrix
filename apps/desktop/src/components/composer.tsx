@@ -704,6 +704,7 @@ function mentionOptionAriaLabel(candidate: MentionCandidate): string {
 function ThreadComposer({
   canEdit,
   draft,
+  draftKey,
   isSending,
   resolveComposerKeyAction,
   onDraftChange,
@@ -711,19 +712,32 @@ function ThreadComposer({
 }: {
   canEdit: boolean;
   draft: string;
+  draftKey: string;
   isSending: boolean;
   resolveComposerKeyAction: ResolveComposerKeyAction;
   onDraftChange: (draft: string) => void;
-  onSend: () => void | Promise<void>;
+  onSend: (value: string) => void | Promise<void>;
 }) {
-  const canSend = canEdit && !isSending && draft.trim().length > 0;
+  const [visibleDraft, setVisibleDraft] = useState(draft);
+  const canSend = canEdit && !isSending && visibleDraft.trim().length > 0;
   const macKillRingRef = useRef<string>("");
   const {
     textareaRef,
     lifecycle: imeComposition,
     onCompositionStart,
     onCompositionEnd
-  } = useCompositionOwnedTextarea(draft, "thread");
+  } = useCompositionOwnedTextarea(draft, draftKey);
+
+  useEffect(() => {
+    if (!imeComposition.active()) {
+      setVisibleDraft(draft);
+    }
+  }, [draft, draftKey, imeComposition]);
+
+  function updateVisibleDraft(value: string) {
+    setVisibleDraft(value);
+    onDraftChange(value);
+  }
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (composerImeShouldHandleKeyEvent(event, imeComposition.active())) {
@@ -748,7 +762,7 @@ function ThreadComposer({
             macKillRingRef.current = effect.newKillRing;
           }
           if (effect.newValue !== undefined) {
-            onDraftChange(effect.newValue);
+            updateVisibleDraft(effect.newValue);
           }
           const pos = effect.newSelectionPos;
           requestAnimationFrame(() => ta.setSelectionRange(pos, pos));
@@ -761,6 +775,7 @@ function ThreadComposer({
     }
 
     const textarea = event.currentTarget;
+    const visibleValue = textarea.value;
     const selectionStart = textarea.selectionStart;
     const selectionEnd = textarea.selectionEnd;
     const keyEvent = composerKeyEventFromDom(event, {
@@ -769,7 +784,7 @@ function ThreadComposer({
     });
     const resolverOptions = {
       autocomplete_open: false,
-      send_enabled: canSend
+      send_enabled: canEdit && !isSending && visibleValue.trim().length > 0
     };
     if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
       void resolveComposerKeyAction("thread", keyEvent, resolverOptions).catch(() => undefined);
@@ -780,7 +795,7 @@ function ThreadComposer({
     void resolveComposerKeyAction("thread", keyEvent, resolverOptions)
       .then((action) => {
         if (action === "send") {
-          void onSend();
+          void onSend(visibleValue);
           return;
         }
         if (action === "insertNewline") {
@@ -789,7 +804,7 @@ function ThreadComposer({
             selectionStart,
             selectionEnd
           );
-          onDraftChange(nextDraft.value);
+          updateVisibleDraft(nextDraft.value);
           requestAnimationFrame(() => {
             textarea.selectionStart = nextDraft.cursor;
             textarea.selectionEnd = nextDraft.cursor;
@@ -807,7 +822,7 @@ function ThreadComposer({
         placeholder={t("timeline.threadPlaceholder")}
         ref={textareaRef}
         defaultValue={draft}
-        onChange={(event) => onDraftChange(event.target.value)}
+        onChange={(event) => updateVisibleDraft(event.target.value)}
         onKeyDown={onComposerKeyDown}
         onCompositionStart={onCompositionStart}
         onCompositionEnd={onCompositionEnd}
@@ -818,7 +833,10 @@ function ThreadComposer({
           type="button"
           aria-label={isSending ? t("action.sending") : t("action.send")}
           disabled={!canSend}
-          onClick={onSend}
+          onClick={() => {
+            const value = textareaRef.current?.value ?? visibleDraft;
+            void onSend(value);
+          }}
         >
           <Send size={ICON_SIZE.input} />
         </button>
