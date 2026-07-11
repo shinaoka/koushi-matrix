@@ -5145,6 +5145,10 @@ export function TimelineItemRow({
 
       const textarea = event.currentTarget;
       const intent = captureEditKeyIntent(textarea);
+      if (intent === null) {
+        event.preventDefault();
+        return;
+      }
       const keyEvent = composerKeyEventFromDom(event, {
         start: intent.selectionStart,
         end: intent.selectionEnd
@@ -5154,7 +5158,9 @@ export function TimelineItemRow({
         send_enabled: Boolean(eventId && intent.value.trim())
       };
       if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
-        void resolveComposerKeyAction("edit", keyEvent, resolverOptions).catch(() => undefined);
+        void resolveComposerKeyAction("edit", keyEvent, resolverOptions)
+          .catch(() => undefined)
+          .finally(intent.releaseResolution);
         return;
       }
       event.preventDefault();
@@ -5188,7 +5194,8 @@ export function TimelineItemRow({
             closeEditForm();
           }
         })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(intent.releaseResolution);
     },
     [captureEditKeyIntent, closeEditForm, editImeComposition, eventId, onEdit, resolveComposerKeyAction, roomId]
   );

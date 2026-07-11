@@ -343,6 +343,10 @@ export const Composer = memo(function Composer({
 
     const textarea = event.currentTarget;
     const intent = captureKeyIntent(textarea);
+    if (intent === null) {
+      event.preventDefault();
+      return;
+    }
     const keyEvent = composerKeyEventFromDom(event, {
       start: intent.selectionStart,
       end: intent.selectionEnd
@@ -352,7 +356,9 @@ export const Composer = memo(function Composer({
       send_enabled: !isSending && (intent.value.trim().length > 0 || hasStagedUploads)
     };
     if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
-      void resolveComposerKeyAction("main", keyEvent, resolverOptions).catch(() => undefined);
+      void resolveComposerKeyAction("main", keyEvent, resolverOptions)
+        .catch(() => undefined)
+        .finally(intent.releaseResolution);
       return;
     }
     event.preventDefault();
@@ -391,7 +397,8 @@ export const Composer = memo(function Composer({
           onCancelReply();
         }
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(intent.releaseResolution);
   }
 
   return (
@@ -786,6 +793,10 @@ function ThreadComposer({
 
     const textarea = event.currentTarget;
     const intent = captureKeyIntent(textarea);
+    if (intent === null) {
+      event.preventDefault();
+      return;
+    }
     const keyEvent = composerKeyEventFromDom(event, {
       start: intent.selectionStart,
       end: intent.selectionEnd
@@ -795,7 +806,9 @@ function ThreadComposer({
       send_enabled: canEdit && !isSending && intent.value.trim().length > 0
     };
     if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
-      void resolveComposerKeyAction("thread", keyEvent, resolverOptions).catch(() => undefined);
+      void resolveComposerKeyAction("thread", keyEvent, resolverOptions)
+        .catch(() => undefined)
+        .finally(intent.releaseResolution);
       return;
     }
     event.preventDefault();
@@ -822,7 +835,8 @@ function ThreadComposer({
           });
         }
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(intent.releaseResolution);
   }
 
   return (

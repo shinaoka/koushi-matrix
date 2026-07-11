@@ -1058,9 +1058,19 @@ export interface TimelineMediaGalleryItem {
 }
 
 export interface ComposerState {
+  pending_submission_id?: string | null;
   pending_transaction_id: string | null;
   draft: string;
   mode: ComposerMode;
+}
+
+export type SubmissionOutcome = "accepted" | { rejected: { kind: string } };
+
+export interface SubmissionResponse {
+  outcome: SubmissionOutcome;
+  submissionId: string;
+  transactionId: string | null;
+  snapshot: DesktopSnapshot;
 }
 
 // Rust ComposerMode has NO serde tag → externally tagged (like SyncState in this file)

@@ -758,11 +758,12 @@ describe("desktop model", () => {
     const api = createBrowserFakeApi();
 
     const snapshot = await api.sendText(
+      "submission-test-send",
       "!room-alpha:example.invalid",
       "Synthetic message from composer"
     );
 
-    expect(snapshot.timeline.at(-1)).toMatchObject({
+    expect(snapshot.snapshot.timeline.at(-1)).toMatchObject({
       room_id: "!room-alpha:example.invalid",
       sender: "@demo-user:example.invalid",
       body: "Synthetic message from composer"
@@ -771,10 +772,12 @@ describe("desktop model", () => {
 
   test("browser fake edits and redacts a sent timeline message", async () => {
     const api = createBrowserFakeApi();
-    let snapshot = await api.sendText(
+    const submission = await api.sendText(
+      "submission-test-edit",
       "!room-alpha:example.invalid",
       "Synthetic message before edit"
     );
+    let snapshot = submission.snapshot;
     const eventId = snapshot.timeline.at(-1)?.event_id;
     if (!eventId) {
       throw new Error("expected sent event id");
@@ -988,7 +991,13 @@ describe("desktop model", () => {
     const rootReplyCountBefore = rootMessage.reply_count;
     const roomId = rootMessage.room_id;
 
-    const snapshot = await api.sendReply(roomId, rootEventId, "Synthetic reply message");
+    const submission = await api.sendReply(
+      "submission-test-reply",
+      roomId,
+      rootEventId,
+      "Synthetic reply message"
+    );
+    const snapshot = submission.snapshot;
 
     // New reply appended at end with reply_count: 0
     const lastMessage = snapshot.timeline[snapshot.timeline.length - 1];

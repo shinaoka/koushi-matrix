@@ -467,6 +467,33 @@ describe("Composer", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  it("resolves one main key intent for rapid Enter presses", async () => {
+    let resolveAction!: (action: "send") => void;
+    const action = new Promise<"send">((resolve) => {
+      resolveAction = resolve;
+    });
+    const resolveComposerKeyAction = vi.fn(() => action);
+    const onSend = vi.fn();
+    const { container } = render(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        roomName="Room"
+        value="once"
+        resolveComposerKeyAction={resolveComposerKeyAction}
+        onCancelReply={() => undefined}
+        onSend={onSend}
+        onValueChange={vi.fn()}
+      />
+    );
+    const textarea = container.querySelector("textarea")!;
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 13 });
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 13 });
+    expect(resolveComposerKeyAction).toHaveBeenCalledTimes(1);
+    await act(async () => resolveAction("send"));
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
   it("finishes old DOM ownership and syncs a switched draft exactly once", async () => {
     vi.useFakeTimers();
     const onSend = vi.fn();

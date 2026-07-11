@@ -62,6 +62,7 @@ export interface ComposerKeyIntentSnapshot {
   readonly selectionStart: number;
   readonly selectionEnd: number;
   readonly intentGeneration: number;
+  releaseResolution(): void;
   isValidForResult(): boolean;
   isCurrentForMutation(): boolean;
 }
@@ -78,10 +79,15 @@ export function canApplyResolvedComposerAction(
 
 export function useComposerKeyIntentSnapshot(lifecycle: CompositionLifecycle) {
   const intentGenerationRef = useRef(0);
+  const resolveInFlightRef = useRef<number | null>(null);
 
-  return useCallback((textarea: HTMLTextAreaElement): ComposerKeyIntentSnapshot => {
+  return useCallback((textarea: HTMLTextAreaElement): ComposerKeyIntentSnapshot | null => {
+    if (resolveInFlightRef.current !== null) {
+      return null;
+    }
     intentGenerationRef.current += 1;
     const intentGeneration = intentGenerationRef.current;
+    resolveInFlightRef.current = intentGeneration;
     const compositionGeneration = lifecycle.generation();
     const value = textarea.value;
     const selectionStart = textarea.selectionStart;
@@ -94,6 +100,11 @@ export function useComposerKeyIntentSnapshot(lifecycle: CompositionLifecycle) {
       selectionStart,
       selectionEnd,
       intentGeneration,
+      releaseResolution: () => {
+        if (resolveInFlightRef.current === intentGeneration) {
+          resolveInFlightRef.current = null;
+        }
+      },
       isValidForResult,
       isCurrentForMutation: () =>
         isValidForResult() &&

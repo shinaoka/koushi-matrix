@@ -44,6 +44,7 @@ describe("composition lifecycle", () => {
         selectionStart: 0,
         selectionEnd: 0,
         intentGeneration: 1,
+        releaseResolution: () => undefined,
         isValidForResult: () => resultValid,
         isCurrentForMutation: () => mutationValid
       };

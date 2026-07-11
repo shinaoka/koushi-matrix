@@ -23,6 +23,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 import { createDesktopApi } from "./backend/client";
+import {
+  createComposerSubmissionController,
+  createSubmissionId,
+  type ComposerSubmissionController
+} from "./domain/composerSubmission";
 import { setActiveLocaleProfile, t } from "./i18n/messages";
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
 import {
@@ -1101,6 +1106,14 @@ export function App() {
   const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
   const [localThreadComposerDrafts, setLocalThreadComposerDrafts] = useState<Record<string, string>>({});
   const stagedUploadFilesRef = useRef<Map<string, File>>(new Map());
+  const composerSubmissionRef = useRef<ComposerSubmissionController | null>(null);
+  const threadSubmissionRef = useRef<ComposerSubmissionController | null>(null);
+  if (composerSubmissionRef.current === null) {
+    composerSubmissionRef.current = createComposerSubmissionController();
+  }
+  if (threadSubmissionRef.current === null) {
+    threadSubmissionRef.current = createComposerSubmissionController();
+  }
   const [imageCompressionDialog, setImageCompressionDialog] =
     useState<ImageCompressionDialogState | null>(null);
   const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);
@@ -1382,6 +1395,19 @@ export function App() {
       void tauriTimelineTransport.downloadAvatarThumbnail(mxcUri).catch(() => {
         requestedAvatarMxcsRef.current.delete(mxcUri);
       });
+    }
+  }, [snapshot]);
+
+  useEffect(() => {
+    const submissionId = threadSubmissionRef.current?.active();
+    const thread = snapshot?.state.ui.thread;
+    if (
+      submissionId &&
+      thread?.kind === "open" &&
+      thread.composer?.pending_transaction_id === null &&
+      thread.composer.pending_submission_id !== submissionId
+    ) {
+      threadSubmissionRef.current?.releaseTerminal(submissionId);
     }
   }, [snapshot]);
 
@@ -1667,12 +1693,12 @@ export function App() {
     qaSendPending.current = true;
     setQaSendStatus("pending");
     void api
-      .sendText(roomId, message)
-      .then((nextSnapshot) => {
-        setSnapshot(nextSnapshot);
+      .sendText(createSubmissionId(), roomId, message)
+      .then((response) => {
+        setSnapshot(response.snapshot);
         if (!isTauriRuntime()) {
           const completionStatus = qaSendSmokeCompletionStatus(
-            nextSnapshot,
+            response.snapshot,
             qaSendBaselineErrorCount.current,
             qaSendBaselineTimelineItems.current
           );
@@ -2723,6 +2749,10 @@ export function App() {
     // Reply semantics are Rust-owned: dispatch sendReply when the composer is
     // in reply mode, otherwise plain sendText.
     const composerMode = snapshot?.state.ui.timeline.composer.mode ?? "Plain";
+    const submissionId = composerSubmissionRef.current!.begin();
+    if (submissionId === null) {
+      return;
+    }
 
     qaSendStarted.current = true;
     qaSendBaselineErrorCount.current = snapshot?.state.ui.errors.length ?? 0;
@@ -2740,20 +2770,27 @@ export function App() {
       const mentions = pruneMentionIntentForDraft(composerMentions, body);
       const nextSnapshot =
         composerMode === "Plain"
-          ? await api.sendText(roomId, body, mentions)
+          ? await api.sendText(submissionId, roomId, body, mentions)
           : await api.sendReply(
+              submissionId,
               roomId,
               composerMode.Reply.in_reply_to_event_id,
               body,
               mentions
             );
+      if (nextSnapshot.submissionId !== submissionId || nextSnapshot.outcome !== "accepted") {
+        composerSubmissionRef.current!.reject(submissionId);
+        setSnapshot(nextSnapshot.snapshot);
+        return;
+      }
+      composerSubmissionRef.current!.accept(submissionId);
       cancelComposerDraftPersist();
       clearLocalComposerDraft(roomId);
-      setSnapshot(nextSnapshot);
+      setSnapshot(nextSnapshot.snapshot);
       updateComposerTypingSignal(roomId, "");
       if (!isTauriRuntime()) {
         const completionStatus = qaSendSmokeCompletionStatus(
-          nextSnapshot,
+          nextSnapshot.snapshot,
           qaSendBaselineErrorCount.current,
           qaSendBaselineTimelineItems.current
         );
@@ -2761,12 +2798,24 @@ export function App() {
         setQaSendStatus(completionStatus);
       }
     } catch {
+      composerSubmissionRef.current!.reject(submissionId);
       qaSendPending.current = false;
       setQaSendStatus("failed");
       return;
     }
     setComposerMentions(EMPTY_MENTION_INTENT);
   }
+
+  useEffect(() => {
+    const submissionId = composerSubmissionRef.current?.active();
+    if (
+      submissionId &&
+      snapshot?.state.ui.timeline.composer.pending_transaction_id === null &&
+      snapshot.state.ui.timeline.composer.pending_submission_id !== submissionId
+    ) {
+      composerSubmissionRef.current?.releaseTerminal(submissionId);
+    }
+  }, [snapshot]);
 
   async function scheduleSend(sendAtMs: number, bodyOverride?: string) {
     const roomId = snapshot?.state.ui.timeline.room_id;
@@ -3073,9 +3122,26 @@ export function App() {
   }
 
   async function sendThreadReply(roomId: string, rootEventId: string, body: string) {
+    const submissionId = threadSubmissionRef.current!.begin();
+    if (submissionId === null) {
+      return;
+    }
+    let response;
+    try {
+      response = await api.sendThreadReply(submissionId, roomId, rootEventId, body);
+    } catch {
+      threadSubmissionRef.current!.reject(submissionId);
+      return;
+    }
+    if (response.submissionId !== submissionId || response.outcome !== "accepted") {
+      threadSubmissionRef.current!.reject(submissionId);
+      setSnapshot(response.snapshot);
+      return;
+    }
+    threadSubmissionRef.current!.accept(submissionId);
     cancelThreadComposerDraftPersist(roomId, rootEventId);
     clearLocalThreadComposerDraft(roomId, rootEventId);
-    setSnapshot(await api.sendThreadReply(roomId, rootEventId, body));
+    setSnapshot(response.snapshot);
   }
 
   function queueThreadComposerDraftPersist(roomId: string, rootEventId: string, draft: string) {
