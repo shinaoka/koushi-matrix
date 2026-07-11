@@ -957,6 +957,11 @@ pub enum AppAction {
         room_id: String,
         receipts_by_event: Vec<LiveEventReceipts>,
     },
+    LiveRoomReceiptsWindowReconciled {
+        room_id: String,
+        scoped_event_ids: Vec<String>,
+        receipts_by_event: Vec<LiveEventReceipts>,
+    },
     FullyReadMarkerUpdated {
         room_id: String,
         event_id: Option<String>,

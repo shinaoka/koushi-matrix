@@ -1071,21 +1071,25 @@ stateDiagram-v2
     [*] --> Empty
     Empty --> RoomSignals: LiveRoomSignalsUpdated
     Empty --> RoomSignals: LiveRoomReceiptsUpdated
+    Empty --> RoomSignals: LiveRoomReceiptsWindowReconciled
     Empty --> RoomSignals: FullyReadMarkerUpdated
     Empty --> RoomSignals: TypingUsersUpdated
     Empty --> PresenceSignals: PresenceUpdated
     RoomSignals --> RoomSignals: LiveRoomSignalsUpdated
     RoomSignals --> RoomSignals: LiveRoomReceiptsUpdated
+    RoomSignals --> RoomSignals: LiveRoomReceiptsWindowReconciled
     RoomSignals --> RoomSignals: FullyReadMarkerUpdated
     RoomSignals --> RoomSignals: TypingUsersUpdated
     RoomSignals --> RoomAndPresence: PresenceUpdated
     PresenceSignals --> PresenceSignals: PresenceUpdated
     PresenceSignals --> RoomAndPresence: LiveRoomSignalsUpdated
     PresenceSignals --> RoomAndPresence: LiveRoomReceiptsUpdated
+    PresenceSignals --> RoomAndPresence: LiveRoomReceiptsWindowReconciled
     PresenceSignals --> RoomAndPresence: FullyReadMarkerUpdated
     PresenceSignals --> RoomAndPresence: TypingUsersUpdated
     RoomAndPresence --> RoomAndPresence: LiveRoomSignalsUpdated
     RoomAndPresence --> RoomAndPresence: LiveRoomReceiptsUpdated
+    RoomAndPresence --> RoomAndPresence: LiveRoomReceiptsWindowReconciled
     RoomAndPresence --> RoomAndPresence: FullyReadMarkerUpdated
     RoomAndPresence --> RoomAndPresence: TypingUsersUpdated
     RoomAndPresence --> RoomAndPresence: PresenceUpdated
@@ -1102,6 +1106,11 @@ stateDiagram-v2
 - `LiveRoomReceiptsUpdated { room_id, receipts_by_event }` is a partial merge
   into the room receipt map. It does not clear typing users or the fully-read
   marker.
+- `LiveRoomReceiptsWindowReconciled { room_id, scoped_event_ids,
+  receipts_by_event }` is an authoritative replacement only for the stable
+  event-ID union of the actor's old and replacement timeline windows. It first
+  removes receipt entries in that scope, then inserts the replacement snapshot;
+  receipt state outside the scope is preserved.
 - Receipt reader display data is resolved in Rust before it reaches the GUI.
   Each event's receipt projection deduplicates by reader user id using the
   newest timestamp, fills missing display labels and avatar DTOs from

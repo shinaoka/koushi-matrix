@@ -1025,6 +1025,16 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             receipts_by_event,
         } => live_signals::handle_live_room_receipts_updated(state, room_id, receipts_by_event),
+        AppAction::LiveRoomReceiptsWindowReconciled {
+            room_id,
+            scoped_event_ids,
+            receipts_by_event,
+        } => live_signals::handle_live_room_receipts_window_reconciled(
+            state,
+            room_id,
+            scoped_event_ids,
+            receipts_by_event,
+        ),
         AppAction::FullyReadMarkerUpdated { room_id, event_id } => {
             live_signals::handle_fully_read_marker_updated(state, room_id, event_id)
         }

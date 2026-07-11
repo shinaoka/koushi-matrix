@@ -645,6 +645,53 @@ fn local_user_aliases_override_read_receipt_reader_labels() {
 }
 
 #[test]
+fn receipt_window_reconcile_clears_missing_scoped_events_and_preserves_outside_scope() {
+    let mut state = ready_state();
+    for event_id in [
+        "$removed:localhost",
+        "$updated:localhost",
+        "$outside:localhost",
+    ] {
+        reduce(
+            &mut state,
+            AppAction::LiveRoomReceiptsUpdated {
+                room_id: "!room:localhost".to_owned(),
+                receipts_by_event: vec![LiveEventReceipts {
+                    event_id: event_id.to_owned(),
+                    receipts: vec![LiveReadReceipt {
+                        user_id: "@bob:localhost".to_owned(),
+                        display_name: None,
+                        original_display_label: String::new(),
+                        avatar: None,
+                        timestamp_ms: Some(1),
+                    }],
+                }],
+            },
+        );
+    }
+
+    reduce(
+        &mut state,
+        AppAction::LiveRoomReceiptsWindowReconciled {
+            room_id: "!room:localhost".to_owned(),
+            scoped_event_ids: vec![
+                "$removed:localhost".to_owned(),
+                "$updated:localhost".to_owned(),
+            ],
+            receipts_by_event: vec![LiveEventReceipts {
+                event_id: "$updated:localhost".to_owned(),
+                receipts: Vec::new(),
+            }],
+        },
+    );
+
+    let receipts = &state.live_signals.rooms["!room:localhost"].receipts_by_event;
+    assert!(!receipts.contains_key("$removed:localhost"));
+    assert_eq!(receipts["$updated:localhost"].total_count, 0);
+    assert!(receipts.contains_key("$outside:localhost"));
+}
+
+#[test]
 fn room_space_and_invite_summaries_surface_avatar_mxc() {
     let mut state = ready_state();
 

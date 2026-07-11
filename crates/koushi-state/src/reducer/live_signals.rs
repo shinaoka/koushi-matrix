@@ -28,6 +28,30 @@ pub(crate) fn handle_live_room_receipts_updated(
     vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
 }
 
+pub(crate) fn handle_live_room_receipts_window_reconciled(
+    state: &mut AppState,
+    room_id: String,
+    scoped_event_ids: Vec<String>,
+    receipts_by_event: Vec<crate::state::LiveEventReceipts>,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    let own_user_id = session_user_id(state).map(str::to_owned);
+    let normalized = crate::state::LiveRoomSignalUpdate {
+        receipts_by_event,
+        fully_read_event_id: None,
+        typing_user_ids: Vec::new(),
+    }
+    .into_room_signals_with_profiles(&state.profile, own_user_id.as_deref());
+    let room = state.live_signals.rooms.entry(room_id).or_default();
+    for event_id in scoped_event_ids {
+        room.receipts_by_event.remove(&event_id);
+    }
+    room.receipts_by_event.extend(normalized.receipts_by_event);
+    vec![AppEffect::EmitUiEvent(UiEvent::LiveSignalsChanged)]
+}
+
 pub(crate) fn handle_fully_read_marker_updated(
     state: &mut AppState,
     room_id: String,

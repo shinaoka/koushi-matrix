@@ -7898,6 +7898,49 @@ impl TimelineActor {
         }
     }
 
+    async fn reconcile_authoritative_snapshot(
+        &mut self,
+        old_window_event_ids: &std::collections::BTreeSet<String>,
+        items: &eyeball_im::Vector<Arc<SdkTimelineItem>>,
+    ) {
+        let mut replacement_media_sources = HashMap::new();
+        for item in items {
+            cache_sdk_item_media_source(&mut replacement_media_sources, item);
+        }
+        replace_authoritative_cache(&mut self.media_sources, replacement_media_sources);
+        let new_window_event_ids = items
+            .iter()
+            .filter_map(|item| match item.kind() {
+                matrix_sdk_ui::timeline::TimelineItemKind::Event(event) => {
+                    event.event_id().map(ToString::to_string)
+                }
+                matrix_sdk_ui::timeline::TimelineItemKind::Virtual(_) => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let reconciliation =
+            authoritative_window_reconciliation(old_window_event_ids, &new_window_event_ids);
+        if let Some(room_id) = timeline_room_id(&self.key) {
+            let _ = self
+                .emit_action_reliable(authoritative_receipts_action(
+                    &room_id,
+                    &reconciliation,
+                    live_event_receipts_from_sdk_items(items.iter()),
+                ))
+                .await;
+        }
+        if let Some(tx) = &self.search_index_tx {
+            for message in authoritative_search_removals(&reconciliation) {
+                if tx.send(message).await.is_err() {
+                    return;
+                }
+            }
+            self.forward_diff_to_search(&eyeball_im::VectorDiff::Reset {
+                values: items.clone(),
+            })
+            .await;
+        }
+    }
+
     /// Forward SDK diff mutations to the search index channel reliably.
     /// Redactions are privacy-sensitive removals and must not be silently
     /// dropped as freshness-only updates.
@@ -8472,6 +8515,14 @@ impl TimelineActor {
         //    stream from one SDK subscription boundary.
         let current_items = prepared.snapshot;
         let diff_stream = prepared.stream;
+        let old_window_event_ids = self
+            .navigation_items
+            .iter()
+            .filter_map(timeline_item_event_id)
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>();
+        self.reconcile_authoritative_snapshot(&old_window_event_ids, &current_items)
+            .await;
 
         // 5. Emit fresh InitialItems for the new generation.
         let link_preview_context = self.link_preview_policy.for_room(self.key.room_id());
@@ -8748,6 +8799,48 @@ struct PreparedRelayRecovery<Snapshot, Stream> {
     generation: TimelineGeneration,
     snapshot: Snapshot,
     stream: Stream,
+}
+
+struct AuthoritativeWindowReconciliation {
+    scoped_event_ids: Vec<String>,
+    removed_event_ids: Vec<String>,
+}
+
+fn authoritative_window_reconciliation(
+    old_event_ids: &std::collections::BTreeSet<String>,
+    new_event_ids: &std::collections::BTreeSet<String>,
+) -> AuthoritativeWindowReconciliation {
+    AuthoritativeWindowReconciliation {
+        scoped_event_ids: old_event_ids.union(new_event_ids).cloned().collect(),
+        removed_event_ids: old_event_ids.difference(new_event_ids).cloned().collect(),
+    }
+}
+
+fn authoritative_search_removals(
+    reconciliation: &AuthoritativeWindowReconciliation,
+) -> Vec<SearchIndexMessage> {
+    reconciliation
+        .removed_event_ids
+        .iter()
+        .cloned()
+        .map(|event_id| SearchIndexMessage::Redact { event_id })
+        .collect()
+}
+
+fn authoritative_receipts_action(
+    room_id: &str,
+    reconciliation: &AuthoritativeWindowReconciliation,
+    receipts_by_event: Vec<LiveEventReceipts>,
+) -> AppAction {
+    AppAction::LiveRoomReceiptsWindowReconciled {
+        room_id: room_id.to_owned(),
+        scoped_event_ids: reconciliation.scoped_event_ids.clone(),
+        receipts_by_event,
+    }
+}
+
+fn replace_authoritative_cache<K, V>(cache: &mut HashMap<K, V>, replacement: HashMap<K, V>) {
+    *cache = replacement;
 }
 
 async fn prepare_relay_recovery<Subscribe, SubscribeFuture, Snapshot, Stream>(
@@ -17949,6 +18042,49 @@ mod tests {
             event_rx.try_recv(),
             Err(broadcast::error::TryRecvError::Empty)
         ));
+    }
+
+    #[test]
+    fn relay_overflow_authoritative_window_plan_scopes_receipts_and_search_removals() {
+        let old = std::collections::BTreeSet::from([
+            "$removed:test".to_owned(),
+            "$retained:test".to_owned(),
+        ]);
+        let new = std::collections::BTreeSet::from([
+            "$retained:test".to_owned(),
+            "$added:test".to_owned(),
+        ]);
+        let plan = authoritative_window_reconciliation(&old, &new);
+        assert_eq!(
+            plan.scoped_event_ids,
+            vec!["$added:test", "$removed:test", "$retained:test"]
+        );
+        assert_eq!(plan.removed_event_ids, vec!["$removed:test"]);
+        assert!(matches!(
+            authoritative_search_removals(&plan).as_slice(),
+            [SearchIndexMessage::Redact { event_id }] if event_id == "$removed:test"
+        ));
+        assert!(matches!(
+            authoritative_receipts_action("!room:test", &plan, Vec::new()),
+            AppAction::LiveRoomReceiptsWindowReconciled {
+                scoped_event_ids,
+                receipts_by_event,
+                ..
+            } if scoped_event_ids.len() == 3 && receipts_by_event.is_empty()
+        ));
+    }
+
+    #[test]
+    fn relay_overflow_authoritative_cache_rebuild_removes_old_and_installs_new_entries() {
+        let mut cache = HashMap::from([("old", 1_u8), ("retained-old-value", 2)]);
+        replace_authoritative_cache(
+            &mut cache,
+            HashMap::from([("retained-old-value", 3_u8), ("new", 4)]),
+        );
+        assert_eq!(
+            cache,
+            HashMap::from([("retained-old-value", 3_u8), ("new", 4)])
+        );
     }
 
     #[tokio::test]
