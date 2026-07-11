@@ -90,6 +90,7 @@ describe("desktop notification content", () => {
       clear: vi.fn().mockResolvedValue(undefined)
     };
 
+    const diagnostic = vi.fn();
     await expect(
       sendDesktopAttentionNotification(
         {
@@ -98,10 +99,12 @@ describe("desktop notification content", () => {
           unreadCount: 1,
           highlightCount: 0
         },
-        transport
+        transport,
+        diagnostic
       )
     ).resolves.toBeUndefined();
     expect(transport.notify).toHaveBeenCalledOnce();
+    expect(diagnostic).toHaveBeenCalledWith("attention_notification_failed");
   });
 
   test("clears native notifications through a mockable adapter", async () => {
@@ -113,6 +116,17 @@ describe("desktop notification content", () => {
     await clearDesktopAttentionNotifications(transport);
 
     expect(transport.clear).toHaveBeenCalledOnce();
+  });
+
+  test("reports native notification clear failure with a fixed token", async () => {
+    const transport = {
+      notify: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn().mockRejectedValue(new Error("private raw failure"))
+    };
+    const diagnostic = vi.fn();
+    await expect(clearDesktopAttentionNotifications(transport, diagnostic)).resolves.toBeUndefined();
+    expect(diagnostic).toHaveBeenCalledWith("attention_notification_clear_failed");
+    expect(diagnostic).not.toHaveBeenCalledWith(expect.stringContaining("private raw failure"));
   });
 
   test("swallows native notification clearing failures", async () => {

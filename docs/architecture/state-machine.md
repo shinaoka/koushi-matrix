@@ -2198,6 +2198,15 @@ stateDiagram-v2
   pass that Rust-owned setting into transient adapter routing to skip sound, but
   must not keep a separate notification preference or alter
   `NativeAttentionState` locally.
+- Sound playback crosses a typed Tauri command into a cfg-specific Rust native
+  adapter (macOS AudioToolbox, Windows User32; Linux explicitly unsupported).
+  No WebView audio or external process fallback is allowed. A deterministic
+  three-second dispatcher cooldown coalesces candidate bursts independently of
+  Rust candidate dedupe.
+- Numeric badge, overlay, and tray APIs are called only for `Available`
+  capabilities; `Unknown` and `Unavailable` never trigger substitute surfaces.
+  Native failures are nonfatal but emit fixed `attention_*_failed` diagnostic
+  tokens without raw errors, paths, or Matrix identifiers.
 - Space attention for the workspace rail is projected by Rust
   `SidebarModel.space_rail`; React renders those unread/highlight counts without
   recomputing child-room state. Timeline thread summary chips render

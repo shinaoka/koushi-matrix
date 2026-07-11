@@ -5,7 +5,10 @@ import {
   sendNotification
 } from "@tauri-apps/plugin-notification";
 
-import type { DesktopAttentionNotificationCandidate } from "./desktopAttention";
+import type {
+  DesktopAttentionDiagnosticSink,
+  DesktopAttentionNotificationCandidate
+} from "./desktopAttention";
 
 export interface DesktopNotificationContent {
   title: string;
@@ -44,22 +47,24 @@ export function desktopAttentionNotificationContent(
 
 export async function sendDesktopAttentionNotification(
   candidate: DesktopAttentionNotificationCandidate,
-  transport: DesktopNotificationTransport
+  transport: DesktopNotificationTransport,
+  diagnostic?: DesktopAttentionDiagnosticSink
 ): Promise<void> {
   try {
     await transport.notify(desktopAttentionNotificationContent(candidate));
   } catch {
-    // Best-effort desktop attention: notification failures must not surface.
+    diagnostic?.("attention_notification_failed");
   }
 }
 
 export async function clearDesktopAttentionNotifications(
-  transport: DesktopNotificationTransport
+  transport: DesktopNotificationTransport,
+  diagnostic?: DesktopAttentionDiagnosticSink
 ): Promise<void> {
   try {
     await transport.clear();
   } catch {
-    // Best-effort desktop attention: native clearing failures must not surface.
+    diagnostic?.("attention_notification_clear_failed");
   }
 }
 
@@ -75,7 +80,10 @@ export function createTauriDesktopNotificationTransport(): DesktopNotificationTr
       await sendNotification(content);
     },
     async clear() {
-      await Promise.allSettled([cancelAll(), removeAllActive()]);
+      const outcomes = await Promise.allSettled([cancelAll(), removeAllActive()]);
+      if (outcomes.some((outcome) => outcome.status === "rejected")) {
+        throw new Error("native_notification_clear_failed");
+      }
     }
   };
 }

@@ -65,7 +65,7 @@ fn native_attention_capabilities_are_resolved_from_platform_profile() {
     assert_eq!(linux.overlay_icon, NativeAttentionCapability::Unavailable);
     assert_eq!(macos.sound, NativeAttentionCapability::Available);
     assert_eq!(windows.sound, NativeAttentionCapability::Available);
-    assert_eq!(linux.sound, NativeAttentionCapability::Available);
+    assert_eq!(linux.sound, NativeAttentionCapability::Unavailable);
     assert_eq!(macos.tray, NativeAttentionCapability::Unknown);
     assert_eq!(windows.tray, NativeAttentionCapability::Unknown);
     assert_eq!(linux.tray, NativeAttentionCapability::Unknown);

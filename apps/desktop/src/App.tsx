@@ -83,7 +83,8 @@ import {
 } from "./domain/rightPanel";
 import {
   applyDesktopAttentionToWindow,
-  dispatchDesktopAttentionTransientEffects,
+  createDesktopAttentionTransientDispatcher,
+  createTauriDesktopAttentionTransientTransport,
   desktopAttentionSummary,
   desktopAttentionWindowTitle,
   desktopAttentionNotificationCandidate
@@ -400,6 +401,12 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
 const tauriNotificationTransport = isTauriRuntime()
   ? createTauriDesktopNotificationTransport()
   : null;
+const tauriAttentionTransientTransport = isTauriRuntime()
+  ? createTauriDesktopAttentionTransientTransport(() =>
+      invoke<"played" | "unsupported" | "failed">("play_native_attention_sound")
+    )
+  : null;
+const desktopAttentionTransientDispatcher = createDesktopAttentionTransientDispatcher();
 type ReportDialogState =
   | { kind: "user"; userId: string }
   | { kind: "content"; roomId: string; eventId: string }
@@ -1595,7 +1602,12 @@ export function App() {
       getCurrentWindow(),
       title,
       safeAttentionSummary.badgeCount,
-      snapshot?.state.domain.native_attention.summary.capabilities
+      snapshot?.state.domain.native_attention.summary.capabilities,
+      (token) => appendDiagnosticLog({
+        timestampMs: Date.now(),
+        source: "native.attention",
+        message: token
+      })
     );
   }, [
     snapshot,
@@ -1615,17 +1627,28 @@ export function App() {
       snapshot.state.domain.native_attention
     );
 
-    if (!candidate || !tauriNotificationTransport) {
+    if (!candidate || !tauriNotificationTransport || !tauriAttentionTransientTransport) {
       return;
     }
 
-    void dispatchDesktopAttentionTransientEffects(
-      getCurrentWindow(),
+    const currentWindow = getCurrentWindow();
+    void desktopAttentionTransientDispatcher.dispatch(
+      {
+        ...tauriAttentionTransientTransport,
+        requestUserAttention: (requestType) => currentWindow.requestUserAttention(requestType)
+      },
       candidate,
       snapshot.state.domain.native_attention.summary.capabilities,
-      snapshot.state.domain.settings.values.notifications
+      snapshot.state.domain.settings.values.notifications,
+      (token) => appendDiagnosticLog({
+        timestampMs: Date.now(),
+        source: "native.attention",
+        message: token
+      })
     );
-    void sendDesktopAttentionNotification(candidate, tauriNotificationTransport);
+    void sendDesktopAttentionNotification(candidate, tauriNotificationTransport, (token) =>
+      appendDiagnosticLog({ timestampMs: Date.now(), source: "native.attention", message: token })
+    );
   }, [
     snapshot?.state.domain.native_attention.dispatch.kind,
     snapshot?.state.domain.native_attention.summary.candidate?.room_display_name,
@@ -1639,7 +1662,9 @@ export function App() {
       return;
     }
 
-    void clearDesktopAttentionNotifications(tauriNotificationTransport);
+    void clearDesktopAttentionNotifications(tauriNotificationTransport, (token) =>
+      appendDiagnosticLog({ timestampMs: Date.now(), source: "native.attention", message: token })
+    );
   }, [safeAttentionSummary.badgeCount]);
 
   useEffect(() => {

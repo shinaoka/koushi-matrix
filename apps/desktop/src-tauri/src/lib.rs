@@ -1025,6 +1025,7 @@ pub fn run() {
             commands::settings::update_settings,
             commands::settings::rebuild_search_index,
             commands::settings::set_room_url_preview_override,
+            commands::native_attention::play_native_attention_sound,
             commands::room::select_room_list_filter,
             commands::room::mark_room_as_read,
             commands::room::mark_room_as_unread,

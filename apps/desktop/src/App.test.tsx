@@ -1732,7 +1732,8 @@ describe("Tauri state refresh wiring", () => {
 
     const notificationEffectEnd = source.indexOf("]);", notificationStart);
     const notificationEffectSource = source.slice(notificationStart, notificationEffectEnd);
-    expect(notificationEffectSource).toContain("void dispatchDesktopAttentionTransientEffects");
+    expect(notificationEffectSource).toContain("void desktopAttentionTransientDispatcher.dispatch");
+    expect(notificationEffectSource).toContain("tauriAttentionTransientTransport");
     expect(notificationEffectSource).toContain("snapshot.state.domain.native_attention.summary.capabilities");
     expect(notificationEffectSource).not.toContain("snapshot.state.domain.rooms");
 
@@ -1745,7 +1746,7 @@ describe("Tauri state refresh wiring", () => {
 
     expect(source).toContain("desktopAttentionWindowTitle");
     expect(source).toContain("sendDesktopAttentionNotification");
-    expect(source).toContain("dispatchDesktopAttentionTransientEffects");
+    expect(source).toContain("createDesktopAttentionTransientDispatcher");
     expect(source).toContain("applyDesktopAttentionToWindow");
     expect(source).toContain("qaWindowTitle(");
     expect(source).toContain("effectiveRightPanelModeForSnapshot");

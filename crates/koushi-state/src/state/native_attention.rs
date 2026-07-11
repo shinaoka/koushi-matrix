@@ -267,7 +267,12 @@ pub fn native_attention_capabilities_for_platform(
                 NativeAttentionCapability::Unavailable
             }
         },
-        sound: NativeAttentionCapability::Available,
+        sound: match platform {
+            DisplayPlatform::Macos | DisplayPlatform::Windows => {
+                NativeAttentionCapability::Available
+            }
+            DisplayPlatform::Linux => NativeAttentionCapability::Unavailable,
+        },
         tray: NativeAttentionCapability::Unknown,
         activation: NativeAttentionCapability::Unknown,
     }
