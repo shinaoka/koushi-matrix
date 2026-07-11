@@ -96,6 +96,7 @@ import type {
 import { openExternalHttpUrl, toExternalHttpUrl } from "../domain/externalLinks";
 import { mediaSourceUrl } from "../domain/mediaUrl";
 import {
+  canApplyResolvedComposerAction,
   isComposerImeEnter,
   useComposerKeyIntentSnapshot,
   useCompositionOwnedTextarea
@@ -5160,10 +5161,10 @@ export function TimelineItemRow({
 
       void resolveComposerKeyAction("edit", keyEvent, resolverOptions)
         .then((action) => {
+          if (!canApplyResolvedComposerAction(intent, action)) {
+            return;
+          }
           if (action === "send") {
-            if (!intent.isValidForResult()) {
-              return;
-            }
             if (eventId && intent.value.trim()) {
               onEdit(roomId, eventId, intent.value.trim());
               closeEditForm();
@@ -5171,9 +5172,6 @@ export function TimelineItemRow({
             return;
           }
           if (action === "insertNewline") {
-            if (!intent.isCurrentForMutation()) {
-              return;
-            }
             const nextDraft = insertNewlineAtSelection(
               intent.value,
               intent.selectionStart,

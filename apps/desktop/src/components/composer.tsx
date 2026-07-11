@@ -38,6 +38,7 @@ import {
 } from "../domain/composerKeyEvents";
 import { EmojiPicker } from "./EmojiPicker";
 import {
+  canApplyResolvedComposerAction,
   isComposerImeEnter,
   useComposerKeyIntentSnapshot,
   useCompositionOwnedTextarea
@@ -358,17 +359,14 @@ export const Composer = memo(function Composer({
 
     void resolveComposerKeyAction("main", keyEvent, resolverOptions)
       .then((action) => {
+        if (!canApplyResolvedComposerAction(intent, action)) {
+          return;
+        }
         if (action === "send") {
-          if (!intent.isValidForResult()) {
-            return;
-          }
           void onSend(intent.value);
           return;
         }
         if (action === "insertNewline") {
-          if (!intent.isCurrentForMutation()) {
-            return;
-          }
           const nextValue = insertNewlineAtSelection(
             intent.value,
             intent.selectionStart,
@@ -804,17 +802,14 @@ function ThreadComposer({
 
     void resolveComposerKeyAction("thread", keyEvent, resolverOptions)
       .then((action) => {
+        if (!canApplyResolvedComposerAction(intent, action)) {
+          return;
+        }
         if (action === "send") {
-          if (!intent.isValidForResult()) {
-            return;
-          }
           void onSend(intent.value);
           return;
         }
         if (action === "insertNewline") {
-          if (!intent.isCurrentForMutation()) {
-            return;
-          }
           const nextDraft = insertNewlineAtSelection(
             intent.value,
             intent.selectionStart,

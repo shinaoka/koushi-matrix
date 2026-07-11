@@ -322,6 +322,64 @@ describe("Composer", () => {
     }
   );
 
+  it("discards deferred reply cancel after the main composer unmounts", async () => {
+    let resolveAction!: (action: "cancel") => void;
+    const action = new Promise<"cancel">((resolve) => {
+      resolveAction = resolve;
+    });
+    const onCancelReply = vi.fn();
+    const { container, unmount } = render(
+      <Composer
+        composerMode={{ kind: "reply", in_reply_to_event_id: "$reply" }}
+        isSending={false}
+        roomName="Room"
+        value="draft"
+        resolveComposerKeyAction={() => action}
+        onCancelReply={onCancelReply}
+        onSend={vi.fn()}
+        onValueChange={vi.fn()}
+      />
+    );
+    fireEvent.keyDown(container.querySelector("textarea")!, {
+      key: "Escape",
+      code: "Escape",
+      keyCode: 27
+    });
+    unmount();
+    await act(async () => resolveAction("cancel"));
+
+    expect(onCancelReply).not.toHaveBeenCalled();
+  });
+
+  it("discards deferred autocomplete acceptance after newer input", async () => {
+    let resolveAction!: (action: "acceptAutocomplete") => void;
+    const action = new Promise<"acceptAutocomplete">((resolve) => {
+      resolveAction = resolve;
+    });
+    const onValueChange = vi.fn();
+    const { container } = render(
+      <Composer
+        composerMode={{ kind: "plain" }}
+        isSending={false}
+        mentionCandidates={mentionCandidates}
+        roomName="Room"
+        value="@a"
+        resolveComposerKeyAction={() => action}
+        onCancelReply={() => undefined}
+        onSend={vi.fn()}
+        onValueChange={onValueChange}
+      />
+    );
+    const textarea = container.querySelector("textarea")!;
+    textarea.setSelectionRange(2, 2);
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 13 });
+    fireEvent.change(textarea, { target: { value: "newer input" } });
+    await act(async () => resolveAction("acceptAutocomplete"));
+
+    expect(textarea.value).toBe("newer input");
+    expect(onValueChange).toHaveBeenCalledTimes(1);
+  });
+
   it("sends the thread value captured when deferred Enter was pressed", async () => {
     let resolveAction!: (action: "send") => void;
     const action = new Promise<"send">((resolve) => {

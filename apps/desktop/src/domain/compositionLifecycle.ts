@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import type { ComposerResolvedAction } from "./types";
 
 export interface CompositionLifecycle {
   start(): number;
@@ -63,6 +64,16 @@ export interface ComposerKeyIntentSnapshot {
   readonly intentGeneration: number;
   isValidForResult(): boolean;
   isCurrentForMutation(): boolean;
+}
+
+export function canApplyResolvedComposerAction(
+  intent: ComposerKeyIntentSnapshot,
+  action: ComposerResolvedAction
+): boolean {
+  if (action === "insertNewline" || action === "acceptAutocomplete") {
+    return intent.isCurrentForMutation();
+  }
+  return intent.isValidForResult();
 }
 
 export function useComposerKeyIntentSnapshot(lifecycle: CompositionLifecycle) {
