@@ -8,6 +8,7 @@ use koushi_state::ScheduledSendCapability;
 use matrix_sdk::ruma::api::FeatureFlag;
 
 pub(crate) const MSC4140_FEATURE: &str = "org.matrix.msc4140";
+pub(crate) const LOCAL_SCHEDULED_SEND_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 pub(crate) fn capability_from_unstable_features(
     features: &BTreeSet<FeatureFlag>,
@@ -41,6 +42,24 @@ pub(crate) fn current_epoch_ms() -> u64 {
         .unwrap_or_default()
 }
 
+pub(crate) fn local_scheduled_send_retry_at_ms() -> u64 {
+    current_epoch_ms().saturating_add(LOCAL_SCHEDULED_SEND_RETRY_DELAY.as_millis() as u64)
+}
+
+pub(crate) fn scheduled_send_transaction_id(scheduled_id: &str) -> String {
+    let sanitized = scheduled_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    format!("desktop-{sanitized}")
+}
+
 pub(crate) async fn detect_capability(client: &matrix_sdk::Client) -> ScheduledSendCapability {
     match client.unstable_features().await {
         Ok(features) => capability_from_unstable_features(&features),
@@ -53,7 +72,18 @@ mod tests {
     use koushi_state::ScheduledSendCapability;
     use matrix_sdk::ruma::api::FeatureFlag;
 
-    use super::{MSC4140_FEATURE, capability_from_unstable_features, server_delay_timeout};
+    use super::{
+        MSC4140_FEATURE, capability_from_unstable_features, scheduled_send_transaction_id,
+        server_delay_timeout,
+    };
+
+    #[test]
+    fn scheduled_send_transaction_id_is_deterministic_and_matrix_safe() {
+        assert_eq!(
+            scheduled_send_transaction_id("scheduled 12/34"),
+            "desktop-scheduled-12-34"
+        );
+    }
 
     #[test]
     fn capability_detects_msc4140_server_support() {

@@ -2352,7 +2352,7 @@ fn validate_composer_body_for_timeline_send(body: &str) -> Result<(), TimelineFa
     }
 }
 
-fn build_room_message_content_from_composer_body(
+pub(crate) fn build_room_message_content_from_composer_body(
     body: &str,
     mentions: MentionIntent,
 ) -> Result<RoomMessageEventContent, TimelineFailureKind> {

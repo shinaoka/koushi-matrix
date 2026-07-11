@@ -1436,6 +1436,7 @@ mod tests {
             body: plaintext.to_owned(),
             send_at_ms: 1_900_000_000_000,
             handle: koushi_state::ScheduledSendHandle::Local,
+            is_dispatching: false,
         });
 
         actor
@@ -1509,6 +1510,7 @@ mod tests {
             body: "scheduled body".to_owned(),
             send_at_ms: 1_900_000_000_000,
             handle: koushi_state::ScheduledSendHandle::Local,
+            is_dispatching: false,
         });
 
         actor
