@@ -456,8 +456,9 @@ stateDiagram-v2
   with those exact captured values. Later accepted/terminal observation may
   settle the guard without a retry.
 - Acceptance and settlement tombstones live in one Rust-owned global timeline
-  submission registry, independent of the selected room or open thread. Both
-  lists are bounded to 128 opaque IDs and are serialized in snapshots. Tauri
+  submission registry, independent of the selected room or open thread. The
+  accepted list is the non-evicting active set; settlement removes its ID and
+  appends it to a 128-entry settled FIFO. Both are serialized in snapshots. Tauri
   confirms acceptance from this registry, so room navigation cannot hide an
   admitted submission. Frontend submission controllers are keyed by stable
   main-room or thread-room/root targets; navigation to another target creates a

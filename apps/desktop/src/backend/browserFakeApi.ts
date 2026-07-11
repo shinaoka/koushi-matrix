@@ -307,6 +307,10 @@ class BrowserFakeApi implements DesktopApi {
     composer.pending_submission_id = null;
     composer.pending_transaction_id = null;
     if (submissionId) {
+      const active = this.snapshot.state.ui.timeline.submission_registry.accepted_submission_ids;
+      this.snapshot.state.ui.timeline.submission_registry.accepted_submission_ids = active.filter(
+        (id) => id !== submissionId
+      );
       this.rememberSubmissionRegistryId(
         this.snapshot.state.ui.timeline.submission_registry.settled_submission_ids,
         submissionId

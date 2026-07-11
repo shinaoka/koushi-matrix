@@ -545,8 +545,9 @@ fn global_submission_registry_tracks_offscreen_acceptance_and_settlement() {
 }
 
 #[test]
-fn global_submission_registry_is_bounded() {
+fn global_submission_registry_never_evicts_active_and_bounds_only_settled() {
     let mut state = selected_room_state("room-b");
+    let first = SubmissionId::new("global-0");
     for index in 0..129 {
         let id = SubmissionId::new(format!("global-{index}"));
         reduce(
@@ -558,10 +559,27 @@ fn global_submission_registry_is_bounded() {
                 body: "body".to_owned(),
             },
         );
+    }
+    assert_eq!(
+        state
+            .timeline
+            .submission_registry
+            .accepted_submission_ids
+            .len(),
+        129
+    );
+    assert!(
+        state
+            .timeline
+            .submission_registry
+            .accepted_submission_ids
+            .contains(&first)
+    );
+    for index in 0..129 {
         reduce(
             &mut state,
             AppAction::ComposerSubmissionSettled {
-                submission_id: id,
+                submission_id: SubmissionId::new(format!("global-{index}")),
                 transaction_id: format!("txn-{index}"),
                 target: ComposerSubmissionTarget::Main {
                     room_id: "room-a".to_owned(),
@@ -570,13 +588,12 @@ fn global_submission_registry_is_bounded() {
             },
         );
     }
-    assert_eq!(
+    assert!(
         state
             .timeline
             .submission_registry
             .accepted_submission_ids
-            .len(),
-        128
+            .is_empty()
     );
     assert_eq!(
         state
@@ -590,8 +607,8 @@ fn global_submission_registry_is_bounded() {
         !state
             .timeline
             .submission_registry
-            .accepted_submission_ids
-            .contains(&SubmissionId::new("global-0"))
+            .settled_submission_ids
+            .contains(&first)
     );
 }
 

@@ -35,10 +35,13 @@ pub struct ComposerSubmissionRegistry {
 
 impl ComposerSubmissionRegistry {
     pub(crate) fn remember_accepted(&mut self, id: SubmissionId) {
-        remember_bounded_id(&mut self.accepted_submission_ids, id);
+        if !self.accepted_submission_ids.contains(&id) {
+            self.accepted_submission_ids.push_back(id);
+        }
     }
 
     pub(crate) fn remember_settled(&mut self, id: SubmissionId) {
+        self.accepted_submission_ids.retain(|active| active != &id);
         remember_bounded_id(&mut self.settled_submission_ids, id);
     }
 }

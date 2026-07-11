@@ -71,11 +71,9 @@ async fn wait_for_submission_outcome<S: SubmissionEventSource>(
     if matches!(outcome, SubmissionOutcome::Accepted) {
         loop {
             let snapshot = source.snapshot();
-            if snapshot
-                .timeline
-                .submission_registry
-                .accepted_submission_ids
-                .contains(submission_id)
+            let registry = &snapshot.timeline.submission_registry;
+            if registry.accepted_submission_ids.contains(submission_id)
+                || registry.settled_submission_ids.contains(submission_id)
             {
                 break;
             }
