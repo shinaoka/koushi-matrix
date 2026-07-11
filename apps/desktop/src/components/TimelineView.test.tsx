@@ -304,6 +304,41 @@ function installResizeObserverMock() {
 }
 
 describe("TimelineView", () => {
+  it("keeps edit live conversion DOM value and selection across timeline rerenders", () => {
+    const editable = { ...message("$edit-ime", "before"), can_edit: true };
+    const makeStore = (item: TimelineItem): TimelineStoreState =>
+      applyTimelineEvent(createTimelineStore(), {
+        InitialItems: {
+          request_id: null,
+          key: KEY,
+          generation: 1,
+          items: [item]
+        }
+      });
+    const transport = baseTransport({});
+    const view = (store: TimelineStoreState) => (
+      <TimelineStoreContext.Provider value={{ store, setStore: vi.fn() }}>
+        <TimelineView
+          timelineKey={KEY}
+          roomId="!room:example.invalid"
+          transport={transport}
+          onReply={vi.fn()}
+        />
+      </TimelineStoreContext.Provider>
+    );
+    const { rerender } = render(view(makeStore(editable)));
+
+    fireEvent.click(screen.getByRole("button", { name: /edit message/i }));
+    const textarea = screen.getByRole("textbox", { name: /edit.*body/i }) as HTMLTextAreaElement;
+    fireEvent.compositionStart(textarea);
+    fireEvent.change(textarea, { target: { value: "日本語変換中" } });
+    textarea.setSelectionRange(3, 5);
+    rerender(view(makeStore({ ...editable, body: "stale timeline body", is_edited: true })));
+
+    expect(textarea.value).toBe("日本語変換中");
+    expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([3, 5]);
+  });
+
   it("computes a stable clamped media box for known image dimensions", () => {
     expect(timelineMediaDisplayBoxForTests(2048, 1188)).toEqual({
       inlineSize: 420,

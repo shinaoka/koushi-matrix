@@ -1,0 +1,99 @@
+import { useEffect, useLayoutEffect, useRef } from "react";
+
+export interface CompositionLifecycle {
+  start(): number;
+  end(epoch?: number): void;
+  finish(): void;
+  active(): boolean;
+  dispose(): void;
+}
+
+export function createCompositionLifecycle(): CompositionLifecycle {
+  let epoch = 0;
+  let isActive = false;
+  let deferredEnd: ReturnType<typeof setTimeout> | null = null;
+
+  const cancelDeferredEnd = () => {
+    if (deferredEnd !== null) {
+      clearTimeout(deferredEnd);
+      deferredEnd = null;
+    }
+  };
+
+  return {
+    start() {
+      cancelDeferredEnd();
+      epoch += 1;
+      isActive = true;
+      return epoch;
+    },
+    end(capturedEpoch = epoch) {
+      cancelDeferredEnd();
+      deferredEnd = setTimeout(() => {
+        deferredEnd = null;
+        if (capturedEpoch === epoch) {
+          isActive = false;
+        }
+      }, 0);
+    },
+    finish() {
+      cancelDeferredEnd();
+      epoch += 1;
+      isActive = false;
+    },
+    active() {
+      return isActive;
+    },
+    dispose() {
+      cancelDeferredEnd();
+      isActive = false;
+    }
+  };
+}
+
+export function isComposerImeEnter(
+  key: string,
+  signals: {
+    epochActive: boolean;
+    nativeIsComposing: boolean;
+    keyCode: number;
+  }
+): boolean {
+  return (
+    key === "Enter" &&
+    (signals.epochActive || signals.nativeIsComposing || signals.keyCode === 229)
+  );
+}
+
+export function useCompositionOwnedTextarea(externalValue: string, syncKey: string) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const lifecycleRef = useRef<CompositionLifecycle | null>(null);
+  const previousKeyRef = useRef(syncKey);
+  if (lifecycleRef.current === null) {
+    lifecycleRef.current = createCompositionLifecycle();
+  }
+  const lifecycle = lifecycleRef.current;
+
+  useLayoutEffect(() => {
+    const keyChanged = previousKeyRef.current !== syncKey;
+    previousKeyRef.current = syncKey;
+    if (keyChanged) {
+      lifecycle.finish();
+    } else if (lifecycle.active()) {
+      return;
+    }
+    const textarea = textareaRef.current;
+    if (textarea && textarea.value !== externalValue) {
+      textarea.value = externalValue;
+    }
+  }, [externalValue, lifecycle, syncKey]);
+
+  useEffect(() => () => lifecycle.dispose(), [lifecycle]);
+
+  return {
+    textareaRef,
+    lifecycle,
+    onCompositionStart: () => lifecycle.start(),
+    onCompositionEnd: () => lifecycle.end()
+  };
+}

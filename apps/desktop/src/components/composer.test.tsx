@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { MentionCandidate } from "../domain/projectionTypes";
-import { Composer } from "./composer";
+import { Composer, ThreadComposer } from "./composer";
 
 afterEach(() => {
   cleanup();
@@ -42,6 +42,49 @@ describe("Composer", () => {
       }
     }
   ];
+
+  it("keeps the live conversion DOM value and selection across parent rerenders", () => {
+    const props = {
+      composerMode: { kind: "plain" as const },
+      isSending: false,
+      roomName: "Direct room",
+      value: "before",
+      onCancelReply: () => undefined,
+      onSend: vi.fn(),
+      onValueChange: vi.fn()
+    };
+    const { container, rerender } = render(<Composer {...props} />);
+    const textarea = container.querySelector("textarea")!;
+
+    fireEvent.compositionStart(textarea);
+    fireEvent.change(textarea, { target: { value: "日本語変換中" } });
+    textarea.setSelectionRange(3, 5);
+    rerender(<Composer {...props} value="stale parent draft" roomName="Renamed room" />);
+
+    expect(textarea.value).toBe("日本語変換中");
+    expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([3, 5]);
+  });
+
+  it("gives the thread textarea the same live conversion ownership", () => {
+    const props = {
+      canEdit: true,
+      draft: "before",
+      isSending: false,
+      resolveComposerKeyAction: vi.fn(async () => "noop" as const),
+      onDraftChange: vi.fn(),
+      onSend: vi.fn()
+    };
+    const { rerender } = render(<ThreadComposer {...props} />);
+    const textarea = screen.getByRole("textbox", { name: /thread/i }) as HTMLTextAreaElement;
+
+    fireEvent.compositionStart(textarea);
+    fireEvent.change(textarea, { target: { value: "日本語変換中" } });
+    textarea.setSelectionRange(3, 5);
+    rerender(<ThreadComposer {...props} draft="stale parent draft" isSending />);
+
+    expect(textarea.value).toBe("日本語変換中");
+    expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([3, 5]);
+  });
 
   it("does not submit while an IME composition is being confirmed with Enter", async () => {
     const onSend = vi.fn();

@@ -38,6 +38,10 @@ import {
 } from "../domain/composerKeyEvents";
 import { EmojiPicker } from "./EmojiPicker";
 import {
+  isComposerImeEnter,
+  useCompositionOwnedTextarea
+} from "../domain/compositionLifecycle";
+import {
   ICON_SIZE,
   EMPTY_MENTION_INTENT,
   ignoreComposerKeyAction,
@@ -88,9 +92,7 @@ export const Composer = memo(function Composer({
   onValueChange: (value: string) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const emojiButtonRef = useRef<HTMLButtonElement>(null);
-  const imeCompositionActiveRef = useRef(false);
   const macKillRingRef = useRef<string>("");
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
@@ -98,6 +100,12 @@ export const Composer = memo(function Composer({
   const [localValue, setLocalValue] = useState(value);
   const [activeMentionIndex, setActiveMentionIndex] = useState(0);
   const [dismissedMentionKey, setDismissedMentionKey] = useState<string | null>(null);
+  const {
+    textareaRef,
+    lifecycle: imeComposition,
+    onCompositionStart,
+    onCompositionEnd
+  } = useCompositionOwnedTextarea(value, draftKey);
   const autocompleteListboxId = useId();
   const activeMention = activeMentionQuery(localValue);
   const activeMentionKey =
@@ -119,8 +127,11 @@ export const Composer = memo(function Composer({
       : undefined;
 
   useEffect(() => {
+    if (imeComposition.active()) {
+      return;
+    }
     setLocalValue(value);
-  }, [draftKey, value]);
+  }, [draftKey, imeComposition, value]);
 
   useEffect(() => {
     setActiveMentionIndex(0);
@@ -278,12 +289,12 @@ export const Composer = memo(function Composer({
   }
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (composerImeShouldHandleKeyEvent(event, imeCompositionActiveRef.current)) {
+    if (composerImeShouldHandleKeyEvent(event, imeComposition.active())) {
       return;
     }
     // macOS native Emacs text-editing bindings (Ctrl+F/B/P/N/K/Y).
     // Must not fire during IME composition.
-    if (IS_MAC_PLATFORM && !event.nativeEvent.isComposing && !imeCompositionActiveRef.current) {
+    if (IS_MAC_PLATFORM && !event.nativeEvent.isComposing && !imeComposition.active()) {
       const emacsAction = macEmacsActionFromEvent(event);
       if (emacsAction !== null) {
         event.preventDefault();
@@ -473,17 +484,11 @@ export const Composer = memo(function Composer({
       <textarea
         ref={textareaRef}
         aria-label={t("composer.messageComposer")}
-        value={localValue}
+        defaultValue={localValue}
         placeholder={t("composer.placeholder", { roomName })}
         onKeyDown={onComposerKeyDown}
-        onCompositionStart={() => {
-          imeCompositionActiveRef.current = true;
-        }}
-        onCompositionEnd={() => {
-          window.setTimeout(() => {
-            imeCompositionActiveRef.current = false;
-          }, 0);
-        }}
+        onCompositionStart={onCompositionStart}
+        onCompositionEnd={onCompositionEnd}
         onPaste={(event) => {
           const files = Array.from(event.clipboardData.files);
           if (files.length > 0) {
@@ -712,23 +717,28 @@ function ThreadComposer({
   onSend: () => void | Promise<void>;
 }) {
   const canSend = canEdit && !isSending && draft.trim().length > 0;
-  const imeCompositionActiveRef = useRef(false);
   const macKillRingRef = useRef<string>("");
+  const {
+    textareaRef,
+    lifecycle: imeComposition,
+    onCompositionStart,
+    onCompositionEnd
+  } = useCompositionOwnedTextarea(draft, "thread");
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (composerImeShouldHandleKeyEvent(event, imeCompositionActiveRef.current)) {
+    if (composerImeShouldHandleKeyEvent(event, imeComposition.active())) {
       return;
     }
     // macOS native Emacs text-editing bindings (Ctrl+F/B/P/N/K/Y).
     // Must not fire during IME composition.
-    if (IS_MAC_PLATFORM && !event.nativeEvent.isComposing && !imeCompositionActiveRef.current) {
+    if (IS_MAC_PLATFORM && !event.nativeEvent.isComposing && !imeComposition.active()) {
       const emacsAction = macEmacsActionFromEvent(event);
       if (emacsAction !== null) {
         event.preventDefault();
         const ta = event.currentTarget;
         const effect = applyMacEmacsAction(
           emacsAction,
-          draft,
+          event.currentTarget.value,
           ta.selectionStart,
           ta.selectionEnd,
           macKillRingRef.current
@@ -774,7 +784,11 @@ function ThreadComposer({
           return;
         }
         if (action === "insertNewline") {
-          const nextDraft = insertNewlineAtSelection(draft, selectionStart, selectionEnd);
+          const nextDraft = insertNewlineAtSelection(
+            textarea.value,
+            selectionStart,
+            selectionEnd
+          );
           onDraftChange(nextDraft.value);
           requestAnimationFrame(() => {
             textarea.selectionStart = nextDraft.cursor;
@@ -791,17 +805,12 @@ function ThreadComposer({
         aria-label={t("timeline.threadComposer")}
         disabled={!canEdit}
         placeholder={t("timeline.threadPlaceholder")}
-        value={draft}
+        ref={textareaRef}
+        defaultValue={draft}
         onChange={(event) => onDraftChange(event.target.value)}
         onKeyDown={onComposerKeyDown}
-        onCompositionStart={() => {
-          imeCompositionActiveRef.current = true;
-        }}
-        onCompositionEnd={() => {
-          window.setTimeout(() => {
-            imeCompositionActiveRef.current = false;
-          }, 0);
-        }}
+        onCompositionStart={onCompositionStart}
+        onCompositionEnd={onCompositionEnd}
       />
       <div className="thread-composer-footer">
         <button
@@ -822,12 +831,11 @@ function composerImeShouldHandleKeyEvent(
   event: KeyboardEvent<HTMLTextAreaElement>,
   compositionActive: boolean
 ): boolean {
-  return (
-    event.key === "Enter" &&
-    (compositionActive ||
-      event.nativeEvent.isComposing ||
-      event.keyCode === 229)
-  );
+  return isComposerImeEnter(event.key, {
+    epochActive: compositionActive,
+    nativeIsComposing: event.nativeEvent.isComposing,
+    keyCode: event.keyCode
+  });
 }
 
 export { ThreadComposer };

@@ -96,6 +96,10 @@ import type {
 import { openExternalHttpUrl, toExternalHttpUrl } from "../domain/externalLinks";
 import { mediaSourceUrl } from "../domain/mediaUrl";
 import {
+  isComposerImeEnter,
+  useCompositionOwnedTextarea
+} from "../domain/compositionLifecycle";
+import {
   recordTimelineEventReceived,
   recordTimelineInitialItems,
   recordTimelineKeyMismatch,
@@ -4944,8 +4948,12 @@ export function TimelineItemRow({
   const actionMenuControlRef = useRef<HTMLDivElement>(null);
   const actionMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const firstActionMenuItemRef = useRef<HTMLButtonElement>(null);
-  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
-  const editImeCompositionActiveRef = useRef(false);
+  const {
+    textareaRef: editTextareaRef,
+    lifecycle: editImeComposition,
+    onCompositionStart: onEditCompositionStart,
+    onCompositionEnd: onEditCompositionEnd
+  } = useCompositionOwnedTextarea(editDraft, eventId ?? "edit");
   const editMacKillRingRef = useRef<string>("");
   const requestedLinkPreviewsRef = useRef<Set<string>>(new Set());
 
@@ -5098,19 +5106,19 @@ export function TimelineItemRow({
 
   const onEditKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
-      if (timelineEditImeShouldHandleKeyEvent(event, editImeCompositionActiveRef.current)) {
+      if (timelineEditImeShouldHandleKeyEvent(event, editImeComposition.active())) {
         return;
       }
       // macOS native Emacs text-editing bindings (Ctrl+F/B/P/N/K/Y).
       // Must not fire during IME composition.
-      if (IS_MAC_PLATFORM && !event.nativeEvent.isComposing && !editImeCompositionActiveRef.current) {
+      if (IS_MAC_PLATFORM && !event.nativeEvent.isComposing && !editImeComposition.active()) {
         const emacsAction = macEmacsActionFromEvent(event);
         if (emacsAction !== null) {
           event.preventDefault();
           const ta = event.currentTarget;
           const effect = applyMacEmacsAction(
             emacsAction,
-            editDraft,
+            event.currentTarget.value,
             ta.selectionStart,
             ta.selectionEnd,
             editMacKillRingRef.current
@@ -5141,7 +5149,7 @@ export function TimelineItemRow({
       });
       const resolverOptions = {
         autocomplete_open: false,
-        send_enabled: Boolean(eventId && editDraft.trim())
+        send_enabled: Boolean(eventId && textarea.value.trim())
       };
       if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
         void resolveComposerKeyAction("edit", keyEvent, resolverOptions).catch(() => undefined);
@@ -5152,15 +5160,15 @@ export function TimelineItemRow({
       void resolveComposerKeyAction("edit", keyEvent, resolverOptions)
         .then((action) => {
           if (action === "send") {
-            if (eventId && editDraft.trim()) {
-              onEdit(roomId, eventId, editDraft.trim());
+            if (eventId && textarea.value.trim()) {
+              onEdit(roomId, eventId, textarea.value.trim());
               closeEditForm();
             }
             return;
           }
           if (action === "insertNewline") {
             const nextDraft = insertNewlineAtSelection(
-              editDraft,
+              textarea.value,
               selectionStart,
               selectionEnd
             );
@@ -5177,7 +5185,7 @@ export function TimelineItemRow({
         })
         .catch(() => undefined);
     },
-    [closeEditForm, editDraft, eventId, onEdit, resolveComposerKeyAction, roomId]
+    [closeEditForm, editImeComposition, eventId, onEdit, resolveComposerKeyAction, roomId]
   );
 
   const submitReaction = useCallback(
@@ -5419,17 +5427,11 @@ export function TimelineItemRow({
         ref={editTextareaRef}
         aria-label={t("timeline.editBody")}
         className="message-edit-body"
-        value={editDraft}
+        defaultValue={editDraft}
         onChange={(event) => setEditDraft(event.target.value)}
         onKeyDown={onEditKeyDown}
-        onCompositionStart={() => {
-          editImeCompositionActiveRef.current = true;
-        }}
-        onCompositionEnd={() => {
-          window.setTimeout(() => {
-            editImeCompositionActiveRef.current = false;
-          }, 0);
-        }}
+        onCompositionStart={onEditCompositionStart}
+        onCompositionEnd={onEditCompositionEnd}
       />
       <div className="message-edit-actions">
         <button className="message-edit-button" type="submit">
@@ -7186,12 +7188,11 @@ function timelineEditImeShouldHandleKeyEvent(
   event: KeyboardEvent<HTMLTextAreaElement>,
   compositionActive: boolean
 ): boolean {
-  return (
-    event.key === "Enter" &&
-    (compositionActive ||
-      event.nativeEvent.isComposing ||
-      event.keyCode === 229)
-  );
+  return isComposerImeEnter(event.key, {
+    epochActive: compositionActive,
+    nativeIsComposing: event.nativeEvent.isComposing,
+    keyCode: event.keyCode
+  });
 }
 
 function formatThreadSummary(
