@@ -91,7 +91,7 @@ use matrix_sdk_ui::timeline::{
     TimelineDetails, TimelineEventItemId, TimelineFocus, TimelineItem as SdkTimelineItem,
     TimelineItemContent, TimelineItemKind, TimelineReadReceiptTracking,
 };
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::command::{
     MediaDownloadSelection, TimelineCommand, UploadMediaKind, UploadMediaRequest,
@@ -183,7 +183,12 @@ pub enum TimelineMessage {
         activity: ThreadRootProjectionActivity,
         result: Result<TimelineItem, OperationFailureKind>,
     },
-    Shutdown,
+    SubmissionTerminal {
+        submission_id: koushi_state::SubmissionId,
+    },
+    Shutdown {
+        acknowledged: Option<tokio::sync::oneshot::Sender<()>>,
+    },
 }
 
 /// Handle to the timeline manager task (owned by `AccountActor`).
@@ -1006,6 +1011,7 @@ pub struct TimelineManagerActor {
     session: Option<Arc<MatrixClientSession>>,
     room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
     timelines: HashMap<TimelineKey, TimelineActorHandle>,
+    accepted_submissions: SubmissionAdmissionLedger,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_tx: mpsc::Sender<TimelineMessage>,
@@ -1034,6 +1040,57 @@ pub struct TimelineManagerActor {
     test_session_available: bool,
 }
 
+const MAX_SUBMISSION_TOMBSTONES: usize = 128;
+
+#[derive(Default)]
+struct SubmissionAdmissionLedger {
+    active: HashMap<koushi_state::SubmissionId, (TimelineKey, String)>,
+    tombstones: std::collections::VecDeque<(koushi_state::SubmissionId, TimelineKey, String)>,
+    rejected: std::collections::VecDeque<(koushi_state::SubmissionId, TimelineKey)>,
+}
+
+impl SubmissionAdmissionLedger {
+    fn get(&self, id: &koushi_state::SubmissionId) -> Option<(&TimelineKey, &String)> {
+        self.active
+            .get(id)
+            .map(|(key, txn)| (key, txn))
+            .or_else(|| {
+                self.tombstones
+                    .iter()
+                    .find(|(found, _, _)| found == id)
+                    .map(|(_, key, txn)| (key, txn))
+            })
+    }
+
+    fn accept(&mut self, id: koushi_state::SubmissionId, key: TimelineKey, transaction_id: String) {
+        self.active.insert(id, (key, transaction_id));
+    }
+
+    fn rejected(&self, id: &koushi_state::SubmissionId) -> Option<&TimelineKey> {
+        self.rejected
+            .iter()
+            .find(|(found, _)| found == id)
+            .map(|(_, key)| key)
+    }
+
+    fn reject(&mut self, id: koushi_state::SubmissionId, key: TimelineKey) {
+        while self.rejected.len() >= MAX_SUBMISSION_TOMBSTONES {
+            self.rejected.pop_front();
+        }
+        self.rejected.push_back((id, key));
+    }
+
+    fn terminal(&mut self, id: &koushi_state::SubmissionId) {
+        let Some((key, transaction_id)) = self.active.remove(id) else {
+            return;
+        };
+        while self.tombstones.len() >= MAX_SUBMISSION_TOMBSTONES {
+            self.tombstones.pop_front();
+        }
+        self.tombstones.push_back((id.clone(), key, transaction_id));
+    }
+}
+
 impl TimelineManagerActor {
     pub(crate) fn spawn(
         action_tx: mpsc::Sender<Vec<AppAction>>,
@@ -1046,6 +1103,7 @@ impl TimelineManagerActor {
             session: None,
             room_list_service: None,
             timelines: HashMap::new(),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
             event_tx,
             msg_tx: tx.clone(),
@@ -1086,6 +1144,7 @@ impl TimelineManagerActor {
             session: Some(session),
             room_list_service: None,
             timelines: HashMap::new(),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
             event_tx,
             msg_tx: tx.clone(),
@@ -1111,9 +1170,13 @@ impl TimelineManagerActor {
     }
 
     async fn run(mut self) {
+        let mut shutdown_acknowledgement = None;
         while let Some(msg) = self.msg_rx.recv().await {
             match msg {
-                TimelineMessage::Shutdown => break,
+                TimelineMessage::Shutdown { acknowledged } => {
+                    shutdown_acknowledgement = acknowledged;
+                    break;
+                }
                 TimelineMessage::SyncStarted { room_list_service } => {
                     self.handle_sync_started(room_list_service).await;
                 }
@@ -1136,6 +1199,9 @@ impl TimelineManagerActor {
                     self.handle_thread_root_projection_fetch_finished(key, activity, result)
                         .await;
                 }
+                TimelineMessage::SubmissionTerminal { submission_id } => {
+                    self.accepted_submissions.terminal(&submission_id);
+                }
                 TimelineMessage::Command(command) => {
                     self.handle_command(command).await;
                 }
@@ -1147,12 +1213,15 @@ impl TimelineManagerActor {
             .filter(|key| matches!(key.kind, TimelineKind::Room { .. }))
             .cloned()
             .collect::<Vec<_>>();
+        // Drop child handles first so relay/SDK work cannot race cleanup or acknowledgement.
+        self.timelines.clear();
         for key in room_keys {
             self.clear_thread_root_projections_for_room(&key).await;
         }
         self.thread_root_projection_fetches.abort_all();
-        // Drop all timeline handles — this cancels relay tasks and drops SDK handles.
-        self.timelines.clear();
+        if let Some(acknowledged) = shutdown_acknowledgement {
+            let _ = acknowledged.send(());
+        }
     }
 
     async fn handle_thread_root_projection_fetch_start(
@@ -1498,6 +1567,43 @@ impl TimelineManagerActor {
                     SendComposerProjection::for_send_text(&key),
                     TimelineActorMessage::SendText {
                         request_id,
+                        submission_id: None,
+                        admission: None,
+                        transaction_id,
+                        body,
+                        mentions,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::SubmitText {
+                request_id,
+                submission_id,
+                key,
+                transaction_id,
+                body,
+                mentions,
+            } => {
+                if let Err(kind) = validate_composer_body_for_timeline_send(&body) {
+                    self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                        request_id,
+                        key,
+                        submission_id,
+                        kind,
+                    }));
+                    return;
+                }
+                self.route_submission_to_actor(
+                    request_id,
+                    submission_id.clone(),
+                    &key,
+                    transaction_id.clone(),
+                    body.clone(),
+                    SendComposerProjection::for_send_text(&key),
+                    TimelineActorMessage::SendText {
+                        request_id,
+                        submission_id: Some(submission_id.clone()),
+                        admission: None,
                         transaction_id,
                         body,
                         mentions,
@@ -1525,6 +1631,45 @@ impl TimelineManagerActor {
                     SendComposerProjection::for_send_reply(&key),
                     TimelineActorMessage::SendReply {
                         request_id,
+                        submission_id: None,
+                        admission: None,
+                        transaction_id,
+                        in_reply_to_event_id,
+                        body,
+                        mentions,
+                    },
+                )
+                .await;
+            }
+            TimelineCommand::SubmitReply {
+                request_id,
+                submission_id,
+                key,
+                transaction_id,
+                in_reply_to_event_id,
+                body,
+                mentions,
+            } => {
+                if let Err(kind) = validate_composer_body_for_timeline_send(&body) {
+                    self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                        request_id,
+                        key,
+                        submission_id,
+                        kind,
+                    }));
+                    return;
+                }
+                self.route_submission_to_actor(
+                    request_id,
+                    submission_id.clone(),
+                    &key,
+                    transaction_id.clone(),
+                    body.clone(),
+                    SendComposerProjection::for_send_reply(&key),
+                    TimelineActorMessage::SendReply {
+                        request_id,
+                        submission_id: Some(submission_id.clone()),
+                        admission: None,
                         transaction_id,
                         in_reply_to_event_id,
                         body,
@@ -1886,6 +2031,106 @@ impl TimelineManagerActor {
         }
     }
 
+    async fn route_submission_to_actor(
+        &mut self,
+        request_id: RequestId,
+        submission_id: koushi_state::SubmissionId,
+        key: &TimelineKey,
+        transaction_id: String,
+        body: String,
+        projection: SendComposerProjection,
+        msg: TimelineActorMessage,
+    ) {
+        if let Some(rejected_key) = self.accepted_submissions.rejected(&submission_id) {
+            self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                request_id,
+                key: rejected_key.clone(),
+                submission_id,
+                kind: TimelineFailureKind::QueueOverflow,
+            }));
+            return;
+        }
+        if let Some((accepted_key, accepted_transaction_id)) =
+            self.accepted_submissions.get(&submission_id)
+        {
+            self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionAccepted {
+                request_id,
+                key: accepted_key.clone(),
+                submission_id,
+                transaction_id: accepted_transaction_id.clone(),
+            }));
+            return;
+        }
+        let Some(handle) = self.timelines.get(key) else {
+            self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                request_id,
+                key: key.clone(),
+                submission_id,
+                kind: TimelineFailureKind::NotSubscribed,
+            }));
+            return;
+        };
+        let (permit_tx, permit_rx) = oneshot::channel();
+        if !handle.send(msg.with_submission_admission(permit_rx)).await {
+            self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                request_id,
+                key: key.clone(),
+                submission_id,
+                kind: TimelineFailureKind::QueueOverflow,
+            }));
+            return;
+        }
+        let action = match (projection, &key.kind) {
+            (SendComposerProjection::Room, TimelineKind::Room { room_id }) => {
+                Some(AppAction::ComposerSubmissionAccepted {
+                    submission_id: submission_id.clone(),
+                    room_id: room_id.clone(),
+                    transaction_id: transaction_id.clone(),
+                    body,
+                })
+            }
+            (
+                SendComposerProjection::ThreadReply,
+                TimelineKind::Thread {
+                    room_id,
+                    root_event_id,
+                },
+            ) => Some(AppAction::ThreadSubmissionAccepted {
+                submission_id: submission_id.clone(),
+                room_id: room_id.clone(),
+                root_event_id: root_event_id.clone(),
+                transaction_id: transaction_id.clone(),
+                body,
+            }),
+            _ => send_submitted_action(key, projection, transaction_id.clone(), body),
+        };
+        if let Some(action) = action {
+            if self.action_tx.send(vec![action]).await.is_err() {
+                self.accepted_submissions
+                    .reject(submission_id.clone(), key.clone());
+                self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                    request_id,
+                    key: key.clone(),
+                    submission_id,
+                    kind: TimelineFailureKind::QueueOverflow,
+                }));
+                return;
+            }
+        }
+        self.accepted_submissions.accept(
+            submission_id.clone(),
+            key.clone(),
+            transaction_id.clone(),
+        );
+        self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionAccepted {
+            request_id,
+            key: key.clone(),
+            submission_id,
+            transaction_id,
+        }));
+        let _ = permit_tx.send(());
+    }
+
     async fn handle_replay_subscribed(&mut self, request_id: RequestId) {
         for handle in self.timelines.values() {
             let _ = handle
@@ -2244,6 +2489,22 @@ fn send_finished_action(key: &TimelineKey, transaction_id: String) -> Option<App
     }
 }
 
+fn submission_target(key: &TimelineKey) -> Option<koushi_state::ComposerSubmissionTarget> {
+    match &key.kind {
+        TimelineKind::Room { room_id } => Some(koushi_state::ComposerSubmissionTarget::Main {
+            room_id: room_id.clone(),
+        }),
+        TimelineKind::Thread {
+            room_id,
+            root_event_id,
+        } => Some(koushi_state::ComposerSubmissionTarget::Thread {
+            room_id: room_id.clone(),
+            root_event_id: root_event_id.clone(),
+        }),
+        TimelineKind::Focused { .. } => None,
+    }
+}
+
 fn send_failed_action(
     key: &TimelineKey,
     projection: SendComposerProjection,
@@ -2464,12 +2725,16 @@ enum TimelineActorMessage {
     },
     SendText {
         request_id: RequestId,
+        submission_id: Option<koushi_state::SubmissionId>,
+        admission: Option<oneshot::Receiver<()>>,
         transaction_id: String,
         body: String,
         mentions: MentionIntent,
     },
     SendReply {
         request_id: RequestId,
+        submission_id: Option<koushi_state::SubmissionId>,
+        admission: Option<oneshot::Receiver<()>>,
         transaction_id: String,
         in_reply_to_event_id: String,
         body: String,
@@ -2576,15 +2841,11 @@ enum TimelineActorMessage {
         encrypted_global_enabled: bool,
         room_enabled: Option<bool>,
     },
-    /// Internal: diff batch from the relay task.
-    DiffBatch(Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>),
     /// Internal: send completed (from send queue monitor task).
     SendQueueUpdate(RoomSendQueueUpdate),
     /// Internal: send queue broadcast lagged and the actor must resync the
     /// SDK-owned local echo snapshot before projecting outbound send states.
     SendQueueLagged,
-    /// Internal: relay task hit overflow — must resync.
-    RelayOverflow,
     /// Internal: re-emit the current navigation_items as InitialItems for a
     /// new request_id without tearing down the SDK subscription.  Sent by
     /// `handle_subscribe` when the key is already subscribed (idempotency
@@ -2593,6 +2854,119 @@ enum TimelineActorMessage {
     ReplayInitialItems {
         request_id: RequestId,
     },
+}
+
+impl TimelineActorMessage {
+    fn with_submission_admission(mut self, permit: oneshot::Receiver<()>) -> Self {
+        match &mut self {
+            Self::SendText { admission, .. } | Self::SendReply { admission, .. } => {
+                *admission = Some(permit);
+            }
+            _ => debug_assert!(
+                false,
+                "admission permits only apply to composer submissions"
+            ),
+        }
+        self
+    }
+}
+
+async fn await_submission_admission(admission: Option<oneshot::Receiver<()>>) -> bool {
+    match admission {
+        Some(permit) => permit.await.is_ok(),
+        None => true,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TimelineRelayControl {
+    Overflow {
+        generation: TimelineGeneration,
+    },
+    StreamEnded {
+        generation: TimelineGeneration,
+    },
+    RestartDue {
+        generation: TimelineGeneration,
+        serial: u64,
+    },
+}
+
+const RELAY_RESTART_BASE_DELAY: Duration = Duration::from_millis(100);
+const RELAY_RESTART_MAX_DELAY: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Copy)]
+struct RelayRestartSchedule {
+    generation: TimelineGeneration,
+    serial: u64,
+    delay: Duration,
+}
+
+struct RelayRestartBackoff {
+    base: Duration,
+    cap: Duration,
+    attempts: u32,
+    next_serial: u64,
+    active: Option<(TimelineGeneration, u64)>,
+}
+
+impl RelayRestartBackoff {
+    fn new(base: Duration, cap: Duration) -> Self {
+        Self {
+            base,
+            cap,
+            attempts: 0,
+            next_serial: 0,
+            active: None,
+        }
+    }
+
+    fn schedule(&mut self, generation: TimelineGeneration) -> RelayRestartSchedule {
+        self.next_serial = self.next_serial.wrapping_add(1);
+        let factor = 1_u32.checked_shl(self.attempts.min(30)).unwrap_or(u32::MAX);
+        let delay = self.base.saturating_mul(factor).min(self.cap);
+        self.attempts = self.attempts.saturating_add(1);
+        self.active = Some((generation, self.next_serial));
+        RelayRestartSchedule {
+            generation,
+            serial: self.next_serial,
+            delay,
+        }
+    }
+
+    fn accept_due(&mut self, generation: TimelineGeneration, serial: u64) -> bool {
+        if self.active != Some((generation, serial)) {
+            return false;
+        }
+        self.active = None;
+        true
+    }
+
+    fn reset_after_live_batch(&mut self) {
+        self.attempts = 0;
+        self.active = None;
+    }
+}
+
+fn spawn_relay_restart_timer(
+    control_tx: mpsc::Sender<TimelineRelayControl>,
+    schedule: RelayRestartSchedule,
+    delay: impl std::future::Future<Output = ()> + Send + 'static,
+) -> executor::JoinHandle<()> {
+    executor::spawn(async move {
+        delay.await;
+        let _ = control_tx
+            .send(TimelineRelayControl::RestartDue {
+                generation: schedule.generation,
+                serial: schedule.serial,
+            })
+            .await;
+    })
+}
+
+struct TimelineRelayBatch {
+    generation: TimelineGeneration,
+    diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
 }
 
 fn timeline_key_trace_kind(key: &TimelineKey) -> &'static str {
@@ -4529,6 +4903,12 @@ struct TimelineActor {
     event_tx: broadcast::Sender<CoreEvent>,
     msg_tx: mpsc::Sender<TimelineActorMessage>,
     msg_rx: mpsc::Receiver<TimelineActorMessage>,
+    relay_control_tx: mpsc::Sender<TimelineRelayControl>,
+    relay_control_rx: mpsc::Receiver<TimelineRelayControl>,
+    relay_data_rx: Option<mpsc::Receiver<TimelineRelayBatch>>,
+    relay_task: Option<executor::JoinHandle<()>>,
+    relay_restart_backoff: RelayRestartBackoff,
+    relay_restart_task: Option<executor::JoinHandle<()>>,
     generation: TimelineGeneration,
     next_batch_id: TimelineBatchId,
     /// Correlates send queue completions across the enqueue / SentEvent race.
@@ -4645,6 +5025,12 @@ struct ThreadAttentionCounters {
 
 impl Drop for TimelineActor {
     fn drop(&mut self) {
+        if let Some(task) = self.relay_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.relay_restart_task.take() {
+            task.abort();
+        }
         for task in self.link_preview_fetches.values() {
             task.abort();
         }
@@ -4815,6 +5201,8 @@ impl TimelineActor {
         let initial_receipts = live_event_receipts_from_sdk_items(initial_sdk_items.iter());
 
         let (actor_tx, actor_rx) = mpsc::channel(256);
+        let (relay_control_tx, relay_control_rx) = mpsc::channel(1);
+        let (relay_data_tx, relay_data_rx) = mpsc::channel(256);
         let mut send_statuses = HashMap::new();
         let mut send_handles = HashMap::new();
 
@@ -4850,12 +5238,11 @@ impl TimelineActor {
         }
 
         // Spawn the diff relay task: converts SDK VectorDiff stream into actor messages.
-        let relay_tx = actor_tx.clone();
-        let relay_timeline = timeline.clone();
-        auxiliary_tasks.push(executor::spawn(run_diff_relay(
-            relay_tx,
+        let relay_task = Some(executor::spawn(run_diff_relay(
+            relay_data_tx,
+            relay_control_tx.clone(),
+            generation,
             diff_stream,
-            relay_timeline,
         )));
 
         // Spawn the send queue monitor task: forwards RoomSendQueueUpdate to actor.
@@ -4912,6 +5299,15 @@ impl TimelineActor {
             event_tx,
             msg_tx: actor_tx.clone(),
             msg_rx: actor_rx,
+            relay_control_tx,
+            relay_control_rx,
+            relay_data_rx: Some(relay_data_rx),
+            relay_task,
+            relay_restart_backoff: RelayRestartBackoff::new(
+                RELAY_RESTART_BASE_DELAY,
+                RELAY_RESTART_MAX_DELAY,
+            ),
+            relay_restart_task: None,
             generation,
             next_batch_id: TimelineBatchId(0),
             send_completion: SendCompletionTracker::default(),
@@ -4965,9 +5361,76 @@ impl TimelineActor {
     }
 
     async fn run(mut self) {
-        while let Some(msg) = self.msg_rx.recv().await {
-            self.handle_msg(msg).await;
+        loop {
+            tokio::select! {
+                biased;
+                control = self.relay_control_rx.recv() => {
+                    let Some(control) = control else { break };
+                    self.handle_relay_control(control).await;
+                }
+                batch = async {
+                    match self.relay_data_rx.as_mut() {
+                        Some(receiver) => receiver.recv().await,
+                        None => futures_util::future::pending().await,
+                    }
+                } => {
+                    if let Some(TimelineRelayBatch { generation, diffs }) = batch {
+                        if let Some(diffs) = accepted_relay_batch(self.generation, generation, diffs) {
+                            self.relay_restart_backoff.reset_after_live_batch();
+                            self.handle_diff_batch(diffs).await;
+                        }
+                    }
+                }
+                msg = self.msg_rx.recv() => {
+                    let Some(msg) = msg else { break };
+                    self.handle_msg(msg).await;
+                }
+            }
         }
+    }
+
+    async fn handle_relay_control(&mut self, control: TimelineRelayControl) {
+        match control {
+            TimelineRelayControl::Overflow { generation } => {
+                self.handle_relay_overflow(generation, TimelineResyncReason::QueueOverflow)
+                    .await;
+            }
+            TimelineRelayControl::StreamEnded { generation } => {
+                self.schedule_relay_restart(generation);
+            }
+            TimelineRelayControl::RestartDue { generation, serial } => {
+                if accept_relay_generation(self.generation, generation)
+                    && self.relay_restart_backoff.accept_due(generation, serial)
+                {
+                    self.relay_restart_task = None;
+                    self.handle_relay_overflow(
+                        generation,
+                        TimelineResyncReason::SubscriptionRestarted,
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+
+    fn schedule_relay_restart(&mut self, generation: TimelineGeneration) {
+        if !accept_relay_generation(self.generation, generation) {
+            return;
+        }
+        if let Some(task) = self.relay_task.take() {
+            task.abort();
+        }
+        self.relay_data_rx = None;
+        if let Some(task) = self.relay_restart_task.take() {
+            task.abort();
+        }
+        let schedule = self.relay_restart_backoff.schedule(generation);
+        let control_tx = self.relay_control_tx.clone();
+        self.relay_restart_task = Some(spawn_relay_restart_timer(
+            control_tx,
+            schedule,
+            executor::sleep(schedule.delay),
+        ));
     }
 
     async fn handle_msg(&mut self, msg: TimelineActorMessage) {
@@ -5014,22 +5477,33 @@ impl TimelineActor {
             }
             TimelineActorMessage::SendText {
                 request_id,
+                submission_id,
+                admission,
                 transaction_id,
                 body,
                 mentions,
             } => {
-                self.handle_send_text(request_id, transaction_id, body, mentions)
+                if !await_submission_admission(admission).await {
+                    return;
+                }
+                self.handle_send_text(request_id, submission_id, transaction_id, body, mentions)
                     .await;
             }
             TimelineActorMessage::SendReply {
                 request_id,
+                submission_id,
+                admission,
                 transaction_id,
                 in_reply_to_event_id,
                 body,
                 mentions,
             } => {
+                if !await_submission_admission(admission).await {
+                    return;
+                }
                 self.handle_send_reply(
                     request_id,
+                    submission_id,
                     transaction_id,
                     in_reply_to_event_id,
                     body,
@@ -5208,17 +5682,11 @@ impl TimelineActor {
                 )
                 .await;
             }
-            TimelineActorMessage::DiffBatch(diffs) => {
-                self.handle_diff_batch(diffs).await;
-            }
             TimelineActorMessage::SendQueueUpdate(update) => {
                 self.handle_send_queue_update(update).await;
             }
             TimelineActorMessage::SendQueueLagged => {
                 self.handle_send_queue_lagged().await;
-            }
-            TimelineActorMessage::RelayOverflow => {
-                self.handle_relay_overflow().await;
             }
             TimelineActorMessage::ReplayInitialItems { request_id } => {
                 self.handle_replay_initial_items(request_id);
@@ -5813,6 +6281,7 @@ impl TimelineActor {
     async fn handle_send_text(
         &mut self,
         request_id: RequestId,
+        submission_id: Option<koushi_state::SubmissionId>,
         client_txn_id: String,
         body: String,
         mentions: MentionIntent,
@@ -5826,7 +6295,11 @@ impl TimelineActor {
         let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_send_failed_action(&client_txn_id).await;
+                self.emit_send_failed_action_with_submission(
+                    &client_txn_id,
+                    submission_id.as_ref(),
+                )
+                .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -5838,7 +6311,8 @@ impl TimelineActor {
         };
         let client = self.session.client();
         if client.get_room(&room_id).is_none() {
-            self.emit_send_failed_action(&client_txn_id).await;
+            self.emit_send_failed_action_with_submission(&client_txn_id, submission_id.as_ref())
+                .await;
             self.emit_failure(
                 request_id,
                 CoreFailure::TimelineOperationFailed {
@@ -5857,7 +6331,11 @@ impl TimelineActor {
         let content = match build_room_message_content_from_composer_body(&body, mentions) {
             Ok(content) => content,
             Err(kind) => {
-                self.emit_send_failed_action(&client_txn_id).await;
+                self.emit_send_failed_action_with_submission(
+                    &client_txn_id,
+                    submission_id.as_ref(),
+                )
+                .await;
                 self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
                 return;
             }
@@ -5873,11 +6351,20 @@ impl TimelineActor {
                     &handle,
                     TimelineSendState::Sending,
                 );
-                if let Some((client_txn_id, request_id, event_id)) = self
-                    .send_completion
-                    .remember_pending_send(sdk_txn_id, client_txn_id, request_id, true)
+                if let Some((client_txn_id, completed_submission_id, request_id, event_id)) =
+                    self.send_completion.remember_pending_send(
+                        sdk_txn_id,
+                        client_txn_id,
+                        submission_id.clone(),
+                        request_id,
+                        true,
+                    )
                 {
-                    self.emit_send_finished_action(&client_txn_id).await;
+                    self.emit_send_finished_action_with_submission(
+                        &client_txn_id,
+                        completed_submission_id.as_ref(),
+                    )
+                    .await;
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
                         key: self.key.clone(),
@@ -5888,7 +6375,11 @@ impl TimelineActor {
             }
             Err(err) => {
                 let kind = classify_timeline_send_error(&err);
-                self.emit_send_failed_action(&client_txn_id).await;
+                self.emit_send_failed_action_with_submission(
+                    &client_txn_id,
+                    submission_id.as_ref(),
+                )
+                .await;
                 self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
             }
         }
@@ -5899,6 +6390,7 @@ impl TimelineActor {
     async fn handle_send_reply(
         &mut self,
         request_id: RequestId,
+        submission_id: Option<koushi_state::SubmissionId>,
         client_txn_id: String,
         in_reply_to_event_id: String,
         body: String,
@@ -5913,7 +6405,11 @@ impl TimelineActor {
         let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_send_failed_action(&client_txn_id).await;
+                self.emit_send_failed_action_with_submission(
+                    &client_txn_id,
+                    submission_id.as_ref(),
+                )
+                .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -5927,7 +6423,11 @@ impl TimelineActor {
         let reply_event_id = match matrix_sdk::ruma::EventId::parse(&in_reply_to_event_id) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_send_failed_action(&client_txn_id).await;
+                self.emit_send_failed_action_with_submission(
+                    &client_txn_id,
+                    submission_id.as_ref(),
+                )
+                .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -5940,7 +6440,8 @@ impl TimelineActor {
 
         let client = self.session.client();
         if client.get_room(&room_id).is_none() {
-            self.emit_send_failed_action(&client_txn_id).await;
+            self.emit_send_failed_action_with_submission(&client_txn_id, submission_id.as_ref())
+                .await;
             self.emit_failure(
                 request_id,
                 CoreFailure::TimelineOperationFailed {
@@ -5954,7 +6455,11 @@ impl TimelineActor {
             match build_room_message_content_without_relation_from_composer_body(&body, mentions) {
                 Ok(content) => content,
                 Err(kind) => {
-                    self.emit_send_failed_action(&client_txn_id).await;
+                    self.emit_send_failed_action_with_submission(
+                        &client_txn_id,
+                        submission_id.as_ref(),
+                    )
+                    .await;
                     self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
                     return;
                 }
@@ -5968,7 +6473,11 @@ impl TimelineActor {
         let content = match self.timeline.room().make_reply_event(content, reply).await {
             Ok(content) => content,
             Err(_) => {
-                self.emit_send_failed_action(&client_txn_id).await;
+                self.emit_send_failed_action_with_submission(
+                    &client_txn_id,
+                    submission_id.as_ref(),
+                )
+                .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -5988,11 +6497,20 @@ impl TimelineActor {
                     &handle,
                     TimelineSendState::Sending,
                 );
-                if let Some((client_txn_id, request_id, event_id)) = self
-                    .send_completion
-                    .remember_pending_send(sdk_txn_id, client_txn_id, request_id, true)
+                if let Some((client_txn_id, completed_submission_id, request_id, event_id)) =
+                    self.send_completion.remember_pending_send(
+                        sdk_txn_id,
+                        client_txn_id,
+                        submission_id.clone(),
+                        request_id,
+                        true,
+                    )
                 {
-                    self.emit_send_finished_action(&client_txn_id).await;
+                    self.emit_send_finished_action_with_submission(
+                        &client_txn_id,
+                        completed_submission_id.as_ref(),
+                    )
+                    .await;
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
                         key: self.key.clone(),
@@ -6003,7 +6521,11 @@ impl TimelineActor {
             }
             Err(err) => {
                 let kind = classify_timeline_send_error(&err);
-                self.emit_send_failed_action(&client_txn_id).await;
+                self.emit_send_failed_action_with_submission(
+                    &client_txn_id,
+                    submission_id.as_ref(),
+                )
+                .await;
                 self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
             }
         }
@@ -6190,11 +6712,12 @@ impl TimelineActor {
                 if let Some(room) = self.sdk_room_for_key() {
                     room.send_queue().set_enabled(true);
                 }
-                if let Some((client_txn_id, _request_id, settles_composer)) =
+                if let Some((client_txn_id, submission_id, _request_id, settles_composer)) =
                     self.send_completion.record_cancelled_event(&transaction_id)
                 {
                     if settles_composer {
-                        self.emit_send_finished_action(&client_txn_id).await;
+                        self.emit_send_cancelled_action(&client_txn_id, submission_id.as_ref())
+                            .await;
                     }
                 }
             }
@@ -6297,9 +6820,9 @@ impl TimelineActor {
                     &handle,
                     TimelineSendState::Sending,
                 );
-                if let Some((client_txn_id, request_id, event_id)) = self
+                if let Some((client_txn_id, _submission_id, request_id, event_id)) = self
                     .send_completion
-                    .remember_pending_send(sdk_txn_id, client_txn_id, request_id, false)
+                    .remember_pending_send(sdk_txn_id, client_txn_id, None, request_id, false)
                 {
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
@@ -7861,6 +8384,49 @@ impl TimelineActor {
         }
     }
 
+    async fn reconcile_authoritative_snapshot(
+        &mut self,
+        old_window_event_ids: &std::collections::BTreeSet<String>,
+        items: &eyeball_im::Vector<Arc<SdkTimelineItem>>,
+    ) {
+        let mut replacement_media_sources = HashMap::new();
+        for item in items {
+            cache_sdk_item_media_source(&mut replacement_media_sources, item);
+        }
+        replace_authoritative_cache(&mut self.media_sources, replacement_media_sources);
+        let new_window_event_ids = items
+            .iter()
+            .filter_map(|item| match item.kind() {
+                matrix_sdk_ui::timeline::TimelineItemKind::Event(event) => {
+                    event.event_id().map(ToString::to_string)
+                }
+                matrix_sdk_ui::timeline::TimelineItemKind::Virtual(_) => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let reconciliation =
+            authoritative_window_reconciliation(old_window_event_ids, &new_window_event_ids);
+        if let Some(room_id) = timeline_room_id(&self.key) {
+            let _ = self
+                .emit_action_reliable(authoritative_receipts_action(
+                    &room_id,
+                    &reconciliation,
+                    live_event_receipts_from_sdk_items(items.iter()),
+                ))
+                .await;
+        }
+        if let Some(tx) = &self.search_index_tx {
+            for message in authoritative_search_removals(&reconciliation) {
+                if tx.send(message).await.is_err() {
+                    return;
+                }
+            }
+            self.forward_diff_to_search(&eyeball_im::VectorDiff::Reset {
+                values: items.clone(),
+            })
+            .await;
+        }
+    }
+
     /// Forward SDK diff mutations to the search index channel reliably.
     /// Redactions are privacy-sensitive removals and must not be silently
     /// dropped as freshness-only updates.
@@ -8247,11 +8813,12 @@ impl TimelineActor {
                 self.send_statuses
                     .insert(sdk_txn_str.clone(), TimelineSendState::Cancelled);
                 self.send_handles.remove(&sdk_txn_str);
-                if let Some((client_txn_id, _request_id, settles_composer)) =
+                if let Some((client_txn_id, submission_id, _request_id, settles_composer)) =
                     self.send_completion.record_cancelled_event(&sdk_txn_str)
                 {
                     if settles_composer {
-                        self.emit_send_finished_action(&client_txn_id).await;
+                        self.emit_send_cancelled_action(&client_txn_id, submission_id.as_ref())
+                            .await;
                     }
                 }
             }
@@ -8271,11 +8838,15 @@ impl TimelineActor {
                         reason: send_failure_reason(is_recoverable),
                     },
                 );
-                if let Some((client_txn_id, _request_id, settles_composer)) =
+                if let Some((client_txn_id, submission_id, _request_id, settles_composer)) =
                     self.send_completion.record_send_error(&sdk_txn_str)
                 {
                     if settles_composer {
-                        self.emit_send_failed_action(&client_txn_id).await;
+                        self.emit_send_failed_action_with_submission(
+                            &client_txn_id,
+                            submission_id.as_ref(),
+                        )
+                        .await;
                     }
                 }
             }
@@ -8294,12 +8865,22 @@ impl TimelineActor {
                 self.send_handles.remove(&sdk_txn_str);
                 self.sent_event_txns
                     .insert(event_id.to_string(), transaction_id.clone());
-                if let Some((client_txn_id, request_id, event_id, settles_composer)) = self
+                if let Some((
+                    client_txn_id,
+                    submission_id,
+                    request_id,
+                    event_id,
+                    settles_composer,
+                )) = self
                     .send_completion
                     .record_sent_event(sdk_txn_str, event_id.to_string())
                 {
                     if settles_composer {
-                        self.emit_send_finished_action(&client_txn_id).await;
+                        self.emit_send_finished_action_with_submission(
+                            &client_txn_id,
+                            submission_id.as_ref(),
+                        )
+                        .await;
                     }
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
@@ -8411,22 +8992,47 @@ impl TimelineActor {
         }
     }
 
-    async fn handle_relay_overflow(&mut self) {
-        // Overflow protocol (canon decision B):
-        // 1. Bump generation.
-        self.generation = TimelineGeneration(self.generation.0 + 1);
+    async fn handle_relay_overflow(
+        &mut self,
+        overflow_generation: TimelineGeneration,
+        reason: TimelineResyncReason,
+    ) {
+        if !accept_relay_generation(self.generation, overflow_generation) {
+            return;
+        }
+        if let Some(task) = self.relay_restart_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.relay_task.take() {
+            task.abort();
+        }
+        let timeline = self.timeline.clone();
+        let Some(prepared) =
+            prepare_relay_recovery(self.generation, overflow_generation, move || async move {
+                timeline.subscribe().await
+            })
+            .await
+        else {
+            return;
+        };
+        self.generation = prepared.generation;
         // 2. Reset batch_id to 0.
         self.next_batch_id = TimelineBatchId(0);
 
-        // 3. Emit ResyncRequired.
-        self.emit(CoreEvent::Timeline(TimelineEvent::ResyncRequired {
-            key: self.key.clone(),
-            reason: TimelineResyncReason::QueueOverflow,
-        }));
+        // 3. Acquire the authoritative snapshot and its matching replacement
+        //    stream from one SDK subscription boundary.
+        let current_items = prepared.snapshot;
+        let diff_stream = prepared.stream;
+        let old_window_event_ids = self
+            .navigation_items
+            .iter()
+            .filter_map(timeline_item_event_id)
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>();
+        self.reconcile_authoritative_snapshot(&old_window_event_ids, &current_items)
+            .await;
 
-        // 4. Emit a fresh InitialItems with the new generation from the current
-        //    SDK timeline snapshot.
-        let (current_items, _) = self.timeline.subscribe().await;
+        // 5. Emit fresh InitialItems for the new generation.
         let link_preview_context = self.link_preview_policy.for_room(self.key.room_id());
         let items: Vec<TimelineItem> = current_items
             .iter()
@@ -8454,25 +9060,34 @@ impl TimelineActor {
             .await;
         }
         trace_timeline_items("overflow_initial", &self.key, &items);
-        self.navigation_items = items.clone();
-        self.replay_known_display_items = normalize_display_timeline_items(&items);
-        let replay_known_candidates = replay_known_candidates_for_display_items(
-            &self.key,
-            &self.navigation_items,
-            &self.replay_known_display_items,
-        );
-        let _ = emit_initial_items_and_reconcile_replay_known_for_generation(
+        if let Some(replacement) =
+            authoritative_media_gallery_replacement(&self.key, &self.media_gallery_items, &items)
+        {
+            if self.emit_action_reliable(replacement.action).await {
+                self.media_gallery_items = replacement.items;
+            }
+        }
+        commit_authoritative_recovery_window(
+            &mut self.navigation_items,
+            &mut self.replay_known_display_items,
             &self.event_tx,
             &self.replay_known_thread_root_projections,
             &self.thread_root_projection_service,
             &self.timeline_actor_generations,
             &self.key,
             self.actor_generation,
-            None,
             self.generation,
+            reason,
             items,
-            replay_known_candidates,
         );
+        let (relay_data_tx, relay_data_rx) = mpsc::channel(256);
+        self.relay_data_rx = Some(relay_data_rx);
+        self.relay_task = Some(executor::spawn(run_diff_relay(
+            relay_data_tx,
+            self.relay_control_tx.clone(),
+            self.generation,
+            diff_stream,
+        )));
         if let Some(restore) = self.restore_anchor.take() {
             self.finish_anchor_restore(
                 restore.request_id,
@@ -8627,16 +9242,57 @@ impl TimelineActor {
     /// Drive the reducer's composer completion transition for the matching
     /// pending send. Room timelines settle the main composer; thread timelines
     /// settle the open thread composer; focused timelines own no composer state.
-    async fn emit_send_finished_action(&self, client_txn_id: &str) {
-        if let Some(action) = send_finished_action(&self.key, client_txn_id.to_owned()) {
+    async fn emit_send_finished_action_with_submission(
+        &self,
+        client_txn_id: &str,
+        submission_id: Option<&koushi_state::SubmissionId>,
+    ) {
+        let action = submission_id
+            .zip(submission_target(&self.key))
+            .map(
+                |(submission_id, target)| AppAction::ComposerSubmissionSettled {
+                    submission_id: submission_id.clone(),
+                    transaction_id: client_txn_id.to_owned(),
+                    target,
+                    outcome: koushi_state::ComposerSubmissionTerminalOutcome::Succeeded,
+                },
+            )
+            .or_else(|| send_finished_action(&self.key, client_txn_id.to_owned()));
+        if let Some(action) = action {
             let _ = self.emit_action_reliable(action).await;
         }
+        if let Some(submission_id) = submission_id {
+            self.notify_submission_terminal(submission_id).await;
+        }
+    }
+
+    async fn emit_send_finished_action(&self, client_txn_id: &str) {
+        self.emit_send_finished_action_with_submission(client_txn_id, None)
+            .await;
     }
 
     /// Drive the reducer's composer failure transition for the matching pending
     /// send. Room timelines settle the main composer; thread timelines settle
     /// the open thread composer; focused timelines own no composer state.
-    async fn emit_send_failed_action(&self, client_txn_id: &str) {
+    async fn emit_send_failed_action_with_submission(
+        &self,
+        client_txn_id: &str,
+        submission_id: Option<&koushi_state::SubmissionId>,
+    ) {
+        if let Some((submission_id, target)) = submission_id.zip(submission_target(&self.key)) {
+            let _ = self
+                .emit_action_reliable(AppAction::ComposerSubmissionSettled {
+                    submission_id: submission_id.clone(),
+                    transaction_id: client_txn_id.to_owned(),
+                    target,
+                    outcome: koushi_state::ComposerSubmissionTerminalOutcome::Failed {
+                        message: "send failed".to_owned(),
+                    },
+                })
+                .await;
+            self.notify_submission_terminal(submission_id).await;
+            return;
+        }
         let projection = match self.key.kind {
             TimelineKind::Room { .. } => SendComposerProjection::Room,
             TimelineKind::Thread { .. } => SendComposerProjection::ThreadReply,
@@ -8650,6 +9306,35 @@ impl TimelineActor {
         ) {
             let _ = self.emit_action_reliable(action).await;
         }
+    }
+
+    async fn emit_send_cancelled_action(
+        &self,
+        client_txn_id: &str,
+        submission_id: Option<&koushi_state::SubmissionId>,
+    ) {
+        if let Some((submission_id, target)) = submission_id.zip(submission_target(&self.key)) {
+            let _ = self
+                .emit_action_reliable(AppAction::ComposerSubmissionSettled {
+                    submission_id: submission_id.clone(),
+                    transaction_id: client_txn_id.to_owned(),
+                    target,
+                    outcome: koushi_state::ComposerSubmissionTerminalOutcome::Cancelled,
+                })
+                .await;
+            self.notify_submission_terminal(submission_id).await;
+        } else {
+            self.emit_send_finished_action(client_txn_id).await;
+        }
+    }
+
+    async fn notify_submission_terminal(&self, submission_id: &koushi_state::SubmissionId) {
+        let _ = self
+            .manager_tx
+            .send(TimelineMessage::SubmissionTerminal {
+                submission_id: submission_id.clone(),
+            })
+            .await;
     }
 
     fn emit_typing_users_action(&self, user_ids: Vec<String>) {
@@ -8690,36 +9375,190 @@ fn koushi_timeline_builder(
         .track_read_marker_and_receipts(TimelineReadReceiptTracking::AllEvents)
 }
 
+struct PreparedRelayRecovery<Snapshot, Stream> {
+    generation: TimelineGeneration,
+    snapshot: Snapshot,
+    stream: Stream,
+}
+
+struct AuthoritativeWindowReconciliation {
+    scoped_event_ids: Vec<String>,
+    removed_event_ids: Vec<String>,
+}
+
+fn authoritative_window_reconciliation(
+    old_event_ids: &std::collections::BTreeSet<String>,
+    new_event_ids: &std::collections::BTreeSet<String>,
+) -> AuthoritativeWindowReconciliation {
+    AuthoritativeWindowReconciliation {
+        scoped_event_ids: old_event_ids.union(new_event_ids).cloned().collect(),
+        removed_event_ids: old_event_ids.difference(new_event_ids).cloned().collect(),
+    }
+}
+
+fn authoritative_search_removals(
+    reconciliation: &AuthoritativeWindowReconciliation,
+) -> Vec<SearchIndexMessage> {
+    reconciliation
+        .removed_event_ids
+        .iter()
+        .cloned()
+        .map(|event_id| SearchIndexMessage::Redact { event_id })
+        .collect()
+}
+
+fn authoritative_receipts_action(
+    room_id: &str,
+    reconciliation: &AuthoritativeWindowReconciliation,
+    receipts_by_event: Vec<LiveEventReceipts>,
+) -> AppAction {
+    AppAction::LiveRoomReceiptsWindowReconciled {
+        room_id: room_id.to_owned(),
+        scoped_event_ids: reconciliation.scoped_event_ids.clone(),
+        receipts_by_event,
+    }
+}
+
+fn replace_authoritative_cache<K, V>(cache: &mut HashMap<K, V>, replacement: HashMap<K, V>) {
+    *cache = replacement;
+}
+
+async fn prepare_relay_recovery<Subscribe, SubscribeFuture, Snapshot, Stream>(
+    current_generation: TimelineGeneration,
+    overflow_generation: TimelineGeneration,
+    subscribe: Subscribe,
+) -> Option<PreparedRelayRecovery<Snapshot, Stream>>
+where
+    Subscribe: FnOnce() -> SubscribeFuture,
+    SubscribeFuture: std::future::Future<Output = (Snapshot, Stream)>,
+{
+    if !accept_relay_generation(current_generation, overflow_generation) {
+        return None;
+    }
+    let (snapshot, stream) = subscribe().await;
+    Some(PreparedRelayRecovery {
+        generation: TimelineGeneration(current_generation.0 + 1),
+        snapshot,
+        stream,
+    })
+}
+
+fn accept_relay_generation(
+    current_generation: TimelineGeneration,
+    incoming_generation: TimelineGeneration,
+) -> bool {
+    current_generation == incoming_generation
+}
+
+fn accepted_relay_batch<T>(
+    current_generation: TimelineGeneration,
+    incoming_generation: TimelineGeneration,
+    batch: T,
+) -> Option<T> {
+    accept_relay_generation(current_generation, incoming_generation).then_some(batch)
+}
+
+fn commit_authoritative_recovery_window(
+    navigation_items: &mut Vec<TimelineItem>,
+    replay_known_display_items: &mut Vec<TimelineItem>,
+    event_tx: &broadcast::Sender<CoreEvent>,
+    replay_known_thread_root_projections: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    generation: TimelineGeneration,
+    reason: TimelineResyncReason,
+    authoritative_items: Vec<TimelineItem>,
+) {
+    *navigation_items = authoritative_items;
+    *replay_known_display_items = normalize_display_timeline_items(navigation_items);
+    let replay_known_candidates = replay_known_candidates_for_display_items(
+        key,
+        navigation_items,
+        replay_known_display_items,
+    );
+    emit_relay_recovery_snapshot(
+        event_tx,
+        replay_known_thread_root_projections,
+        thread_root_projection_service,
+        timeline_actor_generations,
+        key,
+        actor_generation,
+        generation,
+        reason,
+        navigation_items.clone(),
+        replay_known_candidates,
+    );
+}
+
+fn emit_relay_recovery_snapshot(
+    event_tx: &broadcast::Sender<CoreEvent>,
+    replay_known_thread_root_projections: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    generation: TimelineGeneration,
+    reason: TimelineResyncReason,
+    items: Vec<TimelineItem>,
+    replay_known_candidates: Vec<ThreadRootProjectionDto>,
+) {
+    let _ = emit_timeline_events_for_generation(
+        event_tx,
+        timeline_actor_generations,
+        key,
+        actor_generation,
+        vec![TimelineEvent::ResyncRequired {
+            key: key.clone(),
+            reason,
+        }],
+    );
+    let _ = emit_initial_items_and_reconcile_replay_known_for_generation(
+        event_tx,
+        replay_known_thread_root_projections,
+        thread_root_projection_service,
+        timeline_actor_generations,
+        key,
+        actor_generation,
+        None,
+        generation,
+        items,
+        replay_known_candidates,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Relay task: SDK diff stream → actor inbox (with overflow detection)
 // ---------------------------------------------------------------------------
 
 async fn run_diff_relay(
-    actor_tx: mpsc::Sender<TimelineActorMessage>,
+    actor_tx: mpsc::Sender<TimelineRelayBatch>,
+    control_tx: mpsc::Sender<TimelineRelayControl>,
+    generation: TimelineGeneration,
     mut diff_stream: impl futures_util::Stream<Item = Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>>
     + Unpin,
-    _timeline: Arc<Timeline>,
 ) {
     use futures_util::StreamExt;
 
-    let mut overflow = false;
     loop {
         let Some(diffs) = diff_stream.next().await else {
+            let _ = control_tx
+                .send(TimelineRelayControl::StreamEnded { generation })
+                .await;
             break;
         };
 
-        if overflow {
-            // Already in overflow state — stay silent, the actor has already
-            // been notified and will emit a new InitialItems on the new generation.
-            continue;
-        }
-
-        match actor_tx.try_send(TimelineActorMessage::DiffBatch(diffs)) {
+        match actor_tx.try_send(TimelineRelayBatch { generation, diffs }) {
             Ok(_) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
-                // Queue overflow: notify the actor to resync.
-                overflow = true;
-                let _ = actor_tx.try_send(TimelineActorMessage::RelayOverflow);
+                // Overflow control must not compete for capacity with data.
+                // Once delivered, this generation is terminal; the actor
+                // resubscribes and owns the replacement relay task.
+                let _ = control_tx
+                    .send(TimelineRelayControl::Overflow { generation })
+                    .await;
+                break;
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 // Actor dropped — relay task should stop.
@@ -8901,6 +9740,24 @@ fn media_gallery_updated_action(
         room_id: room_id.clone(),
         items,
     })
+}
+
+struct AuthoritativeMediaGalleryReplacement {
+    items: Vec<TimelineMediaGalleryItem>,
+    action: AppAction,
+}
+
+fn authoritative_media_gallery_replacement(
+    key: &TimelineKey,
+    current: &[TimelineMediaGalleryItem],
+    authoritative_items: &[TimelineItem],
+) -> Option<AuthoritativeMediaGalleryReplacement> {
+    let items = media_gallery_items_from_timeline_items(key, authoritative_items);
+    if items == current {
+        return None;
+    }
+    let action = media_gallery_updated_action(key, items.clone())?;
+    Some(AuthoritativeMediaGalleryReplacement { items, action })
 }
 
 fn media_gallery_items_from_timeline_items(
@@ -10949,6 +11806,7 @@ struct SendCompletionTracker {
 
 struct PendingSendCompletion {
     client_txn_id: String,
+    submission_id: Option<koushi_state::SubmissionId>,
     request_id: RequestId,
     settles_composer: bool,
     failure_reported: bool,
@@ -10959,16 +11817,23 @@ impl SendCompletionTracker {
         &mut self,
         sdk_txn_id: String,
         client_txn_id: String,
+        submission_id: Option<koushi_state::SubmissionId>,
         request_id: RequestId,
         settles_composer: bool,
-    ) -> Option<(String, RequestId, String)> {
+    ) -> Option<(
+        String,
+        Option<koushi_state::SubmissionId>,
+        RequestId,
+        String,
+    )> {
         if let Some(event_id) = self.completed_sends.remove(&sdk_txn_id) {
-            Some((client_txn_id, request_id, event_id))
+            Some((client_txn_id, submission_id, request_id, event_id))
         } else {
             self.pending_sends.insert(
                 sdk_txn_id,
                 PendingSendCompletion {
                     client_txn_id,
+                    submission_id,
                     request_id,
                     settles_composer,
                     failure_reported: false,
@@ -10982,11 +11847,18 @@ impl SendCompletionTracker {
         &mut self,
         sdk_txn_id: String,
         event_id: String,
-    ) -> Option<(String, RequestId, String, bool)> {
+    ) -> Option<(
+        String,
+        Option<koushi_state::SubmissionId>,
+        RequestId,
+        String,
+        bool,
+    )> {
         if let Some(pending) = self.pending_sends.remove(&sdk_txn_id) {
             let settles_composer = pending.settles_composer && !pending.failure_reported;
             Some((
                 pending.client_txn_id,
+                pending.submission_id,
                 pending.request_id,
                 event_id,
                 settles_composer,
@@ -10997,7 +11869,10 @@ impl SendCompletionTracker {
         }
     }
 
-    fn record_send_error(&mut self, sdk_txn_id: &str) -> Option<(String, RequestId, bool)> {
+    fn record_send_error(
+        &mut self,
+        sdk_txn_id: &str,
+    ) -> Option<(String, Option<koushi_state::SubmissionId>, RequestId, bool)> {
         let pending = self.pending_sends.get_mut(sdk_txn_id)?;
         if pending.failure_reported {
             return None;
@@ -11005,15 +11880,20 @@ impl SendCompletionTracker {
         pending.failure_reported = true;
         Some((
             pending.client_txn_id.clone(),
+            pending.submission_id.clone(),
             pending.request_id,
             pending.settles_composer,
         ))
     }
 
-    fn record_cancelled_event(&mut self, sdk_txn_id: &str) -> Option<(String, RequestId, bool)> {
+    fn record_cancelled_event(
+        &mut self,
+        sdk_txn_id: &str,
+    ) -> Option<(String, Option<koushi_state::SubmissionId>, RequestId, bool)> {
         let pending = self.pending_sends.remove(sdk_txn_id)?;
         Some((
             pending.client_txn_id,
+            pending.submission_id,
             pending.request_id,
             pending.settles_composer && !pending.failure_reported,
         ))
@@ -11038,7 +11918,7 @@ mod tests {
 
     use koushi_diagnostics::DiagnosticValue;
     use koushi_state::{
-        AppAction, MentionIntent, MentionTarget, SessionInfo, SessionState,
+        AppAction, MentionIntent, MentionTarget, SessionInfo, SessionState, SubmissionId,
         TimelineMediaKind as GalleryTimelineMediaKind,
     };
     use matrix_sdk::ruma::events::room::message::{
@@ -12789,6 +13669,7 @@ mod tests {
             session: None,
             room_list_service: None,
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
             event_tx,
             msg_tx,
@@ -14053,7 +14934,10 @@ mod tests {
                 .next()
                 .expect("actor lifecycle helper boundary");
             assert!(
-                section.contains("emit_initial_items_and_reconcile_replay_known_for_generation"),
+                section.contains("emit_initial_items_and_reconcile_replay_known_for_generation")
+                    || (name == "queue_overflow"
+                        && (section.contains("emit_relay_recovery_snapshot")
+                            || section.contains("commit_authoritative_recovery_window"))),
                 "{name} must publish InitialItems and replay-known ownership in one group"
             );
         }
@@ -14133,6 +15017,7 @@ mod tests {
             session: None,
             room_list_service: None,
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
             event_tx,
             msg_tx,
@@ -14542,7 +15427,9 @@ mod tests {
         assert!(!auxiliary_alive.load(Ordering::SeqCst));
         assert!(
             auxiliary_sender
-                .try_send(TimelineActorMessage::RelayOverflow)
+                .try_send(TimelineActorMessage::ReplayInitialItems {
+                    request_id: fake_rid(99),
+                })
                 .is_err()
         );
     }
@@ -14594,6 +15481,361 @@ mod tests {
             task,
             auxiliary_tasks: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn duplicate_submission_routes_one_actor_message() {
+        let key = room_key();
+        let (actor_tx, mut actor_rx) = mpsc::channel(4);
+        let actor_task = executor::spawn(std::future::pending());
+        let (action_tx, mut action_rx) = mpsc::channel(4);
+        let (event_tx, mut event_rx) = broadcast::channel(4);
+        let (msg_tx, msg_rx) = mpsc::channel(1);
+        let mut manager = TimelineManagerActor {
+            session: None,
+            room_list_service: None,
+            timelines: HashMap::from([(
+                key.clone(),
+                TimelineActorHandle {
+                    tx: actor_tx,
+                    task: actor_task,
+                    auxiliary_tasks: Vec::new(),
+                },
+            )]),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
+            action_tx,
+            event_tx,
+            msg_tx,
+            msg_rx,
+            search_index_tx: None,
+            ignored_user_ids: Default::default(),
+            data_dir: None,
+            link_preview_policy: LinkPreviewContext::default(),
+            messages_backpressure: MessagesBackpressure::default(),
+            thread_root_projection_service: Arc::new(Mutex::new(
+                ThreadRootProjectionService::default(),
+            )),
+            thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
+            replay_known_thread_root_projections: Arc::new(Mutex::new(
+                ReplayKnownThreadRootProjectionRegistry::default(),
+            )),
+            timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+            test_session_available: true,
+        };
+        let submission_id = SubmissionId::new("opaque-submission");
+        for request_id in [fake_rid(7300), fake_rid(7301)] {
+            manager
+                .handle_command(TimelineCommand::SubmitText {
+                    request_id,
+                    submission_id: submission_id.clone(),
+                    key: key.clone(),
+                    transaction_id: "txn-once".to_owned(),
+                    body: "body".to_owned(),
+                    mentions: MentionIntent::default(),
+                })
+                .await;
+        }
+
+        let admission = match actor_rx.try_recv() {
+            Ok(TimelineActorMessage::SendText { admission, .. }) => admission,
+            _ => panic!("one actor mailbox reservation expected"),
+        };
+        assert!(await_submission_admission(admission).await);
+        assert!(actor_rx.try_recv().is_err());
+        assert!(matches!(
+            action_rx.try_recv(),
+            Ok(actions) if matches!(actions.as_slice(), [AppAction::ComposerSubmissionAccepted { submission_id: accepted, .. }] if accepted == &submission_id)
+        ));
+        assert!(action_rx.try_recv().is_err());
+
+        while event_rx.try_recv().is_ok() {}
+        drop(actor_rx);
+        let rejected_id = SubmissionId::new("closed-actor-submission");
+        manager
+            .handle_command(TimelineCommand::SubmitText {
+                request_id: fake_rid(7302),
+                submission_id: rejected_id.clone(),
+                key: key.clone(),
+                transaction_id: "txn-rejected".to_owned(),
+                body: "body".to_owned(),
+                mentions: MentionIntent::default(),
+            })
+            .await;
+        assert!(action_rx.try_recv().is_err());
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                submission_id,
+                ..
+            })) if submission_id == rejected_id
+        ));
+
+        let failed_id = SubmissionId::new("reducer-closed-submission");
+        let (actor_tx, mut actor_rx) = mpsc::channel(1);
+        let actor_task = executor::spawn(async {});
+        manager.timelines.insert(
+            key.clone(),
+            TimelineActorHandle {
+                tx: actor_tx,
+                task: actor_task,
+                auxiliary_tasks: Vec::new(),
+            },
+        );
+        let (closed_action_tx, closed_action_rx) = mpsc::channel(1);
+        drop(closed_action_rx);
+        manager.action_tx = closed_action_tx;
+        manager
+            .handle_command(TimelineCommand::SubmitText {
+                request_id: fake_rid(7303),
+                submission_id: failed_id.clone(),
+                key: key.clone(),
+                transaction_id: "txn-reducer-closed".to_owned(),
+                body: "body".to_owned(),
+                mentions: MentionIntent::default(),
+            })
+            .await;
+        let admission = match actor_rx.recv().await {
+            Some(TimelineActorMessage::SendText { admission, .. }) => admission,
+            _ => panic!("reserved actor message expected"),
+        };
+        assert!(!await_submission_admission(admission).await);
+        manager
+            .handle_command(TimelineCommand::SubmitText {
+                request_id: fake_rid(7304),
+                submission_id: failed_id.clone(),
+                key,
+                transaction_id: "txn-replayed".to_owned(),
+                body: "changed".to_owned(),
+                mentions: MentionIntent::default(),
+            })
+            .await;
+        assert!(
+            actor_rx.try_recv().is_err(),
+            "rejected replay never reaches SDK actor"
+        );
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::SubmissionRejected { submission_id, .. }))
+                if submission_id == failed_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn submission_admission_permit_blocks_until_reducer_acceptance_and_aborts_on_drop() {
+        let (permit_tx, mut permit_rx) = tokio::sync::oneshot::channel();
+        assert!(matches!(
+            permit_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        permit_tx.send(()).expect("open admission permit");
+        assert!(await_submission_admission(Some(permit_rx)).await);
+
+        let (permit_tx, permit_rx) = tokio::sync::oneshot::channel::<()>();
+        drop(permit_tx);
+        assert!(
+            !await_submission_admission(Some(permit_rx)).await,
+            "dropped permit aborts actor SDK work"
+        );
+        assert!(
+            await_submission_admission(None).await,
+            "legacy sends need no permit"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_acknowledges_after_timeline_children_are_dropped() {
+        let (action_tx, _action_rx) = mpsc::channel(1);
+        let (event_tx, _) = broadcast::channel(1);
+        let handle =
+            TimelineManagerActor::spawn(action_tx, event_tx, None, MessagesBackpressure::default());
+        let (acknowledged, acknowledgement) = tokio::sync::oneshot::channel();
+        assert!(
+            handle
+                .send(TimelineMessage::Shutdown {
+                    acknowledged: Some(acknowledged),
+                })
+                .await
+        );
+        tokio::time::timeout(Duration::from_secs(1), acknowledgement)
+            .await
+            .expect("shutdown acknowledgement must not hang")
+            .expect("timeline manager acknowledges shutdown");
+    }
+
+    #[tokio::test]
+    async fn shutdown_cleans_captured_room_keys_before_acknowledging() {
+        struct DropSignal(Option<oneshot::Sender<()>>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                if let Some(signal) = self.0.take() {
+                    let _ = signal.send(());
+                }
+            }
+        }
+
+        let key = room_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        generations.activate_after_quiescence(&key).await;
+        let (dropped_tx, dropped_rx) = oneshot::channel();
+        let child = executor::spawn(async move {
+            let _signal = DropSignal(Some(dropped_tx));
+            std::future::pending::<()>().await;
+        });
+        let (actor_tx, _actor_rx) = mpsc::channel(1);
+        let (action_tx, mut action_rx) = mpsc::channel(4);
+        let (event_tx, _) = broadcast::channel(4);
+        let (msg_tx, msg_rx) = mpsc::channel(4);
+        let manager = TimelineManagerActor {
+            session: None,
+            room_list_service: None,
+            timelines: HashMap::from([(
+                key.clone(),
+                TimelineActorHandle {
+                    tx: actor_tx,
+                    task: child,
+                    auxiliary_tasks: Vec::new(),
+                },
+            )]),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
+            action_tx,
+            event_tx,
+            msg_tx: msg_tx.clone(),
+            msg_rx,
+            search_index_tx: None,
+            ignored_user_ids: Default::default(),
+            data_dir: None,
+            link_preview_policy: LinkPreviewContext::default(),
+            messages_backpressure: MessagesBackpressure::default(),
+            thread_root_projection_service: Arc::new(Mutex::new(
+                ThreadRootProjectionService::default(),
+            )),
+            thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
+            replay_known_thread_root_projections: Arc::new(Mutex::new(
+                ReplayKnownThreadRootProjectionRegistry::default(),
+            )),
+            timeline_actor_generations: generations.clone(),
+            test_session_available: true,
+        };
+        let run = executor::spawn(async move { manager.run().await });
+        let (ack_tx, ack_rx) = oneshot::channel();
+        msg_tx
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(ack_tx),
+            })
+            .await
+            .expect("shutdown command");
+        ack_rx.await.expect("shutdown acknowledgement");
+        dropped_rx
+            .await
+            .expect("child dropped before acknowledgement");
+        assert!(matches!(
+            action_rx.recv().await,
+            Some(actions) if matches!(actions.as_slice(), [AppAction::ThreadRootProjectionsCleared { room_id }] if room_id == key.room_id())
+        ));
+        assert!(
+            !generations
+                .state
+                .lock()
+                .expect("generation gate")
+                .entries
+                .contains_key(&key)
+        );
+        run.await.expect("manager shutdown");
+    }
+
+    #[tokio::test]
+    async fn reserved_actor_message_waits_for_reducer_acceptance_delivery() {
+        let key = room_key();
+        let (actor_tx, mut actor_rx) = mpsc::channel(1);
+        let actor_task = executor::spawn(std::future::pending());
+        let (action_tx, mut action_rx) = mpsc::channel(1);
+        action_tx
+            .try_send(Vec::new())
+            .expect("pause reducer delivery");
+        let (event_tx, mut event_rx) = broadcast::channel(4);
+        let (msg_tx, msg_rx) = mpsc::channel(1);
+        let mut manager = TimelineManagerActor {
+            session: None,
+            room_list_service: None,
+            timelines: HashMap::from([(
+                key.clone(),
+                TimelineActorHandle {
+                    tx: actor_tx,
+                    task: actor_task,
+                    auxiliary_tasks: Vec::new(),
+                },
+            )]),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
+            action_tx,
+            event_tx,
+            msg_tx,
+            msg_rx,
+            search_index_tx: None,
+            ignored_user_ids: Default::default(),
+            data_dir: None,
+            link_preview_policy: LinkPreviewContext::default(),
+            messages_backpressure: MessagesBackpressure::default(),
+            thread_root_projection_service: Arc::new(Mutex::new(
+                ThreadRootProjectionService::default(),
+            )),
+            thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
+            replay_known_thread_root_projections: Arc::new(Mutex::new(
+                ReplayKnownThreadRootProjectionRegistry::default(),
+            )),
+            timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+            test_session_available: true,
+        };
+        let submission_id = SubmissionId::new("paused-admission");
+        let command_id = submission_id.clone();
+        let route = tokio::spawn(async move {
+            manager
+                .handle_command(TimelineCommand::SubmitText {
+                    request_id: fake_rid(7310),
+                    submission_id: command_id,
+                    key,
+                    transaction_id: "txn-paused".to_owned(),
+                    body: "body".to_owned(),
+                    mentions: MentionIntent::default(),
+                })
+                .await;
+        });
+        let mut admission = match actor_rx.recv().await {
+            Some(TimelineActorMessage::SendText {
+                admission: Some(admission),
+                ..
+            }) => admission,
+            _ => panic!("actor mailbox must be reserved"),
+        };
+        assert!(matches!(
+            admission.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(event_rx.try_recv().is_err());
+        assert!(action_rx.recv().await.expect("pause marker").is_empty());
+        assert!(
+            matches!(action_rx.recv().await, Some(actions) if matches!(actions.as_slice(), [AppAction::ComposerSubmissionAccepted { submission_id: accepted, .. }] if accepted == &submission_id))
+        );
+        route.await.expect("manager route");
+        assert!(
+            matches!(event_rx.try_recv(), Ok(CoreEvent::Timeline(TimelineEvent::SubmissionAccepted { submission_id: accepted, .. })) if accepted == submission_id)
+        );
+        assert!(await_submission_admission(Some(admission)).await);
+    }
+
+    #[test]
+    fn submission_admission_tombstones_are_bounded_and_active_is_retained() {
+        let mut ledger = SubmissionAdmissionLedger::default();
+        let key = room_key();
+        let active = SubmissionId::new("active");
+        ledger.accept(active.clone(), key.clone(), "active-txn".to_owned());
+        for index in 0..=MAX_SUBMISSION_TOMBSTONES {
+            let id = SubmissionId::new(format!("terminal-{index}"));
+            ledger.accept(id.clone(), key.clone(), format!("txn-{index}"));
+            ledger.terminal(&id);
+        }
+        assert_eq!(ledger.tombstones.len(), MAX_SUBMISSION_TOMBSTONES);
+        assert!(ledger.active.contains_key(&active));
+        assert!(ledger.get(&SubmissionId::new("terminal-0")).is_none());
     }
 
     #[test]
@@ -14734,6 +15976,38 @@ mod tests {
 
         apply_timeline_diffs_to_items(&mut items, &[TimelineDiff::Reset { items: Vec::new() }]);
         assert!(media_gallery_items_from_timeline_items(&room_key(), &items).is_empty());
+    }
+
+    #[test]
+    fn relay_overflow_authoritative_snapshot_replaces_media_gallery_and_emits_action() {
+        let key = room_key();
+        let old_navigation = vec![timeline_media_item(
+            "$old:test",
+            "@alice:test",
+            None,
+            1,
+            "old.png",
+            TimelineMediaKind::Image,
+        )];
+        let new_navigation = vec![timeline_media_item(
+            "$new:test",
+            "@bob:test",
+            None,
+            2,
+            "new.png",
+            TimelineMediaKind::Image,
+        )];
+        let old_gallery = media_gallery_items_from_timeline_items(&key, &old_navigation);
+        let replacement =
+            authoritative_media_gallery_replacement(&key, &old_gallery, &new_navigation)
+                .expect("changed authoritative snapshot must emit gallery replacement");
+        assert_eq!(replacement.items.len(), 1);
+        assert_eq!(replacement.items[0].event_id, "$new:test");
+        assert!(matches!(
+            replacement.action,
+            AppAction::MediaGalleryUpdated { items, .. }
+                if items.len() == 1 && items[0].event_id == "$new:test"
+        ));
     }
 
     #[test]
@@ -15614,6 +16888,7 @@ mod tests {
                     auxiliary_tasks: Vec::new(),
                 },
             )]),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
             event_tx,
             msg_tx: manager_tx.clone(),
@@ -15788,6 +17063,7 @@ mod tests {
                     auxiliary_tasks: Vec::new(),
                 },
             )]),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
             event_tx,
             msg_tx: _manager_tx,
@@ -17229,14 +18505,14 @@ mod tests {
             .split("fn send_finished_action")
             .next()
             .expect("send finished projection helper should follow submit helper");
-        let finished_projection_source = source
+        let _finished_projection_source = source
             .split("fn send_finished_action")
             .nth(1)
             .expect("send finished projection helper should exist")
             .split("fn send_failed_action")
             .next()
             .expect("send failed projection helper should follow finished helper");
-        let failed_projection_source = source
+        let _failed_projection_source = source
             .split("fn send_failed_action")
             .nth(1)
             .expect("send failed projection helper should exist")
@@ -17262,10 +18538,9 @@ mod tests {
             "thread SendReply route failures must clear thread composer pending state"
         );
         assert!(
-            actor_completion_source.contains("send_finished_action")
-                && actor_completion_source.contains("send_failed_action")
-                && finished_projection_source.contains("ThreadReplyFinished")
-                && failed_projection_source.contains("ThreadReplyFailed"),
+            actor_completion_source.contains("ComposerSubmissionSettled")
+                && actor_completion_source.contains("ComposerSubmissionTerminalOutcome")
+                && actor_completion_source.contains("submission_target"),
             "thread actor completion and failure must settle thread composer state"
         );
         assert!(
@@ -17629,6 +18904,408 @@ mod tests {
     // --- Generation bump + ResyncRequired on synthetic overflow ---
 
     #[tokio::test]
+    async fn relay_overflow_control_is_delivered_when_data_inbox_is_full() {
+        let (actor_tx, mut actor_rx) = mpsc::channel::<TimelineRelayBatch>(1);
+        let (command_tx, mut command_rx) = mpsc::channel::<TimelineActorMessage>(1);
+        let (control_tx, mut control_rx) = mpsc::channel::<TimelineRelayControl>(1);
+
+        command_tx
+            .try_send(TimelineActorMessage::ReplayInitialItems {
+                request_id: fake_rid(1),
+            })
+            .expect("command must queue independently of relay data");
+
+        actor_tx
+            .try_send(TimelineRelayBatch {
+                generation: TimelineGeneration(7),
+                diffs: Vec::new(),
+            })
+            .expect("test must fill the data inbox");
+
+        let relay = executor::spawn(run_diff_relay(
+            actor_tx.clone(),
+            control_tx.clone(),
+            TimelineGeneration(7),
+            futures_util::stream::iter([Vec::new()]),
+        ));
+
+        let control = tokio::time::timeout(Duration::from_secs(1), control_rx.recv())
+            .await
+            .expect("overflow control must not wait for capacity in the data inbox")
+            .expect("relay must keep the control lane open until overflow is delivered");
+        assert!(matches!(
+            control,
+            TimelineRelayControl::Overflow {
+                generation: TimelineGeneration(7)
+            }
+        ));
+        relay
+            .await
+            .expect("overflowed relay must terminate cleanly");
+
+        let _filled_message = actor_rx
+            .recv()
+            .await
+            .expect("test must release the old full data inbox");
+        run_diff_relay(
+            actor_tx,
+            control_tx,
+            TimelineGeneration(8),
+            futures_util::stream::iter([Vec::new()]),
+        )
+        .await;
+        assert!(matches!(
+            actor_rx.recv().await,
+            Some(TimelineRelayBatch {
+                generation: TimelineGeneration(8),
+                diffs
+            }) if diffs.is_empty()
+        ));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(TimelineActorMessage::ReplayInitialItems { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn relay_stream_end_emits_one_recovery_control_without_consuming_commands() {
+        let (data_tx, mut data_rx) = mpsc::channel::<TimelineRelayBatch>(1);
+        let (control_tx, mut control_rx) = mpsc::channel::<TimelineRelayControl>(1);
+        let (command_tx, mut command_rx) = mpsc::channel::<TimelineActorMessage>(1);
+        command_tx
+            .try_send(TimelineActorMessage::ReplayInitialItems {
+                request_id: fake_rid(88),
+            })
+            .expect("command must queue independently");
+
+        run_diff_relay(
+            data_tx,
+            control_tx,
+            TimelineGeneration(9),
+            futures_util::stream::empty(),
+        )
+        .await;
+
+        assert!(matches!(
+            control_rx.recv().await,
+            Some(TimelineRelayControl::StreamEnded {
+                generation: TimelineGeneration(9)
+            })
+        ));
+        assert!(matches!(data_rx.recv().await, None));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(TimelineActorMessage::ReplayInitialItems { .. })
+        ));
+        assert!(matches!(
+            control_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn relay_restart_backoff_grows_caps_resets_and_rejects_stale_due_tokens() {
+        let mut backoff =
+            RelayRestartBackoff::new(Duration::from_millis(10), Duration::from_millis(40));
+        let first = backoff.schedule(TimelineGeneration(3));
+        let second = backoff.schedule(TimelineGeneration(3));
+        let third = backoff.schedule(TimelineGeneration(3));
+        let capped = backoff.schedule(TimelineGeneration(3));
+        assert_eq!(first.delay, Duration::from_millis(10));
+        assert_eq!(second.delay, Duration::from_millis(20));
+        assert_eq!(third.delay, Duration::from_millis(40));
+        assert_eq!(capped.delay, Duration::from_millis(40));
+        assert!(!backoff.accept_due(first.generation, first.serial));
+        assert!(backoff.accept_due(capped.generation, capped.serial));
+        assert!(!backoff.accept_due(capped.generation, capped.serial));
+
+        backoff.reset_after_live_batch();
+        let reset = backoff.schedule(TimelineGeneration(4));
+        assert_eq!(reset.delay, Duration::from_millis(10));
+        assert!(!backoff.accept_due(TimelineGeneration(3), reset.serial));
+    }
+
+    #[tokio::test]
+    async fn relay_restart_timer_does_not_block_commands_and_emits_one_due_after_delay() {
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        command_tx
+            .try_send(TimelineActorMessage::ReplayInitialItems {
+                request_id: fake_rid(89),
+            })
+            .expect("command queued during restart delay");
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let schedule = RelayRestartSchedule {
+            generation: TimelineGeneration(5),
+            serial: 11,
+            delay: Duration::ZERO,
+        };
+        let timer = spawn_relay_restart_timer(control_tx, schedule, async move {
+            let _ = release_rx.await;
+        });
+
+        assert!(matches!(
+            control_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(TimelineActorMessage::ReplayInitialItems { .. })
+        ));
+        release_tx.send(()).expect("release timer");
+        timer.await.expect("timer task");
+        assert!(matches!(
+            control_rx.recv().await,
+            Some(TimelineRelayControl::RestartDue {
+                generation: TimelineGeneration(5),
+                serial: 11,
+            })
+        ));
+        assert!(matches!(
+            control_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[tokio::test]
+    async fn relay_overflow_recovery_subscribes_once_emits_snapshot_then_next_live_update() {
+        let key = room_key();
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let actor_generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        let replay_registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let projection_service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let subscribe_count = Arc::new(AtomicU64::new(0));
+        let subscribe_count_for_fake = subscribe_count.clone();
+
+        let prepared = prepare_relay_recovery(
+            TimelineGeneration(7),
+            TimelineGeneration(7),
+            move || async move {
+                subscribe_count_for_fake.fetch_add(1, Ordering::SeqCst);
+                (
+                    Vec::<TimelineItem>::new(),
+                    futures_util::stream::iter([vec![
+                        eyeball_im::VectorDiff::<Arc<SdkTimelineItem>>::Clear,
+                    ]]),
+                )
+            },
+        )
+        .await
+        .expect("matching overflow generation must recover");
+        assert_eq!(subscribe_count.load(Ordering::SeqCst), 1);
+        assert_eq!(prepared.generation, TimelineGeneration(8));
+
+        let PreparedRelayRecovery {
+            generation,
+            snapshot,
+            stream,
+        } = prepared;
+        emit_relay_recovery_snapshot(
+            &event_tx,
+            &replay_registry,
+            &projection_service,
+            &actor_generations,
+            &key,
+            actor_generation,
+            generation,
+            TimelineResyncReason::QueueOverflow,
+            snapshot,
+            Vec::new(),
+        );
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::ResyncRequired { .. }))
+        ));
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::InitialItems {
+                generation: TimelineGeneration(8),
+                ..
+            }))
+        ));
+
+        let (actor_tx, mut actor_rx) = mpsc::channel(1);
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        run_diff_relay(actor_tx, control_tx, generation, stream).await;
+        let Some(TimelineRelayBatch {
+            generation: batch_generation,
+            diffs,
+        }) = actor_rx.recv().await
+        else {
+            panic!("replacement stream must produce a generation-tagged batch");
+        };
+        let diffs = accepted_relay_batch(generation, batch_generation, diffs)
+            .expect("replacement generation must be accepted")
+            .into_iter()
+            .map(|diff| sdk_vector_diff_to_timeline_diff(diff, &key, None, &HashMap::new()))
+            .collect();
+        assert!(
+            emit_items_updated_and_reconcile_replay_known_for_generation(
+                &event_tx,
+                &replay_registry,
+                &projection_service,
+                &actor_generations,
+                &key,
+                actor_generation,
+                generation,
+                TimelineBatchId(0),
+                diffs,
+                &[],
+                &[],
+            )
+        );
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                generation: TimelineGeneration(8),
+                diffs,
+                ..
+            })) if matches!(diffs.as_slice(), [TimelineDiff::Clear])
+        ));
+    }
+
+    #[test]
+    fn relay_overflow_stale_generation_is_rejected_without_state_or_event_change() {
+        let next_batch_id = TimelineBatchId(4);
+        let (event_tx, mut event_rx) = broadcast::channel::<CoreEvent>(1);
+        let stale = accepted_relay_batch(
+            TimelineGeneration(8),
+            TimelineGeneration(7),
+            vec![TimelineDiff::Clear],
+        );
+        if stale.is_some() {
+            let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
+                key: room_key(),
+                generation: TimelineGeneration(7),
+                batch_id: next_batch_id,
+                diffs: vec![TimelineDiff::Clear],
+            }));
+        }
+        assert!(stale.is_none());
+        assert_eq!(next_batch_id, TimelineBatchId(4));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn relay_overflow_authoritative_window_plan_scopes_receipts_and_search_removals() {
+        let old = std::collections::BTreeSet::from([
+            "$removed:test".to_owned(),
+            "$retained:test".to_owned(),
+        ]);
+        let new = std::collections::BTreeSet::from([
+            "$retained:test".to_owned(),
+            "$added:test".to_owned(),
+        ]);
+        let plan = authoritative_window_reconciliation(&old, &new);
+        assert_eq!(
+            plan.scoped_event_ids,
+            vec!["$added:test", "$removed:test", "$retained:test"]
+        );
+        assert_eq!(plan.removed_event_ids, vec!["$removed:test"]);
+        assert!(matches!(
+            authoritative_search_removals(&plan).as_slice(),
+            [SearchIndexMessage::Redact { event_id }] if event_id == "$removed:test"
+        ));
+        assert!(matches!(
+            authoritative_receipts_action("!room:test", &plan, Vec::new()),
+            AppAction::LiveRoomReceiptsWindowReconciled {
+                scoped_event_ids,
+                receipts_by_event,
+                ..
+            } if scoped_event_ids.len() == 3 && receipts_by_event.is_empty()
+        ));
+    }
+
+    #[test]
+    fn relay_overflow_authoritative_cache_rebuild_removes_old_and_installs_new_entries() {
+        let mut cache = HashMap::from([("old", 1_u8), ("retained-old-value", 2)]);
+        replace_authoritative_cache(
+            &mut cache,
+            HashMap::from([("retained-old-value", 3_u8), ("new", 4)]),
+        );
+        assert_eq!(
+            cache,
+            HashMap::from([("retained-old-value", 3_u8), ("new", 4)])
+        );
+    }
+
+    #[tokio::test]
+    async fn authoritative_resync_projects_event_only_and_emits_ordered_recovery_events() {
+        let mut transaction = timeline_item(
+            "$transaction-placeholder:test",
+            Some("same body"),
+            "@me:test",
+            false,
+        );
+        transaction.id = TimelineItemId::Transaction {
+            transaction_id: "txn-echo".to_owned(),
+        };
+        transaction.send_state = Some(TimelineSendState::Sending);
+        let remote = timeline_item("$remote-echo:test", Some("same body"), "@me:test", false);
+        let mut current = vec![transaction, remote.clone()];
+        let mut display = normalize_display_timeline_items(&current);
+        let key = room_key();
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let actor_generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        let replay_registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let projection_service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+
+        commit_authoritative_recovery_window(
+            &mut current,
+            &mut display,
+            &event_tx,
+            &replay_registry,
+            &projection_service,
+            &actor_generations,
+            &key,
+            actor_generation,
+            TimelineGeneration(2),
+            TimelineResyncReason::QueueOverflow,
+            vec![remote],
+        );
+
+        assert_eq!(current.len(), 1);
+        assert!(matches!(
+            current[0].id,
+            TimelineItemId::Event { ref event_id } if event_id == "$remote-echo:test"
+        ));
+        assert!(!matches!(
+            current[0].send_state,
+            Some(TimelineSendState::Sending)
+        ));
+        assert_eq!(display, current);
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::ResyncRequired { .. }))
+        ));
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::InitialItems {
+                generation: TimelineGeneration(2),
+                items,
+                ..
+            })) if items.len() == 1
+                && matches!(items[0].id, TimelineItemId::Event { .. })
+                && !matches!(items[0].send_state, Some(TimelineSendState::Sending))
+        ));
+    }
+
+    #[tokio::test]
     async fn relay_overflow_signal_triggers_generation_bump() {
         // Test the overflow logic directly on the actor message pathway,
         // using a synthetic mpsc channel at capacity 1 to force overflow.
@@ -17691,7 +19368,7 @@ mod tests {
         let event_id = "$event-42".to_owned();
 
         assert_eq!(
-            tracker.remember_pending_send(sdk_txn.clone(), client_txn.clone(), rid, true),
+            tracker.remember_pending_send(sdk_txn.clone(), client_txn.clone(), None, rid, true),
             None
         );
         assert_eq!(
@@ -17700,7 +19377,7 @@ mod tests {
         );
         assert_eq!(
             tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
-            Some((client_txn.clone(), rid, event_id, true))
+            Some((client_txn.clone(), None, rid, event_id, true))
         );
 
         assert!(tracker.pending_sends.is_empty());
@@ -17720,8 +19397,14 @@ mod tests {
             None
         );
         assert_eq!(
-            tracker.remember_pending_send(sdk_txn.clone(), client_txn.clone(), request_id, true),
-            Some((client_txn.clone(), request_id, event_id.clone()))
+            tracker.remember_pending_send(
+                sdk_txn.clone(),
+                client_txn.clone(),
+                None,
+                request_id,
+                true,
+            ),
+            Some((client_txn.clone(), None, request_id, event_id.clone()))
         );
         assert!(tracker.pending_sends.is_empty());
         assert!(tracker.completed_sends.is_empty());
@@ -17736,13 +19419,40 @@ mod tests {
         let event_id = "$event-media".to_owned();
 
         assert_eq!(
-            tracker.remember_pending_send(sdk_txn.clone(), client_txn.clone(), request_id, false),
+            tracker.remember_pending_send(
+                sdk_txn.clone(),
+                client_txn.clone(),
+                None,
+                request_id,
+                false,
+            ),
             None
         );
         assert_eq!(
             tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
-            Some((client_txn, request_id, event_id, false))
+            Some((client_txn, None, request_id, event_id, false))
         );
+    }
+
+    #[test]
+    fn send_completion_tracker_preserves_submission_id_for_terminal_paths() {
+        let mut tracker = SendCompletionTracker::default();
+        let submission_id = SubmissionId::new("submission-terminal");
+        tracker.remember_pending_send(
+            "sdk-txn".to_owned(),
+            "client-txn".to_owned(),
+            Some(submission_id.clone()),
+            fake_rid(7400),
+            true,
+        );
+        assert!(matches!(
+            tracker.record_send_error("sdk-txn"),
+            Some((_, Some(ref found), _, true)) if found == &submission_id
+        ));
+        assert!(matches!(
+            tracker.record_cancelled_event("sdk-txn"),
+            Some((_, Some(found), _, false)) if found == submission_id
+        ));
     }
 
     #[test]

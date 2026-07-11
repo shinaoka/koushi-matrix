@@ -36,10 +36,10 @@ use koushi_state::{
     ImageUploadCompressionMode, InviteScopeSelection, LoginRequest, MentionIntent, PresenceKind,
     RecoveryRequest, RoomListFilter, RoomModerationAction, RoomNotificationMode, RoomSettingChange,
     RoomTagKind, SessionInfo, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem,
-    StagedUploadKind, TimelineScrollAnchor, VerificationCancelReason,
+    StagedUploadKind, SubmissionId, TimelineScrollAnchor, VerificationCancelReason,
     build_formatted_message_draft,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 #[cfg(any(debug_assertions, test))]
 use tauri::Emitter;
 use tauri::{AppHandle, Manager, State};
@@ -66,6 +66,7 @@ pub(crate) mod directory;
 pub(crate) mod e2ee;
 pub(crate) mod live_signals;
 pub(crate) mod local_encryption;
+pub(crate) mod native_attention;
 pub(crate) mod navigation;
 pub(crate) mod profile;
 pub(crate) mod room;
@@ -1608,6 +1609,7 @@ pub(crate) fn build_observe_timeline_viewport_command(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn build_send_text_command(
     request_id: koushi_core::RequestId,
     account_key: AccountKey,
@@ -1621,6 +1623,28 @@ pub(crate) fn build_send_text_command(
     }
     Some(CoreCommand::Timeline(TimelineCommand::SendText {
         request_id,
+        key: build_timeline_key(account_key, room_id),
+        transaction_id,
+        body,
+        mentions,
+    }))
+}
+
+pub(crate) fn build_submit_text_command(
+    request_id: RequestId,
+    submission_id: SubmissionId,
+    account_key: AccountKey,
+    room_id: String,
+    transaction_id: String,
+    body: String,
+    mentions: MentionIntent,
+) -> Option<CoreCommand> {
+    if body.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::SubmitText {
+        request_id,
+        submission_id,
         key: build_timeline_key(account_key, room_id),
         transaction_id,
         body,
@@ -2578,6 +2602,7 @@ pub(crate) fn build_invite_targets_command(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn build_send_reply_command(
     request_id: koushi_core::RequestId,
     account_key: AccountKey,
@@ -2598,6 +2623,58 @@ pub(crate) fn build_send_reply_command(
         body,
         mentions,
     }))
+}
+
+pub(crate) fn build_submit_reply_command(
+    request_id: RequestId,
+    submission_id: SubmissionId,
+    account_key: AccountKey,
+    room_id: String,
+    transaction_id: String,
+    in_reply_to_event_id: String,
+    body: String,
+    mentions: MentionIntent,
+) -> Option<CoreCommand> {
+    if body.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::SubmitReply {
+        request_id,
+        submission_id,
+        key: build_timeline_key(account_key, room_id),
+        transaction_id,
+        in_reply_to_event_id,
+        body,
+        mentions,
+    }))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum SubmissionOutcome {
+    Accepted,
+    Rejected {
+        kind: koushi_core::TimelineFailureKind,
+    },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubmissionResponse {
+    pub outcome: SubmissionOutcome,
+    pub submission_id: SubmissionId,
+    pub transaction_id: Option<String>,
+    pub snapshot: FrontendDesktopSnapshot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum SubmissionFailure {
+    Invalid,
+    SubmitFailed,
+    Timeout,
+    Disconnected,
+    Lagged,
 }
 
 pub(crate) fn build_set_thread_composer_draft_command(
@@ -2626,6 +2703,7 @@ pub(crate) fn build_set_composer_draft_command(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn build_send_thread_reply_command(
     request_id: koushi_core::RequestId,
     account_key: AccountKey,
@@ -2650,6 +2728,35 @@ pub(crate) fn build_send_thread_reply_command(
         in_reply_to_event_id: root_event_id,
         body,
         mentions: koushi_state::MentionIntent::default(),
+    }))
+}
+
+pub(crate) fn build_submit_thread_reply_command(
+    request_id: RequestId,
+    submission_id: SubmissionId,
+    account_key: AccountKey,
+    room_id: String,
+    root_event_id: String,
+    transaction_id: String,
+    body: String,
+) -> Option<CoreCommand> {
+    if body.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::SubmitReply {
+        request_id,
+        submission_id,
+        key: TimelineKey {
+            account_key,
+            kind: TimelineKind::Thread {
+                room_id,
+                root_event_id: root_event_id.clone(),
+            },
+        },
+        transaction_id,
+        in_reply_to_event_id: root_event_id,
+        body,
+        mentions: MentionIntent::default(),
     }))
 }
 

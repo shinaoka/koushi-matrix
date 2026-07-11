@@ -654,6 +654,7 @@ export function ContextualRightPanel({
       </section>
       <ThreadComposer
         draft={threadDraft}
+        draftKey={threadDraftKeyValue ?? `${threadRoomId}:${rootEventId}`}
         isSending={threadSendPending}
         resolveComposerKeyAction={onResolveComposerKeyAction}
         canEdit={threadState.kind === "open" && Boolean(threadRoomId && rootEventId && threadComposer)}
@@ -662,9 +663,9 @@ export function ContextualRightPanel({
             onThreadComposerDraftChange(threadRoomId, rootEventId, draft);
           }
         }}
-        onSend={() => {
+        onSend={(value) => {
           if (threadRoomId && rootEventId) {
-            onThreadReplySend(threadRoomId, rootEventId, threadDraft);
+            onThreadReplySend(threadRoomId, rootEventId, value);
           }
         }}
       />

@@ -1,21 +1,23 @@
 use std::fmt;
 
+use crate::{ComposerSubmissionTarget, ComposerSubmissionTerminalOutcome, SubmissionId};
+
 use crate::state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityStream, ActivityTab,
     AttachmentFilter, AttachmentResult, AttachmentScope, AttachmentSort, AuthFailureKind,
     AvatarThumbnailState, BasicOperationRequest, CrossSigningStatus, DelegatedAuthLinks,
     DeviceSessionSummary, DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState, FilesViewScope,
     IdentityResetAuthType, InviteDestinationResult, InviteScopeSelection, JapaneseCatalogProfile,
-    LiveEventReceipts, LocalEncryptionHealth, LoginFlow, NativeAttentionState, NavigationState,
-    OperationFailureKind, OwnProfile, PinnedEvent, PresenceKind, ProfileUpdateRequest,
-    RecoveryKeyDeliveryState, RecoveryMethod, RoomListFilter, RoomListProjection,
-    RoomModerationAction, RoomPreferencesState, RoomSettingChange, RoomSettingsSnapshot,
-    RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability,
-    ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope, SessionInfo, SettingsPatch,
-    SettingsValues, SpaceSummary, StagedUploadCompressionChoice, StagedUploadItem,
-    SyncLifecycleStatus, SyncMode, TimelineMediaDownloadState, TimelineMediaGalleryItem,
-    TimelineScrollAnchor, TrustOperationFailureKind, UserProfile, VerificationCancelReason,
-    VerificationTarget,
+    LiveEventReceipts, LocalEncryptionHealth, LoginFlow, NativeAttentionDispatchId,
+    NativeAttentionSoundOutcome, NativeAttentionState, NavigationState, OperationFailureKind,
+    OwnProfile, PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryKeyDeliveryState,
+    RecoveryMethod, RoomListFilter, RoomListProjection, RoomModerationAction, RoomPreferencesState,
+    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
+    SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult,
+    SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
+    StagedUploadCompressionChoice, StagedUploadItem, SyncLifecycleStatus, SyncMode,
+    TimelineMediaDownloadState, TimelineMediaGalleryItem, TimelineScrollAnchor,
+    TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
@@ -596,6 +598,13 @@ pub enum AppAction {
     NativeAttentionUpdated {
         attention: NativeAttentionState,
     },
+    NativeAttentionDispatchStarted {
+        dispatch_id: NativeAttentionDispatchId,
+    },
+    NativeAttentionDispatchSettled {
+        dispatch_id: NativeAttentionDispatchId,
+        outcome: NativeAttentionSoundOutcome,
+    },
     JapaneseCatalogProfileChanged {
         profile: JapaneseCatalogProfile,
     },
@@ -744,12 +753,36 @@ pub enum AppAction {
         transaction_id: String,
         message: String,
     },
+    ComposerSubmissionAccepted {
+        submission_id: SubmissionId,
+        room_id: String,
+        transaction_id: String,
+        body: String,
+    },
+    ComposerSubmissionFinished {
+        submission_id: SubmissionId,
+        room_id: String,
+        transaction_id: String,
+    },
+    ComposerSubmissionSettled {
+        submission_id: SubmissionId,
+        transaction_id: String,
+        target: ComposerSubmissionTarget,
+        outcome: ComposerSubmissionTerminalOutcome,
+    },
     ThreadComposerDraftChanged {
         room_id: String,
         root_event_id: String,
         draft: String,
     },
     ThreadReplySubmitted {
+        room_id: String,
+        root_event_id: String,
+        transaction_id: String,
+        body: String,
+    },
+    ThreadSubmissionAccepted {
+        submission_id: SubmissionId,
         room_id: String,
         root_event_id: String,
         transaction_id: String,
@@ -955,6 +988,11 @@ pub enum AppAction {
     },
     LiveRoomReceiptsUpdated {
         room_id: String,
+        receipts_by_event: Vec<LiveEventReceipts>,
+    },
+    LiveRoomReceiptsWindowReconciled {
+        room_id: String,
+        scoped_event_ids: Vec<String>,
         receipts_by_event: Vec<LiveEventReceipts>,
     },
     FullyReadMarkerUpdated {

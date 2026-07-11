@@ -136,8 +136,9 @@ pub use local_encryption::{LocalEncryptionHealth, LocalEncryptionState};
 // ── Re-exports: native_attention ─────────────────────────────────────────────
 pub use native_attention::{
     NativeAttentionCandidate, NativeAttentionCapabilities, NativeAttentionCapability,
-    NativeAttentionDispatchState, NativeAttentionObservationKind, NativeAttentionProjectionInput,
-    NativeAttentionState, NativeAttentionSummary, NativeAttentionSuppressionReason,
+    NativeAttentionDispatchId, NativeAttentionDispatchState, NativeAttentionObservationKind,
+    NativeAttentionProjectionInput, NativeAttentionSoundOutcome, NativeAttentionState,
+    NativeAttentionSummary, NativeAttentionSuppressionReason,
     native_attention_capabilities_for_platform, native_attention_state_from_rooms,
 };
 
@@ -148,7 +149,8 @@ pub use cjk::{
 
 // ── Re-exports: timeline ────────────────────────────────────────────────────
 pub use timeline::{
-    ComposerDraftStore, ComposerMode, ComposerState, MAX_PERSISTED_COMPOSER_DRAFT_BYTES,
+    ComposerDraftStore, ComposerMode, ComposerState, ComposerSubmissionRecord,
+    ComposerSubmissionRegistry, MAX_PERSISTED_COMPOSER_DRAFT_BYTES,
     MAX_PERSISTED_COMPOSER_DRAFT_ROOM_COUNT, MAX_PERSISTED_COMPOSER_DRAFT_THREAD_COUNT,
     MediaGalleryStore, PendingComposerSendKind, ScheduledSendCapability, ScheduledSendHandle,
     ScheduledSendItem, ScheduledSendStore, StagedUploadCompressionChoice, StagedUploadItem,

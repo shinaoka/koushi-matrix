@@ -19,6 +19,27 @@ pub struct NativeAttentionState {
     pub dispatch: NativeAttentionDispatchState,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NativeAttentionDispatchId {
+    connection_id: u64,
+    sequence: u64,
+}
+
+impl NativeAttentionDispatchId {
+    pub fn new(connection_id: u64, sequence: u64) -> Self {
+        Self {
+            connection_id,
+            sequence,
+        }
+    }
+}
+
+impl fmt::Debug for NativeAttentionDispatchId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NativeAttentionDispatchId(..)")
+    }
+}
+
 impl NativeAttentionState {
     pub fn kind(&self) -> &'static str {
         self.dispatch.kind()
@@ -267,7 +288,12 @@ pub fn native_attention_capabilities_for_platform(
                 NativeAttentionCapability::Unavailable
             }
         },
-        sound: NativeAttentionCapability::Available,
+        sound: match platform {
+            DisplayPlatform::Macos | DisplayPlatform::Windows => {
+                NativeAttentionCapability::Available
+            }
+            DisplayPlatform::Linux => NativeAttentionCapability::Unavailable,
+        },
         tray: NativeAttentionCapability::Unknown,
         activation: NativeAttentionCapability::Unknown,
     }
@@ -288,16 +314,19 @@ pub enum NativeAttentionDispatchState {
     #[default]
     Idle,
     Dispatching {
-        request_id: u64,
+        dispatch_id: NativeAttentionDispatchId,
     },
     Delivered {
-        request_id: u64,
+        dispatch_id: NativeAttentionDispatchId,
+    },
+    Unsupported {
+        dispatch_id: NativeAttentionDispatchId,
     },
     Suppressed {
         reason: NativeAttentionSuppressionReason,
     },
     Failed {
-        request_id: u64,
+        dispatch_id: NativeAttentionDispatchId,
         #[serde(rename = "failureKind")]
         kind: OperationFailureKind,
     },
@@ -309,10 +338,20 @@ impl NativeAttentionDispatchState {
             Self::Idle => "idle",
             Self::Dispatching { .. } => "dispatching",
             Self::Delivered { .. } => "delivered",
+            Self::Unsupported { .. } => "unsupported",
             Self::Suppressed { .. } => "suppressed",
             Self::Failed { .. } => "failed",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeAttentionSoundOutcome {
+    Played,
+    Unsupported,
+    Failed,
+    Skipped,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

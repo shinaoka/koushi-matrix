@@ -1,8 +1,8 @@
 use koushi_state::{
-    AppAction, AppEffect, AppState, ComposerMode, ComposerState, NavigationState,
-    PendingComposerSendKind, RoomSummary, RoomTags, SessionInfo, SessionState,
-    ThreadAttentionState, ThreadListOrder, ThreadPaneState, ThreadsListItem, TimelinePaneState,
-    UiEvent, reduce,
+    AppAction, AppEffect, AppState, ComposerMode, ComposerState, ComposerSubmissionTarget,
+    ComposerSubmissionTerminalOutcome, NavigationState, PendingComposerSendKind, RoomSummary,
+    RoomTags, SessionInfo, SessionState, SubmissionId, ThreadAttentionState, ThreadListOrder,
+    ThreadPaneState, ThreadsListItem, TimelinePaneState, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -338,6 +338,439 @@ fn send_text_submission_is_ignored_while_send_is_pending() {
         Some("txn1")
     );
     assert_eq!(state.timeline.composer.draft, "second");
+}
+
+#[test]
+fn duplicate_submission_id_is_accepted_once_and_stale_completion_is_ignored() {
+    let mut state = selected_room_state("room-a");
+    state.timeline.composer.draft = "hello".to_owned();
+    let submission_id = SubmissionId::new("submission-opaque");
+
+    let first = reduce(
+        &mut state,
+        AppAction::ComposerSubmissionAccepted {
+            submission_id: submission_id.clone(),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn1".to_owned(),
+            body: "hello".to_owned(),
+        },
+    );
+    let duplicate = reduce(
+        &mut state,
+        AppAction::ComposerSubmissionAccepted {
+            submission_id: submission_id.clone(),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn2".to_owned(),
+            body: "hello".to_owned(),
+        },
+    );
+    let stale = reduce(
+        &mut state,
+        AppAction::ComposerSubmissionFinished {
+            submission_id: SubmissionId::new("other-submission"),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn1".to_owned(),
+        },
+    );
+    let finished = reduce(
+        &mut state,
+        AppAction::ComposerSubmissionSettled {
+            submission_id: submission_id.clone(),
+            transaction_id: "txn1".to_owned(),
+            target: ComposerSubmissionTarget::Main {
+                room_id: "room-a".to_owned(),
+            },
+            outcome: ComposerSubmissionTerminalOutcome::Succeeded,
+        },
+    );
+    let replay = reduce(
+        &mut state,
+        AppAction::ComposerSubmissionAccepted {
+            submission_id: submission_id.clone(),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn3".to_owned(),
+            body: "hello".to_owned(),
+        },
+    );
+
+    assert_eq!(first.len(), 2);
+    assert!(duplicate.is_empty());
+    assert!(stale.is_empty());
+    assert_eq!(finished.len(), 1);
+    assert!(replay.is_empty());
+    assert_eq!(state.timeline.composer.pending_submission_id, None);
+    assert_eq!(state.timeline.composer.pending_transaction_id, None);
+}
+
+#[test]
+fn terminal_submission_requires_matching_id_and_transaction() {
+    let mut state = selected_room_state("room-a");
+    let active = SubmissionId::new("active-submission");
+    reduce(
+        &mut state,
+        AppAction::ComposerSubmissionAccepted {
+            submission_id: active.clone(),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-active".to_owned(),
+            body: "draft".to_owned(),
+        },
+    );
+    for (submission_id, transaction_id, room_id) in [
+        (
+            SubmissionId::new("stale-submission"),
+            "txn-active",
+            "room-a",
+        ),
+        (active.clone(), "txn-collision", "room-a"),
+        (active.clone(), "txn-active", "wrong-room"),
+    ] {
+        assert!(
+            reduce(
+                &mut state,
+                AppAction::ComposerSubmissionSettled {
+                    submission_id,
+                    transaction_id: transaction_id.to_owned(),
+                    target: ComposerSubmissionTarget::Main {
+                        room_id: room_id.to_owned(),
+                    },
+                    outcome: ComposerSubmissionTerminalOutcome::Succeeded,
+                },
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            state.timeline.composer.pending_submission_id,
+            Some(active.clone())
+        );
+        assert!(
+            state
+                .timeline
+                .submission_registry
+                .accepted_submission_ids
+                .contains(&active)
+        );
+    }
+    let effects = reduce(
+        &mut state,
+        AppAction::ComposerSubmissionSettled {
+            submission_id: active.clone(),
+            transaction_id: "txn-active".to_owned(),
+            target: ComposerSubmissionTarget::Main {
+                room_id: "room-a".to_owned(),
+            },
+            outcome: ComposerSubmissionTerminalOutcome::Succeeded,
+        },
+    );
+    assert_eq!(effects.len(), 1);
+    assert_eq!(state.timeline.composer.pending_submission_id, None);
+    assert!(
+        !state
+            .timeline
+            .submission_registry
+            .accepted_submission_ids
+            .contains(&active)
+    );
+}
+
+#[test]
+fn submission_tombstones_are_bounded_without_evicting_pending() {
+    let mut state = selected_room_state("room-a");
+    for index in 0..129 {
+        let submission_id = SubmissionId::new(format!("submission-{index}"));
+        let transaction_id = format!("txn-{index}");
+        reduce(
+            &mut state,
+            AppAction::ComposerSubmissionAccepted {
+                submission_id: submission_id.clone(),
+                room_id: "room-a".to_owned(),
+                transaction_id: transaction_id.clone(),
+                body: "body".to_owned(),
+            },
+        );
+        reduce(
+            &mut state,
+            AppAction::ComposerSubmissionSettled {
+                submission_id,
+                transaction_id,
+                target: ComposerSubmissionTarget::Main {
+                    room_id: "room-a".to_owned(),
+                },
+                outcome: ComposerSubmissionTerminalOutcome::Succeeded,
+            },
+        );
+    }
+    assert_eq!(state.timeline.composer.accepted_submission_ids.len(), 128);
+    assert!(
+        !state
+            .timeline
+            .composer
+            .accepted_submission_ids
+            .contains(&SubmissionId::new("submission-0"))
+    );
+    assert!(
+        state
+            .timeline
+            .composer
+            .accepted_submission_ids
+            .contains(&SubmissionId::new("submission-128"))
+    );
+}
+
+#[test]
+fn composer_snapshot_serializes_bounded_accepted_submission_tombstones() {
+    let mut composer = ComposerState::default();
+    composer
+        .accepted_submission_ids
+        .push_back(SubmissionId::new("accepted-opaque"));
+    let value = serde_json::to_value(composer).expect("composer serializes");
+    assert_eq!(
+        value["accepted_submission_ids"],
+        serde_json::json!(["accepted-opaque"])
+    );
+}
+
+#[test]
+fn global_submission_registry_tracks_offscreen_acceptance_and_settlement() {
+    let mut state = selected_room_state("room-b");
+    let id = SubmissionId::new("room-a-unknown");
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::ComposerSubmissionAccepted {
+                submission_id: id.clone(),
+                room_id: "room-a".to_owned(),
+                transaction_id: "txn-a".to_owned(),
+                body: "body".to_owned(),
+            }
+        )
+        .is_empty()
+    );
+    assert!(
+        state
+            .timeline
+            .submission_registry
+            .accepted_submission_ids
+            .contains(&id)
+    );
+    assert_eq!(state.timeline.composer.pending_submission_id, None);
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::ComposerSubmissionSettled {
+                submission_id: id.clone(),
+                transaction_id: "txn-a".to_owned(),
+                target: ComposerSubmissionTarget::Main {
+                    room_id: "room-a".to_owned()
+                },
+                outcome: ComposerSubmissionTerminalOutcome::Succeeded,
+            }
+        )
+        .is_empty()
+    );
+    assert!(
+        state
+            .timeline
+            .submission_registry
+            .settled_submission_ids
+            .contains(&id)
+    );
+}
+
+#[test]
+fn global_submission_registry_never_evicts_active_and_bounds_only_settled() {
+    let mut state = selected_room_state("room-b");
+    let first = SubmissionId::new("global-0");
+    for index in 0..129 {
+        let id = SubmissionId::new(format!("global-{index}"));
+        reduce(
+            &mut state,
+            AppAction::ComposerSubmissionAccepted {
+                submission_id: id.clone(),
+                room_id: "room-a".to_owned(),
+                transaction_id: format!("txn-{index}"),
+                body: "body".to_owned(),
+            },
+        );
+    }
+    assert_eq!(
+        state
+            .timeline
+            .submission_registry
+            .accepted_submission_ids
+            .len(),
+        129
+    );
+    assert!(
+        state
+            .timeline
+            .submission_registry
+            .accepted_submission_ids
+            .contains(&first)
+    );
+    for index in 0..129 {
+        reduce(
+            &mut state,
+            AppAction::ComposerSubmissionSettled {
+                submission_id: SubmissionId::new(format!("global-{index}")),
+                transaction_id: format!("txn-{index}"),
+                target: ComposerSubmissionTarget::Main {
+                    room_id: "room-a".to_owned(),
+                },
+                outcome: ComposerSubmissionTerminalOutcome::Succeeded,
+            },
+        );
+    }
+    assert!(
+        state
+            .timeline
+            .submission_registry
+            .accepted_submission_ids
+            .is_empty()
+    );
+    assert_eq!(
+        state
+            .timeline
+            .submission_registry
+            .settled_submission_ids
+            .len(),
+        128
+    );
+    assert!(
+        !state
+            .timeline
+            .submission_registry
+            .settled_submission_ids
+            .contains(&first)
+    );
+}
+
+#[test]
+fn thread_terminal_submission_requires_matching_id_and_transaction() {
+    let mut state = open_thread_state("room-a", "$root");
+    let active = SubmissionId::new("active-thread-submission");
+    reduce(
+        &mut state,
+        AppAction::ThreadSubmissionAccepted {
+            submission_id: active.clone(),
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+            body: "reply".to_owned(),
+        },
+    );
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::ComposerSubmissionSettled {
+                submission_id: SubmissionId::new("other"),
+                transaction_id: "txn-thread".to_owned(),
+                target: ComposerSubmissionTarget::Thread {
+                    room_id: "room-a".to_owned(),
+                    root_event_id: "$root".to_owned(),
+                },
+                outcome: ComposerSubmissionTerminalOutcome::Cancelled,
+            },
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        open_thread_composer(&state).pending_submission_id,
+        Some(active)
+    );
+}
+
+#[test]
+fn legacy_main_terminals_are_noop_during_submission_owned_pending() {
+    let mut state = selected_room_state("room-a");
+    let submission_id = SubmissionId::new("submission-main");
+    reduce(
+        &mut state,
+        AppAction::ComposerSubmissionAccepted {
+            submission_id: submission_id.clone(),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-main".to_owned(),
+            body: "body".to_owned(),
+        },
+    );
+    for action in [
+        AppAction::SendTextFinished {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-main".to_owned(),
+        },
+        AppAction::SendTextFailed {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-main".to_owned(),
+            message: "legacy failure".to_owned(),
+        },
+    ] {
+        let before = state.clone();
+        assert!(reduce(&mut state, action).is_empty());
+        assert_eq!(state, before);
+    }
+    assert!(
+        !reduce(
+            &mut state,
+            AppAction::ComposerSubmissionSettled {
+                submission_id,
+                transaction_id: "txn-main".to_owned(),
+                target: ComposerSubmissionTarget::Main {
+                    room_id: "room-a".to_owned(),
+                },
+                outcome: ComposerSubmissionTerminalOutcome::Succeeded,
+            },
+        )
+        .is_empty()
+    );
+    assert!(state.timeline.composer.pending_submission_id.is_none());
+}
+
+#[test]
+fn legacy_thread_terminals_are_noop_during_submission_owned_pending() {
+    let mut state = open_thread_state("room-a", "$root");
+    let submission_id = SubmissionId::new("submission-thread");
+    reduce(
+        &mut state,
+        AppAction::ThreadSubmissionAccepted {
+            submission_id: submission_id.clone(),
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+            body: "body".to_owned(),
+        },
+    );
+    for action in [
+        AppAction::ThreadReplyFinished {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+        },
+        AppAction::ThreadReplyFailed {
+            room_id: "room-a".to_owned(),
+            root_event_id: "$root".to_owned(),
+            transaction_id: "txn-thread".to_owned(),
+            message: "legacy failure".to_owned(),
+        },
+    ] {
+        let before = state.clone();
+        assert!(reduce(&mut state, action).is_empty());
+        assert_eq!(state, before);
+    }
+    assert!(
+        !reduce(
+            &mut state,
+            AppAction::ComposerSubmissionSettled {
+                submission_id,
+                transaction_id: "txn-thread".to_owned(),
+                target: ComposerSubmissionTarget::Thread {
+                    room_id: "room-a".to_owned(),
+                    root_event_id: "$root".to_owned(),
+                },
+                outcome: ComposerSubmissionTerminalOutcome::Succeeded,
+            },
+        )
+        .is_empty()
+    );
+    assert!(open_thread_composer(&state).pending_submission_id.is_none());
 }
 
 #[test]
@@ -792,6 +1225,26 @@ fn thread_reply_submit_sets_thread_pending_reply_and_leaves_main_composer_alone(
 }
 
 #[test]
+fn duplicate_thread_submission_id_is_accepted_once() {
+    let mut state = open_thread_state("room-a", "$root");
+    let submission_id = SubmissionId::new("thread-submission");
+    let action = || AppAction::ThreadSubmissionAccepted {
+        submission_id: submission_id.clone(),
+        room_id: "room-a".to_owned(),
+        root_event_id: "$root".to_owned(),
+        transaction_id: "txn-thread".to_owned(),
+        body: "reply".to_owned(),
+    };
+
+    assert_eq!(reduce(&mut state, action()).len(), 1);
+    assert!(reduce(&mut state, action()).is_empty());
+    assert_eq!(
+        open_thread_composer(&state).pending_submission_id,
+        Some(submission_id)
+    );
+}
+
+#[test]
 fn thread_reply_submit_is_ignored_unless_ready_matching_open_and_idle() {
     let mut state = open_thread_state("room-a", "$root");
     reduce(
@@ -1179,11 +1632,14 @@ fn timeline_and_thread_actions_are_ignored_without_ready_session() {
             is_subscribed: false,
             is_paginating_backwards: false,
             composer: ComposerState {
+                accepted_submission_ids: Default::default(),
+                pending_submission_id: None,
                 pending_transaction_id: Some("txn1".to_owned()),
                 pending_send_kind: None,
                 draft: "draft".to_owned(),
                 mode: Default::default(),
             },
+            submission_registry: Default::default(),
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),

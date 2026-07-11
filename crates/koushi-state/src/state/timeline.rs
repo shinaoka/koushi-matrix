@@ -1,8 +1,12 @@
-use std::{collections::BTreeSet, fmt};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    fmt,
+};
 
 use serde::{Deserialize, Serialize};
 
 use crate::composer_shortcuts::FormattedMessageDraft;
+use crate::submission::{ComposerSubmissionTarget, SubmissionId};
 
 use super::media_download::TimelineMediaDownloadState;
 use super::settings::ImageUploadCompressionMode;
@@ -13,12 +17,83 @@ pub struct TimelinePaneState {
     pub is_subscribed: bool,
     pub is_paginating_backwards: bool,
     pub composer: ComposerState,
+    #[serde(default)]
+    pub submission_registry: ComposerSubmissionRegistry,
     pub scheduled_send_capability: ScheduledSendCapability,
     pub scheduled_sends: Vec<ScheduledSendItem>,
     pub staged_uploads: Vec<StagedUploadItem>,
     pub media_gallery: Vec<TimelineMediaGalleryItem>,
     #[serde(default)]
     pub media_downloads: std::collections::BTreeMap<String, TimelineMediaDownloadState>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ComposerSubmissionRegistry {
+    pub accepted_submission_ids: VecDeque<SubmissionId>,
+    pub settled_submission_ids: VecDeque<SubmissionId>,
+    #[serde(skip)]
+    pub active_submissions: VecDeque<ComposerSubmissionRecord>,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ComposerSubmissionRecord {
+    pub submission_id: SubmissionId,
+    pub transaction_id: String,
+    pub target: ComposerSubmissionTarget,
+}
+
+impl fmt::Debug for ComposerSubmissionRecord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ComposerSubmissionRecord(..)")
+    }
+}
+
+impl ComposerSubmissionRegistry {
+    pub(crate) fn remember_accepted(
+        &mut self,
+        id: SubmissionId,
+        transaction_id: String,
+        target: ComposerSubmissionTarget,
+    ) {
+        if !self.accepted_submission_ids.contains(&id) {
+            self.accepted_submission_ids.push_back(id.clone());
+            self.active_submissions.push_back(ComposerSubmissionRecord {
+                submission_id: id,
+                transaction_id,
+                target,
+            });
+        }
+    }
+
+    pub(crate) fn active_matches(
+        &self,
+        id: &SubmissionId,
+        transaction_id: &str,
+        target: &ComposerSubmissionTarget,
+    ) -> bool {
+        self.active_submissions.iter().any(|active| {
+            &active.submission_id == id
+                && active.transaction_id == transaction_id
+                && &active.target == target
+        })
+    }
+
+    pub(crate) fn remember_settled(&mut self, id: SubmissionId) {
+        self.accepted_submission_ids.retain(|active| active != &id);
+        self.active_submissions
+            .retain(|active| active.submission_id != id);
+        remember_bounded_id(&mut self.settled_submission_ids, id);
+    }
+}
+
+fn remember_bounded_id(ids: &mut VecDeque<SubmissionId>, id: SubmissionId) {
+    if ids.contains(&id) {
+        return;
+    }
+    while ids.len() >= MAX_ACCEPTED_SUBMISSION_TOMBSTONES {
+        ids.pop_front();
+    }
+    ids.push_back(id);
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -606,11 +681,26 @@ impl fmt::Debug for ComposerDraftStore {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ComposerState {
+    #[serde(default)]
+    pub accepted_submission_ids: VecDeque<SubmissionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_submission_id: Option<SubmissionId>,
     pub pending_transaction_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_send_kind: Option<PendingComposerSendKind>,
     pub draft: String,
     pub mode: ComposerMode,
+}
+
+pub(crate) const MAX_ACCEPTED_SUBMISSION_TOMBSTONES: usize = 128;
+
+impl ComposerState {
+    pub(crate) fn remember_accepted_submission(&mut self, submission_id: SubmissionId) {
+        while self.accepted_submission_ids.len() >= MAX_ACCEPTED_SUBMISSION_TOMBSTONES {
+            self.accepted_submission_ids.pop_front();
+        }
+        self.accepted_submission_ids.push_back(submission_id);
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

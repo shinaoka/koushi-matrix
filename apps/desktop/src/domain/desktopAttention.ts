@@ -8,6 +8,18 @@ import type {
 export type DesktopAttentionKind = "mention" | "dm" | "message" | "none";
 export const WINDOWS_ATTENTION_OVERLAY_ICON_PATH = "src-tauri/icons/icon.png";
 export const DESKTOP_ATTENTION_REQUEST_TYPE = 2;
+export const DESKTOP_ATTENTION_SOUND_COOLDOWN_MS = 3_000;
+
+export type DesktopAttentionDiagnosticToken =
+  | "attention_title_failed"
+  | "attention_badge_failed"
+  | "attention_overlay_failed"
+  | "attention_tray_failed"
+  | "attention_sound_failed"
+  | "attention_activation_failed"
+  | "attention_notification_failed"
+  | "attention_notification_clear_failed";
+export type DesktopAttentionDiagnosticSink = (token: DesktopAttentionDiagnosticToken) => void;
 
 export interface DesktopAttentionSummary {
   unreadTotal: number;
@@ -32,9 +44,10 @@ export interface DesktopWindowLike {
 }
 
 export interface DesktopAttentionTransientLike {
-  playAttentionSound?(): Promise<void>;
+  playAttentionSound?(): Promise<NativeAttentionSoundOutcome>;
   requestUserAttention?(requestType: typeof DESKTOP_ATTENTION_REQUEST_TYPE): Promise<void>;
 }
+export type NativeAttentionSoundOutcome = "played" | "unsupported" | "failed" | "skipped";
 
 export type DesktopAttentionTransientPolicy = Pick<NotificationSettings, "sound">;
 
@@ -63,33 +76,64 @@ export async function applyDesktopAttentionToWindow(
   windowLike: DesktopWindowLike,
   title: string,
   badgeCount: number,
-  capabilities?: NativeAttentionCapabilities
+  capabilities?: NativeAttentionCapabilities,
+  diagnostic?: DesktopAttentionDiagnosticSink
 ): Promise<void> {
-  const operations = [
-    windowLike.setTitle(title),
-    windowLike.setBadgeCount(badgeCount > 0 ? badgeCount : undefined)
-  ];
+  const operations = [runNativeOperation(() => windowLike.setTitle(title), "attention_title_failed", diagnostic)];
 
-  if (capabilities?.overlay_icon === "available" && windowLike.setOverlayIcon) {
+  if (capabilities?.badge === "available") {
+    operations.push(runNativeOperation(
+      () => windowLike.setBadgeCount(badgeCount > 0 ? badgeCount : undefined),
+      "attention_badge_failed",
+      diagnostic
+    ));
+  }
+
+  if (
+    capabilities?.badge === "available" &&
+    capabilities.overlay_icon === "available" &&
+    windowLike.setOverlayIcon
+  ) {
     operations.push(
-      windowLike.setOverlayIcon(
+      runNativeOperation(() => windowLike.setOverlayIcon!(
         badgeCount > 0 ? WINDOWS_ATTENTION_OVERLAY_ICON_PATH : undefined
-      )
+      ), "attention_overlay_failed", diagnostic)
     );
   }
 
-  if (capabilities?.tray === "available" && windowLike.setTrayBadgeCount) {
-    operations.push(windowLike.setTrayBadgeCount(badgeCount > 0 ? badgeCount : undefined));
+  if (
+    capabilities?.badge === "available" &&
+    capabilities.tray === "available" &&
+    windowLike.setTrayBadgeCount
+  ) {
+    operations.push(runNativeOperation(
+      () => windowLike.setTrayBadgeCount!(badgeCount > 0 ? badgeCount : undefined),
+      "attention_tray_failed",
+      diagnostic
+    ));
   }
 
   await Promise.allSettled(operations);
+}
+
+async function runNativeOperation(
+  operation: () => Promise<void>,
+  failureToken: DesktopAttentionDiagnosticToken,
+  diagnostic?: DesktopAttentionDiagnosticSink
+): Promise<void> {
+  try {
+    await operation();
+  } catch {
+    diagnostic?.(failureToken);
+  }
 }
 
 export async function dispatchDesktopAttentionTransientEffects(
   transport: DesktopAttentionTransientLike,
   candidate: DesktopAttentionNotificationCandidate | null,
   capabilities?: NativeAttentionCapabilities,
-  policy?: DesktopAttentionTransientPolicy
+  policy?: DesktopAttentionTransientPolicy,
+  diagnostic?: DesktopAttentionDiagnosticSink
 ): Promise<void> {
   if (!candidate) {
     return;
@@ -99,14 +143,79 @@ export async function dispatchDesktopAttentionTransientEffects(
   const soundEnabled = policy?.sound ?? true;
 
   if (soundEnabled && capabilities?.sound === "available" && transport.playAttentionSound) {
-    operations.push(transport.playAttentionSound());
+    operations.push(runNativeOperation(
+      async () => { await transport.playAttentionSound!(); }, "attention_sound_failed", diagnostic
+    ));
   }
 
   if (capabilities?.activation === "available" && transport.requestUserAttention) {
-    operations.push(transport.requestUserAttention(DESKTOP_ATTENTION_REQUEST_TYPE));
+    operations.push(runNativeOperation(
+      () => transport.requestUserAttention!(DESKTOP_ATTENTION_REQUEST_TYPE),
+      "attention_activation_failed",
+      diagnostic
+    ));
   }
 
   await Promise.allSettled(operations);
+}
+
+export interface DesktopAttentionTransientDispatcher {
+  dispatch(
+    transport: DesktopAttentionTransientLike,
+    candidate: DesktopAttentionNotificationCandidate | null,
+    capabilities: NativeAttentionCapabilities,
+    policy: DesktopAttentionTransientPolicy,
+    diagnostic?: DesktopAttentionDiagnosticSink
+  ): Promise<void>;
+}
+
+export function createDesktopAttentionTransientDispatcher(
+  now: () => number = Date.now,
+  cooldownMs = DESKTOP_ATTENTION_SOUND_COOLDOWN_MS
+): DesktopAttentionTransientDispatcher {
+  let lastSoundAt = Number.NEGATIVE_INFINITY;
+  let soundInFlight = false;
+  return {
+    async dispatch(transport, candidate, capabilities, policy, diagnostic) {
+      const timestamp = now();
+      const soundAllowed = !soundInFlight && timestamp - lastSoundAt >= cooldownMs;
+      if (
+        candidate && policy.sound && capabilities.sound === "available" &&
+        soundAllowed && transport.playAttentionSound
+      ) {
+        soundInFlight = true;
+        try {
+          const outcome = await transport.playAttentionSound();
+          if (outcome === "played") {
+            lastSoundAt = now();
+          } else if (outcome === "failed") {
+            diagnostic?.("attention_sound_failed");
+          }
+        } catch {
+          diagnostic?.("attention_sound_failed");
+        } finally {
+          soundInFlight = false;
+        }
+      }
+      await dispatchDesktopAttentionTransientEffects(
+        { ...transport, playAttentionSound: undefined },
+        candidate,
+        capabilities,
+        { sound: false },
+        diagnostic
+      );
+    }
+  };
+}
+
+export function createTauriDesktopAttentionTransientTransport(
+  invokeNative: () => Promise<NativeAttentionSoundOutcome>
+): DesktopAttentionTransientLike {
+  return {
+    async playAttentionSound() {
+      return invokeNative();
+    }
+  };
 }
 
 export function desktopAttentionNotificationCandidate(

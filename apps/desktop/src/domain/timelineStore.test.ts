@@ -1046,6 +1046,61 @@ describe("timeline store — diff application", () => {
 // ---------------------------------------------------------------------------
 
 describe("timeline store — generation handling", () => {
+  test("authoritative resync converges a transaction and transaction-less remote echo to one event row", () => {
+    const transaction = {
+      ...makeLocalEcho("txn-echo", "same body"),
+      send_state: { kind: "sending" as const }
+    };
+    const remote = makeMsg("$remote-echo", "same body");
+    let store = createTimelineStore();
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [transaction]
+      }
+    });
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 1,
+        batch_id: 0,
+        diffs: [{ PushBack: { item: remote } }]
+      }
+    });
+    expect(getItems(store, KEY)).toHaveLength(2);
+
+    store = applyTimelineEvent(store, {
+      ResyncRequired: { key: KEY, reason: "QueueOverflow" }
+    });
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 2,
+        items: [remote]
+      }
+    });
+    const convergedItems = getItems(store, KEY);
+    expect(convergedItems).toHaveLength(1);
+    expect(itemId(convergedItems[0])).toBe("$remote-echo");
+    expect(convergedItems[0].send_state?.kind).not.toBe("sending");
+
+    // Completion is deliberately late. It is not the convergence mechanism
+    // and must not disturb the authoritative InitialItems result.
+    store = applyTimelineEvent(store, {
+      SendCompleted: {
+        request_id: { connection_id: 1, sequence: 99 },
+        key: KEY,
+        transaction_id: "txn-echo",
+        event_id: "$remote-echo"
+      }
+    });
+
+    expect(getItems(store, KEY)).toEqual(convergedItems);
+  });
+
   test("diff with stale generation is silently discarded", () => {
     let store = createTimelineStore();
     store = applyTimelineEvent(store, {

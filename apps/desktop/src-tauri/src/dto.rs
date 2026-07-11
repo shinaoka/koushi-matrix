@@ -1585,11 +1585,24 @@ mod tests {
         };
 
         // timeline — composer + media_downloads populated
+        let mut composer = koushi_state::ComposerState::default();
+        composer
+            .accepted_submission_ids
+            .push_back(koushi_state::SubmissionId::new("accepted-contract"));
         state.timeline = TimelinePaneState {
             room_id: Some("!room:example.invalid".to_owned()),
             is_subscribed: true,
             is_paginating_backwards: false,
-            composer: koushi_state::ComposerState::default(),
+            composer,
+            submission_registry: koushi_state::ComposerSubmissionRegistry {
+                accepted_submission_ids: [koushi_state::SubmissionId::new("global-accepted")]
+                    .into_iter()
+                    .collect(),
+                settled_submission_ids: [koushi_state::SubmissionId::new("global-settled")]
+                    .into_iter()
+                    .collect(),
+                active_submissions: Default::default(),
+            },
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),

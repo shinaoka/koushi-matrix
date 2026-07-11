@@ -23,7 +23,26 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 import { createDesktopApi } from "./backend/client";
+import {
+  classifySubmissionFailure,
+  createComposerSubmissionControllerRegistry,
+  createSubmissionId,
+  mainSubmissionTarget,
+  threadSubmissionTarget,
+  type ComposerSubmissionControllerRegistry
+} from "./domain/composerSubmission";
+import type { TimelinePaneState } from "./domain/types";
 import { setActiveLocaleProfile, t } from "./i18n/messages";
+
+export function reconcileComposerSubmissionSnapshot(
+  registry: ComposerSubmissionControllerRegistry,
+  timeline: TimelinePaneState
+): void {
+  registry.reconcile(
+    timeline.submission_registry.accepted_submission_ids,
+    timeline.submission_registry.settled_submission_ids
+  );
+}
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
 import {
   type TimelineDiagnosticLogEntry,
@@ -64,7 +83,8 @@ import {
 } from "./domain/rightPanel";
 import {
   applyDesktopAttentionToWindow,
-  dispatchDesktopAttentionTransientEffects,
+  createDesktopAttentionTransientDispatcher,
+  createTauriDesktopAttentionTransientTransport,
   desktopAttentionSummary,
   desktopAttentionWindowTitle,
   desktopAttentionNotificationCandidate
@@ -381,6 +401,12 @@ const tauriTimelineTransport: TimelineTransport | null = isTauriRuntime()
 const tauriNotificationTransport = isTauriRuntime()
   ? createTauriDesktopNotificationTransport()
   : null;
+const tauriAttentionTransientTransport = isTauriRuntime()
+  ? createTauriDesktopAttentionTransientTransport(() =>
+        invoke<"played" | "unsupported" | "failed" | "skipped">("play_native_attention_sound")
+    )
+  : null;
+const desktopAttentionTransientDispatcher = createDesktopAttentionTransientDispatcher();
 type ReportDialogState =
   | { kind: "user"; userId: string }
   | { kind: "content"; roomId: string; eventId: string }
@@ -1101,6 +1127,18 @@ export function App() {
   const [composerMentions, setComposerMentions] = useState<MentionIntent>(EMPTY_MENTION_INTENT);
   const [localThreadComposerDrafts, setLocalThreadComposerDrafts] = useState<Record<string, string>>({});
   const stagedUploadFilesRef = useRef<Map<string, File>>(new Map());
+  const submissionRegistryRef = useRef<ComposerSubmissionControllerRegistry | null>(null);
+  const submissionAccountOwnerRef = useRef<string | null>(null);
+  if (submissionRegistryRef.current === null) {
+    submissionRegistryRef.current = createComposerSubmissionControllerRegistry();
+  }
+  useEffect(() => {
+    const owner = snapshot?.state.domain.session.user_id ?? null;
+    if (owner === null || (submissionAccountOwnerRef.current !== null && submissionAccountOwnerRef.current !== owner)) {
+      submissionRegistryRef.current?.reset();
+    }
+    submissionAccountOwnerRef.current = owner;
+  }, [snapshot?.state.domain.session.user_id, snapshot?.state.domain.session.kind]);
   const [imageCompressionDialog, setImageCompressionDialog] =
     useState<ImageCompressionDialogState | null>(null);
   const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);
@@ -1564,7 +1602,12 @@ export function App() {
       getCurrentWindow(),
       title,
       safeAttentionSummary.badgeCount,
-      snapshot?.state.domain.native_attention.summary.capabilities
+      snapshot?.state.domain.native_attention.summary.capabilities,
+      (token) => appendDiagnosticLog({
+        timestampMs: Date.now(),
+        source: "native.attention",
+        message: token
+      })
     );
   }, [
     snapshot,
@@ -1584,17 +1627,28 @@ export function App() {
       snapshot.state.domain.native_attention
     );
 
-    if (!candidate || !tauriNotificationTransport) {
+    if (!candidate || !tauriNotificationTransport || !tauriAttentionTransientTransport) {
       return;
     }
 
-    void dispatchDesktopAttentionTransientEffects(
-      getCurrentWindow(),
+    const currentWindow = getCurrentWindow();
+    void desktopAttentionTransientDispatcher.dispatch(
+      {
+        ...tauriAttentionTransientTransport,
+        requestUserAttention: (requestType) => currentWindow.requestUserAttention(requestType)
+      },
       candidate,
       snapshot.state.domain.native_attention.summary.capabilities,
-      snapshot.state.domain.settings.values.notifications
+      snapshot.state.domain.settings.values.notifications,
+      (token) => appendDiagnosticLog({
+        timestampMs: Date.now(),
+        source: "native.attention",
+        message: token
+      })
     );
-    void sendDesktopAttentionNotification(candidate, tauriNotificationTransport);
+    void sendDesktopAttentionNotification(candidate, tauriNotificationTransport, (token) =>
+      appendDiagnosticLog({ timestampMs: Date.now(), source: "native.attention", message: token })
+    );
   }, [
     snapshot?.state.domain.native_attention.dispatch.kind,
     snapshot?.state.domain.native_attention.summary.candidate?.room_display_name,
@@ -1608,7 +1662,9 @@ export function App() {
       return;
     }
 
-    void clearDesktopAttentionNotifications(tauriNotificationTransport);
+    void clearDesktopAttentionNotifications(tauriNotificationTransport, (token) =>
+      appendDiagnosticLog({ timestampMs: Date.now(), source: "native.attention", message: token })
+    );
   }, [safeAttentionSummary.badgeCount]);
 
   useEffect(() => {
@@ -1667,12 +1723,12 @@ export function App() {
     qaSendPending.current = true;
     setQaSendStatus("pending");
     void api
-      .sendText(roomId, message)
-      .then((nextSnapshot) => {
-        setSnapshot(nextSnapshot);
+      .sendText(createSubmissionId(), roomId, message)
+      .then((response) => {
+        setSnapshot(response.snapshot);
         if (!isTauriRuntime()) {
           const completionStatus = qaSendSmokeCompletionStatus(
-            nextSnapshot,
+            response.snapshot,
             qaSendBaselineErrorCount.current,
             qaSendBaselineTimelineItems.current
           );
@@ -2723,6 +2779,25 @@ export function App() {
     // Reply semantics are Rust-owned: dispatch sendReply when the composer is
     // in reply mode, otherwise plain sendText.
     const composerMode = snapshot?.state.ui.timeline.composer.mode ?? "Plain";
+    const submissionController = submissionRegistryRef.current!.forTarget(mainSubmissionTarget(roomId));
+    const submissionId = submissionController.begin();
+    if (submissionId === null) {
+      return;
+    }
+
+    const mentions = pruneMentionIntentForDraft(composerMentions, body);
+    submissionController.capture(submissionId, {
+      roomId,
+      body,
+      mentions,
+      composerMode
+    });
+    const captured = submissionController.payload<{
+      roomId: string;
+      body: string;
+      mentions: MentionIntent;
+      composerMode: typeof composerMode;
+    }>(submissionId)!;
 
     qaSendStarted.current = true;
     qaSendBaselineErrorCount.current = snapshot?.state.ui.errors.length ?? 0;
@@ -2737,36 +2812,57 @@ export function App() {
       });
     }
     try {
-      const mentions = pruneMentionIntentForDraft(composerMentions, body);
       const nextSnapshot =
-        composerMode === "Plain"
-          ? await api.sendText(roomId, body, mentions)
+        captured.composerMode === "Plain"
+          ? await api.sendText(submissionId, captured.roomId, captured.body, captured.mentions)
           : await api.sendReply(
-              roomId,
-              composerMode.Reply.in_reply_to_event_id,
-              body,
-              mentions
+              submissionId,
+              captured.roomId,
+              captured.composerMode.Reply.in_reply_to_event_id,
+              captured.body,
+              captured.mentions
             );
+      if (nextSnapshot.submissionId !== submissionId || nextSnapshot.outcome !== "accepted") {
+        submissionController.reject(submissionId);
+        setSnapshot(nextSnapshot.snapshot);
+        return;
+      }
+      submissionController.accept(submissionId);
       cancelComposerDraftPersist();
       clearLocalComposerDraft(roomId);
-      setSnapshot(nextSnapshot);
+      setSnapshot(nextSnapshot.snapshot);
       updateComposerTypingSignal(roomId, "");
       if (!isTauriRuntime()) {
         const completionStatus = qaSendSmokeCompletionStatus(
-          nextSnapshot,
+          nextSnapshot.snapshot,
           qaSendBaselineErrorCount.current,
           qaSendBaselineTimelineItems.current
         );
         qaSendPending.current = completionStatus === "pending";
         setQaSendStatus(completionStatus);
       }
-    } catch {
+    } catch (error) {
+      const disposition = classifySubmissionFailure(error);
+      if (disposition.kind === "unknown") {
+        submissionController.markUnknown(submissionId, disposition.reason);
+      } else {
+        submissionController.reject(submissionId);
+      }
       qaSendPending.current = false;
       setQaSendStatus("failed");
       return;
     }
     setComposerMentions(EMPTY_MENTION_INTENT);
   }
+
+  useEffect(() => {
+    if (submissionRegistryRef.current && snapshot) {
+      reconcileComposerSubmissionSnapshot(
+        submissionRegistryRef.current,
+        snapshot.state.ui.timeline
+      );
+    }
+  }, [snapshot]);
 
   async function scheduleSend(sendAtMs: number, bodyOverride?: string) {
     const roomId = snapshot?.state.ui.timeline.room_id;
@@ -3073,9 +3169,45 @@ export function App() {
   }
 
   async function sendThreadReply(roomId: string, rootEventId: string, body: string) {
+    const submissionController = submissionRegistryRef.current!.forTarget(
+      threadSubmissionTarget(roomId, rootEventId)
+    );
+    const submissionId = submissionController.begin();
+    if (submissionId === null) {
+      return;
+    }
+    submissionController.capture(submissionId, { roomId, rootEventId, body });
+    const captured = submissionController.payload<{
+      roomId: string;
+      rootEventId: string;
+      body: string;
+    }>(submissionId)!;
+    let response;
+    try {
+      response = await api.sendThreadReply(
+        submissionId,
+        captured.roomId,
+        captured.rootEventId,
+        captured.body
+      );
+    } catch (error) {
+      const disposition = classifySubmissionFailure(error);
+      if (disposition.kind === "unknown") {
+        submissionController.markUnknown(submissionId, disposition.reason);
+      } else {
+        submissionController.reject(submissionId);
+      }
+      return;
+    }
+    if (response.submissionId !== submissionId || response.outcome !== "accepted") {
+      submissionController.reject(submissionId);
+      setSnapshot(response.snapshot);
+      return;
+    }
+    submissionController.accept(submissionId);
     cancelThreadComposerDraftPersist(roomId, rootEventId);
     clearLocalThreadComposerDraft(roomId, rootEventId);
-    setSnapshot(await api.sendThreadReply(roomId, rootEventId, body));
+    setSnapshot(response.snapshot);
   }
 
   function queueThreadComposerDraftPersist(roomId: string, rootEventId: string, draft: string) {

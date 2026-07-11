@@ -23,6 +23,9 @@ pub(crate) fn handle_settings_loaded(
         AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
         AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
     ];
+    if super::native_attention::apply_badge_setting(state) {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged));
+    }
     if let crate::state::ThreadsListState::Open { items, .. } = &mut state.threads_list {
         sort_threads_list_items(items, state.settings.values.thread_list_order);
         effects.push(AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged));
@@ -68,6 +71,9 @@ pub(crate) fn handle_settings_update_requested(
         },
         AppEffect::EmitUiEvent(UiEvent::SettingsChanged),
     ];
+    if super::native_attention::apply_badge_setting(state) {
+        effects.push(AppEffect::EmitUiEvent(UiEvent::NativeAttentionChanged));
+    }
 
     if state.settings.values.room_list_sort != prev_room_list_sort {
         recompute_room_list_projection(state);

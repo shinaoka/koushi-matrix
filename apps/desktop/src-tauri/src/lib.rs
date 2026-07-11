@@ -1025,6 +1025,7 @@ pub fn run() {
             commands::settings::update_settings,
             commands::settings::rebuild_search_index,
             commands::settings::set_room_url_preview_override,
+            commands::native_attention::play_native_attention_sound,
             commands::room::select_room_list_filter,
             commands::room::mark_room_as_read,
             commands::room::mark_room_as_unread,
@@ -1754,8 +1755,8 @@ mod tests {
             NativeAttentionSummary, PresenceKind, ReplyQuote, ReplyQuoteState,
             RoomHistoryVisibility, RoomJoinRule, RoomMemberRole, RoomModerationAction,
             RoomPermissionFacts, RoomSettingsSnapshot, RoomTagKind, SasEmoji,
-            SearchCrawlerFailureKind, SearchCrawlerRoomState, SyncMode, UserTrustState,
-            VerificationFlowState, VerificationTarget,
+            SearchCrawlerFailureKind, SearchCrawlerRoomState, SubmissionId, SyncMode,
+            UserTrustState, VerificationFlowState, VerificationTarget,
         };
         use serde_json::json;
 
@@ -3013,6 +3014,32 @@ mod tests {
             "timelineReplyQuoteInitialItems": reply_quote_initial,
             "timelineResyncRequired": resync,
             "timelineSendStateInitialItems": send_state_initial,
+            "timelineSubmissionAccepted": serialize_core_event(&CoreEvent::Timeline(
+                TimelineEvent::SubmissionAccepted {
+                    request_id,
+                    key: TimelineKey {
+                        account_key: AccountKey("@user:example.test".to_owned()),
+                        kind: koushi_core::TimelineKind::Room {
+                            room_id: "!room:example.test".to_owned(),
+                        },
+                    },
+                    submission_id: SubmissionId::new("submission-contract"),
+                    transaction_id: "transaction-contract".to_owned(),
+                }
+            )).expect("serialize submission accepted"),
+            "timelineSubmissionRejected": serialize_core_event(&CoreEvent::Timeline(
+                TimelineEvent::SubmissionRejected {
+                    request_id,
+                    key: TimelineKey {
+                        account_key: AccountKey("@user:example.test".to_owned()),
+                        kind: koushi_core::TimelineKind::Room {
+                            room_id: "!room:example.test".to_owned(),
+                        },
+                    },
+                    submission_id: SubmissionId::new("submission-contract"),
+                    kind: TimelineFailureKind::NotSubscribed,
+                }
+            )).expect("serialize submission rejected"),
             "threadsListOpened": serialize_core_event(&CoreEvent::ThreadsList(
                 ThreadsListEvent::Opened {
                     request_id,
@@ -3120,6 +3147,8 @@ mod tests {
             "timelineReplyQuoteInitialItems",
             "timelineResyncRequired",
             "timelineSendStateInitialItems",
+            "timelineSubmissionAccepted",
+            "timelineSubmissionRejected",
         ]
         .iter()
         .copied()

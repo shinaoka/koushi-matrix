@@ -1,3 +1,4 @@
+use crate::SubmissionId;
 use crate::{
     effect::{AppEffect, UiEvent},
     state::{
@@ -5,6 +6,39 @@ use crate::{
         ThreadPaneState, ThreadsListState, sort_threads_list_items,
     },
 };
+
+use super::current_session_info;
+
+pub(crate) fn handle_thread_submission_accepted(
+    state: &mut AppState,
+    submission_id: SubmissionId,
+    room_id: String,
+    root_event_id: String,
+    transaction_id: String,
+) -> Vec<AppEffect> {
+    if current_session_info(state).is_none() {
+        return Vec::new();
+    }
+    state.timeline.submission_registry.remember_accepted(
+        submission_id.clone(),
+        transaction_id.clone(),
+        crate::ComposerSubmissionTarget::Thread {
+            room_id: room_id.clone(),
+            root_event_id: root_event_id.clone(),
+        },
+    );
+    let ThreadPaneState::Open { composer, .. } = &mut state.thread else {
+        return Vec::new();
+    };
+    if composer.pending_submission_id.is_some()
+        || composer.accepted_submission_ids.contains(&submission_id)
+    {
+        return Vec::new();
+    }
+    composer.remember_accepted_submission(submission_id.clone());
+    composer.pending_submission_id = Some(submission_id);
+    handle_thread_reply_submitted(state, room_id, root_event_id, transaction_id)
+}
 
 use super::is_session_ready;
 
@@ -75,6 +109,12 @@ pub(crate) fn handle_thread_reply_finished(
     root_event_id: String,
     transaction_id: String,
 ) -> Vec<AppEffect> {
+    if matches!(
+        &state.thread,
+        ThreadPaneState::Open { composer, .. } if composer.pending_submission_id.is_some()
+    ) {
+        return Vec::new();
+    }
     if !is_session_ready(state) {
         return Vec::new();
     }
@@ -104,6 +144,12 @@ pub(crate) fn handle_thread_reply_failed(
     transaction_id: String,
     message: String,
 ) -> Vec<AppEffect> {
+    if matches!(
+        &state.thread,
+        ThreadPaneState::Open { composer, .. } if composer.pending_submission_id.is_some()
+    ) {
+        return Vec::new();
+    }
     if !is_session_ready(state) {
         return Vec::new();
     }

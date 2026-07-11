@@ -368,6 +368,22 @@ export type TimelineEvent =
       };
     }
   | {
+      SubmissionAccepted: {
+        request_id: RequestId;
+        key: TimelineKey;
+        submission_id: string;
+        transaction_id: string;
+      };
+    }
+  | {
+      SubmissionRejected: {
+        request_id: RequestId;
+        key: TimelineKey;
+        submission_id: string;
+        kind: TimelineFailureKind;
+      };
+    }
+  | {
       MessageForwarded: {
         request_id: RequestId;
         key: TimelineKey;
@@ -919,10 +935,13 @@ export interface NativeAttentionCapabilities {
 
 export type NativeAttentionCapability = "available" | "unavailable" | "unknown";
 
-export type NativeAttentionEvent = {
-  kind: "summaryUpdated";
-  summary: NativeAttentionSummary;
-};
+export type NativeAttentionEvent =
+  | { kind: "summaryUpdated"; summary: NativeAttentionSummary }
+  | {
+      kind: "dispatchAdmission";
+      dispatch_id: { connection_id: number; sequence: number };
+      accepted: boolean;
+    };
 
 export interface JapaneseCatalogProfile {
   catalog_locale: string;

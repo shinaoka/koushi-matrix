@@ -17,6 +17,7 @@ import type {
   ActivityTab,
   AttachmentResult,
   CreateRoomRequest,
+  ComposerState,
   DesktopSnapshot,
   ComposerKeyEvent,
   ComposerResolvedAction,
@@ -50,6 +51,7 @@ import type {
   MentionIntent,
   OidcAuthorization,
   SpaceSummary,
+  SubmissionResponse,
   StagedUploadCompressionChoice,
   TimelineMessage,
   ThreadsListItem,
@@ -129,7 +131,12 @@ export interface DesktopApi {
   openTimelineAtTimestamp(roomId: string, timestampMs: number): Promise<DesktopSnapshot>;
   closeFocusedContext(): Promise<DesktopSnapshot>;
   closeSearch(): Promise<DesktopSnapshot>;
-  sendText(roomId: string, body: string, mentions?: MentionIntent): Promise<DesktopSnapshot>;
+  sendText(
+    submissionId: string,
+    roomId: string,
+    body: string,
+    mentions?: MentionIntent
+  ): Promise<SubmissionResponse>;
   scheduleSend(roomId: string, body: string, sendAtMs: number): Promise<DesktopSnapshot>;
   stageUploads(roomId: string, items: UploadStagingRequestItem[]): Promise<DesktopSnapshot>;
   updateStagedUploadCaption(stagedId: string, caption: string | null): Promise<DesktopSnapshot>;
@@ -193,7 +200,12 @@ export interface DesktopApi {
   openFilesView(scope: FilesViewScope, filter: AttachmentFilter, sort: AttachmentSort): Promise<DesktopSnapshot>;
   closeFilesView(): Promise<DesktopSnapshot>;
   setThreadComposerDraft(roomId: string, rootEventId: string, draft: string): Promise<DesktopSnapshot>;
-  sendThreadReply(roomId: string, rootEventId: string, body: string): Promise<DesktopSnapshot>;
+  sendThreadReply(
+    submissionId: string,
+    roomId: string,
+    rootEventId: string,
+    body: string
+  ): Promise<SubmissionResponse>;
   submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot>;
   queryDirectory(query: DirectoryQuery): Promise<DesktopSnapshot>;
   joinDirectoryRoom(alias: string, viaServer?: string | null): Promise<DesktopSnapshot>;
@@ -232,11 +244,12 @@ export interface DesktopApi {
   setComposerReplyTarget(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   cancelComposerReply(): Promise<DesktopSnapshot>;
   sendReply(
+    submissionId: string,
     roomId: string,
     inReplyToEventId: string,
     body: string,
     mentions?: MentionIntent
-  ): Promise<DesktopSnapshot>;
+  ): Promise<SubmissionResponse>;
   setRoomListProjection(projection: RoomListProjection): void;
   startRoomCrawl(roomId: string): Promise<DesktopSnapshot>;
   stopRoomCrawl(roomId: string): Promise<DesktopSnapshot>;
@@ -255,6 +268,61 @@ class BrowserFakeApi implements DesktopApi {
   private snapshot: DesktopSnapshot;
   private requestSequence = 1_000;
   private composerDrafts = new Map<string, string>();
+  private submissionLedger = new Map<string, string>();
+
+  private replaySubmission(submissionId: string): SubmissionResponse | null {
+    const admitted = this.submissionLedger.get(submissionId);
+    if (!admitted) return null;
+    return {
+      outcome: "accepted",
+      submissionId,
+      transactionId: admitted,
+      snapshot: clone(this.snapshot)
+    };
+  }
+
+  private acceptSubmission(submissionId: string, composer: ComposerState): string {
+    const transactionId = `$browser-${submissionId}`;
+    while (this.submissionLedger.size >= 128) {
+      const oldest = this.submissionLedger.keys().next().value;
+      if (oldest === undefined) break;
+      this.submissionLedger.delete(oldest);
+    }
+    this.submissionLedger.set(submissionId, transactionId);
+    this.rememberSubmissionRegistryId(
+      this.snapshot.state.ui.timeline.submission_registry.accepted_submission_ids,
+      submissionId
+    );
+    composer.accepted_submission_ids = [
+      ...(composer.accepted_submission_ids ?? []).filter((id) => id !== submissionId),
+      submissionId
+    ];
+    composer.pending_submission_id = submissionId;
+    composer.pending_transaction_id = transactionId;
+    return transactionId;
+  }
+
+  private terminalSubmission(composer: ComposerState): void {
+    const submissionId = composer.pending_submission_id;
+    composer.pending_submission_id = null;
+    composer.pending_transaction_id = null;
+    if (submissionId) {
+      const active = this.snapshot.state.ui.timeline.submission_registry.accepted_submission_ids;
+      this.snapshot.state.ui.timeline.submission_registry.accepted_submission_ids = active.filter(
+        (id) => id !== submissionId
+      );
+      this.rememberSubmissionRegistryId(
+        this.snapshot.state.ui.timeline.submission_registry.settled_submission_ids,
+        submissionId
+      );
+    }
+  }
+
+  private rememberSubmissionRegistryId(ids: string[], id: string): void {
+    if (ids.includes(id)) return;
+    while (ids.length >= 128) ids.shift();
+    ids.push(id);
+  }
 
   constructor(options: BrowserFakeApiOptions) {
     this.snapshot = createInitialSnapshot(initialSession(options));
@@ -473,6 +541,12 @@ class BrowserFakeApi implements DesktopApi {
       this.snapshot.state.domain.settings.values.typography
     );
     this.snapshot.state.domain.settings.persistence = { kind: "idle" };
+    const attention = this.snapshot.state.domain.native_attention.summary;
+    attention.badge_count =
+      this.snapshot.state.domain.settings.values.notifications.badges &&
+      attention.capabilities.badge !== "unavailable"
+        ? attention.unread_count
+        : 0;
     this.snapshot.state.ui.room_list = computeBrowserRoomListProjection(
       this.snapshot.state.ui.room_list.active_filter,
       this.snapshot.state.domain.settings.values.room_list_sort,
@@ -956,6 +1030,7 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.ui.timeline.room_id = roomId;
     this.snapshot.state.ui.timeline.is_subscribed = true;
     this.snapshot.state.ui.timeline.composer = {
+      accepted_submission_ids: [],
       pending_transaction_id: null,
       draft: this.composerDrafts.get(roomId) ?? "",
       mode: "Plain"
@@ -1025,11 +1100,14 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async sendText(
+    submissionId: string,
     roomId: string,
     body: string,
     mentions: MentionIntent = emptyMentionIntent()
-  ): Promise<DesktopSnapshot> {
+  ): Promise<SubmissionResponse> {
     void mentions;
+    const replay = this.replaySubmission(submissionId);
+    if (replay) return replay;
     const session = this.snapshot.state.domain.session;
     if (
       session.kind !== "ready" ||
@@ -1037,9 +1115,16 @@ class BrowserFakeApi implements DesktopApi {
       this.snapshot.state.ui.timeline.room_id !== roomId ||
       body.trim().length === 0
     ) {
-      return this.getSnapshot();
+      return {
+        outcome: { rejected: { kind: "invalid" } },
+        submissionId,
+        transactionId: null,
+        snapshot: await this.getSnapshot()
+      };
     }
     const sender = session.user_id;
+    const composer = this.snapshot.state.ui.timeline.composer;
+    const transactionId = this.acceptSubmission(submissionId, composer);
 
     this.snapshot.timeline = [
       ...this.snapshot.timeline,
@@ -1053,10 +1138,15 @@ class BrowserFakeApi implements DesktopApi {
         reply_count: 0
       }
     ];
-    this.snapshot.state.ui.timeline.composer.pending_transaction_id = null;
+    this.terminalSubmission(composer);
     this.snapshot.state.ui.timeline.composer.draft = "";
     this.composerDrafts.delete(roomId);
-    return this.getSnapshot();
+    return {
+      outcome: "accepted",
+      submissionId,
+      transactionId,
+      snapshot: await this.getSnapshot()
+    };
   }
 
   async scheduleSend(
@@ -1481,7 +1571,7 @@ class BrowserFakeApi implements DesktopApi {
       room_id: roomId,
       root_event_id: rootEventId,
       is_subscribed: true,
-      composer: { pending_transaction_id: null, draft: "", mode: "Plain" }
+      composer: { accepted_submission_ids: [], pending_transaction_id: null, draft: "", mode: "Plain" }
     };
     this.snapshot.thread = {
       room_id: roomId,
@@ -1608,10 +1698,13 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async sendThreadReply(
+    submissionId: string,
     roomId: string,
     rootEventId: string,
     body: string
-  ): Promise<DesktopSnapshot> {
+  ): Promise<SubmissionResponse> {
+    const replay = this.replaySubmission(submissionId);
+    if (replay) return replay;
     const session = this.snapshot.state.domain.session;
     const thread = this.snapshot.state.ui.thread;
     if (
@@ -1624,12 +1717,23 @@ class BrowserFakeApi implements DesktopApi {
       thread.composer.pending_transaction_id ||
       body.trim().length === 0
     ) {
-      return this.getSnapshot();
+      return {
+        outcome: { rejected: { kind: "invalid" } },
+        submissionId,
+        transactionId: null,
+        snapshot: await this.getSnapshot()
+      };
     }
 
-    thread.composer.pending_transaction_id = null;
+    const transactionId = this.acceptSubmission(submissionId, thread.composer);
+    this.terminalSubmission(thread.composer);
     thread.composer.draft = "";
-    return this.getSnapshot();
+    return {
+      outcome: "accepted",
+      submissionId,
+      transactionId,
+      snapshot: await this.getSnapshot()
+    };
   }
 
   async submitSearch(query: string, scope: SearchScopeKind): Promise<DesktopSnapshot> {
@@ -2538,12 +2642,15 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async sendReply(
+    submissionId: string,
     roomId: string,
     inReplyToEventId: string,
     body: string,
     mentions: MentionIntent = emptyMentionIntent()
-  ): Promise<DesktopSnapshot> {
+  ): Promise<SubmissionResponse> {
     void mentions;
+    const replay = this.replaySubmission(submissionId);
+    if (replay) return replay;
     const session = this.snapshot.state.domain.session;
     if (
       session.kind !== "ready" ||
@@ -2551,9 +2658,16 @@ class BrowserFakeApi implements DesktopApi {
       this.snapshot.state.ui.timeline.room_id !== roomId ||
       body.trim().length === 0
     ) {
-      return this.getSnapshot();
+      return {
+        outcome: { rejected: { kind: "invalid" } },
+        submissionId,
+        transactionId: null,
+        snapshot: await this.getSnapshot()
+      };
     }
     const sender = session.user_id;
+    const composer = this.snapshot.state.ui.timeline.composer;
+    const transactionId = this.acceptSubmission(submissionId, composer);
 
     this.snapshot.timeline = [
       ...this.snapshot.timeline,
@@ -2572,11 +2686,16 @@ class BrowserFakeApi implements DesktopApi {
         ? { ...message, reply_count: message.reply_count + 1 }
         : message
     );
-    this.snapshot.state.ui.timeline.composer.pending_transaction_id = null;
+    this.terminalSubmission(composer);
     this.snapshot.state.ui.timeline.composer.draft = "";
     this.snapshot.state.ui.timeline.composer.mode = "Plain";
     this.composerDrafts.delete(roomId);
-    return this.getSnapshot();
+    return {
+      outcome: "accepted",
+      submissionId,
+      transactionId,
+      snapshot: await this.getSnapshot()
+    };
   }
 
   async rebuildSearchIndex(): Promise<DesktopSnapshot> {
@@ -2826,10 +2945,12 @@ class BrowserFakeApi implements DesktopApi {
       is_subscribed: false,
       is_paginating_backwards: false,
       composer: {
+        accepted_submission_ids: [],
         pending_transaction_id: null,
         draft: "",
         mode: "Plain"
       },
+      submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] },
       scheduled_send_capability: this.snapshot.state.ui.timeline.scheduled_send_capability,
       scheduled_sends: [],
       staged_uploads: [],
@@ -2908,10 +3029,12 @@ class BrowserFakeApi implements DesktopApi {
       is_subscribed: false,
       is_paginating_backwards: false,
       composer: {
+        accepted_submission_ids: [],
         pending_transaction_id: null,
         draft: "",
         mode: "Plain"
       },
+      submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] },
       scheduled_send_capability: "unknown",
       scheduled_sends: [],
         staged_uploads: [],
@@ -3090,10 +3213,12 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
           is_subscribed: true,
           is_paginating_backwards: false,
           composer: {
+            accepted_submission_ids: [],
             pending_transaction_id: null,
             draft: "",
             mode: "Plain"
           },
+          submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] },
           scheduled_send_capability: "unknown",
           scheduled_sends: [],
           staged_uploads: [],
@@ -3211,10 +3336,12 @@ function createSignedOutSnapshot(): DesktopSnapshot {
           is_subscribed: false,
           is_paginating_backwards: false,
           composer: {
+            accepted_submission_ids: [],
             pending_transaction_id: null,
             draft: "",
             mode: "Plain"
           },
+          submission_registry: { accepted_submission_ids: [], settled_submission_ids: [] },
           scheduled_send_capability: "unknown",
           scheduled_sends: [],
           staged_uploads: [],

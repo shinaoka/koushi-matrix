@@ -29,9 +29,9 @@ use crate::command::{
     TimelineCommand,
 };
 use crate::event::{
-    ActivityEvent, AppStateSnapshot, CoreEvent, IntentNoOpReason, IntentOutcome, TimelineEvent,
-    VersionedAppStateSnapshot, project_room_event_display_labels,
-    project_timeline_event_display_labels,
+    ActivityEvent, AppStateSnapshot, CoreEvent, IntentNoOpReason, IntentOutcome,
+    NativeAttentionEvent, TimelineEvent, VersionedAppStateSnapshot,
+    project_room_event_display_labels, project_timeline_event_display_labels,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -2237,6 +2237,38 @@ impl AppActor {
                 } => {
                     let effects = self
                         .reduce_app_action(AppAction::NativeAttentionUpdated { attention })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::StartNativeAttentionDispatch {
+                    request_id,
+                    dispatch_id,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::NativeAttentionDispatchStarted {
+                            dispatch_id,
+                        })
+                        .await;
+                    self.emit(CoreEvent::NativeAttention(
+                        NativeAttentionEvent::DispatchAdmission {
+                            dispatch_id,
+                            accepted: !effects.is_empty(),
+                        },
+                    ));
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::SettleNativeAttentionDispatch {
+                    request_id,
+                    dispatch_id,
+                    outcome,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::NativeAttentionDispatchSettled {
+                            dispatch_id,
+                            outcome,
+                        })
                         .await;
                     self.handle_app_effects(request_id, effects).await;
                     true

@@ -28,6 +28,7 @@ import type {
   AttachmentSort,
   CreateRoomRequest,
   FilesViewScope
+  ,SubmissionResponse
 } from "../domain/types";
 import type { DiagnosticLogSnapshot } from "../domain/diagnostics";
 
@@ -274,11 +275,12 @@ class TauriDesktopApi implements DesktopApi {
   }
 
   async sendText(
+    submissionId: string,
     roomId: string,
     body: string,
     mentions: MentionIntent = { targets: [] }
-  ): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("send_text", { roomId, body, mentions });
+  ): Promise<SubmissionResponse> {
+    return invoke<SubmissionResponse>("send_text", { submissionId, roomId, body, mentions });
   }
 
   async scheduleSend(
@@ -591,11 +593,17 @@ class TauriDesktopApi implements DesktopApi {
   }
 
   async sendThreadReply(
+    submissionId: string,
     roomId: string,
     rootEventId: string,
     body: string
-  ): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("send_thread_reply", { roomId, rootEventId, body });
+  ): Promise<SubmissionResponse> {
+    return invoke<SubmissionResponse>("send_thread_reply", {
+      submissionId,
+      roomId,
+      rootEventId,
+      body
+    });
   }
 
   async selectSearchResult(roomId: string, eventId: string): Promise<DesktopSnapshot> {
@@ -710,12 +718,19 @@ class TauriDesktopApi implements DesktopApi {
   }
 
   async sendReply(
+    submissionId: string,
     roomId: string,
     inReplyToEventId: string,
     body: string,
     mentions: MentionIntent = { targets: [] }
-  ): Promise<DesktopSnapshot> {
-    return invoke<DesktopSnapshot>("send_reply", { roomId, inReplyToEventId, body, mentions });
+  ): Promise<SubmissionResponse> {
+    return invoke<SubmissionResponse>("send_reply", {
+      submissionId,
+      roomId,
+      inReplyToEventId,
+      body,
+      mentions
+    });
   }
 
   async startRoomCrawl(roomId: string): Promise<DesktopSnapshot> {

@@ -38,6 +38,12 @@ import {
 } from "../domain/composerKeyEvents";
 import { EmojiPicker } from "./EmojiPicker";
 import {
+  canApplyResolvedComposerAction,
+  isComposerImeEnter,
+  useComposerKeyIntentSnapshot,
+  useCompositionOwnedTextarea
+} from "../domain/compositionLifecycle";
+import {
   ICON_SIZE,
   EMPTY_MENTION_INTENT,
   ignoreComposerKeyAction,
@@ -88,9 +94,7 @@ export const Composer = memo(function Composer({
   onValueChange: (value: string) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const emojiButtonRef = useRef<HTMLButtonElement>(null);
-  const imeCompositionActiveRef = useRef(false);
   const macKillRingRef = useRef<string>("");
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
@@ -98,6 +102,13 @@ export const Composer = memo(function Composer({
   const [localValue, setLocalValue] = useState(value);
   const [activeMentionIndex, setActiveMentionIndex] = useState(0);
   const [dismissedMentionKey, setDismissedMentionKey] = useState<string | null>(null);
+  const {
+    textareaRef,
+    lifecycle: imeComposition,
+    onCompositionStart,
+    onCompositionEnd
+  } = useCompositionOwnedTextarea(value, draftKey);
+  const captureKeyIntent = useComposerKeyIntentSnapshot(imeComposition);
   const autocompleteListboxId = useId();
   const activeMention = activeMentionQuery(localValue);
   const activeMentionKey =
@@ -119,8 +130,11 @@ export const Composer = memo(function Composer({
       : undefined;
 
   useEffect(() => {
+    if (imeComposition.active()) {
+      return;
+    }
     setLocalValue(value);
-  }, [draftKey, value]);
+  }, [draftKey, imeComposition, value]);
 
   useEffect(() => {
     setActiveMentionIndex(0);
@@ -278,12 +292,12 @@ export const Composer = memo(function Composer({
   }
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (composerImeShouldHandleKeyEvent(event, imeCompositionActiveRef.current)) {
+    if (composerImeShouldHandleKeyEvent(event, imeComposition.active())) {
       return;
     }
     // macOS native Emacs text-editing bindings (Ctrl+F/B/P/N/K/Y).
     // Must not fire during IME composition.
-    if (IS_MAC_PLATFORM && !event.nativeEvent.isComposing && !imeCompositionActiveRef.current) {
+    if (IS_MAC_PLATFORM && !event.nativeEvent.isComposing && !imeComposition.active()) {
       const emacsAction = macEmacsActionFromEvent(event);
       if (emacsAction !== null) {
         event.preventDefault();
@@ -328,30 +342,42 @@ export const Composer = memo(function Composer({
     }
 
     const textarea = event.currentTarget;
-    const selectionStart = textarea.selectionStart;
-    const selectionEnd = textarea.selectionEnd;
+    const intent = captureKeyIntent(textarea);
+    if (intent === null) {
+      event.preventDefault();
+      return;
+    }
     const keyEvent = composerKeyEventFromDom(event, {
-      start: selectionStart,
-      end: selectionEnd
+      start: intent.selectionStart,
+      end: intent.selectionEnd
     });
     const resolverOptions = {
       autocomplete_open: autocompleteOpen,
-      send_enabled: !isSending && (localValue.trim().length > 0 || hasStagedUploads)
+      send_enabled: !isSending && (intent.value.trim().length > 0 || hasStagedUploads)
     };
     if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
-      void resolveComposerKeyAction("main", keyEvent, resolverOptions).catch(() => undefined);
+      void resolveComposerKeyAction("main", keyEvent, resolverOptions)
+        .catch(() => undefined)
+        .finally(intent.releaseResolution);
       return;
     }
     event.preventDefault();
 
     void resolveComposerKeyAction("main", keyEvent, resolverOptions)
       .then((action) => {
+        if (!canApplyResolvedComposerAction(intent, action)) {
+          return;
+        }
         if (action === "send") {
-          void onSend(localValue);
+          void onSend(intent.value);
           return;
         }
         if (action === "insertNewline") {
-          const nextValue = insertNewlineAtSelection(localValue, selectionStart, selectionEnd);
+          const nextValue = insertNewlineAtSelection(
+            intent.value,
+            intent.selectionStart,
+            intent.selectionEnd
+          );
           updateLocalValue(nextValue.value);
           requestAnimationFrame(() => {
             textarea.selectionStart = nextValue.cursor;
@@ -371,7 +397,8 @@ export const Composer = memo(function Composer({
           onCancelReply();
         }
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(intent.releaseResolution);
   }
 
   return (
@@ -473,17 +500,11 @@ export const Composer = memo(function Composer({
       <textarea
         ref={textareaRef}
         aria-label={t("composer.messageComposer")}
-        value={localValue}
+        defaultValue={localValue}
         placeholder={t("composer.placeholder", { roomName })}
         onKeyDown={onComposerKeyDown}
-        onCompositionStart={() => {
-          imeCompositionActiveRef.current = true;
-        }}
-        onCompositionEnd={() => {
-          window.setTimeout(() => {
-            imeCompositionActiveRef.current = false;
-          }, 0);
-        }}
+        onCompositionStart={onCompositionStart}
+        onCompositionEnd={onCompositionEnd}
         onPaste={(event) => {
           const files = Array.from(event.clipboardData.files);
           if (files.length > 0) {
@@ -699,6 +720,7 @@ function mentionOptionAriaLabel(candidate: MentionCandidate): string {
 function ThreadComposer({
   canEdit,
   draft,
+  draftKey,
   isSending,
   resolveComposerKeyAction,
   onDraftChange,
@@ -706,29 +728,48 @@ function ThreadComposer({
 }: {
   canEdit: boolean;
   draft: string;
+  draftKey: string;
   isSending: boolean;
   resolveComposerKeyAction: ResolveComposerKeyAction;
   onDraftChange: (draft: string) => void;
-  onSend: () => void | Promise<void>;
+  onSend: (value: string) => void | Promise<void>;
 }) {
-  const canSend = canEdit && !isSending && draft.trim().length > 0;
-  const imeCompositionActiveRef = useRef(false);
+  const [visibleDraft, setVisibleDraft] = useState(draft);
+  const canSend = canEdit && !isSending && visibleDraft.trim().length > 0;
   const macKillRingRef = useRef<string>("");
+  const {
+    textareaRef,
+    lifecycle: imeComposition,
+    onCompositionStart,
+    onCompositionEnd
+  } = useCompositionOwnedTextarea(draft, draftKey);
+  const captureKeyIntent = useComposerKeyIntentSnapshot(imeComposition);
+
+  useEffect(() => {
+    if (!imeComposition.active()) {
+      setVisibleDraft(draft);
+    }
+  }, [draft, draftKey, imeComposition]);
+
+  function updateVisibleDraft(value: string) {
+    setVisibleDraft(value);
+    onDraftChange(value);
+  }
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (composerImeShouldHandleKeyEvent(event, imeCompositionActiveRef.current)) {
+    if (composerImeShouldHandleKeyEvent(event, imeComposition.active())) {
       return;
     }
     // macOS native Emacs text-editing bindings (Ctrl+F/B/P/N/K/Y).
     // Must not fire during IME composition.
-    if (IS_MAC_PLATFORM && !event.nativeEvent.isComposing && !imeCompositionActiveRef.current) {
+    if (IS_MAC_PLATFORM && !event.nativeEvent.isComposing && !imeComposition.active()) {
       const emacsAction = macEmacsActionFromEvent(event);
       if (emacsAction !== null) {
         event.preventDefault();
         const ta = event.currentTarget;
         const effect = applyMacEmacsAction(
           emacsAction,
-          draft,
+          event.currentTarget.value,
           ta.selectionStart,
           ta.selectionEnd,
           macKillRingRef.current
@@ -738,7 +779,7 @@ function ThreadComposer({
             macKillRingRef.current = effect.newKillRing;
           }
           if (effect.newValue !== undefined) {
-            onDraftChange(effect.newValue);
+            updateVisibleDraft(effect.newValue);
           }
           const pos = effect.newSelectionPos;
           requestAnimationFrame(() => ta.setSelectionRange(pos, pos));
@@ -751,38 +792,51 @@ function ThreadComposer({
     }
 
     const textarea = event.currentTarget;
-    const selectionStart = textarea.selectionStart;
-    const selectionEnd = textarea.selectionEnd;
+    const intent = captureKeyIntent(textarea);
+    if (intent === null) {
+      event.preventDefault();
+      return;
+    }
     const keyEvent = composerKeyEventFromDom(event, {
-      start: selectionStart,
-      end: selectionEnd
+      start: intent.selectionStart,
+      end: intent.selectionEnd
     });
     const resolverOptions = {
       autocomplete_open: false,
-      send_enabled: canSend
+      send_enabled: canEdit && !isSending && intent.value.trim().length > 0
     };
     if (shouldLetNativeImeHandleComposerKeyEvent(keyEvent)) {
-      void resolveComposerKeyAction("thread", keyEvent, resolverOptions).catch(() => undefined);
+      void resolveComposerKeyAction("thread", keyEvent, resolverOptions)
+        .catch(() => undefined)
+        .finally(intent.releaseResolution);
       return;
     }
     event.preventDefault();
 
     void resolveComposerKeyAction("thread", keyEvent, resolverOptions)
       .then((action) => {
+        if (!canApplyResolvedComposerAction(intent, action)) {
+          return;
+        }
         if (action === "send") {
-          void onSend();
+          void onSend(intent.value);
           return;
         }
         if (action === "insertNewline") {
-          const nextDraft = insertNewlineAtSelection(draft, selectionStart, selectionEnd);
-          onDraftChange(nextDraft.value);
+          const nextDraft = insertNewlineAtSelection(
+            intent.value,
+            intent.selectionStart,
+            intent.selectionEnd
+          );
+          updateVisibleDraft(nextDraft.value);
           requestAnimationFrame(() => {
             textarea.selectionStart = nextDraft.cursor;
             textarea.selectionEnd = nextDraft.cursor;
           });
         }
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(intent.releaseResolution);
   }
 
   return (
@@ -791,17 +845,12 @@ function ThreadComposer({
         aria-label={t("timeline.threadComposer")}
         disabled={!canEdit}
         placeholder={t("timeline.threadPlaceholder")}
-        value={draft}
-        onChange={(event) => onDraftChange(event.target.value)}
+        ref={textareaRef}
+        defaultValue={draft}
+        onChange={(event) => updateVisibleDraft(event.target.value)}
         onKeyDown={onComposerKeyDown}
-        onCompositionStart={() => {
-          imeCompositionActiveRef.current = true;
-        }}
-        onCompositionEnd={() => {
-          window.setTimeout(() => {
-            imeCompositionActiveRef.current = false;
-          }, 0);
-        }}
+        onCompositionStart={onCompositionStart}
+        onCompositionEnd={onCompositionEnd}
       />
       <div className="thread-composer-footer">
         <button
@@ -809,7 +858,10 @@ function ThreadComposer({
           type="button"
           aria-label={isSending ? t("action.sending") : t("action.send")}
           disabled={!canSend}
-          onClick={onSend}
+          onClick={() => {
+            const value = textareaRef.current?.value ?? visibleDraft;
+            void onSend(value);
+          }}
         >
           <Send size={ICON_SIZE.input} />
         </button>
@@ -822,12 +874,11 @@ function composerImeShouldHandleKeyEvent(
   event: KeyboardEvent<HTMLTextAreaElement>,
   compositionActive: boolean
 ): boolean {
-  return (
-    event.key === "Enter" &&
-    (compositionActive ||
-      event.nativeEvent.isComposing ||
-      event.keyCode === 229)
-  );
+  return isComposerImeEnter(event.key, {
+    epochActive: compositionActive,
+    nativeIsComposing: event.nativeEvent.isComposing,
+    keyCode: event.keyCode
+  });
 }
 
 export { ThreadComposer };

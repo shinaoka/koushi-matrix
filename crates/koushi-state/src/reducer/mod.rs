@@ -29,6 +29,7 @@ mod room_management;
 mod search;
 mod session;
 mod settings;
+mod submission;
 mod sync;
 mod thread;
 mod timeline;
@@ -636,6 +637,13 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::NativeAttentionUpdated { attention } => {
             native_attention::handle_native_attention_updated(state, attention)
         }
+        AppAction::NativeAttentionDispatchStarted { dispatch_id } => {
+            native_attention::handle_dispatch_started(state, dispatch_id)
+        }
+        AppAction::NativeAttentionDispatchSettled {
+            dispatch_id,
+            outcome,
+        } => native_attention::handle_dispatch_settled(state, dispatch_id, outcome),
         AppAction::JapaneseCatalogProfileChanged { profile } => {
             native_attention::handle_japanese_catalog_profile_changed(state, profile)
         }
@@ -773,6 +781,34 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             transaction_id,
             message,
         } => timeline::handle_send_text_failed(state, room_id, transaction_id, message),
+        AppAction::ComposerSubmissionAccepted {
+            submission_id,
+            room_id,
+            transaction_id,
+            body,
+        } => timeline::handle_composer_submission_accepted(
+            state,
+            submission_id,
+            room_id,
+            transaction_id,
+            body,
+        ),
+        AppAction::ComposerSubmissionFinished {
+            submission_id,
+            room_id,
+            transaction_id,
+        } => timeline::handle_composer_submission_finished(
+            state,
+            submission_id,
+            room_id,
+            transaction_id,
+        ),
+        AppAction::ComposerSubmissionSettled {
+            submission_id,
+            transaction_id,
+            target,
+            outcome,
+        } => submission::handle_settled(state, submission_id, transaction_id, target, outcome),
         AppAction::ComposerReplyTargetSelected { room_id, event_id } => {
             timeline::handle_composer_reply_target_selected(state, room_id, event_id)
         }
@@ -788,6 +824,19 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             transaction_id,
             body: _,
         } => thread::handle_thread_reply_submitted(state, room_id, root_event_id, transaction_id),
+        AppAction::ThreadSubmissionAccepted {
+            submission_id,
+            room_id,
+            root_event_id,
+            transaction_id,
+            body: _,
+        } => thread::handle_thread_submission_accepted(
+            state,
+            submission_id,
+            room_id,
+            root_event_id,
+            transaction_id,
+        ),
         AppAction::ThreadReplyFinished {
             room_id,
             root_event_id,
@@ -1025,6 +1074,16 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             receipts_by_event,
         } => live_signals::handle_live_room_receipts_updated(state, room_id, receipts_by_event),
+        AppAction::LiveRoomReceiptsWindowReconciled {
+            room_id,
+            scoped_event_ids,
+            receipts_by_event,
+        } => live_signals::handle_live_room_receipts_window_reconciled(
+            state,
+            room_id,
+            scoped_event_ids,
+            receipts_by_event,
+        ),
         AppAction::FullyReadMarkerUpdated { room_id, event_id } => {
             live_signals::handle_fully_read_marker_updated(state, room_id, event_id)
         }
@@ -1405,6 +1464,7 @@ pub(crate) fn select_active_room_after_room_list_update(
         is_subscribed: false,
         is_paginating_backwards: false,
         composer: state.composer_drafts.composer_for_room(&room_id),
+        submission_registry: state.timeline.submission_registry.clone(),
         scheduled_send_capability: state.scheduled_sends.capability.clone(),
         scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
         staged_uploads: state.upload_staging.items_for_room(&room_id),
@@ -1438,6 +1498,7 @@ pub(crate) fn select_active_room_for_navigation(
         is_subscribed: false,
         is_paginating_backwards: false,
         composer: state.composer_drafts.composer_for_room(&room_id),
+        submission_registry: state.timeline.submission_registry.clone(),
         scheduled_send_capability: state.scheduled_sends.capability.clone(),
         scheduled_sends: state.scheduled_sends.items_for_room(&room_id),
         staged_uploads: state.upload_staging.items_for_room(&room_id),

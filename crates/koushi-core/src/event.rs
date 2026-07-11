@@ -7,9 +7,10 @@ use koushi_state::{
     ActivityStream, ActivityTab, AppState, AttachmentResult, AvatarImage, AvatarThumbnailState,
     CrossSigningStatus, DirectoryQuery, DirectoryRoomSummary, IdentityResetState,
     InviteDestinationResult, JapaneseCatalogProfile, KeyBackupStatus, LocalEncryptionHealth,
-    MediaTransferProgress, NativeAttentionSummary, OperationFailureKind, PinnedEvent, PresenceKind,
-    ProfileState, ReplyQuote, RoomModerationAction, RoomSettingsSnapshot, RoomTagKind,
-    SessionState, SyncMode, ThreadsListItem, VerificationFlowState, resolve_user_display_name,
+    MediaTransferProgress, NativeAttentionDispatchId, NativeAttentionSummary, OperationFailureKind,
+    PinnedEvent, PresenceKind, ProfileState, ReplyQuote, RoomModerationAction,
+    RoomSettingsSnapshot, RoomTagKind, SessionState, SubmissionId, SyncMode, ThreadsListItem,
+    VerificationFlowState, resolve_user_display_name,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -209,7 +210,13 @@ pub enum EventCacheFailureReasonClass {
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum NativeAttentionEvent {
-    SummaryUpdated { summary: NativeAttentionSummary },
+    SummaryUpdated {
+        summary: NativeAttentionSummary,
+    },
+    DispatchAdmission {
+        dispatch_id: NativeAttentionDispatchId,
+        accepted: bool,
+    },
 }
 
 impl fmt::Debug for NativeAttentionEvent {
@@ -224,6 +231,11 @@ impl fmt::Debug for NativeAttentionEvent {
                     "candidate",
                     &summary.candidate.as_ref().map(|_| "AttentionCandidate(..)"),
                 )
+                .finish(),
+            Self::DispatchAdmission { accepted, .. } => formatter
+                .debug_struct("DispatchAdmission")
+                .field("dispatch_id", &"NativeAttentionDispatchId(..)")
+                .field("accepted", accepted)
                 .finish(),
         }
     }
@@ -905,6 +917,18 @@ pub enum TimelineEvent {
         transaction_id: String,
         event_id: String,
     },
+    SubmissionAccepted {
+        request_id: RequestId,
+        key: TimelineKey,
+        submission_id: SubmissionId,
+        transaction_id: String,
+    },
+    SubmissionRejected {
+        request_id: RequestId,
+        key: TimelineKey,
+        submission_id: SubmissionId,
+        kind: TimelineFailureKind,
+    },
     MessageForwarded {
         request_id: RequestId,
         key: TimelineKey,
@@ -1027,6 +1051,30 @@ impl fmt::Debug for TimelineEvent {
                 .field("key", &"TimelineKey(..)")
                 .field("transaction_id", transaction_id)
                 .field("event_id", &"EventId(..)")
+                .finish(),
+            Self::SubmissionAccepted {
+                request_id,
+                submission_id,
+                transaction_id,
+                ..
+            } => formatter
+                .debug_struct("SubmissionAccepted")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("submission_id", submission_id)
+                .field("transaction_id", transaction_id)
+                .finish(),
+            Self::SubmissionRejected {
+                request_id,
+                submission_id,
+                kind,
+                ..
+            } => formatter
+                .debug_struct("SubmissionRejected")
+                .field("request_id", request_id)
+                .field("key", &"TimelineKey(..)")
+                .field("submission_id", submission_id)
+                .field("kind", kind)
                 .finish(),
             Self::MessageForwarded { request_id, .. } => formatter
                 .debug_struct("MessageForwarded")
@@ -1847,6 +1895,8 @@ pub fn project_timeline_event_display_labels(event: &mut TimelineEvent, state: &
         TimelineEvent::PaginationStateChanged { .. }
         | TimelineEvent::AnchorRestoreFinished { .. }
         | TimelineEvent::SendCompleted { .. }
+        | TimelineEvent::SubmissionAccepted { .. }
+        | TimelineEvent::SubmissionRejected { .. }
         | TimelineEvent::MessageSourceLoaded { .. }
         | TimelineEvent::MessageForwarded { .. }
         | TimelineEvent::MediaUploadProgress { .. }

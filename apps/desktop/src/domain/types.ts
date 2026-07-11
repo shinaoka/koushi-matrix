@@ -968,11 +968,17 @@ export interface TimelinePaneState {
   is_subscribed: boolean;
   is_paginating_backwards: boolean;
   composer: ComposerState;
+  submission_registry: ComposerSubmissionRegistry;
   scheduled_send_capability: ScheduledSendCapability;
   scheduled_sends: ScheduledSendItem[];
   staged_uploads: StagedUploadItem[];
   media_gallery: TimelineMediaGalleryItem[];
   media_downloads: Record<string, TimelineMediaDownloadState>;
+}
+
+export interface ComposerSubmissionRegistry {
+  accepted_submission_ids: string[];
+  settled_submission_ids: string[];
 }
 
 export type ScheduledSendCapability = "unknown" | "serverDelayedEvents" | "localFallback";
@@ -1058,9 +1064,20 @@ export interface TimelineMediaGalleryItem {
 }
 
 export interface ComposerState {
+  accepted_submission_ids: string[];
+  pending_submission_id?: string | null;
   pending_transaction_id: string | null;
   draft: string;
   mode: ComposerMode;
+}
+
+export type SubmissionOutcome = "accepted" | { rejected: { kind: string } };
+
+export interface SubmissionResponse {
+  outcome: SubmissionOutcome;
+  submissionId: string;
+  transactionId: string | null;
+  snapshot: DesktopSnapshot;
 }
 
 // Rust ComposerMode has NO serde tag → externally tagged (like SyncState in this file)
@@ -1284,12 +1301,18 @@ export interface NativeAttentionCapabilities {
 
 export type NativeAttentionCapability = "available" | "unavailable" | "unknown";
 
+export interface NativeAttentionDispatchId {
+  connection_id: number;
+  sequence: number;
+}
+
 export type NativeAttentionDispatchState =
   | { kind: "idle" }
-  | { kind: "dispatching"; request_id: number }
-  | { kind: "delivered"; request_id: number }
+  | { kind: "dispatching"; dispatch_id: NativeAttentionDispatchId }
+  | { kind: "delivered"; dispatch_id: NativeAttentionDispatchId }
+  | { kind: "unsupported"; dispatch_id: NativeAttentionDispatchId }
   | { kind: "suppressed"; reason: NativeAttentionSuppressionReason }
-  | { kind: "failed"; request_id: number; failureKind: OperationFailureKind };
+  | { kind: "failed"; dispatch_id: NativeAttentionDispatchId; failureKind: OperationFailureKind };
 
 export type NativeAttentionSuppressionReason =
   | "initialSync"

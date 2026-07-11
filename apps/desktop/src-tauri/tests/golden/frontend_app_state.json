@@ -640,6 +640,9 @@
       },
       "timeline": {
         "composer": {
+          "accepted_submission_ids": [
+            "accepted-contract"
+          ],
           "draft": "",
           "mode": "Plain",
           "pending_transaction_id": null
@@ -659,7 +662,15 @@
         "room_id": "!room:example.invalid",
         "scheduled_send_capability": "unknown",
         "scheduled_sends": [],
-        "staged_uploads": []
+        "staged_uploads": [],
+        "submission_registry": {
+          "accepted_submission_ids": [
+            "global-accepted"
+          ],
+          "settled_submission_ids": [
+            "global-settled"
+          ]
+        }
       }
     }
   },

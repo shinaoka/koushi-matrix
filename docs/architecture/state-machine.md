@@ -363,10 +363,130 @@ stateDiagram-v2
 
 ## Timeline And Thread
 
+### Timeline Diff Relay Recovery
+
+The SDK `Timeline` is the authoritative timeline source. Each timeline actor owns
+one relay task and a monotonically increasing relay generation. Normal SDK
+`VectorDiff` batches use the bounded data inbox and carry the generation of the
+relay that observed them. The actor applies a batch only when its generation
+matches the actor's current relay generation; delayed batches from a replaced
+relay are discarded.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Subscribed: Timeline::subscribe / snapshot + stream generation N
+    Subscribed --> Subscribed: DiffBatch(N) / ItemsUpdated(N)
+    Subscribed --> Overflowed: data inbox Full / lossless Overflow(N) control
+    Subscribed --> Overflowed: SDK diff stream ended / lossless StreamEnded(N) control
+    Overflowed --> Resubscribing: actor stops relay N and advances to N+1
+    Resubscribing --> Subscribed: Timeline::subscribe / ResyncRequired then InitialItems(N+1), start relay N+1
+    Subscribed --> Subscribed: stale DiffBatch(<N) / discard
+```
+
+Overflow control has a dedicated lossless lane and never competes with diff
+data for the already-full inbox. A relay terminates after reporting overflow;
+it must not remain alive in a permanent drop mode. At recovery the actor stops
+the old task, obtains the authoritative snapshot and matching new stream from
+one `Timeline::subscribe()` boundary, emits `ResyncRequired` followed by
+`InitialItems` for the new generation, and starts the replacement relay. The
+next live diff is therefore emitted as an ordinary `ItemsUpdated`. Send-queue
+broadcast lag recovery is a separate state machine and does not satisfy this
+relay recovery contract.
+
+Unexpected SDK diff-stream completion schedules the same generation-guarded
+resubscription protocol with reason `SubscriptionRestarted`. The relay emits
+exactly one lossless `StreamEnded(generation)` control before terminating. The
+actor disables the closed data receiver immediately, then schedules one
+actor-owned `RestartDue(generation, serial)` timer with bounded exponential
+backoff (100 ms base, 5 s cap). Commands remain serviceable during the delay;
+stale or duplicate due tokens are ignored, and actor shutdown aborts the timer.
+Each immediately-ending replacement increases the delay, preventing a hot
+subscribe/Resync loop. The first accepted live diff batch resets backoff to the
+base delay. Queue overflow recovery remains immediate.
+
+The replacement snapshot also reconciles actor-owned auxiliary projections
+before the replacement relay becomes live: media-source cache and media gallery
+are replaced from the snapshot, live receipts are replaced only within the
+union of old/new window event IDs, and search removes old-window IDs absent
+from the new window before applying the snapshot's Upsert/Edit/Redact messages.
+Window-external crawler/search and receipt state is preserved.
+
 - The main timeline has one selected room.
 - Timeline subscription signals only affect the selected room.
-- The main composer tracks one pending transaction. A second send is ignored
-  until the pending transaction completes.
+- The main and thread composers correlate every new-text send with one opaque,
+  private-data-safe `SubmissionId`. The same ID is preserved from the frontend
+  intent through Tauri, `TimelineCommand`, the timeline actor, and reducer.
+  A composer accepts a submission ID at most once: duplicate commands cannot
+  allocate or enqueue another transaction, and stale or duplicate terminal
+  results cannot settle a newer submission.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Resolving: ComposerEnter [resolveInFlight=false]
+    Resolving --> Idle: ResolverRejected / release resolve guard
+    Resolving --> Submitting: ResolverSend / allocate SubmissionId; set submitInFlight
+    Submitting --> Pending: SubmissionAccepted [matching SubmissionId] / clear matching draft
+    Submitting --> Submitting: Timeout_or_Disconnect_or_Lag / mark Unknown; preserve ID, target, payload, draft, guard
+    Submitting --> Submitting: ExplicitRetry [Unknown] / reuse same ID and captured payload
+    Submitting --> Idle: SubmissionRejected [matching SubmissionId] / preserve draft; release guards
+    Pending --> Idle: SendFinished [matching SubmissionId and transaction] / release guards
+    Pending --> Idle: SendFailed_or_Cancelled [matching SubmissionId and transaction] / release guards
+    Resolving --> Resolving: duplicate Enter / ignore
+    Submitting --> Submitting: duplicate invoke / return same acceptance; do not enqueue
+    Pending --> Pending: duplicate or stale completion / ignore
+```
+
+- `resolveInFlight` is acquired synchronously before invoking the asynchronous
+  shortcut resolver. `submitInFlight` and the `SubmissionId` are acquired after
+  a resolved send action and before the Tauri invocation. Edit actions share
+  the resolve guard but do not allocate new-text submission IDs.
+- Core admission uses a cross-actor one-shot permit. The manager reserves the
+  actor mailbox first, delivers reducer acceptance, records/emits acceptance,
+  and only then opens the permit. A closed or dropped permit prevents every SDK
+  enqueue and terminal. Reducer-delivery failure records a rejected tombstone;
+  replay of that ID is explicitly rejected and cannot reach the actor again.
+- A draft is cleared only by the reducer transition that accepts the matching
+  submission. An IPC return without matching reducer acceptance is not success.
+  Explicit rejection releases both guards while preserving the draft. Accepted
+  pending submissions release only after matching completion, failure, or
+  cancellation. Existing transaction retry does not allocate a new submission.
+  Timeout, disconnect, and lag are unknown outcomes: the frontend retains the
+  ID plus the original target/payload and retries only on explicit user action
+  with those exact captured values. Later accepted/terminal observation may
+  settle the guard without a retry.
+- Acceptance and settlement tombstones live in one Rust-owned global timeline
+  submission registry, independent of the selected room or open thread. The
+  accepted list is the non-evicting active set; settlement removes its ID and
+  appends it to a 128-entry settled FIFO. Both are serialized in snapshots. Tauri
+  confirms acceptance from this registry, so room navigation cannot hide an
+  admitted submission. Frontend submission controllers are keyed by stable
+  main-room or thread-room/root targets; navigation to another target creates a
+  distinct controller while the original Unknown submission remains retryable
+  only from its original target. Every snapshot reconciles all controllers
+  against the global accepted and settled lists.
+- Lock and recovery transitions retain the registry for the same authenticated
+  account, and registry acceptance/settlement projection remains active while
+  the visible composer is unavailable. Logout and account replacement clear
+  it. Account replacement first sends a TimelineManager shutdown barrier and
+  awaits its acknowledgement after child timeline actors are dropped; only
+  then may reducer state reset for the new account. This prevents an old
+  account action from entering the new account registry.
+- The timeline actor carries the submission ID beside the client transaction
+  through its send-completion tracker. Success, failure, and cancellation emit
+  one `ComposerSubmissionSettled` action containing both values and the main or
+  thread target. The reducer clears pending state only when ID, transaction,
+  and target all match; legacy transaction-only terminal actions never clear a
+  submission-owned pending ID.
+- Admission replay memory is bounded. Active IDs live in a non-evicting map;
+  terminal notification moves them into a 128-entry FIFO tombstone ledger.
+  Reducer composer state independently retains the latest 128 accepted IDs.
+  Active pending IDs are stored separately and are never evicted. Retry uses
+  the existing transaction and does not enter either admission path again.
+- Tauri `send_text` and `send_reply` wait for the matching accepted/rejected
+  result and return a typed outcome with the same submission ID, optional
+  transaction ID, and correlated snapshot. Timeout and disconnect are typed
+  failures whose diagnostics contain no message body or raw Matrix identifier.
 - Main-composer drafts are backed by a Rust-owned keyed draft store outside the
   transient `TimelinePaneState`. `ComposerDraftChanged` writes the selected
   room's draft through to that store, `SelectRoom` hydrates the active composer
@@ -1042,21 +1162,25 @@ stateDiagram-v2
     [*] --> Empty
     Empty --> RoomSignals: LiveRoomSignalsUpdated
     Empty --> RoomSignals: LiveRoomReceiptsUpdated
+    Empty --> RoomSignals: LiveRoomReceiptsWindowReconciled
     Empty --> RoomSignals: FullyReadMarkerUpdated
     Empty --> RoomSignals: TypingUsersUpdated
     Empty --> PresenceSignals: PresenceUpdated
     RoomSignals --> RoomSignals: LiveRoomSignalsUpdated
     RoomSignals --> RoomSignals: LiveRoomReceiptsUpdated
+    RoomSignals --> RoomSignals: LiveRoomReceiptsWindowReconciled
     RoomSignals --> RoomSignals: FullyReadMarkerUpdated
     RoomSignals --> RoomSignals: TypingUsersUpdated
     RoomSignals --> RoomAndPresence: PresenceUpdated
     PresenceSignals --> PresenceSignals: PresenceUpdated
     PresenceSignals --> RoomAndPresence: LiveRoomSignalsUpdated
     PresenceSignals --> RoomAndPresence: LiveRoomReceiptsUpdated
+    PresenceSignals --> RoomAndPresence: LiveRoomReceiptsWindowReconciled
     PresenceSignals --> RoomAndPresence: FullyReadMarkerUpdated
     PresenceSignals --> RoomAndPresence: TypingUsersUpdated
     RoomAndPresence --> RoomAndPresence: LiveRoomSignalsUpdated
     RoomAndPresence --> RoomAndPresence: LiveRoomReceiptsUpdated
+    RoomAndPresence --> RoomAndPresence: LiveRoomReceiptsWindowReconciled
     RoomAndPresence --> RoomAndPresence: FullyReadMarkerUpdated
     RoomAndPresence --> RoomAndPresence: TypingUsersUpdated
     RoomAndPresence --> RoomAndPresence: PresenceUpdated
@@ -1073,6 +1197,11 @@ stateDiagram-v2
 - `LiveRoomReceiptsUpdated { room_id, receipts_by_event }` is a partial merge
   into the room receipt map. It does not clear typing users or the fully-read
   marker.
+- `LiveRoomReceiptsWindowReconciled { room_id, scoped_event_ids,
+  receipts_by_event }` is an authoritative replacement only for the stable
+  event-ID union of the actor's old and replacement timeline windows. It first
+  removes receipt entries in that scope, then inserts the replacement snapshot;
+  receipt state outside the scope is preserved.
 - Receipt reader display data is resolved in Rust before it reaches the GUI.
   Each event's receipt projection deduplicates by reader user id using the
   newest timestamp, fills missing display labels and avatar DTOs from
@@ -2035,7 +2164,9 @@ stateDiagram-v2
   `SettingsValues.notifications`, persisted by the settings store with legacy
   JSON backfill to the default policy. React settings panels may dispatch typed
   `SettingsPatch.notifications` updates, but they must not keep separate
-  notification policy state.
+  notification policy state. Disabling badges immediately projects
+  `badge_count = 0` in the Rust reducer and emits the updated attention state;
+  React must not mask a nonzero badge locally.
 - Platform capability updates use the shared Rust `DisplayPlatform` model.
   React receives the resulting `NativeAttentionCapabilities` DTO and must not
   branch on macOS/Linux/Windows notification semantics locally.
@@ -2069,6 +2200,19 @@ stateDiagram-v2
   pass that Rust-owned setting into transient adapter routing to skip sound, but
   must not keep a separate notification preference or alter
   `NativeAttentionState` locally.
+- Sound playback crosses a typed Tauri command into a cfg-specific Rust native
+  adapter (macOS AudioToolbox, Windows User32; Linux explicitly unsupported).
+  No WebView audio or external process fallback is allowed. A deterministic
+  three-second dispatcher cooldown coalesces successfully played candidate
+  bursts independently of Rust candidate dedupe. Playback is synchronously
+  reserved before awaiting the native adapter, so concurrent React dispatches
+  cannot start duplicate sounds. `Failed`, `Unsupported`, and thrown outcomes
+  release that reservation without consuming the cooldown, so a later
+  candidate can retry.
+- Numeric badge, overlay, and tray APIs are called only for `Available`
+  capabilities; `Unknown` and `Unavailable` never trigger substitute surfaces.
+  Native failures are nonfatal but emit fixed `attention_*_failed` diagnostic
+  tokens without raw errors, paths, or Matrix identifiers.
 - Space attention for the workspace rail is projected by Rust
   `SidebarModel.space_rail`; React renders those unread/highlight counts without
   recomputing child-room state. Timeline thread summary chips render
@@ -2083,9 +2227,18 @@ stateDiagram-v2
   ask the native adapter to cancel/remove pending or active notifications as a
   best-effort side effect. Adapter clear failures do not feed back into Matrix
   state and cannot change read/focus semantics.
-- Dispatch completions are request-correlated. Stale dispatch results are
-  ignored, and adapter failures settle as private-data-free `Failed(kind)`
-  states that can be cleared by read/focus transitions.
+- Native sound dispatch starts and settles through typed core commands and the
+  Rust reducer. Its opaque dispatch identity contains both runtime connection
+  identity and sequence, preventing separately attached Tauri commands from
+  colliding at the same sequence. Tauri waits for a typed matching Rust
+  admission before invoking the native backend; an already-dispatching request
+  is rejected and skipped. A process-local adapter lock is secondary protection.
+  Attention projection updates replace summary/candidate/capabilities while
+  preserving an active dispatch lifecycle. Completions are request-correlated; stale results are ignored,
+  `Played` settles as delivered, and adapter failures settle as
+  private-data-free `Failed(kind)` or `Unsupported` states that can be cleared
+  by read/focus transitions. React diagnostics are secondary observability and
+  are not the authoritative dispatch state.
 - Logout, lock, account switch, and session clearing remove all account-derived
   summaries, candidates, and badge counts. Non-secret platform capability data
   may survive as a process-level profile, but it cannot carry account activity.

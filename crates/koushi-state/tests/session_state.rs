@@ -1,13 +1,14 @@
 use koushi_state::{
     AppAction, AppEffect, AppError, AppState, AuthDiscoveryState, AuthFailureKind, AuthSecret,
-    BasicOperationState, DelegatedAuthLinks, E2eeRecoveryState, InviteOperationState,
-    InviteScopeSelection, InviteTargetQueryState, InviteWorkflowState, LoginFlow, LoginFlowKind,
-    LoginRequest, NativeAttentionCandidate, NativeAttentionCapabilities, NativeAttentionCapability,
+    BasicOperationState, ComposerSubmissionTarget, ComposerSubmissionTerminalOutcome,
+    DelegatedAuthLinks, E2eeRecoveryState, InviteOperationState, InviteScopeSelection,
+    InviteTargetQueryState, InviteWorkflowState, LoginFlow, LoginFlowKind, LoginRequest,
+    NativeAttentionCandidate, NativeAttentionCapabilities, NativeAttentionCapability,
     NativeAttentionState, NativeAttentionSummary, NavigationState, RecoveryMethod, RecoveryRequest,
     RoomAttentionKind, RoomSummary, RoomTags, SearchCrawlerLastActive,
     SearchCrawlerLastActiveStatus, SearchCrawlerRoomState, SearchCrawlerState, SearchScope,
-    SearchState, SessionInfo, SessionState, SpaceSummary, SyncState, ThreadAttentionState,
-    ThreadPaneState, TimelinePaneState, UiEvent, reduce,
+    SearchState, SessionInfo, SessionState, SpaceSummary, SubmissionId, SyncState,
+    ThreadAttentionState, ThreadPaneState, TimelinePaneState, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -381,6 +382,7 @@ fn account_switch_request_enters_switching_state_and_clears_views() {
             is_subscribed: true,
             is_paginating_backwards: false,
             composer: Default::default(),
+            submission_registry: Default::default(),
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),
@@ -641,6 +643,7 @@ fn incomplete_e2ee_recovery_state_prompts_without_stopping_sync() {
             is_subscribed: true,
             is_paginating_backwards: false,
             composer: Default::default(),
+            submission_registry: Default::default(),
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),
@@ -779,6 +782,7 @@ fn logout_clears_session_views_and_notifies_ui() {
             is_subscribed: true,
             is_paginating_backwards: true,
             composer: Default::default(),
+            submission_registry: Default::default(),
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),
             staged_uploads: Vec::new(),
@@ -909,6 +913,113 @@ fn session_locked_stops_sync_and_clears_session_views() {
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
             AppEffect::EmitUiEvent(UiEvent::RoomListChanged),
         ]
+    );
+}
+
+#[test]
+fn lock_preserves_global_submission_registry_and_records_terminal() {
+    let id = SubmissionId::new("locked-submission");
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        ..AppState::default()
+    };
+    reduce(
+        &mut state,
+        AppAction::ComposerSubmissionAccepted {
+            submission_id: id.clone(),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn".to_owned(),
+            body: "body".to_owned(),
+        },
+    );
+    reduce(&mut state, AppAction::SessionLocked);
+    assert!(
+        state
+            .timeline
+            .submission_registry
+            .accepted_submission_ids
+            .contains(&id)
+    );
+    reduce(
+        &mut state,
+        AppAction::ComposerSubmissionSettled {
+            submission_id: id.clone(),
+            transaction_id: "wrong-txn".to_owned(),
+            target: ComposerSubmissionTarget::Main {
+                room_id: "room-a".to_owned(),
+            },
+            outcome: ComposerSubmissionTerminalOutcome::Succeeded,
+        },
+    );
+    assert!(
+        state
+            .timeline
+            .submission_registry
+            .accepted_submission_ids
+            .contains(&id)
+    );
+    reduce(
+        &mut state,
+        AppAction::ComposerSubmissionSettled {
+            submission_id: id.clone(),
+            transaction_id: "txn".to_owned(),
+            target: ComposerSubmissionTarget::Main {
+                room_id: "room-a".to_owned(),
+            },
+            outcome: ComposerSubmissionTerminalOutcome::Succeeded,
+        },
+    );
+    assert!(
+        state
+            .timeline
+            .submission_registry
+            .settled_submission_ids
+            .contains(&id)
+    );
+}
+
+#[test]
+fn account_replacement_clears_registry_and_ignores_unaccepted_late_terminal() {
+    let old = SubmissionId::new("old-account-submission");
+    let mut state = AppState {
+        session: SessionState::Ready(session_info()),
+        ..AppState::default()
+    };
+    state
+        .timeline
+        .submission_registry
+        .accepted_submission_ids
+        .push_back(old.clone());
+    reduce(
+        &mut state,
+        AppAction::SwitchAccountRequested {
+            info: alternate_session_info(),
+        },
+    );
+    assert!(
+        state
+            .timeline
+            .submission_registry
+            .accepted_submission_ids
+            .is_empty()
+    );
+    reduce(
+        &mut state,
+        AppAction::ComposerSubmissionSettled {
+            submission_id: old,
+            transaction_id: "txn".to_owned(),
+            target: ComposerSubmissionTarget::Main {
+                room_id: "old-room".to_owned(),
+            },
+            outcome: ComposerSubmissionTerminalOutcome::Succeeded,
+        },
+    );
+    assert!(
+        state
+            .timeline
+            .submission_registry
+            .settled_submission_ids
+            .is_empty()
     );
 }
 

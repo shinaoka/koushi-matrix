@@ -1,3 +1,4 @@
+use crate::SubmissionId;
 use crate::{
     effect::{AppEffect, UiEvent},
     state::{
@@ -7,8 +8,8 @@ use crate::{
 };
 
 use super::{
-    is_session_ready, refresh_timeline_media_gallery, refresh_timeline_scheduled_sends,
-    refresh_timeline_upload_staging, room_exists,
+    current_session_info, is_session_ready, refresh_timeline_media_gallery,
+    refresh_timeline_scheduled_sends, refresh_timeline_upload_staging, room_exists,
 };
 
 const TIMELINE_SUBSCRIPTION_FAILED_MESSAGE: &str = "Matrix timeline subscription failed";
@@ -45,8 +46,10 @@ pub(crate) fn handle_timeline_back_pagination_requested(
     state: &mut AppState,
     room_id: String,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state)
-        || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    if state.timeline.room_id.as_deref() != Some(room_id.as_str())
         || state.timeline.is_paginating_backwards
     {
         return Vec::new();
@@ -65,8 +68,10 @@ pub(crate) fn handle_timeline_back_pagination_finished(
     state: &mut AppState,
     room_id: String,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state)
-        || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    if state.timeline.room_id.as_deref() != Some(room_id.as_str())
         || !state.timeline.is_paginating_backwards
     {
         return Vec::new();
@@ -418,11 +423,69 @@ pub(crate) fn handle_send_text_submitted(
     ]
 }
 
+pub(crate) fn handle_composer_submission_accepted(
+    state: &mut AppState,
+    submission_id: SubmissionId,
+    room_id: String,
+    transaction_id: String,
+    body: String,
+) -> Vec<AppEffect> {
+    if current_session_info(state).is_none() {
+        return Vec::new();
+    }
+    state.timeline.submission_registry.remember_accepted(
+        submission_id.clone(),
+        transaction_id.clone(),
+        crate::ComposerSubmissionTarget::Main {
+            room_id: room_id.clone(),
+        },
+    );
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    if state.timeline.room_id.as_deref() != Some(room_id.as_str())
+        || state.timeline.composer.pending_submission_id.is_some()
+        || state.timeline.composer.pending_transaction_id.is_some()
+        || state
+            .timeline
+            .composer
+            .accepted_submission_ids
+            .contains(&submission_id)
+    {
+        return Vec::new();
+    }
+    state
+        .timeline
+        .composer
+        .remember_accepted_submission(submission_id.clone());
+    state.timeline.composer.pending_submission_id = Some(submission_id);
+    handle_send_text_submitted(state, room_id, transaction_id, body)
+}
+
+pub(crate) fn handle_composer_submission_finished(
+    state: &mut AppState,
+    submission_id: SubmissionId,
+    room_id: String,
+    transaction_id: String,
+) -> Vec<AppEffect> {
+    if state.timeline.composer.pending_submission_id.as_ref() != Some(&submission_id) {
+        return Vec::new();
+    }
+    let effects = handle_send_text_finished(state, room_id, transaction_id);
+    if !effects.is_empty() {
+        state.timeline.composer.pending_submission_id = None;
+    }
+    effects
+}
+
 pub(crate) fn handle_send_text_finished(
     state: &mut AppState,
     room_id: String,
     transaction_id: String,
 ) -> Vec<AppEffect> {
+    if state.timeline.composer.pending_submission_id.is_some() {
+        return Vec::new();
+    }
     if !is_session_ready(state)
         || state.timeline.room_id.as_deref() != Some(room_id.as_str())
         || state.timeline.composer.pending_transaction_id.as_deref()
@@ -454,6 +517,9 @@ pub(crate) fn handle_send_text_failed(
     transaction_id: String,
     message: String,
 ) -> Vec<AppEffect> {
+    if state.timeline.composer.pending_submission_id.is_some() {
+        return Vec::new();
+    }
     if !is_session_ready(state)
         || state.timeline.room_id.as_deref() != Some(room_id.as_str())
         || state.timeline.composer.pending_transaction_id.as_deref()

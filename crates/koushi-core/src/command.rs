@@ -7,9 +7,10 @@ use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentScope, AttachmentSort,
     DirectoryQuery, FilesViewScope, FormattedMessageDraft, IdentityResetAuthRequest,
     ImageUploadCompressionMode, InviteScopeSelection, JapaneseCatalogProfile,
-    LocalEncryptionHealth, LoginRequest, MentionIntent, NativeAttentionState, PresenceKind,
-    RecoveryRequest, RoomListFilter, RoomModerationAction, RoomSettingChange, RoomTagKind,
-    SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem, TimelineScrollAnchor,
+    LocalEncryptionHealth, LoginRequest, MentionIntent, NativeAttentionDispatchId,
+    NativeAttentionSoundOutcome, NativeAttentionState, PresenceKind, RecoveryRequest,
+    RoomListFilter, RoomModerationAction, RoomSettingChange, RoomTagKind, SettingsPatch,
+    StagedUploadCompressionChoice, StagedUploadItem, SubmissionId, TimelineScrollAnchor,
     VerificationCancelReason, VerificationTarget,
 };
 use serde::{Deserialize, Serialize};
@@ -73,6 +74,8 @@ impl CoreCommand {
                 | AppCommand::PaginateThreadsList { request_id, .. }
                 | AppCommand::RecordLocalEncryptionHealth { request_id, .. }
                 | AppCommand::UpdateNativeAttentionState { request_id, .. }
+                | AppCommand::StartNativeAttentionDispatch { request_id, .. }
+                | AppCommand::SettleNativeAttentionDispatch { request_id, .. }
                 | AppCommand::UpdateJapaneseCatalogProfile { request_id, .. }
                 | AppCommand::SelectRoomListFilter { request_id, .. },
             ) => *request_id,
@@ -170,7 +173,9 @@ impl CoreCommand {
                 | TimelineCommand::RestoreTimelineAnchor { request_id, .. }
                 | TimelineCommand::ObserveViewport { request_id, .. }
                 | TimelineCommand::SendText { request_id, .. }
+                | TimelineCommand::SubmitText { request_id, .. }
                 | TimelineCommand::SendReply { request_id, .. }
+                | TimelineCommand::SubmitReply { request_id, .. }
                 | TimelineCommand::ForwardMessage { request_id, .. }
                 | TimelineCommand::LoadMessageSource { request_id, .. }
                 | TimelineCommand::RequestRoomKey { request_id, .. }
@@ -415,6 +420,15 @@ pub enum AppCommand {
     UpdateNativeAttentionState {
         request_id: RequestId,
         attention: NativeAttentionState,
+    },
+    StartNativeAttentionDispatch {
+        request_id: RequestId,
+        dispatch_id: NativeAttentionDispatchId,
+    },
+    SettleNativeAttentionDispatch {
+        request_id: RequestId,
+        dispatch_id: NativeAttentionDispatchId,
+        outcome: NativeAttentionSoundOutcome,
     },
     UpdateJapaneseCatalogProfile {
         request_id: RequestId,
@@ -717,6 +731,24 @@ impl fmt::Debug for AppCommand {
                         .as_ref()
                         .map(|_| "AttentionCandidate(..)"),
                 )
+                .finish(),
+            Self::StartNativeAttentionDispatch {
+                request_id,
+                dispatch_id,
+            } => formatter
+                .debug_struct("StartNativeAttentionDispatch")
+                .field("request_id", request_id)
+                .field("dispatch_id", dispatch_id)
+                .finish(),
+            Self::SettleNativeAttentionDispatch {
+                request_id,
+                dispatch_id,
+                outcome,
+            } => formatter
+                .debug_struct("SettleNativeAttentionDispatch")
+                .field("request_id", request_id)
+                .field("dispatch_id", dispatch_id)
+                .field("outcome", outcome)
                 .finish(),
             Self::UpdateJapaneseCatalogProfile {
                 request_id,
@@ -2058,8 +2090,25 @@ pub enum TimelineCommand {
         body: String,
         mentions: MentionIntent,
     },
+    SubmitText {
+        request_id: RequestId,
+        submission_id: SubmissionId,
+        key: TimelineKey,
+        transaction_id: String,
+        body: String,
+        mentions: MentionIntent,
+    },
     SendReply {
         request_id: RequestId,
+        key: TimelineKey,
+        transaction_id: String,
+        in_reply_to_event_id: String,
+        body: String,
+        mentions: MentionIntent,
+    },
+    SubmitReply {
+        request_id: RequestId,
+        submission_id: SubmissionId,
         key: TimelineKey,
         transaction_id: String,
         in_reply_to_event_id: String,
@@ -2262,6 +2311,35 @@ impl fmt::Debug for TimelineCommand {
                 .debug_struct("SendReply")
                 .field("request_id", request_id)
                 .field("key", key)
+                .field("transaction_id", transaction_id)
+                .field("in_reply_to_event_id", &"EventId(..)")
+                .field("body", &"MessageBody(..)")
+                .field("mentions", &"MentionIntent(..)")
+                .finish(),
+            Self::SubmitText {
+                request_id,
+                submission_id,
+                transaction_id,
+                ..
+            } => formatter
+                .debug_struct("SubmitText")
+                .field("request_id", request_id)
+                .field("submission_id", submission_id)
+                .field("key", &"TimelineKey(..)")
+                .field("transaction_id", transaction_id)
+                .field("body", &"MessageBody(..)")
+                .field("mentions", &"MentionIntent(..)")
+                .finish(),
+            Self::SubmitReply {
+                request_id,
+                submission_id,
+                transaction_id,
+                ..
+            } => formatter
+                .debug_struct("SubmitReply")
+                .field("request_id", request_id)
+                .field("submission_id", submission_id)
+                .field("key", &"TimelineKey(..)")
                 .field("transaction_id", transaction_id)
                 .field("in_reply_to_event_id", &"EventId(..)")
                 .field("body", &"MessageBody(..)")

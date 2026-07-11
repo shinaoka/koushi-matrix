@@ -1,5 +1,97 @@
 use super::*;
 
+const SUBMISSION_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(10);
+
+trait SubmissionEventSource {
+    fn snapshot(&self) -> koushi_state::AppState;
+    fn recv_event(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<CoreEvent, EventStreamLag>> + Send + '_>>;
+}
+
+impl SubmissionEventSource for CoreConnection {
+    fn snapshot(&self) -> koushi_state::AppState {
+        CoreConnection::snapshot(self)
+    }
+
+    fn recv_event(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<CoreEvent, EventStreamLag>> + Send + '_>> {
+        Box::pin(CoreConnection::recv_event(self))
+    }
+}
+
+async fn wait_for_submission_settlement(
+    event_conn: &mut CoreConnection,
+    submission_id: SubmissionId,
+) -> Result<SubmissionResponse, SubmissionFailure> {
+    let (outcome, transaction_id) =
+        wait_for_submission_outcome(event_conn, &submission_id, SUBMISSION_SETTLEMENT_TIMEOUT)
+            .await?;
+    let snapshot = event_conn.versioned_snapshot();
+    Ok(SubmissionResponse {
+        outcome,
+        submission_id,
+        transaction_id,
+        snapshot: FrontendDesktopSnapshot::from_versioned(snapshot.state, snapshot.generation),
+    })
+}
+
+async fn wait_for_submission_outcome<S: SubmissionEventSource>(
+    source: &mut S,
+    submission_id: &SubmissionId,
+    timeout: Duration,
+) -> Result<(SubmissionOutcome, Option<String>), SubmissionFailure> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let (outcome, transaction_id) = loop {
+        let event = tokio::time::timeout_at(deadline, source.recv_event())
+            .await
+            .map_err(|_| SubmissionFailure::Timeout)?;
+        match event {
+            Ok(CoreEvent::Timeline(TimelineEvent::SubmissionAccepted {
+                submission_id: accepted_id,
+                transaction_id,
+                ..
+            })) if accepted_id == *submission_id => {
+                break (SubmissionOutcome::Accepted, Some(transaction_id));
+            }
+            Ok(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                submission_id: rejected_id,
+                kind,
+                ..
+            })) if rejected_id == *submission_id => {
+                break (SubmissionOutcome::Rejected { kind }, None);
+            }
+            Ok(_) => {}
+            Err(EventStreamLag { skipped: 0 }) => return Err(SubmissionFailure::Disconnected),
+            Err(_) => return Err(SubmissionFailure::Lagged),
+        }
+    };
+
+    if matches!(outcome, SubmissionOutcome::Accepted) {
+        loop {
+            let snapshot = source.snapshot();
+            let registry = &snapshot.timeline.submission_registry;
+            if registry.accepted_submission_ids.contains(submission_id)
+                || registry.settled_submission_ids.contains(submission_id)
+            {
+                break;
+            }
+            tokio::time::timeout_at(deadline, source.recv_event())
+                .await
+                .map_err(|_| SubmissionFailure::Timeout)?
+                .map_err(|lag| {
+                    if lag.skipped == 0 {
+                        SubmissionFailure::Disconnected
+                    } else {
+                        SubmissionFailure::Lagged
+                    }
+                })?;
+        }
+    }
+    Ok((outcome, transaction_id))
+}
+
 #[tauri::command]
 pub async fn resolve_composer_key_action(
     surface: ComposerSurface,
@@ -114,34 +206,42 @@ pub async fn paginate_thread_timeline_backwards(
 
 #[tauri::command]
 pub async fn send_text(
+    submission_id: String,
     room_id: String,
     body: String,
     mentions: Option<koushi_state::MentionIntent>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
+) -> Result<SubmissionResponse, SubmissionFailure> {
     if body.trim().is_empty() {
-        return current_snapshot(state.inner()).await;
+        return Err(SubmissionFailure::Invalid);
     }
 
     let transaction_id = format!(
         "desktop-{}",
         NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
     );
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
     let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_send_text_command(
+    let submission_id = SubmissionId::new(submission_id);
+    if let Some(command) = build_submit_text_command(
         request_id,
+        submission_id.clone(),
         account_key,
         room_id,
         transaction_id,
         body,
         mentions.unwrap_or_default(),
     ) {
-        submit_core_command(state.inner(), command).await?;
+        event_conn
+            .command(command)
+            .await
+            .map_err(|_| SubmissionFailure::SubmitFailed)?;
     }
+    let response = wait_for_submission_settlement(&mut event_conn, submission_id).await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
+    Ok(response)
 }
 
 #[tauri::command]
@@ -881,25 +981,29 @@ pub async fn set_thread_composer_draft(
 
 #[tauri::command]
 pub async fn send_reply(
+    submission_id: String,
     room_id: String,
     in_reply_to_event_id: String,
     body: String,
     mentions: Option<koushi_state::MentionIntent>,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
+) -> Result<SubmissionResponse, SubmissionFailure> {
     if body.trim().is_empty() {
-        return current_snapshot(state.inner()).await;
+        return Err(SubmissionFailure::Invalid);
     }
 
     let transaction_id = format!(
         "desktop-{}",
         NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
     );
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
     let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_send_reply_command(
+    let submission_id = SubmissionId::new(submission_id);
+    if let Some(command) = build_submit_reply_command(
         request_id,
+        submission_id.clone(),
         account_key,
         room_id,
         transaction_id,
@@ -907,42 +1011,182 @@ pub async fn send_reply(
         body,
         mentions.unwrap_or_default(),
     ) {
-        submit_core_command(state.inner(), command).await?;
+        event_conn
+            .command(command)
+            .await
+            .map_err(|_| SubmissionFailure::SubmitFailed)?;
     }
+    let response = wait_for_submission_settlement(&mut event_conn, submission_id).await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
+    Ok(response)
 }
 
 #[tauri::command]
 pub async fn send_thread_reply(
+    submission_id: String,
     room_id: String,
     root_event_id: String,
     body: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
+) -> Result<SubmissionResponse, SubmissionFailure> {
     if body.trim().is_empty() {
-        return current_snapshot(state.inner()).await;
+        return Err(SubmissionFailure::Invalid);
     }
 
     let transaction_id = format!(
         "desktop-{}",
         NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
     );
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
     let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_send_thread_reply_command(
+    let submission_id = SubmissionId::new(submission_id);
+    if let Some(command) = build_submit_thread_reply_command(
         request_id,
+        submission_id.clone(),
         account_key,
         room_id,
         root_event_id,
         transaction_id,
         body,
     ) {
-        submit_core_command(state.inner(), command).await?;
+        event_conn
+            .command(command)
+            .await
+            .map_err(|_| SubmissionFailure::SubmitFailed)?;
     }
+    let response = wait_for_submission_settlement(&mut event_conn, submission_id).await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
+    Ok(response)
+}
+
+#[cfg(test)]
+mod submission_settlement_tests {
+    use std::collections::VecDeque;
+
+    use super::*;
+
+    struct ScriptedSource {
+        state: koushi_state::AppState,
+        events: VecDeque<(Result<CoreEvent, EventStreamLag>, Option<SubmissionId>)>,
+        pending_on_empty: bool,
+    }
+
+    impl SubmissionEventSource for ScriptedSource {
+        fn snapshot(&self) -> koushi_state::AppState {
+            self.state.clone()
+        }
+
+        fn recv_event(
+            &mut self,
+        ) -> Pin<Box<dyn Future<Output = Result<CoreEvent, EventStreamLag>> + Send + '_>> {
+            if let Some((event, accepted_id)) = self.events.pop_front() {
+                if let Some(accepted_id) = accepted_id {
+                    self.state
+                        .timeline
+                        .submission_registry
+                        .accepted_submission_ids
+                        .push_back(accepted_id);
+                }
+                Box::pin(async move { event })
+            } else if self.pending_on_empty {
+                Box::pin(std::future::pending())
+            } else {
+                Box::pin(async { Err(EventStreamLag { skipped: 0 }) })
+            }
+        }
+    }
+
+    fn accepted(id: SubmissionId, sequence: u64) -> CoreEvent {
+        CoreEvent::Timeline(TimelineEvent::SubmissionAccepted {
+            request_id: RequestId {
+                connection_id: koushi_core::RuntimeConnectionId(1),
+                sequence,
+            },
+            key: build_timeline_key(AccountKey("@u:test".to_owned()), "!r:test".to_owned()),
+            submission_id: id,
+            transaction_id: "txn".to_owned(),
+        })
+    }
+
+    #[tokio::test]
+    async fn waits_for_global_reducer_acceptance_after_active_room_switch() {
+        let expected = SubmissionId::new("expected");
+        let mut switched_state = koushi_state::AppState::default();
+        switched_state.timeline.room_id = Some("!room-b:test".to_owned());
+        let mut source = ScriptedSource {
+            state: switched_state,
+            events: VecDeque::from([
+                (Ok(accepted(SubmissionId::new("other"), 1)), None),
+                (Ok(accepted(expected.clone(), 2)), None),
+                (
+                    Ok(accepted(SubmissionId::new("after-accept"), 3)),
+                    Some(expected.clone()),
+                ),
+            ]),
+            pending_on_empty: false,
+        };
+        let result = wait_for_submission_outcome(&mut source, &expected, Duration::from_secs(1))
+            .await
+            .expect("accepted");
+        assert_eq!(result.0, SubmissionOutcome::Accepted);
+    }
+
+    #[tokio::test]
+    async fn matching_rejection_disconnect_lag_and_timeout_are_typed() {
+        let expected = SubmissionId::new("expected");
+        let rejected = CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+            request_id: RequestId {
+                connection_id: koushi_core::RuntimeConnectionId(1),
+                sequence: 1,
+            },
+            key: build_timeline_key(AccountKey("@u:test".to_owned()), "!r:test".to_owned()),
+            submission_id: expected.clone(),
+            kind: koushi_core::TimelineFailureKind::NotSubscribed,
+        });
+        let mut source = ScriptedSource {
+            state: koushi_state::AppState::default(),
+            events: VecDeque::from([(Ok(rejected), None)]),
+            pending_on_empty: false,
+        };
+        assert!(matches!(
+            wait_for_submission_outcome(&mut source, &expected, Duration::from_secs(1)).await,
+            Ok((
+                SubmissionOutcome::Rejected {
+                    kind: koushi_core::TimelineFailureKind::NotSubscribed
+                },
+                None
+            ))
+        ));
+        let mut disconnected = ScriptedSource {
+            state: koushi_state::AppState::default(),
+            events: VecDeque::new(),
+            pending_on_empty: false,
+        };
+        assert_eq!(
+            wait_for_submission_outcome(&mut disconnected, &expected, Duration::from_secs(1)).await,
+            Err(SubmissionFailure::Disconnected)
+        );
+        let mut lagged = ScriptedSource {
+            state: koushi_state::AppState::default(),
+            events: VecDeque::from([(Err(EventStreamLag { skipped: 1 }), None)]),
+            pending_on_empty: false,
+        };
+        assert_eq!(
+            wait_for_submission_outcome(&mut lagged, &expected, Duration::from_secs(1)).await,
+            Err(SubmissionFailure::Lagged)
+        );
+        let mut timed_out = ScriptedSource {
+            state: koushi_state::AppState::default(),
+            events: VecDeque::new(),
+            pending_on_empty: true,
+        };
+        assert_eq!(
+            wait_for_submission_outcome(&mut timed_out, &expected, Duration::from_millis(1)).await,
+            Err(SubmissionFailure::Timeout)
+        );
+    }
 }
 
 #[cfg(test)]

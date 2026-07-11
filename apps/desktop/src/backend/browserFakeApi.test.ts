@@ -18,6 +18,83 @@ function receipt(
 }
 
 describe("BrowserFakeApi settings preview", () => {
+  test("projects disabled badge settings to zero without frontend recomputation", async () => {
+    const api = createBrowserFakeApi();
+    const mutable = api as unknown as { snapshot: DesktopSnapshot };
+    mutable.snapshot.state.domain.native_attention.summary.unread_count = 6;
+    mutable.snapshot.state.domain.native_attention.summary.badge_count = 6;
+    mutable.snapshot.state.domain.native_attention.summary.capabilities.badge = "available";
+    const snapshot = await api.updateSettings({
+      notifications: {
+        ...mutable.snapshot.state.domain.settings.values.notifications,
+        badges: false
+      }
+    });
+    expect(snapshot.state.domain.native_attention.summary.badge_count).toBe(0);
+  });
+  test("deduplicates main submissions by id and exposes accepted terminal snapshot fields", async () => {
+    const api = createBrowserFakeApi();
+    const roomId = "!room-alpha:example.invalid";
+    await api.selectRoom(roomId);
+    const before = (await api.getSnapshot()).timeline.length;
+
+    const first = await api.sendText("submission-same", roomId, "original");
+    const replay = await api.sendText("submission-same", roomId, "changed");
+
+    expect(first.outcome).toBe("accepted");
+    expect(replay.transactionId).toBe(first.transactionId);
+    expect(replay.snapshot.timeline).toHaveLength(before + 1);
+    expect(replay.snapshot.timeline.at(-1)?.body).toBe("original");
+    expect(replay.snapshot.state.ui.timeline.composer.pending_submission_id).toBeNull();
+    expect(replay.snapshot.state.ui.timeline.composer.accepted_submission_ids).toContain("submission-same");
+  });
+
+  test("deduplicates reply submissions without incrementing the root twice", async () => {
+    const api = createBrowserFakeApi();
+    const roomId = "!room-alpha:example.invalid";
+    await api.selectRoom(roomId);
+    const root = (await api.getSnapshot()).timeline[0]!;
+    const before = root.reply_count;
+    await api.sendReply("reply-same", roomId, root.event_id, "original");
+    const replay = await api.sendReply("reply-same", roomId, root.event_id, "changed");
+    expect(replay.snapshot.timeline.find((item) => item.event_id === root.event_id)?.reply_count).toBe(before + 1);
+  });
+
+  test("deduplicates an unknown thread retry and preserves terminal correlation fields", async () => {
+    const api = createBrowserFakeApi();
+    const roomId = "!room-alpha:example.invalid";
+    await api.selectRoom(roomId);
+    const rootId = (await api.getSnapshot()).timeline[0]!.event_id;
+    await api.openThread(roomId, rootId);
+    const first = await api.sendThreadReply("thread-unknown", roomId, rootId, "original");
+    const replay = await api.sendThreadReply("thread-unknown", roomId, rootId, "edited");
+    expect(replay.transactionId).toBe(first.transactionId);
+    const thread = replay.snapshot.state.ui.thread;
+    expect(thread.kind).toBe("open");
+    if (thread.kind === "open") {
+      expect(thread.composer?.pending_submission_id).toBeNull();
+      expect(thread.composer?.accepted_submission_ids).toContain("thread-unknown");
+    }
+  });
+
+  test("bounds terminal submission replay tombstones to 128 entries", async () => {
+    const api = createBrowserFakeApi();
+    const roomId = "!room-alpha:example.invalid";
+    await api.selectRoom(roomId);
+    for (let index = 0; index < 129; index += 1) {
+      await api.sendText(`bounded-${index}`, roomId, `body-${index}`);
+    }
+    const bounded = await api.getSnapshot();
+    const before = bounded.timeline.length;
+    expect(bounded.state.ui.timeline.submission_registry.accepted_submission_ids).toHaveLength(0);
+    expect(bounded.state.ui.timeline.submission_registry.settled_submission_ids).toHaveLength(128);
+    expect(bounded.state.ui.timeline.submission_registry.settled_submission_ids).not.toContain("bounded-0");
+    await api.sendText("bounded-1", roomId, "deduped");
+    expect((await api.getSnapshot()).timeline).toHaveLength(before);
+    await api.sendText("bounded-0", roomId, "evicted");
+    expect((await api.getSnapshot()).timeline).toHaveLength(before + 1);
+  });
+
   test("returns an empty diagnostic snapshot in the browser fake", async () => {
     const api = createBrowserFakeApi();
 

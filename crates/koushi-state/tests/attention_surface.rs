@@ -1,8 +1,9 @@
 use koushi_state::{
     AppAction, AppState, DisplayPlatform, NativeAttentionCandidate, NativeAttentionCapabilities,
-    NativeAttentionCapability, NativeAttentionDispatchState, NativeAttentionObservationKind,
-    NativeAttentionProjectionInput, NativeAttentionSuppressionReason, RoomAttentionKind,
-    RoomSummary, RoomTagInfo, RoomTags, native_attention_capabilities_for_platform,
+    NativeAttentionCapability, NativeAttentionDispatchId, NativeAttentionDispatchState,
+    NativeAttentionObservationKind, NativeAttentionProjectionInput, NativeAttentionSoundOutcome,
+    NativeAttentionSuppressionReason, NotificationSettings, RoomAttentionKind, RoomSummary,
+    RoomTagInfo, RoomTags, SettingsPatch, native_attention_capabilities_for_platform,
     native_attention_state_from_rooms, reduce, room_attention_summary,
 };
 use serde_json::json;
@@ -65,7 +66,7 @@ fn native_attention_capabilities_are_resolved_from_platform_profile() {
     assert_eq!(linux.overlay_icon, NativeAttentionCapability::Unavailable);
     assert_eq!(macos.sound, NativeAttentionCapability::Available);
     assert_eq!(windows.sound, NativeAttentionCapability::Available);
-    assert_eq!(linux.sound, NativeAttentionCapability::Available);
+    assert_eq!(linux.sound, NativeAttentionCapability::Unavailable);
     assert_eq!(macos.tray, NativeAttentionCapability::Unknown);
     assert_eq!(windows.tray, NativeAttentionCapability::Unknown);
     assert_eq!(linux.tray, NativeAttentionCapability::Unknown);
@@ -395,7 +396,139 @@ fn native_attention_reducer_preserves_dispatch_state_not_only_summary() {
         },
     );
 
-    assert_eq!(app_state.native_attention, attention);
-    assert_eq!(app_state.native_attention.kind(), "suppressed");
+    assert_eq!(app_state.native_attention.summary, attention.summary);
+    assert_eq!(
+        app_state.native_attention.dispatch,
+        NativeAttentionDispatchState::Idle
+    );
     assert_eq!(effects.len(), 1);
+}
+
+#[test]
+fn disabling_badges_immediately_projects_zero_from_rust_owned_settings() {
+    let mut state = AppState::default();
+    state.native_attention.summary.unread_count = 7;
+    state.native_attention.summary.badge_count = 7;
+    state.native_attention.summary.capabilities.badge = NativeAttentionCapability::Available;
+    let effects = reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 44,
+            patch: SettingsPatch {
+                notifications: Some(NotificationSettings {
+                    badges: false,
+                    ..NotificationSettings::default()
+                }),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+    assert_eq!(state.native_attention.summary.badge_count, 0);
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        koushi_state::AppEffect::EmitUiEvent(koushi_state::UiEvent::NativeAttentionChanged)
+    )));
+}
+
+#[test]
+fn native_sound_dispatch_outcomes_are_correlated_and_stale_safe() {
+    for (outcome, expected_kind) in [
+        (NativeAttentionSoundOutcome::Played, "delivered"),
+        (NativeAttentionSoundOutcome::Unsupported, "unsupported"),
+        (NativeAttentionSoundOutcome::Failed, "failed"),
+    ] {
+        let mut state = AppState::default();
+        state.native_attention.summary.candidate = Some(NativeAttentionCandidate {
+            room_display_name: "Room".to_owned(),
+            kind: RoomAttentionKind::Message,
+            unread_count: 1,
+            highlight_count: 0,
+        });
+        let current_id = NativeAttentionDispatchId::new(2, 9);
+        let stale_same_sequence = NativeAttentionDispatchId::new(1, 9);
+        reduce(
+            &mut state,
+            AppAction::NativeAttentionDispatchStarted {
+                dispatch_id: current_id,
+            },
+        );
+        let before = state.clone();
+        assert!(
+            reduce(
+                &mut state,
+                AppAction::NativeAttentionDispatchSettled {
+                    dispatch_id: stale_same_sequence,
+                    outcome,
+                }
+            )
+            .is_empty()
+        );
+        assert_eq!(state, before);
+        reduce(
+            &mut state,
+            AppAction::NativeAttentionDispatchSettled {
+                dispatch_id: current_id,
+                outcome,
+            },
+        );
+        assert_eq!(state.native_attention.dispatch.kind(), expected_kind);
+    }
+}
+
+#[test]
+fn native_attention_projection_preserves_and_does_not_replace_active_dispatch() {
+    let mut state = AppState::default();
+    state.native_attention.summary.candidate = Some(NativeAttentionCandidate {
+        room_display_name: "Room".to_owned(),
+        kind: RoomAttentionKind::Message,
+        unread_count: 1,
+        highlight_count: 0,
+    });
+    let active = NativeAttentionDispatchId::new(1, 7);
+    let concurrent = NativeAttentionDispatchId::new(2, 7);
+    reduce(
+        &mut state,
+        AppAction::NativeAttentionDispatchStarted {
+            dispatch_id: active,
+        },
+    );
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::NativeAttentionDispatchStarted {
+                dispatch_id: concurrent,
+            },
+        )
+        .is_empty()
+    );
+
+    let mut projection = state.native_attention.clone();
+    projection.summary.unread_count = 2;
+    projection.dispatch = NativeAttentionDispatchState::Idle;
+    reduce(
+        &mut state,
+        AppAction::NativeAttentionUpdated {
+            attention: projection,
+        },
+    );
+    assert_eq!(
+        state.native_attention.dispatch,
+        NativeAttentionDispatchState::Dispatching {
+            dispatch_id: active
+        }
+    );
+
+    reduce(
+        &mut state,
+        AppAction::NativeAttentionDispatchSettled {
+            dispatch_id: active,
+            outcome: NativeAttentionSoundOutcome::Played,
+        },
+    );
+    assert_eq!(
+        state.native_attention.dispatch,
+        NativeAttentionDispatchState::Delivered {
+            dispatch_id: active
+        }
+    );
 }
