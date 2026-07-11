@@ -91,7 +91,7 @@ use matrix_sdk_ui::timeline::{
     TimelineDetails, TimelineEventItemId, TimelineFocus, TimelineItem as SdkTimelineItem,
     TimelineItemContent, TimelineItemKind, TimelineReadReceiptTracking,
 };
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::command::{
     MediaDownloadSelection, TimelineCommand, UploadMediaKind, UploadMediaRequest,
@@ -1044,6 +1044,7 @@ const MAX_SUBMISSION_TOMBSTONES: usize = 128;
 struct SubmissionAdmissionLedger {
     active: HashMap<koushi_state::SubmissionId, (TimelineKey, String)>,
     tombstones: std::collections::VecDeque<(koushi_state::SubmissionId, TimelineKey, String)>,
+    rejected: std::collections::VecDeque<(koushi_state::SubmissionId, TimelineKey)>,
 }
 
 impl SubmissionAdmissionLedger {
@@ -1061,6 +1062,20 @@ impl SubmissionAdmissionLedger {
 
     fn accept(&mut self, id: koushi_state::SubmissionId, key: TimelineKey, transaction_id: String) {
         self.active.insert(id, (key, transaction_id));
+    }
+
+    fn rejected(&self, id: &koushi_state::SubmissionId) -> Option<&TimelineKey> {
+        self.rejected
+            .iter()
+            .find(|(found, _)| found == id)
+            .map(|(_, key)| key)
+    }
+
+    fn reject(&mut self, id: koushi_state::SubmissionId, key: TimelineKey) {
+        while self.rejected.len() >= MAX_SUBMISSION_TOMBSTONES {
+            self.rejected.pop_front();
+        }
+        self.rejected.push_back((id, key));
     }
 
     fn terminal(&mut self, id: &koushi_state::SubmissionId) {
@@ -1544,6 +1559,7 @@ impl TimelineManagerActor {
                     TimelineActorMessage::SendText {
                         request_id,
                         submission_id: None,
+                        admission: None,
                         transaction_id,
                         body,
                         mentions,
@@ -1578,6 +1594,7 @@ impl TimelineManagerActor {
                     TimelineActorMessage::SendText {
                         request_id,
                         submission_id: Some(submission_id.clone()),
+                        admission: None,
                         transaction_id,
                         body,
                         mentions,
@@ -1606,6 +1623,7 @@ impl TimelineManagerActor {
                     TimelineActorMessage::SendReply {
                         request_id,
                         submission_id: None,
+                        admission: None,
                         transaction_id,
                         in_reply_to_event_id,
                         body,
@@ -1642,6 +1660,7 @@ impl TimelineManagerActor {
                     TimelineActorMessage::SendReply {
                         request_id,
                         submission_id: Some(submission_id.clone()),
+                        admission: None,
                         transaction_id,
                         in_reply_to_event_id,
                         body,
@@ -2013,6 +2032,15 @@ impl TimelineManagerActor {
         projection: SendComposerProjection,
         msg: TimelineActorMessage,
     ) {
+        if let Some(rejected_key) = self.accepted_submissions.rejected(&submission_id) {
+            self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                request_id,
+                key: rejected_key.clone(),
+                submission_id,
+                kind: TimelineFailureKind::QueueOverflow,
+            }));
+            return;
+        }
         if let Some((accepted_key, accepted_transaction_id)) =
             self.accepted_submissions.get(&submission_id)
         {
@@ -2033,7 +2061,8 @@ impl TimelineManagerActor {
             }));
             return;
         };
-        if !handle.send(msg).await {
+        let (permit_tx, permit_rx) = oneshot::channel();
+        if !handle.send(msg.with_submission_admission(permit_rx)).await {
             self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
                 request_id,
                 key: key.clone(),
@@ -2068,6 +2097,8 @@ impl TimelineManagerActor {
         };
         if let Some(action) = action {
             if self.action_tx.send(vec![action]).await.is_err() {
+                self.accepted_submissions
+                    .reject(submission_id.clone(), key.clone());
                 self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
                     request_id,
                     key: key.clone(),
@@ -2088,6 +2119,7 @@ impl TimelineManagerActor {
             submission_id,
             transaction_id,
         }));
+        let _ = permit_tx.send(());
     }
 
     async fn handle_replay_subscribed(&mut self, request_id: RequestId) {
@@ -2685,6 +2717,7 @@ enum TimelineActorMessage {
     SendText {
         request_id: RequestId,
         submission_id: Option<koushi_state::SubmissionId>,
+        admission: Option<oneshot::Receiver<()>>,
         transaction_id: String,
         body: String,
         mentions: MentionIntent,
@@ -2692,6 +2725,7 @@ enum TimelineActorMessage {
     SendReply {
         request_id: RequestId,
         submission_id: Option<koushi_state::SubmissionId>,
+        admission: Option<oneshot::Receiver<()>>,
         transaction_id: String,
         in_reply_to_event_id: String,
         body: String,
@@ -2811,6 +2845,28 @@ enum TimelineActorMessage {
     ReplayInitialItems {
         request_id: RequestId,
     },
+}
+
+impl TimelineActorMessage {
+    fn with_submission_admission(mut self, permit: oneshot::Receiver<()>) -> Self {
+        match &mut self {
+            Self::SendText { admission, .. } | Self::SendReply { admission, .. } => {
+                *admission = Some(permit);
+            }
+            _ => debug_assert!(
+                false,
+                "admission permits only apply to composer submissions"
+            ),
+        }
+        self
+    }
+}
+
+async fn await_submission_admission(admission: Option<oneshot::Receiver<()>>) -> bool {
+    match admission {
+        Some(permit) => permit.await.is_ok(),
+        None => true,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5413,21 +5469,29 @@ impl TimelineActor {
             TimelineActorMessage::SendText {
                 request_id,
                 submission_id,
+                admission,
                 transaction_id,
                 body,
                 mentions,
             } => {
+                if !await_submission_admission(admission).await {
+                    return;
+                }
                 self.handle_send_text(request_id, submission_id, transaction_id, body, mentions)
                     .await;
             }
             TimelineActorMessage::SendReply {
                 request_id,
                 submission_id,
+                admission,
                 transaction_id,
                 in_reply_to_event_id,
                 body,
                 mentions,
             } => {
+                if !await_submission_admission(admission).await {
+                    return;
+                }
                 self.handle_send_reply(
                     request_id,
                     submission_id,
@@ -15463,10 +15527,11 @@ mod tests {
                 .await;
         }
 
-        assert!(matches!(
-            actor_rx.try_recv(),
-            Ok(TimelineActorMessage::SendText { .. })
-        ));
+        let admission = match actor_rx.try_recv() {
+            Ok(TimelineActorMessage::SendText { admission, .. }) => admission,
+            _ => panic!("one actor mailbox reservation expected"),
+        };
+        assert!(await_submission_admission(admission).await);
         assert!(actor_rx.try_recv().is_err());
         assert!(matches!(
             action_rx.try_recv(),
@@ -15495,23 +15560,77 @@ mod tests {
                 ..
             })) if submission_id == rejected_id
         ));
+
+        let failed_id = SubmissionId::new("reducer-closed-submission");
+        let (actor_tx, mut actor_rx) = mpsc::channel(1);
+        let actor_task = executor::spawn(async {});
+        manager.timelines.insert(
+            key.clone(),
+            TimelineActorHandle {
+                tx: actor_tx,
+                task: actor_task,
+                auxiliary_tasks: Vec::new(),
+            },
+        );
+        let (closed_action_tx, closed_action_rx) = mpsc::channel(1);
+        drop(closed_action_rx);
+        manager.action_tx = closed_action_tx;
+        manager
+            .handle_command(TimelineCommand::SubmitText {
+                request_id: fake_rid(7303),
+                submission_id: failed_id.clone(),
+                key: key.clone(),
+                transaction_id: "txn-reducer-closed".to_owned(),
+                body: "body".to_owned(),
+                mentions: MentionIntent::default(),
+            })
+            .await;
+        let admission = match actor_rx.recv().await {
+            Some(TimelineActorMessage::SendText { admission, .. }) => admission,
+            _ => panic!("reserved actor message expected"),
+        };
+        assert!(!await_submission_admission(admission).await);
+        manager
+            .handle_command(TimelineCommand::SubmitText {
+                request_id: fake_rid(7304),
+                submission_id: failed_id.clone(),
+                key,
+                transaction_id: "txn-replayed".to_owned(),
+                body: "changed".to_owned(),
+                mentions: MentionIntent::default(),
+            })
+            .await;
+        assert!(
+            actor_rx.try_recv().is_err(),
+            "rejected replay never reaches SDK actor"
+        );
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::SubmissionRejected { submission_id, .. }))
+                if submission_id == failed_id
+        ));
     }
 
-    #[test]
-    fn submission_acceptance_is_emitted_after_actor_enqueue() {
-        let source = include_str!("timeline.rs");
-        let route = source
-            .split("async fn route_submission_to_actor")
-            .nth(1)
-            .expect("submission route exists")
-            .split("async fn route_send_to_actor_or_fail")
-            .next()
-            .expect("submission route body");
-        let actor_enqueue = route.find("handle.send(msg).await").expect("actor enqueue");
-        let reducer_accept = route
-            .find("self.action_tx.send(vec![action]).await")
-            .expect("reducer acceptance");
-        assert!(actor_enqueue < reducer_accept);
+    #[tokio::test]
+    async fn submission_admission_permit_blocks_until_reducer_acceptance_and_aborts_on_drop() {
+        let (permit_tx, mut permit_rx) = tokio::sync::oneshot::channel();
+        assert!(matches!(
+            permit_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        permit_tx.send(()).expect("open admission permit");
+        assert!(await_submission_admission(Some(permit_rx)).await);
+
+        let (permit_tx, permit_rx) = tokio::sync::oneshot::channel::<()>();
+        drop(permit_tx);
+        assert!(
+            !await_submission_admission(Some(permit_rx)).await,
+            "dropped permit aborts actor SDK work"
+        );
+        assert!(
+            await_submission_admission(None).await,
+            "legacy sends need no permit"
+        );
     }
 
     #[test]
