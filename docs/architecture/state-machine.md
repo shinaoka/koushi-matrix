@@ -363,6 +363,35 @@ stateDiagram-v2
 
 ## Timeline And Thread
 
+### Timeline Diff Relay Recovery
+
+The SDK `Timeline` is the authoritative timeline source. Each timeline actor owns
+one relay task and a monotonically increasing relay generation. Normal SDK
+`VectorDiff` batches use the bounded data inbox and carry the generation of the
+relay that observed them. The actor applies a batch only when its generation
+matches the actor's current relay generation; delayed batches from a replaced
+relay are discarded.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Subscribed: Timeline::subscribe / snapshot + stream generation N
+    Subscribed --> Subscribed: DiffBatch(N) / ItemsUpdated(N)
+    Subscribed --> Overflowed: data inbox Full / lossless Overflow(N) control
+    Overflowed --> Resubscribing: actor stops relay N and advances to N+1
+    Resubscribing --> Subscribed: Timeline::subscribe / ResyncRequired then InitialItems(N+1), start relay N+1
+    Subscribed --> Subscribed: stale DiffBatch(<N) / discard
+```
+
+Overflow control has a dedicated lossless lane and never competes with diff
+data for the already-full inbox. A relay terminates after reporting overflow;
+it must not remain alive in a permanent drop mode. At recovery the actor stops
+the old task, obtains the authoritative snapshot and matching new stream from
+one `Timeline::subscribe()` boundary, emits `ResyncRequired` followed by
+`InitialItems` for the new generation, and starts the replacement relay. The
+next live diff is therefore emitted as an ordinary `ItemsUpdated`. Send-queue
+broadcast lag recovery is a separate state machine and does not satisfy this
+relay recovery contract.
+
 - The main timeline has one selected room.
 - Timeline subscription signals only affect the selected room.
 - The main composer tracks one pending transaction. A second send is ignored

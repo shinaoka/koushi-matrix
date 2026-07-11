@@ -2577,14 +2577,15 @@ enum TimelineActorMessage {
         room_enabled: Option<bool>,
     },
     /// Internal: diff batch from the relay task.
-    DiffBatch(Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>),
+    DiffBatch {
+        generation: TimelineGeneration,
+        diffs: Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>,
+    },
     /// Internal: send completed (from send queue monitor task).
     SendQueueUpdate(RoomSendQueueUpdate),
     /// Internal: send queue broadcast lagged and the actor must resync the
     /// SDK-owned local echo snapshot before projecting outbound send states.
     SendQueueLagged,
-    /// Internal: relay task hit overflow — must resync.
-    RelayOverflow,
     /// Internal: re-emit the current navigation_items as InitialItems for a
     /// new request_id without tearing down the SDK subscription.  Sent by
     /// `handle_subscribe` when the key is already subscribed (idempotency
@@ -2593,6 +2594,11 @@ enum TimelineActorMessage {
     ReplayInitialItems {
         request_id: RequestId,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TimelineRelayControl {
+    Overflow { generation: TimelineGeneration },
 }
 
 fn timeline_key_trace_kind(key: &TimelineKey) -> &'static str {
@@ -4529,6 +4535,9 @@ struct TimelineActor {
     event_tx: broadcast::Sender<CoreEvent>,
     msg_tx: mpsc::Sender<TimelineActorMessage>,
     msg_rx: mpsc::Receiver<TimelineActorMessage>,
+    relay_control_tx: mpsc::Sender<TimelineRelayControl>,
+    relay_control_rx: mpsc::Receiver<TimelineRelayControl>,
+    relay_task: Option<executor::JoinHandle<()>>,
     generation: TimelineGeneration,
     next_batch_id: TimelineBatchId,
     /// Correlates send queue completions across the enqueue / SentEvent race.
@@ -4645,6 +4654,9 @@ struct ThreadAttentionCounters {
 
 impl Drop for TimelineActor {
     fn drop(&mut self) {
+        if let Some(task) = self.relay_task.take() {
+            task.abort();
+        }
         for task in self.link_preview_fetches.values() {
             task.abort();
         }
@@ -4815,6 +4827,7 @@ impl TimelineActor {
         let initial_receipts = live_event_receipts_from_sdk_items(initial_sdk_items.iter());
 
         let (actor_tx, actor_rx) = mpsc::channel(256);
+        let (relay_control_tx, relay_control_rx) = mpsc::channel(1);
         let mut send_statuses = HashMap::new();
         let mut send_handles = HashMap::new();
 
@@ -4850,12 +4863,11 @@ impl TimelineActor {
         }
 
         // Spawn the diff relay task: converts SDK VectorDiff stream into actor messages.
-        let relay_tx = actor_tx.clone();
-        let relay_timeline = timeline.clone();
-        auxiliary_tasks.push(executor::spawn(run_diff_relay(
-            relay_tx,
+        let relay_task = Some(executor::spawn(run_diff_relay(
+            actor_tx.clone(),
+            relay_control_tx.clone(),
+            generation,
             diff_stream,
-            relay_timeline,
         )));
 
         // Spawn the send queue monitor task: forwards RoomSendQueueUpdate to actor.
@@ -4912,6 +4924,9 @@ impl TimelineActor {
             event_tx,
             msg_tx: actor_tx.clone(),
             msg_rx: actor_rx,
+            relay_control_tx,
+            relay_control_rx,
+            relay_task,
             generation,
             next_batch_id: TimelineBatchId(0),
             send_completion: SendCompletionTracker::default(),
@@ -4965,8 +4980,26 @@ impl TimelineActor {
     }
 
     async fn run(mut self) {
-        while let Some(msg) = self.msg_rx.recv().await {
-            self.handle_msg(msg).await;
+        loop {
+            tokio::select! {
+                biased;
+                control = self.relay_control_rx.recv() => {
+                    let Some(control) = control else { break };
+                    self.handle_relay_control(control).await;
+                }
+                msg = self.msg_rx.recv() => {
+                    let Some(msg) = msg else { break };
+                    self.handle_msg(msg).await;
+                }
+            }
+        }
+    }
+
+    async fn handle_relay_control(&mut self, control: TimelineRelayControl) {
+        match control {
+            TimelineRelayControl::Overflow { generation } => {
+                self.handle_relay_overflow(generation).await;
+            }
         }
     }
 
@@ -5208,17 +5241,16 @@ impl TimelineActor {
                 )
                 .await;
             }
-            TimelineActorMessage::DiffBatch(diffs) => {
-                self.handle_diff_batch(diffs).await;
+            TimelineActorMessage::DiffBatch { generation, diffs } => {
+                if generation == self.generation {
+                    self.handle_diff_batch(diffs).await;
+                }
             }
             TimelineActorMessage::SendQueueUpdate(update) => {
                 self.handle_send_queue_update(update).await;
             }
             TimelineActorMessage::SendQueueLagged => {
                 self.handle_send_queue_lagged().await;
-            }
-            TimelineActorMessage::RelayOverflow => {
-                self.handle_relay_overflow().await;
             }
             TimelineActorMessage::ReplayInitialItems { request_id } => {
                 self.handle_replay_initial_items(request_id);
@@ -8411,22 +8443,29 @@ impl TimelineActor {
         }
     }
 
-    async fn handle_relay_overflow(&mut self) {
+    async fn handle_relay_overflow(&mut self, overflow_generation: TimelineGeneration) {
+        if overflow_generation != self.generation {
+            return;
+        }
+        if let Some(task) = self.relay_task.take() {
+            task.abort();
+        }
         // Overflow protocol (canon decision B):
         // 1. Bump generation.
         self.generation = TimelineGeneration(self.generation.0 + 1);
         // 2. Reset batch_id to 0.
         self.next_batch_id = TimelineBatchId(0);
 
-        // 3. Emit ResyncRequired.
+        // 3. Acquire the authoritative snapshot and its matching replacement
+        //    stream from one SDK subscription boundary.
+        let (current_items, diff_stream) = self.timeline.subscribe().await;
+        // 4. Announce the generation reset before publishing its snapshot.
         self.emit(CoreEvent::Timeline(TimelineEvent::ResyncRequired {
             key: self.key.clone(),
             reason: TimelineResyncReason::QueueOverflow,
         }));
 
-        // 4. Emit a fresh InitialItems with the new generation from the current
-        //    SDK timeline snapshot.
-        let (current_items, _) = self.timeline.subscribe().await;
+        // 5. Emit fresh InitialItems for the new generation.
         let link_preview_context = self.link_preview_policy.for_room(self.key.room_id());
         let items: Vec<TimelineItem> = current_items
             .iter()
@@ -8473,6 +8512,12 @@ impl TimelineActor {
             items,
             replay_known_candidates,
         );
+        self.relay_task = Some(executor::spawn(run_diff_relay(
+            self.msg_tx.clone(),
+            self.relay_control_tx.clone(),
+            self.generation,
+            diff_stream,
+        )));
         if let Some(restore) = self.restore_anchor.take() {
             self.finish_anchor_restore(
                 restore.request_id,
@@ -8696,30 +8741,28 @@ fn koushi_timeline_builder(
 
 async fn run_diff_relay(
     actor_tx: mpsc::Sender<TimelineActorMessage>,
+    control_tx: mpsc::Sender<TimelineRelayControl>,
+    generation: TimelineGeneration,
     mut diff_stream: impl futures_util::Stream<Item = Vec<eyeball_im::VectorDiff<Arc<SdkTimelineItem>>>>
     + Unpin,
-    _timeline: Arc<Timeline>,
 ) {
     use futures_util::StreamExt;
 
-    let mut overflow = false;
     loop {
         let Some(diffs) = diff_stream.next().await else {
             break;
         };
 
-        if overflow {
-            // Already in overflow state — stay silent, the actor has already
-            // been notified and will emit a new InitialItems on the new generation.
-            continue;
-        }
-
-        match actor_tx.try_send(TimelineActorMessage::DiffBatch(diffs)) {
+        match actor_tx.try_send(TimelineActorMessage::DiffBatch { generation, diffs }) {
             Ok(_) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
-                // Queue overflow: notify the actor to resync.
-                overflow = true;
-                let _ = actor_tx.try_send(TimelineActorMessage::RelayOverflow);
+                // Overflow control must not compete for capacity with data.
+                // Once delivered, this generation is terminal; the actor
+                // resubscribes and owns the replacement relay task.
+                let _ = control_tx
+                    .send(TimelineRelayControl::Overflow { generation })
+                    .await;
+                break;
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 // Actor dropped — relay task should stop.
@@ -14542,7 +14585,9 @@ mod tests {
         assert!(!auxiliary_alive.load(Ordering::SeqCst));
         assert!(
             auxiliary_sender
-                .try_send(TimelineActorMessage::RelayOverflow)
+                .try_send(TimelineActorMessage::ReplayInitialItems {
+                    request_id: fake_rid(99),
+                })
                 .is_err()
         );
     }
@@ -17627,6 +17672,92 @@ mod tests {
     }
 
     // --- Generation bump + ResyncRequired on synthetic overflow ---
+
+    #[tokio::test]
+    async fn relay_overflow_control_is_delivered_when_data_inbox_is_full() {
+        let (actor_tx, mut actor_rx) = mpsc::channel::<TimelineActorMessage>(1);
+        let (control_tx, mut control_rx) = mpsc::channel::<TimelineRelayControl>(1);
+
+        actor_tx
+            .try_send(TimelineActorMessage::ReplayInitialItems {
+                request_id: fake_rid(1),
+            })
+            .expect("test must fill the data inbox");
+
+        let relay = executor::spawn(run_diff_relay(
+            actor_tx.clone(),
+            control_tx.clone(),
+            TimelineGeneration(7),
+            futures_util::stream::iter([Vec::new()]),
+        ));
+
+        let control = tokio::time::timeout(Duration::from_secs(1), control_rx.recv())
+            .await
+            .expect("overflow control must not wait for capacity in the data inbox")
+            .expect("relay must keep the control lane open until overflow is delivered");
+        assert!(matches!(
+            control,
+            TimelineRelayControl::Overflow {
+                generation: TimelineGeneration(7)
+            }
+        ));
+        relay
+            .await
+            .expect("overflowed relay must terminate cleanly");
+
+        let _filled_message = actor_rx
+            .recv()
+            .await
+            .expect("test must release the old full data inbox");
+        run_diff_relay(
+            actor_tx,
+            control_tx,
+            TimelineGeneration(8),
+            futures_util::stream::iter([Vec::new()]),
+        )
+        .await;
+        assert!(matches!(
+            actor_rx.recv().await,
+            Some(TimelineActorMessage::DiffBatch {
+                generation: TimelineGeneration(8),
+                diffs
+            }) if diffs.is_empty()
+        ));
+    }
+
+    #[test]
+    fn relay_overflow_resubscribes_before_ordered_resync_events_and_restarts_the_relay() {
+        let source = include_str!("timeline.rs");
+        let handler = source
+            .split("async fn handle_relay_overflow")
+            .nth(1)
+            .expect("overflow handler must exist")
+            .split("fn emit(&self")
+            .next()
+            .expect("emit helper must follow overflow handler");
+        let subscribe = handler
+            .find("self.timeline.subscribe().await")
+            .expect("overflow recovery must obtain a new snapshot and stream");
+        let resync = handler
+            .find("TimelineEvent::ResyncRequired")
+            .expect("overflow recovery must announce the new generation");
+        let initial = handler
+            .find("emit_initial_items_and_reconcile_replay_known_for_generation")
+            .expect("overflow recovery must publish the authoritative snapshot");
+        let restart = handler
+            .rfind("run_diff_relay(")
+            .expect("overflow recovery must start a replacement relay");
+
+        assert!(
+            subscribe < resync,
+            "subscribe boundary must precede resync events"
+        );
+        assert!(resync < initial, "ResyncRequired must precede InitialItems");
+        assert!(
+            initial < restart,
+            "replacement relay starts after InitialItems"
+        );
+    }
 
     #[tokio::test]
     async fn relay_overflow_signal_triggers_generation_bump() {
