@@ -464,6 +464,13 @@ stateDiagram-v2
   distinct controller while the original Unknown submission remains retryable
   only from its original target. Every snapshot reconciles all controllers
   against the global accepted and settled lists.
+- Lock and recovery transitions retain the registry for the same authenticated
+  account, and registry acceptance/settlement projection remains active while
+  the visible composer is unavailable. Logout and account replacement clear
+  it. Account replacement first sends a TimelineManager shutdown barrier and
+  awaits its acknowledgement after child timeline actors are dropped; only
+  then may reducer state reset for the new account. This prevents an old
+  account action from entering the new account registry.
 - The timeline actor carries the submission ID beside the client transaction
   through its send-completion tracker. Success, failure, and cancellation emit
   one `ComposerSubmissionSettled` action containing both values and the main or

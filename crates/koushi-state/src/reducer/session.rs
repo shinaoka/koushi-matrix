@@ -144,6 +144,7 @@ pub(crate) fn handle_session_persistence_failed(
 
 pub(crate) fn handle_session_locked(state: &mut AppState) -> Vec<AppEffect> {
     if let SessionState::Ready(info) = &state.session {
+        let submission_registry = state.timeline.submission_registry.clone();
         state.session = SessionState::Locked(info.clone());
         state.sync = SyncState::Stopped;
         let mut effects = vec![
@@ -151,6 +152,7 @@ pub(crate) fn handle_session_locked(state: &mut AppState) -> Vec<AppEffect> {
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
         ];
         effects.extend(clear_session_views(state));
+        state.timeline.submission_registry = submission_registry;
         return effects;
     }
     Vec::new()

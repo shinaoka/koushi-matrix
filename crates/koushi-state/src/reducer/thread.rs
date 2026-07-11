@@ -7,6 +7,8 @@ use crate::{
     },
 };
 
+use super::current_session_info;
+
 pub(crate) fn handle_thread_submission_accepted(
     state: &mut AppState,
     submission_id: SubmissionId,
@@ -14,6 +16,9 @@ pub(crate) fn handle_thread_submission_accepted(
     root_event_id: String,
     transaction_id: String,
 ) -> Vec<AppEffect> {
+    if current_session_info(state).is_none() {
+        return Vec::new();
+    }
     state
         .timeline
         .submission_registry

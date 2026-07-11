@@ -1373,7 +1373,16 @@ impl AccountActor {
     /// Ordered shutdown of the TimelineManagerActor (step 2 of the shutdown
     /// sequence per Async rule 12 — timelines before search/room/sync).
     async fn stop_timeline_actor(&mut self) {
-        let _ = self.timeline_manager.send(TimelineMessage::Shutdown).await;
+        let (acknowledged, acknowledgement) = tokio::sync::oneshot::channel();
+        if self
+            .timeline_manager
+            .send(TimelineMessage::Shutdown {
+                acknowledged: Some(acknowledged),
+            })
+            .await
+        {
+            let _ = acknowledgement.await;
+        }
     }
 
     /// Route a SyncCommand to the SyncActor, or emit SessionRequired if no
@@ -1533,7 +1542,8 @@ impl AccountActor {
         // Replace the TimelineManagerActor with one holding the current session
         // AND the search index sender. The old manager (with no session) is
         // stopped by dropping its handle. We use try_send to shut down the old.
-        self.timeline_manager.try_send(TimelineMessage::Shutdown);
+        self.timeline_manager
+            .try_send(TimelineMessage::Shutdown { acknowledged: None });
         self.timeline_manager = crate::timeline::TimelineManagerActor::spawn_with_session(
             session.clone(),
             self.action_tx.clone(),

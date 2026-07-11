@@ -12,13 +12,21 @@ pub(crate) fn handle_settled(
     target: ComposerSubmissionTarget,
     outcome: ComposerSubmissionTerminalOutcome,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
+    if !state
+        .timeline
+        .submission_registry
+        .accepted_submission_ids
+        .contains(&submission_id)
+    {
         return Vec::new();
     }
     state
         .timeline
         .submission_registry
         .remember_settled(submission_id.clone());
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
     let changed = match target {
         ComposerSubmissionTarget::Main { room_id } => {
             if state.timeline.room_id.as_deref() != Some(room_id.as_str())

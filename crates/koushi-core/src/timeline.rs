@@ -186,7 +186,9 @@ pub enum TimelineMessage {
     SubmissionTerminal {
         submission_id: koushi_state::SubmissionId,
     },
-    Shutdown,
+    Shutdown {
+        acknowledged: Option<tokio::sync::oneshot::Sender<()>>,
+    },
 }
 
 /// Handle to the timeline manager task (owned by `AccountActor`).
@@ -1168,9 +1170,13 @@ impl TimelineManagerActor {
     }
 
     async fn run(mut self) {
+        let mut shutdown_acknowledgement = None;
         while let Some(msg) = self.msg_rx.recv().await {
             match msg {
-                TimelineMessage::Shutdown => break,
+                TimelineMessage::Shutdown { acknowledged } => {
+                    shutdown_acknowledgement = acknowledged;
+                    break;
+                }
                 TimelineMessage::SyncStarted { room_list_service } => {
                     self.handle_sync_started(room_list_service).await;
                 }
@@ -1200,6 +1206,10 @@ impl TimelineManagerActor {
                     self.handle_command(command).await;
                 }
             }
+        }
+        self.timelines.clear();
+        if let Some(acknowledged) = shutdown_acknowledgement {
+            let _ = acknowledged.send(());
         }
         let room_keys = self
             .timelines
@@ -15631,6 +15641,26 @@ mod tests {
             await_submission_admission(None).await,
             "legacy sends need no permit"
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_acknowledges_after_timeline_children_are_dropped() {
+        let (action_tx, _action_rx) = mpsc::channel(1);
+        let (event_tx, _) = broadcast::channel(1);
+        let handle =
+            TimelineManagerActor::spawn(action_tx, event_tx, None, MessagesBackpressure::default());
+        let (acknowledged, acknowledgement) = tokio::sync::oneshot::channel();
+        assert!(
+            handle
+                .send(TimelineMessage::Shutdown {
+                    acknowledged: Some(acknowledged),
+                })
+                .await
+        );
+        tokio::time::timeout(Duration::from_secs(1), acknowledgement)
+            .await
+            .expect("shutdown acknowledgement must not hang")
+            .expect("timeline manager acknowledges shutdown");
     }
 
     #[tokio::test]

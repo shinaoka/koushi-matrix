@@ -8,8 +8,8 @@ use crate::{
 };
 
 use super::{
-    is_session_ready, refresh_timeline_media_gallery, refresh_timeline_scheduled_sends,
-    refresh_timeline_upload_staging, room_exists,
+    current_session_info, is_session_ready, refresh_timeline_media_gallery,
+    refresh_timeline_scheduled_sends, refresh_timeline_upload_staging, room_exists,
 };
 
 const TIMELINE_SUBSCRIPTION_FAILED_MESSAGE: &str = "Matrix timeline subscription failed";
@@ -430,13 +430,16 @@ pub(crate) fn handle_composer_submission_accepted(
     transaction_id: String,
     body: String,
 ) -> Vec<AppEffect> {
-    if !is_session_ready(state) {
+    if current_session_info(state).is_none() {
         return Vec::new();
     }
     state
         .timeline
         .submission_registry
         .remember_accepted(submission_id.clone());
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
     if state.timeline.room_id.as_deref() != Some(room_id.as_str())
         || state.timeline.composer.pending_submission_id.is_some()
         || state.timeline.composer.pending_transaction_id.is_some()

@@ -154,4 +154,28 @@ describe("composer submission controller", () => {
     );
     expect(controller.begin()).toBe(id);
   });
+
+  it("preserves same-account unknown controllers across lock and releases after terminal", () => {
+    const registry = createComposerSubmissionControllerRegistry(
+      () => createComposerSubmissionController(() => "locked-id")
+    );
+    const controller = registry.forTarget(mainSubmissionTarget("room-a"));
+    const id = controller.begin()!;
+    controller.markUnknown(id, "timeout");
+    expect(registry.forTarget(mainSubmissionTarget("room-a")).begin()).toBe(id);
+    registry.reconcile([id], [id]);
+    expect(registry.forTarget(mainSubmissionTarget("room-a")).begin()).toBe("locked-id");
+  });
+
+  it("clears all controllers on true account reset", () => {
+    let sequence = 0;
+    const registry = createComposerSubmissionControllerRegistry(
+      () => createComposerSubmissionController(() => `id-${++sequence}`)
+    );
+    const old = registry.forTarget(mainSubmissionTarget("room-a"));
+    const oldId = old.begin()!;
+    old.markUnknown(oldId, "timeout");
+    registry.reset();
+    expect(registry.forTarget(mainSubmissionTarget("room-a")).begin()).toBe("id-2");
+  });
 });

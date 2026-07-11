@@ -1121,9 +1121,17 @@ export function App() {
   const [localThreadComposerDrafts, setLocalThreadComposerDrafts] = useState<Record<string, string>>({});
   const stagedUploadFilesRef = useRef<Map<string, File>>(new Map());
   const submissionRegistryRef = useRef<ComposerSubmissionControllerRegistry | null>(null);
+  const submissionAccountOwnerRef = useRef<string | null>(null);
   if (submissionRegistryRef.current === null) {
     submissionRegistryRef.current = createComposerSubmissionControllerRegistry();
   }
+  useEffect(() => {
+    const owner = snapshot?.state.domain.session.user_id ?? null;
+    if (owner === null || (submissionAccountOwnerRef.current !== null && submissionAccountOwnerRef.current !== owner)) {
+      submissionRegistryRef.current?.reset();
+    }
+    submissionAccountOwnerRef.current = owner;
+  }, [snapshot?.state.domain.session.user_id, snapshot?.state.domain.session.kind]);
   const [imageCompressionDialog, setImageCompressionDialog] =
     useState<ImageCompressionDialogState | null>(null);
   const [loginHomeserver, setLoginHomeserver] = useState(DEFAULT_HOMESERVER);

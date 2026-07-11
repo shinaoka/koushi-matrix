@@ -69,6 +69,10 @@ submission registry that survives selected-room and thread navigation. Tauri
 and the frontend reconcile against that registry rather than the visible
 composer. Frontend guards are keyed by main room or thread room/root, so an
 Unknown send from one target can never be retried with another target's draft.
+Lock and recovery preserve the same account's registry and frontend target
+controllers. True logout/account replacement clears both. Account replacement
+awaits a timeline-manager shutdown acknowledgement after child actors are
+dropped before reducer reset, excluding late old-account settlement.
 
 Diagnostics expose only generation/epoch/request tokens, fixed outcomes,
 counts, and durations. They never expose message bodies or Matrix identifiers.
