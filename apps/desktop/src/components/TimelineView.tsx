@@ -2806,6 +2806,10 @@ export const TimelineView = memo(function TimelineView({
                 ? event.AnchorRestoreFinished.key
                 : "SendCompleted" in event
                   ? event.SendCompleted.key
+                  : "SubmissionAccepted" in event
+                    ? event.SubmissionAccepted.key
+                    : "SubmissionRejected" in event
+                      ? event.SubmissionRejected.key
                   : "MediaUploadProgress" in event
                     ? event.MediaUploadProgress.key
                     : "MediaDownloadProgress" in event
@@ -2828,6 +2832,9 @@ export const TimelineView = memo(function TimelineView({
         return;
       }
       emitTimelineEventDiagnosticLog(event, eventKey, emitDiagnosticLog);
+      if ("SubmissionAccepted" in event || "SubmissionRejected" in event) {
+        return;
+      }
       if ("InitialItems" in event) {
         initialItemsSeenForTimelineKeyRef.current = timelineKeyHashRef.current;
         recordTimelineInitialItems(event.InitialItems.items.length);

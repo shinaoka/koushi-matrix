@@ -368,6 +368,22 @@ export type TimelineEvent =
       };
     }
   | {
+      SubmissionAccepted: {
+        request_id: RequestId;
+        key: TimelineKey;
+        submission_id: string;
+        transaction_id: string;
+      };
+    }
+  | {
+      SubmissionRejected: {
+        request_id: RequestId;
+        key: TimelineKey;
+        submission_id: string;
+        kind: TimelineFailureKind;
+      };
+    }
+  | {
       MessageForwarded: {
         request_id: RequestId;
         key: TimelineKey;
