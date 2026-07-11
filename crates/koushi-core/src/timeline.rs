@@ -4821,13 +4821,6 @@ impl TimelineActor {
         // Emit InitialItems (generation 0).
         let generation = TimelineGeneration(0);
         record_subscribe_stage("initial_emitted", Some(initial_items.len()));
-        if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
-            // Private-data-free: item count only, no room/event ids or bodies.
-            eprintln!(
-                "koushi.subscribe stage=initial_emitted count={}",
-                initial_items.len()
-            );
-        }
         let replay_known_candidates = replay_known_candidates_for_display_items(
             &key,
             &navigation_items,
@@ -12809,6 +12802,8 @@ mod tests {
             thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
             replay_known_thread_root_projections: replay_known_thread_root_projections.clone(),
             timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+            #[cfg(test)]
+            test_session_available: false,
         };
 
         for (root_event_id, result) in [
@@ -14153,6 +14148,8 @@ mod tests {
             thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
             replay_known_thread_root_projections: replay_known_thread_root_projections.clone(),
             timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+            #[cfg(test)]
+            test_session_available: false,
         };
 
         manager
@@ -15619,12 +15616,21 @@ mod tests {
             )]),
             action_tx,
             event_tx,
+            msg_tx: manager_tx.clone(),
             msg_rx: manager_rx,
             search_index_tx: None,
             ignored_user_ids: Default::default(),
             data_dir: None,
             link_preview_policy: LinkPreviewContext::default(),
             messages_backpressure: MessagesBackpressure::default(),
+            thread_root_projection_service: Arc::new(Mutex::new(
+                ThreadRootProjectionService::default(),
+            )),
+            thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
+            replay_known_thread_root_projections: Arc::new(Mutex::new(
+                ReplayKnownThreadRootProjectionRegistry::default(),
+            )),
+            timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
             test_session_available: true,
         };
 
@@ -15784,12 +15790,21 @@ mod tests {
             )]),
             action_tx,
             event_tx,
+            msg_tx: _manager_tx,
             msg_rx: manager_rx,
             search_index_tx: None,
             ignored_user_ids: Default::default(),
             data_dir: None,
             link_preview_policy: LinkPreviewContext::default(),
             messages_backpressure: MessagesBackpressure::default(),
+            thread_root_projection_service: Arc::new(Mutex::new(
+                ThreadRootProjectionService::default(),
+            )),
+            thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
+            replay_known_thread_root_projections: Arc::new(Mutex::new(
+                ReplayKnownThreadRootProjectionRegistry::default(),
+            )),
+            timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
             test_session_available: true,
         };
 
