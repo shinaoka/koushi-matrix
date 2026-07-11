@@ -57,6 +57,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_sdk::{
     MatrixClientSession, MatrixCreateRoomOptions, MatrixCreateRoomParentSpace,
     MatrixCreateRoomVisibility, MatrixPublicRoomDirectoryQuery, MatrixPublicRoomDirectoryRoom,
@@ -2731,13 +2732,16 @@ fn classify_report_error(
     }
 }
 
-fn trace_room_operation(kind: &str, stage: &str, request_id: RequestId) {
-    if std::env::var_os("KOUSHI_CORE_ACTOR_TRACE").is_some() {
-        eprintln!(
-            "koushi_core actor_trace room_actor stage={stage} kind={kind} request_id={}/{}",
-            request_id.connection_id.0, request_id.sequence
-        );
-    }
+fn trace_room_operation(kind: &'static str, stage: &'static str, request_id: RequestId) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.room", stage)
+            .field(DiagnosticField::token("operation", kind))
+            .field(DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence,
+            )),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2765,6 +2769,14 @@ pub mod tests {
             connection_id: RuntimeConnectionId(1),
             sequence: seq,
         }
+    }
+
+    #[test]
+    fn room_operation_records_without_environment_switch() {
+        trace_room_operation("create_room", "test_always_on", make_request_id(999));
+        assert!(koushi_diagnostics::snapshot().records.iter().any(|record| {
+            record.event.source == "core.room" && record.event.stage == "test_always_on"
+        }));
     }
 
     // --- Error classification ---

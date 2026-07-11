@@ -60,9 +60,11 @@ import type {
   FilesViewScope,
   UserProfile
 } from "../domain/types";
+import type { DiagnosticLogSnapshot } from "../domain/diagnostics";
 
 export interface DesktopApi {
   getSnapshot(): Promise<DesktopSnapshot>;
+  getDiagnosticSnapshot(): Promise<DiagnosticLogSnapshot>;
   discoverLoginMethods(homeserver: string): Promise<DesktopSnapshot>;
   startOidcLogin(homeserver: string): Promise<OidcAuthorization>;
   completeOidcLogin(homeserver: string, callbackUrl: string): Promise<DesktopSnapshot>;
@@ -261,6 +263,10 @@ class BrowserFakeApi implements DesktopApi {
   async getSnapshot(): Promise<DesktopSnapshot> {
     this.refreshRoomPresentation();
     return clone(this.snapshot);
+  }
+
+  async getDiagnosticSnapshot(): Promise<DiagnosticLogSnapshot> {
+    return { entries: [], droppedEntries: 0 };
   }
 
   async discoverLoginMethods(homeserver: string): Promise<DesktopSnapshot> {

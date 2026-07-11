@@ -20,6 +20,7 @@ required-features = ["smoke"]
 [dependencies]
 eyeball-im = "0.8"
 futures-util = "0.3"
+koushi-diagnostics = { path = "../koushi-diagnostics" }
 koushi-state = { path = "../koushi-state" }
 matrix-sdk = { workspace = true }
 matrix-sdk-search = { workspace = true }

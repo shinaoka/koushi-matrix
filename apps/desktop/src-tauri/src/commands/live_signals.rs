@@ -10,6 +10,8 @@ pub async fn send_read_receipt(
 ) -> Result<(), String> {
     let account_key = account_key_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
+    let trace_started = std::time::Instant::now();
+    trace_tauri_timeline_command("submit", "send_read_receipt", request_id);
     if let Some(command) = build_send_read_receipt_command(
         request_id,
         account_key,
@@ -20,6 +22,12 @@ pub async fn send_read_receipt(
         submit_core_command(state.inner(), command).await?;
     }
     update_qa_window_title_from_state(&app, state.inner()).await;
+    trace_tauri_timeline_command_elapsed(
+        "done",
+        "send_read_receipt",
+        request_id,
+        trace_started.elapsed().as_millis(),
+    );
     Ok(())
 }
 
@@ -32,11 +40,19 @@ pub async fn set_fully_read(
 ) -> Result<(), String> {
     let account_key = account_key_from_snapshot(state.inner()).await;
     let request_id = next_request_id(state.inner()).await;
+    let trace_started = std::time::Instant::now();
+    trace_tauri_timeline_command("submit", "set_fully_read", request_id);
     if let Some(command) = build_set_fully_read_command(request_id, account_key, room_id, event_id)
     {
         submit_core_command(state.inner(), command).await?;
     }
     update_qa_window_title_from_state(&app, state.inner()).await;
+    trace_tauri_timeline_command_elapsed(
+        "done",
+        "set_fully_read",
+        request_id,
+        trace_started.elapsed().as_millis(),
+    );
     Ok(())
 }
 

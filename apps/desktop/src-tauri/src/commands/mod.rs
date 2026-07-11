@@ -10,22 +10,25 @@
 //! (Secret-bearing QA helpers remain behind `#[cfg(any(debug_assertions, test))]`.)
 
 use std::{
+    future::Future,
     path::PathBuf,
+    pin::Pin,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
 use koushi_core::{
     AccountCommand, AccountEvent, AccountKey, AppCommand, CoreCommand, CoreConnection, CoreEvent,
-    CoreFailure, CreateRoomOptions, ImageUploadCompressionPolicy, ImageUploadCompressionState,
-    ImageUploadDimensions, ImageUploadVariantKind, IntentNoOpReason, IntentOutcome,
-    MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent,
+    CoreFailure, CreateRoomOptions, EventStreamLag, ImageUploadCompressionPolicy,
+    ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantKind, IntentNoOpReason,
+    IntentOutcome, MediaDownloadSelection, PaginationDirection, RequestId, RoomCommand, RoomEvent,
     RoomKeyExportRequest, RoomKeyImportRequest, SearchCommand, SearchEvent, SearchScope,
     SecureBackupPassphraseChangeRequest, SecureBackupSetupRequest, SetAvatarRequest, SyncCommand,
     TimelineCommand, TimelineDiff, TimelineEvent, TimelineItem, TimelineItemId, TimelineKey,
     TimelineKind, TimelineViewportObservation, UploadMediaKind, UploadMediaRequest,
     UploadMediaThumbnail,
 };
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentSort, AuthSecret,
     ComposerKeyEvent, ComposerResolvedAction, ComposerResolverContext, ComposerSurface,
@@ -58,6 +61,7 @@ const TIMELINE_RESTORE_ANCHOR_MAX_BATCHES: u16 = 6;
 
 pub(crate) mod account;
 pub(crate) mod activity;
+pub(crate) mod diagnostics;
 pub(crate) mod directory;
 pub(crate) mod e2ee;
 pub(crate) mod live_signals;
@@ -96,12 +100,115 @@ async fn next_request_id(state: &CoreRuntimeState) -> koushi_core::RequestId {
     state.connection.lock().await.next_request_id()
 }
 
-pub(crate) fn trace_tauri_timeline_command(stage: &str, kind: &str, request_id: RequestId) {
-    if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
-        eprintln!(
-            "koushi.desktop stage={stage} kind={kind} request_id={}/{}",
-            request_id.connection_id.0, request_id.sequence
-        );
+pub(crate) fn trace_tauri_timeline_command(
+    stage: &'static str,
+    kind: &'static str,
+    request_id: RequestId,
+) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "desktop.timeline", stage)
+            .field(DiagnosticField::token("operation", kind))
+            .field(DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence,
+            )),
+    );
+}
+
+pub(crate) fn trace_tauri_timeline_command_elapsed(
+    stage: &'static str,
+    kind: &'static str,
+    request_id: RequestId,
+    elapsed_ms: u128,
+) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "desktop.timeline", stage)
+            .field(DiagnosticField::token("operation", kind))
+            .field(DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence,
+            ))
+            .field(DiagnosticField::milliseconds("elapsed_ms", elapsed_ms)),
+    );
+}
+
+fn record_select_trace(
+    stage: &'static str,
+    outcome: &'static str,
+    events: u32,
+    state_changed: u32,
+    state_delta: u32,
+    active: &'static str,
+) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "desktop.select", stage)
+            .field(DiagnosticField::count("events", events.into()))
+            .field(DiagnosticField::count(
+                "state_changed",
+                state_changed.into(),
+            ))
+            .field(DiagnosticField::count("state_delta", state_delta.into()))
+            .field(DiagnosticField::token("outcome", outcome))
+            .field(DiagnosticField::token("active", active)),
+    );
+}
+
+fn record_select_intent_trace(
+    stage: &'static str,
+    outcome: &IntentOutcome,
+    events: u32,
+    state_changed: u32,
+    state_delta: u32,
+) {
+    let (outcome_token, active) = match outcome {
+        IntentOutcome::Committed => ("committed", "selected"),
+        IntentOutcome::BenignNoOp(IntentNoOpReason::AlreadyActive) => {
+            ("already_active", "selected")
+        }
+        IntentOutcome::BenignNoOp(IntentNoOpReason::RoomNotInState) => {
+            ("room_not_in_state", "unknown")
+        }
+        IntentOutcome::BenignNoOp(IntentNoOpReason::SessionNotReady) => {
+            ("session_not_ready", "unknown")
+        }
+        IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState) => {
+            ("room_not_in_state", "unknown")
+        }
+        IntentOutcome::FailedNoOp(IntentNoOpReason::SessionNotReady) => {
+            ("session_not_ready", "unknown")
+        }
+        IntentOutcome::FailedNoOp(IntentNoOpReason::AlreadyActive) => {
+            ("already_active", "selected")
+        }
+    };
+    record_select_trace(
+        stage,
+        outcome_token,
+        events,
+        state_changed,
+        state_delta,
+        active,
+    );
+}
+
+trait SelectEventSource {
+    fn snapshot(&self) -> koushi_state::AppState;
+    fn recv_event(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<CoreEvent, EventStreamLag>> + Send + '_>>;
+}
+
+impl SelectEventSource for CoreConnection {
+    fn snapshot(&self) -> koushi_state::AppState {
+        CoreConnection::snapshot(self)
+    }
+
+    fn recv_event(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<CoreEvent, EventStreamLag>> + Send + '_>> {
+        Box::pin(CoreConnection::recv_event(self))
     }
 }
 
@@ -562,19 +669,12 @@ async fn wait_for_main_timeline_anchor(
     }
 }
 
-async fn wait_for_selected_room(
-    event_conn: &mut CoreConnection,
+async fn wait_for_selected_room<S: SelectEventSource + ?Sized>(
+    event_conn: &mut S,
     select_request_id: RequestId,
     selected_room_id: &str,
     timeout: std::time::Duration,
 ) -> Result<(), String> {
-    // Diagnostic-only, private-data-free probe (no room ids). Enable with
-    // KOUSHI_SUBSCRIBE_TRACE=1 to see WHY select_room times out:
-    //   events=0                      -> runtime/AppActor delivered nothing (hung)
-    //   events>0, active=none         -> deltas flow but the reducer never set
-    //                                    the active room (command unprocessed/rejected)
-    //   events>0, active=other        -> a different room got selected
-    let trace = std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some();
     let deadline = tokio::time::Instant::now() + timeout;
     let mut events: u32 = 0;
     let mut state_changed: u32 = 0;
@@ -582,24 +682,30 @@ async fn wait_for_selected_room(
 
     loop {
         if snapshot_has_active_room(&event_conn.snapshot(), selected_room_id) {
-            if trace {
-                eprintln!(
-                    "koushi.select stage=ok_watch events={events} state_changed={state_changed} state_delta={state_delta}"
-                );
-            }
+            record_select_trace(
+                "ok_watch",
+                "ok_watch",
+                events,
+                state_changed,
+                state_delta,
+                "selected",
+            );
             return Ok(());
         }
 
         let event = match tokio::time::timeout_at(deadline, event_conn.recv_event()).await {
             Ok(event) => event,
             Err(_) => {
-                if trace {
-                    let active =
-                        select_active_room_trace_label(&event_conn.snapshot(), selected_room_id);
-                    eprintln!(
-                        "koushi.select stage=timeout events={events} state_changed={state_changed} state_delta={state_delta} active={active}"
-                    );
-                }
+                let active =
+                    select_active_room_trace_label(&event_conn.snapshot(), selected_room_id);
+                record_select_trace(
+                    "timeout",
+                    "timeout",
+                    events,
+                    state_changed,
+                    state_delta,
+                    active,
+                );
                 return Err("room selection did not complete".to_owned());
             }
         };
@@ -608,9 +714,14 @@ async fn wait_for_selected_room(
             Ok(CoreEvent::StateChanged(snapshot)) => {
                 state_changed += 1;
                 if snapshot_has_active_room(&snapshot, selected_room_id) {
-                    if trace {
-                        eprintln!("koushi.select stage=ok_statechanged events={events}");
-                    }
+                    record_select_trace(
+                        "ok_statechanged",
+                        "ok_statechanged",
+                        events,
+                        state_changed,
+                        state_delta,
+                        "selected",
+                    );
                     return Ok(());
                 }
             }
@@ -621,9 +732,14 @@ async fn wait_for_selected_room(
                 request_id,
                 failure,
             }) if request_id == select_request_id => {
-                if trace {
-                    eprintln!("koushi.select stage=op_failed events={events}");
-                }
+                record_select_trace(
+                    "op_failed",
+                    "op_failed",
+                    events,
+                    state_changed,
+                    state_delta,
+                    "unknown",
+                );
                 return Err(invoke_error_from_core_failure(
                     "room selection failed",
                     failure,
@@ -637,48 +753,66 @@ async fn wait_for_selected_room(
             }) if request_id == select_request_id => {
                 match outcome {
                     IntentOutcome::Committed | IntentOutcome::BenignNoOp(_) => {
-                        if trace {
-                            eprintln!(
-                                "koushi.select stage=ok_intent events={events} outcome={outcome:?}"
-                            );
-                        }
+                        record_select_intent_trace(
+                            "ok_intent",
+                            &outcome,
+                            events,
+                            state_changed,
+                            state_delta,
+                        );
                         return Ok(());
                     }
                     IntentOutcome::FailedNoOp(IntentNoOpReason::RoomNotInState) => {
-                        if trace {
-                            eprintln!("koushi.select stage=failed_not_in_state events={events}");
-                        }
+                        record_select_trace(
+                            "failed_not_in_state",
+                            "failed_not_in_state",
+                            events,
+                            state_changed,
+                            state_delta,
+                            "unknown",
+                        );
                         return Err("room not yet loaded".to_owned());
                     }
                     IntentOutcome::FailedNoOp(IntentNoOpReason::SessionNotReady) => {
-                        if trace {
-                            eprintln!(
-                                "koushi.select stage=failed_session_not_ready events={events}"
-                            );
-                        }
+                        record_select_trace(
+                            "failed_session_not_ready",
+                            "failed_session_not_ready",
+                            events,
+                            state_changed,
+                            state_delta,
+                            "unknown",
+                        );
                         return Err("session not ready".to_owned());
                     }
                     IntentOutcome::FailedNoOp(IntentNoOpReason::AlreadyActive) => {
                         // AlreadyActive is benign; this arm is unreachable per
                         // the classification logic but handle it defensively.
-                        if trace {
-                            eprintln!("koushi.select stage=ok_already_active events={events}");
-                        }
+                        record_select_trace(
+                            "ok_already_active",
+                            "already_active",
+                            events,
+                            state_changed,
+                            state_delta,
+                            "selected",
+                        );
                         return Ok(());
                     }
                 }
             }
             Ok(_) => {}
             Err(_) if snapshot_has_active_room(&event_conn.snapshot(), selected_room_id) => {
-                if trace {
-                    eprintln!("koushi.select stage=ok_after_lag events={events}");
-                }
+                record_select_trace(
+                    "ok_after_lag",
+                    "ok_after_lag",
+                    events,
+                    state_changed,
+                    state_delta,
+                    "selected",
+                );
                 return Ok(());
             }
             Err(_) => {
-                if trace {
-                    eprintln!("koushi.select stage=lag events={events}");
-                }
+                record_select_trace("lag", "lag", events, state_changed, state_delta, "unknown");
                 continue;
             }
         }
@@ -3063,11 +3197,12 @@ mod tests {
     };
     use koushi_core::AccountKey;
     use koushi_core::{
-        AccountCommand, AppCommand, CoreCommand, CreateRoomOptions, CreateRoomParentSpace,
-        CreateRoomVisibility, ImageUploadCompressionPolicy, ImageUploadCompressionState,
-        ImageUploadDimensions, ImageUploadVariantInfo, ImageUploadVariantKind,
-        MediaDownloadSelection, PaginationDirection, RoomCommand, SearchCommand, SearchScope,
-        SyncCommand, TimelineCommand, UploadMediaKind, UploadMediaThumbnail,
+        AccountCommand, AppCommand, CoreCommand, CoreConnection, CoreEvent, CreateRoomOptions,
+        CreateRoomParentSpace, CreateRoomVisibility, ImageUploadCompressionPolicy,
+        ImageUploadCompressionState, ImageUploadDimensions, ImageUploadVariantInfo,
+        ImageUploadVariantKind, IntentNoOpReason, IntentOutcome, MediaDownloadSelection,
+        PaginationDirection, RequestId, RoomCommand, SearchCommand, SearchScope, SyncCommand,
+        TimelineCommand, UploadMediaKind, UploadMediaThumbnail,
     };
     use koushi_state::{
         ActivityMarkReadTarget, ActivityTab, AppearanceSettings, ImageUploadCompressionMode,
@@ -3123,8 +3258,69 @@ mod tests {
         build_update_room_setting_command, build_update_settings_command,
         build_upload_media_command, parse_qa_control_pipe_line, parse_qa_login_pipe_payload,
         qa_recovery_prompt_is_available, qa_window_title_string,
-        resolve_search_scope_from_active_room,
+        resolve_search_scope_from_active_room, trace_tauri_timeline_command,
+        trace_tauri_timeline_command_elapsed,
     };
+    use std::collections::VecDeque;
+
+    struct ScriptedSelectSource {
+        snapshot: AppState,
+        events: VecDeque<Result<CoreEvent, koushi_core::EventStreamLag>>,
+    }
+
+    struct ScriptedSearchPathIo;
+
+    const SYNTHETIC_QUERY: &str = "  synthetic-query-text event synthetic-event-id user synthetic-user-id body synthetic-body-text url https://synthetic.example/path absolute /synthetic/private/path  ";
+
+    impl super::search::SearchPathIo for ScriptedSearchPathIo {
+        fn submit<'a>(
+            &'a self,
+            _state: &'a super::CoreRuntimeState,
+            command: CoreCommand,
+        ) -> super::search::SearchPathFuture<'a> {
+            match command {
+                CoreCommand::Search(SearchCommand::Query { query, scope, .. }) => {
+                    assert_eq!(query, SYNTHETIC_QUERY);
+                    assert_eq!(
+                        scope,
+                        SearchScope::CurrentRoom {
+                            room_id: "synthetic-room-id".to_owned()
+                        }
+                    );
+                }
+                other => panic!("unexpected search command: {other:?}"),
+            }
+            Box::pin(std::future::ready(Ok(())))
+        }
+
+        fn wait<'a>(
+            &'a self,
+            _connection: &'a mut CoreConnection,
+            _request_id: RequestId,
+        ) -> super::search::SearchPathFuture<'a> {
+            Box::pin(std::future::ready(Ok(())))
+        }
+    }
+
+    impl super::SelectEventSource for ScriptedSelectSource {
+        fn snapshot(&self) -> AppState {
+            self.snapshot.clone()
+        }
+
+        fn recv_event(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<CoreEvent, koushi_core::EventStreamLag>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(std::future::ready(self.events.pop_front().unwrap_or_else(
+                || Err(koushi_core::EventStreamLag { skipped: 0 }),
+            )))
+        }
+    }
     use koushi_state::{
         PresenceKind, RoomHistoryVisibility, RoomJoinRule, RoomModerationAction, RoomSettingChange,
         RoomSummary, RoomTagKind, RoomTags,
@@ -5303,16 +5499,18 @@ mod tests {
     fn reaction_tauri_command_contracts_are_present() {
         let commands_source = commands_source();
         let lib_source = include_str!("../lib.rs");
-        for (command_name, route_name, registration_name) in [
+        for (command_name, route_name, registration_name, trace_kind) in [
             (
                 "pub async fn send_reaction",
                 "build_send_reaction_command",
                 "commands::timeline::send_reaction",
+                "send_reaction",
             ),
             (
                 "pub async fn redact_reaction",
                 "build_redact_reaction_command",
                 "commands::timeline::redact_reaction",
+                "redact_reaction",
             ),
         ] {
             assert!(
@@ -5326,6 +5524,37 @@ mod tests {
             assert!(
                 lib_source.contains(registration_name),
                 "Tauri command should register {registration_name}"
+            );
+            assert!(
+                commands_source.contains(&format!(
+                    "trace_tauri_timeline_command(\"submit\", \"{trace_kind}\""
+                )),
+                "Tauri command should trace submit for {trace_kind}"
+            );
+            assert!(
+                commands_source.contains(&format!(
+                    "trace_tauri_timeline_command_elapsed(\n        \"done\",\n        \"{trace_kind}\""
+                )),
+                "Tauri command should trace completion latency for {trace_kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_signal_tauri_commands_emit_latency_trace_tokens() {
+        let commands_source = commands_source();
+        for trace_kind in ["send_read_receipt", "set_fully_read"] {
+            assert!(
+                commands_source.contains(&format!(
+                    "trace_tauri_timeline_command(\"submit\", \"{trace_kind}\""
+                )),
+                "read-signal command should trace submit for {trace_kind}"
+            );
+            assert!(
+                commands_source.contains(&format!(
+                    "trace_tauri_timeline_command_elapsed(\n        \"done\",\n        \"{trace_kind}\""
+                )),
+                "read-signal command should trace completion latency for {trace_kind}"
             );
         }
     }
@@ -6090,6 +6319,7 @@ mod tests {
     #[test]
     fn submit_search_returns_after_correlated_search_start_before_result_completion() {
         let source = commands_source();
+        let search_source = include_str!("search.rs");
         let fn_name = "pub async fn submit_search";
 
         let fn_offset = source
@@ -6101,34 +6331,44 @@ mod tests {
             .expect("start_room_crawl command should follow submit_search");
         let command_source = &rest[..end];
 
-        let attach_offset = command_source
+        let helper_offset = search_source
+            .find("pub(crate) async fn submit_search_production_path")
+            .expect("submit_search should use the shared production path");
+        let helper_source = &search_source[helper_offset..];
+        let attach_offset = helper_source
             .find("let mut event_conn = state.runtime.attach()")
-            .expect("submit_search should attach a transient event listener");
-        let request_offset = command_source
-            .find("let request_id = next_request_id(state.inner()).await")
-            .expect("submit_search should allocate request ids from the command connection");
-        let submit_offset = command_source
-            .find("submit_core_command")
-            .expect("submit_search should submit through the command connection");
-        let wait_offset = command_source
-            .find("wait_for_search_started")
-            .expect("submit_search should wait only for the correlated searching state");
+            .expect("production search path should attach a transient event listener");
+        let request_offset = helper_source
+            .find("let request_id = next_request_id(state).await")
+            .expect("production search path should allocate request ids");
+        let submit_offset = helper_source
+            .find("io.submit")
+            .expect("production search path should submit through its internal port");
+        let wait_offset = helper_source
+            .find("io.wait")
+            .expect("production search path should wait for correlated search start");
         let snapshot_offset = command_source
             .find("current_snapshot")
             .expect("submit_search should return a snapshot");
         assert!(
             attach_offset < request_offset
                 && request_offset < submit_offset
-                && submit_offset < wait_offset
-                && wait_offset < snapshot_offset,
-            "submit_search should return the searching snapshot and let results arrive via state events"
+                && submit_offset < wait_offset,
+            "production search path should return after correlated search start"
+        );
+        let call_offset = command_source
+            .find("submit_search_production_path")
+            .expect("submit_search should call the shared production path");
+        assert!(
+            call_offset < snapshot_offset,
+            "submit_search should return the searching snapshot after the production path"
         );
         assert!(
-            !command_source.contains("let request_id = event_conn.next_request_id()"),
+            !helper_source.contains("let request_id = event_conn.next_request_id()"),
             "submit_search must not use transient event-connection sequence numbers for state correlation"
         );
         assert!(
-            !command_source.contains("wait_for_search_completed"),
+            !helper_source.contains("wait_for_search_completed"),
             "submit_search must not block the renderer on search result completion"
         );
     }
@@ -6668,5 +6908,265 @@ mod tests {
             methods: vec![],
         };
         assert!(super::snapshot_has_authenticated_session(&state));
+    }
+
+    #[test]
+    fn tauri_diagnostics_record_without_stderr_environment_switch() {
+        let request_id = RequestId {
+            connection_id: koushi_core::RuntimeConnectionId(99),
+            sequence: 7,
+        };
+
+        trace_tauri_timeline_command("submit", "diagnostic_test", request_id);
+        trace_tauri_timeline_command_elapsed("done", "diagnostic_test", request_id, 3);
+
+        let records = koushi_diagnostics::snapshot().records;
+        assert!(records.iter().any(|record| {
+            record.event.source == "desktop.timeline"
+                && record.event.stage == "submit"
+                && koushi_diagnostics::format_event(&record.event)
+                    .contains("operation=diagnostic_test")
+        }));
+        assert!(records.iter().any(|record| {
+            record.event.source == "desktop.timeline" && record.event.stage == "done"
+        }));
+    }
+
+    #[test]
+    fn select_diagnostics_keep_intent_outcomes_distinct() {
+        super::record_select_intent_trace("ok_intent", &IntentOutcome::Committed, 0, 0, 0);
+        super::record_select_intent_trace(
+            "ok_intent",
+            &IntentOutcome::BenignNoOp(IntentNoOpReason::AlreadyActive),
+            0,
+            0,
+            0,
+        );
+
+        let records = koushi_diagnostics::snapshot().records;
+        let select_records = records
+            .iter()
+            .filter(|record| record.event.source == "desktop.select")
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>();
+        assert_eq!(select_records.len(), 2);
+        let pairs = select_records
+            .iter()
+            .map(|record| {
+                let fields = &record.event.fields;
+                let outcome = fields
+                    .iter()
+                    .find(|field| field.key == "outcome")
+                    .expect("intent record should include outcome");
+                let active = fields
+                    .iter()
+                    .find(|field| field.key == "active")
+                    .expect("intent record should include active");
+                (outcome.value.clone(), active.value.clone())
+            })
+            .collect::<Vec<_>>();
+        assert!(pairs.iter().any(|(outcome, active)| {
+            matches!(
+                (outcome, active),
+                (
+                    koushi_diagnostics::DiagnosticValue::Token("committed"),
+                    koushi_diagnostics::DiagnosticValue::Token("selected")
+                )
+            )
+        }));
+        assert!(pairs.iter().any(|(outcome, active)| {
+            matches!(
+                (outcome, active),
+                (
+                    koushi_diagnostics::DiagnosticValue::Token("already_active"),
+                    koushi_diagnostics::DiagnosticValue::Token("selected")
+                )
+            )
+        }));
+    }
+
+    #[test]
+    fn env_unset_real_search_and_select_producers_are_private_data_free() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "commands::tests::env_unset_real_search_and_select_producers_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env_remove("KOUSHI_SUBSCRIBE_TRACE")
+            .env_remove("KOUSHI_SEARCH_TRACE")
+            .output()
+            .expect("env-unset diagnostic child should run");
+        assert!(output.status.success(), "child failed: {output:?}");
+        let stdout = String::from_utf8(output.stdout).expect("child stdout should be utf8");
+        let snapshot: serde_json::Value = serde_json::from_str(
+            stdout
+                .lines()
+                .find(|line| line.starts_with('{'))
+                .expect("child should print one JSON snapshot"),
+        )
+        .expect("child output should be a JSON snapshot");
+        let records = snapshot["records"]
+            .as_array()
+            .expect("records should be an array");
+        let fields = |source: &str, stage: &str| {
+            records
+                .iter()
+                .find(|record| {
+                    record["event"]["source"] == source && record["event"]["stage"] == stage
+                })
+                .and_then(|record| record["event"]["fields"].as_array())
+                .expect("expected diagnostic record")
+        };
+        let field = |fields: &[serde_json::Value], key: &str| {
+            fields
+                .iter()
+                .find(|field| field["key"] == key)
+                .map(|field| field["value"].clone())
+                .expect("expected typed field")
+        };
+        let search_fields = fields("desktop.search", "submit");
+        assert_eq!(
+            field(search_fields, "ui_scope"),
+            serde_json::json!({"kind":"token","value":"current_room"})
+        );
+        assert_eq!(
+            field(search_fields, "resolved_scope"),
+            serde_json::json!({"kind":"token","value":"current_room"})
+        );
+        assert_eq!(
+            field(search_fields, "query_bytes"),
+            serde_json::json!({"kind":"count","value":161})
+        );
+        assert_eq!(
+            field(search_fields, "query_chars"),
+            serde_json::json!({"kind":"count","value":161})
+        );
+        assert_eq!(field(search_fields, "request_id")["kind"], "request_id");
+
+        let select_fields = records
+            .iter()
+            .filter(|record| {
+                record["event"]["source"] == "desktop.select"
+                    && record["event"]["stage"] == "ok_intent"
+            })
+            .map(|record| record["event"]["fields"].as_array().expect("select fields"))
+            .collect::<Vec<_>>();
+        assert_eq!(select_fields.len(), 2);
+        for fields in &select_fields {
+            assert_eq!(
+                field(fields, "events"),
+                serde_json::json!({"kind":"count","value":1})
+            );
+            assert_eq!(
+                field(fields, "state_changed"),
+                serde_json::json!({"kind":"count","value":0})
+            );
+            assert_eq!(
+                field(fields, "state_delta"),
+                serde_json::json!({"kind":"count","value":0})
+            );
+            assert_eq!(
+                field(fields, "active"),
+                serde_json::json!({"kind":"token","value":"selected"})
+            );
+        }
+        let outcome_active = select_fields
+            .iter()
+            .map(|fields| {
+                (
+                    field(fields, "outcome").clone(),
+                    field(fields, "active").clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(outcome_active.contains(&(
+            serde_json::json!({"kind":"token","value":"committed"}),
+            serde_json::json!({"kind":"token","value":"selected"}),
+        )));
+        assert!(outcome_active.contains(&(
+            serde_json::json!({"kind":"token","value":"already_active"}),
+            serde_json::json!({"kind":"token","value":"selected"}),
+        )));
+        let serialized_snapshot =
+            serde_json::to_string(&snapshot).expect("parsed diagnostic snapshot should serialize");
+        for private_value in [
+            "synthetic-room-id",
+            "synthetic-query-text",
+            "synthetic-event-id",
+            "synthetic-user-id",
+            "synthetic-body-text",
+            "https://synthetic.example/path",
+            "/synthetic/private/path",
+        ] {
+            assert!(
+                !serialized_snapshot.contains(private_value),
+                "diagnostic snapshot leaked {private_value}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn env_unset_real_search_and_select_producers_child() {
+        assert!(std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_none());
+        assert!(std::env::var_os("KOUSHI_SEARCH_TRACE").is_none());
+
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime should build");
+        async_runtime.block_on(async {
+            let data_dir = tempfile::tempdir().expect("runtime data dir should be created");
+            let runtime = koushi_core::CoreRuntime::start_with_data_dir(data_dir.path().to_owned());
+            let connection = runtime.attach();
+            let state = super::CoreRuntimeState {
+                runtime,
+                connection: tokio::sync::Mutex::new(connection),
+                timeline_items_count: std::sync::atomic::AtomicUsize::new(0),
+            };
+            super::search::submit_search_production_path(
+                SYNTHETIC_QUERY.to_owned(),
+                SearchScopeKind::CurrentRoom,
+                SearchScope::CurrentRoom {
+                    room_id: "synthetic-room-id".to_owned(),
+                },
+                &state,
+                &ScriptedSearchPathIo,
+            )
+            .await
+            .expect("production search path should reach searching state");
+
+            let request_id = RequestId {
+                connection_id: koushi_core::RuntimeConnectionId(101),
+                sequence: 9,
+            };
+            for outcome in [
+                IntentOutcome::Committed,
+                IntentOutcome::BenignNoOp(IntentNoOpReason::AlreadyActive),
+            ] {
+                let mut source = ScriptedSelectSource {
+                    snapshot: AppState::default(),
+                    events: VecDeque::from([Ok(CoreEvent::IntentLifecycle {
+                        request_id,
+                        outcome,
+                    })]),
+                };
+                super::wait_for_selected_room(
+                    &mut source,
+                    request_id,
+                    "synthetic-room-id",
+                    std::time::Duration::from_millis(10),
+                )
+                .await
+                .expect("scripted intent event should select the room");
+            }
+        });
+
+        let serialized = serde_json::to_string(&koushi_diagnostics::snapshot())
+            .expect("diagnostic snapshot should serialize");
+        println!("{serialized}");
     }
 }

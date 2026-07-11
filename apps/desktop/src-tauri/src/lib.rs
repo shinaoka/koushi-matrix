@@ -1010,6 +1010,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::diagnostics::get_diagnostic_snapshot,
             commands::session::get_snapshot,
             commands::session::discover_login_methods,
             commands::session::start_oidc_login,

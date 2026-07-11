@@ -210,9 +210,7 @@ async function runStartupLatency() {
     KOUSHI_REAL_QA_CREDENTIALS_PATH: credentialsPath,
     KOUSHI_REAL_QA_SCENARIO: "startup_latency",
     KOUSHI_QA_FILE_CREDENTIAL_STORE_DIR: credStoreDir,
-    KOUSHI_QA_DATA_DIR: dataDir,
-    // Enable the env-gated origin observer and sub-phase timing.
-    KOUSHI_STARTUP_TRACE: "1"
+    KOUSHI_QA_DATA_DIR: dataDir
   };
 
   const cargoArgs = [

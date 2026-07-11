@@ -84,7 +84,9 @@ import {
 import {
   appendDiagnosticLogEntry,
   diagnosticReport,
+  schemaMismatchDiagnosticEntry,
   type DiagnosticLogEntry,
+  type DiagnosticLogSnapshot,
   type SecurityDiagnostics
 } from "./domain/diagnostics";
 import {
@@ -917,10 +919,6 @@ function qaSendSmokeTargetUserId(): string | null {
   );
 }
 
-function verboseDiagnosticsEnabled(): boolean {
-  return import.meta.env.VITE_KOUSHI_VERBOSE_DIAGNOSTICS === "1";
-}
-
 function qaRenderedDomDiagnostics(): QaDomDiagnostics {
   const root = document.getElementById("root");
   const screen = document.querySelector('[data-testid="boot-error"]')
@@ -1089,9 +1087,8 @@ export function App() {
   // self-healing rather than latching the app into the recovery screen.
   const setSnapshot = useCallback((next: DesktopSnapshot | null) => {
     if (next && next.state.schema_version !== SNAPSHOT_SCHEMA_VERSION) {
-      console.error(
-        `Koushi snapshot schema_version ${next.state.schema_version} != expected ` +
-          `${SNAPSHOT_SCHEMA_VERSION}: stale or mismatched IPC contract.`
+      setDiagnosticLogEntries((current) =>
+        appendDiagnosticLogEntry(current, schemaMismatchDiagnosticEntry(Date.now()))
       );
       setSchemaMismatchVersion(next.state.schema_version ?? -1);
       return;
@@ -1141,6 +1138,8 @@ export function App() {
   const [directorySearchDraft, setDirectorySearchDraft] = useState("");
   const [newDmDialogOpen, setNewDmDialogOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [runtimeDiagnosticSnapshot, setRuntimeDiagnosticSnapshot] =
+    useState<DiagnosticLogSnapshot>({ entries: [], droppedEntries: 0 });
   const [displayDensity, setDisplayDensityState] =
     useState<DisplayDensity>(readDisplayDensity);
   const [spaceLocalOverrides, setSpaceLocalOverrides] =
@@ -1161,7 +1160,6 @@ export function App() {
   const [reportReasonDraft, setReportReasonDraft] = useState("");
   const [timelineStore, setTimelineStore] = useState<TimelineStoreState>(createTimelineStore);
   const uiLatencyDiagnostics = useUiLatencyDiagnostics();
-  const verboseDiagnosticBuild = verboseDiagnosticsEnabled();
   const searchTimer = useRef<number | null>(null);
   const qaSendStarted = useRef(false);
   const qaSendPending = useRef(false);
@@ -1201,6 +1199,7 @@ export function App() {
   const localComposerDraftsRef = useRef<Record<string, string>>({});
   const threadComposerDraftPersistTimers = useRef<Record<string, number>>({});
   const panelDiagnosticRef = useRef<string | null>(null);
+  const diagnosticSnapshotRequestGenerationRef = useRef(0);
   const typingSignalRef = useRef<{ roomId: string | null; isTyping: boolean }>({
     roomId: null,
     isTyping: false
@@ -2133,6 +2132,27 @@ export function App() {
     setReportReasonDraft("");
   }
 
+  async function openDiagnostics() {
+    const requestGeneration = ++diagnosticSnapshotRequestGenerationRef.current;
+    try {
+      const nextSnapshot = await api.getDiagnosticSnapshot();
+      if (requestGeneration !== diagnosticSnapshotRequestGenerationRef.current) {
+        return;
+      }
+      setRuntimeDiagnosticSnapshot(nextSnapshot);
+    } catch {
+      if (requestGeneration !== diagnosticSnapshotRequestGenerationRef.current) {
+        return;
+      }
+      appendDiagnosticLog({
+        timestampMs: Date.now(),
+        source: "diagnostics.fetch",
+        message: "kind=unavailable"
+      });
+    }
+    setDiagnosticsOpen(true);
+  }
+
   function closeReportDialog() {
     setReportDialog(null);
     setReportReasonDraft("");
@@ -2189,20 +2209,20 @@ export function App() {
     appendDiagnosticLog({
       timestampMs: Date.now(),
       source: "e2ee.room_key",
-      message: `manual reshare requested room=${roomId}`
+      message: "operation=manual_reshare stage=request"
     });
     try {
       setSnapshot(await api.reshareRoomKey(roomId));
       appendDiagnosticLog({
         timestampMs: Date.now(),
         source: "e2ee.room_key",
-        message: `manual reshare completed room=${roomId}`
+        message: "operation=manual_reshare stage=completed"
       });
     } catch (error) {
       appendDiagnosticLog({
         timestampMs: Date.now(),
         source: "e2ee.room_key",
-        message: `manual reshare failed room=${roomId} error=${String(error)}`
+        message: "operation=manual_reshare stage=failed kind=transport"
       });
       throw error;
     }
@@ -3507,7 +3527,9 @@ export function App() {
           onOpenKeyboardSettings={() => {
             void setRightPanelModeClosingFocusedContext("keyboardSettings");
           }}
-          onOpenDiagnostics={() => setDiagnosticsOpen(true)}
+          onOpenDiagnostics={() => {
+            void openDiagnostics();
+          }}
           onRestartSync={restartSync}
           onSearchQueryChange={setSearchQuery}
           onSearchScopeChange={setSearchScope}
@@ -3826,9 +3848,7 @@ export function App() {
           onUpdateMemberRole={(roomId, targetUserId, powerLevel) => {
             void updateRoomMemberRole(roomId, targetUserId, powerLevel);
           }}
-          onReshareRoomKey={(roomId) => {
-            void reshareRoomKey(roomId);
-          }}
+          onReshareRoomKey={reshareRoomKey}
           onRecoverySecretPresenceChange={setRecoverySecretFilled}
           onReply={(roomId, eventId) => {
             void setComposerReplyTarget(roomId, eventId);
@@ -4046,11 +4066,9 @@ export function App() {
             stateDeltaStats: getAppStoreDeltaStats(),
             timelineTransportStats: getTimelineTransportStats(),
             jsErrors: getRecentJsErrors(),
-            logEntries: diagnosticLogEntries,
-            verboseDiagnostics: {
-              enabled: verboseDiagnosticBuild,
-              security: verboseDiagnosticBuild ? qaSecurityDiagnostics() : undefined
-            }
+            logEntries: [...diagnosticLogEntries, ...runtimeDiagnosticSnapshot.entries],
+            droppedLogEntries: runtimeDiagnosticSnapshot.droppedEntries,
+            securityDiagnostics: qaSecurityDiagnostics()
           })}
           onClose={() => setDiagnosticsOpen(false)}
         />

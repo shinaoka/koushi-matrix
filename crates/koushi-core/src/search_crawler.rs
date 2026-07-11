@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_search::{AttachmentDocument, SensitiveString};
 use koushi_state::{
     AttachmentKind, SearchCrawlerFailureKind, SearchCrawlerSettings, SearchCrawlerSpeed,
@@ -71,6 +72,22 @@ pub(crate) enum HistoryCrawlPageResult {
     Preempted { checkpoint: HistoryCrawlCheckpoint },
 }
 
+fn trace_crawler_page(
+    level: DiagnosticLevel,
+    outcome: &'static str,
+    processed: u64,
+    indexed: u64,
+    page_items: u64,
+) {
+    record(
+        DiagnosticEvent::new(level, "core.startup", "crawler_page")
+            .field(DiagnosticField::token("outcome", outcome))
+            .field(DiagnosticField::count("processed", processed))
+            .field(DiagnosticField::count("indexed", indexed))
+            .field(DiagnosticField::count("page_items", page_items)),
+    );
+}
+
 pub(crate) fn spawn_history_crawl_page(
     session: Arc<koushi_sdk::MatrixClientSession>,
     messages_backpressure: MessagesBackpressure,
@@ -123,7 +140,7 @@ async fn run_history_crawl_page(
 
     let messages = {
         let permit = messages_backpressure.acquire_crawler().await;
-        let page_started = startup_trace::now_if_enabled();
+        let page_started = Some(startup_trace::now());
         let page_result = tokio::select! {
             biased;
             // A waiting timeline pagination cancels the crawler: yield the gate
@@ -138,6 +155,13 @@ async fn run_history_crawl_page(
         match page_result {
             Ok(messages) => messages,
             Err(_) => {
+                trace_crawler_page(
+                    DiagnosticLevel::Warn,
+                    "failed",
+                    checkpoint.processed,
+                    checkpoint.indexed,
+                    0,
+                );
                 return HistoryCrawlPageResult::Failed {
                     checkpoint,
                     kind: SearchCrawlerFailureKind::Sdk,
@@ -182,6 +206,14 @@ async fn run_history_crawl_page(
 
     let completed = chunk_len == 0 || messages.end.is_none();
     checkpoint.from_token = messages.end;
+
+    trace_crawler_page(
+        DiagnosticLevel::Debug,
+        if completed { "completed" } else { "progress" },
+        checkpoint.processed,
+        checkpoint.indexed,
+        chunk_len,
+    );
 
     if !completed && delay_ms > 0 {
         executor::sleep(std::time::Duration::from_millis(delay_ms)).await;
@@ -438,6 +470,33 @@ fn thumbnail_source(info: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crawler_page_producer_records_typed_progress_without_environment_switch() {
+        trace_crawler_page(DiagnosticLevel::Debug, "test_progress", 12, 9, 4);
+        let record = koushi_diagnostics::snapshot()
+            .records
+            .into_iter()
+            .rev()
+            .find(|record| {
+                record.event.source == "core.startup" && record.event.stage == "crawler_page"
+            })
+            .expect("crawler producer should record");
+        assert!(
+            record
+                .event
+                .fields
+                .iter()
+                .any(|field| field.key == "processed")
+        );
+        assert!(
+            record
+                .event
+                .fields
+                .iter()
+                .any(|field| field.key == "indexed")
+        );
+    }
 
     #[test]
     fn crawler_indexes_text_message_without_attachment_bytes() {

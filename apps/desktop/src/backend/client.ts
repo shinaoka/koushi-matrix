@@ -29,6 +29,7 @@ import type {
   CreateRoomRequest,
   FilesViewScope
 } from "../domain/types";
+import type { DiagnosticLogSnapshot } from "../domain/diagnostics";
 
 export function createDesktopApi(): DesktopApi {
   if (isTauriRuntime()) {
@@ -41,6 +42,10 @@ export function createDesktopApi(): DesktopApi {
 class TauriDesktopApi implements DesktopApi {
   async getSnapshot(): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("get_snapshot");
+  }
+
+  async getDiagnosticSnapshot(): Promise<DiagnosticLogSnapshot> {
+    return invoke<DiagnosticLogSnapshot>("get_diagnostic_snapshot");
   }
 
   async discoverLoginMethods(homeserver: string): Promise<DesktopSnapshot> {

@@ -34,6 +34,7 @@ use std::{
 };
 
 use futures_util::StreamExt;
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_key::{SessionKeyId, StoredMatrixSession};
 use koushi_sdk::{MatrixClientSession, PendingOidcLogin, PersistableMatrixSession};
 use koushi_state::{
@@ -85,8 +86,6 @@ const SERVER_LOGOUT_TIMEOUT: Duration = Duration::from_secs(10);
 const ACCOUNT_HYDRATION_TIMEOUT: Duration = Duration::from_secs(10);
 const IDENTITY_RESET_AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 const OIDC_REDIRECT_URI: &str = "koushi-desktop://auth/callback";
-const ENV_SYNC_TRACE: &str = "KOUSHI_SYNC_TRACE";
-
 /// Redacted message used in reducer error projections (never raw SDK text).
 const RESTORE_FAILED_MESSAGE: &str = "session restore failed";
 const INCOMING_VERIFICATION_FLOW_ID_BASE: u64 = 1 << 63;
@@ -108,28 +107,38 @@ fn state_search_scope(scope: &crate::command::SearchScope) -> koushi_state::Sear
     }
 }
 
-fn trace_restore(stage: &str, message: &str) {
-    if std::env::var_os(ENV_SYNC_TRACE).is_some() {
-        eprintln!("koushi.account stage={stage} {message}");
-    }
+macro_rules! trace_restore {
+    ($stage:expr, [$($field:expr),* $(,)?], $($arg:tt)*) => {{
+        let event = DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.account",
+            $stage,
+        )$(.field($field))*;
+        record(event);
+    }};
 }
 
-fn request_id_trace_label(request_id: RequestId) -> String {
-    format!("{}/{}", request_id.connection_id.0, request_id.sequence)
+fn trace_restore_simple(stage: &'static str, action: &'static str) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.account", stage)
+            .field(DiagnosticField::token("action", action)),
+    );
 }
 
-fn bool_trace_label(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
-}
-
-fn trace_account_request(stage: &str, request_id: RequestId, action: &str) {
-    trace_restore(
+fn trace_account_request(stage: &'static str, request_id: RequestId, action: &'static str) {
+    trace_restore!(
         stage,
-        &format!(
-            "request_id={} action={}",
-            request_id_trace_label(request_id),
-            action
-        ),
+        [
+            DiagnosticField::token("action", action),
+            DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence
+            ),
+        ],
+        "request_id={} action={}",
+        request_id_trace_label(request_id),
+        action
     );
 }
 
@@ -1026,49 +1035,53 @@ impl AccountActor {
             .await;
     }
 
+    fn record_event_cache_repair(
+        request_id: RequestId,
+        stage: &'static str,
+        outcome: &'static str,
+        reason: &'static str,
+    ) {
+        record(
+            DiagnosticEvent::new(DiagnosticLevel::Debug, "core.event_cache_repair", stage)
+                .field(DiagnosticField::request_id(
+                    "request_id",
+                    request_id.connection_id.0,
+                    request_id.sequence,
+                ))
+                .field(DiagnosticField::token("outcome", outcome))
+                .field(DiagnosticField::token("reason", reason)),
+        );
+    }
+
     async fn handle_ensure_room_event_cached(
         &self,
-        _request_id: RequestId,
+        request_id: RequestId,
         room_id: String,
         event_id: String,
     ) {
-        let trace = std::env::var_os("KOUSHI_TIMELINE_ITEM_TRACE").is_some()
-            || std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some();
         let Some(session) = &self.session else {
-            if trace {
-                eprintln!("koushi.event_cache_repair stage=skip reason=no_session");
-            }
+            Self::record_event_cache_repair(request_id, "skip", "skipped", "no_session");
             return;
         };
         let Ok(parsed_room_id) = matrix_sdk::ruma::RoomId::parse(room_id.as_str()) else {
-            if trace {
-                eprintln!("koushi.event_cache_repair stage=skip reason=invalid_room");
-            }
+            Self::record_event_cache_repair(request_id, "skip", "skipped", "invalid_room");
             return;
         };
         let Ok(parsed_event_id) = matrix_sdk::ruma::EventId::parse(event_id.as_str()) else {
-            if trace {
-                eprintln!("koushi.event_cache_repair stage=skip reason=invalid_event");
-            }
+            Self::record_event_cache_repair(request_id, "skip", "skipped", "invalid_event");
             return;
         };
         let Some(room) = session.client().get_room(&parsed_room_id) else {
-            if trace {
-                eprintln!("koushi.event_cache_repair stage=skip reason=room_missing");
-            }
+            Self::record_event_cache_repair(request_id, "skip", "skipped", "room_missing");
             return;
         };
 
         match room.load_or_fetch_event(&parsed_event_id, None).await {
             Ok(_) => {
-                if trace {
-                    eprintln!("koushi.event_cache_repair stage=done");
-                }
+                Self::record_event_cache_repair(request_id, "done", "succeeded", "loaded");
             }
             Err(_) => {
-                if trace {
-                    eprintln!("koushi.event_cache_repair stage=failed");
-                }
+                Self::record_event_cache_repair(request_id, "failed", "failed", "sdk");
             }
         }
     }
@@ -1248,45 +1261,68 @@ impl AccountActor {
             SyncCommand::Restart { request_id } => ("restart", *request_id),
             SyncCommand::SyncOnce { request_id } => ("sync_once", *request_id),
         };
-        trace_restore(
+        trace_restore!(
             "route_sync_command",
-            &format!(
-                "request_id={} kind={} session={} sync_actor={} action=begin",
-                request_id_trace_label(request_id),
-                command_kind,
-                if self.session.is_some() { "yes" } else { "no" },
-                if self.sync_actor.is_some() {
-                    "yes"
-                } else {
-                    "no"
-                }
-            ),
+            [
+                DiagnosticField::request_id(
+                    "request_id",
+                    request_id.connection_id.0,
+                    request_id.sequence
+                ),
+                DiagnosticField::token("kind", command_kind),
+                DiagnosticField::boolean("session", self.session.is_some()),
+                DiagnosticField::boolean("sync_actor", self.sync_actor.is_some()),
+                DiagnosticField::token("action", "begin"),
+            ],
+            "request_id={} kind={} session={} sync_actor={} action=begin",
+            request_id_trace_label(request_id),
+            command_kind,
+            if self.session.is_some() { "yes" } else { "no" },
+            if self.sync_actor.is_some() {
+                "yes"
+            } else {
+                "no"
+            }
         );
 
         if self.sync_actor.is_none()
             && !matches!(command, SyncCommand::Stop { .. })
             && let Some(session) = &self.session
         {
-            trace_restore(
+            trace_restore!(
                 "route_sync_command",
-                &format!(
-                    "request_id={} kind={} action=spawn_sync_actor",
-                    request_id_trace_label(request_id),
-                    command_kind
-                ),
+                [
+                    DiagnosticField::request_id(
+                        "request_id",
+                        request_id.connection_id.0,
+                        request_id.sequence
+                    ),
+                    DiagnosticField::token("kind", command_kind),
+                    DiagnosticField::token("action", "spawn_sync_actor"),
+                ],
+                "request_id={} kind={} action=spawn_sync_actor",
+                request_id_trace_label(request_id),
+                command_kind
             );
             self.spawn_sync_actor(session.clone()).await;
         }
 
         match &self.sync_actor {
             Some(handle) => {
-                trace_restore(
+                trace_restore!(
                     "route_sync_command",
-                    &format!(
-                        "request_id={} kind={} action=send_to_sync_actor",
-                        request_id_trace_label(request_id),
-                        command_kind
-                    ),
+                    [
+                        DiagnosticField::request_id(
+                            "request_id",
+                            request_id.connection_id.0,
+                            request_id.sequence
+                        ),
+                        DiagnosticField::token("kind", command_kind),
+                        DiagnosticField::token("action", "send_to_sync_actor"),
+                    ],
+                    "request_id={} kind={} action=send_to_sync_actor",
+                    request_id_trace_label(request_id),
+                    command_kind
                 );
                 // The SyncActor notifies the RoomActor itself on start/stop/
                 // restart: only it knows the selected backend and owns the
@@ -1294,26 +1330,40 @@ impl AccountActor {
                 let _ = handle.send(SyncMessage::Command(command)).await;
             }
             None if self.session.is_none() => {
-                trace_restore(
+                trace_restore!(
                     "route_sync_command",
-                    &format!(
-                        "request_id={} kind={} action=session_required",
-                        request_id_trace_label(request_id),
-                        command_kind
-                    ),
+                    [
+                        DiagnosticField::request_id(
+                            "request_id",
+                            request_id.connection_id.0,
+                            request_id.sequence
+                        ),
+                        DiagnosticField::token("kind", command_kind),
+                        DiagnosticField::token("action", "session_required"),
+                    ],
+                    "request_id={} kind={} action=session_required",
+                    request_id_trace_label(request_id),
+                    command_kind
                 );
                 // Session not yet ready — gate is enforced in AppActor but be
                 // defensive here too.
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
             }
             None => {
-                trace_restore(
+                trace_restore!(
                     "route_sync_command",
-                    &format!(
-                        "request_id={} kind={} action=no_sync_actor",
-                        request_id_trace_label(request_id),
-                        command_kind
-                    ),
+                    [
+                        DiagnosticField::request_id(
+                            "request_id",
+                            request_id.connection_id.0,
+                            request_id.sequence
+                        ),
+                        DiagnosticField::token("kind", command_kind),
+                        DiagnosticField::token("action", "no_sync_actor"),
+                    ],
+                    "request_id={} kind={} action=no_sync_actor",
+                    request_id_trace_label(request_id),
+                    command_kind
                 );
             }
         }
@@ -1324,7 +1374,7 @@ impl AccountActor {
     /// Also replace the TimelineManagerActor with one that holds the session.
     /// Also spawn the SearchActor (Phase 6).
     async fn spawn_sync_actor(&mut self, session: Arc<MatrixClientSession>) {
-        trace_restore("spawn_sync_actor", "action=begin");
+        trace_restore_simple("spawn_sync_actor", "begin");
         // Give the RoomActor the session so room ops work even before sync
         // starts. The room-list observation starts later, on the SyncActor's
         // RoomMessage::SyncStarted (which carries the live RoomListService on
@@ -1378,7 +1428,7 @@ impl AccountActor {
             self.timeline_manager.sender(),
         );
         self.sync_actor = Some(handle);
-        trace_restore("spawn_sync_actor", "action=done");
+        trace_restore_simple("spawn_sync_actor", "done");
         self.start_scheduled_send_capability_probe(session);
     }
 
@@ -1506,9 +1556,14 @@ impl AccountActor {
     }
 
     async fn handle_session_invalidated(&mut self, soft_logout: bool) {
-        trace_restore(
+        trace_restore!(
             "session_invalidated",
-            &format!("soft_logout={} action=lock", bool_trace_label(soft_logout)),
+            [
+                DiagnosticField::boolean("soft_logout", soft_logout),
+                DiagnosticField::token("action", "lock"),
+            ],
+            "soft_logout={} action=lock",
+            bool_trace_label(soft_logout)
         );
         if self.session.is_none() {
             return;
@@ -4390,7 +4445,7 @@ impl AccountActor {
         key_id: SessionKeyId,
         outcome: RestoreOutcome,
     ) {
-        let restore_started = startup_trace::now_if_enabled();
+        let restore_started = Some(startup_trace::now());
         trace_account_request("restore_account", request_id, "load_session");
         let session_json = match self.store.credential_backend().load_matrix_session(&key_id) {
             Ok(stored) => stored,
@@ -4821,10 +4876,7 @@ impl AccountActor {
     }
 }
 
-fn trace_room_route(stage: &str, command: &RoomCommand) {
-    if std::env::var_os("KOUSHI_CORE_ACTOR_TRACE").is_none() {
-        return;
-    }
+fn trace_room_route(stage: &'static str, command: &RoomCommand) {
     match command {
         RoomCommand::CreateRoom { request_id, .. } => {
             trace_room_route_event(stage, "create_room", *request_id);
@@ -4845,17 +4897,24 @@ fn trace_room_route(stage: &str, command: &RoomCommand) {
     }
 }
 
-fn trace_room_route_event(stage: &str, kind: &str, request_id: RequestId) {
-    eprintln!(
-        "koushi_core actor_trace account_room_route stage={stage} kind={kind} request_id={}/{}",
-        request_id.connection_id.0, request_id.sequence
+fn trace_room_route_event(stage: &'static str, kind: &'static str, request_id: RequestId) {
+    record(
+        DiagnosticEvent::new(DiagnosticLevel::Debug, "core.account", stage)
+            .field(DiagnosticField::token("operation", kind))
+            .field(DiagnosticField::request_id(
+                "request_id",
+                request_id.connection_id.0,
+                request_id.sequence,
+            )),
     );
 }
 
 fn trace_room_route_closed() {
-    if std::env::var_os("KOUSHI_CORE_ACTOR_TRACE").is_some() {
-        eprintln!("koushi_core actor_trace account_room_route stage=closed");
-    }
+    record(DiagnosticEvent::new(
+        DiagnosticLevel::Debug,
+        "core.account",
+        "closed",
+    ));
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -5464,10 +5523,141 @@ fn classify_auth_error(error: &koushi_sdk::PasswordLoginError) -> AuthFailureKin
 mod tests {
     use futures_util::stream;
     use tempfile::tempdir;
-    use tokio::sync::{broadcast, mpsc};
+    use tokio::sync::{broadcast, mpsc, oneshot};
 
     use super::*;
     use crate::store::CredentialStoreBackend;
+
+    #[test]
+    fn account_trace_preserves_typed_request_fields_without_environment_switch() {
+        trace_account_request(
+            "test_account_typed_fields",
+            RequestId {
+                connection_id: RuntimeConnectionId(7),
+                sequence: 11,
+            },
+            "restore_session",
+        );
+        let records = koushi_diagnostics::snapshot()
+            .records
+            .into_iter()
+            .filter(|record| record.event.stage == "test_account_typed_fields")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            records.len(),
+            1,
+            "one account request must produce one collector event"
+        );
+        let record = &records[0];
+        assert_eq!(record.event.source, "core.account");
+        assert!(
+            record
+                .event
+                .fields
+                .iter()
+                .any(|field| field.key == "request_id")
+        );
+        assert!(
+            record
+                .event
+                .fields
+                .iter()
+                .any(|field| field.key == "action")
+        );
+    }
+
+    #[test]
+    fn event_cache_repair_diagnostic_runs_without_trace_environment() {
+        let child = std::process::Command::new(
+            std::env::current_exe().expect("current test executable should be available"),
+        )
+        .arg("--exact")
+        .arg(concat!(
+            "account::tests::",
+            "event_cache_repair_diagnostic_records_without_trace_environment"
+        ))
+        .arg("--ignored")
+        .arg("--nocapture")
+        .env_remove("KOUSHI_TIMELINE_ITEM_TRACE")
+        .env_remove("KOUSHI_SUBSCRIBE_TRACE")
+        .status()
+        .expect("env-unset event-cache-repair child should start");
+        assert!(
+            child.success(),
+            "env-unset event-cache-repair child failed: {child}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn event_cache_repair_diagnostic_records_without_trace_environment() {
+        assert!(std::env::var_os("KOUSHI_TIMELINE_ITEM_TRACE").is_none());
+        assert!(std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_none());
+
+        let cred_dir = tempdir().expect("credential tempdir");
+        let data_dir = tempdir().expect("data tempdir");
+        let (handle, _action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let synthetic_room_id = "!synthetic-room:example.invalid";
+        let synthetic_event_id = "$synthetic-event:example.invalid";
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(17),
+            sequence: 23,
+        };
+        let (response_tx, response_rx) = oneshot::channel();
+        assert!(
+            handle
+                .send(AccountMessage::EnsureRoomEventCached {
+                    request_id,
+                    room_id: synthetic_room_id.to_owned(),
+                    event_id: synthetic_event_id.to_owned(),
+                    response_tx,
+                })
+                .await
+        );
+        response_rx.await.expect("cache-repair response");
+
+        let records = koushi_diagnostics::snapshot().records;
+        let repair = records
+            .iter()
+            .rev()
+            .find(|record| {
+                record.event.source == "core.event_cache_repair"
+                    && record.event.stage == "skip"
+                    && record.event.fields.iter().any(|field| {
+                        field.key == "reason"
+                            && field.value
+                                == koushi_diagnostics::DiagnosticValue::Token("no_session")
+                    })
+            })
+            .expect("event-cache repair should be collected without trace environment");
+        assert_eq!(repair.event.source, "core.event_cache_repair");
+        assert_eq!(repair.event.stage, "skip");
+        assert_eq!(
+            repair.event.fields,
+            vec![
+                koushi_diagnostics::DiagnosticField::request_id("request_id", 17, 23),
+                koushi_diagnostics::DiagnosticField::token("outcome", "skipped"),
+                koushi_diagnostics::DiagnosticField::token("reason", "no_session"),
+            ]
+        );
+
+        let serialized = serde_json::to_string(&repair.event)
+            .expect("event-cache repair event should serialize for privacy assertions");
+        for forbidden in [
+            synthetic_room_id,
+            synthetic_event_id,
+            "synthetic-body-value",
+            "https://example.invalid/synthetic",
+            "/tmp/synthetic-path",
+            "raw sdk error: synthetic",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "serialized event must not contain forbidden diagnostic data: {forbidden}"
+            );
+        }
+    }
 
     #[test]
     fn incoming_verification_flow_ids_use_reserved_internal_namespace() {
@@ -5710,10 +5900,6 @@ mod tests {
             .expect("restore_account should precede login handler");
 
         assert!(
-            source.contains("const ENV_SYNC_TRACE: &str = \"KOUSHI_SYNC_TRACE\";"),
-            "restore diagnostics must share the SyncActor opt-in env"
-        );
-        assert!(
             restore_last.contains(
                 "trace_account_request(\"restore_last_session\", request_id, \"load_pointer\")"
             ),
@@ -5744,7 +5930,7 @@ mod tests {
             "restore must log that the SyncActor was spawned"
         );
         assert!(
-            source.contains("fn request_id_trace_label(request_id: RequestId) -> String"),
+            source.contains("DiagnosticField::request_id"),
             "restore diagnostics must include request ids for correlation"
         );
         assert!(
