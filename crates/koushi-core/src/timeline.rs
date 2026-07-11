@@ -8699,14 +8699,9 @@ impl TimelineActor {
                 self.media_gallery_items = replacement.items;
             }
         }
-        replace_authoritative_timeline_window(&mut self.navigation_items, items.clone());
-        self.replay_known_display_items = normalize_display_timeline_items(&items);
-        let replay_known_candidates = replay_known_candidates_for_display_items(
-            &self.key,
-            &self.navigation_items,
-            &self.replay_known_display_items,
-        );
-        emit_relay_recovery_snapshot(
+        commit_authoritative_recovery_window(
+            &mut self.navigation_items,
+            &mut self.replay_known_display_items,
             &self.event_tx,
             &self.replay_known_thread_root_projections,
             &self.thread_root_projection_service,
@@ -8716,7 +8711,6 @@ impl TimelineActor {
             self.generation,
             reason,
             items,
-            replay_known_candidates,
         );
         let (relay_data_tx, relay_data_rx) = mpsc::channel(256);
         self.relay_data_rx = Some(relay_data_rx);
@@ -8991,13 +8985,6 @@ fn replace_authoritative_cache<K, V>(cache: &mut HashMap<K, V>, replacement: Has
     *cache = replacement;
 }
 
-fn replace_authoritative_timeline_window(
-    current: &mut Vec<TimelineItem>,
-    authoritative: Vec<TimelineItem>,
-) {
-    *current = authoritative;
-}
-
 async fn prepare_relay_recovery<Subscribe, SubscribeFuture, Snapshot, Stream>(
     current_generation: TimelineGeneration,
     overflow_generation: TimelineGeneration,
@@ -9031,6 +9018,40 @@ fn accepted_relay_batch<T>(
     batch: T,
 ) -> Option<T> {
     accept_relay_generation(current_generation, incoming_generation).then_some(batch)
+}
+
+fn commit_authoritative_recovery_window(
+    navigation_items: &mut Vec<TimelineItem>,
+    replay_known_display_items: &mut Vec<TimelineItem>,
+    event_tx: &broadcast::Sender<CoreEvent>,
+    replay_known_thread_root_projections: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    generation: TimelineGeneration,
+    reason: TimelineResyncReason,
+    authoritative_items: Vec<TimelineItem>,
+) {
+    *navigation_items = authoritative_items;
+    *replay_known_display_items = normalize_display_timeline_items(navigation_items);
+    let replay_known_candidates = replay_known_candidates_for_display_items(
+        key,
+        navigation_items,
+        replay_known_display_items,
+    );
+    emit_relay_recovery_snapshot(
+        event_tx,
+        replay_known_thread_root_projections,
+        thread_root_projection_service,
+        timeline_actor_generations,
+        key,
+        actor_generation,
+        generation,
+        reason,
+        navigation_items.clone(),
+        replay_known_candidates,
+    );
 }
 
 fn emit_relay_recovery_snapshot(
@@ -14453,7 +14474,8 @@ mod tests {
             assert!(
                 section.contains("emit_initial_items_and_reconcile_replay_known_for_generation")
                     || (name == "queue_overflow"
-                        && section.contains("emit_relay_recovery_snapshot")),
+                        && (section.contains("emit_relay_recovery_snapshot")
+                            || section.contains("commit_authoritative_recovery_window"))),
                 "{name} must publish InitialItems and replay-known ownership in one group"
             );
         }
@@ -18397,8 +18419,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn authoritative_resync_replaces_sending_transaction_and_remote_echo_with_event_only() {
+    #[tokio::test]
+    async fn authoritative_resync_projects_event_only_and_emits_ordered_recovery_events() {
         let mut transaction = timeline_item(
             "$transaction-placeholder:test",
             Some("same body"),
@@ -18411,8 +18433,32 @@ mod tests {
         transaction.send_state = Some(TimelineSendState::Sending);
         let remote = timeline_item("$remote-echo:test", Some("same body"), "@me:test", false);
         let mut current = vec![transaction, remote.clone()];
+        let mut display = normalize_display_timeline_items(&current);
+        let key = room_key();
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let actor_generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        let replay_registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let projection_service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
 
-        replace_authoritative_timeline_window(&mut current, vec![remote]);
+        commit_authoritative_recovery_window(
+            &mut current,
+            &mut display,
+            &event_tx,
+            &replay_registry,
+            &projection_service,
+            &actor_generations,
+            &key,
+            actor_generation,
+            TimelineGeneration(2),
+            TimelineResyncReason::QueueOverflow,
+            vec![remote],
+        );
 
         assert_eq!(current.len(), 1);
         assert!(matches!(
@@ -18422,6 +18468,21 @@ mod tests {
         assert!(!matches!(
             current[0].send_state,
             Some(TimelineSendState::Sending)
+        ));
+        assert_eq!(display, current);
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::ResyncRequired { .. }))
+        ));
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::InitialItems {
+                generation: TimelineGeneration(2),
+                items,
+                ..
+            })) if items.len() == 1
+                && matches!(items[0].id, TimelineItemId::Event { .. })
+                && !matches!(items[0].send_state, Some(TimelineSendState::Sending))
         ));
     }
 

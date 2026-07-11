@@ -1082,6 +1082,13 @@ describe("timeline store — generation handling", () => {
         items: [remote]
       }
     });
+    const convergedItems = getItems(store, KEY);
+    expect(convergedItems).toHaveLength(1);
+    expect(itemId(convergedItems[0])).toBe("$remote-echo");
+    expect(convergedItems[0].send_state?.kind).not.toBe("sending");
+
+    // Completion is deliberately late. It is not the convergence mechanism
+    // and must not disturb the authoritative InitialItems result.
     store = applyTimelineEvent(store, {
       SendCompleted: {
         request_id: { connection_id: 1, sequence: 99 },
@@ -1091,10 +1098,7 @@ describe("timeline store — generation handling", () => {
       }
     });
 
-    const items = getItems(store, KEY);
-    expect(items).toHaveLength(1);
-    expect(itemId(items[0])).toBe("$remote-echo");
-    expect(items[0].send_state?.kind).not.toBe("sending");
+    expect(getItems(store, KEY)).toEqual(convergedItems);
   });
 
   test("diff with stale generation is silently discarded", () => {
