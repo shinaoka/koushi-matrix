@@ -6,7 +6,10 @@ use koushi_core::command::AppCommand;
 use koushi_core::settings::{SettingsStore, SettingsStoreErrorKind};
 use koushi_core::{CoreCommand, CoreEvent, CoreRuntime, executor};
 use koushi_state::{
-    DisplaySettings, MediaSettings, NotificationSettings, SettingsPersistenceState, ThemePreference,
+    DisplaySettings, MediaSettings, NativeAttentionCandidate, NativeAttentionCapabilities,
+    NativeAttentionCapability, NativeAttentionDispatchState, NativeAttentionState,
+    NativeAttentionSummary, NotificationSettings, RoomAttentionKind, SettingsPatch,
+    SettingsPersistenceState, ThemePreference,
 };
 
 mod support;
@@ -96,6 +99,95 @@ async fn persisted_settings_load_when_runtime_restarts() {
         connection.snapshot().settings.persistence,
         SettingsPersistenceState::Idle
     );
+}
+
+#[tokio::test]
+async fn disabled_badges_remain_rust_projected_to_zero_after_runtime_restart() {
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    {
+        let runtime = CoreRuntime::start_with_data_dir(data_dir.path().to_path_buf());
+        let mut connection = runtime.attach();
+        let request_id = connection.next_request_id();
+        let notifications = NotificationSettings {
+            badges: false,
+            ..NotificationSettings::default()
+        };
+
+        connection
+            .command(CoreCommand::App(AppCommand::UpdateSettings {
+                request_id,
+                patch: SettingsPatch {
+                    notifications: Some(notifications),
+                    ..SettingsPatch::default()
+                },
+            }))
+            .await
+            .expect("disable badges");
+
+        executor::timeout(Duration::from_secs(1), async {
+            loop {
+                match connection.recv_event().await.expect("event") {
+                    CoreEvent::StateChanged(snapshot)
+                        if !snapshot.settings.values.notifications.badges
+                            && snapshot.settings.persistence == SettingsPersistenceState::Idle =>
+                    {
+                        return;
+                    }
+                    _ => continue,
+                }
+            }
+        })
+        .await
+        .expect("disabled badge setting should persist before restart");
+    }
+
+    let restarted = CoreRuntime::start_with_data_dir(data_dir.path().to_path_buf());
+    let mut connection = restarted.attach();
+    assert!(!connection.snapshot().settings.values.notifications.badges);
+
+    let request_id = connection.next_request_id();
+    connection
+        .command(CoreCommand::App(AppCommand::UpdateNativeAttentionState {
+            request_id,
+            attention: NativeAttentionState {
+                summary: NativeAttentionSummary {
+                    unread_count: 5,
+                    highlight_count: 1,
+                    badge_count: 5,
+                    candidate: Some(NativeAttentionCandidate {
+                        room_display_name: "Room".to_owned(),
+                        kind: RoomAttentionKind::Mention,
+                        unread_count: 5,
+                        highlight_count: 1,
+                    }),
+                    capabilities: NativeAttentionCapabilities {
+                        badge: NativeAttentionCapability::Available,
+                        ..NativeAttentionCapabilities::default()
+                    },
+                },
+                dispatch: NativeAttentionDispatchState::Idle,
+            },
+        }))
+        .await
+        .expect("project attention after restart");
+
+    let snapshot = executor::timeout(Duration::from_secs(1), async {
+        loop {
+            match connection.recv_event().await.expect("event") {
+                CoreEvent::StateChanged(snapshot)
+                    if snapshot.native_attention.summary.unread_count == 5 =>
+                {
+                    return snapshot;
+                }
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("attention should project after restored settings load");
+
+    assert!(!snapshot.settings.values.notifications.badges);
+    assert_eq!(snapshot.native_attention.summary.badge_count, 0);
 }
 
 #[test]

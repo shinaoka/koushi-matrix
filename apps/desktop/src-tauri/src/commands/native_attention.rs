@@ -11,7 +11,18 @@ struct PlatformNativeAttentionSoundBackend;
 pub(crate) async fn play_native_attention_sound(
     state: State<'_, CoreRuntimeState>,
 ) -> Result<NativeAttentionSoundOutcome, &'static str> {
-    let connection = state.runtime.attach();
+    Ok(
+        dispatch_native_attention_sound(&state.runtime, &PlatformNativeAttentionSoundBackend)
+            .await
+            .0,
+    )
+}
+
+async fn dispatch_native_attention_sound(
+    runtime: &koushi_core::CoreRuntime,
+    backend: &impl NativeAttentionSoundBackend,
+) -> (NativeAttentionSoundOutcome, Option<u64>) {
+    let connection = runtime.attach();
     let start_request = connection.next_request_id();
     let dispatch_id = start_request.sequence;
     if connection
@@ -22,9 +33,9 @@ pub(crate) async fn play_native_attention_sound(
         .await
         .is_err()
     {
-        return Ok(NativeAttentionSoundOutcome::Failed);
+        return (NativeAttentionSoundOutcome::Failed, None);
     }
-    let outcome = PlatformNativeAttentionSoundBackend.play();
+    let outcome = backend.play();
     let settle_request = connection.next_request_id();
     let _ = connection
         .command(CoreCommand::App(
@@ -35,7 +46,7 @@ pub(crate) async fn play_native_attention_sound(
             },
         ))
         .await;
-    Ok(outcome)
+    (outcome, Some(dispatch_id))
 }
 
 #[cfg(target_os = "macos")]
@@ -76,7 +87,13 @@ impl NativeAttentionSoundBackend for PlatformNativeAttentionSoundBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use koushi_core::{CoreEvent, CoreRuntime, executor};
+    use koushi_state::{
+        NativeAttentionCandidate, NativeAttentionCapabilities, NativeAttentionDispatchState,
+        NativeAttentionState, NativeAttentionSummary, RoomAttentionKind,
+    };
     use std::cell::Cell;
+    use std::time::Duration;
 
     struct FakeBackend {
         calls: Cell<u32>,
@@ -119,5 +136,67 @@ mod tests {
             PlatformNativeAttentionSoundBackend.play(),
             NativeAttentionSoundOutcome::Unsupported
         );
+    }
+
+    #[tokio::test]
+    async fn command_helper_crosses_core_runtime_and_settles_the_matching_dispatch() {
+        let runtime = CoreRuntime::start();
+        let mut observer = runtime.attach();
+        let seed_request = observer.next_request_id();
+        observer
+            .command(CoreCommand::App(AppCommand::UpdateNativeAttentionState {
+                request_id: seed_request,
+                attention: NativeAttentionState {
+                    summary: NativeAttentionSummary {
+                        unread_count: 1,
+                        highlight_count: 0,
+                        badge_count: 1,
+                        candidate: Some(NativeAttentionCandidate {
+                            room_display_name: "Room".to_owned(),
+                            kind: RoomAttentionKind::Message,
+                            unread_count: 1,
+                            highlight_count: 0,
+                        }),
+                        capabilities: NativeAttentionCapabilities::default(),
+                    },
+                    dispatch: NativeAttentionDispatchState::Idle,
+                },
+            }))
+            .await
+            .expect("seed native attention candidate through core command");
+
+        let backend = FakeBackend {
+            calls: Cell::new(0),
+            outcome: NativeAttentionSoundOutcome::Played,
+        };
+        let (outcome, dispatch_id) = dispatch_native_attention_sound(&runtime, &backend).await;
+        assert_eq!(outcome, NativeAttentionSoundOutcome::Played);
+        let dispatch_id = dispatch_id.expect("submitted dispatch id");
+
+        let snapshot = executor::timeout(Duration::from_secs(1), async {
+            loop {
+                match observer.recv_event().await.expect("core event") {
+                    CoreEvent::StateChanged(snapshot)
+                        if matches!(
+                            snapshot.native_attention.dispatch,
+                            NativeAttentionDispatchState::Delivered { .. }
+                        ) =>
+                    {
+                        return snapshot;
+                    }
+                    _ => continue,
+                }
+            }
+        })
+        .await
+        .expect("matching dispatch should settle through the runtime reducer");
+
+        assert_eq!(
+            snapshot.native_attention.dispatch,
+            NativeAttentionDispatchState::Delivered {
+                request_id: dispatch_id
+            }
+        );
+        assert_eq!(backend.calls.get(), 1);
     }
 }
