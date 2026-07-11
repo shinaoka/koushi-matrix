@@ -61,7 +61,7 @@ pub use settings::{
     RoomNotificationMode, RoomNotificationModeOperation, RoomNotificationSettings, RoomPreference,
     RoomPreferencesState, RoomUrlPreviews, SettingsPatch, SettingsPersistenceState, SettingsState,
     SettingsValues, TextDirectionPreference, ThemePreference, ThreadListOrder, TimelineSettings,
-    TypographySettings,
+    TimelineThreadRootOrder, TypographySettings,
 };
 
 // ── Re-exports: profile ─────────────────────────────────────────────────────
@@ -159,8 +159,8 @@ pub use timeline::{
 
 // ── Re-exports: thread ──────────────────────────────────────────────────────
 pub use thread::{
-    ThreadAttentionState, ThreadPaneState, ThreadsListItem, ThreadsListState,
-    sort_threads_list_items,
+    ThreadAttentionState, ThreadPaneState, ThreadRootProjectionActivity, ThreadRootProjectionState,
+    ThreadRootProjectionStatus, ThreadsListItem, ThreadsListState, sort_threads_list_items,
 };
 
 // ── Re-exports: search ──────────────────────────────────────────────────────
@@ -240,6 +240,8 @@ pub struct AppState {
     pub thread: ThreadPaneState,
     pub thread_attention: ThreadAttentionState,
     pub threads_list: ThreadsListState,
+    #[serde(default)]
+    pub thread_root_projections: ThreadRootProjectionState,
     pub focused_context: FocusedContextState,
     pub search: SearchState,
     #[serde(default)]
@@ -290,6 +292,7 @@ impl Default for AppState {
             thread: ThreadPaneState::Closed,
             thread_attention: ThreadAttentionState::Closed,
             threads_list: ThreadsListState::Closed,
+            thread_root_projections: ThreadRootProjectionState::default(),
             focused_context: FocusedContextState::Closed,
             search: SearchState::Closed,
             search_crawler: SearchCrawlerState::default(),

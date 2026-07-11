@@ -387,6 +387,8 @@ export type MessageId =
   | "settings.current"
   | "settings.autoLoadOlderMessages"
   | "settings.autoLoadOlderMessagesDescription"
+  | "settings.threadRootLatestReply"
+  | "settings.threadRootLatestReplyDescription"
   | "settings.checkLocalEncryption"
   | "settings.credentialStore"
   | "settings.credentialStoreLinux"
@@ -696,6 +698,8 @@ export type MessageId =
   | "timeline.editMessage"
   | "timeline.editBody"
   | "timeline.loading"
+  | "timeline.threadRootLoading"
+  | "timeline.threadRootUnavailable"
   | "timeline.messagesTab"
   | "timeline.openingThread"
   | "timeline.presenceAway"
@@ -1348,6 +1352,8 @@ const en: Catalog = {
   "settings.current": "Current",
   "settings.autoLoadOlderMessages": "Automatically load older messages",
   "settings.autoLoadOlderMessagesDescription": "Prefetch room history when scrolling near the start of the loaded timeline",
+  "settings.threadRootLatestReply": "Place threaded conversations at their latest reply",
+  "settings.threadRootLatestReplyDescription": "Move each root message and its reply summary to the time of its latest reply",
   "settings.checkLocalEncryption": "Check local encryption",
   "settings.credentialStore": "Credential store",
   "settings.credentialStoreLinux": "Secret Service",
@@ -1669,6 +1675,8 @@ const en: Catalog = {
   "timeline.editMessage": "Edit message",
   "timeline.editBody": "Edit message body",
   "timeline.loading": "Loading",
+  "timeline.threadRootLoading": "Loading thread message…",
+  "timeline.threadRootUnavailable": "Thread message is unavailable.",
   "timeline.messagesTab": "Messages",
   "timeline.openingThread": "Opening thread",
   "timeline.presenceAway": "Away",
@@ -2207,6 +2215,8 @@ const ja: Catalog = {
   "settings.current": "現在",
   "settings.autoLoadOlderMessages": "古いメッセージを自動で読み込む",
   "settings.autoLoadOlderMessagesDescription": "読み込み済みタイムラインの先頭付近までスクロールしたらルーム履歴を先読みします",
+  "settings.threadRootLatestReply": "スレッドを最新の返信位置に表示する",
+  "settings.threadRootLatestReplyDescription": "ルートメッセージと返信サマリーを最新の返信時刻の位置へ移動します",
   "settings.checkLocalEncryption": "ローカル暗号化を確認",
   "settings.credentialStore": "資格情報ストア",
   "settings.credentialStoreLinux": "Linux Secret Service",
@@ -2528,6 +2538,8 @@ const ja: Catalog = {
   "timeline.editMessage": "メッセージを編集",
   "timeline.editBody": "メッセージ本文を編集",
   "timeline.loading": "読み込み中",
+  "timeline.threadRootLoading": "スレッドのメッセージを読み込んでいます…",
+  "timeline.threadRootUnavailable": "スレッドのメッセージを利用できません。",
   "timeline.messagesTab": "メッセージ",
   "timeline.openingThread": "スレッドを開いています",
   "timeline.presenceAway": "離席中",

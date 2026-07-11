@@ -6,6 +6,7 @@ const WRITE_REASONS = [
   "jumpToBottom",
   "roomRestore",
   "backfillCompensation",
+  "projectionCompensation",
   "measurementFlush"
 ] as const;
 

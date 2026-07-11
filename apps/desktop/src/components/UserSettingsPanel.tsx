@@ -435,6 +435,12 @@ export function UserSettingsPanel({
             current={selectedTimeline}
             onSelect={onUpdateSettings}
           />
+          <TimelineThreadRootOrderToggle
+            label={t("settings.threadRootLatestReply")}
+            description={t("settings.threadRootLatestReplyDescription")}
+            current={selectedTimeline}
+            onSelect={onUpdateSettings}
+          />
         </div>
       </section>
 
@@ -2920,7 +2926,7 @@ function TimelineToggle({
 }: {
   label: string;
   description?: string;
-  settingKey: keyof TimelineSettings;
+  settingKey: "auto_load_older_messages";
   current: TimelineSettings;
   onSelect: (patch: SettingsPatch) => void;
 }) {
@@ -2949,6 +2955,48 @@ function TimelineToggle({
         {description ? (
           <span className="settings-toggle-description">{description}</span>
         ) : null}
+      </span>
+      <span className="settings-switch-track" aria-hidden="true">
+        <span className="settings-switch-thumb" />
+      </span>
+    </button>
+  );
+}
+
+function TimelineThreadRootOrderToggle({
+  label,
+  description,
+  current,
+  onSelect
+}: {
+  label: string;
+  description: string;
+  current: TimelineSettings;
+  onSelect: (patch: SettingsPatch) => void;
+}) {
+  const checked = current.thread_root_order.kind === "latestReply";
+  return (
+    <button
+      className="settings-toggle-row"
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={() => {
+        onSelect({
+          timeline: {
+            ...current,
+            thread_root_order: { kind: checked ? "rootEvent" : "latestReply" }
+          }
+        });
+      }}
+    >
+      <span className="settings-toggle-copy">
+        <span className="settings-toggle-label">
+          <History size={15} aria-hidden="true" />
+          <span>{label}</span>
+        </span>
+        <span className="settings-toggle-description">{description}</span>
       </span>
       <span className="settings-switch-track" aria-hidden="true">
         <span className="settings-switch-thumb" />

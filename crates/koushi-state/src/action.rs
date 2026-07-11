@@ -900,6 +900,38 @@ pub enum AppAction {
         room_id: String,
     },
     CloseThreadsList,
+    /// A Room timeline observed thread reply activity whose root is outside
+    /// its canonical loaded items. This is not a pagination request.
+    ThreadRootProjectionObserved {
+        room_id: String,
+        root_event_id: String,
+        activity_event_id: String,
+        activity_timestamp_ms: Option<u64>,
+    },
+    ThreadRootProjectionReady {
+        room_id: String,
+        root_event_id: String,
+        activity_event_id: String,
+        activity_timestamp_ms: Option<u64>,
+    },
+    ThreadRootProjectionFailed {
+        room_id: String,
+        root_event_id: String,
+        activity_event_id: String,
+        activity_timestamp_ms: Option<u64>,
+        failure_kind: crate::OperationFailureKind,
+    },
+    /// Bounded Room-window lifecycle for out-of-band root projections. This
+    /// carries no canonical timeline items and cannot trigger pagination.
+    ThreadRootProjectionsReconciled {
+        room_id: String,
+        activities: Vec<crate::state::ThreadRootProjectionActivity>,
+    },
+    /// The Room timeline was unsubscribed, so no retained/pending root
+    /// projection may survive into a future actor lifetime for that Room.
+    ThreadRootProjectionsCleared {
+        room_id: String,
+    },
     ClearError {
         code: String,
     },

@@ -26,6 +26,10 @@ fn default_thread_list_order() -> ThreadListOrder {
     ThreadListOrder::LatestReply
 }
 
+fn default_timeline_thread_root_order() -> TimelineThreadRootOrder {
+    TimelineThreadRootOrder::RootEvent
+}
+
 fn default_room_list_sort() -> RoomListSort {
     RoomListSort::Activity
 }
@@ -396,14 +400,24 @@ impl Default for ImageUploadCompressionPolicy {
 pub struct TimelineSettings {
     #[serde(default = "default_true")]
     pub auto_load_older_messages: bool,
+    #[serde(default = "default_timeline_thread_root_order")]
+    pub thread_root_order: TimelineThreadRootOrder,
 }
 
 impl Default for TimelineSettings {
     fn default() -> Self {
         Self {
             auto_load_older_messages: true,
+            thread_root_order: default_timeline_thread_root_order(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TimelineThreadRootOrder {
+    RootEvent,
+    LatestReply,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

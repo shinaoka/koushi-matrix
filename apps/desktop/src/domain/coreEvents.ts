@@ -227,11 +227,34 @@ export type TimelineUnableToDecryptReason =
 
 export interface ThreadSummaryDto {
   reply_count: number;
+  latest_event_id: string | null;
   latest_sender: string | null;
   latest_sender_label?: string | null;
   latest_body_preview: string | null;
   latest_timestamp_ms: number | null;
 }
+
+/** Out-of-band root snapshot for Room latest-reply presentation. Never part of TimelineDiff. */
+export type ThreadRootProjectionSourceDto =
+  | { kind: "hydration" }
+  | { kind: "replayKnown"; epoch: number };
+
+export interface ThreadRootProjectionDto {
+  root_event_id: string;
+  activity_event_id: string;
+  activity_timestamp_ms: number | null;
+  /** Keep a replay-known ready root even when this display window lacks its reply. */
+  retain_without_reply?: boolean;
+  /** Scopes replay-known clear events so they cannot remove a hydration result for the same root. */
+  source?: ThreadRootProjectionSourceDto;
+  state: ThreadRootProjectionStateDto;
+}
+
+export type ThreadRootProjectionStateDto =
+  | { kind: "pending" }
+  | { kind: "ready"; item: TimelineItem }
+  | { kind: "failed"; failure_kind: OperationFailureKind }
+  | { kind: "cleared" };
 
 /** Stable string id usable as a React key and a `data-item-id` DOM hook. */
 export function timelineItemDomId(id: TimelineItemId): string {
@@ -396,6 +419,12 @@ export type TimelineEvent =
         key: TimelineKey;
         event_id: string;
         kind: TimelineFailureKind;
+      };
+    }
+  | {
+      ThreadRootProjection: {
+        key: TimelineKey;
+        projection: ThreadRootProjectionDto;
       };
     }
   | {

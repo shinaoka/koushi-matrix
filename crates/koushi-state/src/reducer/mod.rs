@@ -957,6 +957,51 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
         } => thread::handle_paginate_threads_list(state, request_id, room_id),
         AppAction::CloseThreadsList => thread::handle_close_threads_list(state),
+        AppAction::ThreadRootProjectionObserved {
+            room_id,
+            root_event_id,
+            activity_event_id,
+            activity_timestamp_ms,
+        } => thread::handle_thread_root_projection_observed(
+            state,
+            room_id,
+            root_event_id,
+            activity_event_id,
+            activity_timestamp_ms,
+        ),
+        AppAction::ThreadRootProjectionReady {
+            room_id,
+            root_event_id,
+            activity_event_id,
+            activity_timestamp_ms,
+        } => thread::handle_thread_root_projection_ready(
+            state,
+            room_id,
+            root_event_id,
+            activity_event_id,
+            activity_timestamp_ms,
+        ),
+        AppAction::ThreadRootProjectionFailed {
+            room_id,
+            root_event_id,
+            activity_event_id,
+            activity_timestamp_ms,
+            failure_kind,
+        } => thread::handle_thread_root_projection_failed(
+            state,
+            room_id,
+            root_event_id,
+            activity_event_id,
+            activity_timestamp_ms,
+            failure_kind,
+        ),
+        AppAction::ThreadRootProjectionsReconciled {
+            room_id,
+            activities,
+        } => thread::handle_thread_root_projections_reconciled(state, room_id, activities),
+        AppAction::ThreadRootProjectionsCleared { room_id } => {
+            thread::handle_thread_root_projections_cleared(state, room_id)
+        }
         AppAction::ClearError { code } => basic_operation::handle_clear_error(state, code),
         AppAction::BasicOperationRequested {
             request_id,

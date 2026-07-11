@@ -44,6 +44,7 @@ import {
   XCircle
 } from "lucide-react";
 import {
+  Component,
   Fragment,
   type CSSProperties,
   type FormEvent,
@@ -110,6 +111,7 @@ import {
   batchContainsPrepend,
   createTimelineStore,
   getItems,
+  getThreadRootProjections,
   getMediaUploadProgress,
   getKeyState,
   getPaginationState,
@@ -145,10 +147,15 @@ import type {
   ResolveComposerKeyAction,
   TimelineScrollAnchor,
   TimelineMediaDownloadState,
+  TimelineThreadRootOrder,
   UserProfile
 } from "../domain/types";
 import type { TimelineLinkRange } from "../domain/coreEvents";
 import type { TimelineForwardDestination } from "../domain/projectionTypes";
+import {
+  projectTimelineDisplayRows,
+  type TimelineDisplayRow
+} from "../domain/timelineDisplayProjection";
 
 export type { TimelineForwardDestination } from "../domain/projectionTypes";
 
@@ -273,16 +280,78 @@ interface ScrollAnchor {
   offsetTop: number;
 }
 
+type ScrollAnchorCaptureOptions = {
+  /**
+   * Lets a caller exclude a row whose presentation position is itself being
+   * changed. This is essential for the latest-reply projection: restoring a
+   * moved root would preserve the wrong visual intent.
+   */
+  isEligible?: (node: HTMLElement) => boolean;
+};
+
+type TimelineEventIdentity = "content" | "activity";
+
+type TimelineProjectionSnapshot = {
+  timelineKeyHash: string;
+  generation: number;
+  signature: string;
+  rows: readonly TimelineDisplayRow[];
+};
+
+type PendingProjectionLayoutTransaction = {
+  timelineKeyHash: string;
+  generation: number;
+  signature: string;
+  revision: number;
+  intentRevision: number;
+  mode: "free-scroll" | "live-edge";
+  anchor: ScrollAnchor | null;
+};
+
+type ProjectionSnapshotBoundaryProps = {
+  snapshot: TimelineProjectionSnapshot;
+  onBeforeProjectionChange: (
+    previous: TimelineProjectionSnapshot,
+    next: TimelineProjectionSnapshot
+  ) => void;
+  children: ReactNode;
+};
+
+/**
+ * Function components do not expose `getSnapshotBeforeUpdate`. This boundary
+ * provides the commit-safe pre-mutation point needed to capture an old DOM
+ * anchor without allowing an abandoned render to touch scroll transaction
+ * refs. It renders no DOM of its own.
+ */
+class ProjectionSnapshotBoundary extends Component<ProjectionSnapshotBoundaryProps> {
+  override getSnapshotBeforeUpdate(previousProps: ProjectionSnapshotBoundaryProps): null {
+    this.props.onBeforeProjectionChange(previousProps.snapshot, this.props.snapshot);
+    return null;
+  }
+
+  override componentDidUpdate(): void {}
+
+  override render(): ReactNode {
+    return this.props.children;
+  }
+}
+
 type PendingMeasuredHeight = {
   height: number;
   epoch: number;
 };
 
-/** Capture the first visible item as the anchor (id + pixel offset). */
-function captureAnchor(container: HTMLElement): ScrollAnchor | null {
+/** Capture the first eligible visible item as the anchor (id + pixel offset). */
+function captureAnchor(
+  container: HTMLElement,
+  options: ScrollAnchorCaptureOptions = {}
+): ScrollAnchor | null {
   const containerTop = container.getBoundingClientRect().top;
   const nodes = container.querySelectorAll<HTMLElement>("[data-item-id]");
   for (const node of nodes) {
+    if (options.isEligible && !options.isEligible(node)) {
+      continue;
+    }
     const rect = node.getBoundingClientRect();
     if (rect.bottom > containerTop) {
       return {
@@ -292,6 +361,21 @@ function captureAnchor(container: HTMLElement): ScrollAnchor | null {
     }
   }
   return null;
+}
+
+/**
+ * A root shown at a reply's activity position is not a stable free-scroll
+ * anchor: the next reply/redaction can relocate it again. Prefer a normal
+ * material row and leave the anchor empty when no such row is mounted.
+ */
+function captureFreeScrollAnchor(container: HTMLElement): ScrollAnchor | null {
+  return captureAnchor(container, {
+    isEligible: (node) => {
+      const contentEventId = node.dataset["contentEventId"] ?? null;
+      const activityEventId = node.dataset["activityEventId"] ?? null;
+      return contentEventId === null || activityEventId === null || contentEventId === activityEventId;
+    }
+  });
 }
 
 /** Restore the anchor by adjusting scrollTop; true if the anchor was found. */
@@ -329,14 +413,14 @@ export function clearTimelineViewportSessionMemoryForTests(): void {
 
 function captureRoomScrollAnchor(container: HTMLElement): CapturedTimelineScrollAnchor | null {
   const containerRect = container.getBoundingClientRect();
-  const nodes = container.querySelectorAll<HTMLElement>("[data-event-id]");
+  const nodes = container.querySelectorAll<HTMLElement>("[data-activity-event-id]");
   let captured: CapturedTimelineScrollAnchor | null = null;
   for (const node of nodes) {
     const rect = node.getBoundingClientRect();
     if (rect.bottom <= containerRect.top || rect.top >= containerRect.bottom) {
       continue;
     }
-    const eventId = node.dataset["eventId"] ?? null;
+    const eventId = eventIdForTimelineIdentity(node, "activity");
     if (!eventId) {
       continue;
     }
@@ -375,9 +459,7 @@ function findRoomScrollAnchorNode(
   container: HTMLElement,
   anchor: TimelineScrollAnchor
 ): HTMLElement | null {
-  return container.querySelector<HTMLElement>(
-    `[data-event-id="${cssEscape(anchor.event_id)}"]`
-  );
+  return findTimelineEventNode(container, "activity", anchor.event_id);
 }
 
 function roomScrollAnchorSignature(roomId: string, anchor: TimelineScrollAnchor): string {
@@ -402,9 +484,35 @@ function roomScrollAnchorStableSignature(
   ].join("\u0000");
 }
 
-function timelineContainsEventId(items: readonly TimelineItem[], eventId: string): boolean {
+function canonicalTimelineContainsActivityEventId(
+  items: readonly TimelineItem[],
+  eventId: string
+): boolean {
   return items.some(
     (item) => "Event" in item.id && item.id.Event.event_id === eventId
+  );
+}
+
+function timelineEventIdentityAttribute(identity: TimelineEventIdentity): string {
+  return identity === "activity" ? "data-activity-event-id" : "data-content-event-id";
+}
+
+function eventIdForTimelineIdentity(
+  node: HTMLElement,
+  identity: TimelineEventIdentity
+): string | null {
+  return identity === "activity"
+    ? node.dataset["activityEventId"] ?? null
+    : node.dataset["contentEventId"] ?? null;
+}
+
+function findTimelineEventNode(
+  container: HTMLElement,
+  identity: TimelineEventIdentity,
+  eventId: string
+): HTMLElement | null {
+  return container.querySelector<HTMLElement>(
+    `[${timelineEventIdentityAttribute(identity)}="${cssEscape(eventId)}"]`
   );
 }
 
@@ -413,7 +521,7 @@ function visibleEventIds(container: HTMLElement): {
   lastVisibleEventId: string | null;
 } {
   const containerRect = container.getBoundingClientRect();
-  const nodes = container.querySelectorAll<HTMLElement>("[data-event-id]");
+  const nodes = container.querySelectorAll<HTMLElement>("[data-activity-event-id]");
   let firstVisibleEventId: string | null = null;
   let lastVisibleEventId: string | null = null;
   for (const node of nodes) {
@@ -421,7 +529,7 @@ function visibleEventIds(container: HTMLElement): {
     if (rect.bottom <= containerRect.top || rect.top >= containerRect.bottom) {
       continue;
     }
-    const eventId = node.dataset["eventId"] ?? null;
+    const eventId = eventIdForTimelineIdentity(node, "activity");
     if (!eventId) {
       continue;
     }
@@ -429,6 +537,54 @@ function visibleEventIds(container: HTMLElement): {
     lastVisibleEventId = eventId;
   }
   return { firstVisibleEventId, lastVisibleEventId };
+}
+
+function timelineProjectionSignature(rows: readonly TimelineDisplayRow[]): string {
+  return rows
+    .map((row) =>
+      [
+        row.row_id,
+        row.kind,
+        row.content_event_id ?? "",
+        row.activity_event_id ?? "",
+        row.display_timestamp_ms ?? ""
+      ].join("\u0000")
+    )
+    .join("\u0001");
+}
+
+function projectionStructureChanged(
+  previous: TimelineProjectionSnapshot,
+  next: TimelineProjectionSnapshot
+): boolean {
+  return previous.signature !== next.signature;
+}
+
+/**
+ * Pick only ordinary rows that survive a projection change with both
+ * identities intact. Thread-root rows are intentionally excluded even when
+ * their row id survives: their visual placement is the mutation in progress.
+ */
+function stableProjectionAnchorRowIds(
+  previousRows: readonly TimelineDisplayRow[],
+  nextRows: readonly TimelineDisplayRow[]
+): ReadonlySet<string> {
+  const nextByRowId = new Map(nextRows.map((row) => [row.row_id, row]));
+  const stable = new Set<string>();
+  for (const previous of previousRows) {
+    const next = nextByRowId.get(previous.row_id);
+    if (
+      next === undefined ||
+      previous.kind === "threadRoot" ||
+      next.kind === "threadRoot" ||
+      previous.content_event_id !== next.content_event_id ||
+      previous.activity_event_id !== next.activity_event_id
+    ) {
+      continue;
+    }
+    stable.add(previous.row_id);
+  }
+  return stable;
 }
 
 function isScrolledToBottom(container: HTMLElement): boolean {
@@ -612,7 +768,7 @@ type TimelineItemIndexRange = {
 };
 
 type TimelineVirtualWindow = TimelineVirtualRangeState & {
-  items: readonly TimelineItem[];
+  items: readonly TimelineDisplayRow[];
 };
 
 const EMPTY_TIMELINE_RANGE: TimelineVirtualRangeState = {
@@ -627,6 +783,8 @@ const EMPTY_TIMELINE_ITEM_INDEX_RANGE: TimelineItemIndexRange = {
   startIndex: 0,
   endIndex: 0
 };
+
+const ROOT_EVENT_THREAD_ORDER: TimelineThreadRootOrder = { kind: "rootEvent" };
 
 type ViewportIntent = { kind: "free-scroll" } | { kind: "live-edge" };
 
@@ -695,21 +853,20 @@ function scheduleTimelineFrame(callback: FrameRequestCallback): TimelineSchedule
 }
 
 function buildTimelineHeightModel(
-  items: readonly TimelineItem[],
+  rows: readonly TimelineDisplayRow[],
   measuredHeights: ReadonlyMap<string, number>,
   fallbackHeight: number
 ): TimelineHeightModel {
   const fallback = estimatedItemHeight(fallbackHeight);
-  const offsets = new Array<number>(items.length + 1);
+  const offsets = new Array<number>(rows.length + 1);
   offsets[0] = 0;
-  for (const [index, item] of items.entries()) {
-    const domId = timelineItemDomId(item.id);
-    offsets[index + 1] = offsets[index] + (measuredHeights.get(domId) ?? fallback);
+  for (const [index, row] of rows.entries()) {
+    offsets[index + 1] = offsets[index] + (measuredHeights.get(row.row_id) ?? fallback);
   }
   return {
     fallbackHeight: fallback,
     offsets,
-    totalHeight: offsets[items.length] ?? 0
+    totalHeight: offsets[rows.length] ?? 0
   };
 }
 
@@ -1950,6 +2107,7 @@ export const TimelineView = memo(function TimelineView({
   isAnchored = false,
   onReturnToLive,
   autoLoadOlderMessages = false,
+  threadRootOrder = ROOT_EVENT_THREAD_ORDER,
   codeBlockWrap = true,
   searchQuery = "",
   mediaDownloads = {},
@@ -1991,6 +2149,8 @@ export const TimelineView = memo(function TimelineView({
   isAnchored?: boolean;
   onReturnToLive?: () => void;
   autoLoadOlderMessages?: boolean;
+  /** Presentation-only Room order; the canonical store remains SDK ordered. */
+  threadRootOrder?: TimelineThreadRootOrder;
   codeBlockWrap?: boolean;
   searchQuery?: string;
   mediaDownloads?: Record<string, TimelineMediaDownloadState>;
@@ -2144,6 +2304,13 @@ export const TimelineView = memo(function TimelineView({
   const autoBackfillRequiresUserScrollRef = useRef(false);
   /** Coalesces ResizeObserver-driven live-edge corrections. */
   const viewportIntentResizeFrameRef = useRef<TimelineScheduledFrame | null>(null);
+  /** Coalesces a structural display-projection correction to one frame. */
+  const projectionLayoutFrameRef = useRef<TimelineScheduledFrame | null>(null);
+  const pendingProjectionLayoutRef = useRef<PendingProjectionLayoutTransaction | null>(null);
+  const projectionRenderStateRef = useRef<TimelineProjectionSnapshot | null>(null);
+  const projectionLayoutRevisionRef = useRef(0);
+  /** Invalidates a queued projection correction when viewport ownership changes. */
+  const viewportIntentRevisionRef = useRef(0);
   const scrollFollowUpFramesRef = useRef<Set<TimelineScheduledFrame>>(new Set());
   /** Pagination request currently in flight (suppresses duplicates). */
   const backfillInFlightRef = useRef(false);
@@ -2184,6 +2351,16 @@ export const TimelineView = memo(function TimelineView({
   const readSignalThreadRootEventId =
     "Thread" in timelineKey.kind ? timelineKey.kind.Thread.root_event_id : null;
   const items = getItems(store, timelineKey);
+  // The selector returns an array. Memoize it by the separately-owned map so
+  // ordinary scroll/measurement renders keep the existing display-row
+  // identity; otherwise an empty projection source would churn Task 4's
+  // height-model transaction on every render.
+  const threadRootProjections = useMemo(
+    () => getThreadRootProjections(store, timelineKey),
+    [store.threadRootProjections, timelineKey]
+  );
+  const timelineKeyState = getKeyState(store, timelineKey);
+  const generation = timelineKeyState?.generation ?? 0;
   const emitDiagnosticLog = useCallback(
     (source: string, message: string) => {
       onDiagnosticLogEntry?.({
@@ -2358,6 +2535,9 @@ export const TimelineView = memo(function TimelineView({
   );
 
   const setViewportIntentToLiveEdge = useCallback(() => {
+    if (viewportIntentRef.current.kind !== "live-edge") {
+      viewportIntentRevisionRef.current += 1;
+    }
     viewportIntentRef.current = { kind: "live-edge" };
     timelineViewportSessionMemory.set(timelineKeyHash, { mode: "live-edge" });
   }, [timelineKeyHash]);
@@ -2487,6 +2667,9 @@ export const TimelineView = memo(function TimelineView({
   }, [flushPendingMeasurements]);
 
   const setViewportIntentToFreeScroll = useCallback(() => {
+    if (viewportIntentRef.current.kind !== "free-scroll") {
+      viewportIntentRevisionRef.current += 1;
+    }
     viewportIntentRef.current = { kind: "free-scroll" };
     stickToBottomAfterMeasurementRef.current = false;
   }, []);
@@ -2497,6 +2680,10 @@ export const TimelineView = memo(function TimelineView({
   }, [setViewportIntentToFreeScroll]);
 
   const markUserScrollInput = useCallback((options: { keepLiveEdgeAtBottom?: boolean } = {}) => {
+    // Input belongs to the user even when it leaves the logical intent kind
+    // unchanged (for example another free-scroll wheel event). A queued
+    // projection frame must never reclaim that viewport position.
+    viewportIntentRevisionRef.current += 1;
     userScrollInputPendingRef.current = true;
     const container = containerRef.current;
     if (
@@ -2627,7 +2814,9 @@ export const TimelineView = memo(function TimelineView({
                             ? event.MessageSourceLoaded.key
                               : "NavigationUpdated" in event
                                 ? event.NavigationUpdated.key
-                                : event.ResyncRequired.key;
+                                : "ThreadRootProjection" in event
+                                  ? event.ThreadRootProjection.key
+                                  : event.ResyncRequired.key;
       if (!timelineKeyEquals(eventKey, timelineKeyRef.current)) {
         recordTimelineKeyMismatch();
         return;
@@ -2829,6 +3018,13 @@ export const TimelineView = memo(function TimelineView({
       viewportIntentResizeFrameRef.current.cancel();
       viewportIntentResizeFrameRef.current = null;
     }
+    if (projectionLayoutFrameRef.current !== null) {
+      projectionLayoutFrameRef.current.cancel();
+      projectionLayoutFrameRef.current = null;
+    }
+    pendingProjectionLayoutRef.current = null;
+    projectionLayoutRevisionRef.current += 1;
+    viewportIntentRevisionRef.current += 1;
     setMeasuredHeightVersion((current) => current + 1);
     backfillInFlightRef.current = false;
   }, [resetActiveMeasurementDeferral, timelineKeyHash]);
@@ -2849,6 +3045,13 @@ export const TimelineView = memo(function TimelineView({
         viewportIntentResizeFrameRef.current.cancel();
         viewportIntentResizeFrameRef.current = null;
       }
+      if (projectionLayoutFrameRef.current !== null) {
+        projectionLayoutFrameRef.current.cancel();
+        projectionLayoutFrameRef.current = null;
+      }
+      pendingProjectionLayoutRef.current = null;
+      projectionLayoutRevisionRef.current += 1;
+      viewportIntentRevisionRef.current += 1;
     },
     [resetActiveMeasurementDeferral]
   );
@@ -2857,27 +3060,91 @@ export const TimelineView = memo(function TimelineView({
     relevantAvatarMxcsRef.current = timelineAvatarMxcsForItems(items, profileUsers);
   }, [items, profileUsers]);
   const visibleItems = useMemo(() => items.filter((item) => !item.is_hidden), [items]);
+  // The SDK-owned store stays canonical. Only these presentation rows feed
+  // rendering, measuring, and virtualization for an opt-in Room projection.
+  const visibleRows = useMemo(
+    () =>
+      projectTimelineDisplayRows(items, timelineKey, threadRootOrder, threadRootProjections).filter(
+        (row) => !row.item.is_hidden
+      ),
+    [items, threadRootOrder, threadRootProjections, timelineKey]
+  );
+  const projectionSnapshot = useMemo<TimelineProjectionSnapshot>(
+    () => ({
+      timelineKeyHash,
+      generation,
+      signature: timelineProjectionSignature(visibleRows),
+      rows: visibleRows
+    }),
+    [generation, timelineKeyHash, visibleRows]
+  );
+  const captureProjectionLayoutTransaction = useCallback(
+    (previous: TimelineProjectionSnapshot, next: TimelineProjectionSnapshot) => {
+      if (!projectionStructureChanged(previous, next)) {
+        return;
+      }
+      if (
+        next.timelineKeyHash !== previous.timelineKeyHash ||
+        next.generation !== previous.generation
+      ) {
+        if (projectionLayoutFrameRef.current !== null) {
+          projectionLayoutFrameRef.current.cancel();
+          projectionLayoutFrameRef.current = null;
+        }
+        pendingProjectionLayoutRef.current = null;
+        projectionLayoutRevisionRef.current += 1;
+        return;
+      }
+      const container = containerRef.current;
+      const stableRowIds = stableProjectionAnchorRowIds(previous.rows, next.rows);
+      const anchor =
+        container && viewportIntentRef.current.kind !== "live-edge"
+          ? captureAnchor(container, {
+              isEligible: (node) => stableRowIds.has(node.dataset["itemId"] ?? "")
+            })
+          : null;
+      if (projectionLayoutFrameRef.current !== null) {
+        projectionLayoutFrameRef.current.cancel();
+        projectionLayoutFrameRef.current = null;
+      }
+      const revision = projectionLayoutRevisionRef.current + 1;
+      projectionLayoutRevisionRef.current = revision;
+      pendingProjectionLayoutRef.current = {
+        timelineKeyHash: next.timelineKeyHash,
+        generation: next.generation,
+        signature: next.signature,
+        revision,
+        intentRevision: viewportIntentRevisionRef.current,
+        mode: viewportIntentRef.current.kind === "live-edge" ? "live-edge" : "free-scroll",
+        anchor
+      };
+    },
+    []
+  );
+  useLayoutEffect(() => {
+    projectionRenderStateRef.current = projectionSnapshot;
+  }, [projectionSnapshot]);
   const visibleItemDomIds = useMemo(
-    () => new Set(visibleItems.map((item) => timelineItemDomId(item.id))),
-    [visibleItems]
+    () => new Set(visibleRows.map((row) => row.row_id)),
+    [visibleRows]
   );
   visibleItemDomIdsRef.current = visibleItemDomIds;
   const timelineHeightModel = useMemo(
     () =>
       buildTimelineHeightModel(
-        visibleItems,
+        visibleRows,
         itemHeightByDomIdRef.current,
         virtualItemHeight
       ),
-    [measuredHeightVersion, visibleItems, virtualItemHeight]
+    [measuredHeightVersion, visibleRows, virtualItemHeight]
   );
   useLayoutEffect(() => {
     rangeModelEpochRef.current += 1;
-  }, [timelineHeightModel, visibleItems]);
+  }, [timelineHeightModel, visibleRows]);
   const commitVirtualRangeForMetrics = useCallback(
     (metrics: TimelineViewportMetrics) => {
       const nextAvatarRequestRange = calculateTimelineItemIndexRange({
-        visibleItemsLength: visibleItems.length,
+        visibleItemsLength: visibleRows.length,
         metrics,
         model: timelineHeightModel,
         overscanItems: TIMELINE_AVATAR_THUMBNAIL_OVERSCAN_ITEMS
@@ -2893,7 +3160,7 @@ export const TimelineView = memo(function TimelineView({
       }
 
       const nextLinkPreviewRequestRange = calculateTimelineItemIndexRange({
-        visibleItemsLength: visibleItems.length,
+        visibleItemsLength: visibleRows.length,
         metrics,
         model: timelineHeightModel,
         overscanItems: TIMELINE_LINK_PREVIEW_OVERSCAN_ITEMS
@@ -2909,7 +3176,7 @@ export const TimelineView = memo(function TimelineView({
       }
 
       const next = calculateTimelineVirtualRange({
-        visibleItemsLength: visibleItems.length,
+        visibleItemsLength: visibleRows.length,
         metrics,
         model: timelineHeightModel
       });
@@ -2921,7 +3188,7 @@ export const TimelineView = memo(function TimelineView({
       setVirtualRange(next);
       return next;
     },
-    [timelineHeightModel, updateScrollDiagnostics, visibleItems.length]
+    [timelineHeightModel, updateScrollDiagnostics, visibleRows.length]
   );
   const updateViewportMetrics = useCallback(() => {
     const metrics = readViewportMetrics();
@@ -2929,11 +3196,11 @@ export const TimelineView = memo(function TimelineView({
   }, [commitVirtualRangeForMetrics, readViewportMetrics]);
   const virtualWindow = useMemo<TimelineVirtualWindow>(() => {
     const range =
-      visibleItems.length <= TIMELINE_VIRTUALIZATION_THRESHOLD
+      visibleRows.length <= TIMELINE_VIRTUALIZATION_THRESHOLD
         ? {
             virtualized: false,
             startIndex: 0,
-            endIndex: visibleItems.length,
+            endIndex: visibleRows.length,
             paddingTop: 0,
             paddingBottom: 0
           }
@@ -2941,9 +3208,9 @@ export const TimelineView = memo(function TimelineView({
 
     return {
       ...range,
-      items: visibleItems.slice(range.startIndex, range.endIndex)
+      items: visibleRows.slice(range.startIndex, range.endIndex)
     };
-  }, [virtualRange, visibleItems]);
+  }, [virtualRange, visibleRows]);
   useLayoutEffect(() => {
     commitVirtualRangeForMetrics(readViewportMetrics());
   }, [commitVirtualRangeForMetrics, readViewportMetrics]);
@@ -2975,15 +3242,22 @@ export const TimelineView = memo(function TimelineView({
     virtualWindow.startIndex,
     virtualWindow.virtualized
   ]);
-  const sideEffectItems =
-    visibleItems.length > TIMELINE_VIRTUALIZATION_THRESHOLD ? virtualWindow.items : visibleItems;
+  const sideEffectRows =
+    visibleRows.length > TIMELINE_VIRTUALIZATION_THRESHOLD ? virtualWindow.items : visibleRows;
+  const sideEffectItems = useMemo(
+    () => sideEffectRows.map((row) => row.item),
+    [sideEffectRows]
+  );
   const avatarSideEffectItems = useMemo(
-    () => visibleItems.slice(avatarRequestRange.startIndex, avatarRequestRange.endIndex),
-    [avatarRequestRange.endIndex, avatarRequestRange.startIndex, visibleItems]
+    () =>
+      visibleRows
+        .slice(avatarRequestRange.startIndex, avatarRequestRange.endIndex)
+        .map((row) => row.item),
+    [avatarRequestRange.endIndex, avatarRequestRange.startIndex, visibleRows]
   );
   useEffect(() => {
     const avatarDiagnostics = timelineAvatarDiagnostics(
-      visibleItems,
+      visibleRows.map((row) => row.item),
       profileUsers,
       avatarThumbnails
     );
@@ -2993,7 +3267,7 @@ export const TimelineView = memo(function TimelineView({
       }
     }
     const diagnostics = {
-      visibleItems: visibleItems.length,
+      visibleItems: visibleRows.length,
       downloadedItems: downloadedEventIdsRef.current.size,
       backfill: paginationStateDiagnosticLabel(getPaginationState(store, timelineKey, "Backward")),
       ...avatarDiagnostics,
@@ -3023,7 +3297,7 @@ export const TimelineView = memo(function TimelineView({
     profileUsers,
     store,
     timelineKeyHash,
-    visibleItems
+    visibleRows
   ]);
   useEffect(() => {
     // #116 perf gate: skip avatar downloads when disabled (default).
@@ -3095,14 +3369,15 @@ export const TimelineView = memo(function TimelineView({
   const isPaginating = backwardState === "Paginating";
   const endReached = backwardState === "EndReached";
   const roomSignals = liveSignals?.rooms[roomId] ?? null;
+  // Read receipts and fully-read state remain canonical timeline facts. A
+  // moved root only changes presentation; it must not cause the root id to be
+  // sent as the room's latest readable event.
   const latestReadableEventId = latestEventBackedItemId(items);
-  const timelineKeyState = getKeyState(store, timelineKey);
   const timelineInitialized = Boolean(timelineKeyState && !timelineKeyState.awaitingResync);
   // Stable, render-visible timeline generation for this key. Bumps when the
   // store replaces the list for a new generation (InitialItems / resync), so
   // tests can poll a concrete attribute instead of sleeping. 0 is a valid
   // Core generation; use timelineInitialized to distinguish "not initialized".
-  const generation = timelineKeyState?.generation ?? 0;
   const initialLiveEdgeScrollKey = timelineInitialized
     ? `${timelineKeyHash}:${generation}`
     : null;
@@ -3413,6 +3688,82 @@ export const TimelineView = memo(function TimelineView({
     viewportAtBottom
   ]);
 
+  useLayoutEffect(() => {
+    const transaction = pendingProjectionLayoutRef.current;
+    if (
+      transaction === null ||
+      transaction.timelineKeyHash !== projectionSnapshot.timelineKeyHash ||
+      transaction.generation !== projectionSnapshot.generation ||
+      transaction.signature !== projectionSnapshot.signature
+    ) {
+      return;
+    }
+    pendingProjectionLayoutRef.current = null;
+    const scheduledTransaction = transaction;
+    projectionLayoutFrameRef.current = scheduleTimelineFrame(() => {
+      if (projectionLayoutFrameRef.current !== null) {
+        projectionLayoutFrameRef.current = null;
+      }
+      const current = projectionRenderStateRef.current;
+      if (
+        current === null ||
+        projectionLayoutRevisionRef.current !== scheduledTransaction.revision ||
+        viewportIntentRevisionRef.current !== scheduledTransaction.intentRevision ||
+        current.timelineKeyHash !== scheduledTransaction.timelineKeyHash ||
+        current.generation !== scheduledTransaction.generation ||
+        current.signature !== scheduledTransaction.signature ||
+        (scheduledTransaction.mode === "live-edge" &&
+          viewportIntentRef.current.kind !== "live-edge") ||
+        (scheduledTransaction.mode === "free-scroll" &&
+          (viewportIntentRef.current.kind !== "free-scroll" || jumpViewportControlRef.current))
+      ) {
+        return;
+      }
+      const container = containerRef.current;
+      if (!container) {
+        return;
+      }
+      if (scheduledTransaction.mode === "live-edge") {
+        runWithScrollWriteReason("projectionCompensation", () => {
+          scrollContainerToBottom(container);
+        });
+      } else if (scheduledTransaction.anchor !== null) {
+        let restored = false;
+        runWithScrollWriteReason("projectionCompensation", () => {
+          restored = restoreAnchor(container, scheduledTransaction.anchor!);
+        });
+        if (!restored && virtualWindow.virtualized) {
+          const anchorIndex = visibleRows.findIndex(
+            (row) => row.row_id === scheduledTransaction.anchor?.itemId
+          );
+          if (anchorIndex >= 0) {
+            runWithScrollWriteReason("projectionCompensation", () => {
+              container.scrollTop = Math.max(
+                0,
+                viewportMetricsRef.current.listOffsetTop +
+                  (timelineHeightModel.offsets[anchorIndex] ?? 0) -
+                  scheduledTransaction.anchor!.offsetTop
+              );
+            });
+          }
+        }
+      }
+      if (viewportIntentRef.current.kind !== "live-edge") {
+        freeScrollAnchorRef.current = captureFreeScrollAnchor(container);
+      }
+      updateViewportMetrics();
+      reportViewportObservation();
+    });
+  }, [
+    projectionSnapshot,
+    reportViewportObservation,
+    runWithScrollWriteReason,
+    timelineHeightModel,
+    updateViewportMetrics,
+    virtualWindow.virtualized,
+    visibleRows
+  ]);
+
   // --- Anchor restoration: after React commits the prepend ---
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -3446,7 +3797,10 @@ export const TimelineView = memo(function TimelineView({
         return restored;
       };
 
-      const anchorIsLive = timelineContainsEventId(items, activeRoomAnchor.event_id);
+      const anchorIsLive = canonicalTimelineContainsActivityEventId(
+        items,
+        activeRoomAnchor.event_id
+      );
       if (anchorIsLive) {
         roomScrollAnchorRestorePendingRef.current = true;
         runWithScrollWriteReason("roomRestore", () => {
@@ -3458,9 +3812,8 @@ export const TimelineView = memo(function TimelineView({
           virtualWindow.virtualized &&
           roomTimelineRoomId === roomId
         ) {
-          const anchorIndex = visibleItems.findIndex(
-            (item) =>
-              "Event" in item.id && item.id.Event.event_id === activeRoomAnchor.event_id
+          const anchorIndex = visibleRows.findIndex(
+            (row) => row.activity_event_id === activeRoomAnchor.event_id
           );
           if (anchorIndex >= 0) {
             const anchorTop = timelineHeightModel.offsets[anchorIndex] ?? 0;
@@ -3554,9 +3907,7 @@ export const TimelineView = memo(function TimelineView({
         });
       }
       if (!restored && container && anchor && virtualWindow.virtualized) {
-        const anchorIndex = visibleItems.findIndex(
-          (item) => timelineItemDomId(item.id) === anchor.itemId
-        );
+        const anchorIndex = visibleRows.findIndex((row) => row.row_id === anchor.itemId);
         if (anchorIndex >= 0) {
           runWithScrollWriteReason("backfillCompensation", () => {
             container.scrollTop = Math.max(
@@ -3595,7 +3946,7 @@ export const TimelineView = memo(function TimelineView({
       // Refresh the free-scroll anchor after layout/measurement commits so a
       // later above-viewport resize (overflow-anchor: none) restores the
       // viewport against the settled position rather than a stale pre-measure one.
-      freeScrollAnchorRef.current = captureAnchor(container);
+      freeScrollAnchorRef.current = captureFreeScrollAnchor(container);
     }
     updateViewportMetrics();
     reportViewportObservation();
@@ -3612,7 +3963,7 @@ export const TimelineView = memo(function TimelineView({
     timelineInitialized,
     updateViewportMetrics,
     virtualWindow.virtualized,
-    visibleItems,
+    visibleRows,
     runWithScrollWriteReason,
     scheduleScrollFollowUpFrame,
     setViewportIntentToLiveEdge,
@@ -3906,7 +4257,7 @@ export const TimelineView = memo(function TimelineView({
         viewportIntentRef.current.kind !== "live-edge" &&
         !jumpViewportControlRef.current
       ) {
-        freeScrollAnchorRef.current = captureAnchor(container);
+        freeScrollAnchorRef.current = captureFreeScrollAnchor(container);
       }
     }
     if (pendingScrollFrameRef.current === null) {
@@ -4016,16 +4367,13 @@ export const TimelineView = memo(function TimelineView({
     (eventId: string) => {
       releaseViewportIntent();
       jumpViewportControlRef.current = true;
+      viewportIntentRevisionRef.current += 1;
       const container = containerRef.current;
       const scrollMountedRowIntoView = () => {
-        const row = container?.querySelector<HTMLElement>(
-          `[data-event-id="${cssEscape(eventId)}"]`
-        );
+        const row = container ? findTimelineEventNode(container, "activity", eventId) : null;
         row?.scrollIntoView({ block: "center", inline: "nearest" });
       };
-      const row = container?.querySelector<HTMLElement>(
-        `[data-event-id="${cssEscape(eventId)}"]`
-      );
+      const row = container ? findTimelineEventNode(container, "activity", eventId) : null;
       if (row) {
         runWithScrollWriteReason("jumpToEvent", () => {
           row.scrollIntoView({ block: "center", inline: "nearest" });
@@ -4035,8 +4383,8 @@ export const TimelineView = memo(function TimelineView({
         return;
       }
       if (container && virtualWindow.virtualized) {
-        const itemIndex = visibleItems.findIndex(
-          (item) => "Event" in item.id && item.id.Event.event_id === eventId
+        const itemIndex = visibleRows.findIndex(
+          (row) => row.activity_event_id === eventId
         );
         if (itemIndex >= 0) {
           const itemTop = timelineHeightModel.offsets[itemIndex] ?? 0;
@@ -4071,7 +4419,7 @@ export const TimelineView = memo(function TimelineView({
       timelineHeightModel,
       updateViewportMetrics,
       virtualWindow.virtualized,
-      visibleItems
+      visibleRows
     ]
   );
   const jumpToBottom = useCallback(() => {
@@ -4083,6 +4431,7 @@ export const TimelineView = memo(function TimelineView({
     if (activeElement instanceof HTMLElement && container.contains(activeElement)) {
       activeElement.blur();
     }
+    viewportIntentRevisionRef.current += 1;
     setViewportIntentToLiveEdge();
     runWithScrollWriteReason("jumpToBottom", () => {
       scrollContainerToBottom(container);
@@ -4129,22 +4478,26 @@ export const TimelineView = memo(function TimelineView({
     null;
 
   return (
-    <div
-      className="timeline-view"
-      data-testid="timeline-view"
-      data-end-reached={endReached || undefined}
-      data-timeline-generation={generation}
-      data-virtualized={virtualWindow.virtualized || undefined}
-      data-total-items={visibleItems.length}
-      data-rendered-items={virtualWindow.items.length}
-      ref={containerRef}
-      style={{ overflowY: "auto", height: "100%" }}
-      onKeyDown={onTimelineKeyDown}
-      onPointerDown={onTimelinePointerDown}
-      onScroll={onTimelineScroll}
-      onTouchMove={() => markUserScrollInput()}
-      onWheel={(event) => markUserScrollInput({ keepLiveEdgeAtBottom: event.deltaY > 0 })}
+    <ProjectionSnapshotBoundary
+      snapshot={projectionSnapshot}
+      onBeforeProjectionChange={captureProjectionLayoutTransaction}
     >
+      <div
+        className="timeline-view"
+        data-testid="timeline-view"
+        data-end-reached={endReached || undefined}
+        data-timeline-generation={generation}
+        data-virtualized={virtualWindow.virtualized || undefined}
+        data-total-items={visibleRows.length}
+        data-rendered-items={virtualWindow.items.length}
+        ref={containerRef}
+        style={{ overflowY: "auto", height: "100%" }}
+        onKeyDown={onTimelineKeyDown}
+        onPointerDown={onTimelinePointerDown}
+        onScroll={onTimelineScroll}
+        onTouchMove={() => markUserScrollInput()}
+        onWheel={(event) => markUserScrollInput({ keepLiveEdgeAtBottom: event.deltaY > 0 })}
+      >
       {canRenderRoomNavigation ? (
         <div
           className="timeline-navigation-bar"
@@ -4245,27 +4598,42 @@ export const TimelineView = memo(function TimelineView({
             style={{ blockSize: virtualWindow.paddingTop }}
           />
         ) : null}
-        {virtualWindow.items.map((item, windowIndex) => {
-          const itemDomId = timelineItemDomId(item.id);
+        {virtualWindow.items.map((row, windowIndex) => {
+          const { item } = row;
           const visibleIndex = virtualWindow.startIndex + windowIndex;
-          const eventId = "Event" in item.id ? item.id.Event.event_id : null;
-          const isUnreadMarker = Boolean(eventId && unreadMarkerEventId === eventId);
+          const contentEventId = row.content_event_id;
+          const activityEventId = row.activity_event_id;
+          const isUnreadMarker = Boolean(
+            activityEventId && unreadMarkerEventId === activityEventId
+          );
           const isReadMarker = Boolean(
-            eventId && readMarkerDisplayEventId === eventId && !unreadMarkerEventId
+            activityEventId &&
+              readMarkerDisplayEventId === activityEventId &&
+              !unreadMarkerEventId
           );
           return (
             <div
               className="timeline-item-frame"
-              key={itemDomId}
-              data-frame-item-id={itemDomId}
+              key={row.row_id}
+              data-frame-item-id={row.row_id}
             >
               {isUnreadMarker ? (
                 <div className="read-marker" role="separator" aria-label={t("timeline.unreadMarker")}>
                   <span>{t("timeline.unreadMarker")}</span>
                 </div>
               ) : null}
-              <TimelineItemRow
+              {row.kind === "threadRootPending" || row.kind === "threadRootFailed" ? (
+                <ThreadRootProjectionPlaceholder
+                  row={row}
+                  state={row.kind === "threadRootPending" ? "pending" : "failed"}
+                />
+              ) : (
+                <TimelineItemRow
                 item={item}
+                rowId={row.row_id}
+                contentEventId={contentEventId}
+                activityEventId={activityEventId}
+                contentTimestampMs={row.content_timestamp_ms}
                 roomId={roomId}
                 codeBlockWrap={codeBlockWrap}
                 searchQuery={searchQuery}
@@ -4277,7 +4645,7 @@ export const TimelineView = memo(function TimelineView({
                 onRedactReaction={onRedactReaction}
                 onEdit={onEdit}
                 onRedact={onRedact}
-                isPinned={eventId ? pinnedEventIds.includes(eventId) : false}
+                isPinned={contentEventId ? pinnedEventIds.includes(contentEventId) : false}
                 onPin={onPin}
                 onUnpin={onUnpin}
                 onDownloadMedia={onDownloadMedia}
@@ -4305,15 +4673,24 @@ export const TimelineView = memo(function TimelineView({
                 onOpenContextMenu={onOpenContextMenu}
                 mentionProfileUsers={profileUsers}
                 threadAttention={threadAttention}
-                mediaDownload={eventId ? mediaDownloads[eventId] : undefined}
-                receipts={eventId ? roomSignals?.receipts_by_event[eventId]?.readers ?? [] : []}
+                mediaDownload={contentEventId ? mediaDownloads[contentEventId] : undefined}
+                receipts={
+                  contentEventId
+                    ? roomSignals?.receipts_by_event[contentEventId]?.readers ?? []
+                    : []
+                }
                 receiptTotalCount={
-                  eventId ? roomSignals?.receipts_by_event[eventId]?.total_count ?? 0 : 0
+                  contentEventId
+                    ? roomSignals?.receipts_by_event[contentEventId]?.total_count ?? 0
+                    : 0
                 }
                 receiptOverflowCount={
-                  eventId ? roomSignals?.receipts_by_event[eventId]?.overflow_count ?? 0 : 0
+                  contentEventId
+                    ? roomSignals?.receipts_by_event[contentEventId]?.overflow_count ?? 0
+                    : 0
                 }
-              />
+                />
+              )}
               {isReadMarker ? (
                 <div className="read-marker" role="separator" aria-label={t("timeline.readMarker")}>
                   <span>{t("timeline.readMarker")}</span>
@@ -4380,12 +4757,55 @@ export const TimelineView = memo(function TimelineView({
           </form>
         </div>
       ) : null}
-    </div>
+      </div>
+    </ProjectionSnapshotBoundary>
   );
 });
 
+/**
+ * A projection-only placeholder for an old root which was intentionally kept
+ * out of canonical SDK items. Its stable row/content/activity identities let
+ * virtual layout and viewport observation continue to use the latest reply
+ * while the bounded root request settles. It has no message actions, so a
+ * pending or terminal failure can never trigger navigation/pagination.
+ */
+function ThreadRootProjectionPlaceholder({
+  row,
+  state
+}: {
+  row: TimelineDisplayRow;
+  state: "pending" | "failed";
+}) {
+  const summary = row.item.thread_summary;
+  const replyCount = summary?.reply_count ?? 0;
+  return (
+    <article
+      className="message thread-root-projection-placeholder"
+      data-item-id={row.row_id}
+      data-row-id={row.row_id}
+      data-content-event-id={row.content_event_id ?? undefined}
+      data-activity-event-id={row.activity_event_id ?? undefined}
+      data-event-id={row.activity_event_id ?? undefined}
+      data-thread-root-projection-state={state}
+    >
+      <p className="timeline-thread-root-projection-status" role="status">
+        {state === "pending"
+          ? t("timeline.threadRootLoading")
+          : t("timeline.threadRootUnavailable")}
+      </p>
+      <span className="thread-reply-count">
+        {replyCount === 1 ? "1 reply" : `${replyCount} replies`}
+      </span>
+    </article>
+  );
+}
+
 export function TimelineItemRow({
   item,
+  rowId,
+  contentEventId,
+  activityEventId,
+  contentTimestampMs,
   roomId,
   codeBlockWrap = true,
   searchQuery = "",
@@ -4428,6 +4848,14 @@ export function TimelineItemRow({
   mediaDownload
 }: {
   item: TimelineItem;
+  /** Stable presentation identity used by DOM/virtualization rows. */
+  rowId?: string;
+  /** Root/content identity for every message action. */
+  contentEventId?: string | null;
+  /** Latest-activity identity for Room viewport observation. */
+  activityEventId?: string | null;
+  /** The content event timestamp, independent of presentation placement. */
+  contentTimestampMs?: number | null;
   roomId: string;
   codeBlockWrap?: boolean;
   searchQuery?: string;
@@ -4476,7 +4904,8 @@ export function TimelineItemRow({
   threadAttention?: TimelineThreadAttention | null;
   mediaDownload?: TimelineMediaDownloadState;
 }) {
-  const domId = timelineItemDomId(item.id);
+  const itemDomId = timelineItemDomId(item.id);
+  const domId = rowId ?? itemDomId;
   const syntheticId = "Synthetic" in item.id ? item.id.Synthetic.synthetic_id : null;
   const dateDividerTimestampMs = syntheticDateDividerTimestampMs(syntheticId, item.timestamp_ms);
   if (dateDividerTimestampMs !== null) {
@@ -4490,7 +4919,9 @@ export function TimelineItemRow({
     return null;
   }
   const transactionId = "Transaction" in item.id ? item.id.Transaction.transaction_id : null;
-  const eventId = "Event" in item.id ? item.id.Event.event_id : null;
+  const itemEventId = "Event" in item.id ? item.id.Event.event_id : null;
+  const eventId = contentEventId ?? itemEventId;
+  const activityId = activityEventId ?? eventId;
   const isRedacted = item.is_redacted;
   const sendState = item.send_state ?? null;
   const sendStateKind = sendState?.kind ?? null;
@@ -5074,8 +5505,11 @@ export function TimelineItemRow({
     <article
       className="message"
       data-item-id={domId}
+      data-row-id={domId}
+      data-content-event-id={eventId ?? undefined}
+      data-activity-event-id={activityId ?? undefined}
       data-send-state={sendStateKind ?? undefined}
-      data-event-id={eventId ?? undefined}
+      data-event-id={activityId ?? undefined}
       data-redacted={isRedacted || undefined}
       data-reply={item.in_reply_to_event_id ? "true" : undefined}
       data-message-kind={messageKind}
@@ -5096,7 +5530,7 @@ export function TimelineItemRow({
         <div className="message-heading">
           <MessageMeta
             senderDisplayLabel={senderDisplayLabel}
-            timestampMs={item.timestamp_ms ?? null}
+            timestampMs={contentTimestampMs ?? item.timestamp_ms ?? null}
             isEdited={item.is_edited}
             isRedacted={isRedacted}
             sendStateKind={sendStateKind}

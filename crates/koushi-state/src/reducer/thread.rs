@@ -527,3 +527,97 @@ pub(crate) fn handle_close_threads_list(state: &mut AppState) -> Vec<AppEffect> 
         AppEffect::EmitUiEvent(UiEvent::ThreadsListChanged),
     ]
 }
+
+pub(crate) fn handle_thread_root_projection_observed(
+    state: &mut AppState,
+    room_id: String,
+    root_event_id: String,
+    activity_event_id: String,
+    activity_timestamp_ms: Option<u64>,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    if !state.thread_root_projections.observe(
+        room_id,
+        root_event_id,
+        activity_event_id,
+        activity_timestamp_ms,
+    ) {
+        return Vec::new();
+    }
+    vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+}
+
+pub(crate) fn handle_thread_root_projection_ready(
+    state: &mut AppState,
+    room_id: String,
+    root_event_id: String,
+    activity_event_id: String,
+    activity_timestamp_ms: Option<u64>,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    state.thread_root_projections.mark_ready(
+        room_id,
+        root_event_id,
+        activity_event_id,
+        activity_timestamp_ms,
+    );
+    vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+}
+
+pub(crate) fn handle_thread_root_projection_failed(
+    state: &mut AppState,
+    room_id: String,
+    root_event_id: String,
+    activity_event_id: String,
+    activity_timestamp_ms: Option<u64>,
+    failure_kind: crate::state::OperationFailureKind,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    state.thread_root_projections.mark_failed(
+        room_id,
+        root_event_id,
+        activity_event_id,
+        activity_timestamp_ms,
+        failure_kind,
+    );
+    vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
+}
+
+pub(crate) fn handle_thread_root_projections_reconciled(
+    state: &mut AppState,
+    room_id: String,
+    activities: Vec<crate::state::ThreadRootProjectionActivity>,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    let before = state.thread_root_projections.clone();
+    state
+        .thread_root_projections
+        .reconcile_room(room_id, activities);
+    (before != state.thread_root_projections)
+        .then_some(AppEffect::EmitUiEvent(UiEvent::ThreadChanged))
+        .into_iter()
+        .collect()
+}
+
+pub(crate) fn handle_thread_root_projections_cleared(
+    state: &mut AppState,
+    room_id: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
+    state
+        .thread_root_projections
+        .clear_room(&room_id)
+        .then_some(AppEffect::EmitUiEvent(UiEvent::ThreadChanged))
+        .into_iter()
+        .collect()
+}

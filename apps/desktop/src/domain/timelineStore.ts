@@ -38,7 +38,8 @@ import type {
   TimelineDiff,
   TimelineEvent,
   TimelineItem,
-  TimelineKey
+  TimelineKey,
+  ThreadRootProjectionDto
 } from "./coreEvents";
 import { timelineItemDomId, timelineKeyEquals } from "./coreEvents";
 
@@ -71,6 +72,8 @@ export interface TimelineKeyState {
 export interface TimelineStoreState {
   /** Keyed by JSON.stringify(TimelineKey) for simple equality. */
   keys: Map<string, TimelineKeyState>;
+  /** Bounded root snapshots, keyed independently from canonical SDK items. */
+  threadRootProjections: Map<string, ThreadRootProjectionDto>;
 }
 
 export const TIMELINE_STORE_INACTIVE_RETAIN_LIMIT = 8;
@@ -98,7 +101,116 @@ function emptyKeyState(): TimelineKeyState {
 }
 
 export function createTimelineStore(): TimelineStoreState {
-  return { keys: new Map() };
+  return { keys: new Map(), threadRootProjections: new Map() };
+}
+
+function withKeys(store: TimelineStoreState, keys: Map<string, TimelineKeyState>): TimelineStoreState {
+  return {
+    ...store,
+    keys,
+    threadRootProjections: retainActiveThreadRootProjections(store.threadRootProjections, keys)
+  };
+}
+
+function withRetainedKeys(
+  store: TimelineStoreState,
+  keys: Map<string, TimelineKeyState>
+): TimelineStoreState {
+  const retainedPrefixes = [...keys.keys()].map((key) => `${key}\u0000`);
+  const threadRootProjections = new Map(
+    [...store.threadRootProjections].filter(([projectionKey]) =>
+      retainedPrefixes.some((prefix) => projectionKey.startsWith(prefix))
+    )
+  );
+  // Pruning an unrelated timeline must not invalidate TimelineView's display
+  // projection memo for a room whose root snapshots were all retained.
+  return withKeys(
+    {
+      ...store,
+      threadRootProjections:
+        threadRootProjections.size === store.threadRootProjections.size
+          ? store.threadRootProjections
+          : threadRootProjections
+    },
+    keys
+  );
+}
+
+function threadRootProjectionStoreKey(key: TimelineKey, rootEventId: string): string {
+  return `${keyStr(key)}\u0000${rootEventId}`;
+}
+
+/**
+ * A root projection is useful only while its reply is in the bounded canonical
+ * Room window. A Core-marked replay-known **ready** root is the sole exception:
+ * it may stay without a reply because the bounded display window intentionally
+ * omitted the known root. Pending, failed, and ordinary ready entries are
+ * removed as soon as their reply leaves. This never mutates canonical items.
+ */
+function retainActiveThreadRootProjections(
+  projections: Map<string, ThreadRootProjectionDto>,
+  keys: ReadonlyMap<string, TimelineKeyState>
+): Map<string, ThreadRootProjectionDto> {
+  const retained = new Map<string, ThreadRootProjectionDto>();
+  for (const [projectionKey, projection] of projections) {
+    const separator = projectionKey.lastIndexOf("\u0000");
+    const timelineKeyId = separator < 0 ? projectionKey : projectionKey.slice(0, separator);
+    const state = keys.get(timelineKeyId);
+    if (!state) {
+      continue;
+    }
+    if (isReplayKnownReadyProjection(projection)) {
+      retained.set(projectionKey, projection);
+      continue;
+    }
+    if (state.items.some((item) => item.thread_root === projection.root_event_id)) {
+      retained.set(projectionKey, projection);
+    }
+  }
+  // Preserve the reference when no projection lifecycle changed. TimelineView
+  // memoizes display rows by this map, so cloning an unchanged empty map on a
+  // pagination-only event would schedule a spurious projection transaction.
+  return retained.size === projections.size ? projections : retained;
+}
+
+function isReplayKnownReadyProjection(projection: ThreadRootProjectionDto): boolean {
+  return (
+    projection.retain_without_reply === true &&
+    projection.state.kind === "ready" &&
+    replayKnownEpoch(projection) !== null
+  );
+}
+
+function normalizeThreadRootProjection(
+  projection: ThreadRootProjectionDto
+): ThreadRootProjectionDto {
+  if (projection.retain_without_reply !== true || isReplayKnownReadyProjection(projection)) {
+    return projection;
+  }
+  // `retain_without_reply` is an epoch-scoped Core replay-known Ready contract.
+  // Never let an arbitrary Ready or malformed Pending/Failed wire payload
+  // manufacture an unbounded retention.
+  return { ...projection, retain_without_reply: false };
+}
+
+function replayKnownEpoch(projection: ThreadRootProjectionDto): number | null {
+  const source = projection.source;
+  return source?.kind === "replayKnown" && Number.isSafeInteger(source.epoch) && source.epoch > 0
+    ? source.epoch
+    : null;
+}
+
+function projectionSourcesMatch(
+  left: ThreadRootProjectionDto,
+  right: ThreadRootProjectionDto
+): boolean {
+  const leftReplayEpoch = replayKnownEpoch(left);
+  const rightReplayEpoch = replayKnownEpoch(right);
+  if (leftReplayEpoch !== null || rightReplayEpoch !== null) {
+    return leftReplayEpoch !== null && leftReplayEpoch === rightReplayEpoch;
+  }
+  return (left.source?.kind ?? "hydration") === "hydration" &&
+    (right.source?.kind ?? "hydration") === "hydration";
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +226,9 @@ export function applyTimelineEvent(
   }
   if ("ItemsUpdated" in event) {
     return applyItemsUpdated(store, event.ItemsUpdated);
+  }
+  if ("ThreadRootProjection" in event) {
+    return applyThreadRootProjection(store, event.ThreadRootProjection);
   }
   if ("DisplayLabelsUpdated" in event) {
     return applyDisplayLabelsUpdated(store, event.DisplayLabelsUpdated);
@@ -162,7 +277,11 @@ export function applyGlobalResync(store: TimelineStoreState): TimelineStoreState
       mediaUploadProgress: new Map()
     });
   }
-  return { keys: next };
+  // EventStreamLag temporarily clears canonical rows while already-subscribed
+  // actors replay InitialItems. It is not a canonical-window transition, so
+  // retained terminal root snapshots must survive until that replay restores
+  // their reply activity. True window exits still flow through `withKeys`.
+  return { ...store, keys: next };
 }
 
 export function pruneTimelineStore(
@@ -188,7 +307,7 @@ export function pruneTimelineStore(
     }
   }
   if (inactiveCount <= retainLimit) {
-    return movedTouchedKey ? { keys: next } : store;
+    return movedTouchedKey ? withKeys(store, next) : store;
   }
 
   let evictCount = inactiveCount - retainLimit;
@@ -202,7 +321,7 @@ export function pruneTimelineStore(
     next.delete(keyId);
     evictCount -= 1;
   }
-  return { keys: next };
+  return withRetainedKeys(store, next);
 }
 
 function timelineEventKeyId(event: TimelineEvent): string | null {
@@ -242,6 +361,9 @@ function timelineEventKeyId(event: TimelineEvent): string | null {
   if ("MediaDownloadFailed" in event) {
     return keyStr(event.MediaDownloadFailed.key);
   }
+  if ("ThreadRootProjection" in event) {
+    return keyStr(event.ThreadRootProjection.key);
+  }
   if ("ResyncRequired" in event) {
     return keyStr(event.ResyncRequired.key);
   }
@@ -251,6 +373,37 @@ function timelineEventKeyId(event: TimelineEvent): string | null {
 // ---------------------------------------------------------------------------
 // Internal reducers
 // ---------------------------------------------------------------------------
+
+function applyThreadRootProjection(
+  store: TimelineStoreState,
+  payload: Extract<TimelineEvent, { ThreadRootProjection: unknown }>[
+    "ThreadRootProjection"
+  ]
+): TimelineStoreState {
+  if (!("Room" in payload.key.kind)) {
+    return store;
+  }
+  const projection = normalizeThreadRootProjection(payload.projection);
+  const projectionKey = threadRootProjectionStoreKey(payload.key, projection.root_event_id);
+  const projections = new Map(store.threadRootProjections);
+  if (projection.state.kind === "cleared") {
+    const existing = projections.get(projectionKey);
+    if (existing === undefined || !projectionSourcesMatch(existing, projection)) {
+      return store;
+    }
+    projections.delete(projectionKey);
+    return { ...store, threadRootProjections: projections };
+  }
+  // Delete before set so a changed terminal result is the most-recent record
+  // should future bounded retention diagnostics need map order.
+  projections.delete(projectionKey);
+  projections.set(projectionKey, projection);
+  // Deliberately does not touch `keys`, canonical items, or either index.
+  return {
+    ...store,
+    threadRootProjections: retainActiveThreadRootProjections(projections, store.keys)
+  };
+}
 
 function applyInitialItems(
   store: TimelineStoreState,
@@ -269,7 +422,7 @@ function applyInitialItems(
     lastAppliedBatchId: null,
     awaitingResync: false
   });
-  return { keys: next };
+  return withKeys(store, next);
 }
 
 function applyMediaUploadProgress(
@@ -282,7 +435,7 @@ function applyMediaUploadProgress(
   progress.set(payload.transaction_id, payload.progress);
   const next = new Map(store.keys);
   next.set(k, { ...existing, mediaUploadProgress: progress });
-  return { keys: next };
+  return withKeys(store, next);
 }
 
 function applySendCompleted(
@@ -298,7 +451,7 @@ function applySendCompleted(
   progress.delete(payload.transaction_id);
   const next = new Map(store.keys);
   next.set(k, { ...existing, mediaUploadProgress: progress });
-  return { keys: next };
+  return withKeys(store, next);
 }
 
 function applyItemsUpdated(
@@ -327,7 +480,7 @@ function applyItemsUpdated(
       itemIndexById: updated.itemIndexById,
       itemIdsByTimestamp: updated.itemIdsByTimestamp
     });
-    return { keys: next };
+    return withKeys(store, next);
   }
 
   // Stale generation: discard silently.
@@ -358,7 +511,7 @@ function applyItemsUpdated(
     itemIdsByTimestamp: updated.itemIdsByTimestamp,
     lastAppliedBatchId: payload.batch_id
   });
-  return { keys: next };
+  return withKeys(store, next);
 }
 
 function applyPaginationStateChanged(
@@ -376,7 +529,7 @@ function applyPaginationStateChanged(
       ? { ...existing, paginationBackward: payload.state }
       : { ...existing, paginationForward: payload.state };
   next.set(k, updated);
-  return { keys: next };
+  return withKeys(store, next);
 }
 
 function applyResyncRequired(
@@ -397,14 +550,14 @@ function applyResyncRequired(
     awaitingResync: true,
     mediaUploadProgress: new Map()
   });
-  return { keys: next };
+  return withKeys(store, next);
 }
 
 function applyDisplayPolicyUpdated(
   store: TimelineStoreState,
   payload: Extract<TimelineEvent, { DisplayPolicyUpdated: unknown }>["DisplayPolicyUpdated"]
 ): TimelineStoreState {
-  if (store.keys.size === 0) {
+  if (store.keys.size === 0 && store.threadRootProjections.size === 0) {
     return store;
   }
 
@@ -429,14 +582,27 @@ function applyDisplayPolicyUpdated(
     }
   }
 
-  return changed ? { keys: next } : store;
+  const nextStore = changed ? withKeys(store, next) : store;
+  const threadRootProjections = mapReadyThreadRootProjectionItems(
+    nextStore.threadRootProjections,
+    (item) => {
+      const isHidden = payload.hide_redacted && item.is_redacted;
+      return item.is_hidden === isHidden ? item : { ...item, is_hidden: isHidden };
+    }
+  );
+  return threadRootProjections === nextStore.threadRootProjections
+    ? nextStore
+    : { ...nextStore, threadRootProjections };
 }
 
 function applyDisplayLabelsUpdated(
   store: TimelineStoreState,
   payload: Extract<TimelineEvent, { DisplayLabelsUpdated: unknown }>["DisplayLabelsUpdated"]
 ): TimelineStoreState {
-  if (payload.labels.length === 0 || store.keys.size === 0) {
+  if (
+    payload.labels.length === 0 ||
+    (store.keys.size === 0 && store.threadRootProjections.size === 0)
+  ) {
     return store;
   }
 
@@ -467,7 +633,44 @@ function applyDisplayLabelsUpdated(
     }
   }
 
-  return changed ? { keys: next } : store;
+  const nextStore = changed ? withKeys(store, next) : store;
+  const threadRootProjections = mapReadyThreadRootProjectionItems(
+    nextStore.threadRootProjections,
+    (item) => applyDisplayLabelUpdateToItem(item, labels)
+  );
+  return threadRootProjections === nextStore.threadRootProjections
+    ? nextStore
+    : { ...nextStore, threadRootProjections };
+}
+
+/**
+ * Root snapshots are a separately-owned display input, but their renderable
+ * Ready item must receive the same global presentation updates as canonical
+ * timeline rows. This maps only that item, never `keys[*].items`.
+ */
+function mapReadyThreadRootProjectionItems(
+  projections: Map<string, ThreadRootProjectionDto>,
+  update: (item: TimelineItem) => TimelineItem
+): Map<string, ThreadRootProjectionDto> {
+  let changed = false;
+  const next = new Map<string, ThreadRootProjectionDto>();
+  for (const [projectionKey, projection] of projections) {
+    if (projection.state.kind !== "ready") {
+      next.set(projectionKey, projection);
+      continue;
+    }
+    const item = update(projection.state.item);
+    if (item === projection.state.item) {
+      next.set(projectionKey, projection);
+      continue;
+    }
+    changed = true;
+    next.set(projectionKey, {
+      ...projection,
+      state: { ...projection.state, item }
+    });
+  }
+  return changed ? next : projections;
 }
 
 function applyDisplayLabelUpdateToItem(
@@ -797,6 +1000,24 @@ export function getItems(
   key: TimelineKey
 ): TimelineItem[] {
   return store.keys.get(keyStr(key))?.items ?? [];
+}
+
+/**
+ * Returns the separately-owned old-root snapshots for one Room timeline.
+ * Callers must use these only as display-projection input; they are never
+ * canonical diff items and cannot be applied back to `TimelineKeyState`.
+ */
+export function getThreadRootProjections(
+  store: TimelineStoreState,
+  key: TimelineKey
+): ThreadRootProjectionDto[] {
+  if (!("Room" in key.kind)) {
+    return [];
+  }
+  const prefix = `${keyStr(key)}\u0000`;
+  return [...store.threadRootProjections.entries()]
+    .filter(([projectionKey]) => projectionKey.startsWith(prefix))
+    .map(([, projection]) => projection);
 }
 
 export function getMediaUploadProgress(

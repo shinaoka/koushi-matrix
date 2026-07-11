@@ -607,7 +607,8 @@ function makeSnapshot(): DesktopSnapshot {
               }
             },
             timeline: {
-              auto_load_older_messages: true
+              auto_load_older_messages: true,
+              thread_root_order: { kind: "rootEvent" }
             },
             search_crawler: {
               speed: "standard",

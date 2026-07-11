@@ -197,6 +197,7 @@ fn audit_app_state_delta_slices(state: &AppState) {
         thread: _,
         thread_attention: _,
         threads_list: _,
+        thread_root_projections: _,
         focused_context: _,
         search: _,
         search_crawler: _,
