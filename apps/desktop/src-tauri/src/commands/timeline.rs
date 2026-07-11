@@ -2,13 +2,49 @@ use super::*;
 
 const SUBMISSION_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(10);
 
+trait SubmissionEventSource {
+    fn snapshot(&self) -> koushi_state::AppState;
+    fn recv_event(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<CoreEvent, EventStreamLag>> + Send + '_>>;
+}
+
+impl SubmissionEventSource for CoreConnection {
+    fn snapshot(&self) -> koushi_state::AppState {
+        CoreConnection::snapshot(self)
+    }
+
+    fn recv_event(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<CoreEvent, EventStreamLag>> + Send + '_>> {
+        Box::pin(CoreConnection::recv_event(self))
+    }
+}
+
 async fn wait_for_submission_settlement(
     event_conn: &mut CoreConnection,
     submission_id: SubmissionId,
 ) -> Result<SubmissionResponse, SubmissionFailure> {
-    let deadline = tokio::time::Instant::now() + SUBMISSION_SETTLEMENT_TIMEOUT;
+    let (outcome, transaction_id) =
+        wait_for_submission_outcome(event_conn, &submission_id, SUBMISSION_SETTLEMENT_TIMEOUT)
+            .await?;
+    let snapshot = event_conn.versioned_snapshot();
+    Ok(SubmissionResponse {
+        outcome,
+        submission_id,
+        transaction_id,
+        snapshot: FrontendDesktopSnapshot::from_versioned(snapshot.state, snapshot.generation),
+    })
+}
+
+async fn wait_for_submission_outcome<S: SubmissionEventSource>(
+    source: &mut S,
+    submission_id: &SubmissionId,
+    timeout: Duration,
+) -> Result<(SubmissionOutcome, Option<String>), SubmissionFailure> {
+    let deadline = tokio::time::Instant::now() + timeout;
     let (outcome, transaction_id) = loop {
-        let event = tokio::time::timeout_at(deadline, event_conn.recv_event())
+        let event = tokio::time::timeout_at(deadline, source.recv_event())
             .await
             .map_err(|_| SubmissionFailure::Timeout)?;
         match event {
@@ -16,14 +52,14 @@ async fn wait_for_submission_settlement(
                 submission_id: accepted_id,
                 transaction_id,
                 ..
-            })) if accepted_id == submission_id => {
+            })) if accepted_id == *submission_id => {
                 break (SubmissionOutcome::Accepted, Some(transaction_id));
             }
             Ok(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
                 submission_id: rejected_id,
                 kind,
                 ..
-            })) if rejected_id == submission_id => {
+            })) if rejected_id == *submission_id => {
                 break (SubmissionOutcome::Rejected { kind }, None);
             }
             Ok(_) => {}
@@ -34,21 +70,21 @@ async fn wait_for_submission_settlement(
 
     if matches!(outcome, SubmissionOutcome::Accepted) {
         loop {
-            let snapshot = event_conn.snapshot();
+            let snapshot = source.snapshot();
             let main_accepted = snapshot
                 .timeline
                 .composer
                 .accepted_submission_ids
-                .contains(&submission_id);
+                .contains(submission_id);
             let thread_accepted = matches!(
                 &snapshot.thread,
                 koushi_state::ThreadPaneState::Open { composer, .. }
-                    if composer.accepted_submission_ids.contains(&submission_id)
+                    if composer.accepted_submission_ids.contains(submission_id)
             );
             if main_accepted || thread_accepted {
                 break;
             }
-            tokio::time::timeout_at(deadline, event_conn.recv_event())
+            tokio::time::timeout_at(deadline, source.recv_event())
                 .await
                 .map_err(|_| SubmissionFailure::Timeout)?
                 .map_err(|lag| {
@@ -60,13 +96,7 @@ async fn wait_for_submission_settlement(
                 })?;
         }
     }
-    let snapshot = event_conn.versioned_snapshot();
-    Ok(SubmissionResponse {
-        outcome,
-        submission_id,
-        transaction_id,
-        snapshot: FrontendDesktopSnapshot::from_versioned(snapshot.state, snapshot.generation),
-    })
+    Ok((outcome, transaction_id))
 }
 
 #[tauri::command]
@@ -1036,6 +1066,123 @@ pub async fn send_thread_reply(
     let response = wait_for_submission_settlement(&mut event_conn, submission_id).await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
     Ok(response)
+}
+
+#[cfg(test)]
+mod submission_settlement_tests {
+    use std::collections::VecDeque;
+
+    use super::*;
+
+    struct ScriptedSource {
+        state: koushi_state::AppState,
+        events: VecDeque<(Result<CoreEvent, EventStreamLag>, Option<SubmissionId>)>,
+        pending_on_empty: bool,
+    }
+
+    impl SubmissionEventSource for ScriptedSource {
+        fn snapshot(&self) -> koushi_state::AppState {
+            self.state.clone()
+        }
+
+        fn recv_event(
+            &mut self,
+        ) -> Pin<Box<dyn Future<Output = Result<CoreEvent, EventStreamLag>> + Send + '_>> {
+            if let Some((event, accepted_id)) = self.events.pop_front() {
+                if let Some(accepted_id) = accepted_id {
+                    self.state
+                        .timeline
+                        .composer
+                        .accepted_submission_ids
+                        .push_back(accepted_id);
+                }
+                Box::pin(async move { event })
+            } else if self.pending_on_empty {
+                Box::pin(std::future::pending())
+            } else {
+                Box::pin(async { Err(EventStreamLag { skipped: 0 }) })
+            }
+        }
+    }
+
+    fn accepted(id: SubmissionId, sequence: u64) -> CoreEvent {
+        CoreEvent::Timeline(TimelineEvent::SubmissionAccepted {
+            request_id: RequestId {
+                connection_id: koushi_core::RuntimeConnectionId(1),
+                sequence,
+            },
+            key: build_timeline_key(AccountKey("@u:test".to_owned()), "!r:test".to_owned()),
+            submission_id: id,
+            transaction_id: "txn".to_owned(),
+        })
+    }
+
+    #[tokio::test]
+    async fn ignores_unrelated_events_and_waits_for_reducer_acceptance() {
+        let expected = SubmissionId::new("expected");
+        let mut source = ScriptedSource {
+            state: koushi_state::AppState::default(),
+            events: VecDeque::from([
+                (Ok(accepted(SubmissionId::new("other"), 1)), None),
+                (Ok(accepted(expected.clone(), 2)), None),
+                (
+                    Ok(accepted(SubmissionId::new("after-accept"), 3)),
+                    Some(expected.clone()),
+                ),
+            ]),
+            pending_on_empty: false,
+        };
+        let result = wait_for_submission_outcome(&mut source, &expected, Duration::from_secs(1))
+            .await
+            .expect("accepted");
+        assert_eq!(result.0, SubmissionOutcome::Accepted);
+    }
+
+    #[tokio::test]
+    async fn matching_rejection_disconnect_and_timeout_are_typed() {
+        let expected = SubmissionId::new("expected");
+        let rejected = CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+            request_id: RequestId {
+                connection_id: koushi_core::RuntimeConnectionId(1),
+                sequence: 1,
+            },
+            key: build_timeline_key(AccountKey("@u:test".to_owned()), "!r:test".to_owned()),
+            submission_id: expected.clone(),
+            kind: koushi_core::TimelineFailureKind::NotSubscribed,
+        });
+        let mut source = ScriptedSource {
+            state: koushi_state::AppState::default(),
+            events: VecDeque::from([(Ok(rejected), None)]),
+            pending_on_empty: false,
+        };
+        assert!(matches!(
+            wait_for_submission_outcome(&mut source, &expected, Duration::from_secs(1)).await,
+            Ok((
+                SubmissionOutcome::Rejected {
+                    kind: koushi_core::TimelineFailureKind::NotSubscribed
+                },
+                None
+            ))
+        ));
+        let mut disconnected = ScriptedSource {
+            state: koushi_state::AppState::default(),
+            events: VecDeque::new(),
+            pending_on_empty: false,
+        };
+        assert_eq!(
+            wait_for_submission_outcome(&mut disconnected, &expected, Duration::from_secs(1)).await,
+            Err(SubmissionFailure::Disconnected)
+        );
+        let mut timed_out = ScriptedSource {
+            state: koushi_state::AppState::default(),
+            events: VecDeque::new(),
+            pending_on_empty: true,
+        };
+        assert_eq!(
+            wait_for_submission_outcome(&mut timed_out, &expected, Duration::from_millis(1)).await,
+            Err(SubmissionFailure::Timeout)
+        );
+    }
 }
 
 #[cfg(test)]
