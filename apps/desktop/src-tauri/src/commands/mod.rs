@@ -2673,6 +2673,7 @@ pub(crate) enum SubmissionFailure {
     SubmitFailed,
     Timeout,
     Disconnected,
+    Lagged,
 }
 
 pub(crate) fn build_set_thread_composer_draft_command(

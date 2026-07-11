@@ -46,6 +46,24 @@ matching reducer transition is observable; it does not return an enqueue-time
 snapshot. Draft text clears only after acceptance. Retry remains tied to the
 existing transaction and does not create a new submission.
 
+Admission is atomic across the manager and timeline actor. The manager first
+reserves one actor-mailbox slot with a closed one-shot start permit attached.
+The actor must await that permit before touching the SDK or emitting a
+terminal. The manager opens it only after the matching reducer acceptance was
+delivered, the active ledger was recorded, and `SubmissionAccepted` was
+emitted. A mailbox failure rejects without reducer acceptance. A reducer
+delivery failure drops the permit, records a bounded rejected tombstone, and
+replays of that ID remain explicitly rejected without reaching the SDK.
+
+Timeout, disconnect, lag, or submit-delivery ambiguity is `Unknown`, not
+rejection. The frontend retains the submission guard, ID, target, and captured
+payload, leaves the draft intact, and waits for a later accepted/terminal
+observation or an explicit user retry. That retry reuses the same ID and exact
+captured payload. It never allocates a replacement ID and never loops
+automatically. Explicit `SubmissionRejected` is the only safe pre-acceptance
+release. Browser fakes implement the same accepted/replay/terminal ledger for
+main sends, replies, and thread replies.
+
 Diagnostics expose only generation/epoch/request tokens, fixed outcomes,
 counts, and durations. They never expose message bodies or Matrix identifiers.
 

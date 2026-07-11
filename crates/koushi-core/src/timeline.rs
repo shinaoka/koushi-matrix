@@ -15633,6 +15633,85 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn reserved_actor_message_waits_for_reducer_acceptance_delivery() {
+        let key = room_key();
+        let (actor_tx, mut actor_rx) = mpsc::channel(1);
+        let actor_task = executor::spawn(std::future::pending());
+        let (action_tx, mut action_rx) = mpsc::channel(1);
+        action_tx
+            .try_send(Vec::new())
+            .expect("pause reducer delivery");
+        let (event_tx, mut event_rx) = broadcast::channel(4);
+        let (msg_tx, msg_rx) = mpsc::channel(1);
+        let mut manager = TimelineManagerActor {
+            session: None,
+            room_list_service: None,
+            timelines: HashMap::from([(
+                key.clone(),
+                TimelineActorHandle {
+                    tx: actor_tx,
+                    task: actor_task,
+                    auxiliary_tasks: Vec::new(),
+                },
+            )]),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
+            action_tx,
+            event_tx,
+            msg_tx,
+            msg_rx,
+            search_index_tx: None,
+            ignored_user_ids: Default::default(),
+            data_dir: None,
+            link_preview_policy: LinkPreviewContext::default(),
+            messages_backpressure: MessagesBackpressure::default(),
+            thread_root_projection_service: Arc::new(Mutex::new(
+                ThreadRootProjectionService::default(),
+            )),
+            thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
+            replay_known_thread_root_projections: Arc::new(Mutex::new(
+                ReplayKnownThreadRootProjectionRegistry::default(),
+            )),
+            timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+            test_session_available: true,
+        };
+        let submission_id = SubmissionId::new("paused-admission");
+        let command_id = submission_id.clone();
+        let route = tokio::spawn(async move {
+            manager
+                .handle_command(TimelineCommand::SubmitText {
+                    request_id: fake_rid(7310),
+                    submission_id: command_id,
+                    key,
+                    transaction_id: "txn-paused".to_owned(),
+                    body: "body".to_owned(),
+                    mentions: MentionIntent::default(),
+                })
+                .await;
+        });
+        let mut admission = match actor_rx.recv().await {
+            Some(TimelineActorMessage::SendText {
+                admission: Some(admission),
+                ..
+            }) => admission,
+            _ => panic!("actor mailbox must be reserved"),
+        };
+        assert!(matches!(
+            admission.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(event_rx.try_recv().is_err());
+        assert!(action_rx.recv().await.expect("pause marker").is_empty());
+        assert!(
+            matches!(action_rx.recv().await, Some(actions) if matches!(actions.as_slice(), [AppAction::ComposerSubmissionAccepted { submission_id: accepted, .. }] if accepted == &submission_id))
+        );
+        route.await.expect("manager route");
+        assert!(
+            matches!(event_rx.try_recv(), Ok(CoreEvent::Timeline(TimelineEvent::SubmissionAccepted { submission_id: accepted, .. })) if accepted == submission_id)
+        );
+        assert!(await_submission_admission(Some(admission)).await);
+    }
+
     #[test]
     fn submission_admission_tombstones_are_bounded_and_active_is_retained() {
         let mut ledger = SubmissionAdmissionLedger::default();

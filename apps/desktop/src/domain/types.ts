@@ -1058,6 +1058,7 @@ export interface TimelineMediaGalleryItem {
 }
 
 export interface ComposerState {
+  accepted_submission_ids?: string[];
   pending_submission_id?: string | null;
   pending_transaction_id: string | null;
   draft: string;

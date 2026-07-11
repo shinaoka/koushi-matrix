@@ -64,7 +64,7 @@ async fn wait_for_submission_outcome<S: SubmissionEventSource>(
             }
             Ok(_) => {}
             Err(EventStreamLag { skipped: 0 }) => return Err(SubmissionFailure::Disconnected),
-            Err(_) => {}
+            Err(_) => return Err(SubmissionFailure::Lagged),
         }
     };
 
@@ -91,7 +91,7 @@ async fn wait_for_submission_outcome<S: SubmissionEventSource>(
                     if lag.skipped == 0 {
                         SubmissionFailure::Disconnected
                     } else {
-                        SubmissionFailure::Timeout
+                        SubmissionFailure::Lagged
                     }
                 })?;
         }
@@ -1139,7 +1139,7 @@ mod submission_settlement_tests {
     }
 
     #[tokio::test]
-    async fn matching_rejection_disconnect_and_timeout_are_typed() {
+    async fn matching_rejection_disconnect_lag_and_timeout_are_typed() {
         let expected = SubmissionId::new("expected");
         let rejected = CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
             request_id: RequestId {
@@ -1172,6 +1172,15 @@ mod submission_settlement_tests {
         assert_eq!(
             wait_for_submission_outcome(&mut disconnected, &expected, Duration::from_secs(1)).await,
             Err(SubmissionFailure::Disconnected)
+        );
+        let mut lagged = ScriptedSource {
+            state: koushi_state::AppState::default(),
+            events: VecDeque::from([(Err(EventStreamLag { skipped: 1 }), None)]),
+            pending_on_empty: false,
+        };
+        assert_eq!(
+            wait_for_submission_outcome(&mut lagged, &expected, Duration::from_secs(1)).await,
+            Err(SubmissionFailure::Lagged)
         );
         let mut timed_out = ScriptedSource {
             state: koushi_state::AppState::default(),

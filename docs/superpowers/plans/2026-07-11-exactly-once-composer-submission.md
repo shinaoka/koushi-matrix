@@ -53,3 +53,14 @@
 - [ ] Add a RED end-to-end duplicate invocation test proving one resolver, invoke, reducer acceptance, transaction, and SDK enqueue.
 - [ ] Regenerate checked-in wire artifacts using the repository generator.
 - [ ] Run state/core/Tauri/frontend suites plus IPC contract checks and commit only generated contract changes.
+
+### Task 6: Atomic admission and ambiguous IPC recovery
+
+**Files:** `crates/koushi-core/src/timeline.rs`, `apps/desktop/src-tauri/src/commands/{mod.rs,timeline.rs}`, `apps/desktop/src/domain/composerSubmission.ts`, `apps/desktop/src/App.tsx`, `apps/desktop/src/backend/browserFakeApi.ts`, focused tests
+
+- [x] Replace source-order assertions with deterministic closed/open/dropped permit behavior tests.
+- [x] Reserve the actor mailbox with a one-shot permit and open it only after reducer acceptance delivery, ledger recording, and accepted-event emission.
+- [x] Tombstone reducer-delivery failures as rejected so replay is deterministic and never reaches the SDK.
+- [x] Preserve ID, captured target/payload, draft, and guard for timeout/disconnect/lag; explicit retry reuses them without an automatic loop.
+- [x] Mirror accepted replay and terminal snapshot fields in the browser fake for main/reply/thread.
+- [ ] Run the full state/core/Tauri/frontend/fake/wire gates and commit.

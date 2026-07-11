@@ -427,6 +427,8 @@ stateDiagram-v2
     Resolving --> Idle: ResolverRejected / release resolve guard
     Resolving --> Submitting: ResolverSend / allocate SubmissionId; set submitInFlight
     Submitting --> Pending: SubmissionAccepted [matching SubmissionId] / clear matching draft
+    Submitting --> Submitting: Timeout_or_Disconnect_or_Lag / mark Unknown; preserve ID, target, payload, draft, guard
+    Submitting --> Submitting: ExplicitRetry [Unknown] / reuse same ID and captured payload
     Submitting --> Idle: SubmissionRejected [matching SubmissionId] / preserve draft; release guards
     Pending --> Idle: SendFinished [matching SubmissionId and transaction] / release guards
     Pending --> Idle: SendFailed_or_Cancelled [matching SubmissionId and transaction] / release guards
@@ -439,11 +441,20 @@ stateDiagram-v2
   shortcut resolver. `submitInFlight` and the `SubmissionId` are acquired after
   a resolved send action and before the Tauri invocation. Edit actions share
   the resolve guard but do not allocate new-text submission IDs.
+- Core admission uses a cross-actor one-shot permit. The manager reserves the
+  actor mailbox first, delivers reducer acceptance, records/emits acceptance,
+  and only then opens the permit. A closed or dropped permit prevents every SDK
+  enqueue and terminal. Reducer-delivery failure records a rejected tombstone;
+  replay of that ID is explicitly rejected and cannot reach the actor again.
 - A draft is cleared only by the reducer transition that accepts the matching
   submission. An IPC return without matching reducer acceptance is not success.
   Explicit rejection releases both guards while preserving the draft. Accepted
   pending submissions release only after matching completion, failure, or
   cancellation. Existing transaction retry does not allocate a new submission.
+  Timeout, disconnect, and lag are unknown outcomes: the frontend retains the
+  ID plus the original target/payload and retries only on explicit user action
+  with those exact captured values. Later accepted/terminal observation may
+  settle the guard without a retry.
 - The timeline actor carries the submission ID beside the client transaction
   through its send-completion tracker. Success, failure, and cancellation emit
   one `ComposerSubmissionSettled` action containing both values and the main or

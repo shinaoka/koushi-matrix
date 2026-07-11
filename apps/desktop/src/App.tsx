@@ -24,6 +24,7 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 
 import { createDesktopApi } from "./backend/client";
 import {
+  classifySubmissionFailure,
   createComposerSubmissionController,
   createSubmissionId,
   type ComposerSubmissionController
@@ -1404,6 +1405,13 @@ export function App() {
     if (
       submissionId &&
       thread?.kind === "open" &&
+      thread.composer?.accepted_submission_ids?.includes(submissionId)
+    ) {
+      threadSubmissionRef.current?.accept(submissionId);
+    }
+    if (
+      submissionId &&
+      thread?.kind === "open" &&
       thread.composer?.pending_transaction_id === null &&
       thread.composer.pending_submission_id !== submissionId
     ) {
@@ -2754,6 +2762,20 @@ export function App() {
       return;
     }
 
+    const mentions = pruneMentionIntentForDraft(composerMentions, body);
+    composerSubmissionRef.current!.capture(submissionId, {
+      roomId,
+      body,
+      mentions,
+      composerMode
+    });
+    const captured = composerSubmissionRef.current!.payload<{
+      roomId: string;
+      body: string;
+      mentions: MentionIntent;
+      composerMode: typeof composerMode;
+    }>(submissionId)!;
+
     qaSendStarted.current = true;
     qaSendBaselineErrorCount.current = snapshot?.state.ui.errors.length ?? 0;
     qaSendBaselineTimelineItems.current = snapshot?.timeline.length ?? 0;
@@ -2767,16 +2789,15 @@ export function App() {
       });
     }
     try {
-      const mentions = pruneMentionIntentForDraft(composerMentions, body);
       const nextSnapshot =
-        composerMode === "Plain"
-          ? await api.sendText(submissionId, roomId, body, mentions)
+        captured.composerMode === "Plain"
+          ? await api.sendText(submissionId, captured.roomId, captured.body, captured.mentions)
           : await api.sendReply(
               submissionId,
-              roomId,
-              composerMode.Reply.in_reply_to_event_id,
-              body,
-              mentions
+              captured.roomId,
+              captured.composerMode.Reply.in_reply_to_event_id,
+              captured.body,
+              captured.mentions
             );
       if (nextSnapshot.submissionId !== submissionId || nextSnapshot.outcome !== "accepted") {
         composerSubmissionRef.current!.reject(submissionId);
@@ -2797,8 +2818,13 @@ export function App() {
         qaSendPending.current = completionStatus === "pending";
         setQaSendStatus(completionStatus);
       }
-    } catch {
-      composerSubmissionRef.current!.reject(submissionId);
+    } catch (error) {
+      const disposition = classifySubmissionFailure(error);
+      if (disposition.kind === "unknown") {
+        composerSubmissionRef.current!.markUnknown(submissionId, disposition.reason);
+      } else {
+        composerSubmissionRef.current!.reject(submissionId);
+      }
       qaSendPending.current = false;
       setQaSendStatus("failed");
       return;
@@ -2808,6 +2834,12 @@ export function App() {
 
   useEffect(() => {
     const submissionId = composerSubmissionRef.current?.active();
+    if (
+      submissionId &&
+      snapshot?.state.ui.timeline.composer.accepted_submission_ids?.includes(submissionId)
+    ) {
+      composerSubmissionRef.current?.accept(submissionId);
+    }
     if (
       submissionId &&
       snapshot?.state.ui.timeline.composer.pending_transaction_id === null &&
@@ -3126,11 +3158,27 @@ export function App() {
     if (submissionId === null) {
       return;
     }
+    threadSubmissionRef.current!.capture(submissionId, { roomId, rootEventId, body });
+    const captured = threadSubmissionRef.current!.payload<{
+      roomId: string;
+      rootEventId: string;
+      body: string;
+    }>(submissionId)!;
     let response;
     try {
-      response = await api.sendThreadReply(submissionId, roomId, rootEventId, body);
-    } catch {
-      threadSubmissionRef.current!.reject(submissionId);
+      response = await api.sendThreadReply(
+        submissionId,
+        captured.roomId,
+        captured.rootEventId,
+        captured.body
+      );
+    } catch (error) {
+      const disposition = classifySubmissionFailure(error);
+      if (disposition.kind === "unknown") {
+        threadSubmissionRef.current!.markUnknown(submissionId, disposition.reason);
+      } else {
+        threadSubmissionRef.current!.reject(submissionId);
+      }
       return;
     }
     if (response.submissionId !== submissionId || response.outcome !== "accepted") {
