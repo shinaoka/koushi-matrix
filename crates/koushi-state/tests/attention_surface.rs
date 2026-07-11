@@ -1,9 +1,10 @@
 use koushi_state::{
     AppAction, AppState, DisplayPlatform, NativeAttentionCandidate, NativeAttentionCapabilities,
     NativeAttentionCapability, NativeAttentionDispatchState, NativeAttentionObservationKind,
-    NativeAttentionProjectionInput, NativeAttentionSuppressionReason, RoomAttentionKind,
-    RoomSummary, RoomTagInfo, RoomTags, native_attention_capabilities_for_platform,
-    native_attention_state_from_rooms, reduce, room_attention_summary,
+    NativeAttentionProjectionInput, NativeAttentionSoundOutcome, NativeAttentionSuppressionReason,
+    NotificationSettings, RoomAttentionKind, RoomSummary, RoomTagInfo, RoomTags, SettingsPatch,
+    native_attention_capabilities_for_platform, native_attention_state_from_rooms, reduce,
+    room_attention_summary,
 };
 use serde_json::json;
 
@@ -398,4 +399,71 @@ fn native_attention_reducer_preserves_dispatch_state_not_only_summary() {
     assert_eq!(app_state.native_attention, attention);
     assert_eq!(app_state.native_attention.kind(), "suppressed");
     assert_eq!(effects.len(), 1);
+}
+
+#[test]
+fn disabling_badges_immediately_projects_zero_from_rust_owned_settings() {
+    let mut state = AppState::default();
+    state.native_attention.summary.unread_count = 7;
+    state.native_attention.summary.badge_count = 7;
+    state.native_attention.summary.capabilities.badge = NativeAttentionCapability::Available;
+    let effects = reduce(
+        &mut state,
+        AppAction::SettingsUpdateRequested {
+            request_id: 44,
+            patch: SettingsPatch {
+                notifications: Some(NotificationSettings {
+                    badges: false,
+                    ..NotificationSettings::default()
+                }),
+                ..SettingsPatch::default()
+            },
+        },
+    );
+    assert_eq!(state.native_attention.summary.badge_count, 0);
+    assert!(effects.iter().any(|effect| matches!(
+        effect,
+        koushi_state::AppEffect::EmitUiEvent(koushi_state::UiEvent::NativeAttentionChanged)
+    )));
+}
+
+#[test]
+fn native_sound_dispatch_outcomes_are_correlated_and_stale_safe() {
+    for (outcome, expected_kind) in [
+        (NativeAttentionSoundOutcome::Played, "delivered"),
+        (NativeAttentionSoundOutcome::Unsupported, "unsupported"),
+        (NativeAttentionSoundOutcome::Failed, "failed"),
+    ] {
+        let mut state = AppState::default();
+        state.native_attention.summary.candidate = Some(NativeAttentionCandidate {
+            room_display_name: "Room".to_owned(),
+            kind: RoomAttentionKind::Message,
+            unread_count: 1,
+            highlight_count: 0,
+        });
+        reduce(
+            &mut state,
+            AppAction::NativeAttentionDispatchStarted { request_id: 9 },
+        );
+        let before = state.clone();
+        assert!(
+            reduce(
+                &mut state,
+                AppAction::NativeAttentionDispatchSettled {
+                    request_id: 8,
+                    outcome,
+                }
+            )
+            .is_empty()
+        );
+        assert_eq!(state, before);
+        reduce(
+            &mut state,
+            AppAction::NativeAttentionDispatchSettled {
+                request_id: 9,
+                outcome,
+            },
+        );
+        assert_eq!(state.native_attention.dispatch.kind(), expected_kind);
+    }
 }

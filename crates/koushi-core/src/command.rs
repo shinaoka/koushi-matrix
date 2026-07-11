@@ -7,10 +7,10 @@ use koushi_state::{
     ActivityMarkReadTarget, ActivityTab, AttachmentFilter, AttachmentScope, AttachmentSort,
     DirectoryQuery, FilesViewScope, FormattedMessageDraft, IdentityResetAuthRequest,
     ImageUploadCompressionMode, InviteScopeSelection, JapaneseCatalogProfile,
-    LocalEncryptionHealth, LoginRequest, MentionIntent, NativeAttentionState, PresenceKind,
-    RecoveryRequest, RoomListFilter, RoomModerationAction, RoomSettingChange, RoomTagKind,
-    SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem, SubmissionId,
-    TimelineScrollAnchor, VerificationCancelReason, VerificationTarget,
+    LocalEncryptionHealth, LoginRequest, MentionIntent, NativeAttentionSoundOutcome,
+    NativeAttentionState, PresenceKind, RecoveryRequest, RoomListFilter, RoomModerationAction,
+    RoomSettingChange, RoomTagKind, SettingsPatch, StagedUploadCompressionChoice, StagedUploadItem,
+    SubmissionId, TimelineScrollAnchor, VerificationCancelReason, VerificationTarget,
 };
 use serde::{Deserialize, Serialize};
 
@@ -73,6 +73,8 @@ impl CoreCommand {
                 | AppCommand::PaginateThreadsList { request_id, .. }
                 | AppCommand::RecordLocalEncryptionHealth { request_id, .. }
                 | AppCommand::UpdateNativeAttentionState { request_id, .. }
+                | AppCommand::StartNativeAttentionDispatch { request_id, .. }
+                | AppCommand::SettleNativeAttentionDispatch { request_id, .. }
                 | AppCommand::UpdateJapaneseCatalogProfile { request_id, .. }
                 | AppCommand::SelectRoomListFilter { request_id, .. },
             ) => *request_id,
@@ -418,6 +420,15 @@ pub enum AppCommand {
         request_id: RequestId,
         attention: NativeAttentionState,
     },
+    StartNativeAttentionDispatch {
+        request_id: RequestId,
+        dispatch_id: u64,
+    },
+    SettleNativeAttentionDispatch {
+        request_id: RequestId,
+        dispatch_id: u64,
+        outcome: NativeAttentionSoundOutcome,
+    },
     UpdateJapaneseCatalogProfile {
         request_id: RequestId,
         profile: JapaneseCatalogProfile,
@@ -719,6 +730,24 @@ impl fmt::Debug for AppCommand {
                         .as_ref()
                         .map(|_| "AttentionCandidate(..)"),
                 )
+                .finish(),
+            Self::StartNativeAttentionDispatch {
+                request_id,
+                dispatch_id,
+            } => formatter
+                .debug_struct("StartNativeAttentionDispatch")
+                .field("request_id", request_id)
+                .field("dispatch_id", dispatch_id)
+                .finish(),
+            Self::SettleNativeAttentionDispatch {
+                request_id,
+                dispatch_id,
+                outcome,
+            } => formatter
+                .debug_struct("SettleNativeAttentionDispatch")
+                .field("request_id", request_id)
+                .field("dispatch_id", dispatch_id)
+                .field("outcome", outcome)
                 .finish(),
             Self::UpdateJapaneseCatalogProfile {
                 request_id,

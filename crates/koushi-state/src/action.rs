@@ -8,16 +8,16 @@ use crate::state::{
     AvatarThumbnailState, BasicOperationRequest, CrossSigningStatus, DelegatedAuthLinks,
     DeviceSessionSummary, DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState, FilesViewScope,
     IdentityResetAuthType, InviteDestinationResult, InviteScopeSelection, JapaneseCatalogProfile,
-    LiveEventReceipts, LocalEncryptionHealth, LoginFlow, NativeAttentionState, NavigationState,
-    OperationFailureKind, OwnProfile, PinnedEvent, PresenceKind, ProfileUpdateRequest,
-    RecoveryKeyDeliveryState, RecoveryMethod, RoomListFilter, RoomListProjection,
-    RoomModerationAction, RoomPreferencesState, RoomSettingChange, RoomSettingsSnapshot,
-    RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji, ScheduledSendCapability,
-    ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope, SessionInfo, SettingsPatch,
-    SettingsValues, SpaceSummary, StagedUploadCompressionChoice, StagedUploadItem,
-    SyncLifecycleStatus, SyncMode, TimelineMediaDownloadState, TimelineMediaGalleryItem,
-    TimelineScrollAnchor, TrustOperationFailureKind, UserProfile, VerificationCancelReason,
-    VerificationTarget,
+    LiveEventReceipts, LocalEncryptionHealth, LoginFlow, NativeAttentionSoundOutcome,
+    NativeAttentionState, NavigationState, OperationFailureKind, OwnProfile, PinnedEvent,
+    PresenceKind, ProfileUpdateRequest, RecoveryKeyDeliveryState, RecoveryMethod, RoomListFilter,
+    RoomListProjection, RoomModerationAction, RoomPreferencesState, RoomSettingChange,
+    RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji,
+    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope,
+    SessionInfo, SettingsPatch, SettingsValues, SpaceSummary, StagedUploadCompressionChoice,
+    StagedUploadItem, SyncLifecycleStatus, SyncMode, TimelineMediaDownloadState,
+    TimelineMediaGalleryItem, TimelineScrollAnchor, TrustOperationFailureKind, UserProfile,
+    VerificationCancelReason, VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
@@ -597,6 +597,13 @@ pub enum AppAction {
     },
     NativeAttentionUpdated {
         attention: NativeAttentionState,
+    },
+    NativeAttentionDispatchStarted {
+        request_id: u64,
+    },
+    NativeAttentionDispatchSettled {
+        request_id: u64,
+        outcome: NativeAttentionSoundOutcome,
     },
     JapaneseCatalogProfileChanged {
         profile: JapaneseCatalogProfile,

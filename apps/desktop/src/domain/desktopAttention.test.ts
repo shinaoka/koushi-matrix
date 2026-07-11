@@ -203,7 +203,7 @@ describe("desktop notification candidate", () => {
       setBadgeCount: vi.fn().mockResolvedValue(undefined),
       setOverlayIcon: vi.fn().mockResolvedValue(undefined),
       setTrayBadgeCount: vi.fn().mockResolvedValue(undefined),
-      playAttentionSound: vi.fn().mockResolvedValue(undefined),
+      playAttentionSound: vi.fn().mockResolvedValue("played" as const),
       requestUserAttention: vi.fn().mockResolvedValue(undefined)
     };
 
@@ -223,7 +223,7 @@ describe("desktop notification candidate", () => {
 
   test("routes transient sound and activation only for notification candidates", async () => {
     const windowMock = {
-      playAttentionSound: vi.fn().mockResolvedValue(undefined),
+      playAttentionSound: vi.fn().mockResolvedValue("played" as const),
       requestUserAttention: vi.fn().mockResolvedValue(undefined)
     };
 
@@ -251,7 +251,7 @@ describe("desktop notification candidate", () => {
 
   test("keeps Rust-owned notification sound settings out of transient sound routing", async () => {
     const windowMock = {
-      playAttentionSound: vi.fn().mockResolvedValue(undefined),
+      playAttentionSound: vi.fn().mockResolvedValue("played" as const),
       requestUserAttention: vi.fn().mockResolvedValue(undefined)
     };
 
@@ -313,7 +313,7 @@ describe("desktop notification candidate", () => {
       setTitle: vi.fn().mockResolvedValue(undefined),
       setBadgeCount: vi.fn().mockResolvedValue(undefined),
       setTrayBadgeCount: vi.fn().mockResolvedValue(undefined),
-      playAttentionSound: vi.fn().mockResolvedValue(undefined),
+      playAttentionSound: vi.fn().mockResolvedValue("played" as const),
       requestUserAttention: vi.fn().mockResolvedValue(undefined)
     };
 
@@ -405,7 +405,7 @@ describe("desktop notification candidate", () => {
   test("coalesces sound bursts independently from candidate dedupe", async () => {
     let now = 1_000;
     const dispatcher = createDesktopAttentionTransientDispatcher(() => now, 3_000);
-    const transport = { playAttentionSound: vi.fn().mockResolvedValue(undefined) };
+    const transport = { playAttentionSound: vi.fn().mockResolvedValue("played" as const) };
     const capabilities = {
       notifications: "available", badge: "available", overlay_icon: "unavailable",
       sound: "available", tray: "unavailable", activation: "unavailable"
@@ -419,6 +419,26 @@ describe("desktop notification candidate", () => {
     await dispatcher.dispatch(transport, { ...candidate, unreadCount: 3 }, capabilities, { sound: true });
     expect(transport.playAttentionSound).toHaveBeenCalledTimes(2);
   });
+
+  test.each(["failed", "unsupported"] as const)(
+    "%s native outcome does not consume the sound cooldown",
+    async (firstOutcome) => {
+      const dispatcher = createDesktopAttentionTransientDispatcher(() => 1_000, 3_000);
+      const playAttentionSound = vi.fn()
+        .mockResolvedValueOnce(firstOutcome)
+        .mockResolvedValueOnce("played");
+      const diagnostic = vi.fn();
+      const capabilities = {
+        notifications: "available", badge: "available", overlay_icon: "unavailable",
+        sound: "available", tray: "unavailable", activation: "unavailable"
+      } as const;
+      const candidate = { roomDisplayName: "Room", kind: "message", unreadCount: 1, highlightCount: 0 } as const;
+      await dispatcher.dispatch({ playAttentionSound }, candidate, capabilities, { sound: true }, diagnostic);
+      await dispatcher.dispatch({ playAttentionSound }, { ...candidate, unreadCount: 2 }, capabilities, { sound: true }, diagnostic);
+      expect(playAttentionSound).toHaveBeenCalledTimes(2);
+      if (firstOutcome === "failed") expect(diagnostic).toHaveBeenCalledWith("attention_sound_failed");
+    }
+  );
 
   test("bundled Tauri sound adapter plays through the platform boundary", async () => {
     const invokeNative = vi.fn().mockResolvedValue("played" as const);

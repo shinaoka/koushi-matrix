@@ -1,13 +1,5 @@
-use serde::Serialize;
-
-#[allow(dead_code)] // platform cfg means some outcomes are not constructed on every target
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum NativeAttentionSoundOutcome {
-    Played,
-    Unsupported,
-    Failed,
-}
+use super::*;
+use koushi_state::NativeAttentionSoundOutcome;
 
 trait NativeAttentionSoundBackend {
     fn play(&self) -> NativeAttentionSoundOutcome;
@@ -16,8 +8,34 @@ trait NativeAttentionSoundBackend {
 struct PlatformNativeAttentionSoundBackend;
 
 #[tauri::command]
-pub(crate) fn play_native_attention_sound() -> NativeAttentionSoundOutcome {
-    PlatformNativeAttentionSoundBackend.play()
+pub(crate) async fn play_native_attention_sound(
+    state: State<'_, CoreRuntimeState>,
+) -> Result<NativeAttentionSoundOutcome, &'static str> {
+    let connection = state.runtime.attach();
+    let start_request = connection.next_request_id();
+    let dispatch_id = start_request.sequence;
+    if connection
+        .command(CoreCommand::App(AppCommand::StartNativeAttentionDispatch {
+            request_id: start_request,
+            dispatch_id,
+        }))
+        .await
+        .is_err()
+    {
+        return Ok(NativeAttentionSoundOutcome::Failed);
+    }
+    let outcome = PlatformNativeAttentionSoundBackend.play();
+    let settle_request = connection.next_request_id();
+    let _ = connection
+        .command(CoreCommand::App(
+            AppCommand::SettleNativeAttentionDispatch {
+                request_id: settle_request,
+                dispatch_id,
+                outcome,
+            },
+        ))
+        .await;
+    Ok(outcome)
 }
 
 #[cfg(target_os = "macos")]
@@ -91,6 +109,15 @@ mod tests {
         assert_eq!(
             serde_json::to_value(NativeAttentionSoundOutcome::Unsupported).unwrap(),
             "unsupported"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn actual_linux_platform_adapter_is_explicitly_unsupported() {
+        assert_eq!(
+            PlatformNativeAttentionSoundBackend.play(),
+            NativeAttentionSoundOutcome::Unsupported
         );
     }
 }

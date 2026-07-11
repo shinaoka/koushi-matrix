@@ -137,8 +137,9 @@ pub use local_encryption::{LocalEncryptionHealth, LocalEncryptionState};
 pub use native_attention::{
     NativeAttentionCandidate, NativeAttentionCapabilities, NativeAttentionCapability,
     NativeAttentionDispatchState, NativeAttentionObservationKind, NativeAttentionProjectionInput,
-    NativeAttentionState, NativeAttentionSummary, NativeAttentionSuppressionReason,
-    native_attention_capabilities_for_platform, native_attention_state_from_rooms,
+    NativeAttentionSoundOutcome, NativeAttentionState, NativeAttentionSummary,
+    NativeAttentionSuppressionReason, native_attention_capabilities_for_platform,
+    native_attention_state_from_rooms,
 };
 
 // ── Re-exports: cjk ─────────────────────────────────────────────────────────

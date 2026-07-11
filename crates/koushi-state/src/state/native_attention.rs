@@ -298,6 +298,9 @@ pub enum NativeAttentionDispatchState {
     Delivered {
         request_id: u64,
     },
+    Unsupported {
+        request_id: u64,
+    },
     Suppressed {
         reason: NativeAttentionSuppressionReason,
     },
@@ -314,10 +317,19 @@ impl NativeAttentionDispatchState {
             Self::Idle => "idle",
             Self::Dispatching { .. } => "dispatching",
             Self::Delivered { .. } => "delivered",
+            Self::Unsupported { .. } => "unsupported",
             Self::Suppressed { .. } => "suppressed",
             Self::Failed { .. } => "failed",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeAttentionSoundOutcome {
+    Played,
+    Unsupported,
+    Failed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

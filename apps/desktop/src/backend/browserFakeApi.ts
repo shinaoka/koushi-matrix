@@ -541,6 +541,12 @@ class BrowserFakeApi implements DesktopApi {
       this.snapshot.state.domain.settings.values.typography
     );
     this.snapshot.state.domain.settings.persistence = { kind: "idle" };
+    const attention = this.snapshot.state.domain.native_attention.summary;
+    attention.badge_count =
+      this.snapshot.state.domain.settings.values.notifications.badges &&
+      attention.capabilities.badge !== "unavailable"
+        ? attention.unread_count
+        : 0;
     this.snapshot.state.ui.room_list = computeBrowserRoomListProjection(
       this.snapshot.state.ui.room_list.active_filter,
       this.snapshot.state.domain.settings.values.room_list_sort,

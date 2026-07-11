@@ -9,7 +9,6 @@ export type DesktopAttentionKind = "mention" | "dm" | "message" | "none";
 export const WINDOWS_ATTENTION_OVERLAY_ICON_PATH = "src-tauri/icons/icon.png";
 export const DESKTOP_ATTENTION_REQUEST_TYPE = 2;
 export const DESKTOP_ATTENTION_SOUND_COOLDOWN_MS = 3_000;
-// Self-authored short PCM WAV tone, dedicated to the public domain (CC0-1.0).
 
 export type DesktopAttentionDiagnosticToken =
   | "attention_title_failed"
@@ -45,9 +44,10 @@ export interface DesktopWindowLike {
 }
 
 export interface DesktopAttentionTransientLike {
-  playAttentionSound?(): Promise<void>;
+  playAttentionSound?(): Promise<NativeAttentionSoundOutcome>;
   requestUserAttention?(requestType: typeof DESKTOP_ATTENTION_REQUEST_TYPE): Promise<void>;
 }
+export type NativeAttentionSoundOutcome = "played" | "unsupported" | "failed";
 
 export type DesktopAttentionTransientPolicy = Pick<NotificationSettings, "sound">;
 
@@ -144,7 +144,7 @@ export async function dispatchDesktopAttentionTransientEffects(
 
   if (soundEnabled && capabilities?.sound === "available" && transport.playAttentionSound) {
     operations.push(runNativeOperation(
-      () => transport.playAttentionSound!(), "attention_sound_failed", diagnostic
+      async () => { await transport.playAttentionSound!(); }, "attention_sound_failed", diagnostic
     ));
   }
 
@@ -178,28 +178,38 @@ export function createDesktopAttentionTransientDispatcher(
     async dispatch(transport, candidate, capabilities, policy, diagnostic) {
       const timestamp = now();
       const soundAllowed = timestamp - lastSoundAt >= cooldownMs;
-      const soundTransport = soundAllowed
-        ? transport
-        : { ...transport, playAttentionSound: undefined };
-      if (candidate && policy.sound && capabilities.sound === "available" && soundAllowed) {
-        lastSoundAt = timestamp;
+      if (
+        candidate && policy.sound && capabilities.sound === "available" &&
+        soundAllowed && transport.playAttentionSound
+      ) {
+        try {
+          const outcome = await transport.playAttentionSound();
+          if (outcome === "played") {
+            lastSoundAt = timestamp;
+          } else if (outcome === "failed") {
+            diagnostic?.("attention_sound_failed");
+          }
+        } catch {
+          diagnostic?.("attention_sound_failed");
+        }
       }
       await dispatchDesktopAttentionTransientEffects(
-        soundTransport, candidate, capabilities, policy, diagnostic
+        { ...transport, playAttentionSound: undefined },
+        candidate,
+        capabilities,
+        { sound: false },
+        diagnostic
       );
     }
   };
 }
 
 export function createTauriDesktopAttentionTransientTransport(
-  invokeNative: () => Promise<"played" | "unsupported" | "failed">
+  invokeNative: () => Promise<NativeAttentionSoundOutcome>
 ): DesktopAttentionTransientLike {
   return {
     async playAttentionSound() {
-      const outcome = await invokeNative();
-      if (outcome === "failed") {
-        throw new Error("native_attention_sound_failed");
-      }
+      return invokeNative();
     }
   };
 }

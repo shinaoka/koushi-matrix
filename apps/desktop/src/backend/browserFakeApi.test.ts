@@ -18,6 +18,20 @@ function receipt(
 }
 
 describe("BrowserFakeApi settings preview", () => {
+  test("projects disabled badge settings to zero without frontend recomputation", async () => {
+    const api = createBrowserFakeApi();
+    const mutable = api as unknown as { snapshot: DesktopSnapshot };
+    mutable.snapshot.state.domain.native_attention.summary.unread_count = 6;
+    mutable.snapshot.state.domain.native_attention.summary.badge_count = 6;
+    mutable.snapshot.state.domain.native_attention.summary.capabilities.badge = "available";
+    const snapshot = await api.updateSettings({
+      notifications: {
+        ...mutable.snapshot.state.domain.settings.values.notifications,
+        badges: false
+      }
+    });
+    expect(snapshot.state.domain.native_attention.summary.badge_count).toBe(0);
+  });
   test("deduplicates main submissions by id and exposes accepted terminal snapshot fields", async () => {
     const api = createBrowserFakeApi();
     const roomId = "!room-alpha:example.invalid";

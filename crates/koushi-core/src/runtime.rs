@@ -2241,6 +2241,32 @@ impl AppActor {
                     self.handle_app_effects(request_id, effects).await;
                     true
                 }
+                AppCommand::StartNativeAttentionDispatch {
+                    request_id,
+                    dispatch_id,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::NativeAttentionDispatchStarted {
+                            request_id: dispatch_id,
+                        })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::SettleNativeAttentionDispatch {
+                    request_id,
+                    dispatch_id,
+                    outcome,
+                } => {
+                    let effects = self
+                        .reduce_app_action(AppAction::NativeAttentionDispatchSettled {
+                            request_id: dispatch_id,
+                            outcome,
+                        })
+                        .await;
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
                 AppCommand::UpdateJapaneseCatalogProfile {
                     request_id,
                     profile,

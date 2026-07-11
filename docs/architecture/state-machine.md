@@ -2164,7 +2164,9 @@ stateDiagram-v2
   `SettingsValues.notifications`, persisted by the settings store with legacy
   JSON backfill to the default policy. React settings panels may dispatch typed
   `SettingsPatch.notifications` updates, but they must not keep separate
-  notification policy state.
+  notification policy state. Disabling badges immediately projects
+  `badge_count = 0` in the Rust reducer and emits the updated attention state;
+  React must not mask a nonzero badge locally.
 - Platform capability updates use the shared Rust `DisplayPlatform` model.
   React receives the resulting `NativeAttentionCapabilities` DTO and must not
   branch on macOS/Linux/Windows notification semantics locally.
@@ -2201,8 +2203,9 @@ stateDiagram-v2
 - Sound playback crosses a typed Tauri command into a cfg-specific Rust native
   adapter (macOS AudioToolbox, Windows User32; Linux explicitly unsupported).
   No WebView audio or external process fallback is allowed. A deterministic
-  three-second dispatcher cooldown coalesces candidate bursts independently of
-  Rust candidate dedupe.
+  three-second dispatcher cooldown coalesces successfully played candidate
+  bursts independently of Rust candidate dedupe. `Failed` and `Unsupported`
+  outcomes do not consume the cooldown, so a later candidate can retry.
 - Numeric badge, overlay, and tray APIs are called only for `Available`
   capabilities; `Unknown` and `Unavailable` never trigger substitute surfaces.
   Native failures are nonfatal but emit fixed `attention_*_failed` diagnostic
@@ -2221,9 +2224,12 @@ stateDiagram-v2
   ask the native adapter to cancel/remove pending or active notifications as a
   best-effort side effect. Adapter clear failures do not feed back into Matrix
   state and cannot change read/focus semantics.
-- Dispatch completions are request-correlated. Stale dispatch results are
-  ignored, and adapter failures settle as private-data-free `Failed(kind)`
-  states that can be cleared by read/focus transitions.
+- Native sound dispatch starts and settles through typed core commands and the
+  Rust reducer. Completions are request-correlated; stale results are ignored,
+  `Played` settles as delivered, and adapter failures settle as
+  private-data-free `Failed(kind)` or `Unsupported` states that can be cleared
+  by read/focus transitions. React diagnostics are secondary observability and
+  are not the authoritative dispatch state.
 - Logout, lock, account switch, and session clearing remove all account-derived
   summaries, candidates, and badge counts. Non-secret platform capability data
   may survive as a process-level profile, but it cannot carry account activity.
