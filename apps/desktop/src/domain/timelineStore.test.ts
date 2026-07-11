@@ -1046,6 +1046,57 @@ describe("timeline store — diff application", () => {
 // ---------------------------------------------------------------------------
 
 describe("timeline store — generation handling", () => {
+  test("authoritative resync converges a transaction and transaction-less remote echo to one event row", () => {
+    const transaction = {
+      ...makeLocalEcho("txn-echo", "same body"),
+      send_state: { kind: "sending" as const }
+    };
+    const remote = makeMsg("$remote-echo", "same body");
+    let store = createTimelineStore();
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [transaction]
+      }
+    });
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 1,
+        batch_id: 0,
+        diffs: [{ PushBack: { item: remote } }]
+      }
+    });
+    expect(getItems(store, KEY)).toHaveLength(2);
+
+    store = applyTimelineEvent(store, {
+      ResyncRequired: { key: KEY, reason: "QueueOverflow" }
+    });
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 2,
+        items: [remote]
+      }
+    });
+    store = applyTimelineEvent(store, {
+      SendCompleted: {
+        request_id: { connection_id: 1, sequence: 99 },
+        key: KEY,
+        transaction_id: "txn-echo",
+        event_id: "$remote-echo"
+      }
+    });
+
+    const items = getItems(store, KEY);
+    expect(items).toHaveLength(1);
+    expect(itemId(items[0])).toBe("$remote-echo");
+    expect(items[0].send_state?.kind).not.toBe("sending");
+  });
+
   test("diff with stale generation is silently discarded", () => {
     let store = createTimelineStore();
     store = applyTimelineEvent(store, {

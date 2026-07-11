@@ -8699,7 +8699,7 @@ impl TimelineActor {
                 self.media_gallery_items = replacement.items;
             }
         }
-        self.navigation_items = items.clone();
+        replace_authoritative_timeline_window(&mut self.navigation_items, items.clone());
         self.replay_known_display_items = normalize_display_timeline_items(&items);
         let replay_known_candidates = replay_known_candidates_for_display_items(
             &self.key,
@@ -8989,6 +8989,13 @@ fn authoritative_receipts_action(
 
 fn replace_authoritative_cache<K, V>(cache: &mut HashMap<K, V>, replacement: HashMap<K, V>) {
     *cache = replacement;
+}
+
+fn replace_authoritative_timeline_window(
+    current: &mut Vec<TimelineItem>,
+    authoritative: Vec<TimelineItem>,
+) {
+    *current = authoritative;
 }
 
 async fn prepare_relay_recovery<Subscribe, SubscribeFuture, Snapshot, Stream>(
@@ -18388,6 +18395,34 @@ mod tests {
             cache,
             HashMap::from([("retained-old-value", 3_u8), ("new", 4)])
         );
+    }
+
+    #[test]
+    fn authoritative_resync_replaces_sending_transaction_and_remote_echo_with_event_only() {
+        let mut transaction = timeline_item(
+            "$transaction-placeholder:test",
+            Some("same body"),
+            "@me:test",
+            false,
+        );
+        transaction.id = TimelineItemId::Transaction {
+            transaction_id: "txn-echo".to_owned(),
+        };
+        transaction.send_state = Some(TimelineSendState::Sending);
+        let remote = timeline_item("$remote-echo:test", Some("same body"), "@me:test", false);
+        let mut current = vec![transaction, remote.clone()];
+
+        replace_authoritative_timeline_window(&mut current, vec![remote]);
+
+        assert_eq!(current.len(), 1);
+        assert!(matches!(
+            current[0].id,
+            TimelineItemId::Event { ref event_id } if event_id == "$remote-echo:test"
+        ));
+        assert!(!matches!(
+            current[0].send_state,
+            Some(TimelineSendState::Sending)
+        ));
     }
 
     #[tokio::test]
