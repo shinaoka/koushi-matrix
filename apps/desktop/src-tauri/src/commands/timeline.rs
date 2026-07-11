@@ -34,13 +34,18 @@ async fn wait_for_submission_settlement(
 
     if matches!(outcome, SubmissionOutcome::Accepted) {
         loop {
-            if event_conn
-                .snapshot()
+            let snapshot = event_conn.snapshot();
+            let main_accepted = snapshot
                 .timeline
                 .composer
                 .accepted_submission_ids
-                .contains(&submission_id)
-            {
+                .contains(&submission_id);
+            let thread_accepted = matches!(
+                &snapshot.thread,
+                koushi_state::ThreadPaneState::Open { composer, .. }
+                    if composer.accepted_submission_ids.contains(&submission_id)
+            );
+            if main_accepted || thread_accepted {
                 break;
             }
             tokio::time::timeout_at(deadline, event_conn.recv_event())
@@ -995,34 +1000,42 @@ pub async fn send_reply(
 
 #[tauri::command]
 pub async fn send_thread_reply(
+    submission_id: String,
     room_id: String,
     root_event_id: String,
     body: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
-) -> Result<FrontendDesktopSnapshot, String> {
+) -> Result<SubmissionResponse, SubmissionFailure> {
     if body.trim().is_empty() {
-        return current_snapshot(state.inner()).await;
+        return Err(SubmissionFailure::Invalid);
     }
 
     let transaction_id = format!(
         "desktop-{}",
         NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
     );
+    let mut event_conn = state.runtime.attach();
+    let request_id = event_conn.next_request_id();
     let account_key = account_key_from_snapshot(state.inner()).await;
-    let request_id = next_request_id(state.inner()).await;
-    if let Some(command) = build_send_thread_reply_command(
+    let submission_id = SubmissionId::new(submission_id);
+    if let Some(command) = build_submit_thread_reply_command(
         request_id,
+        submission_id.clone(),
         account_key,
         room_id,
         root_event_id,
         transaction_id,
         body,
     ) {
-        submit_core_command(state.inner(), command).await?;
+        event_conn
+            .command(command)
+            .await
+            .map_err(|_| SubmissionFailure::SubmitFailed)?;
     }
+    let response = wait_for_submission_settlement(&mut event_conn, submission_id).await?;
     update_qa_window_title_from_state(&app, state.inner()).await;
-    current_snapshot(state.inner()).await
+    Ok(response)
 }
 
 #[cfg(test)]

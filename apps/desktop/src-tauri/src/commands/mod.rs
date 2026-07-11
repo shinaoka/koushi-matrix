@@ -2701,6 +2701,7 @@ pub(crate) fn build_set_composer_draft_command(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn build_send_thread_reply_command(
     request_id: koushi_core::RequestId,
     account_key: AccountKey,
@@ -2725,6 +2726,35 @@ pub(crate) fn build_send_thread_reply_command(
         in_reply_to_event_id: root_event_id,
         body,
         mentions: koushi_state::MentionIntent::default(),
+    }))
+}
+
+pub(crate) fn build_submit_thread_reply_command(
+    request_id: RequestId,
+    submission_id: SubmissionId,
+    account_key: AccountKey,
+    room_id: String,
+    root_event_id: String,
+    transaction_id: String,
+    body: String,
+) -> Option<CoreCommand> {
+    if body.trim().is_empty() {
+        return None;
+    }
+    Some(CoreCommand::Timeline(TimelineCommand::SubmitReply {
+        request_id,
+        submission_id,
+        key: TimelineKey {
+            account_key,
+            kind: TimelineKind::Thread {
+                room_id,
+                root_event_id: root_event_id.clone(),
+            },
+        },
+        transaction_id,
+        in_reply_to_event_id: root_event_id,
+        body,
+        mentions: MentionIntent::default(),
     }))
 }
 
