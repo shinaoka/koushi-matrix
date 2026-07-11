@@ -773,6 +773,28 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             transaction_id,
             message,
         } => timeline::handle_send_text_failed(state, room_id, transaction_id, message),
+        AppAction::ComposerSubmissionAccepted {
+            submission_id,
+            room_id,
+            transaction_id,
+            body,
+        } => timeline::handle_composer_submission_accepted(
+            state,
+            submission_id,
+            room_id,
+            transaction_id,
+            body,
+        ),
+        AppAction::ComposerSubmissionFinished {
+            submission_id,
+            room_id,
+            transaction_id,
+        } => timeline::handle_composer_submission_finished(
+            state,
+            submission_id,
+            room_id,
+            transaction_id,
+        ),
         AppAction::ComposerReplyTargetSelected { room_id, event_id } => {
             timeline::handle_composer_reply_target_selected(state, room_id, event_id)
         }

@@ -1,6 +1,6 @@
 use koushi_state::{
     AppAction, AppEffect, AppState, ComposerMode, ComposerState, NavigationState,
-    PendingComposerSendKind, RoomSummary, RoomTags, SessionInfo, SessionState,
+    PendingComposerSendKind, RoomSummary, RoomTags, SessionInfo, SessionState, SubmissionId,
     ThreadAttentionState, ThreadListOrder, ThreadPaneState, ThreadsListItem, TimelinePaneState,
     UiEvent, reduce,
 };
@@ -338,6 +338,65 @@ fn send_text_submission_is_ignored_while_send_is_pending() {
         Some("txn1")
     );
     assert_eq!(state.timeline.composer.draft, "second");
+}
+
+#[test]
+fn duplicate_submission_id_is_accepted_once_and_stale_completion_is_ignored() {
+    let mut state = selected_room_state("room-a");
+    state.timeline.composer.draft = "hello".to_owned();
+    let submission_id = SubmissionId::new("submission-opaque");
+
+    let first = reduce(
+        &mut state,
+        AppAction::ComposerSubmissionAccepted {
+            submission_id: submission_id.clone(),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn1".to_owned(),
+            body: "hello".to_owned(),
+        },
+    );
+    let duplicate = reduce(
+        &mut state,
+        AppAction::ComposerSubmissionAccepted {
+            submission_id: submission_id.clone(),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn2".to_owned(),
+            body: "hello".to_owned(),
+        },
+    );
+    let stale = reduce(
+        &mut state,
+        AppAction::ComposerSubmissionFinished {
+            submission_id: SubmissionId::new("other-submission"),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn1".to_owned(),
+        },
+    );
+    let finished = reduce(
+        &mut state,
+        AppAction::ComposerSubmissionFinished {
+            submission_id: submission_id.clone(),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn1".to_owned(),
+        },
+    );
+    let replay = reduce(
+        &mut state,
+        AppAction::ComposerSubmissionAccepted {
+            submission_id: submission_id.clone(),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn3".to_owned(),
+            body: "hello".to_owned(),
+        },
+    );
+
+    assert_eq!(first.len(), 2);
+    assert!(duplicate.is_empty());
+    assert!(stale.is_empty());
+    assert_eq!(finished.len(), 1);
+    assert!(replay.is_empty());
+    assert_eq!(state.timeline.composer.pending_submission_id, None);
+    assert_eq!(state.timeline.composer.pending_transaction_id, None);
 }
 
 #[test]
@@ -1179,6 +1238,8 @@ fn timeline_and_thread_actions_are_ignored_without_ready_session() {
             is_subscribed: false,
             is_paginating_backwards: false,
             composer: ComposerState {
+                accepted_submission_ids: Default::default(),
+                pending_submission_id: None,
                 pending_transaction_id: Some("txn1".to_owned()),
                 pending_send_kind: None,
                 draft: "draft".to_owned(),

@@ -8,6 +8,7 @@ mod locale_profile;
 mod reducer;
 mod sidebar;
 mod state;
+mod submission;
 mod typography_profile;
 
 pub use action::{AppAction, AuthSecret, IdentityResetAuthRequest, LoginRequest, RecoveryRequest};
@@ -87,6 +88,7 @@ pub use state::{
     refresh_room_summary_display_projection, resolve_user_display_name, room_activity_unread_count,
     room_attention_kind, room_attention_summary, room_settings_share_link, sort_threads_list_items,
 };
+pub use submission::SubmissionId;
 // Composer-draft persistence limits consumed by koushi-core's store and the
 // state-crate integration tests; root-re-exported so `state` can stay crate-internal.
 pub use state::{

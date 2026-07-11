@@ -3,6 +3,7 @@ use std::{collections::BTreeSet, fmt};
 use serde::{Deserialize, Serialize};
 
 use crate::composer_shortcuts::FormattedMessageDraft;
+use crate::submission::SubmissionId;
 
 use super::media_download::TimelineMediaDownloadState;
 use super::settings::ImageUploadCompressionMode;
@@ -606,6 +607,10 @@ impl fmt::Debug for ComposerDraftStore {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ComposerState {
+    #[serde(default, skip_serializing)]
+    pub accepted_submission_ids: BTreeSet<SubmissionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_submission_id: Option<SubmissionId>,
     pub pending_transaction_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_send_kind: Option<PendingComposerSendKind>,

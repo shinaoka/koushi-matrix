@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::SubmissionId;
+
 use crate::state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityStream, ActivityTab,
     AttachmentFilter, AttachmentResult, AttachmentScope, AttachmentSort, AuthFailureKind,
@@ -743,6 +745,17 @@ pub enum AppAction {
         room_id: String,
         transaction_id: String,
         message: String,
+    },
+    ComposerSubmissionAccepted {
+        submission_id: SubmissionId,
+        room_id: String,
+        transaction_id: String,
+        body: String,
+    },
+    ComposerSubmissionFinished {
+        submission_id: SubmissionId,
+        room_id: String,
+        transaction_id: String,
     },
     ThreadComposerDraftChanged {
         room_id: String,

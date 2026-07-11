@@ -1,3 +1,4 @@
+use crate::SubmissionId;
 use crate::{
     effect::{AppEffect, UiEvent},
     state::{
@@ -416,6 +417,50 @@ pub(crate) fn handle_send_text_submitted(
         },
         AppEffect::EmitUiEvent(UiEvent::TimelineChanged { room_id }),
     ]
+}
+
+pub(crate) fn handle_composer_submission_accepted(
+    state: &mut AppState,
+    submission_id: SubmissionId,
+    room_id: String,
+    transaction_id: String,
+    body: String,
+) -> Vec<AppEffect> {
+    if !is_session_ready(state)
+        || state.timeline.room_id.as_deref() != Some(room_id.as_str())
+        || state.timeline.composer.pending_submission_id.is_some()
+        || state.timeline.composer.pending_transaction_id.is_some()
+        || state
+            .timeline
+            .composer
+            .accepted_submission_ids
+            .contains(&submission_id)
+    {
+        return Vec::new();
+    }
+    state
+        .timeline
+        .composer
+        .accepted_submission_ids
+        .insert(submission_id.clone());
+    state.timeline.composer.pending_submission_id = Some(submission_id);
+    handle_send_text_submitted(state, room_id, transaction_id, body)
+}
+
+pub(crate) fn handle_composer_submission_finished(
+    state: &mut AppState,
+    submission_id: SubmissionId,
+    room_id: String,
+    transaction_id: String,
+) -> Vec<AppEffect> {
+    if state.timeline.composer.pending_submission_id.as_ref() != Some(&submission_id) {
+        return Vec::new();
+    }
+    let effects = handle_send_text_finished(state, room_id, transaction_id);
+    if !effects.is_empty() {
+        state.timeline.composer.pending_submission_id = None;
+    }
+    effects
 }
 
 pub(crate) fn handle_send_text_finished(
