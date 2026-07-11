@@ -65,6 +65,7 @@ describe("diagnosticReport", () => {
               root_event_id: "$private-event:example.invalid",
               is_subscribed: true,
               composer: {
+                accepted_submission_ids: [],
                 draft: "",
                 pending_transaction_id: null,
                 mode: "Plain"

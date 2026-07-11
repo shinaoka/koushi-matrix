@@ -610,7 +610,7 @@ impl fmt::Debug for ComposerDraftStore {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ComposerState {
-    #[serde(default, skip_serializing)]
+    #[serde(default)]
     pub accepted_submission_ids: VecDeque<SubmissionId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_submission_id: Option<SubmissionId>,

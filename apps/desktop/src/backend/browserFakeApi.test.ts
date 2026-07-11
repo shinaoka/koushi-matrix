@@ -63,6 +63,20 @@ describe("BrowserFakeApi settings preview", () => {
     }
   });
 
+  test("bounds terminal submission replay tombstones to 128 entries", async () => {
+    const api = createBrowserFakeApi();
+    const roomId = "!room-alpha:example.invalid";
+    await api.selectRoom(roomId);
+    for (let index = 0; index < 129; index += 1) {
+      await api.sendText(`bounded-${index}`, roomId, `body-${index}`);
+    }
+    const before = (await api.getSnapshot()).timeline.length;
+    await api.sendText("bounded-1", roomId, "deduped");
+    expect((await api.getSnapshot()).timeline).toHaveLength(before);
+    await api.sendText("bounded-0", roomId, "evicted");
+    expect((await api.getSnapshot()).timeline).toHaveLength(before + 1);
+  });
+
   test("returns an empty diagnostic snapshot in the browser fake", async () => {
     const api = createBrowserFakeApi();
 

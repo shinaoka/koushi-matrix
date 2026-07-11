@@ -459,7 +459,7 @@ function makeSnapshot(): DesktopSnapshot {
           room_id: "!room-alpha:example.invalid",
           is_subscribed: true,
           is_paginating_backwards: false,
-          composer: { pending_transaction_id: null, draft: "hello", mode: "Plain" },
+          composer: { accepted_submission_ids: [], pending_transaction_id: null, draft: "hello", mode: "Plain" },
           scheduled_send_capability: "unknown",
           scheduled_sends: [],
           staged_uploads: [],
@@ -471,7 +471,7 @@ function makeSnapshot(): DesktopSnapshot {
           room_id: "!room-alpha:example.invalid",
           root_event_id: "$thread-root:example.invalid",
           is_subscribed: true,
-          composer: { pending_transaction_id: null, draft: "", mode: "Plain" }
+          composer: { accepted_submission_ids: [], pending_transaction_id: null, draft: "", mode: "Plain" }
         },
         focused_context: { kind: "closed" },
         files_view: { kind: "closed" },

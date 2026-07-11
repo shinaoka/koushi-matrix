@@ -640,6 +640,9 @@
       },
       "timeline": {
         "composer": {
+          "accepted_submission_ids": [
+            "accepted-contract"
+          ],
           "draft": "",
           "mode": "Plain",
           "pending_transaction_id": null

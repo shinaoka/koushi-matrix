@@ -185,7 +185,7 @@ function readySnapshot(
         ui: {
           navigation: { active_space_id: activeSpaceId, active_room_id: ROOM_ID, space_order: spaces.map((space) => space.space_id), last_room_by_space_id: {} },
           room_list: computeBrowserRoomListProjection({ kind: "rooms" }, { kind: "activity" }, activeSpaceId, spaces, rooms, []),
-          timeline: { room_id: ROOM_ID, is_subscribed: true, is_paginating_backwards: false, composer: { pending_transaction_id: null, draft: "", mode: composerMode }, scheduled_send_capability: "unknown", scheduled_sends: [], staged_uploads: [], media_gallery: [], media_downloads: {} },
+          timeline: { room_id: ROOM_ID, is_subscribed: true, is_paginating_backwards: false, composer: { accepted_submission_ids: [], pending_transaction_id: null, draft: "", mode: composerMode }, scheduled_send_capability: "unknown", scheduled_sends: [], staged_uploads: [], media_gallery: [], media_downloads: {} },
           thread: { kind: "closed" }, threads_list: { kind: "closed" }, focused_context: { kind: "closed" },
           files_view: { kind: "closed" }, errors: [], basic_operation: basicOperation
         }
@@ -748,6 +748,7 @@ mock.setCommandResponse("select_room", ({ roomId }: { roomId: string }) => {
           room_id: roomId,
           is_subscribed: true,
           composer: {
+            accepted_submission_ids: [],
             pending_transaction_id: null,
             draft: "",
             mode: "Plain"
@@ -1586,8 +1587,9 @@ mock.setCommandResponse(
             room_id: roomId,
             root_event_id: rootEventId,
             is_subscribed: true,
-            composer: {
-              pending_transaction_id: null,
+          composer: {
+            accepted_submission_ids: [],
+            pending_transaction_id: null,
               draft: "",
               mode: "Plain"
             }

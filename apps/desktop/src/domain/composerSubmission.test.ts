@@ -87,4 +87,19 @@ describe("composer submission controller", () => {
     expect(admitted.size).toBe(1);
     expect(controller.payload<{ body: string }>(retryId)?.body).toBe("original");
   });
+
+  it("settles an unknown send from an accepted terminal snapshot and allocates a new id", () => {
+    const ids = ["submission-1", "submission-2"];
+    const controller = createComposerSubmissionController(() => ids.shift()!);
+    const first = controller.begin()!;
+    controller.capture(first, { body: "original" });
+    controller.markUnknown(first, "timeout");
+
+    controller.observeSnapshot(first, [first], null);
+
+    const next = controller.begin()!;
+    controller.capture(next, { body: "current draft" });
+    expect(next).toBe("submission-2");
+    expect(controller.payload<{ body: string }>(next)?.body).toBe("current draft");
+  });
 });

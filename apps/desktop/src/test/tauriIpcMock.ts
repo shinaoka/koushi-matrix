@@ -251,6 +251,7 @@ function defaultSnapshotResponse() {
         is_subscribed: false,
         is_paginating_backwards: false,
         composer: {
+          accepted_submission_ids: [],
           pending_submission_id: null,
           pending_transaction_id: null,
           draft: "",

@@ -485,6 +485,19 @@ fn submission_tombstones_are_bounded_without_evicting_pending() {
 }
 
 #[test]
+fn composer_snapshot_serializes_bounded_accepted_submission_tombstones() {
+    let mut composer = ComposerState::default();
+    composer
+        .accepted_submission_ids
+        .push_back(SubmissionId::new("accepted-opaque"));
+    let value = serde_json::to_value(composer).expect("composer serializes");
+    assert_eq!(
+        value["accepted_submission_ids"],
+        serde_json::json!(["accepted-opaque"])
+    );
+}
+
+#[test]
 fn thread_terminal_submission_requires_matching_id_and_transaction() {
     let mut state = open_thread_state("room-a", "$root");
     let active = SubmissionId::new("active-thread-submission");

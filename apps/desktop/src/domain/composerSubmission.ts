@@ -8,6 +8,11 @@ export interface ComposerSubmissionController {
   reject(submissionId: SubmissionId): void;
   markUnknown(submissionId: SubmissionId, reason: SubmissionUnknownReason): void;
   unknownReason(submissionId: SubmissionId): SubmissionUnknownReason | null;
+  observeSnapshot(
+    submissionId: SubmissionId,
+    acceptedSubmissionIds: readonly string[],
+    pendingSubmissionId: string | null | undefined
+  ): void;
   releaseTerminal(submissionId: SubmissionId): void;
   active(): SubmissionId | null;
 }
@@ -76,6 +81,16 @@ export function createComposerSubmissionController(
     },
     unknownReason(submissionId) {
       return current?.id === submissionId ? current.unknownReason : null;
+    },
+    observeSnapshot(submissionId, acceptedSubmissionIds, pendingSubmissionId) {
+      if (current?.id !== submissionId || !acceptedSubmissionIds.includes(submissionId)) {
+        return;
+      }
+      current.accepted = true;
+      current.unknownReason = null;
+      if (pendingSubmissionId !== submissionId) {
+        current = null;
+      }
     },
     releaseTerminal(submissionId) {
       if (current?.id === submissionId && current.accepted) {

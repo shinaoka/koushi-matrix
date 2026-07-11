@@ -29,7 +29,27 @@ import {
   createSubmissionId,
   type ComposerSubmissionController
 } from "./domain/composerSubmission";
+import type { ComposerState } from "./domain/types";
 import { setActiveLocaleProfile, t } from "./i18n/messages";
+
+export function reconcileComposerSubmissionSnapshot(
+  controller: ComposerSubmissionController,
+  composer: ComposerState
+): void {
+  const submissionId = controller.active();
+  if (!submissionId) return;
+  controller.observeSnapshot(
+    submissionId,
+    composer.accepted_submission_ids,
+    composer.pending_submission_id
+  );
+  if (
+    composer.pending_transaction_id === null &&
+    composer.pending_submission_id !== submissionId
+  ) {
+    controller.releaseTerminal(submissionId);
+  }
+}
 import { ContextMenuSurface } from "./components/ContextMenuSurface";
 import {
   type TimelineDiagnosticLogEntry,
@@ -1400,22 +1420,9 @@ export function App() {
   }, [snapshot]);
 
   useEffect(() => {
-    const submissionId = threadSubmissionRef.current?.active();
     const thread = snapshot?.state.ui.thread;
-    if (
-      submissionId &&
-      thread?.kind === "open" &&
-      thread.composer?.accepted_submission_ids?.includes(submissionId)
-    ) {
-      threadSubmissionRef.current?.accept(submissionId);
-    }
-    if (
-      submissionId &&
-      thread?.kind === "open" &&
-      thread.composer?.pending_transaction_id === null &&
-      thread.composer.pending_submission_id !== submissionId
-    ) {
-      threadSubmissionRef.current?.releaseTerminal(submissionId);
+    if (threadSubmissionRef.current && thread?.kind === "open" && thread.composer) {
+      reconcileComposerSubmissionSnapshot(threadSubmissionRef.current, thread.composer);
     }
   }, [snapshot]);
 
@@ -2833,19 +2840,11 @@ export function App() {
   }
 
   useEffect(() => {
-    const submissionId = composerSubmissionRef.current?.active();
-    if (
-      submissionId &&
-      snapshot?.state.ui.timeline.composer.accepted_submission_ids?.includes(submissionId)
-    ) {
-      composerSubmissionRef.current?.accept(submissionId);
-    }
-    if (
-      submissionId &&
-      snapshot?.state.ui.timeline.composer.pending_transaction_id === null &&
-      snapshot.state.ui.timeline.composer.pending_submission_id !== submissionId
-    ) {
-      composerSubmissionRef.current?.releaseTerminal(submissionId);
+    if (composerSubmissionRef.current && snapshot) {
+      reconcileComposerSubmissionSnapshot(
+        composerSubmissionRef.current,
+        snapshot.state.ui.timeline.composer
+      );
     }
   }, [snapshot]);
 

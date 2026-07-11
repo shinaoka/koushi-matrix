@@ -307,7 +307,7 @@ function snapshotForPanelMode(
           room_id: null,
           is_subscribed: false,
           is_paginating_backwards: false,
-          composer: { pending_transaction_id: null, draft: "", mode: "Plain" },
+          composer: { accepted_submission_ids: [], pending_transaction_id: null, draft: "", mode: "Plain" },
           scheduled_send_capability: "unknown",
           scheduled_sends: [],
           staged_uploads: [],

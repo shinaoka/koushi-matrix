@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
 
 import { createBrowserFakeApi } from "./backend/browserFakeApi";
+import { createComposerSubmissionController } from "./domain/composerSubmission";
 import { MessageSourceDialog, TimelineItemRow } from "./components/TimelineView";
 import type { TimelineItem } from "./domain/coreEvents";
 import type { DesktopSnapshot } from "./domain/types";
@@ -11,6 +12,26 @@ import { formatScheduledSendTime } from "./app/uiShared";
 import { t } from "./i18n/messages";
 
 describe("ContextualRightPanel", () => {
+  test("accepted terminal snapshot settles an unknown send before the next draft", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { reconcileComposerSubmissionSnapshot } = await import("./App");
+    const ids = ["submission-1", "submission-2"];
+    const controller = createComposerSubmissionController(() => ids.shift()!);
+    const first = controller.begin()!;
+    controller.capture(first, { body: "original" });
+    controller.markUnknown(first, "timeout");
+    reconcileComposerSubmissionSnapshot(controller, {
+      accepted_submission_ids: [first],
+      pending_submission_id: null,
+      pending_transaction_id: null,
+      draft: "current draft",
+      mode: "Plain"
+    });
+    const next = controller.begin()!;
+    controller.capture(next, { body: "current draft" });
+    expect(next).toBe("submission-2");
+    expect(controller.payload<{ body: string }>(next)?.body).toBe("current draft");
+  });
   const trustPanelHandlers = {
     onAcceptVerification: () => undefined,
     onBootstrapCrossSigning: () => undefined,
@@ -998,7 +1019,7 @@ describe("ContextualRightPanel", () => {
       room_id: snapshot.state.domain.rooms[0]?.room_id,
       root_event_id: "$root:example.invalid",
       is_subscribed: true,
-      composer: { pending_transaction_id: null, draft: "", mode: "Plain" }
+      composer: { accepted_submission_ids: [], pending_transaction_id: null, draft: "", mode: "Plain" }
     };
     snapshot.timeline = [
       {
@@ -1086,6 +1107,7 @@ describe("ContextualRightPanel", () => {
       root_event_id: "$root:example.invalid",
       is_subscribed: true,
       composer: {
+        accepted_submission_ids: [],
         pending_transaction_id: null,
         draft: "Rust-owned draft",
         mode: "Plain"
@@ -1140,6 +1162,7 @@ describe("ContextualRightPanel", () => {
       root_event_id: "$root:example.invalid",
       is_subscribed: true,
       composer: {
+        accepted_submission_ids: [],
         pending_transaction_id: "txn-thread-1",
         draft: "Draft blocked by pending send",
         mode: "Plain"

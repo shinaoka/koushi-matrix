@@ -268,7 +268,7 @@ class BrowserFakeApi implements DesktopApi {
   private snapshot: DesktopSnapshot;
   private requestSequence = 1_000;
   private composerDrafts = new Map<string, string>();
-  private submissionLedger = new Map<string, { transactionId: string; target: string }>();
+  private submissionLedger = new Map<string, string>();
 
   private replaySubmission(submissionId: string): SubmissionResponse | null {
     const admitted = this.submissionLedger.get(submissionId);
@@ -276,14 +276,19 @@ class BrowserFakeApi implements DesktopApi {
     return {
       outcome: "accepted",
       submissionId,
-      transactionId: admitted.transactionId,
+      transactionId: admitted,
       snapshot: clone(this.snapshot)
     };
   }
 
-  private acceptSubmission(submissionId: string, target: string, composer: ComposerState): string {
+  private acceptSubmission(submissionId: string, composer: ComposerState): string {
     const transactionId = `$browser-${submissionId}`;
-    this.submissionLedger.set(submissionId, { transactionId, target });
+    while (this.submissionLedger.size >= 128) {
+      const oldest = this.submissionLedger.keys().next().value;
+      if (oldest === undefined) break;
+      this.submissionLedger.delete(oldest);
+    }
+    this.submissionLedger.set(submissionId, transactionId);
     composer.accepted_submission_ids = [
       ...(composer.accepted_submission_ids ?? []).filter((id) => id !== submissionId),
       submissionId
@@ -998,6 +1003,7 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.ui.timeline.room_id = roomId;
     this.snapshot.state.ui.timeline.is_subscribed = true;
     this.snapshot.state.ui.timeline.composer = {
+      accepted_submission_ids: [],
       pending_transaction_id: null,
       draft: this.composerDrafts.get(roomId) ?? "",
       mode: "Plain"
@@ -1091,7 +1097,7 @@ class BrowserFakeApi implements DesktopApi {
     }
     const sender = session.user_id;
     const composer = this.snapshot.state.ui.timeline.composer;
-    const transactionId = this.acceptSubmission(submissionId, `main:${roomId}`, composer);
+    const transactionId = this.acceptSubmission(submissionId, composer);
 
     this.snapshot.timeline = [
       ...this.snapshot.timeline,
@@ -1538,7 +1544,7 @@ class BrowserFakeApi implements DesktopApi {
       room_id: roomId,
       root_event_id: rootEventId,
       is_subscribed: true,
-      composer: { pending_transaction_id: null, draft: "", mode: "Plain" }
+      composer: { accepted_submission_ids: [], pending_transaction_id: null, draft: "", mode: "Plain" }
     };
     this.snapshot.thread = {
       room_id: roomId,
@@ -1692,11 +1698,7 @@ class BrowserFakeApi implements DesktopApi {
       };
     }
 
-    const transactionId = this.acceptSubmission(
-      submissionId,
-      `thread:${roomId}:${rootEventId}`,
-      thread.composer
-    );
+    const transactionId = this.acceptSubmission(submissionId, thread.composer);
     this.terminalSubmission(thread.composer);
     thread.composer.draft = "";
     return {
@@ -2638,7 +2640,7 @@ class BrowserFakeApi implements DesktopApi {
     }
     const sender = session.user_id;
     const composer = this.snapshot.state.ui.timeline.composer;
-    const transactionId = this.acceptSubmission(submissionId, `reply:${roomId}:${inReplyToEventId}`, composer);
+    const transactionId = this.acceptSubmission(submissionId, composer);
 
     this.snapshot.timeline = [
       ...this.snapshot.timeline,
@@ -2916,6 +2918,7 @@ class BrowserFakeApi implements DesktopApi {
       is_subscribed: false,
       is_paginating_backwards: false,
       composer: {
+        accepted_submission_ids: [],
         pending_transaction_id: null,
         draft: "",
         mode: "Plain"
@@ -2998,6 +3001,7 @@ class BrowserFakeApi implements DesktopApi {
       is_subscribed: false,
       is_paginating_backwards: false,
       composer: {
+        accepted_submission_ids: [],
         pending_transaction_id: null,
         draft: "",
         mode: "Plain"
@@ -3180,6 +3184,7 @@ function createReadySnapshot(session: SavedSessionInfo = savedSessions[0]): Desk
           is_subscribed: true,
           is_paginating_backwards: false,
           composer: {
+            accepted_submission_ids: [],
             pending_transaction_id: null,
             draft: "",
             mode: "Plain"
@@ -3301,6 +3306,7 @@ function createSignedOutSnapshot(): DesktopSnapshot {
           is_subscribed: false,
           is_paginating_backwards: false,
           composer: {
+            accepted_submission_ids: [],
             pending_transaction_id: null,
             draft: "",
             mode: "Plain"
