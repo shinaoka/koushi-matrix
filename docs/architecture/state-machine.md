@@ -413,8 +413,41 @@ Window-external crawler/search and receipt state is preserved.
 
 - The main timeline has one selected room.
 - Timeline subscription signals only affect the selected room.
-- The main composer tracks one pending transaction. A second send is ignored
-  until the pending transaction completes.
+- The main and thread composers correlate every new-text send with one opaque,
+  private-data-safe `SubmissionId`. The same ID is preserved from the frontend
+  intent through Tauri, `TimelineCommand`, the timeline actor, and reducer.
+  A composer accepts a submission ID at most once: duplicate commands cannot
+  allocate or enqueue another transaction, and stale or duplicate terminal
+  results cannot settle a newer submission.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Resolving: ComposerEnter [resolveInFlight=false]
+    Resolving --> Idle: ResolverRejected / release resolve guard
+    Resolving --> Submitting: ResolverSend / allocate SubmissionId; set submitInFlight
+    Submitting --> Pending: SubmissionAccepted [matching SubmissionId] / clear matching draft
+    Submitting --> Idle: SubmissionRejected [matching SubmissionId] / preserve draft; release guards
+    Pending --> Idle: SendFinished [matching SubmissionId and transaction] / release guards
+    Pending --> Idle: SendFailed_or_Cancelled [matching SubmissionId and transaction] / release guards
+    Resolving --> Resolving: duplicate Enter / ignore
+    Submitting --> Submitting: duplicate invoke / return same acceptance; do not enqueue
+    Pending --> Pending: duplicate or stale completion / ignore
+```
+
+- `resolveInFlight` is acquired synchronously before invoking the asynchronous
+  shortcut resolver. `submitInFlight` and the `SubmissionId` are acquired after
+  a resolved send action and before the Tauri invocation. Edit actions share
+  the resolve guard but do not allocate new-text submission IDs.
+- A draft is cleared only by the reducer transition that accepts the matching
+  submission. An IPC return without matching reducer acceptance is not success.
+  Explicit rejection releases both guards while preserving the draft. Accepted
+  pending submissions release only after matching completion, failure, or
+  cancellation. Existing transaction retry does not allocate a new submission.
+- Tauri `send_text` and `send_reply` wait for the matching accepted/rejected
+  result and return a typed outcome with the same submission ID, optional
+  transaction ID, and correlated snapshot. Timeout and disconnect are typed
+  failures whose diagnostics contain no message body or raw Matrix identifier.
 - Main-composer drafts are backed by a Rust-owned keyed draft store outside the
   transient `TimelinePaneState`. `ComposerDraftChanged` writes the selected
   room's draft through to that store, `SelectRoom` hydrates the active composer
