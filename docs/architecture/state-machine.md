@@ -377,6 +377,7 @@ stateDiagram-v2
     [*] --> Subscribed: Timeline::subscribe / snapshot + stream generation N
     Subscribed --> Subscribed: DiffBatch(N) / ItemsUpdated(N)
     Subscribed --> Overflowed: data inbox Full / lossless Overflow(N) control
+    Subscribed --> Overflowed: SDK diff stream ended / lossless StreamEnded(N) control
     Overflowed --> Resubscribing: actor stops relay N and advances to N+1
     Resubscribing --> Subscribed: Timeline::subscribe / ResyncRequired then InitialItems(N+1), start relay N+1
     Subscribed --> Subscribed: stale DiffBatch(<N) / discard
@@ -391,6 +392,20 @@ one `Timeline::subscribe()` boundary, emits `ResyncRequired` followed by
 next live diff is therefore emitted as an ordinary `ItemsUpdated`. Send-queue
 broadcast lag recovery is a separate state machine and does not satisfy this
 relay recovery contract.
+
+Unexpected SDK diff-stream completion is handled through the same generation-
+guarded resubscription protocol with reason `SubscriptionRestarted`. The relay
+emits exactly one lossless `StreamEnded(generation)` control before terminating;
+the actor replaces the closed data lane, so a permanently-ready closed receiver
+cannot busy-spin or starve queued actor commands. A stale end signal from an old
+generation is ignored.
+
+The replacement snapshot also reconciles actor-owned auxiliary projections
+before the replacement relay becomes live: media-source cache and media gallery
+are replaced from the snapshot, live receipts are replaced only within the
+union of old/new window event IDs, and search removes old-window IDs absent
+from the new window before applying the snapshot's Upsert/Edit/Redact messages.
+Window-external crawler/search and receipt state is preserved.
 
 - The main timeline has one selected room.
 - Timeline subscription signals only affect the selected room.

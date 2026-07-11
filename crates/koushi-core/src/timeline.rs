@@ -2594,6 +2594,7 @@ enum TimelineActorMessage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TimelineRelayControl {
     Overflow { generation: TimelineGeneration },
+    StreamEnded { generation: TimelineGeneration },
 }
 
 struct TimelineRelayBatch {
@@ -5008,7 +5009,12 @@ impl TimelineActor {
     async fn handle_relay_control(&mut self, control: TimelineRelayControl) {
         match control {
             TimelineRelayControl::Overflow { generation } => {
-                self.handle_relay_overflow(generation).await;
+                self.handle_relay_overflow(generation, TimelineResyncReason::QueueOverflow)
+                    .await;
+            }
+            TimelineRelayControl::StreamEnded { generation } => {
+                self.handle_relay_overflow(generation, TimelineResyncReason::SubscriptionRestarted)
+                    .await;
             }
         }
     }
@@ -8491,7 +8497,11 @@ impl TimelineActor {
         }
     }
 
-    async fn handle_relay_overflow(&mut self, overflow_generation: TimelineGeneration) {
+    async fn handle_relay_overflow(
+        &mut self,
+        overflow_generation: TimelineGeneration,
+        reason: TimelineResyncReason,
+    ) {
         if !accept_relay_generation(self.generation, overflow_generation) {
             return;
         }
@@ -8552,6 +8562,13 @@ impl TimelineActor {
             .await;
         }
         trace_timeline_items("overflow_initial", &self.key, &items);
+        if let Some(replacement) =
+            authoritative_media_gallery_replacement(&self.key, &self.media_gallery_items, &items)
+        {
+            if self.emit_action_reliable(replacement.action).await {
+                self.media_gallery_items = replacement.items;
+            }
+        }
         self.navigation_items = items.clone();
         self.replay_known_display_items = normalize_display_timeline_items(&items);
         let replay_known_candidates = replay_known_candidates_for_display_items(
@@ -8567,6 +8584,7 @@ impl TimelineActor {
             &self.key,
             self.actor_generation,
             self.generation,
+            reason,
             items,
             replay_known_candidates,
         );
@@ -8886,6 +8904,7 @@ fn emit_relay_recovery_snapshot(
     key: &TimelineKey,
     actor_generation: u64,
     generation: TimelineGeneration,
+    reason: TimelineResyncReason,
     items: Vec<TimelineItem>,
     replay_known_candidates: Vec<ThreadRootProjectionDto>,
 ) {
@@ -8896,7 +8915,7 @@ fn emit_relay_recovery_snapshot(
         actor_generation,
         vec![TimelineEvent::ResyncRequired {
             key: key.clone(),
-            reason: TimelineResyncReason::QueueOverflow,
+            reason,
         }],
     );
     let _ = emit_initial_items_and_reconcile_replay_known_for_generation(
@@ -8928,6 +8947,9 @@ async fn run_diff_relay(
 
     loop {
         let Some(diffs) = diff_stream.next().await else {
+            let _ = control_tx
+                .send(TimelineRelayControl::StreamEnded { generation })
+                .await;
             break;
         };
 
@@ -9122,6 +9144,24 @@ fn media_gallery_updated_action(
         room_id: room_id.clone(),
         items,
     })
+}
+
+struct AuthoritativeMediaGalleryReplacement {
+    items: Vec<TimelineMediaGalleryItem>,
+    action: AppAction,
+}
+
+fn authoritative_media_gallery_replacement(
+    key: &TimelineKey,
+    current: &[TimelineMediaGalleryItem],
+    authoritative_items: &[TimelineItem],
+) -> Option<AuthoritativeMediaGalleryReplacement> {
+    let items = media_gallery_items_from_timeline_items(key, authoritative_items);
+    if items == current {
+        return None;
+    }
+    let action = media_gallery_updated_action(key, items.clone())?;
+    Some(AuthoritativeMediaGalleryReplacement { items, action })
 }
 
 fn media_gallery_items_from_timeline_items(
@@ -14962,6 +15002,38 @@ mod tests {
     }
 
     #[test]
+    fn relay_overflow_authoritative_snapshot_replaces_media_gallery_and_emits_action() {
+        let key = room_key();
+        let old_navigation = vec![timeline_media_item(
+            "$old:test",
+            "@alice:test",
+            None,
+            1,
+            "old.png",
+            TimelineMediaKind::Image,
+        )];
+        let new_navigation = vec![timeline_media_item(
+            "$new:test",
+            "@bob:test",
+            None,
+            2,
+            "new.png",
+            TimelineMediaKind::Image,
+        )];
+        let old_gallery = media_gallery_items_from_timeline_items(&key, &old_navigation);
+        let replacement =
+            authoritative_media_gallery_replacement(&key, &old_gallery, &new_navigation)
+                .expect("changed authoritative snapshot must emit gallery replacement");
+        assert_eq!(replacement.items.len(), 1);
+        assert_eq!(replacement.items[0].event_id, "$new:test");
+        assert!(matches!(
+            replacement.action,
+            AppAction::MediaGalleryUpdated { items, .. }
+                if items.len() == 1 && items[0].event_id == "$new:test"
+        ));
+    }
+
+    #[test]
     fn timeline_navigation_marks_first_unread_inside_viewport() {
         let items = vec![
             timeline_item("$read:test", Some("read"), "@alice:test", false),
@@ -17918,6 +17990,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relay_stream_end_emits_one_recovery_control_without_consuming_commands() {
+        let (data_tx, mut data_rx) = mpsc::channel::<TimelineRelayBatch>(1);
+        let (control_tx, mut control_rx) = mpsc::channel::<TimelineRelayControl>(1);
+        let (command_tx, mut command_rx) = mpsc::channel::<TimelineActorMessage>(1);
+        command_tx
+            .try_send(TimelineActorMessage::ReplayInitialItems {
+                request_id: fake_rid(88),
+            })
+            .expect("command must queue independently");
+
+        run_diff_relay(
+            data_tx,
+            control_tx,
+            TimelineGeneration(9),
+            futures_util::stream::empty(),
+        )
+        .await;
+
+        assert!(matches!(
+            control_rx.recv().await,
+            Some(TimelineRelayControl::StreamEnded {
+                generation: TimelineGeneration(9)
+            })
+        ));
+        assert!(matches!(data_rx.recv().await, None));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(TimelineActorMessage::ReplayInitialItems { .. })
+        ));
+        assert!(matches!(
+            control_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[tokio::test]
     async fn relay_overflow_recovery_subscribes_once_emits_snapshot_then_next_live_update() {
         let key = room_key();
         let (event_tx, mut event_rx) = broadcast::channel(8);
@@ -17964,6 +18072,7 @@ mod tests {
             &key,
             actor_generation,
             generation,
+            TimelineResyncReason::QueueOverflow,
             snapshot,
             Vec::new(),
         );
