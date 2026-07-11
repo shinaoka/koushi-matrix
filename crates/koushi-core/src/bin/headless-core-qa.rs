@@ -572,7 +572,7 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "live_signals=ok",
         ],
         QaStage::Thread => &[
-            "thread_hidden=ok",
+            "thread_canonical=ok",
             "thread_summary=ok",
             "thread_recv=ok",
             "thread_paginate=end_reached",
@@ -646,7 +646,7 @@ fn implemented_final_tokens() -> Vec<&'static str> {
         "pin_event=ok",
         "pinned_state=ok",
         "unpin_event=ok",
-        "thread_hidden=ok",
+        "thread_canonical=ok",
         "thread_summary=ok",
         "thread_recv=ok",
         "thread_paginate=end_reached",
@@ -4466,7 +4466,7 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
             "wait for A room live thread summary",
         )
         .await?;
-        println!("thread_hidden=ok");
+        println!("thread_canonical=ok");
         println!("thread_summary=ok");
 
         let thread_key_a = TimelineKey {
@@ -11751,6 +11751,8 @@ fn timeline_item_has_thread_summary_reply(item: &TimelineItem, root_event_id: &s
 struct RoomThreadSummaryObserver<'a> {
     expected_thread_body: &'a str,
     root_event_id: &'a str,
+    saw_canonical_reply: bool,
+    saw_summary: bool,
 }
 
 impl<'a> RoomThreadSummaryObserver<'a> {
@@ -11758,34 +11760,36 @@ impl<'a> RoomThreadSummaryObserver<'a> {
         Self {
             expected_thread_body,
             root_event_id,
+            saw_canonical_reply: false,
+            saw_summary: false,
         }
+    }
+
+    fn observe_item(&mut self, item: &TimelineItem) -> Result<(), String> {
+        if timeline_item_body_contains(item, self.expected_thread_body) {
+            assert_thread_reply_relation(item, self.root_event_id).map_err(|_| {
+                "thread_canonical failed: canonical reply relation did not match root".to_owned()
+            })?;
+            self.saw_canonical_reply = true;
+        }
+        self.saw_summary |= timeline_item_has_thread_summary_reply(item, self.root_event_id);
+        Ok(())
+    }
+
+    fn is_complete(&self) -> bool {
+        self.saw_canonical_reply && self.saw_summary
     }
 
     fn observe_items(&mut self, items: &[TimelineItem]) -> Result<bool, String> {
-        let mut saw_summary = false;
         for item in items {
-            if timeline_item_body_contains(item, self.expected_thread_body) {
-                return Err(
-                    "thread_hidden failed: thread reply appeared on room live timeline".to_owned(),
-                );
-            }
-            saw_summary |= timeline_item_has_thread_summary_reply(item, self.root_event_id);
+            self.observe_item(item)?;
         }
-        Ok(saw_summary)
+        Ok(self.is_complete())
     }
 
     fn observe_diffs(&mut self, diffs: &[TimelineDiff]) -> Result<bool, String> {
-        let mut saw_summary = false;
-        visit_timeline_diff_items(diffs, |item| {
-            if timeline_item_body_contains(item, self.expected_thread_body) {
-                return Err(
-                    "thread_hidden failed: thread reply appeared on room live timeline".to_owned(),
-                );
-            }
-            saw_summary |= timeline_item_has_thread_summary_reply(item, self.root_event_id);
-            Ok(())
-        })?;
-        Ok(saw_summary)
+        visit_timeline_diff_items(diffs, |item| self.observe_item(item))?;
+        Ok(self.is_complete())
     }
 }
 
@@ -11844,14 +11848,17 @@ async fn wait_for_room_timeline_thread_summary(
 }
 
 #[allow(dead_code)]
-fn assert_room_timeline_hides_thread_reply_and_summarizes_root(
+fn assert_room_timeline_exposes_canonical_reply_and_summarizes_root(
     items: &[TimelineItem],
     expected_thread_body: &str,
     root_event_id: &str,
 ) -> Result<(), String> {
     let mut observer = RoomThreadSummaryObserver::new(expected_thread_body, root_event_id);
     if !observer.observe_items(items)? {
-        return Err("thread_summary failed: root item did not carry a reply summary".to_owned());
+        return Err(
+            "thread_canonical failed: root summary and canonical reply were not both observed"
+                .to_owned(),
+        );
     }
     Ok(())
 }
@@ -12968,7 +12975,7 @@ mod tests {
     }
 
     #[test]
-    fn room_thread_assertion_requires_hidden_reply_and_root_summary() {
+    fn room_thread_assertion_requires_canonical_reply_and_root_summary() {
         let root = synthetic_timeline_item(
             "$root:test",
             Some("root message"),
@@ -12986,15 +12993,16 @@ mod tests {
         let unrelated = synthetic_timeline_item("$other:test", Some("other"), None, None, None);
 
         assert!(
-            assert_room_timeline_hides_thread_reply_and_summarizes_root(
+            assert_room_timeline_exposes_canonical_reply_and_summarizes_root(
                 &[root.clone(), unrelated],
                 "Phase 11 QA thread reply from B",
                 "$root:test",
             )
-            .is_ok()
+            .is_err(),
+            "a Room canonical stream must include the thread reply as the projection anchor"
         );
 
-        let leaked = synthetic_timeline_item(
+        let canonical_reply = synthetic_timeline_item(
             "$reply:test",
             Some("Phase 11 QA thread reply from B"),
             Some("$root:test"),
@@ -13002,16 +13010,16 @@ mod tests {
             None,
         );
         assert!(
-            assert_room_timeline_hides_thread_reply_and_summarizes_root(
-                &[root.clone(), leaked],
+            assert_room_timeline_exposes_canonical_reply_and_summarizes_root(
+                &[root.clone(), canonical_reply],
                 "Phase 11 QA thread reply from B",
                 "$root:test",
             )
-            .is_err()
+            .is_ok()
         );
 
         assert!(
-            assert_room_timeline_hides_thread_reply_and_summarizes_root(
+            assert_room_timeline_exposes_canonical_reply_and_summarizes_root(
                 &[synthetic_timeline_item(
                     "$root:test",
                     Some("root message"),
@@ -13057,14 +13065,16 @@ mod tests {
                     item: root_with_summary,
                 }])
                 .unwrap()
+                == false,
+            "the root summary alone is insufficient; canonical reply observation is the anchor contract"
         );
     }
 
     #[test]
-    fn room_thread_summary_observer_fails_immediately_on_leaked_reply() {
+    fn room_thread_summary_observer_accepts_canonical_thread_reply() {
         let mut observer =
             RoomThreadSummaryObserver::new("Phase 11 QA thread reply from B", "$root:test");
-        let leaked = synthetic_timeline_item(
+        let canonical_reply = synthetic_timeline_item(
             "$reply:test",
             Some("Phase 11 QA thread reply from B"),
             Some("$root:test"),
@@ -13072,9 +13082,15 @@ mod tests {
             None,
         );
 
-        let error = observer.observe_items(&[leaked]).unwrap_err();
+        assert!(!observer.observe_items(&[canonical_reply]).unwrap());
+    }
 
-        assert!(error.contains("thread_hidden failed"));
+    #[test]
+    fn thread_qa_reports_canonical_reply_contract() {
+        assert!(
+            final_tokens_for_scenario(QaScenario::Thread).contains(&"thread_canonical=ok"),
+            "the public QA summary must describe the canonical Room stream contract"
+        );
     }
 
     #[test]
@@ -14089,7 +14105,7 @@ mod tests {
                 "pin_event=ok",
                 "pinned_state=ok",
                 "unpin_event=ok",
-                "thread_hidden=ok",
+                "thread_canonical=ok",
                 "thread_summary=ok",
                 "thread_recv=ok",
                 "thread_paginate=end_reached",
@@ -14434,7 +14450,7 @@ mod tests {
                 "pin_event=ok",
                 "pinned_state=ok",
                 "unpin_event=ok",
-                "thread_hidden=ok",
+                "thread_canonical=ok",
                 "thread_summary=ok",
                 "thread_recv=ok",
                 "thread_paginate=end_reached",
@@ -14546,7 +14562,7 @@ mod tests {
                 "pin_event=ok",
                 "pinned_state=ok",
                 "unpin_event=ok",
-                "thread_hidden=ok",
+                "thread_canonical=ok",
                 "thread_summary=ok",
                 "thread_recv=ok",
                 "thread_paginate=end_reached",

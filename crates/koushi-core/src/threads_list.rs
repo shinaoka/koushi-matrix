@@ -190,6 +190,21 @@ impl ThreadRootProjectionService {
             .is_some_and(ThreadRootProjectionRecord::is_pending)
     }
 
+    /// Returns the current terminal result for one active root without
+    /// observing it again or starting another bounded lookup. Replay-known
+    /// ownership uses this only to hand a previously suppressed terminal
+    /// snapshot back to the exact canonical reply slot when that owner ends.
+    pub(crate) fn terminal_record(
+        &self,
+        room_id: &str,
+        root_event_id: &str,
+    ) -> Option<ThreadRootProjectionRecord> {
+        self.attempts
+            .get(&(room_id.to_owned(), root_event_id.to_owned()))
+            .filter(|record| !record.is_pending())
+            .cloned()
+    }
+
     pub(crate) fn mark_ready(
         &mut self,
         activity: &ThreadRootProjectionActivity,

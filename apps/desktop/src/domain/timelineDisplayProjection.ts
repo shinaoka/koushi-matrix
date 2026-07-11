@@ -45,13 +45,21 @@ type MoveCandidate = {
   displayTimestampMs: number;
 };
 
+type SummaryFallbackCandidate = {
+  row: TimelineDisplayRow;
+  displayTimestampMs: number;
+  originalIndex: number;
+  rootEventId: string;
+};
+
 /**
  * Derives render rows from canonical timeline items.
  *
- * RootEvent and non-Room keys are identity projections: item order and item
- * references remain exactly as received. LatestReply replaces a loaded exact
- * thread-reply slot with the root row, suppresses all Room reply rows, and
- * regenerates only the presentation date dividers.
+ * RootEvent keeps a Room root/summary at its canonical origin while suppressing
+ * standalone thread-reply rows. LatestReply replaces a loaded exact
+ * thread-reply slot with the root row. When an SDK room window exposes only a
+ * root summary, the same root row is inserted by its summary activity time.
+ * Thread, Focused, and non-Room projections remain identity projections.
  */
 export function projectTimelineDisplayRows(
   canonicalItems: readonly TimelineItem[],
@@ -59,11 +67,40 @@ export function projectTimelineDisplayRows(
   order: TimelineThreadRootOrder,
   threadRootProjections: readonly ThreadRootProjectionDto[] = []
 ): TimelineDisplayRow[] {
-  if (!("Room" in key.kind) || order.kind !== "latestReply") {
+  if (!("Room" in key.kind)) {
     return canonicalItems.map((item) => canonicalRow(item));
   }
 
+  if (order.kind === "rootEvent") {
+    return projectRootEventRoomRows(canonicalItems);
+  }
+
   return projectLatestReplyRoomRows(canonicalItems, threadRootProjections);
+}
+
+function projectRootEventRoomRows(canonicalItems: readonly TimelineItem[]): TimelineDisplayRow[] {
+  const rows: TimelineDisplayRow[] = [];
+  let pendingDateDivider: TimelineItem | null = null;
+
+  for (const item of canonicalItems) {
+    if (isCanonicalDateDivider(item)) {
+      // Canonical divider rows precede their date's first item. Keep one only
+      // when that next visible Room item survives reply suppression; do not
+      // manufacture dividers for ordinary timelines that did not have one.
+      pendingDateDivider = item;
+      continue;
+    }
+    if (isThreadReply(item)) {
+      continue;
+    }
+    if (pendingDateDivider !== null) {
+      rows.push(canonicalRow(pendingDateDivider));
+      pendingDateDivider = null;
+    }
+    rows.push(canonicalRow(item));
+  }
+
+  return rows;
 }
 
 function projectLatestReplyRoomRows(
@@ -100,6 +137,24 @@ function projectLatestReplyRoomRows(
     rootIds,
     threadRootProjections
   );
+  const exactMovedRootIds = new Set(
+    [...movedRootByActivityIndex.values()].map((candidate) => candidate.root.eventId)
+  );
+  const exactHydratedRootIds = new Set(
+    [...hydratedRootByActivityIndex.values()].flatMap((row) =>
+      row.content_event_id === null ? [] : [row.content_event_id]
+    )
+  );
+  const summaryFallbacks = [
+    ...chooseSummaryFallbackRoots(rootsByIndex, exactMovedRootIds),
+    ...chooseHydratedSummaryFallbacks(
+      entries,
+      rootIds,
+      exactHydratedRootIds,
+      threadRootProjections
+    )
+  ];
+  const summaryFallbackRootIds = new Set(summaryFallbacks.map((candidate) => candidate.rootEventId));
   const movedRootIndexes = new Set(
     [...movedRootByActivityIndex.values()].map((candidate) => candidate.root.index)
   );
@@ -128,7 +183,7 @@ function projectLatestReplyRoomRows(
       // by any standalone reply row, including an unmatched stale reply.
       continue;
     }
-    if (movedRootIndexes.has(entry.index)) {
+    if (movedRootIndexes.has(entry.index) || summaryFallbackRootIds.has(entry.eventId ?? "")) {
       continue;
     }
 
@@ -136,7 +191,7 @@ function projectLatestReplyRoomRows(
     projectedRows.push(root === undefined ? canonicalRow(entry.item) : rootAtOriginRow(root));
   }
 
-  return rebuildDateDividers(projectedRows);
+  return rebuildDateDividers(insertSummaryFallbackRows(projectedRows, summaryFallbacks, entries));
 }
 
 function chooseHydratedRoots(
@@ -173,6 +228,83 @@ function chooseHydratedRoots(
     selected.set(activity.index, hydratedRootRow(projection, displayTimestampMs));
   }
   return selected;
+}
+
+function chooseSummaryFallbackRoots(
+  rootsByIndex: ReadonlyMap<number, ThreadRoot>,
+  exactMovedRootIds: ReadonlySet<string>
+): SummaryFallbackCandidate[] {
+  const fallbacks: SummaryFallbackCandidate[] = [];
+  for (const root of rootsByIndex.values()) {
+    if (exactMovedRootIds.has(root.eventId) || root.latestEventId === null) {
+      continue;
+    }
+    const displayTimestampMs = finiteTimestamp(root.latestTimestampMs);
+    if (displayTimestampMs === null) {
+      continue;
+    }
+    fallbacks.push({
+      row: summaryOnlyRootRow(root, displayTimestampMs),
+      displayTimestampMs,
+      originalIndex: root.index,
+      rootEventId: root.eventId
+    });
+  }
+  return fallbacks;
+}
+
+function chooseHydratedSummaryFallbacks(
+  entries: readonly CanonicalEntry[],
+  loadedRootIds: ReadonlySet<string>,
+  exactHydratedRootIds: ReadonlySet<string>,
+  projections: readonly ThreadRootProjectionDto[]
+): SummaryFallbackCandidate[] {
+  const canonicalEventIds = new Set(
+    entries.flatMap((entry) => (entry.eventId === null ? [] : [entry.eventId]))
+  );
+  const fallbacks: SummaryFallbackCandidate[] = [];
+
+  for (const projection of projections) {
+    if (
+      projection.state.kind !== "ready" ||
+      !isReplayKnownSummaryFallback(projection) ||
+      loadedRootIds.has(projection.root_event_id) ||
+      canonicalEventIds.has(projection.root_event_id) ||
+      exactHydratedRootIds.has(projection.root_event_id) ||
+      !projection.activity_event_id.trim()
+    ) {
+      continue;
+    }
+    const displayTimestampMs =
+      finiteTimestamp(projection.activity_timestamp_ms) ??
+      finiteTimestamp(projection.state.item.thread_summary?.latest_timestamp_ms ?? null);
+    if (displayTimestampMs === null) {
+      continue;
+    }
+    fallbacks.push({
+      row: hydratedRootRow(projection, displayTimestampMs),
+      displayTimestampMs,
+      originalIndex: Number.MAX_SAFE_INTEGER,
+      rootEventId: projection.root_event_id
+    });
+  }
+  return fallbacks;
+}
+
+/**
+ * Only the bounded replay path may create a root row when there is no
+ * canonical reply slot. Hydration Ready records remain valid for replacing an
+ * exact reply, but must not invent an out-of-band summary row after a global
+ * resync or in any other canonical-empty interval.
+ */
+function isReplayKnownSummaryFallback(projection: ThreadRootProjectionDto): boolean {
+  const source = projection.source;
+  return (
+    projection.retain_without_reply === true &&
+    source?.kind === "replayKnown" &&
+    Number.isSafeInteger(source.epoch) &&
+    source.epoch > 0
+  );
 }
 
 function chooseMoves(
@@ -279,6 +411,18 @@ function movedRootRow(candidate: MoveCandidate): TimelineDisplayRow {
   };
 }
 
+function summaryOnlyRootRow(root: ThreadRoot, displayTimestampMs: number): TimelineDisplayRow {
+  return {
+    row_id: `thread-root:${root.eventId}`,
+    item: root.item,
+    kind: "threadRoot",
+    content_event_id: root.eventId,
+    activity_event_id: root.latestEventId,
+    content_timestamp_ms: finiteTimestamp(root.item.timestamp_ms),
+    display_timestamp_ms: displayTimestampMs
+  };
+}
+
 function hydratedRootRow(
   projection: ThreadRootProjectionDto,
   displayTimestampMs: number
@@ -324,6 +468,55 @@ function hydratedPlaceholderItem(projection: ThreadRootProjectionDto): TimelineI
     is_edited: false,
     can_edit: false
   };
+}
+
+function insertSummaryFallbackRows(
+  rows: TimelineDisplayRow[],
+  fallbacks: readonly SummaryFallbackCandidate[],
+  entries: readonly CanonicalEntry[]
+): TimelineDisplayRow[] {
+  const originalIndexByRowId = new Map<string, number>();
+  for (const entry of entries) {
+    const root = asThreadRoot(entry);
+    const rowId = root === null ? timelineItemDomId(entry.item.id) : `thread-root:${root.eventId}`;
+    originalIndexByRowId.set(rowId, entry.index);
+  }
+  const inserted = [...rows];
+  for (const fallback of [...fallbacks].sort(compareSummaryFallbackCandidates)) {
+    const insertionIndex = inserted.findIndex((row) =>
+      compareSummaryFallbackToRow(fallback, row, originalIndexByRowId) <= 0
+    );
+    inserted.splice(insertionIndex < 0 ? inserted.length : insertionIndex, 0, fallback.row);
+  }
+  return inserted;
+}
+
+function compareSummaryFallbackCandidates(
+  left: SummaryFallbackCandidate,
+  right: SummaryFallbackCandidate
+): number {
+  return (
+    left.displayTimestampMs - right.displayTimestampMs ||
+    left.originalIndex - right.originalIndex ||
+    left.rootEventId.localeCompare(right.rootEventId)
+  );
+}
+
+function compareSummaryFallbackToRow(
+  fallback: SummaryFallbackCandidate,
+  row: TimelineDisplayRow,
+  originalIndexByRowId: ReadonlyMap<string, number>
+): number {
+  const rowTimestampMs = row.display_timestamp_ms;
+  if (rowTimestampMs === null) {
+    return 1;
+  }
+  const rowOriginalIndex = originalIndexByRowId.get(row.row_id) ?? Number.MAX_SAFE_INTEGER;
+  return (
+    fallback.displayTimestampMs - rowTimestampMs ||
+    fallback.originalIndex - rowOriginalIndex ||
+    fallback.rootEventId.localeCompare(row.content_event_id ?? row.row_id)
+  );
 }
 
 function rebuildDateDividers(rows: readonly TimelineDisplayRow[]): TimelineDisplayRow[] {
@@ -394,7 +587,7 @@ function asThreadRoot(entry: CanonicalEntry): ThreadRoot | null {
   return {
     ...entry,
     eventId: entry.eventId,
-    latestEventId: summary.latest_event_id,
+    latestEventId: nonEmptyTrimmedEventId(summary.latest_event_id),
     latestTimestampMs: summary.latest_timestamp_ms
   };
 }
@@ -417,6 +610,11 @@ function eventIdFor(item: TimelineItem): string | null {
 
 function finiteTimestamp(timestampMs: number | null): number | null {
   return timestampMs !== null && Number.isFinite(timestampMs) ? timestampMs : null;
+}
+
+function nonEmptyTrimmedEventId(eventId: string | null): string | null {
+  const trimmed = eventId?.trim() ?? "";
+  return trimmed || null;
 }
 
 function localDateKey(timestampMs: number): string {

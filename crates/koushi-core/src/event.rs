@@ -1754,11 +1754,33 @@ pub struct ThreadSummaryDto {
 /// the surrounding `TimelineEvent`. The activity identity is intentionally
 /// distinct from the root/content identity: it places the root block while
 /// actions continue targeting `root_event_id`.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ThreadRootProjectionSourceDto {
+    /// A bounded load-or-fetch projection whose lifetime follows a canonical
+    /// reply row in the Room window.
+    #[default]
+    Hydration,
+    /// A Ready snapshot copied from an already-known root during bounded
+    /// replay. Its epoch scopes later Clear events to this exact ownership.
+    ReplayKnown { epoch: u64 },
+}
+
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ThreadRootProjectionDto {
     pub root_event_id: String,
     pub activity_event_id: String,
     pub activity_timestamp_ms: Option<u64>,
+    /// A replay already had this complete root in the actor cache but omitted
+    /// it from the bounded display window. The frontend may retain this ready
+    /// snapshot without a canonical reply row until the Room projection is
+    /// explicitly cleared or replaced.
+    #[serde(default)]
+    pub retain_without_reply: bool,
+    /// The owner of this snapshot. Clears are source-scoped so a stale replay
+    /// clear cannot delete a newer ordinary hydration for the same root.
+    #[serde(default)]
+    pub source: ThreadRootProjectionSourceDto,
     pub state: ThreadRootProjectionStateDto,
 }
 
@@ -1769,6 +1791,8 @@ impl fmt::Debug for ThreadRootProjectionDto {
             .field("root_event_id", &"EventId(..)")
             .field("activity_event_id", &"EventId(..)")
             .field("activity_timestamp_ms", &self.activity_timestamp_ms)
+            .field("retain_without_reply", &self.retain_without_reply)
+            .field("source", &self.source)
             .field("state", &self.state)
             .finish()
     }

@@ -2127,6 +2127,8 @@ mod tests {
                     root_event_id: "$e1".to_owned(),
                     activity_event_id: "$thread-reply:example.test".to_owned(),
                     activity_timestamp_ms: Some(124),
+                    retain_without_reply: false,
+                    source: Default::default(),
                     state: ThreadRootProjectionStateDto::Pending,
                 },
             }))

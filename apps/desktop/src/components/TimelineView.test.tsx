@@ -5352,6 +5352,72 @@ describe("TimelineView", () => {
     expect(screen.queryByText("reply must remain suppressed")).toBeNull();
   });
 
+  it("keeps a Room root summary at its origin and suppresses canonical replies by default", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const paginateBackwards = vi.fn(async () => undefined);
+    const rootTimestampMs = 1_800_000_000_000;
+    const latestReplyTimestampMs = rootTimestampMs + 60_000;
+    const root = {
+      ...message("$default-thread-root:example.invalid", "Default root body"),
+      timestamp_ms: rootTimestampMs,
+      thread_summary: {
+        reply_count: 1,
+        latest_event_id: "$default-thread-reply:example.invalid",
+        latest_sender: "@bob:example.invalid",
+        latest_sender_label: "Bob",
+        latest_body_preview: "Default latest reply preview",
+        latest_timestamp_ms: latestReplyTimestampMs
+      }
+    };
+    const latestReply = {
+      ...message("$default-thread-reply:example.invalid", "Default standalone reply"),
+      timestamp_ms: latestReplyTimestampMs,
+      thread_root: "$default-thread-root:example.invalid"
+    };
+    const transport = baseTransport({
+      paginateBackwards,
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+
+    render(
+      <TimelineView timelineKey={KEY} roomId="!room:example.invalid" transport={transport} onReply={vi.fn()} />
+    );
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: {
+            request_id: null,
+            key: KEY,
+            generation: 1,
+            items: [root, message("$default-between:example.invalid", "Default between"), latestReply]
+          }
+        }
+      });
+    });
+
+    const rootRow = await screen.findByText("Default root body").then((node) =>
+      node.closest<HTMLElement>("article")
+    );
+    expect(rootRow?.getAttribute("data-row-id")).toBe(
+      "thread-root:$default-thread-root:example.invalid"
+    );
+    expect(rootRow?.getAttribute("data-content-event-id")).toBe("$default-thread-root:example.invalid");
+    expect(rootRow?.getAttribute("data-activity-event-id")).toBe("$default-thread-root:example.invalid");
+    expect(rootRow?.textContent).toContain("1 reply · Bob: Default latest reply preview");
+    expect(screen.queryByText("Default standalone reply")).toBeNull();
+    expect(
+      Array.from(document.querySelectorAll("article[data-row-id]")).map((row) =>
+        row.getAttribute("data-content-event-id")
+      )
+    ).toEqual(["$default-thread-root:example.invalid", "$default-between:example.invalid"]);
+    expect(paginateBackwards).not.toHaveBeenCalled();
+  });
+
   it("moves one Room thread root and its summary to its latest reply while keeping root actions and timestamps", async () => {
     let emit: (payload: CoreEventPayload) => void = () => undefined;
     const onOpenThread = vi.fn();
@@ -5486,6 +5552,198 @@ describe("TimelineView", () => {
         )
       ).toBe(true);
     });
+    rectMock.mockRestore();
+  });
+
+  it("keeps a replay-summary root out of the free-scroll anchor while using its activity identity", async () => {
+    let emit: (payload: CoreEventPayload) => void = () => undefined;
+    const onScrollDiagnosticsChange = vi.fn();
+    const viewportObservations: Array<{
+      firstVisibleEventId: string | null;
+      lastVisibleEventId: string | null;
+    }> = [];
+    const observeViewport = vi.fn(
+      async (
+        _roomId: string,
+        firstVisibleEventId: string | null,
+        lastVisibleEventId: string | null,
+        _atBottom: boolean
+      ) => {
+        viewportObservations.push({ firstVisibleEventId, lastVisibleEventId });
+      }
+    );
+    const scrollContainerRef: { current: HTMLElement | null } = { current: null };
+    const rectMock = mockPresentationOrderRects(scrollContainerRef);
+    const rootEventId = "$replay-summary-root:example.invalid";
+    const firstActivityEventId = "$summary-activity-first:example.invalid";
+    const laterActivityEventId = "$summary-activity-later:example.invalid";
+    const rootTimestampMs = 1_800_000_000_000;
+    const firstActivityTimestampMs = rootTimestampMs + 2_000;
+    const laterActivityTimestampMs = rootTimestampMs + 4_000;
+    const root = {
+      ...message(rootEventId, "Replay summary root"),
+      timestamp_ms: rootTimestampMs,
+      thread_summary: {
+        reply_count: 1,
+        latest_event_id: firstActivityEventId,
+        latest_sender: "@bob:example.invalid",
+        latest_sender_label: "Bob",
+        latest_body_preview: "Summary-only activity",
+        latest_timestamp_ms: firstActivityTimestampMs
+      }
+    };
+    const rootWithLaterSummary = {
+      ...root,
+      thread_summary: {
+        ...root.thread_summary,
+        latest_event_id: laterActivityEventId,
+        latest_timestamp_ms: laterActivityTimestampMs
+      }
+    };
+    const before = {
+      ...message("$before-summary-root:example.invalid", "Before"),
+      timestamp_ms: rootTimestampMs + 1_000
+    };
+    const after = {
+      ...message("$after-summary-root:example.invalid", "After"),
+      timestamp_ms: rootTimestampMs + 3_000
+    };
+    const transport = baseTransport({
+      observeViewport,
+      listenCoreEvents(nextListener) {
+        emit = nextListener;
+        return () => undefined;
+      }
+    });
+    const renderView = () => (
+      <TimelineView
+        timelineKey={KEY}
+        roomId="!room:example.invalid"
+        transport={transport}
+        onReply={vi.fn()}
+        onScrollDiagnosticsChange={onScrollDiagnosticsChange}
+        threadRootOrder={{ kind: "latestReply" }}
+      />
+    );
+    const { rerender } = render(renderView());
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          NavigationUpdated: {
+            key: KEY,
+            snapshot: navigationSnapshot({
+              first_unread_event_id: firstActivityEventId,
+              unread_event_count: 1,
+              unread_position: "insideViewport"
+            })
+          }
+        }
+      });
+      emit({
+        kind: "Timeline",
+        event: {
+          InitialItems: { request_id: null, key: KEY, generation: 1, items: [before, after] }
+        }
+      });
+      emit({
+        kind: "Timeline",
+        event: {
+          ThreadRootProjection: {
+            key: KEY,
+            projection: {
+              root_event_id: rootEventId,
+              activity_event_id: firstActivityEventId,
+              activity_timestamp_ms: firstActivityTimestampMs,
+              retain_without_reply: true,
+              source: { kind: "replayKnown", epoch: 1 },
+              state: { kind: "ready", item: root }
+            }
+          }
+        }
+      });
+    });
+
+    const rootRow = await screen.findByText("Replay summary root").then((node) =>
+      node.closest<HTMLElement>("article")
+    );
+    expect(rootRow?.getAttribute("data-content-event-id")).toBe(rootEventId);
+    expect(rootRow?.getAttribute("data-activity-event-id")).toBe(firstActivityEventId);
+    expect(
+      Array.from(document.querySelectorAll("article[data-row-id]")).map((row) =>
+        row.getAttribute("data-row-id")
+      )
+    ).toEqual([
+      "$before-summary-root:example.invalid",
+      `thread-root:${rootEventId}`,
+      "$after-summary-root:example.invalid"
+    ]);
+    const unreadMarker = await screen.findByRole("separator", { name: "Unread messages" });
+    expect(unreadMarker.nextElementSibling).toBe(rootRow);
+    await waitFor(() => {
+      expect(
+        viewportObservations.some(
+          ({ firstVisibleEventId, lastVisibleEventId }) =>
+            firstVisibleEventId === "$before-summary-root:example.invalid" &&
+            lastVisibleEventId === firstActivityEventId
+        )
+      ).toBe(true);
+    });
+
+    const timeline = screen.getByTestId("timeline-view");
+    scrollContainerRef.current = timeline;
+    Object.defineProperty(timeline, "clientHeight", { value: 200, configurable: true });
+    Object.defineProperty(timeline, "scrollHeight", { value: 1_000, configurable: true });
+    Object.defineProperty(timeline, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+    act(() => {
+      rerender(renderView());
+    });
+    await waitFor(() => expect(timeline.scrollTop).toBe(800));
+    timeline.scrollTop = 190;
+    fireEvent.wheel(timeline, { deltaY: -1 });
+    fireEvent.scroll(timeline);
+
+    act(() => {
+      emit({
+        kind: "Timeline",
+        event: {
+          ThreadRootProjection: {
+            key: KEY,
+            projection: {
+              root_event_id: rootEventId,
+              activity_event_id: laterActivityEventId,
+              activity_timestamp_ms: laterActivityTimestampMs,
+              retain_without_reply: true,
+              source: { kind: "replayKnown", epoch: 2 },
+              state: { kind: "ready", item: rootWithLaterSummary }
+            }
+          }
+        }
+      });
+    });
+
+    await waitFor(() => {
+      // The unchanged normal row stays at the same pixel. If the movable
+      // summary root were used as the anchor, this would instead become 290.
+      expect(timeline.scrollTop).toBe(90);
+      expect(screen.getByText("After").closest("article")?.getBoundingClientRect().top).toBe(10);
+      expect(
+        onScrollDiagnosticsChange.mock.calls.some(
+          ([diagnostics]) => diagnostics.scrollWrites.projectionCompensation > 0
+        )
+      ).toBe(true);
+      expect(
+        viewportObservations.some(
+          ({ lastVisibleEventId }) => lastVisibleEventId === laterActivityEventId
+        )
+      ).toBe(true);
+    });
+    expect(rootRow?.getAttribute("data-activity-event-id")).toBe(laterActivityEventId);
     rectMock.mockRestore();
   });
 

@@ -873,7 +873,11 @@
         "projection": {
           "activity_event_id": "$thread-reply:example.test",
           "activity_timestamp_ms": 124,
+          "retain_without_reply": false,
           "root_event_id": "$e1",
+          "source": {
+            "kind": "hydration"
+          },
           "state": {
             "kind": "pending"
           }

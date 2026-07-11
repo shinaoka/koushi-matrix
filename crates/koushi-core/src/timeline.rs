@@ -90,21 +90,21 @@ use matrix_sdk_ui::timeline::{
     TimelineDetails, TimelineEventItemId, TimelineFocus, TimelineItem as SdkTimelineItem,
     TimelineItemContent, TimelineItemKind, TimelineReadReceiptTracking,
 };
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::command::{
     MediaDownloadSelection, TimelineCommand, UploadMediaKind, UploadMediaRequest,
 };
 use crate::event::{
     CoreEvent, LinkPreview, LinkPreviewState, LiveSignalsEvent, PaginationDirection,
-    PaginationState, ReactionGroup, ThreadRootProjectionDto, ThreadRootProjectionStateDto,
-    ThreadSummaryDto, TimelineAnchorRestoreStatus, TimelineDiff, TimelineEvent, TimelineItem,
-    TimelineItemId, TimelineMedia, TimelineMediaKind, TimelineMediaSource, TimelineMediaThumbnail,
-    TimelineMessageActions, TimelineMessageKind, TimelineMessageSource, TimelineNavigationSnapshot,
-    TimelineResyncReason, TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan,
-    TimelineUnableToDecrypt, TimelineUnableToDecryptReason, TimelineUnreadPosition,
-    TimelineViewportObservation, message_actions_for_timeline_item,
-    message_source_for_timeline_item,
+    PaginationState, ReactionGroup, ThreadRootProjectionDto, ThreadRootProjectionSourceDto,
+    ThreadRootProjectionStateDto, ThreadSummaryDto, TimelineAnchorRestoreStatus, TimelineDiff,
+    TimelineEvent, TimelineItem, TimelineItemId, TimelineMedia, TimelineMediaKind,
+    TimelineMediaSource, TimelineMediaThumbnail, TimelineMessageActions, TimelineMessageKind,
+    TimelineMessageSource, TimelineNavigationSnapshot, TimelineResyncReason,
+    TimelineSendFailureReason, TimelineSendState, TimelineSpoilerSpan, TimelineUnableToDecrypt,
+    TimelineUnableToDecryptReason, TimelineUnreadPosition, TimelineViewportObservation,
+    message_actions_for_timeline_item, message_source_for_timeline_item,
 };
 use crate::executor;
 use crate::failure::{CoreFailure, TimelineFailureKind};
@@ -125,6 +125,14 @@ use crate::unread_trace;
 pub const TIMELINE_DIFF_QUEUE_CAPACITY: usize = 128;
 const INITIAL_EMPTY_ROOM_BACKFILL_EVENT_COUNT: u16 = 100;
 const ROOM_REPLAY_INITIAL_ITEMS_MAX: usize = 120;
+/// A bounded Room replay may surface summary-only roots that the SDK omitted
+/// from its item stream. Keep this much smaller than the base window so a
+/// historical root-heavy room cannot multiply initial render work.
+const ROOM_REPLAY_KNOWN_THREAD_ROOT_PROJECTIONS_MAX: usize = 32;
+/// `epoch` crosses the JSON/JavaScript IPC boundary as a number. It must stay
+/// within JavaScript's exact integer range so a source-scoped Clear can never
+/// be rounded into another replay owner's epoch.
+const JAVASCRIPT_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 const REPLY_QUOTE_PREVIEW_MAX_CHARS: usize = 160;
 const MEDIA_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 /// Backstop tick count for the anchor-relay wait. After the SDK signals
@@ -239,6 +247,743 @@ impl ThreadRootProjectionFetchRegistry {
     }
 }
 
+/// Lifecycle registry for ready root snapshots copied from an actor's own
+/// navigation cache during a bounded replay. This is separate from the
+/// fetch-backed projection service: no SDK fetch was started for these roots,
+/// but unsubscribe and shutdown still must emit a matching frontend clear.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReplayKnownThreadRootProjection {
+    root_event_id: String,
+    activity_event_id: String,
+    activity_timestamp_ms: Option<u64>,
+    /// The full renderable Ready payload. Activity identity alone is not a
+    /// revision: edits, redactions, reactions, and action affordances can
+    /// change while the latest thread reply remains the same.
+    item: TimelineItem,
+    source: ThreadRootProjectionSourceDto,
+}
+
+#[derive(Default)]
+struct ReplayKnownThreadRootProjectionRegistry {
+    entries: HashMap<TimelineKey, HashMap<String, ReplayKnownThreadRootProjection>>,
+    /// Hydration terminal results that arrived while a replay-known Ready
+    /// owned the root. The marker is consumed when that owner clears.
+    suppressed_hydration_terminals: HashMap<TimelineKey, HashSet<String>>,
+    /// Hydration terminal results that were actually broadcast while no replay
+    /// owner existed. A later replay Ready can overwrite that source in the
+    /// desktop store, so its scoped Clear must reassert this terminal. Merely
+    /// retaining a terminal in the service is not sufficient: it may never
+    /// have been visible to the store.
+    emitted_hydration_terminals: HashMap<TimelineKey, HashSet<String>>,
+    next_epoch: u64,
+}
+
+#[derive(Default)]
+struct ReplayKnownThreadRootProjectionUpdate {
+    ready: Vec<ThreadRootProjectionDto>,
+    stale: Vec<ReplayKnownThreadRootProjection>,
+}
+
+/// Manager-owned serial fence for an actor instance of a timeline key.
+///
+/// A replay-known registry mutation and its Core event emission acquire a
+/// short, synchronous lease. Replacement first prevents new old-generation
+/// leases, waits for the in-flight lease count to reach zero, then publishes a
+/// new generation before its actor may refresh the shared registry. The lease
+/// intentionally never spans an `.await`; it protects only `Mutex` mutation
+/// and synchronous `broadcast::Sender::send` calls.
+#[derive(Default)]
+struct TimelineActorGenerationGateState {
+    entries: HashMap<TimelineKey, TimelineActorGenerationGateEntry>,
+    next_generation: u64,
+}
+
+struct TimelineActorGenerationGateEntry {
+    generation: u64,
+    active_leases: usize,
+    replacing: bool,
+}
+
+struct TimelineActorGenerationGate {
+    state: Mutex<TimelineActorGenerationGateState>,
+    changes: watch::Sender<u64>,
+}
+
+struct TimelineActorGenerationActivation {
+    generation: u64,
+    previous_generation: Option<u64>,
+}
+
+struct TimelineActorGenerationLease {
+    gate: Arc<TimelineActorGenerationGate>,
+    key: TimelineKey,
+    generation: u64,
+}
+
+impl Default for TimelineActorGenerationGate {
+    fn default() -> Self {
+        let (changes, _) = watch::channel(0_u64);
+        Self {
+            state: Mutex::new(TimelineActorGenerationGateState::default()),
+            changes,
+        }
+    }
+}
+
+impl TimelineActorGenerationGate {
+    /// Starts a new actor generation only after every old-generation replay
+    /// lease has completed. No synchronous mutex is held while waiting for a
+    /// watch notification.
+    async fn activate_after_quiescence(
+        &self,
+        key: &TimelineKey,
+    ) -> TimelineActorGenerationActivation {
+        let mut changes = self.changes.subscribe();
+        loop {
+            let activation = {
+                let mut state = self
+                    .state
+                    .lock()
+                    .expect("timeline actor generation lock must not be poisoned");
+                match state.entries.get_mut(key) {
+                    Some(entry) => {
+                        entry.replacing = true;
+                        if entry.active_leases != 0 {
+                            None
+                        } else {
+                            let previous_generation = entry.generation;
+                            let generation = next_timeline_actor_generation(&mut state);
+                            state.entries.insert(
+                                key.clone(),
+                                TimelineActorGenerationGateEntry {
+                                    generation,
+                                    active_leases: 0,
+                                    replacing: false,
+                                },
+                            );
+                            Some(TimelineActorGenerationActivation {
+                                generation,
+                                previous_generation: Some(previous_generation),
+                            })
+                        }
+                    }
+                    None => {
+                        let generation = next_timeline_actor_generation(&mut state);
+                        state.entries.insert(
+                            key.clone(),
+                            TimelineActorGenerationGateEntry {
+                                generation,
+                                active_leases: 0,
+                                replacing: false,
+                            },
+                        );
+                        Some(TimelineActorGenerationActivation {
+                            generation,
+                            previous_generation: None,
+                        })
+                    }
+                }
+            };
+            if let Some(activation) = activation {
+                return activation;
+            }
+            // `changes` was subscribed before the state check, so a lease
+            // release between that check and `changed().await` is observed as
+            // an already-pending version change rather than lost.
+            if changes.changed().await.is_err() {
+                unreachable!("the manager owns the generation gate sender");
+            }
+        }
+    }
+
+    /// Restores an actor generation if construction of its replacement failed
+    /// before an actor handle was returned. A successful spawn is never
+    /// restored: its handle atomically supersedes the old one in the manager.
+    fn restore_failed_activation(
+        &self,
+        key: &TimelineKey,
+        activation: TimelineActorGenerationActivation,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("timeline actor generation lock must not be poisoned");
+        let should_restore = state.entries.get(key).is_some_and(|entry| {
+            entry.generation == activation.generation && entry.active_leases == 0
+        });
+        if !should_restore {
+            return;
+        }
+        match activation.previous_generation {
+            Some(previous_generation) => {
+                state.entries.insert(
+                    key.clone(),
+                    TimelineActorGenerationGateEntry {
+                        generation: previous_generation,
+                        active_leases: 0,
+                        replacing: false,
+                    },
+                );
+            }
+            None => {
+                state.entries.remove(key);
+            }
+        }
+        self.changes
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+
+    /// Unsubscribe/shutdown removes ownership only after a prior synchronous
+    /// replay lease has finished. As with replacement, the mutex is dropped
+    /// before awaiting a watch change.
+    async fn invalidate_and_quiesce(&self, key: &TimelineKey) {
+        let mut changes = self.changes.subscribe();
+        loop {
+            let complete = {
+                let mut state = self
+                    .state
+                    .lock()
+                    .expect("timeline actor generation lock must not be poisoned");
+                let Some(entry) = state.entries.get_mut(key) else {
+                    return;
+                };
+                entry.replacing = true;
+                if entry.active_leases != 0 {
+                    false
+                } else {
+                    state.entries.remove(key);
+                    true
+                }
+            };
+            if complete {
+                self.changes
+                    .send_modify(|revision| *revision = revision.wrapping_add(1));
+                return;
+            }
+            if changes.changed().await.is_err() {
+                unreachable!("the manager owns the generation gate sender");
+            }
+        }
+    }
+
+    fn try_acquire(
+        self: &Arc<Self>,
+        key: &TimelineKey,
+        generation: u64,
+    ) -> Option<TimelineActorGenerationLease> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("timeline actor generation lock must not be poisoned");
+        let entry = state.entries.get_mut(key)?;
+        if entry.generation != generation || entry.replacing {
+            return None;
+        }
+        entry.active_leases = entry.active_leases.saturating_add(1);
+        Some(TimelineActorGenerationLease {
+            gate: Arc::clone(self),
+            key: key.clone(),
+            generation,
+        })
+    }
+
+    #[cfg(test)]
+    fn current_generation(&self, key: &TimelineKey) -> Option<u64> {
+        self.state
+            .lock()
+            .expect("timeline actor generation lock must not be poisoned")
+            .entries
+            .get(key)
+            .map(|entry| entry.generation)
+    }
+}
+
+impl Drop for TimelineActorGenerationLease {
+    fn drop(&mut self) {
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .expect("timeline actor generation lock must not be poisoned");
+        if let Some(entry) = state.entries.get_mut(&self.key)
+            && entry.generation == self.generation
+        {
+            entry.active_leases = entry.active_leases.saturating_sub(1);
+        }
+        drop(state);
+        self.gate
+            .changes
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+}
+
+fn next_timeline_actor_generation(state: &mut TimelineActorGenerationGateState) -> u64 {
+    let generation = state.next_generation.max(1);
+    state.next_generation = generation.wrapping_add(1).max(1);
+    generation
+}
+
+/// The only emission gateway for TimelineActor-owned Core timeline events.
+///
+/// The lease is held solely for the synchronous broadcast send(s). It never
+/// crosses an await, yet replacement cannot activate a new actor generation
+/// between an old actor's current-generation check and this event delivery.
+fn emit_timeline_events_for_generation(
+    event_tx: &broadcast::Sender<CoreEvent>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    events: Vec<TimelineEvent>,
+) -> bool {
+    let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
+        return false;
+    };
+    emit_timeline_events_with_lease(event_tx, &lease, events);
+    true
+}
+
+/// Emits an already-authorized group atomically with respect to generation
+/// replacement. Callers must keep `lease` alive for this entire synchronous
+/// call; this helper deliberately does not acquire a second lease.
+fn emit_timeline_events_with_lease(
+    event_tx: &broadcast::Sender<CoreEvent>,
+    _lease: &TimelineActorGenerationLease,
+    events: Vec<TimelineEvent>,
+) {
+    for event in events {
+        let _ = event_tx.send(CoreEvent::Timeline(event));
+    }
+}
+
+/// Commits one canonical display diff batch and its resulting replay-known
+/// ownership transition under one generation lease. The registry is mutated
+/// only after the lease proves this actor is still current; a SyncStarted
+/// fence therefore rejects both halves of the UI-visible transition.
+///
+/// The helper is deliberately synchronous. In particular, no root hydration,
+/// media work, or reducer delivery may run while the lease is held.
+fn emit_items_updated_and_reconcile_replay_known_for_generation(
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    generation: TimelineGeneration,
+    batch_id: TimelineBatchId,
+    diffs: Vec<TimelineDiff>,
+    navigation_items: &[TimelineItem],
+    display_items: &[TimelineItem],
+) -> bool {
+    let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
+        return false;
+    };
+    emit_items_updated_and_reconcile_replay_known_with_lease(
+        event_tx,
+        registry,
+        thread_root_projection_service,
+        &lease,
+        key,
+        generation,
+        batch_id,
+        diffs,
+        navigation_items,
+        display_items,
+    );
+    true
+}
+
+/// Commits a non-SDK `Set` mutation beside its bounded replay display update
+/// and replay-known ownership transition. These mutations originate in actor
+/// policy/state handlers rather than an SDK vector diff, so canonical indexes
+/// cannot be applied to the bounded display mirror: a replay-only root can be
+/// outside that mirror while it still has index 0 in `navigation_items`.
+///
+/// The actor generation lease is acquired *before* the mirror is changed and
+/// retained until the display-safe `ItemsUpdated` event and scoped replay
+/// Ready/Clear events have all been synchronously broadcast. This is the same
+/// current-generation boundary used for SDK diff batches, with identity-based
+/// display updates appropriate for a bounded window.
+fn emit_non_sdk_item_sets_and_reconcile_replay_known_for_generation(
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    generation: TimelineGeneration,
+    batch_id: TimelineBatchId,
+    diffs: Vec<TimelineDiff>,
+    navigation_items: &[TimelineItem],
+    display_items: &mut Vec<TimelineItem>,
+) -> bool {
+    let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
+        return false;
+    };
+    let display_diffs = apply_non_sdk_item_set_diffs_to_display_items(display_items, &diffs);
+    emit_items_updated_and_reconcile_replay_known_with_lease(
+        event_tx,
+        registry,
+        thread_root_projection_service,
+        &lease,
+        key,
+        generation,
+        batch_id,
+        display_diffs,
+        navigation_items,
+        display_items,
+    );
+    true
+}
+
+/// Sends one `ItemsUpdated` event and all replay-known lifecycle consequences
+/// under a generation lease already acquired by the caller.
+/// Keeping the registry mutation and every broadcast in this helper prevents
+/// an observer from seeing only one half of a display transition.
+fn emit_items_updated_and_reconcile_replay_known_with_lease(
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    lease: &TimelineActorGenerationLease,
+    key: &TimelineKey,
+    generation: TimelineGeneration,
+    batch_id: TimelineBatchId,
+    diffs: Vec<TimelineDiff>,
+    navigation_items: &[TimelineItem],
+    display_items: &[TimelineItem],
+) {
+    let mut registry = registry
+        .lock()
+        .expect("replay-known root registry lock must not be poisoned");
+    let replay_known_update = registry.reconcile_navigation(
+        key,
+        navigation_items,
+        &ReplayKnownDisplayContext::from_display_items(display_items),
+    );
+    let mut events =
+        Vec::with_capacity(1 + replay_known_update.stale.len() + replay_known_update.ready.len());
+    events.push(TimelineEvent::ItemsUpdated {
+        key: key.clone(),
+        generation,
+        batch_id,
+        diffs,
+    });
+    events.extend(replay_known_timeline_events_with_hydration_handoffs(
+        key,
+        &mut registry,
+        thread_root_projection_service,
+        replay_known_update,
+    ));
+    emit_timeline_events_with_lease(event_tx, lease, events);
+}
+
+/// Commits a fresh UI `InitialItems` window and its replay-known ownership
+/// transition under one shared synchronous boundary. The caller derives
+/// `replay_known_candidates` before entering this function; no fetch,
+/// pagination, reducer delivery, or other await is allowed while the
+/// generation lease and registry mutex are held.
+///
+/// In particular, a hydration terminal cannot observe an owner-less interval
+/// after the frontend has replaced its window but before its replay-known
+/// Ready is registered. Event order remains `InitialItems`, then any scoped
+/// replay Clear/Ready/hydration handoff events.
+fn emit_initial_items_and_reconcile_replay_known_for_generation(
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    request_id: Option<RequestId>,
+    generation: TimelineGeneration,
+    items: Vec<TimelineItem>,
+    replay_known_candidates: Vec<ThreadRootProjectionDto>,
+) -> bool {
+    emit_initial_items_and_reconcile_replay_known_for_generation_after_initial(
+        event_tx,
+        registry,
+        thread_root_projection_service,
+        timeline_actor_generations,
+        key,
+        actor_generation,
+        request_id,
+        generation,
+        items,
+        replay_known_candidates,
+        || {},
+    )
+}
+
+/// Internal synchronous boundary used by the production no-op callback above
+/// and the deterministic test-only interleaving hook below. The callback is
+/// invoked after `InitialItems` delivery while both the generation lease and
+/// replay registry mutex remain held; it must never await.
+fn emit_initial_items_and_reconcile_replay_known_for_generation_after_initial<F>(
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    request_id: Option<RequestId>,
+    generation: TimelineGeneration,
+    items: Vec<TimelineItem>,
+    replay_known_candidates: Vec<ThreadRootProjectionDto>,
+    after_initial: F,
+) -> bool
+where
+    F: FnOnce(),
+{
+    let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
+        return false;
+    };
+    let mut registry = registry
+        .lock()
+        .expect("replay-known root registry lock must not be poisoned");
+    let replay_known_update = registry.replace(key, replay_known_candidates);
+    emit_timeline_events_with_lease(
+        event_tx,
+        &lease,
+        vec![TimelineEvent::InitialItems {
+            request_id,
+            key: key.clone(),
+            generation,
+            items,
+        }],
+    );
+    after_initial();
+    let events = replay_known_timeline_events_with_hydration_handoffs(
+        key,
+        &mut registry,
+        thread_root_projection_service,
+        replay_known_update,
+    );
+    emit_timeline_events_with_lease(event_tx, &lease, events);
+    true
+}
+
+#[cfg(test)]
+fn emit_initial_items_and_reconcile_replay_known_for_generation_with_test_hook<F>(
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    request_id: Option<RequestId>,
+    generation: TimelineGeneration,
+    items: Vec<TimelineItem>,
+    replay_known_candidates: Vec<ThreadRootProjectionDto>,
+    after_initial: F,
+) -> bool
+where
+    F: FnOnce(),
+{
+    emit_initial_items_and_reconcile_replay_known_for_generation_after_initial(
+        event_tx,
+        registry,
+        thread_root_projection_service,
+        timeline_actor_generations,
+        key,
+        actor_generation,
+        request_id,
+        generation,
+        items,
+        replay_known_candidates,
+        after_initial,
+    )
+}
+
+impl ReplayKnownThreadRootProjectionRegistry {
+    /// Replaces this replay's known snapshots and returns roots that were in a
+    /// prior replay for the same key but are no longer eligible for display.
+    fn replace(
+        &mut self,
+        key: &TimelineKey,
+        projections: Vec<ThreadRootProjectionDto>,
+    ) -> ReplayKnownThreadRootProjectionUpdate {
+        self.replace_with_emit_unchanged(key, projections, true)
+    }
+
+    fn replace_with_emit_unchanged(
+        &mut self,
+        key: &TimelineKey,
+        projections: Vec<ThreadRootProjectionDto>,
+        emit_unchanged: bool,
+    ) -> ReplayKnownThreadRootProjectionUpdate {
+        let mut previous = self.entries.remove(key).unwrap_or_default();
+        // Keep every live and just-staled epoch occupied while allocating. A
+        // Clear from the old owner can be delivered in the same synchronous
+        // group as a new Ready, so reusing it would make source-scoped clears
+        // ambiguous after JavaScript deserializes the JSON number.
+        let mut occupied_epochs = previous
+            .values()
+            .filter_map(|projection| match projection.source {
+                ThreadRootProjectionSourceDto::ReplayKnown { epoch } => Some(epoch),
+                ThreadRootProjectionSourceDto::Hydration => None,
+            })
+            .collect::<HashSet<_>>();
+        let mut next = HashMap::new();
+        let mut ready = Vec::new();
+        let mut stale = Vec::new();
+
+        for mut projection in projections {
+            let ThreadRootProjectionStateDto::Ready { item } = &projection.state else {
+                continue;
+            };
+            let ready_item = item.clone();
+            if !projection.retain_without_reply {
+                continue;
+            }
+            let (source, is_unchanged) = match previous.remove(&projection.root_event_id) {
+                Some(existing)
+                    if existing.activity_event_id == projection.activity_event_id
+                        && existing.activity_timestamp_ms == projection.activity_timestamp_ms =>
+                {
+                    (existing.source, existing.item == ready_item)
+                }
+                Some(existing) => {
+                    stale.push(existing);
+                    let epoch = self.allocate_safe_epoch(&mut occupied_epochs);
+                    (ThreadRootProjectionSourceDto::ReplayKnown { epoch }, false)
+                }
+                None => {
+                    let epoch = self.allocate_safe_epoch(&mut occupied_epochs);
+                    (ThreadRootProjectionSourceDto::ReplayKnown { epoch }, false)
+                }
+            };
+            projection.source = source.clone();
+            next.insert(
+                projection.root_event_id.clone(),
+                ReplayKnownThreadRootProjection {
+                    root_event_id: projection.root_event_id.clone(),
+                    activity_event_id: projection.activity_event_id.clone(),
+                    activity_timestamp_ms: projection.activity_timestamp_ms,
+                    item: ready_item,
+                    source,
+                },
+            );
+            if emit_unchanged || !is_unchanged {
+                ready.push(projection);
+            }
+        }
+        stale.extend(previous.into_values());
+        if !next.is_empty() {
+            self.entries.insert(key.clone(), next);
+        }
+        ReplayKnownThreadRootProjectionUpdate { ready, stale }
+    }
+
+    fn clear(&mut self, key: &TimelineKey) -> Vec<ReplayKnownThreadRootProjection> {
+        self.suppressed_hydration_terminals.remove(key);
+        self.emitted_hydration_terminals.remove(key);
+        self.entries
+            .remove(key)
+            .map(|entries| entries.into_values().collect())
+            .unwrap_or_default()
+    }
+
+    fn reconcile_navigation(
+        &mut self,
+        key: &TimelineKey,
+        navigation_items: &[TimelineItem],
+        display_context: &ReplayKnownDisplayContext,
+    ) -> ReplayKnownThreadRootProjectionUpdate {
+        self.replace_with_emit_unchanged(
+            key,
+            known_thread_root_projections_for_display_context(navigation_items, display_context),
+            false,
+        )
+    }
+
+    /// True when this Room timeline currently owns the root with a
+    /// replay-known snapshot. Manager-owned hydration workers consult this
+    /// before they publish late terminal events, while still recording their
+    /// result in the hydration service/reducer state.
+    fn owns_root(&self, key: &TimelineKey, root_event_id: &str) -> bool {
+        self.entries
+            .get(key)
+            .is_some_and(|entries| entries.contains_key(root_event_id))
+    }
+
+    fn mark_hydration_terminal_suppressed(&mut self, key: &TimelineKey, root_event_id: String) {
+        self.suppressed_hydration_terminals
+            .entry(key.clone())
+            .or_default()
+            .insert(root_event_id);
+    }
+
+    fn take_suppressed_hydration_terminal(
+        &mut self,
+        key: &TimelineKey,
+        root_event_id: &str,
+    ) -> bool {
+        let Some(roots) = self.suppressed_hydration_terminals.get_mut(key) else {
+            return false;
+        };
+        let was_suppressed = roots.remove(root_event_id);
+        if roots.is_empty() {
+            self.suppressed_hydration_terminals.remove(key);
+        }
+        was_suppressed
+    }
+
+    fn mark_hydration_terminal_emitted(&mut self, key: &TimelineKey, root_event_id: String) {
+        self.emitted_hydration_terminals
+            .entry(key.clone())
+            .or_default()
+            .insert(root_event_id);
+    }
+
+    fn take_emitted_hydration_terminal(&mut self, key: &TimelineKey, root_event_id: &str) -> bool {
+        let Some(roots) = self.emitted_hydration_terminals.get_mut(key) else {
+            return false;
+        };
+        let was_emitted = roots.remove(root_event_id);
+        if roots.is_empty() {
+            self.emitted_hydration_terminals.remove(key);
+        }
+        was_emitted
+    }
+
+    /// Allocate a positive JavaScript-safe source epoch that does not collide
+    /// with any owner in the current replacement group. The registry is
+    /// bounded to 32 entries, so this loop cannot approach the safe range's
+    /// upper bound in practice.
+    fn allocate_safe_epoch(&mut self, occupied_epochs: &mut HashSet<u64>) -> u64 {
+        let mut epoch = if (1..=JAVASCRIPT_SAFE_INTEGER_MAX).contains(&self.next_epoch) {
+            self.next_epoch
+        } else {
+            1
+        };
+        loop {
+            if occupied_epochs.insert(epoch) {
+                self.next_epoch = if epoch == JAVASCRIPT_SAFE_INTEGER_MAX {
+                    1
+                } else {
+                    epoch + 1
+                };
+                return epoch;
+            }
+            epoch = if epoch == JAVASCRIPT_SAFE_INTEGER_MAX {
+                1
+            } else {
+                epoch + 1
+            };
+        }
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    #[cfg(test)]
+    fn get(&self, key: &TimelineKey) -> Option<&HashMap<String, ReplayKnownThreadRootProjection>> {
+        self.entries.get(key)
+    }
+}
+
 impl TimelineManagerHandle {
     pub async fn send(&self, msg: TimelineMessage) -> bool {
         self.tx.send(msg).await.is_ok()
@@ -278,6 +1023,12 @@ pub struct TimelineManagerActor {
     /// cannot restart a failed/pending bounded lookup.
     thread_root_projection_service: Arc<Mutex<ThreadRootProjectionService>>,
     thread_root_projection_fetches: ThreadRootProjectionFetchRegistry,
+    /// Ready snapshots copied from bounded replays, tracked separately so
+    /// unsubscribe/shutdown can explicitly clear retained frontend rows.
+    replay_known_thread_root_projections: Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    /// Serializes ownership transfer between replacement actors before either
+    /// generation may touch the shared replay-known registry.
+    timeline_actor_generations: Arc<TimelineActorGenerationGate>,
 }
 
 impl TimelineManagerActor {
@@ -305,6 +1056,10 @@ impl TimelineManagerActor {
                 ThreadRootProjectionService::default(),
             )),
             thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
+            replay_known_thread_root_projections: Arc::new(Mutex::new(
+                ReplayKnownThreadRootProjectionRegistry::default(),
+            )),
+            timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
         };
         executor::spawn(actor.run());
         TimelineManagerHandle { tx }
@@ -339,6 +1094,10 @@ impl TimelineManagerActor {
                 ThreadRootProjectionService::default(),
             )),
             thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
+            replay_known_thread_root_projections: Arc::new(Mutex::new(
+                ReplayKnownThreadRootProjectionRegistry::default(),
+            )),
+            timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
         };
         executor::spawn(actor.run());
         TimelineManagerHandle { tx }
@@ -457,16 +1216,31 @@ impl TimelineManagerActor {
         {
             return;
         }
-        self.emit(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
-            key,
-            projection: thread_root_projection_dto_from_record(&record),
-        }));
+        // A bounded replay may have acquired display ownership while this
+        // manager-owned cache/network lookup was in flight. The shared
+        // registry mutex covers both this decision and the synchronous
+        // broadcast: actor replay publication uses the same boundary, so no
+        // replay Ready can land between a no-owner check and hydration's
+        // terminal event. The terminal remains in the service/reducer state
+        // either way and is handed back when replay ownership later ends.
+        let _ = emit_hydration_terminal_unless_replay_owned(
+            &self.event_tx,
+            &self.replay_known_thread_root_projections,
+            &key,
+            thread_root_projection_dto_from_record(&record),
+        );
     }
 
     async fn clear_thread_root_projections_for_room(&mut self, key: &TimelineKey) {
         if !matches!(key.kind, TimelineKind::Room { .. }) {
             return;
         }
+        // Stop an old actor from acquiring a replay-known lease, then wait
+        // only for its already-synchronous registry/Core emission section.
+        // This releases the gate mutex before awaiting the watch notification.
+        self.timeline_actor_generations
+            .invalidate_and_quiesce(key)
+            .await;
         let room_id = key.room_id();
         self.thread_root_projection_fetches.abort_room(room_id);
         let records = self
@@ -474,6 +1248,11 @@ impl TimelineManagerActor {
             .lock()
             .expect("thread-root projection service lock must not be poisoned")
             .clear_room(room_id);
+        let replay_known = self
+            .replay_known_thread_root_projections
+            .lock()
+            .expect("replay-known root registry lock must not be poisoned")
+            .clear(key);
         let _ = self
             .emit_action_reliable(AppAction::ThreadRootProjectionsCleared {
                 room_id: room_id.to_owned(),
@@ -486,8 +1265,16 @@ impl TimelineManagerActor {
                     root_event_id: record.activity.root_event_id,
                     activity_event_id: record.activity.activity_event_id,
                     activity_timestamp_ms: record.activity.activity_timestamp_ms,
+                    retain_without_reply: false,
+                    source: ThreadRootProjectionSourceDto::Hydration,
                     state: ThreadRootProjectionStateDto::Cleared,
                 },
+            }));
+        }
+        for projection in replay_known {
+            self.emit(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                key: key.clone(),
+                projection: replay_known_clear_projection(projection),
             }));
         }
     }
@@ -553,12 +1340,23 @@ impl TimelineManagerActor {
 
     async fn replace_existing_room_timeline_after_sync_started(&mut self, key: TimelineKey) {
         let request_id = internal_timeline_request_id();
-        match self.build_timeline_actor_handle(request_id, &key).await {
+        // The activation fences the previous actor before the replacement can
+        // spawn and refresh the shared replay-known registry.
+        let activation = self
+            .timeline_actor_generations
+            .activate_after_quiescence(&key)
+            .await;
+        match self
+            .build_timeline_actor_handle(request_id, &key, activation.generation)
+            .await
+        {
             Ok(handle) => {
                 self.emit_timeline_subscribed_action(&key).await;
                 self.timelines.insert(key, handle);
             }
             Err(kind) => {
+                self.timeline_actor_generations
+                    .restore_failed_activation(&key, activation);
                 self.emit_subscription_failure(request_id, &key, kind).await;
             }
         }
@@ -597,6 +1395,10 @@ impl TimelineManagerActor {
                 // the SDK Timeline handle — no dedicated success event per spec.
                 if matches!(key.kind, TimelineKind::Room { .. }) {
                     self.clear_thread_root_projections_for_room(&key).await;
+                } else {
+                    self.timeline_actor_generations
+                        .invalidate_and_quiesce(&key)
+                        .await;
                 }
                 self.timelines.remove(&key);
             }
@@ -1144,13 +1946,22 @@ impl TimelineManagerActor {
             None => {}
         }
 
-        match self.build_timeline_actor_handle(request_id, &key).await {
+        let activation = self
+            .timeline_actor_generations
+            .activate_after_quiescence(&key)
+            .await;
+        match self
+            .build_timeline_actor_handle(request_id, &key, activation.generation)
+            .await
+        {
             Ok(handle) => {
                 self.emit_timeline_subscribed_action(&key).await;
                 self.timelines.insert(key, handle);
                 trace("subscribed_done");
             }
             Err(kind) => {
+                self.timeline_actor_generations
+                    .restore_failed_activation(&key, activation);
                 self.emit_subscription_failure(request_id, &key, kind).await;
             }
         }
@@ -1160,6 +1971,7 @@ impl TimelineManagerActor {
         &self,
         request_id: RequestId,
         key: &TimelineKey,
+        actor_generation: u64,
     ) -> Result<TimelineActorHandle, TimelineFailureKind> {
         let trace = |stage: &str| {
             if std::env::var_os("KOUSHI_SUBSCRIBE_TRACE").is_some() {
@@ -1249,6 +2061,9 @@ impl TimelineManagerActor {
             self.link_preview_policy.for_room(key.room_id()),
             self.messages_backpressure.clone(),
             Arc::clone(&self.thread_root_projection_service),
+            Arc::clone(&self.replay_known_thread_root_projections),
+            Arc::clone(&self.timeline_actor_generations),
+            actor_generation,
             self.msg_tx.clone(),
         )
         .await;
@@ -2463,6 +3278,8 @@ fn thread_root_projection_dto_from_record(
         root_event_id: record.activity.root_event_id.clone(),
         activity_event_id: record.activity.activity_event_id.clone(),
         activity_timestamp_ms: record.activity.activity_timestamp_ms,
+        retain_without_reply: false,
+        source: ThreadRootProjectionSourceDto::Hydration,
         state,
     }
 }
@@ -2598,6 +3415,349 @@ fn thread_root_projection_activity_from_item(
         activity_sender_label: item.sender_label.clone(),
         activity_body_preview: thread_root_activity_preview(item),
     })
+}
+
+/// The exact Room items currently represented by the bounded display replay.
+///
+/// `navigation_items` deliberately has a wider lifetime than the UI's replay
+/// window. It may therefore contain a latest reply that was not rendered. A
+/// replay-known root must be reconciled against this context, never the whole
+/// navigation cache, or an unrelated cached reply can clear the visible root.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct ReplayKnownDisplayContext {
+    event_ids: HashSet<String>,
+    exact_thread_reply_pairs: HashSet<(String, String)>,
+    activity_range: Option<(u64, u64)>,
+}
+
+impl ReplayKnownDisplayContext {
+    fn from_display_items(display_items: &[TimelineItem]) -> Self {
+        let event_ids = display_items
+            .iter()
+            .filter_map(timeline_item_event_id)
+            .map(ToOwned::to_owned)
+            .collect::<HashSet<_>>();
+        let exact_thread_reply_pairs = display_items
+            .iter()
+            .filter_map(|item| {
+                let root_event_id = item.thread_root.as_deref()?.trim();
+                let reply_event_id = timeline_item_event_id(item)?.trim();
+                (!root_event_id.is_empty() && !reply_event_id.is_empty())
+                    .then(|| (root_event_id.to_owned(), reply_event_id.to_owned()))
+            })
+            .collect::<HashSet<_>>();
+        Self {
+            event_ids,
+            exact_thread_reply_pairs,
+            activity_range: replay_activity_timestamp_range(display_items),
+        }
+    }
+}
+
+/// Returns root snapshots already known to the actor but absent from the
+/// bounded display context. This is not hydration: copying a root from
+/// `navigation_items` must never call the SDK, paginate, or materialize a
+/// viewport anchor.
+#[cfg(test)]
+fn known_thread_root_projections_for_replay(
+    navigation_items: &[TimelineItem],
+    replay_items: &[TimelineItem],
+) -> Vec<ThreadRootProjectionDto> {
+    known_thread_root_projections_for_display_context(
+        navigation_items,
+        &ReplayKnownDisplayContext::from_display_items(replay_items),
+    )
+}
+
+fn known_thread_root_projections_for_display_context(
+    navigation_items: &[TimelineItem],
+    display_context: &ReplayKnownDisplayContext,
+) -> Vec<ThreadRootProjectionDto> {
+    let Some((range_start_ms, range_end_ms)) = display_context.activity_range else {
+        return Vec::new();
+    };
+    let mut emitted_root_event_ids = HashSet::new();
+    let mut projections = navigation_items
+        .iter()
+        .filter_map(|item| {
+            let root_event_id = timeline_item_event_id(item)?;
+            if item.thread_root.is_some() || display_context.event_ids.contains(root_event_id) {
+                return None;
+            }
+            let summary = item.thread_summary.as_ref()?;
+            let activity_event_id = summary.latest_event_id.as_ref()?.trim();
+            if activity_event_id.is_empty() {
+                return None;
+            }
+            if display_context
+                .exact_thread_reply_pairs
+                .contains(&(root_event_id.to_owned(), activity_event_id.to_owned()))
+            {
+                return None;
+            }
+            let activity_timestamp_ms = summary.latest_timestamp_ms?;
+            // The replay display range is inclusive: a summary on either
+            // boundary belongs to the same visual window, never outside it.
+            if activity_timestamp_ms < range_start_ms || activity_timestamp_ms > range_end_ms {
+                return None;
+            }
+            if !emitted_root_event_ids.insert(root_event_id.to_owned()) {
+                return None;
+            }
+            Some(ThreadRootProjectionDto {
+                root_event_id: root_event_id.to_owned(),
+                activity_event_id: activity_event_id.to_owned(),
+                activity_timestamp_ms: Some(activity_timestamp_ms),
+                retain_without_reply: true,
+                source: ThreadRootProjectionSourceDto::Hydration,
+                state: ThreadRootProjectionStateDto::Ready { item: item.clone() },
+            })
+        })
+        .collect::<Vec<_>>();
+    projections.sort_by(|left, right| {
+        left.activity_timestamp_ms
+            .cmp(&right.activity_timestamp_ms)
+            .then_with(|| left.root_event_id.cmp(&right.root_event_id))
+    });
+    projections.truncate(ROOM_REPLAY_KNOWN_THREAD_ROOT_PROJECTIONS_MAX);
+    projections
+}
+
+/// Returns the inclusive activity bounds represented by event-backed replay
+/// rows. A replay with no timestamped event rows cannot place summary-only
+/// roots chronologically, so it deliberately emits none.
+fn replay_activity_timestamp_range(replay_items: &[TimelineItem]) -> Option<(u64, u64)> {
+    replay_items
+        .iter()
+        .filter(|item| timeline_item_event_id(item).is_some())
+        .filter_map(|item| item.timestamp_ms)
+        .fold(None, |range, timestamp_ms| match range {
+            Some((start, end)) => Some((start.min(timestamp_ms), end.max(timestamp_ms))),
+            None => Some((timestamp_ms, timestamp_ms)),
+        })
+}
+
+/// Derives the bounded replay candidates before entering an ownership group.
+/// Only Room timelines have this out-of-band root snapshot behaviour.
+fn replay_known_candidates_for_display_items(
+    key: &TimelineKey,
+    navigation_items: &[TimelineItem],
+    display_items: &[TimelineItem],
+) -> Vec<ThreadRootProjectionDto> {
+    if !matches!(key.kind, TimelineKind::Room { .. }) {
+        return Vec::new();
+    }
+    known_thread_root_projections_for_display_context(
+        navigation_items,
+        &ReplayKnownDisplayContext::from_display_items(display_items),
+    )
+}
+
+#[cfg(test)]
+fn refresh_replay_known_root_projections(
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    key: &TimelineKey,
+    navigation_items: &[TimelineItem],
+    display_items: &[TimelineItem],
+) -> ReplayKnownThreadRootProjectionUpdate {
+    refresh_replay_known_root_projections_with_display_context(
+        registry,
+        key,
+        navigation_items,
+        &ReplayKnownDisplayContext::from_display_items(display_items),
+    )
+}
+
+#[cfg(test)]
+fn refresh_replay_known_root_projections_with_display_context(
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    key: &TimelineKey,
+    navigation_items: &[TimelineItem],
+    display_context: &ReplayKnownDisplayContext,
+) -> ReplayKnownThreadRootProjectionUpdate {
+    let candidates = if matches!(key.kind, TimelineKind::Room { .. }) {
+        known_thread_root_projections_for_display_context(navigation_items, display_context)
+    } else {
+        Vec::new()
+    };
+    registry
+        .lock()
+        .expect("replay-known root registry lock must not be poisoned")
+        .replace(key, candidates)
+}
+
+#[cfg(test)]
+fn reconcile_replay_known_root_projections_after_navigation_update(
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    key: &TimelineKey,
+    navigation_items: &[TimelineItem],
+    display_context: &ReplayKnownDisplayContext,
+) -> ReplayKnownThreadRootProjectionUpdate {
+    registry
+        .lock()
+        .expect("replay-known root registry lock must not be poisoned")
+        .reconcile_navigation(key, navigation_items, display_context)
+}
+
+fn replay_known_clear_projection(
+    projection: ReplayKnownThreadRootProjection,
+) -> ThreadRootProjectionDto {
+    ThreadRootProjectionDto {
+        root_event_id: projection.root_event_id,
+        activity_event_id: projection.activity_event_id,
+        activity_timestamp_ms: projection.activity_timestamp_ms,
+        retain_without_reply: false,
+        source: projection.source,
+        state: ThreadRootProjectionStateDto::Cleared,
+    }
+}
+
+#[cfg(test)]
+fn emit_replay_known_root_projection_update(
+    event_tx: &broadcast::Sender<CoreEvent>,
+    key: &TimelineKey,
+    update: ReplayKnownThreadRootProjectionUpdate,
+) {
+    for event in replay_known_timeline_events(key, update) {
+        let _ = event_tx.send(CoreEvent::Timeline(event));
+    }
+}
+
+#[cfg(test)]
+fn replay_known_timeline_events(
+    key: &TimelineKey,
+    update: ReplayKnownThreadRootProjectionUpdate,
+) -> Vec<TimelineEvent> {
+    let mut events = Vec::with_capacity(update.stale.len() + update.ready.len());
+    for projection in update.stale {
+        events.push(TimelineEvent::ThreadRootProjection {
+            key: key.clone(),
+            projection: replay_known_clear_projection(projection),
+        });
+    }
+    for projection in update.ready {
+        events.push(TimelineEvent::ThreadRootProjection {
+            key: key.clone(),
+            projection,
+        });
+    }
+    events
+}
+
+/// Builds a replay-known transition while the caller still owns the registry
+/// mutex. When a root loses replay ownership, hand the retained terminal
+/// hydration snapshot back after its source-scoped Clear so an exact canonical
+/// reply slot continues to represent the complete root block. No lookup is
+/// started here; the service is consulted read-only and this function never
+/// awaits.
+fn replay_known_timeline_events_with_hydration_handoffs(
+    key: &TimelineKey,
+    registry: &mut ReplayKnownThreadRootProjectionRegistry,
+    thread_root_projection_service: &Arc<Mutex<ThreadRootProjectionService>>,
+    update: ReplayKnownThreadRootProjectionUpdate,
+) -> Vec<TimelineEvent> {
+    let mut events = Vec::with_capacity(update.stale.len() + update.ready.len() * 2);
+    for projection in update.stale {
+        let root_event_id = projection.root_event_id.clone();
+        events.push(TimelineEvent::ThreadRootProjection {
+            key: key.clone(),
+            projection: replay_known_clear_projection(projection),
+        });
+        if registry.owns_root(key, &root_event_id) {
+            continue;
+        }
+        // Reassert only a terminal that the frontend had already observed, or
+        // one deliberately withheld while replay ownership was current. A
+        // retained service terminal that was never emitted is not a UI source
+        // and must remain silent after the replay Clear.
+        let was_suppressed = registry.take_suppressed_hydration_terminal(key, &root_event_id);
+        let was_emitted = registry.take_emitted_hydration_terminal(key, &root_event_id);
+        if !was_suppressed && !was_emitted {
+            continue;
+        }
+        let terminal_hydration = thread_root_projection_service
+            .lock()
+            .expect("thread-root projection service lock must not be poisoned")
+            .terminal_record(key.room_id(), &root_event_id)
+            .map(|record| thread_root_projection_dto_from_record(&record));
+        if let Some(projection) = terminal_hydration {
+            registry.mark_hydration_terminal_emitted(key, root_event_id);
+            events.push(TimelineEvent::ThreadRootProjection {
+                key: key.clone(),
+                projection,
+            });
+        }
+    }
+    for projection in update.ready {
+        events.push(TimelineEvent::ThreadRootProjection {
+            key: key.clone(),
+            projection,
+        });
+    }
+    events
+}
+
+/// Delivers one hydration terminal only if a replay-owned snapshot has not
+/// already won the same root. The replay registry lock covers both the
+/// ownership decision and synchronous Core broadcast, so a replay Ready can
+/// never appear between them and be overwritten by this hydration DTO.
+///
+/// The caller must finish reducer delivery before calling this helper. It does
+/// no I/O and never awaits while the registry mutex is held.
+fn emit_hydration_terminal_unless_replay_owned(
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    key: &TimelineKey,
+    projection: ThreadRootProjectionDto,
+) -> bool {
+    let mut registry = registry
+        .lock()
+        .expect("replay-known root registry lock must not be poisoned");
+    if registry.owns_root(key, &projection.root_event_id) {
+        registry.mark_hydration_terminal_suppressed(key, projection.root_event_id.clone());
+        return false;
+    }
+    registry.mark_hydration_terminal_emitted(key, projection.root_event_id.clone());
+    let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+        key: key.clone(),
+        projection,
+    }));
+    true
+}
+
+/// Actor-side variant of [`emit_hydration_terminal_unless_replay_owned`].
+/// Existing service records can be re-emitted by a replacement actor, so they
+/// must also take the actor generation lease before they inspect or mutate the
+/// shared replay owner. This keeps stale actors from publishing a terminal
+/// after `SyncStarted` has fenced their generation.
+fn emit_hydration_terminal_unless_replay_owned_for_generation(
+    event_tx: &broadcast::Sender<CoreEvent>,
+    registry: &Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    timeline_actor_generations: &Arc<TimelineActorGenerationGate>,
+    key: &TimelineKey,
+    actor_generation: u64,
+    projection: ThreadRootProjectionDto,
+) -> bool {
+    let Some(lease) = timeline_actor_generations.try_acquire(key, actor_generation) else {
+        return false;
+    };
+    let mut registry = registry
+        .lock()
+        .expect("replay-known root registry lock must not be poisoned");
+    if registry.owns_root(key, &projection.root_event_id) {
+        registry.mark_hydration_terminal_suppressed(key, projection.root_event_id.clone());
+        return false;
+    }
+    registry.mark_hydration_terminal_emitted(key, projection.root_event_id.clone());
+    emit_timeline_events_with_lease(
+        event_tx,
+        &lease,
+        vec![TimelineEvent::ThreadRootProjection {
+            key: key.clone(),
+            projection,
+        }],
+    );
+    true
 }
 
 fn thread_root_activity_preview(item: &TimelineItem) -> Option<String> {
@@ -2996,6 +4156,10 @@ struct TimelineActor {
     /// Rust-owned navigation projection source. The webview reports viewport
     /// facts; item ordering, unread marker semantics, and counts stay here.
     navigation_items: Vec<TimelineItem>,
+    /// The bounded sequence last emitted to the Room UI, advanced with the
+    /// same TimelineDiffs. It is display evidence for replay-known roots and
+    /// must not be replaced by the wider navigation cache.
+    replay_known_display_items: Vec<TimelineItem>,
     media_gallery_items: Vec<TimelineMediaGalleryItem>,
     fully_read_event_id: Option<String>,
     viewport_observation: TimelineViewportObservation,
@@ -3010,6 +4174,13 @@ struct TimelineActor {
     /// Manager-owned bounded hydration state shared by replacement Room
     /// actors. This is not a `Timeline` and cannot paginate.
     thread_root_projection_service: Arc<Mutex<ThreadRootProjectionService>>,
+    /// Manager-owned lifecycle registry for ready snapshots copied from a
+    /// bounded replay. It owns no SDK handle and cannot fetch or paginate.
+    replay_known_thread_root_projections: Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+    /// Manager-owned serial fence. Replay-known registry changes and their
+    /// Core events require a lease for this actor generation.
+    timeline_actor_generations: Arc<TimelineActorGenerationGate>,
+    actor_generation: u64,
     /// Bounded root hydration workers are manager-owned so their completion is
     /// ordered with unsubscribe/shutdown lifecycle commands.
     manager_tx: mpsc::Sender<TimelineMessage>,
@@ -3030,6 +4201,11 @@ struct TimelineActor {
     /// (Found/EndReached/BudgetExhausted/Failed/Superseded), so React receives
     /// a single settled update rather than O(chunks) intermediate renders.
     restore_emit_buffer: Vec<TimelineDiff>,
+    /// `maybe_hydrate_missing_thread_roots` is deliberately deferred until a
+    /// buffered restore window has emitted its final canonical `ItemsUpdated`.
+    /// Otherwise a newly observed Pending projection is pruned by the store
+    /// before the reply that owns it is visible.
+    hydrate_after_restore_flush: bool,
     /// Monotonically increasing counter, incremented at the start of every
     /// `handle_diff_batch` call (restore or not).
     diff_batch_seq: u64,
@@ -3093,6 +4269,9 @@ impl TimelineActor {
         link_preview_policy: LinkPreviewContext,
         messages_backpressure: MessagesBackpressure,
         thread_root_projection_service: Arc<Mutex<ThreadRootProjectionService>>,
+        replay_known_thread_root_projections: Arc<Mutex<ReplayKnownThreadRootProjectionRegistry>>,
+        timeline_actor_generations: Arc<TimelineActorGenerationGate>,
+        actor_generation: u64,
         manager_tx: mpsc::Sender<TimelineMessage>,
     ) -> TimelineActorHandle {
         let mut auxiliary_tasks: Vec<executor::JoinHandle<()>> = Vec::new();
@@ -3229,6 +4408,7 @@ impl TimelineActor {
         }
         trace_timeline_items("initial", &key, &initial_items);
         let navigation_items = initial_items.clone();
+        let replay_known_display_items = normalize_display_timeline_items(&initial_items);
         let initial_activity_rows = activity_rows_from_timeline_items(&key, &initial_items);
         let initial_media_gallery_items =
             media_gallery_items_from_timeline_items(&key, &initial_items);
@@ -3247,12 +4427,23 @@ impl TimelineActor {
                 initial_items.len()
             );
         }
-        let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::InitialItems {
-            request_id: Some(subscribe_request_id),
-            key: key.clone(),
+        let replay_known_candidates = replay_known_candidates_for_display_items(
+            &key,
+            &navigation_items,
+            &replay_known_display_items,
+        );
+        let _ = emit_initial_items_and_reconcile_replay_known_for_generation(
+            &event_tx,
+            &replay_known_thread_root_projections,
+            &thread_root_projection_service,
+            &timeline_actor_generations,
+            &key,
+            actor_generation,
+            Some(subscribe_request_id),
             generation,
-            items: initial_items,
-        }));
+            initial_items.clone(),
+            replay_known_candidates,
+        );
         if !initial_activity_rows.is_empty() {
             let _ = action_tx.try_send(vec![AppAction::ActivityRowsObserved {
                 rows: initial_activity_rows,
@@ -3340,6 +4531,7 @@ impl TimelineActor {
             search_index_tx,
             thread_attention_counts: ThreadAttentionCounters::default(),
             navigation_items,
+            replay_known_display_items,
             media_gallery_items: initial_media_gallery_items,
             fully_read_event_id: initial_fully_read_event_id,
             viewport_observation: TimelineViewportObservation::default(),
@@ -3349,6 +4541,9 @@ impl TimelineActor {
             link_preview_fetches: HashMap::new(),
             reply_detail_fetches: HashMap::new(),
             thread_root_projection_service,
+            replay_known_thread_root_projections,
+            timeline_actor_generations,
+            actor_generation,
             manager_tx,
             reply_detail_fetch_attempted_event_ids: HashSet::new(),
             pagination_task: None,
@@ -3358,6 +4553,7 @@ impl TimelineActor {
             restore_anchor: None,
             next_restore_anchor_serial: 0,
             restore_emit_buffer: Vec::new(),
+            hydrate_after_restore_flush: false,
             diff_batch_seq: 0,
         };
 
@@ -3634,6 +4830,10 @@ impl TimelineActor {
                 self.handle_replay_initial_items(request_id);
             }
         }
+        if self.hydrate_after_restore_flush && self.restore_anchor.is_none() {
+            self.hydrate_after_restore_flush = false;
+            self.maybe_hydrate_missing_thread_roots().await;
+        }
     }
 
     async fn handle_paginate(
@@ -3685,6 +4885,8 @@ impl TimelineActor {
         let key = self.key.clone();
         let timeline = self.timeline.clone();
         let event_tx = self.event_tx.clone();
+        let timeline_actor_generations = self.timeline_actor_generations.clone();
+        let actor_generation = self.actor_generation;
         let actor_tx = self.msg_tx.clone();
         let messages_backpressure = self.messages_backpressure.clone();
         let task = executor::spawn(async move {
@@ -3693,6 +4895,8 @@ impl TimelineActor {
                 key,
                 timeline,
                 event_tx,
+                timeline_actor_generations,
+                actor_generation,
                 messages_backpressure,
                 direction,
                 event_count,
@@ -3721,6 +4925,8 @@ impl TimelineActor {
             self.key.clone(),
             self.timeline.clone(),
             self.event_tx.clone(),
+            self.timeline_actor_generations.clone(),
+            self.actor_generation,
             self.messages_backpressure.clone(),
             direction,
             event_count,
@@ -3733,17 +4939,25 @@ impl TimelineActor {
         key: TimelineKey,
         timeline: Arc<Timeline>,
         event_tx: broadcast::Sender<CoreEvent>,
+        timeline_actor_generations: Arc<TimelineActorGenerationGate>,
+        actor_generation: u64,
         messages_backpressure: MessagesBackpressure,
         direction: PaginationDirection,
         event_count: u16,
     ) -> Result<bool, TimelineFailureKind> {
         // Emit Paginating.
-        let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
-            request_id: Some(request_id),
-            key: key.clone(),
-            direction,
-            state: PaginationState::Paginating,
-        }));
+        let _ = emit_timeline_events_for_generation(
+            &event_tx,
+            &timeline_actor_generations,
+            &key,
+            actor_generation,
+            vec![TimelineEvent::PaginationStateChanged {
+                request_id: Some(request_id),
+                key: key.clone(),
+                direction,
+                state: PaginationState::Paginating,
+            }],
+        );
 
         let gate_started =
             (startup_trace::enabled() || timeline_trace_enabled()).then(std::time::Instant::now);
@@ -3800,12 +5014,18 @@ impl TimelineActor {
             PaginationState::Failed { kind } => Some(*kind),
             _ => None,
         };
-        let _ = event_tx.send(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
-            request_id: Some(request_id),
-            key,
-            direction,
-            state: next_state,
-        }));
+        let _ = emit_timeline_events_for_generation(
+            &event_tx,
+            &timeline_actor_generations,
+            &key,
+            actor_generation,
+            vec![TimelineEvent::PaginationStateChanged {
+                request_id: Some(request_id),
+                key: key.clone(),
+                direction,
+                state: next_state,
+            }],
+        );
         failure_kind.map_or(Ok(end_reached), Err)
     }
 
@@ -5315,12 +6535,24 @@ impl TimelineActor {
             );
         }
         trace_timeline_items("replay_initial", &self.key, &items);
-        self.emit(CoreEvent::Timeline(TimelineEvent::InitialItems {
-            request_id: Some(request_id),
-            key: self.key.clone(),
-            generation: self.generation,
+        self.replay_known_display_items = normalize_display_timeline_items(&items);
+        let replay_known_candidates = replay_known_candidates_for_display_items(
+            &self.key,
+            &self.navigation_items,
+            &self.replay_known_display_items,
+        );
+        let _ = emit_initial_items_and_reconcile_replay_known_for_generation(
+            &self.event_tx,
+            &self.replay_known_thread_root_projections,
+            &self.thread_root_projection_service,
+            &self.timeline_actor_generations,
+            &self.key,
+            self.actor_generation,
+            Some(request_id),
+            self.generation,
             items,
-        }));
+            replay_known_candidates,
+        );
     }
 
     async fn handle_diff_batch(
@@ -5407,7 +6639,7 @@ impl TimelineActor {
                 }]);
         }
         apply_timeline_diffs_to_items(&mut self.navigation_items, &core_diffs);
-        self.maybe_hydrate_missing_thread_roots().await;
+        apply_timeline_diffs_to_display_items(&mut self.replay_known_display_items, &core_diffs);
         self.maybe_fetch_visible_reply_details();
         self.emit_media_gallery_if_changed().await;
 
@@ -5420,6 +6652,10 @@ impl TimelineActor {
             // is still advanced so later non-restore emits remain monotonic.
             self.next_batch_id = TimelineBatchId(self.next_batch_id.0 + 1);
             self.restore_emit_buffer.extend(core_diffs);
+            // Hydration Pending must be emitted only after this buffer's final
+            // canonical ItemsUpdated group, otherwise the desktop store prunes
+            // it before the reply item which keeps it active is present.
+            self.hydrate_after_restore_flush = true;
             // Navigation is also suppressed until the flush at restore end.
 
             if restore_diff_is_relevant {
@@ -5441,15 +6677,11 @@ impl TimelineActor {
                 }
             }
         } else {
-            let batch_id = self.next_batch_id;
-            self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
-            self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-                key: self.key.clone(),
-                generation: self.generation,
-                batch_id,
-                diffs: core_diffs,
-            }));
+            let emitted = self.emit_items_updated_and_reconcile_replay_known(core_diffs);
             self.emit_navigation_if_changed();
+            if emitted {
+                self.maybe_hydrate_missing_thread_roots().await;
+            }
         }
     }
 
@@ -5557,16 +6789,34 @@ impl TimelineActor {
                 root_event_id: activity.root_event_id.clone(),
                 activity_event_id: activity.activity_event_id.clone(),
                 activity_timestamp_ms: activity.activity_timestamp_ms,
+                retain_without_reply: false,
+                source: ThreadRootProjectionSourceDto::Hydration,
                 state: ThreadRootProjectionStateDto::Pending,
             },
         }));
     }
 
     fn emit_thread_root_projection_record(&self, record: &ThreadRootProjectionRecord) {
-        self.emit(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
-            key: self.key.clone(),
-            projection: thread_root_projection_dto_from_record(record),
-        }));
+        let projection = thread_root_projection_dto_from_record(record);
+        if record.is_pending() {
+            self.emit(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                key: self.key.clone(),
+                projection,
+            }));
+            return;
+        }
+        // A replacement actor can re-observe a retained terminal record while
+        // a replay-known Ready owns this root. Reuse the manager's ownership
+        // boundary so that resend is suppressed and marked exactly once; the
+        // later scoped replay Clear then hands the terminal back exactly once.
+        let _ = emit_hydration_terminal_unless_replay_owned_for_generation(
+            &self.event_tx,
+            &self.replay_known_thread_root_projections,
+            &self.timeline_actor_generations,
+            &self.key,
+            self.actor_generation,
+            projection,
+        );
     }
 
     async fn handle_ignored_users_updated(&mut self, user_ids: std::collections::BTreeSet<String>) {
@@ -5600,32 +6850,17 @@ impl TimelineActor {
         }
         self.emit_media_gallery_if_changed().await;
 
-        let batch_id = self.next_batch_id;
-        self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
-
-        self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-            key: self.key.clone(),
-            generation: self.generation,
-            batch_id,
-            diffs: core_diffs,
-        }));
-        self.emit_navigation_if_changed();
+        if self.emit_non_sdk_item_sets_and_reconcile_replay_known(core_diffs) {
+            self.emit_navigation_if_changed();
+        }
     }
 
-    fn emit_timeline_item_set(&mut self, index: usize) {
+    fn emit_timeline_item_set(&mut self, index: usize) -> bool {
         let core_diffs = vec![TimelineDiff::Set {
             index,
             item: self.navigation_items[index].clone(),
         }];
-
-        let batch_id = self.next_batch_id;
-        self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
-        self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-            key: self.key.clone(),
-            generation: self.generation,
-            batch_id,
-            diffs: core_diffs,
-        }));
+        self.emit_non_sdk_item_sets_and_reconcile_replay_known(core_diffs)
     }
 
     async fn handle_load_link_previews(&mut self, request_id: RequestId, event_id: String) {
@@ -5837,14 +7072,7 @@ impl TimelineActor {
             return;
         }
 
-        let batch_id = self.next_batch_id;
-        self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
-        self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-            key: self.key.clone(),
-            generation: self.generation,
-            batch_id,
-            diffs: core_diffs,
-        }));
+        let _ = self.emit_non_sdk_item_sets_and_reconcile_replay_known(core_diffs);
     }
 
     async fn handle_hide_link_preview(&mut self, _request_id: RequestId, event_id: String) {
@@ -5870,14 +7098,7 @@ impl TimelineActor {
             return;
         }
 
-        let batch_id = self.next_batch_id;
-        self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
-        self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-            key: self.key.clone(),
-            generation: self.generation,
-            batch_id,
-            diffs: core_diffs,
-        }));
+        let _ = self.emit_non_sdk_item_sets_and_reconcile_replay_known(core_diffs);
     }
 
     async fn handle_link_preview_policy_changed(
@@ -5909,14 +7130,7 @@ impl TimelineActor {
             return;
         }
 
-        let batch_id = self.next_batch_id;
-        self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
-        self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-            key: self.key.clone(),
-            generation: self.generation,
-            batch_id,
-            diffs: core_diffs,
-        }));
+        let _ = self.emit_non_sdk_item_sets_and_reconcile_replay_known(core_diffs);
     }
 
     async fn emit_media_gallery_if_changed(&mut self) {
@@ -6477,12 +7691,25 @@ impl TimelineActor {
             .await;
         }
         trace_timeline_items("send_queue_lagged_initial", &self.key, &items);
-        self.emit(CoreEvent::Timeline(TimelineEvent::InitialItems {
-            request_id: None,
-            key: self.key.clone(),
-            generation: self.generation,
+        self.navigation_items = items.clone();
+        self.replay_known_display_items = normalize_display_timeline_items(&items);
+        let replay_known_candidates = replay_known_candidates_for_display_items(
+            &self.key,
+            &self.navigation_items,
+            &self.replay_known_display_items,
+        );
+        let _ = emit_initial_items_and_reconcile_replay_known_for_generation(
+            &self.event_tx,
+            &self.replay_known_thread_root_projections,
+            &self.thread_root_projection_service,
+            &self.timeline_actor_generations,
+            &self.key,
+            self.actor_generation,
+            None,
+            self.generation,
             items,
-        }));
+            replay_known_candidates,
+        );
     }
 
     async fn resync_send_queue_statuses(&mut self) {
@@ -6549,13 +7776,25 @@ impl TimelineActor {
             .await;
         }
         trace_timeline_items("overflow_initial", &self.key, &items);
-
-        self.emit(CoreEvent::Timeline(TimelineEvent::InitialItems {
-            request_id: None,
-            key: self.key.clone(),
-            generation: self.generation,
+        self.navigation_items = items.clone();
+        self.replay_known_display_items = normalize_display_timeline_items(&items);
+        let replay_known_candidates = replay_known_candidates_for_display_items(
+            &self.key,
+            &self.navigation_items,
+            &self.replay_known_display_items,
+        );
+        let _ = emit_initial_items_and_reconcile_replay_known_for_generation(
+            &self.event_tx,
+            &self.replay_known_thread_root_projections,
+            &self.thread_root_projection_service,
+            &self.timeline_actor_generations,
+            &self.key,
+            self.actor_generation,
+            None,
+            self.generation,
             items,
-        }));
+            replay_known_candidates,
+        );
         if let Some(restore) = self.restore_anchor.take() {
             self.finish_anchor_restore(
                 restore.request_id,
@@ -6567,7 +7806,20 @@ impl TimelineActor {
     }
 
     fn emit(&self, event: CoreEvent) {
-        let _ = self.event_tx.send(event);
+        match event {
+            CoreEvent::Timeline(event) => {
+                let _ = emit_timeline_events_for_generation(
+                    &self.event_tx,
+                    &self.timeline_actor_generations,
+                    &self.key,
+                    self.actor_generation,
+                    vec![event],
+                );
+            }
+            event => {
+                let _ = self.event_tx.send(event);
+            }
+        }
     }
 
     fn emit_anchor_restore_finished(
@@ -6587,21 +7839,76 @@ impl TimelineActor {
     /// BudgetExhausted/Failed/Superseded). If the buffer is empty nothing is
     /// emitted; navigation is always refreshed after a restore so React
     /// receives a consistent settled state. Never drops buffered diffs.
-    fn flush_restore_emit_buffer(&mut self) {
+    fn flush_restore_emit_buffer(&mut self) -> bool {
         if !self.restore_emit_buffer.is_empty() {
             let diffs = std::mem::take(&mut self.restore_emit_buffer);
-            let batch_id = self.next_batch_id;
-            self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
-            self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated {
-                key: self.key.clone(),
-                generation: self.generation,
-                batch_id,
-                diffs,
-            }));
+            // A restore has deliberately deferred its UI diffs. Reconcile only
+            // now, immediately beside the one settled ItemsUpdated emission,
+            // so a replacement actor can never observe a replay transition
+            // without the canonical batch that caused it.
+            let emitted = self.emit_items_updated_and_reconcile_replay_known(diffs);
+            self.emit_navigation_if_changed();
+            return emitted;
         } else {
             self.restore_emit_buffer.clear();
         }
         self.emit_navigation_if_changed();
+        false
+    }
+
+    /// Emit one canonical batch plus replay-known ownership changes. This is
+    /// the sole normal/restore flush path for `ItemsUpdated`; it preserves the
+    /// intentional restore buffering while keeping the final group atomic
+    /// with respect to actor-generation replacement.
+    fn emit_items_updated_and_reconcile_replay_known(&mut self, diffs: Vec<TimelineDiff>) -> bool {
+        let batch_id = self.next_batch_id;
+        if emit_items_updated_and_reconcile_replay_known_for_generation(
+            &self.event_tx,
+            &self.replay_known_thread_root_projections,
+            &self.thread_root_projection_service,
+            &self.timeline_actor_generations,
+            &self.key,
+            self.actor_generation,
+            self.generation,
+            batch_id,
+            diffs,
+            &self.navigation_items,
+            &self.replay_known_display_items,
+        ) {
+            self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Commit a local actor mutation through the same generation-fenced
+    /// display/replay group as an SDK diff. The bounded replay mirror uses
+    /// render identity rather than canonical index, because it can omit old
+    /// roots that remain present in `navigation_items`.
+    fn emit_non_sdk_item_sets_and_reconcile_replay_known(
+        &mut self,
+        diffs: Vec<TimelineDiff>,
+    ) -> bool {
+        let batch_id = self.next_batch_id;
+        if emit_non_sdk_item_sets_and_reconcile_replay_known_for_generation(
+            &self.event_tx,
+            &self.replay_known_thread_root_projections,
+            &self.thread_root_projection_service,
+            &self.timeline_actor_generations,
+            &self.key,
+            self.actor_generation,
+            self.generation,
+            batch_id,
+            diffs,
+            &self.navigation_items,
+            &mut self.replay_known_display_items,
+        ) {
+            self.next_batch_id = TimelineBatchId(batch_id.0 + 1);
+            true
+        } else {
+            false
+        }
     }
 
     /// Terminate a restore walk: flush the buffered diffs (Change 2) then emit
@@ -6613,7 +7920,9 @@ impl TimelineActor {
         request_id: RequestId,
         status: TimelineAnchorRestoreStatus,
     ) {
-        self.flush_restore_emit_buffer();
+        if self.flush_restore_emit_buffer() {
+            self.hydrate_after_restore_flush = true;
+        }
         self.emit_anchor_restore_finished(request_id, status);
     }
 
@@ -7142,6 +8451,118 @@ fn apply_timeline_diffs_to_items(items: &mut Vec<TimelineItem>, diffs: &[Timelin
                 *items = reset_items.clone();
             }
         }
+    }
+}
+
+/// Applies the same render-identity normalization used by the desktop
+/// TimelineStore. A bounded replay can overlap later scrollback diffs, so this
+/// mirror must not retain duplicate event, transaction, or synthetic rows that
+/// the webview collapses before it derives latest-reply placement.
+fn apply_timeline_diffs_to_display_items(items: &mut Vec<TimelineItem>, diffs: &[TimelineDiff]) {
+    for diff in diffs {
+        match diff {
+            TimelineDiff::PushFront { item } => insert_display_timeline_item(items, item, 0),
+            TimelineDiff::PushBack { item } => {
+                insert_display_timeline_item(items, item, items.len())
+            }
+            TimelineDiff::Insert { index, item } => {
+                insert_display_timeline_item(items, item, (*index).min(items.len()))
+            }
+            TimelineDiff::Set { index, item } => set_display_timeline_item(items, *index, item),
+            TimelineDiff::Remove { index } => {
+                if *index < items.len() {
+                    items.remove(*index);
+                }
+            }
+            TimelineDiff::Truncate { length } => items.truncate(*length),
+            TimelineDiff::Clear => items.clear(),
+            TimelineDiff::Reset { items: reset_items } => {
+                *items = normalize_display_timeline_items(reset_items);
+            }
+        }
+    }
+}
+
+/// Applies actor-originated item revisions to the bounded display mirror.
+///
+/// Unlike SDK vector diffs, the index in a local mutation is an index into the
+/// actor's wider `navigation_items` cache. It is therefore unsafe to use it
+/// against a bounded replay window. Update only an already-rendered row with
+/// the same identity; a replay-only root is intentionally absent from this
+/// mirror and will instead be refreshed from `navigation_items` by the replay
+/// registry reconciliation that follows in the same generation lease. Returns
+/// the matching display-index `Set` diffs that are safe to deliver to the
+/// webview; omitted roots deliberately produce no canonical display diff.
+fn apply_non_sdk_item_set_diffs_to_display_items(
+    items: &mut [TimelineItem],
+    diffs: &[TimelineDiff],
+) -> Vec<TimelineDiff> {
+    let mut display_diffs = Vec::new();
+    for diff in diffs {
+        let TimelineDiff::Set { item, .. } = diff else {
+            continue;
+        };
+        let item_id = timeline_item_render_id(item);
+        if let Some((index, existing)) = items
+            .iter_mut()
+            .enumerate()
+            .find(|(_, existing)| timeline_item_render_id(existing) == item_id)
+        {
+            *existing = item.clone();
+            display_diffs.push(TimelineDiff::Set {
+                index,
+                item: item.clone(),
+            });
+        }
+    }
+    display_diffs
+}
+
+fn insert_display_timeline_item(items: &mut Vec<TimelineItem>, item: &TimelineItem, index: usize) {
+    let item_id = timeline_item_render_id(item);
+    if items
+        .iter()
+        .any(|existing| timeline_item_render_id(existing) == item_id)
+    {
+        return;
+    }
+    items.insert(index.min(items.len()), item.clone());
+}
+
+fn set_display_timeline_item(items: &mut [TimelineItem], index: usize, item: &TimelineItem) {
+    if index >= items.len() {
+        return;
+    }
+    let item_id = timeline_item_render_id(item);
+    if let Some(existing_index) = items
+        .iter()
+        .position(|existing| timeline_item_render_id(existing) == item_id)
+        && existing_index != index
+    {
+        // The TypeScript store updates the existing rendered row for a Set
+        // aimed at an overlapping Core slot; it does not replace the item at
+        // the raw index or move later live-edge rows.
+        items[existing_index] = item.clone();
+        return;
+    }
+    items[index] = item.clone();
+}
+
+fn normalize_display_timeline_items(items: &[TimelineItem]) -> Vec<TimelineItem> {
+    let mut seen = HashSet::new();
+    items
+        .iter()
+        .filter(|item| seen.insert(timeline_item_render_id(item)))
+        .cloned()
+        .collect()
+}
+
+/// Matches `timelineItemDomId` in the TypeScript TimelineStore exactly.
+fn timeline_item_render_id(item: &TimelineItem) -> String {
+    match &item.id {
+        TimelineItemId::Event { event_id } => event_id.clone(),
+        TimelineItemId::Transaction { transaction_id } => format!("txn:{transaction_id}"),
+        TimelineItemId::Synthetic { synthetic_id } => format!("syn:{synthetic_id}"),
     }
 }
 
@@ -9010,6 +10431,3091 @@ mod tests {
     }
 
     #[test]
+    fn replay_display_window_emits_a_known_ready_root_without_a_reply_or_fetch() {
+        let key = room_key();
+        let root_event_id = "$old-root:test";
+        let activity_event_id = "$summary-only-activity:test";
+        let activity_timestamp_ms = 1_700_000_100_000;
+        let mut root = timeline_item(root_event_id, Some("old root"), "@alice:test", false);
+        root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some(activity_event_id.to_owned()),
+            latest_sender: Some("@bob:test".to_owned()),
+            latest_sender_label: Some("Bob".to_owned()),
+            latest_body_preview: Some("latest threaded activity".to_owned()),
+            latest_timestamp_ms: Some(activity_timestamp_ms),
+        });
+
+        // The actor's canonical navigation cache still knows the root, but a
+        // Room re-subscription at the live edge deliberately replays only the
+        // final 120 rows to the display store. This server/SDK-shaped case has
+        // a root summary but no standalone canonical reply item at all.
+        let mut navigation_items = vec![root.clone()];
+        navigation_items.extend((0..ROOM_REPLAY_INITIAL_ITEMS_MAX).map(|index| {
+            let mut item = timeline_item(
+                &format!("$ordinary-{index}:test"),
+                Some("ordinary"),
+                "@alice:test",
+                false,
+            );
+            item.timestamp_ms = Some(activity_timestamp_ms + index as u64);
+            item
+        }));
+
+        let replay = replay_initial_items_window(
+            &key.kind,
+            &navigation_items,
+            &TimelineViewportObservation {
+                at_bottom: true,
+                ..TimelineViewportObservation::default()
+            },
+        );
+        assert_eq!(replay.len(), ROOM_REPLAY_INITIAL_ITEMS_MAX);
+        assert!(
+            navigation_items
+                .iter()
+                .any(|item| timeline_item_event_id(item) == Some(root_event_id)),
+            "the canonical cache is intentionally richer than the display replay"
+        );
+        assert!(
+            !replay
+                .iter()
+                .any(|item| timeline_item_event_id(item) == Some(root_event_id)),
+            "the old root must be outside the emitted replay window"
+        );
+        assert!(
+            !replay.iter().any(|item| item.thread_root.is_some()),
+            "the replay intentionally has no standalone canonical reply row"
+        );
+
+        let replay_projections =
+            known_thread_root_projections_for_replay(&navigation_items, &replay);
+        assert!(matches!(
+            replay_projections.as_slice(),
+            [ThreadRootProjectionDto {
+                root_event_id,
+                activity_event_id: emitted_activity_event_id,
+                activity_timestamp_ms: Some(emitted_activity_timestamp_ms),
+                retain_without_reply: true,
+                state: ThreadRootProjectionStateDto::Ready { item },
+                ..
+            }]
+                if root_event_id == "$old-root:test"
+                    && emitted_activity_event_id == activity_event_id
+                    && *emitted_activity_timestamp_ms == activity_timestamp_ms
+                    && *item == root
+        ));
+
+        assert!(known_thread_root_projections_for_replay(&navigation_items, &[root]).is_empty());
+
+        let source = include_str!("timeline.rs");
+        let known_replay_helper = source
+            .split("fn known_thread_root_projections_for_replay")
+            .nth(1)
+            .expect("known replay helper must exist")
+            .split("fn thread_root_activity_preview")
+            .next()
+            .expect("known replay helper boundary");
+        for forbidden in [
+            "load_or_fetch_event",
+            "paginate_backwards",
+            "Paginate",
+            "RestoreTimelineAnchor",
+        ] {
+            assert!(
+                !known_replay_helper.contains(forbidden),
+                "known replay snapshots must not start {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn replay_known_roots_stay_inside_the_display_activity_range_inclusively() {
+        let root_with_summary =
+            |root_event_id: &str, activity_event_id: &str, activity_timestamp_ms: u64| {
+                let mut root = timeline_item(root_event_id, Some("root"), "@alice:test", false);
+                root.thread_summary = Some(ThreadSummaryDto {
+                    reply_count: 1,
+                    latest_event_id: Some(activity_event_id.to_owned()),
+                    latest_sender: None,
+                    latest_sender_label: None,
+                    latest_body_preview: None,
+                    latest_timestamp_ms: Some(activity_timestamp_ms),
+                });
+                root
+            };
+        let mut range_start = timeline_item("$range-start:test", Some("start"), "@a:test", false);
+        range_start.timestamp_ms = Some(100);
+        let mut range_end = timeline_item("$range-end:test", Some("end"), "@a:test", false);
+        range_end.timestamp_ms = Some(200);
+        let mut canonical_reply =
+            timeline_item("$canonical-reply:test", Some("reply"), "@b:test", false);
+        canonical_reply.timestamp_ms = Some(150);
+        canonical_reply.thread_root = Some("$exact-root:test".to_owned());
+        let replay = vec![range_start, canonical_reply, range_end];
+        let navigation = vec![
+            root_with_summary("$below:test", "$below-activity:test", 99),
+            root_with_summary("$at-start:test", "$at-start-activity:test", 100),
+            root_with_summary("$tie-b:test", "$tie-b-activity:test", 150),
+            root_with_summary("$tie-a:test", "$tie-a-activity:test", 150),
+            root_with_summary("$at-end:test", "$at-end-activity:test", 200),
+            root_with_summary("$above:test", "$above-activity:test", 201),
+            root_with_summary("$exact-root:test", "$canonical-reply:test", 150),
+        ];
+
+        let projections = known_thread_root_projections_for_replay(&navigation, &replay);
+
+        assert_eq!(
+            projections
+                .iter()
+                .map(|projection| projection.root_event_id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "$at-start:test",
+                "$tie-a:test",
+                "$tie-b:test",
+                "$at-end:test"
+            ],
+            "summary activity bounds are inclusive, ties are root-ID deterministic, and an exact reply owns its root"
+        );
+    }
+
+    #[test]
+    fn replay_known_roots_are_capped_deterministically() {
+        let mut replay_start = timeline_item("$range-start:test", Some("start"), "@a:test", false);
+        replay_start.timestamp_ms = Some(100);
+        let mut replay_end = timeline_item("$range-end:test", Some("end"), "@a:test", false);
+        replay_end.timestamp_ms = Some(200);
+        let navigation = (0..(ROOM_REPLAY_KNOWN_THREAD_ROOT_PROJECTIONS_MAX + 8))
+            .rev()
+            .map(|index| {
+                let mut root = timeline_item(
+                    &format!("$root-{index:03}:test"),
+                    Some("root"),
+                    "@alice:test",
+                    false,
+                );
+                root.thread_summary = Some(ThreadSummaryDto {
+                    reply_count: 1,
+                    latest_event_id: Some(format!("$activity-{index:03}:test")),
+                    latest_sender: None,
+                    latest_sender_label: None,
+                    latest_body_preview: None,
+                    latest_timestamp_ms: Some(150),
+                });
+                root
+            })
+            .collect::<Vec<_>>();
+
+        let projections =
+            known_thread_root_projections_for_replay(&navigation, &[replay_start, replay_end]);
+
+        assert_eq!(
+            projections.len(),
+            ROOM_REPLAY_KNOWN_THREAD_ROOT_PROJECTIONS_MAX,
+            "a bounded 120-item replay cannot grow without a deterministic root cap"
+        );
+        assert_eq!(
+            projections
+                .first()
+                .map(|projection| projection.root_event_id.as_str()),
+            Some("$root-000:test")
+        );
+        let expected_last = format!(
+            "$root-{:03}:test",
+            ROOM_REPLAY_KNOWN_THREAD_ROOT_PROJECTIONS_MAX - 1
+        );
+        assert_eq!(
+            projections
+                .last()
+                .map(|projection| projection.root_event_id.as_str()),
+            Some(expected_last.as_str())
+        );
+    }
+
+    #[test]
+    fn replay_known_root_is_not_suppressed_by_an_older_canonical_reply() {
+        let mut root = timeline_item("$known-root:test", Some("root"), "@alice:test", false);
+        root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 2,
+            latest_event_id: Some("$latest-summary-reply:test".to_owned()),
+            latest_sender: None,
+            latest_sender_label: None,
+            latest_body_preview: None,
+            latest_timestamp_ms: Some(400),
+        });
+        let mut before = timeline_item("$before:test", Some("before"), "@a:test", false);
+        before.timestamp_ms = Some(200);
+        let mut older_reply = timeline_item("$older-reply:test", Some("older"), "@b:test", false);
+        older_reply.timestamp_ms = Some(300);
+        older_reply.thread_root = Some("$known-root:test".to_owned());
+        let mut after = timeline_item("$after:test", Some("after"), "@a:test", false);
+        after.timestamp_ms = Some(500);
+
+        let projections =
+            known_thread_root_projections_for_replay(&[root], &[before, older_reply, after]);
+
+        assert!(matches!(
+            projections.as_slice(),
+            [ThreadRootProjectionDto {
+                root_event_id,
+                activity_event_id,
+                activity_timestamp_ms: Some(400),
+                retain_without_reply: true,
+                state: ThreadRootProjectionStateDto::Ready { .. },
+                ..
+            }]
+                if root_event_id == "$known-root:test"
+                    && activity_event_id == "$latest-summary-reply:test"
+        ));
+    }
+
+    #[test]
+    fn replay_known_registry_reconciles_diff_removals_and_all_initial_refreshes() {
+        let key = room_key();
+        let mut root = timeline_item("$known-root:test", Some("root"), "@alice:test", false);
+        root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some("$summary-activity:test".to_owned()),
+            latest_sender: None,
+            latest_sender_label: None,
+            latest_body_preview: None,
+            latest_timestamp_ms: Some(400),
+        });
+        let mut before = timeline_item("$before:test", Some("before"), "@a:test", false);
+        before.timestamp_ms = Some(200);
+        let mut after = timeline_item("$after:test", Some("after"), "@a:test", false);
+        after.timestamp_ms = Some(500);
+        let navigation = vec![root];
+        let display = vec![before, after];
+
+        for initial_refresh in [
+            "actor_spawn",
+            "send_queue_lag",
+            "queue_overflow",
+            "sync_started_replacement",
+        ] {
+            let registry = Arc::new(Mutex::new(
+                ReplayKnownThreadRootProjectionRegistry::default(),
+            ));
+            let initial =
+                refresh_replay_known_root_projections(&registry, &key, &navigation, &display);
+            assert!(matches!(
+                initial.ready.as_slice(),
+                [ThreadRootProjectionDto {
+                    retain_without_reply: true,
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 1 },
+                    state: ThreadRootProjectionStateDto::Ready { .. },
+                    ..
+                }]
+            ));
+            let refreshed = refresh_replay_known_root_projections(&registry, &key, &[], &display);
+            assert!(
+                refreshed.ready.is_empty(),
+                "{initial_refresh} must not retain an absent root"
+            );
+            assert!(matches!(
+                refreshed.stale.as_slice(),
+                [ReplayKnownThreadRootProjection { root_event_id, .. }]
+                    if root_event_id == "$known-root:test"
+            ));
+        }
+
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let _ = refresh_replay_known_root_projections(&registry, &key, &navigation, &display);
+        let stale_after_diff = reconcile_replay_known_root_projections_after_navigation_update(
+            &registry,
+            &key,
+            &[],
+            &ReplayKnownDisplayContext::from_display_items(&display),
+        );
+        assert!(matches!(
+            stale_after_diff.stale.as_slice(),
+            [ReplayKnownThreadRootProjection { root_event_id, .. }]
+                if root_event_id == "$known-root:test"
+        ));
+        assert!(stale_after_diff.ready.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replay_known_navigation_summary_change_replaces_the_ready_snapshot() {
+        let key = room_key();
+        let root_with_summary = |activity_event_id: &str, activity_timestamp_ms: u64| {
+            let mut root = timeline_item("$known-root:test", Some("root"), "@alice:test", false);
+            root.thread_summary = Some(ThreadSummaryDto {
+                reply_count: 2,
+                latest_event_id: Some(activity_event_id.to_owned()),
+                latest_sender: None,
+                latest_sender_label: None,
+                latest_body_preview: None,
+                latest_timestamp_ms: Some(activity_timestamp_ms),
+            });
+            root
+        };
+        let mut before = timeline_item("$before:test", Some("before"), "@a:test", false);
+        before.timestamp_ms = Some(200);
+        let mut after = timeline_item("$after:test", Some("after"), "@a:test", false);
+        after.timestamp_ms = Some(600);
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let actor_generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+
+        let initial = {
+            let _lease = actor_generations
+                .try_acquire(&key, actor_generation)
+                .expect("current actor must acquire a replay-known lease");
+            refresh_replay_known_root_projections(
+                &registry,
+                &key,
+                &[root_with_summary("$old-summary:test", 300)],
+                &[before.clone(), after.clone()],
+            )
+        };
+        assert!(matches!(
+            initial.ready.as_slice(),
+            [ThreadRootProjectionDto {
+                activity_event_id,
+                source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 1 },
+                ..
+            }] if activity_event_id == "$old-summary:test"
+        ));
+
+        let replacement = {
+            let _lease = actor_generations
+                .try_acquire(&key, actor_generation)
+                .expect("current actor must acquire a replay-known lease");
+            reconcile_replay_known_root_projections_after_navigation_update(
+                &registry,
+                &key,
+                &[root_with_summary("$new-summary:test", 500)],
+                &ReplayKnownDisplayContext::from_display_items(&[before.clone(), after.clone()]),
+            )
+        };
+
+        assert!(matches!(
+            replacement.stale.as_slice(),
+            [ReplayKnownThreadRootProjection {
+                activity_event_id,
+                source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 1 },
+                ..
+            }] if activity_event_id == "$old-summary:test"
+        ));
+        assert!(matches!(
+            replacement.ready.as_slice(),
+            [ThreadRootProjectionDto {
+                root_event_id,
+                activity_event_id,
+                activity_timestamp_ms: Some(500),
+                retain_without_reply: true,
+                source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 2 },
+                state: ThreadRootProjectionStateDto::Ready { .. },
+            }] if root_event_id == "$known-root:test" && activity_event_id == "$new-summary:test"
+        ));
+
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        emit_replay_known_root_projection_update(&event_tx, &key, replacement);
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                projection: ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 1 },
+                    state: ThreadRootProjectionStateDto::Cleared,
+                    ..
+                },
+                ..
+            }))
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                projection: ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 2 },
+                    state: ThreadRootProjectionStateDto::Ready { .. },
+                    ..
+                },
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn replay_known_same_activity_reemits_a_renderable_root_revision_without_a_clear() {
+        let key = room_key();
+        let root_with_summary = |body: &str| {
+            let mut root = timeline_item("$known-root:test", Some(body), "@alice:test", false);
+            root.thread_summary = Some(ThreadSummaryDto {
+                reply_count: 2,
+                latest_event_id: Some("$latest:test".to_owned()),
+                latest_sender: None,
+                latest_sender_label: None,
+                latest_body_preview: None,
+                latest_timestamp_ms: Some(400),
+            });
+            root
+        };
+        let mut before = timeline_item("$before:test", Some("before"), "@a:test", false);
+        before.timestamp_ms = Some(200);
+        let mut after = timeline_item("$after:test", Some("after"), "@a:test", false);
+        after.timestamp_ms = Some(500);
+        let display_context =
+            ReplayKnownDisplayContext::from_display_items(&[before.clone(), after.clone()]);
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let initial = refresh_replay_known_root_projections(
+            &registry,
+            &key,
+            &[root_with_summary("original")],
+            &[before.clone(), after.clone()],
+        );
+        assert!(matches!(
+            initial.ready.as_slice(),
+            [ThreadRootProjectionDto {
+                source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 1 },
+                state: ThreadRootProjectionStateDto::Ready { item },
+                ..
+            }] if item.body.as_deref() == Some("original")
+        ));
+
+        let mut revised_root = root_with_summary("redacted replacement");
+        revised_root.is_redacted = true;
+        revised_root.reactions = vec![ReactionGroup {
+            key: "👍".to_owned(),
+            count: 2,
+            reacted_by_me: true,
+            my_reaction_event_id: Some("$reaction:test".to_owned()),
+            sender_preview: vec!["@alice:test".to_owned(), "@bob:test".to_owned()],
+        }];
+        revised_root.actions = TimelineMessageActions {
+            can_copy: false,
+            can_forward: false,
+            can_permalink: true,
+            can_view_source: true,
+            permalink: Some("https://example.invalid/#/room/$known-root:test".to_owned()),
+        };
+        let update = reconcile_replay_known_root_projections_after_navigation_update(
+            &registry,
+            &key,
+            &[revised_root.clone()],
+            &display_context,
+        );
+
+        assert!(update.stale.is_empty());
+        assert!(matches!(
+            update.ready.as_slice(),
+            [ThreadRootProjectionDto {
+                activity_event_id,
+                activity_timestamp_ms: Some(400),
+                source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 1 },
+                state: ThreadRootProjectionStateDto::Ready { item },
+                ..
+            }]
+                if activity_event_id == "$latest:test"
+                    && item == &revised_root
+        ));
+
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        emit_replay_known_root_projection_update(&event_tx, &key, update);
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                key: emitted_key,
+                projection: ThreadRootProjectionDto {
+                    activity_event_id,
+                    activity_timestamp_ms: Some(400),
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 1 },
+                    state: ThreadRootProjectionStateDto::Ready { item },
+                    ..
+                },
+            }))
+                if emitted_key == key
+                    && activity_event_id == "$latest:test"
+                    && item == revised_root
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
+        let unchanged = reconcile_replay_known_root_projections_after_navigation_update(
+            &registry,
+            &key,
+            &[revised_root],
+            &display_context,
+        );
+        assert!(unchanged.stale.is_empty());
+        assert!(unchanged.ready.is_empty());
+    }
+
+    #[tokio::test]
+    async fn non_sdk_ignored_root_set_revises_replay_ready_without_corrupting_bounded_display() {
+        let key = room_key();
+        let mut root = timeline_item("$known-root:test", Some("root"), "@ignored:test", false);
+        root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some("$latest:test".to_owned()),
+            latest_sender: None,
+            latest_sender_label: None,
+            latest_body_preview: None,
+            latest_timestamp_ms: Some(400),
+        });
+        let mut before = timeline_item("$before:test", Some("before"), "@a:test", false);
+        before.timestamp_ms = Some(200);
+        let mut after = timeline_item("$after:test", Some("after"), "@a:test", false);
+        after.timestamp_ms = Some(500);
+
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let initial = refresh_replay_known_root_projections(
+            &registry,
+            &key,
+            &[root.clone()],
+            &[before.clone(), after.clone()],
+        );
+        assert!(matches!(
+            initial.ready.as_slice(),
+            [ThreadRootProjectionDto {
+                source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 1 },
+                state: ThreadRootProjectionStateDto::Ready { item },
+                ..
+            }] if !item.is_hidden
+        ));
+
+        let mut ignored_root = root.clone();
+        apply_ignored_sender_suppression(
+            &mut ignored_root,
+            &std::collections::BTreeSet::from(["@ignored:test".to_owned()]),
+        );
+        let diffs = vec![TimelineDiff::Set {
+            index: 0,
+            item: ignored_root.clone(),
+        }];
+        let navigation_items = vec![ignored_root.clone()];
+        let mut display_items = vec![before.clone(), after.clone()];
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+
+        assert!(
+            emit_non_sdk_item_sets_and_reconcile_replay_known_for_generation(
+                &event_tx,
+                &registry,
+                &service,
+                &generations,
+                &key,
+                actor_generation,
+                TimelineGeneration(0),
+                TimelineBatchId(0),
+                diffs.clone(),
+                &navigation_items,
+                &mut display_items,
+            )
+        );
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ItemsUpdated { diffs: emitted, .. }))
+                if emitted.is_empty()
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                projection: ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 1 },
+                    state: ThreadRootProjectionStateDto::Ready { item },
+                    ..
+                },
+                ..
+            })) if item == ignored_root && item.is_hidden
+        ));
+        assert_eq!(display_items, vec![before, after]);
+        assert!(
+            registry
+                .lock()
+                .expect("registry lock")
+                .get(&key)
+                .and_then(|entries| entries.get("$known-root:test"))
+                .is_some_and(|entry| entry.item.is_hidden),
+            "the replay registry must keep the revised snapshot, not the stale visible one"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_sdk_link_preview_set_reemits_same_epoch_replay_ready_revision() {
+        let key = room_key();
+        let mut root = timeline_item("$known-root:test", Some("root"), "@a:test", false);
+        root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some("$latest:test".to_owned()),
+            latest_sender: None,
+            latest_sender_label: None,
+            latest_body_preview: None,
+            latest_timestamp_ms: Some(400),
+        });
+        let mut before = timeline_item("$before:test", Some("before"), "@a:test", false);
+        before.timestamp_ms = Some(200);
+        let mut after = timeline_item("$after:test", Some("after"), "@a:test", false);
+        after.timestamp_ms = Some(500);
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let initial = refresh_replay_known_root_projections(
+            &registry,
+            &key,
+            &[root.clone()],
+            &[before.clone(), after.clone()],
+        );
+        assert!(matches!(
+            initial.ready.as_slice(),
+            [ThreadRootProjectionDto {
+                source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 1 },
+                ..
+            }]
+        ));
+
+        let mut revised_root = root.clone();
+        revised_root.link_previews = Some(vec![LinkPreview {
+            url: "https://example.test/preview".to_owned(),
+            title: Some("ready preview".to_owned()),
+            description: None,
+            image: None,
+            state: LinkPreviewState::Ready,
+        }]);
+        let diffs = vec![TimelineDiff::Set {
+            index: 0,
+            item: revised_root.clone(),
+        }];
+        let navigation_items = vec![revised_root.clone()];
+        let mut display_items = vec![before, after];
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+
+        assert!(
+            emit_non_sdk_item_sets_and_reconcile_replay_known_for_generation(
+                &event_tx,
+                &registry,
+                &service,
+                &generations,
+                &key,
+                actor_generation,
+                TimelineGeneration(0),
+                TimelineBatchId(0),
+                diffs,
+                &navigation_items,
+                &mut display_items,
+            )
+        );
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ItemsUpdated { diffs, .. }))
+                if diffs.is_empty()
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                projection: ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 1 },
+                    state: ThreadRootProjectionStateDto::Ready { item },
+                    ..
+                },
+                ..
+            })) if item == revised_root
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn non_sdk_set_updates_an_ordinary_bounded_display_item_by_render_identity() {
+        let key = room_key();
+        let mut root = timeline_item("$known-root:test", Some("root"), "@a:test", false);
+        root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some("$latest:test".to_owned()),
+            latest_sender: None,
+            latest_sender_label: None,
+            latest_body_preview: None,
+            latest_timestamp_ms: Some(400),
+        });
+        let mut ordinary = timeline_item("$ordinary:test", Some("before"), "@a:test", false);
+        ordinary.timestamp_ms = Some(200);
+        let mut after = timeline_item("$after:test", Some("after"), "@a:test", false);
+        after.timestamp_ms = Some(500);
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let _ = refresh_replay_known_root_projections(
+            &registry,
+            &key,
+            &[root.clone(), ordinary.clone(), after.clone()],
+            &[ordinary.clone(), after.clone()],
+        );
+
+        let mut revised_ordinary = ordinary.clone();
+        revised_ordinary.body = Some("after".to_owned());
+        let diffs = vec![TimelineDiff::Set {
+            index: 1,
+            item: revised_ordinary.clone(),
+        }];
+        let navigation_items = vec![root, revised_ordinary.clone(), after.clone()];
+        let mut display_items = vec![ordinary, after.clone()];
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+
+        assert!(
+            emit_non_sdk_item_sets_and_reconcile_replay_known_for_generation(
+                &event_tx,
+                &registry,
+                &service,
+                &generations,
+                &key,
+                actor_generation,
+                TimelineGeneration(0),
+                TimelineBatchId(0),
+                diffs.clone(),
+                &navigation_items,
+                &mut display_items,
+            )
+        );
+
+        assert_eq!(display_items, vec![revised_ordinary.clone(), after]);
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ItemsUpdated { diffs: emitted, .. }))
+                if emitted
+                    == vec![TimelineDiff::Set {
+                        index: 0,
+                        item: revised_ordinary.clone(),
+                    }]
+        ));
+        assert!(
+            matches!(
+                event_rx.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ),
+            "an unchanged replay root must not be re-emitted for an ordinary row mutation"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_non_sdk_set_cannot_mutate_display_mirror_registry_or_emit_events() {
+        let key = room_key();
+        let mut root = timeline_item("$known-root:test", Some("root"), "@a:test", false);
+        root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some("$latest:test".to_owned()),
+            latest_sender: None,
+            latest_sender_label: None,
+            latest_body_preview: None,
+            latest_timestamp_ms: Some(400),
+        });
+        let mut before = timeline_item("$before:test", Some("before"), "@a:test", false);
+        before.timestamp_ms = Some(200);
+        let mut after = timeline_item("$after:test", Some("after"), "@a:test", false);
+        after.timestamp_ms = Some(500);
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let _ = refresh_replay_known_root_projections(
+            &registry,
+            &key,
+            &[root.clone()],
+            &[before.clone(), after.clone()],
+        );
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let stale_generation = generations.activate_after_quiescence(&key).await.generation;
+        let _current_generation = generations.activate_after_quiescence(&key).await.generation;
+        let mut stale_root = root.clone();
+        stale_root.is_hidden = true;
+        let mut display_items = vec![before.clone(), after.clone()];
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+
+        assert!(
+            !emit_non_sdk_item_sets_and_reconcile_replay_known_for_generation(
+                &event_tx,
+                &registry,
+                &service,
+                &generations,
+                &key,
+                stale_generation,
+                TimelineGeneration(0),
+                TimelineBatchId(0),
+                vec![TimelineDiff::Set {
+                    index: 0,
+                    item: stale_root,
+                }],
+                &[root],
+                &mut display_items,
+            )
+        );
+        assert_eq!(display_items, vec![before, after]);
+        assert!(
+            registry
+                .lock()
+                .expect("registry lock")
+                .get(&key)
+                .and_then(|entries| entries.get("$known-root:test"))
+                .is_some_and(|entry| !entry.item.is_hidden)
+        );
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn non_sdk_item_mutation_paths_use_the_atomic_replay_reconcile_gateway() {
+        let source = include_str!("timeline.rs");
+        let actor_source = source
+            .split("impl TimelineActor {")
+            .nth(1)
+            .expect("timeline actor implementation must exist")
+            .split("\n#[cfg(test)]")
+            .next()
+            .expect("production source must precede tests");
+        for (name, start, end) in [
+            (
+                "ignored users",
+                "async fn handle_ignored_users_updated",
+                "fn emit_timeline_item_set",
+            ),
+            (
+                "single item set",
+                "fn emit_timeline_item_set",
+                "async fn handle_load_link_previews",
+            ),
+            (
+                "cancel previews",
+                "fn handle_cancel_link_previews",
+                "async fn handle_hide_link_preview",
+            ),
+            (
+                "hide preview",
+                "async fn handle_hide_link_preview",
+                "async fn handle_link_preview_policy_changed",
+            ),
+            (
+                "preview policy",
+                "async fn handle_link_preview_policy_changed",
+                "async fn emit_media_gallery_if_changed",
+            ),
+        ] {
+            let handler = actor_source
+                .split(start)
+                .nth(1)
+                .expect("mutation handler must exist")
+                .split(end)
+                .next()
+                .expect("mutation handler must have a stable boundary");
+            assert!(
+                handler.contains("self.emit_non_sdk_item_sets_and_reconcile_replay_known"),
+                "{name} must use the generation-fenced display-mirror and replay-registry gateway"
+            );
+            assert!(
+                !handler.contains("self.emit(CoreEvent::Timeline(TimelineEvent::ItemsUpdated"),
+                "{name} must not bypass replay reconciliation with a direct ItemsUpdated"
+            );
+        }
+    }
+
+    #[test]
+    fn non_sdk_item_sets_project_to_the_bounded_display_by_render_identity() {
+        let mut before = timeline_item("$before:test", Some("before"), "@a:test", false);
+        before.timestamp_ms = Some(200);
+        let mut after = timeline_item("$after:test", Some("after"), "@a:test", false);
+        after.timestamp_ms = Some(500);
+        let mut ignored_root = timeline_item("$old-root:test", Some("root"), "@ignored:test", true);
+        ignored_root.timestamp_ms = Some(400);
+        let mut revised_after = after.clone();
+        revised_after.body = Some("revised after".to_owned());
+
+        let mut display_items = vec![before.clone(), after.clone()];
+        let projected = apply_non_sdk_item_set_diffs_to_display_items(
+            &mut display_items,
+            &[
+                TimelineDiff::Set {
+                    index: 0,
+                    item: ignored_root,
+                },
+                TimelineDiff::Set {
+                    index: 41,
+                    item: revised_after.clone(),
+                },
+            ],
+        );
+
+        assert_eq!(display_items, vec![before, revised_after.clone()]);
+        assert_eq!(
+            projected,
+            vec![TimelineDiff::Set {
+                index: 1,
+                item: revised_after,
+            }],
+            "a navigation-only root must not replace bounded display index zero"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_actor_generation_cannot_clear_new_replay_known_registry_state() {
+        let key = room_key();
+        let mut root = timeline_item("$known-root:test", Some("root"), "@alice:test", false);
+        root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some("$summary:test".to_owned()),
+            latest_sender: None,
+            latest_sender_label: None,
+            latest_body_preview: None,
+            latest_timestamp_ms: Some(400),
+        });
+        let mut before = timeline_item("$before:test", Some("before"), "@a:test", false);
+        before.timestamp_ms = Some(200);
+        let mut after = timeline_item("$after:test", Some("after"), "@a:test", false);
+        after.timestamp_ms = Some(500);
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let actor_generations = Arc::new(TimelineActorGenerationGate::default());
+        let old_generation = actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        let initial = {
+            let _lease = actor_generations
+                .try_acquire(&key, old_generation)
+                .expect("old actor must initially own the gate");
+            refresh_replay_known_root_projections(
+                &registry,
+                &key,
+                &[root.clone()],
+                &[before.clone(), after.clone()],
+            )
+        };
+        assert_eq!(initial.ready.len(), 1);
+
+        // Model an old actor that has begun its registry/Core section when
+        // SyncStarted arrives. Replacement must mark it stale immediately,
+        // wait for this short lease, and only then activate the new actor.
+        let old_lease = actor_generations
+            .try_acquire(&key, old_generation)
+            .expect("old actor lease");
+        let gate_for_replacement = actor_generations.clone();
+        let key_for_replacement = key.clone();
+        let replacement = tokio::spawn(async move {
+            gate_for_replacement
+                .activate_after_quiescence(&key_for_replacement)
+                .await
+        });
+        let mut replacement_has_fenced_old_actor = false;
+        for _ in 0..10 {
+            if actor_generations
+                .try_acquire(&key, old_generation)
+                .is_none()
+            {
+                replacement_has_fenced_old_actor = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            replacement_has_fenced_old_actor,
+            "replacement must stop an old delayed actor before waiting for its in-flight lease"
+        );
+        assert!(
+            !replacement.is_finished(),
+            "replacement must wait until the in-flight synchronous lease quiesces"
+        );
+        drop(old_lease);
+        let new_generation = replacement
+            .await
+            .expect("replacement generation task")
+            .generation;
+        assert_eq!(
+            actor_generations.current_generation(&key),
+            Some(new_generation),
+            "the quiesced replacement must publish the new generation before its actor refreshes"
+        );
+
+        let stale_update = actor_generations
+            .try_acquire(&key, old_generation)
+            .map(|_lease| {
+                reconcile_replay_known_root_projections_after_navigation_update(
+                    &registry,
+                    &key,
+                    &[],
+                    &ReplayKnownDisplayContext::from_display_items(&[
+                        before.clone(),
+                        after.clone(),
+                    ]),
+                )
+            })
+            .unwrap_or_default();
+        assert!(stale_update.ready.is_empty());
+        assert!(stale_update.stale.is_empty());
+        assert!(
+            registry
+                .lock()
+                .expect("registry lock")
+                .get(&key)
+                .is_some_and(|entries| entries.contains_key("$known-root:test"))
+        );
+
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        emit_replay_known_root_projection_update(&event_tx, &key, stale_update);
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
+        let new_actor_ready_count = {
+            let _lease = actor_generations
+                .try_acquire(&key, new_generation)
+                .expect("new actor must own the replacement generation");
+            let update =
+                refresh_replay_known_root_projections(&registry, &key, &[root], &[before, after]);
+            let ready_count = update.ready.len();
+            emit_replay_known_root_projection_update(&event_tx, &key, update);
+            ready_count
+        };
+        assert_eq!(new_actor_ready_count, 1);
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                projection: ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { .. },
+                    state: ThreadRootProjectionStateDto::Ready { .. },
+                    ..
+                },
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn replay_known_reconciliation_uses_the_bounded_display_context_not_cache_replies() {
+        let key = room_key();
+        let root_with_summary = |activity_event_id: &str, activity_timestamp_ms: u64| {
+            let mut root = timeline_item("$known-root:test", Some("root"), "@alice:test", false);
+            root.thread_summary = Some(ThreadSummaryDto {
+                reply_count: 1,
+                latest_event_id: Some(activity_event_id.to_owned()),
+                latest_sender: None,
+                latest_sender_label: None,
+                latest_body_preview: None,
+                latest_timestamp_ms: Some(activity_timestamp_ms),
+            });
+            root
+        };
+        let mut before = timeline_item("$before:test", Some("before"), "@a:test", false);
+        before.timestamp_ms = Some(200);
+        let mut after = timeline_item("$after:test", Some("after"), "@a:test", false);
+        after.timestamp_ms = Some(500);
+        let mut cache_only_latest_reply =
+            timeline_item("$latest:test", Some("reply"), "@b:test", false);
+        cache_only_latest_reply.timestamp_ms = Some(400);
+        cache_only_latest_reply.thread_root = Some("$known-root:test".to_owned());
+        let mut displayed_items = vec![before.clone(), after];
+        let display_context = ReplayKnownDisplayContext::from_display_items(&displayed_items);
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let navigation = vec![
+            root_with_summary("$latest:test", 400),
+            cache_only_latest_reply.clone(),
+        ];
+
+        let initial = refresh_replay_known_root_projections_with_display_context(
+            &registry,
+            &key,
+            &navigation,
+            &display_context,
+        );
+        assert_eq!(
+            initial.ready.len(),
+            1,
+            "cache-only reply is not display evidence"
+        );
+
+        let unrelated = timeline_item("$unrelated:test", Some("other"), "@c:test", false);
+        apply_timeline_diffs_to_items(
+            &mut displayed_items,
+            &[TimelineDiff::PushBack {
+                item: unrelated.clone(),
+            }],
+        );
+        let unchanged = reconcile_replay_known_root_projections_after_navigation_update(
+            &registry,
+            &key,
+            &[navigation.clone(), vec![unrelated]].concat(),
+            &ReplayKnownDisplayContext::from_display_items(&displayed_items),
+        );
+        assert!(unchanged.stale.is_empty());
+        assert!(unchanged.ready.is_empty());
+
+        let outside_range = reconcile_replay_known_root_projections_after_navigation_update(
+            &registry,
+            &key,
+            &[
+                root_with_summary("$later:test", 600),
+                cache_only_latest_reply.clone(),
+            ],
+            &display_context,
+        );
+        assert!(matches!(
+            outside_range.stale.as_slice(),
+            [ReplayKnownThreadRootProjection { root_event_id, .. }]
+                if root_event_id == "$known-root:test"
+        ));
+        assert!(outside_range.ready.is_empty());
+
+        let _ = refresh_replay_known_root_projections_with_display_context(
+            &registry,
+            &key,
+            &navigation,
+            &display_context,
+        );
+        apply_timeline_diffs_to_items(
+            &mut displayed_items,
+            &[TimelineDiff::PushBack {
+                item: cache_only_latest_reply,
+            }],
+        );
+        let displayed_latest_reply =
+            ReplayKnownDisplayContext::from_display_items(&displayed_items);
+        let exact_reply = reconcile_replay_known_root_projections_after_navigation_update(
+            &registry,
+            &key,
+            &navigation,
+            &displayed_latest_reply,
+        );
+        assert!(matches!(
+            exact_reply.stale.as_slice(),
+            [ReplayKnownThreadRootProjection { root_event_id, .. }]
+                if root_event_id == "$known-root:test"
+        ));
+        assert!(exact_reply.ready.is_empty());
+    }
+
+    #[test]
+    fn replay_known_display_mirror_matches_webview_identity_normalization() {
+        let mut before = timeline_item("$before:test", Some("before"), "@a:test", false);
+        before.timestamp_ms = Some(200);
+        let mut latest_reply = timeline_item("$latest:test", Some("reply"), "@b:test", false);
+        latest_reply.timestamp_ms = Some(400);
+        latest_reply.thread_root = Some("$known-root:test".to_owned());
+        let mut root = timeline_item("$known-root:test", Some("root"), "@a:test", false);
+        root.timestamp_ms = None;
+        let mut transaction = timeline_item(
+            "$transaction-placeholder:test",
+            Some("txn"),
+            "@a:test",
+            false,
+        );
+        transaction.id = TimelineItemId::Transaction {
+            transaction_id: "local-1".to_owned(),
+        };
+        transaction.timestamp_ms = Some(450);
+        let mut synthetic = timeline_item(
+            "$synthetic-placeholder:test",
+            Some("synthetic"),
+            "@a:test",
+            false,
+        );
+        synthetic.id = TimelineItemId::Synthetic {
+            synthetic_id: "divider-1".to_owned(),
+        };
+        synthetic.timestamp_ms = Some(500);
+        let mut display_items = vec![
+            before.clone(),
+            latest_reply.clone(),
+            root.clone(),
+            transaction.clone(),
+            synthetic.clone(),
+        ];
+
+        // Overlapping scrollback must not add a second event/transaction/
+        // synthetic row, regardless of the Push or Insert operation.
+        apply_timeline_diffs_to_display_items(
+            &mut display_items,
+            &[
+                TimelineDiff::PushFront {
+                    item: latest_reply.clone(),
+                },
+                TimelineDiff::PushBack {
+                    item: transaction.clone(),
+                },
+                TimelineDiff::Insert {
+                    index: 1,
+                    item: synthetic.clone(),
+                },
+                TimelineDiff::PushBack { item: root.clone() },
+            ],
+        );
+        assert_eq!(display_items.len(), 5);
+
+        // A Set for an overlapping Core slot updates its already-rendered row
+        // without replacing/moving the item currently at the raw index.
+        let mut updated_latest_reply = latest_reply.clone();
+        updated_latest_reply.body = Some("updated reply".to_owned());
+        apply_timeline_diffs_to_display_items(
+            &mut display_items,
+            &[TimelineDiff::Set {
+                index: 0,
+                item: updated_latest_reply.clone(),
+            }],
+        );
+        assert_eq!(
+            timeline_item_event_id(&display_items[0]),
+            Some("$before:test")
+        );
+        assert_eq!(
+            display_items
+                .iter()
+                .find(|item| timeline_item_event_id(item) == Some("$latest:test"))
+                .and_then(|item| item.body.as_deref()),
+            Some("updated reply")
+        );
+
+        // Remove and Reset use the normalized sequence as the webview does;
+        // Reset keeps the first occurrence of each render identity.
+        apply_timeline_diffs_to_display_items(
+            &mut display_items,
+            &[TimelineDiff::Remove { index: 0 }],
+        );
+        assert_eq!(
+            timeline_item_event_id(&display_items[0]),
+            Some("$latest:test")
+        );
+        apply_timeline_diffs_to_display_items(
+            &mut display_items,
+            &[TimelineDiff::Reset {
+                items: vec![
+                    latest_reply.clone(),
+                    updated_latest_reply,
+                    root.clone(),
+                    root,
+                    transaction.clone(),
+                    transaction,
+                    synthetic.clone(),
+                    synthetic,
+                ],
+            }],
+        );
+        assert_eq!(display_items.len(), 4);
+        let normalized_context = ReplayKnownDisplayContext::from_display_items(&display_items);
+        assert!(normalized_context.event_ids.contains("$latest:test"));
+        assert!(
+            normalized_context
+                .exact_thread_reply_pairs
+                .contains(&("$known-root:test".to_owned(), "$latest:test".to_owned()))
+        );
+        assert_eq!(normalized_context.activity_range, Some((400, 400)));
+
+        // Truncate and Clear operate on the same normalized sequence, so stale
+        // IDs/pairs cannot survive in replay-known display evidence.
+        apply_timeline_diffs_to_display_items(
+            &mut display_items,
+            &[TimelineDiff::Truncate { length: 1 }],
+        );
+        let truncated_context = ReplayKnownDisplayContext::from_display_items(&display_items);
+        assert_eq!(
+            truncated_context.event_ids,
+            HashSet::from(["$latest:test".to_owned()])
+        );
+        assert_eq!(truncated_context.activity_range, Some((400, 400)));
+        assert!(
+            truncated_context
+                .exact_thread_reply_pairs
+                .contains(&("$known-root:test".to_owned(), "$latest:test".to_owned()))
+        );
+        apply_timeline_diffs_to_display_items(&mut display_items, &[TimelineDiff::Clear]);
+        assert_eq!(
+            ReplayKnownDisplayContext::from_display_items(&display_items),
+            ReplayKnownDisplayContext::default()
+        );
+
+        // A duplicate, non-displayed cache overlap leaves a retained
+        // replay-known root untouched: the mirror cannot invent a Clear/Ready
+        // transition that the webview itself would not render.
+        let key = room_key();
+        let mut root = timeline_item("$known-root:test", Some("root"), "@a:test", false);
+        root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some("$latest:test".to_owned()),
+            latest_sender: None,
+            latest_sender_label: None,
+            latest_body_preview: None,
+            latest_timestamp_ms: Some(400),
+        });
+        let mut base_before = timeline_item("$base-before:test", Some("before"), "@a:test", false);
+        base_before.timestamp_ms = Some(200);
+        let mut base_after = timeline_item("$base-after:test", Some("after"), "@a:test", false);
+        base_after.timestamp_ms = Some(500);
+        let mut bounded_display = vec![base_before, base_after.clone()];
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let initial = refresh_replay_known_root_projections(
+            &registry,
+            &key,
+            &[root.clone(), latest_reply],
+            &bounded_display,
+        );
+        assert_eq!(initial.ready.len(), 1);
+        apply_timeline_diffs_to_display_items(
+            &mut bounded_display,
+            &[TimelineDiff::PushBack { item: base_after }],
+        );
+        let unchanged = reconcile_replay_known_root_projections_after_navigation_update(
+            &registry,
+            &key,
+            &[root],
+            &ReplayKnownDisplayContext::from_display_items(&bounded_display),
+        );
+        assert!(unchanged.ready.is_empty());
+        assert!(unchanged.stale.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_actor_generation_cannot_emit_any_timeline_event_after_replacement() {
+        let key = room_key();
+        let actor_generations = Arc::new(TimelineActorGenerationGate::default());
+        let old_generation = actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        let old_lease = actor_generations
+            .try_acquire(&key, old_generation)
+            .expect("old actor lease");
+        let replacement_gate = actor_generations.clone();
+        let replacement_key = key.clone();
+        let replacement = tokio::spawn(async move {
+            replacement_gate
+                .activate_after_quiescence(&replacement_key)
+                .await
+        });
+        for _ in 0..10 {
+            if actor_generations
+                .try_acquire(&key, old_generation)
+                .is_none()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            actor_generations
+                .try_acquire(&key, old_generation)
+                .is_none()
+        );
+        drop(old_lease);
+        let new_generation = replacement.await.expect("replacement task").generation;
+
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        assert!(!emit_timeline_events_for_generation(
+            &event_tx,
+            &actor_generations,
+            &key,
+            old_generation,
+            vec![TimelineEvent::ItemsUpdated {
+                key: key.clone(),
+                generation: TimelineGeneration(0),
+                batch_id: TimelineBatchId(1),
+                diffs: vec![TimelineDiff::PushBack {
+                    item: timeline_item("$old-diff:test", Some("old"), "@a:test", false),
+                }],
+            }],
+        ));
+        assert!(!emit_timeline_events_for_generation(
+            &event_tx,
+            &actor_generations,
+            &key,
+            old_generation,
+            vec![TimelineEvent::InitialItems {
+                request_id: None,
+                key: key.clone(),
+                generation: TimelineGeneration(0),
+                items: vec![timeline_item(
+                    "$old-initial:test",
+                    Some("old"),
+                    "@a:test",
+                    false
+                )],
+            }],
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
+        assert!(emit_timeline_events_for_generation(
+            &event_tx,
+            &actor_generations,
+            &key,
+            new_generation,
+            vec![TimelineEvent::InitialItems {
+                request_id: None,
+                key: key.clone(),
+                generation: TimelineGeneration(0),
+                items: vec![timeline_item(
+                    "$new-initial:test",
+                    Some("new"),
+                    "@a:test",
+                    false
+                )],
+            }],
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::InitialItems { items, .. }))
+                if items.iter().any(|item| timeline_item_event_id(item) == Some("$new-initial:test"))
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn timeline_event_group_uses_one_generation_lease_and_finishes_before_replacement() {
+        let key = room_key();
+        let actor_generations = Arc::new(TimelineActorGenerationGate::default());
+        let old_generation = actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        let lease = actor_generations
+            .try_acquire(&key, old_generation)
+            .expect("current actor lease");
+        let replacement_gate = actor_generations.clone();
+        let replacement_key = key.clone();
+        let replacement = tokio::spawn(async move {
+            replacement_gate
+                .activate_after_quiescence(&replacement_key)
+                .await
+        });
+        for _ in 0..10 {
+            if actor_generations
+                .try_acquire(&key, old_generation)
+                .is_none()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        emit_timeline_events_with_lease(
+            &event_tx,
+            &lease,
+            vec![
+                TimelineEvent::PaginationStateChanged {
+                    request_id: None,
+                    key: key.clone(),
+                    direction: PaginationDirection::Backward,
+                    state: PaginationState::Paginating,
+                },
+                TimelineEvent::PaginationStateChanged {
+                    request_id: None,
+                    key: key.clone(),
+                    direction: PaginationDirection::Backward,
+                    state: PaginationState::Idle,
+                },
+            ],
+        );
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                state: PaginationState::Paginating,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::PaginationStateChanged {
+                state: PaginationState::Idle,
+                ..
+            }))
+        ));
+        assert!(
+            !replacement.is_finished(),
+            "the one outer lease keeps the full synchronous event group before replacement"
+        );
+        drop(lease);
+        assert!(
+            replacement.await.is_ok(),
+            "replacement proceeds after the group"
+        );
+    }
+
+    #[tokio::test]
+    async fn fenced_diff_group_emits_neither_replay_transition_nor_items_update() {
+        let key = room_key();
+        let root_with_summary = || {
+            let mut root = timeline_item("$known-root:test", Some("root"), "@a:test", false);
+            root.thread_summary = Some(ThreadSummaryDto {
+                reply_count: 1,
+                latest_event_id: Some("$summary-activity:test".to_owned()),
+                latest_sender: None,
+                latest_sender_label: None,
+                latest_body_preview: None,
+                latest_timestamp_ms: Some(300),
+            });
+            root
+        };
+        let mut before = timeline_item("$before:test", Some("before"), "@a:test", false);
+        before.timestamp_ms = Some(200);
+        let mut after = timeline_item("$after:test", Some("after"), "@a:test", false);
+        after.timestamp_ms = Some(400);
+        let display_items = vec![before, after];
+        let diffs = vec![TimelineDiff::PushBack {
+            item: timeline_item("$new:test", Some("new"), "@a:test", false),
+        }];
+
+        // The actor has already processed the diff into its private mirrors.
+        // SyncStarted fences its generation immediately before the single UI
+        // group is committed. No old registry mutation, Clear/Ready, or diff
+        // may leak through that fence.
+        let fenced_registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let thread_root_projection_service =
+            Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let _ = refresh_replay_known_root_projections(
+            &fenced_registry,
+            &key,
+            &[root_with_summary()],
+            &display_items,
+        );
+        let fenced_generations = Arc::new(TimelineActorGenerationGate::default());
+        let old_generation = fenced_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        let _replacement_generation = fenced_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        let (fenced_tx, mut fenced_rx) = broadcast::channel(8);
+        assert!(
+            !emit_items_updated_and_reconcile_replay_known_for_generation(
+                &fenced_tx,
+                &fenced_registry,
+                &thread_root_projection_service,
+                &fenced_generations,
+                &key,
+                old_generation,
+                TimelineGeneration(0),
+                TimelineBatchId(0),
+                diffs.clone(),
+                &[],
+                &display_items,
+            ),
+            "the old actor must be rejected before either half of the UI group"
+        );
+        assert!(matches!(
+            fenced_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        assert!(
+            fenced_registry
+                .lock()
+                .expect("registry lock")
+                .get(&key)
+                .is_some(),
+            "a fenced actor must not mutate replay ownership either"
+        );
+
+        // A current generation commits both the canonical diff and the
+        // matching source-scoped replay transition under one lease.
+        let current_registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let _ = refresh_replay_known_root_projections(
+            &current_registry,
+            &key,
+            &[root_with_summary()],
+            &display_items,
+        );
+        let current_generations = Arc::new(TimelineActorGenerationGate::default());
+        let current_generation = current_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        let (current_tx, mut current_rx) = broadcast::channel(8);
+        assert!(
+            emit_items_updated_and_reconcile_replay_known_for_generation(
+                &current_tx,
+                &current_registry,
+                &thread_root_projection_service,
+                &current_generations,
+                &key,
+                current_generation,
+                TimelineGeneration(0),
+                TimelineBatchId(0),
+                diffs,
+                &[],
+                &display_items,
+            )
+        );
+        assert!(matches!(
+            current_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ItemsUpdated { .. }))
+        ));
+        assert!(matches!(
+            current_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                projection: ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { .. },
+                    state: ThreadRootProjectionStateDto::Cleared,
+                    ..
+                },
+                ..
+            }))
+        ));
+        assert!(matches!(
+            current_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn hydration_completion_does_not_overwrite_a_current_replay_known_owner() {
+        let key = room_key();
+        let (action_tx, mut action_rx) = mpsc::channel(8);
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let (msg_tx, msg_rx) = mpsc::channel(8);
+        let replay_known_thread_root_projections = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let thread_root_projection_service =
+            Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let mut manager = TimelineManagerActor {
+            session: None,
+            room_list_service: None,
+            timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
+            action_tx,
+            event_tx,
+            msg_tx,
+            msg_rx,
+            search_index_tx: None,
+            ignored_user_ids: Default::default(),
+            data_dir: None,
+            link_preview_policy: LinkPreviewContext::default(),
+            messages_backpressure: MessagesBackpressure::default(),
+            thread_root_projection_service: thread_root_projection_service.clone(),
+            thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
+            replay_known_thread_root_projections: replay_known_thread_root_projections.clone(),
+            timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+        };
+
+        for (root_event_id, result) in [
+            (
+                "$ready-root:test",
+                Ok(timeline_item(
+                    "$ready-root:test",
+                    Some("ready"),
+                    "@a:test",
+                    false,
+                )),
+            ),
+            ("$failed-root:test", Err(OperationFailureKind::Network)),
+        ] {
+            let activity = ThreadRootProjectionActivity {
+                room_id: key.room_id().to_owned(),
+                root_event_id: root_event_id.to_owned(),
+                activity_event_id: format!("$activity-{root_event_id}"),
+                activity_timestamp_ms: Some(300),
+                activity_sender: None,
+                activity_sender_label: None,
+                activity_body_preview: None,
+            };
+            assert!(matches!(
+                thread_root_projection_service
+                    .lock()
+                    .expect("service lock")
+                    .observe(activity.clone()),
+                ThreadRootProjectionDecision::StartFetch(_)
+            ));
+            let replay_snapshot = ThreadRootProjectionDto {
+                root_event_id: root_event_id.to_owned(),
+                activity_event_id: activity.activity_event_id.clone(),
+                activity_timestamp_ms: activity.activity_timestamp_ms,
+                retain_without_reply: true,
+                source: ThreadRootProjectionSourceDto::Hydration,
+                state: ThreadRootProjectionStateDto::Ready {
+                    item: timeline_item(root_event_id, Some("replay root"), "@a:test", false),
+                },
+            };
+            replay_known_thread_root_projections
+                .lock()
+                .expect("registry lock")
+                .replace(&key, vec![replay_snapshot]);
+            manager.thread_root_projection_fetches.insert(
+                activity.room_id.clone(),
+                activity.root_event_id.clone(),
+                executor::spawn(async {}),
+            );
+
+            manager
+                .handle_thread_root_projection_fetch_finished(key.clone(), activity.clone(), result)
+                .await;
+
+            let action = action_rx.recv().await;
+            if root_event_id == "$ready-root:test" {
+                assert!(matches!(
+                    action,
+                    Some(actions) if matches!(
+                        actions.as_slice(),
+                        [AppAction::ThreadRootProjectionReady { root_event_id: action_root, .. }]
+                        if action_root == "$ready-root:test"
+                    )
+                ));
+            } else {
+                assert!(matches!(
+                    action,
+                    Some(actions) if matches!(
+                        actions.as_slice(),
+                        [AppAction::ThreadRootProjectionFailed { root_event_id: action_root, .. }]
+                        if action_root == "$failed-root:test"
+                    )
+                ));
+            }
+            assert!(matches!(
+                event_rx.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ));
+        }
+        assert!(matches!(
+            thread_root_projection_service
+                .lock()
+                .expect("service lock")
+                .observe(ThreadRootProjectionActivity {
+                    room_id: key.room_id().to_owned(),
+                    root_event_id: "$ready-root:test".to_owned(),
+                    activity_event_id: "$activity-$ready-root:test".to_owned(),
+                    activity_timestamp_ms: Some(300),
+                    activity_sender: None,
+                    activity_sender_label: None,
+                    activity_body_preview: None,
+                }),
+            ThreadRootProjectionDecision::Existing(record) if record.item().is_some()
+        ));
+        assert!(matches!(
+            thread_root_projection_service
+                .lock()
+                .expect("service lock")
+                .observe(ThreadRootProjectionActivity {
+                    room_id: key.room_id().to_owned(),
+                    root_event_id: "$failed-root:test".to_owned(),
+                    activity_event_id: "$activity-$failed-root:test".to_owned(),
+                    activity_timestamp_ms: Some(300),
+                    activity_sender: None,
+                    activity_sender_label: None,
+                    activity_body_preview: None,
+                }),
+            ThreadRootProjectionDecision::Existing(record)
+                if record.failure_kind() == Some(OperationFailureKind::Network)
+        ));
+
+        // With no replay-known owner, the exact same manager completion keeps
+        // the existing hydration wire behavior.
+        replay_known_thread_root_projections
+            .lock()
+            .expect("registry lock")
+            .clear(&key);
+        let ordinary_activity = ThreadRootProjectionActivity {
+            room_id: key.room_id().to_owned(),
+            root_event_id: "$ordinary-root:test".to_owned(),
+            activity_event_id: "$ordinary-activity:test".to_owned(),
+            activity_timestamp_ms: Some(301),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        let _ = thread_root_projection_service
+            .lock()
+            .expect("service lock")
+            .observe(ordinary_activity.clone());
+        manager.thread_root_projection_fetches.insert(
+            ordinary_activity.room_id.clone(),
+            ordinary_activity.root_event_id.clone(),
+            executor::spawn(async {}),
+        );
+        manager
+            .handle_thread_root_projection_fetch_finished(
+                key.clone(),
+                ordinary_activity,
+                Ok(timeline_item(
+                    "$ordinary-root:test",
+                    Some("ordinary"),
+                    "@a:test",
+                    false,
+                )),
+            )
+            .await;
+        assert!(matches!(
+            action_rx.recv().await,
+            Some(actions) if matches!(
+                actions.as_slice(),
+                [AppAction::ThreadRootProjectionReady { root_event_id, .. }]
+                    if root_event_id == "$ordinary-root:test"
+            )
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                projection: ThreadRootProjectionDto {
+                    root_event_id,
+                    source: ThreadRootProjectionSourceDto::Hydration,
+                    state: ThreadRootProjectionStateDto::Ready { .. },
+                    ..
+                },
+                ..
+            })) if root_event_id == "$ordinary-root:test"
+        ));
+    }
+
+    #[tokio::test]
+    async fn initial_items_replay_owner_group_suppresses_a_terminal_and_handoffs_exactly_once() {
+        let key = room_key();
+        let actor_generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let activity = ThreadRootProjectionActivity {
+            room_id: key.room_id().to_owned(),
+            root_event_id: "$root:test".to_owned(),
+            activity_event_id: "$latest:test".to_owned(),
+            activity_timestamp_ms: Some(300),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        let _ = service
+            .lock()
+            .expect("service lock")
+            .observe(activity.clone());
+        service
+            .lock()
+            .expect("service lock")
+            .mark_ready(
+                &activity,
+                timeline_item("$root:test", Some("hydrated"), "@a:test", false),
+            )
+            .expect("pending hydration must complete");
+
+        let mut replay_root = timeline_item("$root:test", Some("replay"), "@a:test", false);
+        replay_root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some(activity.activity_event_id.clone()),
+            latest_sender: None,
+            latest_sender_label: None,
+            latest_body_preview: None,
+            latest_timestamp_ms: activity.activity_timestamp_ms,
+        });
+        let replay_snapshot = ThreadRootProjectionDto {
+            root_event_id: activity.root_event_id.clone(),
+            activity_event_id: activity.activity_event_id.clone(),
+            activity_timestamp_ms: activity.activity_timestamp_ms,
+            retain_without_reply: true,
+            source: ThreadRootProjectionSourceDto::Hydration,
+            state: ThreadRootProjectionStateDto::Ready {
+                item: replay_root.clone(),
+            },
+        };
+
+        assert!(
+            emit_initial_items_and_reconcile_replay_known_for_generation(
+                &event_tx,
+                &registry,
+                &service,
+                &actor_generations,
+                &key,
+                actor_generation,
+                Some(fake_rid(14)),
+                TimelineGeneration(0),
+                vec![replay_root.clone()],
+                vec![replay_snapshot],
+            )
+        );
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::InitialItems { .. }))
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                projection: ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { .. },
+                    state: ThreadRootProjectionStateDto::Ready { .. },
+                    ..
+                },
+                ..
+            }))
+        ));
+
+        let terminal = thread_root_projection_dto_from_record(
+            &service
+                .lock()
+                .expect("service lock")
+                .terminal_record(key.room_id(), &activity.root_event_id)
+                .expect("terminal hydration record"),
+        );
+        assert!(
+            !emit_hydration_terminal_unless_replay_owned(&event_tx, &registry, &key, terminal),
+            "a completion attempting immediately after InitialItems must find the replay owner"
+        );
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
+        let mut exact_reply = timeline_item("$latest:test", Some("reply"), "@b:test", false);
+        exact_reply.thread_root = Some(activity.root_event_id.clone());
+        exact_reply.timestamp_ms = activity.activity_timestamp_ms;
+        let events = {
+            let mut guard = registry.lock().expect("registry lock");
+            let update = guard.reconcile_navigation(
+                &key,
+                &[replay_root, exact_reply.clone()],
+                &ReplayKnownDisplayContext::from_display_items(&[exact_reply]),
+            );
+            replay_known_timeline_events_with_hydration_handoffs(&key, &mut guard, &service, update)
+        };
+        for event in events {
+            let _ = event_tx.send(CoreEvent::Timeline(event));
+        }
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                projection: ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { .. },
+                    state: ThreadRootProjectionStateDto::Cleared,
+                    ..
+                },
+                ..
+            }))
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                projection: ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::Hydration,
+                    state: ThreadRootProjectionStateDto::Ready { .. },
+                    ..
+                },
+                ..
+            }))
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn replay_clear_hands_back_a_hydration_terminal_that_was_emitted_before_replay_ownership() {
+        let key = room_key();
+        let activity = ThreadRootProjectionActivity {
+            room_id: key.room_id().to_owned(),
+            root_event_id: "$root:test".to_owned(),
+            activity_event_id: "$latest:test".to_owned(),
+            activity_timestamp_ms: Some(300),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let _ = service
+            .lock()
+            .expect("service lock")
+            .observe(activity.clone());
+        service
+            .lock()
+            .expect("service lock")
+            .mark_ready(
+                &activity,
+                timeline_item("$root:test", Some("hydrated"), "@a:test", false),
+            )
+            .expect("pending hydration must complete");
+        let hydration_terminal = thread_root_projection_dto_from_record(
+            &service
+                .lock()
+                .expect("service lock")
+                .terminal_record(key.room_id(), &activity.root_event_id)
+                .expect("terminal hydration record"),
+        );
+
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        assert!(emit_hydration_terminal_unless_replay_owned(
+            &event_tx,
+            &registry,
+            &key,
+            hydration_terminal,
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                projection: ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::Hydration,
+                    state: ThreadRootProjectionStateDto::Ready { .. },
+                    ..
+                },
+                ..
+            }))
+        ));
+
+        let mut replay_root = timeline_item("$root:test", Some("replay"), "@a:test", false);
+        replay_root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some(activity.activity_event_id.clone()),
+            latest_sender: None,
+            latest_sender_label: None,
+            latest_body_preview: None,
+            latest_timestamp_ms: activity.activity_timestamp_ms,
+        });
+        let replay = ThreadRootProjectionDto {
+            root_event_id: activity.root_event_id.clone(),
+            activity_event_id: activity.activity_event_id.clone(),
+            activity_timestamp_ms: activity.activity_timestamp_ms,
+            retain_without_reply: true,
+            source: ThreadRootProjectionSourceDto::Hydration,
+            state: ThreadRootProjectionStateDto::Ready {
+                item: replay_root.clone(),
+            },
+        };
+        let initial = registry
+            .lock()
+            .expect("registry lock")
+            .replace(&key, vec![replay]);
+        assert_eq!(initial.ready.len(), 1);
+
+        let mut exact_reply = timeline_item("$latest:test", Some("reply"), "@b:test", false);
+        exact_reply.thread_root = Some(activity.root_event_id.clone());
+        exact_reply.timestamp_ms = activity.activity_timestamp_ms;
+        let handoff = {
+            let mut guard = registry.lock().expect("registry lock");
+            let update = guard.reconcile_navigation(
+                &key,
+                &[replay_root, exact_reply.clone()],
+                &ReplayKnownDisplayContext::from_display_items(&[exact_reply]),
+            );
+            replay_known_timeline_events_with_hydration_handoffs(&key, &mut guard, &service, update)
+        };
+
+        assert!(matches!(
+            handoff.as_slice(),
+            [
+                TimelineEvent::ThreadRootProjection {
+                    projection: ThreadRootProjectionDto {
+                        source: ThreadRootProjectionSourceDto::ReplayKnown { .. },
+                        state: ThreadRootProjectionStateDto::Cleared,
+                        ..
+                    },
+                    ..
+                },
+                TimelineEvent::ThreadRootProjection {
+                    projection: ThreadRootProjectionDto {
+                        source: ThreadRootProjectionSourceDto::Hydration,
+                        state: ThreadRootProjectionStateDto::Ready { .. },
+                        ..
+                    },
+                    ..
+                }
+            ]
+        ));
+    }
+
+    #[tokio::test]
+    async fn initial_items_forces_ready_and_failed_completion_attempts_to_wait_for_replay_ownership()
+     {
+        for (root_event_id, result) in [
+            (
+                "$ready-root:test",
+                Ok(timeline_item(
+                    "$ready-root:test",
+                    Some("hydrated"),
+                    "@a:test",
+                    false,
+                )),
+            ),
+            ("$failed-root:test", Err(OperationFailureKind::Network)),
+        ] {
+            let key = room_key();
+            let actor_generations = Arc::new(TimelineActorGenerationGate::default());
+            let actor_generation = actor_generations
+                .activate_after_quiescence(&key)
+                .await
+                .generation;
+            let activity = ThreadRootProjectionActivity {
+                room_id: key.room_id().to_owned(),
+                root_event_id: root_event_id.to_owned(),
+                activity_event_id: format!("$latest-{root_event_id}"),
+                activity_timestamp_ms: Some(300),
+                activity_sender: None,
+                activity_sender_label: None,
+                activity_body_preview: None,
+            };
+            let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+            let _ = service
+                .lock()
+                .expect("service lock")
+                .observe(activity.clone());
+            match result {
+                Ok(item) => service
+                    .lock()
+                    .expect("service lock")
+                    .mark_ready(&activity, item)
+                    .expect("pending hydration must complete"),
+                Err(failure_kind) => service
+                    .lock()
+                    .expect("service lock")
+                    .mark_failed(&activity, failure_kind)
+                    .expect("pending hydration must complete"),
+            };
+            let terminal = thread_root_projection_dto_from_record(
+                &service
+                    .lock()
+                    .expect("service lock")
+                    .terminal_record(key.room_id(), &activity.root_event_id)
+                    .expect("terminal hydration record"),
+            );
+            let mut replay_root = timeline_item(root_event_id, Some("replay"), "@a:test", false);
+            replay_root.thread_summary = Some(ThreadSummaryDto {
+                reply_count: 1,
+                latest_event_id: Some(activity.activity_event_id.clone()),
+                latest_sender: None,
+                latest_sender_label: None,
+                latest_body_preview: None,
+                latest_timestamp_ms: activity.activity_timestamp_ms,
+            });
+            let replay_snapshot = ThreadRootProjectionDto {
+                root_event_id: activity.root_event_id.clone(),
+                activity_event_id: activity.activity_event_id.clone(),
+                activity_timestamp_ms: activity.activity_timestamp_ms,
+                retain_without_reply: true,
+                source: ThreadRootProjectionSourceDto::Hydration,
+                state: ThreadRootProjectionStateDto::Ready {
+                    item: replay_root.clone(),
+                },
+            };
+            let registry = Arc::new(Mutex::new(
+                ReplayKnownThreadRootProjectionRegistry::default(),
+            ));
+            let (event_tx, mut event_rx) = broadcast::channel(16);
+            let (initial_sent_tx, initial_sent_rx) = std::sync::mpsc::channel();
+            let (completion_started_tx, completion_started_rx) = std::sync::mpsc::channel();
+            let completion_registry = registry.clone();
+            let completion_key = key.clone();
+            let completion_event_tx = event_tx.clone();
+            let completion = std::thread::spawn(move || {
+                initial_sent_rx
+                    .recv()
+                    .expect("InitialItems must release the forced completion attempt");
+                completion_started_tx
+                    .send(())
+                    .expect("completion attempt signal");
+                emit_hydration_terminal_unless_replay_owned(
+                    &completion_event_tx,
+                    &completion_registry,
+                    &completion_key,
+                    terminal,
+                )
+            });
+
+            assert!(
+                emit_initial_items_and_reconcile_replay_known_for_generation_with_test_hook(
+                    &event_tx,
+                    &registry,
+                    &service,
+                    &actor_generations,
+                    &key,
+                    actor_generation,
+                    Some(fake_rid(15)),
+                    TimelineGeneration(0),
+                    vec![replay_root.clone()],
+                    vec![replay_snapshot],
+                    move || {
+                        initial_sent_tx
+                            .send(())
+                            .expect("completion must be released after InitialItems");
+                        completion_started_rx.recv().expect(
+                            "completion must attempt the registry while the owner group holds it",
+                        );
+                    },
+                )
+            );
+            assert!(matches!(
+                event_rx.try_recv(),
+                Ok(CoreEvent::Timeline(TimelineEvent::InitialItems { .. }))
+            ));
+            assert!(matches!(
+                event_rx.try_recv(),
+                Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                    projection: ThreadRootProjectionDto {
+                        source: ThreadRootProjectionSourceDto::ReplayKnown { .. },
+                        state: ThreadRootProjectionStateDto::Ready { .. },
+                        ..
+                    },
+                    ..
+                }))
+            ));
+            assert!(
+                !completion
+                    .join()
+                    .expect("completion must finish after owner group"),
+                "a terminal attempt between InitialItems and replay Ready must be suppressed"
+            );
+            assert!(matches!(
+                event_rx.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ));
+
+            let mut exact_reply =
+                timeline_item(&activity.activity_event_id, Some("reply"), "@b:test", false);
+            exact_reply.thread_root = Some(activity.root_event_id.clone());
+            exact_reply.timestamp_ms = activity.activity_timestamp_ms;
+            let events = {
+                let mut guard = registry.lock().expect("registry lock");
+                let update = guard.reconcile_navigation(
+                    &key,
+                    &[replay_root, exact_reply.clone()],
+                    &ReplayKnownDisplayContext::from_display_items(&[exact_reply]),
+                );
+                replay_known_timeline_events_with_hydration_handoffs(
+                    &key, &mut guard, &service, update,
+                )
+            };
+            for event in events {
+                let _ = event_tx.send(CoreEvent::Timeline(event));
+            }
+            assert!(matches!(
+                event_rx.try_recv(),
+                Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                    projection: ThreadRootProjectionDto {
+                        source: ThreadRootProjectionSourceDto::ReplayKnown { .. },
+                        state: ThreadRootProjectionStateDto::Cleared,
+                        ..
+                    },
+                    ..
+                }))
+            ));
+            let handoff = event_rx
+                .try_recv()
+                .expect("one suppressed terminal handoff");
+            assert!(matches!(
+                handoff,
+                CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                    projection: ThreadRootProjectionDto {
+                        source: ThreadRootProjectionSourceDto::Hydration,
+                        state: ThreadRootProjectionStateDto::Ready { .. }
+                            | ThreadRootProjectionStateDto::Failed { .. },
+                        ..
+                    },
+                    ..
+                })
+            ));
+            assert!(matches!(
+                event_rx.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ));
+        }
+    }
+
+    #[test]
+    fn hydration_terminal_cannot_overtake_a_replay_known_ready_in_the_event_stream() {
+        let key = room_key();
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+
+        for hydration_state in [
+            ThreadRootProjectionStateDto::Ready {
+                item: timeline_item("$root:test", Some("hydrated"), "@a:test", false),
+            },
+            ThreadRootProjectionStateDto::Failed {
+                failure_kind: OperationFailureKind::Network,
+            },
+        ] {
+            let root_event_id = "$root:test".to_owned();
+            let replay_snapshot = ThreadRootProjectionDto {
+                root_event_id: root_event_id.clone(),
+                activity_event_id: "$latest:test".to_owned(),
+                activity_timestamp_ms: Some(300),
+                retain_without_reply: true,
+                source: ThreadRootProjectionSourceDto::Hydration,
+                state: ThreadRootProjectionStateDto::Ready {
+                    item: timeline_item("$root:test", Some("replay"), "@a:test", false),
+                },
+            };
+            let hydration_terminal = ThreadRootProjectionDto {
+                root_event_id: root_event_id.clone(),
+                activity_event_id: "$latest:test".to_owned(),
+                activity_timestamp_ms: Some(300),
+                retain_without_reply: false,
+                source: ThreadRootProjectionSourceDto::Hydration,
+                state: hydration_state,
+            };
+
+            // This guard models the actor's short replay ownership section.
+            // A concurrent manager completion may start, but must not decide
+            // ownership or emit until the actor has published its Ready.
+            let mut actor_registry = registry.lock().expect("registry lock");
+            let registry_for_completion = registry.clone();
+            let event_tx_for_completion = event_tx.clone();
+            let key_for_completion = key.clone();
+            let (completion_started_tx, completion_started_rx) = std::sync::mpsc::channel();
+            let completion = std::thread::spawn(move || {
+                completion_started_tx
+                    .send(())
+                    .expect("completion test coordination");
+                emit_hydration_terminal_unless_replay_owned(
+                    &event_tx_for_completion,
+                    &registry_for_completion,
+                    &key_for_completion,
+                    hydration_terminal,
+                )
+            });
+            completion_started_rx
+                .recv()
+                .expect("completion must attempt the shared ownership boundary");
+
+            let update = actor_registry.replace(&key, vec![replay_snapshot]);
+            for event in replay_known_timeline_events(&key, update) {
+                let _ = event_tx.send(CoreEvent::Timeline(event));
+            }
+            drop(actor_registry);
+
+            assert!(
+                !completion.join().expect("completion worker must finish"),
+                "a replay-known owner must suppress both Ready and Failed hydration terminals"
+            );
+            assert!(matches!(
+                event_rx.try_recv(),
+                Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                    projection: ThreadRootProjectionDto {
+                        source: ThreadRootProjectionSourceDto::ReplayKnown { .. },
+                        state: ThreadRootProjectionStateDto::Ready { .. },
+                        ..
+                    },
+                    ..
+                }))
+            ));
+            assert!(matches!(
+                event_rx.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ));
+
+            registry.lock().expect("registry lock").clear(&key);
+        }
+    }
+
+    #[test]
+    fn replay_owner_clear_handoffs_the_retained_hydration_terminal_to_the_exact_reply_slot() {
+        let key = room_key();
+        let activity = ThreadRootProjectionActivity {
+            room_id: key.room_id().to_owned(),
+            root_event_id: "$root:test".to_owned(),
+            activity_event_id: "$latest:test".to_owned(),
+            activity_timestamp_ms: Some(300),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        assert!(matches!(
+            service
+                .lock()
+                .expect("service lock")
+                .observe(activity.clone()),
+            ThreadRootProjectionDecision::StartFetch(_)
+        ));
+        service
+            .lock()
+            .expect("service lock")
+            .mark_ready(
+                &activity,
+                timeline_item("$root:test", Some("hydrated"), "@a:test", false),
+            )
+            .expect("pending hydration must complete");
+
+        let mut root = timeline_item("$root:test", Some("root"), "@a:test", false);
+        root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some(activity.activity_event_id.clone()),
+            latest_sender: None,
+            latest_sender_label: None,
+            latest_body_preview: None,
+            latest_timestamp_ms: activity.activity_timestamp_ms,
+        });
+        let mut exact_latest_reply = timeline_item("$latest:test", Some("reply"), "@b:test", false);
+        exact_latest_reply.thread_root = Some(activity.root_event_id.clone());
+        exact_latest_reply.timestamp_ms = activity.activity_timestamp_ms;
+
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        let replay_snapshot = ThreadRootProjectionDto {
+            root_event_id: activity.root_event_id.clone(),
+            activity_event_id: activity.activity_event_id.clone(),
+            activity_timestamp_ms: activity.activity_timestamp_ms,
+            retain_without_reply: true,
+            source: ThreadRootProjectionSourceDto::Hydration,
+            state: ThreadRootProjectionStateDto::Ready { item: root.clone() },
+        };
+        registry
+            .lock()
+            .expect("registry lock")
+            .replace(&key, vec![replay_snapshot]);
+
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let suppressed_terminal = thread_root_projection_dto_from_record(
+            &service
+                .lock()
+                .expect("service lock")
+                .terminal_record(key.room_id(), &activity.root_event_id)
+                .expect("completed hydration must remain retained while replay owns it"),
+        );
+        assert!(
+            !emit_hydration_terminal_unless_replay_owned(
+                &event_tx,
+                &registry,
+                &key,
+                suppressed_terminal,
+            ),
+            "the terminal must be recorded for a later one-time handoff, not emitted now"
+        );
+
+        let mut registry_guard = registry.lock().expect("registry lock");
+        let update = registry_guard.reconcile_navigation(
+            &key,
+            &[root, exact_latest_reply.clone()],
+            &ReplayKnownDisplayContext::from_display_items(&[exact_latest_reply]),
+        );
+        assert!(matches!(
+            update.stale.as_slice(),
+            [ReplayKnownThreadRootProjection { root_event_id, .. }]
+                if root_event_id == "$root:test"
+        ));
+
+        let events = replay_known_timeline_events_with_hydration_handoffs(
+            &key,
+            &mut registry_guard,
+            &service,
+            update,
+        );
+        for event in events {
+            let _ = event_tx.send(CoreEvent::Timeline(event));
+        }
+        drop(registry_guard);
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                projection: ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { .. },
+                    state: ThreadRootProjectionStateDto::Cleared,
+                    ..
+                },
+                ..
+            }))
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                projection: ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::Hydration,
+                    state: ThreadRootProjectionStateDto::Ready { item },
+                    ..
+                },
+                ..
+            })) if item.body.as_deref() == Some("hydrated")
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            service.lock().expect("service lock").observe(activity),
+            ThreadRootProjectionDecision::Existing(record) if record.item().is_some()
+        ));
+    }
+
+    #[tokio::test]
+    async fn replay_owner_removal_handoffs_an_existing_terminal_reemit_once() {
+        let key = room_key();
+        let actor_generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = actor_generations
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        let activity = ThreadRootProjectionActivity {
+            room_id: key.room_id().to_owned(),
+            root_event_id: "$removed-root:test".to_owned(),
+            activity_event_id: "$latest:test".to_owned(),
+            activity_timestamp_ms: Some(300),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let _ = service
+            .lock()
+            .expect("service lock")
+            .observe(activity.clone());
+        service
+            .lock()
+            .expect("service lock")
+            .mark_ready(
+                &activity,
+                timeline_item("$removed-root:test", Some("hydrated"), "@a:test", false),
+            )
+            .expect("pending hydration must complete");
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        registry.lock().expect("registry lock").replace(
+            &key,
+            vec![ThreadRootProjectionDto {
+                root_event_id: activity.root_event_id.clone(),
+                activity_event_id: activity.activity_event_id.clone(),
+                activity_timestamp_ms: activity.activity_timestamp_ms,
+                retain_without_reply: true,
+                source: ThreadRootProjectionSourceDto::Hydration,
+                state: ThreadRootProjectionStateDto::Ready {
+                    item: timeline_item("$removed-root:test", Some("replay"), "@a:test", false),
+                },
+            }],
+        );
+        let terminal = thread_root_projection_dto_from_record(
+            &service
+                .lock()
+                .expect("service lock")
+                .terminal_record(key.room_id(), &activity.root_event_id)
+                .expect("terminal record"),
+        );
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        assert!(!emit_hydration_terminal_unless_replay_owned(
+            &event_tx,
+            &registry,
+            &key,
+            terminal.clone(),
+        ));
+        assert!(
+            !emit_hydration_terminal_unless_replay_owned_for_generation(
+                &event_tx,
+                &registry,
+                &actor_generations,
+                &key,
+                actor_generation,
+                terminal,
+            ),
+            "an Existing terminal reemit must share the same one-time suppression marker"
+        );
+
+        let mut exact_reply = timeline_item("$latest:test", Some("reply"), "@b:test", false);
+        exact_reply.thread_root = Some(activity.root_event_id.clone());
+        exact_reply.timestamp_ms = activity.activity_timestamp_ms;
+        let events = {
+            let mut guard = registry.lock().expect("registry lock");
+            let update = guard.reconcile_navigation(
+                &key,
+                &[exact_reply.clone()],
+                &ReplayKnownDisplayContext::from_display_items(&[exact_reply]),
+            );
+            replay_known_timeline_events_with_hydration_handoffs(&key, &mut guard, &service, update)
+        };
+        for event in events {
+            let _ = event_tx.send(CoreEvent::Timeline(event));
+        }
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                projection: ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { .. },
+                    state: ThreadRootProjectionStateDto::Cleared,
+                    ..
+                },
+                ..
+            }))
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                projection: ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::Hydration,
+                    state: ThreadRootProjectionStateDto::Ready { .. },
+                    ..
+                },
+                ..
+            }))
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn replay_owner_clear_does_not_reemit_an_unsuppressed_hydration_terminal() {
+        let key = room_key();
+        let activity = ThreadRootProjectionActivity {
+            room_id: key.room_id().to_owned(),
+            root_event_id: "$root:test".to_owned(),
+            activity_event_id: "$latest:test".to_owned(),
+            activity_timestamp_ms: Some(300),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        let _ = service
+            .lock()
+            .expect("service lock")
+            .observe(activity.clone());
+        service
+            .lock()
+            .expect("service lock")
+            .mark_ready(
+                &activity,
+                timeline_item("$root:test", Some("hydrated"), "@a:test", false),
+            )
+            .expect("pending hydration must complete");
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        registry.lock().expect("registry lock").replace(
+            &key,
+            vec![ThreadRootProjectionDto {
+                root_event_id: activity.root_event_id.clone(),
+                activity_event_id: activity.activity_event_id.clone(),
+                activity_timestamp_ms: activity.activity_timestamp_ms,
+                retain_without_reply: true,
+                source: ThreadRootProjectionSourceDto::Hydration,
+                state: ThreadRootProjectionStateDto::Ready {
+                    item: timeline_item("$root:test", Some("replay"), "@a:test", false),
+                },
+            }],
+        );
+
+        let mut registry_guard = registry.lock().expect("registry lock");
+        let update = registry_guard.replace(&key, Vec::new());
+        let events = replay_known_timeline_events_with_hydration_handoffs(
+            &key,
+            &mut registry_guard,
+            &service,
+            update,
+        );
+        assert!(matches!(
+            events.as_slice(),
+            [TimelineEvent::ThreadRootProjection {
+                projection: ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { .. },
+                    state: ThreadRootProjectionStateDto::Cleared,
+                    ..
+                },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn replay_owner_clear_handoffs_the_retained_hydration_failure_without_refetching() {
+        let key = room_key();
+        let activity = ThreadRootProjectionActivity {
+            room_id: key.room_id().to_owned(),
+            root_event_id: "$failed-root:test".to_owned(),
+            activity_event_id: "$latest:test".to_owned(),
+            activity_timestamp_ms: Some(300),
+            activity_sender: None,
+            activity_sender_label: None,
+            activity_body_preview: None,
+        };
+        let service = Arc::new(Mutex::new(ThreadRootProjectionService::default()));
+        assert!(matches!(
+            service
+                .lock()
+                .expect("service lock")
+                .observe(activity.clone()),
+            ThreadRootProjectionDecision::StartFetch(_)
+        ));
+        service
+            .lock()
+            .expect("service lock")
+            .mark_failed(&activity, OperationFailureKind::Network)
+            .expect("pending hydration must fail terminally");
+
+        let mut root = timeline_item("$failed-root:test", Some("root"), "@a:test", false);
+        root.thread_summary = Some(ThreadSummaryDto {
+            reply_count: 1,
+            latest_event_id: Some(activity.activity_event_id.clone()),
+            latest_sender: None,
+            latest_sender_label: None,
+            latest_body_preview: None,
+            latest_timestamp_ms: activity.activity_timestamp_ms,
+        });
+        let mut exact_latest_reply = timeline_item("$latest:test", Some("reply"), "@b:test", false);
+        exact_latest_reply.thread_root = Some(activity.root_event_id.clone());
+        exact_latest_reply.timestamp_ms = activity.activity_timestamp_ms;
+
+        let registry = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        registry.lock().expect("registry lock").replace(
+            &key,
+            vec![ThreadRootProjectionDto {
+                root_event_id: activity.root_event_id.clone(),
+                activity_event_id: activity.activity_event_id.clone(),
+                activity_timestamp_ms: activity.activity_timestamp_ms,
+                retain_without_reply: true,
+                source: ThreadRootProjectionSourceDto::Hydration,
+                state: ThreadRootProjectionStateDto::Ready { item: root.clone() },
+            }],
+        );
+        let (event_tx, _event_rx) = broadcast::channel(8);
+        assert!(!emit_hydration_terminal_unless_replay_owned(
+            &event_tx,
+            &registry,
+            &key,
+            ThreadRootProjectionDto {
+                root_event_id: activity.root_event_id.clone(),
+                activity_event_id: activity.activity_event_id.clone(),
+                activity_timestamp_ms: activity.activity_timestamp_ms,
+                retain_without_reply: false,
+                source: ThreadRootProjectionSourceDto::Hydration,
+                state: ThreadRootProjectionStateDto::Failed {
+                    failure_kind: OperationFailureKind::Network,
+                },
+            },
+        ));
+
+        let mut registry_guard = registry.lock().expect("registry lock");
+        let update = registry_guard.reconcile_navigation(
+            &key,
+            &[root, exact_latest_reply.clone()],
+            &ReplayKnownDisplayContext::from_display_items(&[exact_latest_reply]),
+        );
+        let events = replay_known_timeline_events_with_hydration_handoffs(
+            &key,
+            &mut registry_guard,
+            &service,
+            update,
+        );
+        drop(registry_guard);
+
+        assert!(matches!(
+            events.as_slice(),
+            [
+                TimelineEvent::ThreadRootProjection {
+                    projection: ThreadRootProjectionDto {
+                        source: ThreadRootProjectionSourceDto::ReplayKnown { .. },
+                        state: ThreadRootProjectionStateDto::Cleared,
+                        ..
+                    },
+                    ..
+                },
+                TimelineEvent::ThreadRootProjection {
+                    projection: ThreadRootProjectionDto {
+                        source: ThreadRootProjectionSourceDto::Hydration,
+                        state: ThreadRootProjectionStateDto::Failed {
+                            failure_kind: OperationFailureKind::Network,
+                        },
+                        ..
+                    },
+                    ..
+                }
+            ]
+        ));
+        assert!(matches!(
+            service.lock().expect("service lock").observe(activity),
+            ThreadRootProjectionDecision::Existing(record)
+                if record.failure_kind() == Some(OperationFailureKind::Network)
+        ));
+    }
+
+    #[test]
+    fn replay_known_epoch_never_exceeds_the_javascript_safe_integer_or_reuses_an_owner_epoch() {
+        let key = room_key();
+        let mut registry = ReplayKnownThreadRootProjectionRegistry::default();
+        registry.next_epoch = JAVASCRIPT_SAFE_INTEGER_MAX;
+        let projection = |root_event_id: &str, activity_event_id: &str| ThreadRootProjectionDto {
+            root_event_id: root_event_id.to_owned(),
+            activity_event_id: activity_event_id.to_owned(),
+            activity_timestamp_ms: Some(300),
+            retain_without_reply: true,
+            source: ThreadRootProjectionSourceDto::Hydration,
+            state: ThreadRootProjectionStateDto::Ready {
+                item: timeline_item(root_event_id, Some("root"), "@a:test", false),
+            },
+        };
+
+        let initial = registry.replace(
+            &key,
+            vec![
+                projection("$max-owner:test", "$max-activity:test"),
+                projection("$wrapped-owner:test", "$wrapped-activity:test"),
+            ],
+        );
+        assert!(matches!(
+            initial.ready.as_slice(),
+            [
+                ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::ReplayKnown {
+                        epoch: JAVASCRIPT_SAFE_INTEGER_MAX
+                    },
+                    ..
+                },
+                ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 1 },
+                    ..
+                },
+            ]
+        ));
+
+        // Simulate another complete sequence wrap while both prior owners are
+        // current. The revised root must get a distinct safe epoch rather
+        // than colliding with either a stale Clear or the still-current root.
+        registry.next_epoch = JAVASCRIPT_SAFE_INTEGER_MAX;
+        let replaced = registry.replace(
+            &key,
+            vec![
+                projection("$max-owner:test", "$replacement-activity:test"),
+                projection("$wrapped-owner:test", "$wrapped-activity:test"),
+            ],
+        );
+        assert!(matches!(
+            replaced.stale.as_slice(),
+            [ReplayKnownThreadRootProjection {
+                source: ThreadRootProjectionSourceDto::ReplayKnown {
+                    epoch: JAVASCRIPT_SAFE_INTEGER_MAX
+                },
+                ..
+            }]
+        ));
+        assert!(matches!(
+            replaced.ready.as_slice(),
+            [
+                ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 2 },
+                    ..
+                },
+                ThreadRootProjectionDto {
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 1 },
+                    ..
+                },
+            ]
+        ));
+        for epoch in replaced
+            .ready
+            .iter()
+            .filter_map(|projection| match projection.source {
+                ThreadRootProjectionSourceDto::ReplayKnown { epoch } => Some(epoch),
+                ThreadRootProjectionSourceDto::Hydration => None,
+            })
+        {
+            assert!((1..=JAVASCRIPT_SAFE_INTEGER_MAX).contains(&epoch));
+        }
+    }
+
+    #[test]
+    fn replay_known_registry_lifecycle_helpers_cover_actor_refresh_paths() {
+        let source = include_str!("timeline.rs");
+        for (name, start, end) in [
+            ("spawn", "async fn spawn(", "async fn run(mut self)"),
+            (
+                "replay",
+                "fn handle_replay_initial_items",
+                "async fn handle_diff_batch",
+            ),
+            (
+                "send_queue_lag",
+                "async fn handle_send_queue_lagged",
+                "async fn resync_send_queue_statuses",
+            ),
+            (
+                "queue_overflow",
+                "async fn handle_relay_overflow",
+                "fn emit(&self",
+            ),
+        ] {
+            let section = source
+                .split(start)
+                .nth(1)
+                .expect("actor lifecycle helper must exist")
+                .split(end)
+                .next()
+                .expect("actor lifecycle helper boundary");
+            assert!(
+                section.contains("emit_initial_items_and_reconcile_replay_known_for_generation"),
+                "{name} must publish InitialItems and replay-known ownership in one group"
+            );
+        }
+        let diff_handler = source
+            .split("async fn handle_diff_batch")
+            .nth(1)
+            .expect("diff handler")
+            .split("async fn handle_ignored_users_updated")
+            .next()
+            .expect("next actor handler must bound diff handler");
+        assert!(
+            diff_handler.contains("self.emit_items_updated_and_reconcile_replay_known(core_diffs)"),
+            "normal diffs must commit replay-known ownership beside ItemsUpdated"
+        );
+        assert!(
+            diff_handler
+                .find("self.maybe_hydrate_missing_thread_roots().await")
+                .zip(
+                    diff_handler
+                        .find("self.emit_items_updated_and_reconcile_replay_known(core_diffs)"),
+                )
+                .is_some_and(|(hydration, commit)| commit < hydration),
+            "the canonical ItemsUpdated group must reach the store before hydration emits Pending"
+        );
+        let restore_flush = source
+            .split("fn flush_restore_emit_buffer")
+            .nth(1)
+            .expect("restore flush helper")
+            .split("fn finish_anchor_restore")
+            .next()
+            .expect("restore finish helper must follow flush");
+        assert!(
+            restore_flush.contains("self.emit_items_updated_and_reconcile_replay_known(diffs)"),
+            "restore-buffer flushes must use the same atomic diff/replay group"
+        );
+        let actor_message_handler = source
+            .split("async fn handle_msg")
+            .nth(1)
+            .expect("actor message handler")
+            .split("async fn handle_paginate")
+            .next()
+            .expect("paginate handler must follow message handler");
+        assert!(
+            actor_message_handler.contains("self.restore_anchor.is_none()"),
+            "deferred hydration must not consume its marker while a restore buffer still owns canonical diffs"
+        );
+    }
+
+    #[tokio::test]
+    async fn room_unsubscribe_emits_core_clear_for_replay_known_roots_before_a_revisit() {
+        let key = room_key();
+        let root = timeline_item(
+            "$replay-known-root:test",
+            Some("root"),
+            "@alice:test",
+            false,
+        );
+        let projection = ThreadRootProjectionDto {
+            root_event_id: "$replay-known-root:test".to_owned(),
+            activity_event_id: "$replay-known-activity:test".to_owned(),
+            activity_timestamp_ms: Some(100),
+            retain_without_reply: true,
+            source: ThreadRootProjectionSourceDto::Hydration,
+            state: ThreadRootProjectionStateDto::Ready { item: root },
+        };
+        let (action_tx, _action_rx) = mpsc::channel(8);
+        let (event_tx, mut event_rx) = broadcast::channel(8);
+        let (msg_tx, msg_rx) = mpsc::channel(8);
+        let replay_known_thread_root_projections = Arc::new(Mutex::new(
+            ReplayKnownThreadRootProjectionRegistry::default(),
+        ));
+        replay_known_thread_root_projections
+            .lock()
+            .expect("registry lock")
+            .replace(&key, vec![projection]);
+        let mut manager = TimelineManagerActor {
+            session: None,
+            room_list_service: None,
+            timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
+            action_tx,
+            event_tx,
+            msg_tx,
+            msg_rx,
+            search_index_tx: None,
+            ignored_user_ids: Default::default(),
+            data_dir: None,
+            link_preview_policy: LinkPreviewContext::default(),
+            messages_backpressure: MessagesBackpressure::default(),
+            thread_root_projection_service: Arc::new(Mutex::new(
+                ThreadRootProjectionService::default(),
+            )),
+            thread_root_projection_fetches: ThreadRootProjectionFetchRegistry::default(),
+            replay_known_thread_root_projections: replay_known_thread_root_projections.clone(),
+            timeline_actor_generations: Arc::new(TimelineActorGenerationGate::default()),
+        };
+
+        manager
+            .handle_command(TimelineCommand::Unsubscribe {
+                request_id: fake_rid(99),
+                key: key.clone(),
+            })
+            .await;
+
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(CoreEvent::Timeline(TimelineEvent::ThreadRootProjection {
+                key: cleared_key,
+                projection: ThreadRootProjectionDto {
+                    root_event_id,
+                    activity_event_id,
+                    retain_without_reply: false,
+                    source: ThreadRootProjectionSourceDto::ReplayKnown { epoch: 1 },
+                    state: ThreadRootProjectionStateDto::Cleared,
+                    ..
+                },
+            }))
+                if cleared_key == key
+                    && root_event_id == "$replay-known-root:test"
+                    && activity_event_id == "$replay-known-activity:test"
+        ));
+        assert!(!manager.timelines.contains_key(&key));
+        assert!(
+            replay_known_thread_root_projections
+                .lock()
+                .expect("registry lock")
+                .is_empty()
+        );
+
+        // Revisit starts from an empty lifecycle registry, so an old retained
+        // snapshot has no route back into the display store.
+        manager
+            .timelines
+            .insert(key.clone(), test_timeline_actor_handle());
+        assert!(
+            replay_known_thread_root_projections
+                .lock()
+                .expect("registry lock")
+                .get(&key)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn resubscribe_replay_keeps_scrolled_room_context_complete() {
         let key = room_key();
         let items = (0..(ROOM_REPLAY_INITIAL_ITEMS_MAX + 25))
@@ -9394,6 +13900,16 @@ mod tests {
             actions: TimelineMessageActions::default(),
             send_state: None,
             unable_to_decrypt: None,
+        }
+    }
+
+    fn test_timeline_actor_handle() -> TimelineActorHandle {
+        let (tx, mut rx) = mpsc::channel(1);
+        let task = executor::spawn(async move { while rx.recv().await.is_some() {} });
+        TimelineActorHandle {
+            tx,
+            task,
+            auxiliary_tasks: Vec::new(),
         }
     }
 

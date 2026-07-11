@@ -232,6 +232,325 @@ describe("timeline store — diff application", () => {
     expect(getThreadRootProjections(store, KEY)).toEqual([]);
   });
 
+  test("keeps the first-reply hydration pending and then failed placeholder after canonical diff arrives first", () => {
+    const reply = { ...makeMsg("$first-reply", "reply"), thread_root: "$old-root" };
+    let store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: { request_id: null, key: KEY, generation: 1, items: [] }
+    });
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 1,
+        batch_id: 1,
+        diffs: [{ PushBack: { item: reply } }]
+      }
+    });
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$old-root",
+          activity_event_id: "$first-reply",
+          activity_timestamp_ms: reply.timestamp_ms,
+          state: { kind: "pending" }
+        }
+      }
+    });
+    expect(getThreadRootProjections(store, KEY)).toEqual([
+      expect.objectContaining({ state: { kind: "pending" } })
+    ]);
+
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$old-root",
+          activity_event_id: "$first-reply",
+          activity_timestamp_ms: reply.timestamp_ms,
+          state: { kind: "failed", failure_kind: "network" }
+        }
+      }
+    });
+    expect(getThreadRootProjections(store, KEY)).toEqual([
+      expect.objectContaining({ state: { kind: "failed", failure_kind: "network" } })
+    ]);
+
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 1,
+        batch_id: 2,
+        diffs: [{ PushBack: { item: makeMsg("$unrelated", "unrelated") } }]
+      }
+    });
+    expect(getThreadRootProjections(store, KEY)).toHaveLength(1);
+  });
+
+  test("retains a replay-known ready root through GlobalResync without a canonical reply row", () => {
+    const normal = makeMsg("$normal", "normal");
+    const knownRoot = {
+      ...makeMsg("$known-root", "known root"),
+      thread_summary: {
+        reply_count: 1,
+        latest_event_id: "$summary-activity",
+        latest_sender: "@reply:example.invalid",
+        latest_body_preview: "summary activity",
+        latest_timestamp_ms: 1_800_000_010_000
+      }
+    };
+    let store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: { request_id: null, key: KEY, generation: 1, items: [normal] }
+    });
+
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$known-root",
+          activity_event_id: "$summary-activity",
+          activity_timestamp_ms: 1_800_000_010_000,
+          retain_without_reply: true,
+          source: { kind: "replayKnown", epoch: 7 },
+          state: { kind: "ready", item: knownRoot }
+        }
+      }
+    });
+    expect(getThreadRootProjections(store, KEY)).toHaveLength(1);
+
+    store = applyGlobalResync(store);
+    store = applyTimelineEvent(store, {
+      InitialItems: { request_id: null, key: KEY, generation: 1, items: [normal] }
+    });
+    expect(getItems(store, KEY)).toEqual([normal]);
+    expect(getThreadRootProjections(store, KEY)).toEqual([
+      expect.objectContaining({
+        root_event_id: "$known-root",
+        retain_without_reply: true,
+        source: { kind: "replayKnown", epoch: 7 },
+        state: { kind: "ready", item: knownRoot }
+      })
+    ]);
+
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$known-root",
+          activity_event_id: "$summary-activity",
+          activity_timestamp_ms: 1_800_000_010_000,
+          retain_without_reply: false,
+          source: { kind: "replayKnown", epoch: 7 },
+          state: { kind: "cleared" }
+        }
+      }
+    });
+    expect(getThreadRootProjections(store, KEY)).toEqual([]);
+  });
+
+  test("replaces a replay-known ready root when its renderable revision changes at the same activity", () => {
+    const initialRoot = {
+      ...makeMsg("$known-root", "original root"),
+      thread_summary: {
+        reply_count: 2,
+        latest_event_id: "$latest",
+        latest_sender: "@reply:example.invalid",
+        latest_body_preview: "latest reply",
+        latest_timestamp_ms: 1_800_000_010_000
+      }
+    };
+    const revisedRoot = {
+      ...initialRoot,
+      body: "redacted replacement",
+      is_redacted: true,
+      reactions: [
+        {
+          key: "👍",
+          count: 2,
+          reacted_by_me: true,
+          my_reaction_event_id: "$reaction",
+          sender_preview: ["@sender:example.invalid", "@reply:example.invalid"]
+        }
+      ]
+    };
+    let store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: { request_id: null, key: KEY, generation: 1, items: [makeMsg("$normal", "normal")] }
+    });
+
+    for (const item of [initialRoot, revisedRoot]) {
+      store = applyTimelineEvent(store, {
+        ThreadRootProjection: {
+          key: KEY,
+          projection: {
+            root_event_id: "$known-root",
+            activity_event_id: "$latest",
+            activity_timestamp_ms: 1_800_000_010_000,
+            retain_without_reply: true,
+            source: { kind: "replayKnown", epoch: 1 },
+            state: { kind: "ready", item }
+          }
+        }
+      });
+    }
+
+    expect(getThreadRootProjections(store, KEY)).toEqual([
+      expect.objectContaining({
+        source: { kind: "replayKnown", epoch: 1 },
+        state: { kind: "ready", item: revisedRoot }
+      })
+    ]);
+  });
+
+  test("never retains a non-ready projection solely from retain_without_reply", () => {
+    const normal = makeMsg("$normal", "normal");
+    const readyRoot = makeMsg("$ready-root", "ready root");
+    let store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: { request_id: null, key: KEY, generation: 1, items: [normal] }
+    });
+
+    for (const projection of [
+      {
+        root_event_id: "$pending-root",
+        activity_event_id: "$pending-activity",
+        activity_timestamp_ms: 1,
+        retain_without_reply: true,
+        state: { kind: "pending" as const }
+      },
+      {
+        root_event_id: "$failed-root",
+        activity_event_id: "$failed-activity",
+        activity_timestamp_ms: 2,
+        retain_without_reply: true,
+        state: { kind: "failed" as const, failure_kind: "notFound" as const }
+      },
+      {
+        root_event_id: "$ordinary-ready-root",
+        activity_event_id: "$ordinary-ready-activity",
+        activity_timestamp_ms: 3,
+        state: { kind: "ready" as const, item: readyRoot }
+      }
+    ]) {
+      store = applyTimelineEvent(store, {
+        ThreadRootProjection: { key: KEY, projection }
+      });
+      expect(getThreadRootProjections(store, KEY)).toEqual([]);
+    }
+  });
+
+  test("normalizes retain_without_reply away from pending and failed wire payloads", () => {
+    const reply = { ...makeMsg("$reply", "reply"), thread_root: "$old-root" };
+    let store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: { request_id: null, key: KEY, generation: 1, items: [reply] }
+    });
+
+    for (const state of [
+      { kind: "pending" as const },
+      { kind: "failed" as const, failure_kind: "notFound" as const }
+    ]) {
+      store = applyTimelineEvent(store, {
+        ThreadRootProjection: {
+          key: KEY,
+          projection: {
+            root_event_id: "$old-root",
+            activity_event_id: "$reply",
+            activity_timestamp_ms: 1,
+            retain_without_reply: true,
+            source: { kind: "hydration" },
+            state
+          }
+        }
+      });
+      expect(getThreadRootProjections(store, KEY)).toEqual([
+        expect.objectContaining({ retain_without_reply: false, state })
+      ]);
+    }
+  });
+
+  test("scopes a stale replay-known clear to its epoch instead of deleting a hydration ready root", () => {
+    const normal = makeMsg("$normal", "normal");
+    const reply = { ...makeMsg("$live-reply", "live reply"), thread_root: "$shared-root" };
+    const replayRoot = makeMsg("$shared-root", "replay root");
+    const hydratedRoot = makeMsg("$shared-root", "hydrated root");
+    let store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: { request_id: null, key: KEY, generation: 1, items: [normal] }
+    });
+
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$shared-root",
+          activity_event_id: "$summary-activity",
+          activity_timestamp_ms: 10,
+          retain_without_reply: true,
+          source: { kind: "replayKnown", epoch: 41 },
+          state: { kind: "ready", item: replayRoot }
+        }
+      }
+    });
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 1,
+        batch_id: 1,
+        diffs: [{ PushBack: { item: reply } }]
+      }
+    });
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$shared-root",
+          activity_event_id: "$live-reply",
+          activity_timestamp_ms: 11,
+          retain_without_reply: false,
+          source: { kind: "hydration" },
+          state: { kind: "ready", item: hydratedRoot }
+        }
+      }
+    });
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$shared-root",
+          activity_event_id: "$summary-activity",
+          activity_timestamp_ms: 10,
+          retain_without_reply: false,
+          source: { kind: "replayKnown", epoch: 41 },
+          state: { kind: "cleared" }
+        }
+      }
+    });
+
+    expect(getThreadRootProjections(store, KEY)).toEqual([
+      expect.objectContaining({
+        source: { kind: "hydration" },
+        state: { kind: "ready", item: hydratedRoot }
+      })
+    ]);
+  });
+
+  test("rejects retain_without_reply on an arbitrary hydration ready payload", () => {
+    let store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: { request_id: null, key: KEY, generation: 1, items: [makeMsg("$normal", "normal")] }
+    });
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$untrusted-root",
+          activity_event_id: "$untrusted-activity",
+          activity_timestamp_ms: 1,
+          retain_without_reply: true,
+          source: { kind: "hydration" },
+          state: { kind: "ready", item: makeMsg("$untrusted-root", "root") }
+        }
+      }
+    });
+
+    expect(getThreadRootProjections(store, KEY)).toEqual([]);
+  });
+
   test("keeps a ready root snapshot through temporary canonical overlap for the later absent-root projection", () => {
     const root = makeMsg("$old-root", "old root body");
     const reply = { ...makeMsg("$latest-reply", "reply"), thread_root: "$old-root" };
@@ -259,7 +578,7 @@ describe("timeline store — diff application", () => {
     expect(getThreadRootProjections(store, KEY)[0]?.state).toEqual({ kind: "ready", item: root });
   });
 
-  test("retains an inactive pending root only until its terminal completion clears the out-of-band map", () => {
+  test("prunes an inactive pending root before a terminal completion arrives", () => {
     const reply = { ...makeMsg("$latest-reply", "reply"), thread_root: "$old-root" };
     let store = applyTimelineEvent(createTimelineStore(), {
       InitialItems: { request_id: null, key: KEY, generation: 1, items: [reply] }
@@ -278,7 +597,7 @@ describe("timeline store — diff application", () => {
     store = applyTimelineEvent(store, {
       InitialItems: { request_id: null, key: KEY, generation: 2, items: [] }
     });
-    expect(getThreadRootProjections(store, KEY)).toHaveLength(1);
+    expect(getThreadRootProjections(store, KEY)).toEqual([]);
 
     store = applyTimelineEvent(store, {
       ThreadRootProjection: {
@@ -464,6 +783,35 @@ describe("timeline store — diff application", () => {
     expect(itemId(items[0])).toBe("$a");
     expect(items[0].body).toBe("edited body");
     expect(itemId(items[1])).toBe("$b");
+  });
+
+  test("a replay-external local mutation cannot replace the first bounded display row", () => {
+    let store = createTimelineStore();
+    store = applyTimelineEvent(store, {
+      InitialItems: {
+        request_id: null,
+        key: KEY,
+        generation: 1,
+        items: [makeMsg("$before", "before"), makeMsg("$after", "after")]
+      }
+    });
+
+    // A root at canonical navigation index 0 is outside this bounded replay
+    // window. Rust projects its local Set to no display diff; the separately
+    // emitted replay Ready revision owns rendering that root.
+    store = applyTimelineEvent(store, {
+      ItemsUpdated: {
+        key: KEY,
+        generation: 1,
+        batch_id: 2,
+        diffs: []
+      }
+    });
+
+    expect(getItems(store, KEY).map((item) => [itemId(item), item.body])).toEqual([
+      ["$before", "before"],
+      ["$after", "after"]
+    ]);
   });
 
   test("Set diff for a collapsed duplicate scrollback item updates the canonical row without moving the latest item", () => {
@@ -1338,6 +1686,68 @@ describe("DisplayLabelsUpdated", () => {
     expect(items[0].sender).toBe("@eve:example.invalid");
     expect(items[0].sender_label).toBeNull();
   });
+
+  test("patches a replay-known ready root snapshot just like its canonical root", () => {
+    const canonical = {
+      ...makeMsg("$canonical-root", "canonical root"),
+      sender: "@root:example.invalid",
+      sender_label: null,
+      reply_quote: {
+        event_id: "$quoted:example.invalid",
+        sender: "@quoted:example.invalid",
+        sender_label: null,
+        body_preview: "quoted text",
+        state: "ready" as const
+      },
+      thread_summary: {
+        reply_count: 1,
+        latest_event_id: "$latest:example.invalid",
+        latest_sender: "@latest:example.invalid",
+        latest_sender_label: null,
+        latest_body_preview: "latest reply",
+        latest_timestamp_ms: 3_000
+      }
+    };
+    let store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: { request_id: null, key: KEY, generation: 0, items: [canonical] }
+    });
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$replay-root",
+          activity_event_id: "$latest:example.invalid",
+          activity_timestamp_ms: 3_000,
+          retain_without_reply: true,
+          source: { kind: "replayKnown", epoch: 1 },
+          state: { kind: "ready", item: { ...canonical, id: { Event: { event_id: "$replay-root" } } } }
+        }
+      }
+    });
+
+    store = applyTimelineEvent(store, {
+      DisplayLabelsUpdated: {
+        labels: [
+          { user_id: "@root:example.invalid", display_label: "Root" },
+          { user_id: "@quoted:example.invalid", display_label: "Quoted" },
+          { user_id: "@latest:example.invalid", display_label: "Latest" }
+        ]
+      }
+    });
+
+    const canonicalUpdated = getItems(store, KEY)[0];
+    const projection = getThreadRootProjections(store, KEY)[0];
+    expect(projection?.state).toMatchObject({
+      kind: "ready",
+      item: {
+        sender_label: canonicalUpdated.sender_label,
+        reply_quote: { sender_label: canonicalUpdated.reply_quote?.sender_label },
+        thread_summary: {
+          latest_sender_label: canonicalUpdated.thread_summary?.latest_sender_label
+        }
+      }
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1383,6 +1793,48 @@ describe("DisplayPolicyUpdated", () => {
     items = getItems(store, KEY);
     expect(items[0]).toMatchObject({ is_redacted: true, is_hidden: false });
     expect(items[1]).toMatchObject({ is_redacted: false, is_hidden: false });
+  });
+
+  test("reprojects a replay-known ready root snapshot just like a canonical redacted root", () => {
+    const redacted: TimelineItem = {
+      ...makeMsg("$canonical-redacted", ""),
+      body: null,
+      is_redacted: true,
+      is_hidden: false
+    };
+    let store = applyTimelineEvent(createTimelineStore(), {
+      InitialItems: { request_id: null, key: KEY, generation: 0, items: [redacted] }
+    });
+    store = applyTimelineEvent(store, {
+      ThreadRootProjection: {
+        key: KEY,
+        projection: {
+          root_event_id: "$replay-redacted",
+          activity_event_id: "$latest:example.invalid",
+          activity_timestamp_ms: 3_000,
+          retain_without_reply: true,
+          source: { kind: "replayKnown", epoch: 2 },
+          state: {
+            kind: "ready",
+            item: { ...redacted, id: { Event: { event_id: "$replay-redacted" } } }
+          }
+        }
+      }
+    });
+
+    store = applyTimelineEvent(store, { DisplayPolicyUpdated: { hide_redacted: true } });
+
+    expect(getItems(store, KEY)[0]?.is_hidden).toBe(true);
+    expect(getThreadRootProjections(store, KEY)[0]?.state).toMatchObject({
+      kind: "ready",
+      item: { is_redacted: true, is_hidden: true }
+    });
+
+    store = applyTimelineEvent(store, { DisplayPolicyUpdated: { hide_redacted: false } });
+    expect(getThreadRootProjections(store, KEY)[0]?.state).toMatchObject({
+      kind: "ready",
+      item: { is_hidden: false }
+    });
   });
 });
 

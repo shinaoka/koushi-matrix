@@ -142,9 +142,10 @@ function threadRootProjectionStoreKey(key: TimelineKey, rootEventId: string): st
 
 /**
  * A root projection is useful only while its reply is in the bounded canonical
- * Room window. Pending entries remain until their one worker settles; ready
- * and failed terminal entries are removed deterministically once that reply
- * leaves. This mirrors the Core service without ever mutating canonical items.
+ * Room window. A Core-marked replay-known **ready** root is the sole exception:
+ * it may stay without a reply because the bounded display window intentionally
+ * omitted the known root. Pending, failed, and ordinary ready entries are
+ * removed as soon as their reply leaves. This never mutates canonical items.
  */
 function retainActiveThreadRootProjections(
   projections: Map<string, ThreadRootProjectionDto>,
@@ -158,7 +159,7 @@ function retainActiveThreadRootProjections(
     if (!state) {
       continue;
     }
-    if (projection.state.kind === "pending") {
+    if (isReplayKnownReadyProjection(projection)) {
       retained.set(projectionKey, projection);
       continue;
     }
@@ -170,6 +171,46 @@ function retainActiveThreadRootProjections(
   // memoizes display rows by this map, so cloning an unchanged empty map on a
   // pagination-only event would schedule a spurious projection transaction.
   return retained.size === projections.size ? projections : retained;
+}
+
+function isReplayKnownReadyProjection(projection: ThreadRootProjectionDto): boolean {
+  return (
+    projection.retain_without_reply === true &&
+    projection.state.kind === "ready" &&
+    replayKnownEpoch(projection) !== null
+  );
+}
+
+function normalizeThreadRootProjection(
+  projection: ThreadRootProjectionDto
+): ThreadRootProjectionDto {
+  if (projection.retain_without_reply !== true || isReplayKnownReadyProjection(projection)) {
+    return projection;
+  }
+  // `retain_without_reply` is an epoch-scoped Core replay-known Ready contract.
+  // Never let an arbitrary Ready or malformed Pending/Failed wire payload
+  // manufacture an unbounded retention.
+  return { ...projection, retain_without_reply: false };
+}
+
+function replayKnownEpoch(projection: ThreadRootProjectionDto): number | null {
+  const source = projection.source;
+  return source?.kind === "replayKnown" && Number.isSafeInteger(source.epoch) && source.epoch > 0
+    ? source.epoch
+    : null;
+}
+
+function projectionSourcesMatch(
+  left: ThreadRootProjectionDto,
+  right: ThreadRootProjectionDto
+): boolean {
+  const leftReplayEpoch = replayKnownEpoch(left);
+  const rightReplayEpoch = replayKnownEpoch(right);
+  if (leftReplayEpoch !== null || rightReplayEpoch !== null) {
+    return leftReplayEpoch !== null && leftReplayEpoch === rightReplayEpoch;
+  }
+  return (left.source?.kind ?? "hydration") === "hydration" &&
+    (right.source?.kind ?? "hydration") === "hydration";
 }
 
 // ---------------------------------------------------------------------------
@@ -342,18 +383,21 @@ function applyThreadRootProjection(
   if (!("Room" in payload.key.kind)) {
     return store;
   }
-  const projectionKey = threadRootProjectionStoreKey(payload.key, payload.projection.root_event_id);
+  const projection = normalizeThreadRootProjection(payload.projection);
+  const projectionKey = threadRootProjectionStoreKey(payload.key, projection.root_event_id);
   const projections = new Map(store.threadRootProjections);
-  if (payload.projection.state.kind === "cleared") {
-    if (!projections.delete(projectionKey)) {
+  if (projection.state.kind === "cleared") {
+    const existing = projections.get(projectionKey);
+    if (existing === undefined || !projectionSourcesMatch(existing, projection)) {
       return store;
     }
+    projections.delete(projectionKey);
     return { ...store, threadRootProjections: projections };
   }
   // Delete before set so a changed terminal result is the most-recent record
   // should future bounded retention diagnostics need map order.
   projections.delete(projectionKey);
-  projections.set(projectionKey, payload.projection);
+  projections.set(projectionKey, projection);
   // Deliberately does not touch `keys`, canonical items, or either index.
   return {
     ...store,
@@ -513,7 +557,7 @@ function applyDisplayPolicyUpdated(
   store: TimelineStoreState,
   payload: Extract<TimelineEvent, { DisplayPolicyUpdated: unknown }>["DisplayPolicyUpdated"]
 ): TimelineStoreState {
-  if (store.keys.size === 0) {
+  if (store.keys.size === 0 && store.threadRootProjections.size === 0) {
     return store;
   }
 
@@ -538,14 +582,27 @@ function applyDisplayPolicyUpdated(
     }
   }
 
-  return changed ? withKeys(store, next) : store;
+  const nextStore = changed ? withKeys(store, next) : store;
+  const threadRootProjections = mapReadyThreadRootProjectionItems(
+    nextStore.threadRootProjections,
+    (item) => {
+      const isHidden = payload.hide_redacted && item.is_redacted;
+      return item.is_hidden === isHidden ? item : { ...item, is_hidden: isHidden };
+    }
+  );
+  return threadRootProjections === nextStore.threadRootProjections
+    ? nextStore
+    : { ...nextStore, threadRootProjections };
 }
 
 function applyDisplayLabelsUpdated(
   store: TimelineStoreState,
   payload: Extract<TimelineEvent, { DisplayLabelsUpdated: unknown }>["DisplayLabelsUpdated"]
 ): TimelineStoreState {
-  if (payload.labels.length === 0 || store.keys.size === 0) {
+  if (
+    payload.labels.length === 0 ||
+    (store.keys.size === 0 && store.threadRootProjections.size === 0)
+  ) {
     return store;
   }
 
@@ -576,7 +633,44 @@ function applyDisplayLabelsUpdated(
     }
   }
 
-  return changed ? withKeys(store, next) : store;
+  const nextStore = changed ? withKeys(store, next) : store;
+  const threadRootProjections = mapReadyThreadRootProjectionItems(
+    nextStore.threadRootProjections,
+    (item) => applyDisplayLabelUpdateToItem(item, labels)
+  );
+  return threadRootProjections === nextStore.threadRootProjections
+    ? nextStore
+    : { ...nextStore, threadRootProjections };
+}
+
+/**
+ * Root snapshots are a separately-owned display input, but their renderable
+ * Ready item must receive the same global presentation updates as canonical
+ * timeline rows. This maps only that item, never `keys[*].items`.
+ */
+function mapReadyThreadRootProjectionItems(
+  projections: Map<string, ThreadRootProjectionDto>,
+  update: (item: TimelineItem) => TimelineItem
+): Map<string, ThreadRootProjectionDto> {
+  let changed = false;
+  const next = new Map<string, ThreadRootProjectionDto>();
+  for (const [projectionKey, projection] of projections) {
+    if (projection.state.kind !== "ready") {
+      next.set(projectionKey, projection);
+      continue;
+    }
+    const item = update(projection.state.item);
+    if (item === projection.state.item) {
+      next.set(projectionKey, projection);
+      continue;
+    }
+    changed = true;
+    next.set(projectionKey, {
+      ...projection,
+      state: { ...projection.state, item }
+    });
+  }
+  return changed ? next : projections;
 }
 
 function applyDisplayLabelUpdateToItem(

@@ -464,11 +464,11 @@ fn image_upload_compression_patch_is_rust_owned_and_persisted() {
 }
 
 #[test]
-fn timeline_auto_load_patch_is_rust_owned_and_persisted() {
+fn timeline_thread_root_order_patch_is_rust_owned_and_persisted() {
     let mut state = AppState::default();
     let timeline_settings = TimelineSettings {
         auto_load_older_messages: true,
-        thread_root_order: TimelineThreadRootOrder::RootEvent,
+        thread_root_order: TimelineThreadRootOrder::LatestReply,
     };
 
     let effects = reduce(
