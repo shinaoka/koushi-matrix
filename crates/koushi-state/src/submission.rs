@@ -6,6 +6,24 @@ use serde::{Deserialize, Serialize};
 #[serde(transparent)]
 pub struct SubmissionId(String);
 
+#[derive(Clone, Eq, PartialEq)]
+pub enum ComposerSubmissionTarget {
+    Main {
+        room_id: String,
+    },
+    Thread {
+        room_id: String,
+        root_event_id: String,
+    },
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub enum ComposerSubmissionTerminalOutcome {
+    Succeeded,
+    Failed { message: String },
+    Cancelled,
+}
+
 impl SubmissionId {
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())

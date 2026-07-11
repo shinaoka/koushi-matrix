@@ -45,6 +45,7 @@ fn ready_selected_room_state() -> AppState {
                 mode: ComposerMode::Reply {
                     in_reply_to_event_id: "$reply-root:example.invalid".to_owned(),
                 },
+                ..ComposerState::default()
             },
             scheduled_send_capability: Default::default(),
             scheduled_sends: Vec::new(),

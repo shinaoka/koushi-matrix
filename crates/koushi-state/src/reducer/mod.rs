@@ -29,6 +29,7 @@ mod room_management;
 mod search;
 mod session;
 mod settings;
+mod submission;
 mod sync;
 mod thread;
 mod timeline;
@@ -795,6 +796,12 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             room_id,
             transaction_id,
         ),
+        AppAction::ComposerSubmissionSettled {
+            submission_id,
+            transaction_id,
+            target,
+            outcome,
+        } => submission::handle_settled(state, submission_id, transaction_id, target, outcome),
         AppAction::ComposerReplyTargetSelected { room_id, event_id } => {
             timeline::handle_composer_reply_target_selected(state, room_id, event_id)
         }

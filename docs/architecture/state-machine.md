@@ -444,6 +444,17 @@ stateDiagram-v2
   Explicit rejection releases both guards while preserving the draft. Accepted
   pending submissions release only after matching completion, failure, or
   cancellation. Existing transaction retry does not allocate a new submission.
+- The timeline actor carries the submission ID beside the client transaction
+  through its send-completion tracker. Success, failure, and cancellation emit
+  one `ComposerSubmissionSettled` action containing both values and the main or
+  thread target. The reducer clears pending state only when ID, transaction,
+  and target all match; legacy transaction-only terminal actions never clear a
+  submission-owned pending ID.
+- Admission replay memory is bounded. Active IDs live in a non-evicting map;
+  terminal notification moves them into a 128-entry FIFO tombstone ledger.
+  Reducer composer state independently retains the latest 128 accepted IDs.
+  Active pending IDs are stored separately and are never evicted. Retry uses
+  the existing transaction and does not enter either admission path again.
 - Tauri `send_text` and `send_reply` wait for the matching accepted/rejected
   result and return a typed outcome with the same submission ID, optional
   transaction ID, and correlated snapshot. Timeout and disconnect are typed

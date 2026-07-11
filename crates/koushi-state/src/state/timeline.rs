@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, fmt};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    fmt,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -608,7 +611,7 @@ impl fmt::Debug for ComposerDraftStore {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ComposerState {
     #[serde(default, skip_serializing)]
-    pub accepted_submission_ids: BTreeSet<SubmissionId>,
+    pub accepted_submission_ids: VecDeque<SubmissionId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_submission_id: Option<SubmissionId>,
     pub pending_transaction_id: Option<String>,
@@ -616,6 +619,17 @@ pub struct ComposerState {
     pub pending_send_kind: Option<PendingComposerSendKind>,
     pub draft: String,
     pub mode: ComposerMode,
+}
+
+pub(crate) const MAX_ACCEPTED_SUBMISSION_TOMBSTONES: usize = 128;
+
+impl ComposerState {
+    pub(crate) fn remember_accepted_submission(&mut self, submission_id: SubmissionId) {
+        while self.accepted_submission_ids.len() >= MAX_ACCEPTED_SUBMISSION_TOMBSTONES {
+            self.accepted_submission_ids.pop_front();
+        }
+        self.accepted_submission_ids.push_back(submission_id);
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

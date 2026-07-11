@@ -22,9 +22,7 @@ pub(crate) fn handle_thread_submission_accepted(
     {
         return Vec::new();
     }
-    composer
-        .accepted_submission_ids
-        .insert(submission_id.clone());
+    composer.remember_accepted_submission(submission_id.clone());
     composer.pending_submission_id = Some(submission_id);
     handle_thread_reply_submitted(state, room_id, root_event_id, transaction_id)
 }
@@ -113,7 +111,6 @@ pub(crate) fn handle_thread_reply_finished(
             && composer.pending_transaction_id.as_deref() == Some(transaction_id.as_str()) =>
         {
             composer.pending_transaction_id = None;
-            composer.pending_submission_id = None;
             composer.pending_send_kind = None;
             vec![AppEffect::EmitUiEvent(UiEvent::ThreadChanged)]
         }
@@ -143,7 +140,6 @@ pub(crate) fn handle_thread_reply_failed(
             && composer.pending_transaction_id.as_deref() == Some(transaction_id.as_str()) =>
         {
             composer.pending_transaction_id = None;
-            composer.pending_submission_id = None;
             composer.pending_send_kind = None;
             state.errors.push(AppError {
                 code: "send_text_failed".to_owned(),

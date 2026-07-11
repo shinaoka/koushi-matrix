@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::SubmissionId;
+use crate::{ComposerSubmissionTarget, ComposerSubmissionTerminalOutcome, SubmissionId};
 
 use crate::state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityStream, ActivityTab,
@@ -756,6 +756,12 @@ pub enum AppAction {
         submission_id: SubmissionId,
         room_id: String,
         transaction_id: String,
+    },
+    ComposerSubmissionSettled {
+        submission_id: SubmissionId,
+        transaction_id: String,
+        target: ComposerSubmissionTarget,
+        outcome: ComposerSubmissionTerminalOutcome,
     },
     ThreadComposerDraftChanged {
         room_id: String,

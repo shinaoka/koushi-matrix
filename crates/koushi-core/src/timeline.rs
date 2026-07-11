@@ -183,6 +183,9 @@ pub enum TimelineMessage {
         activity: ThreadRootProjectionActivity,
         result: Result<TimelineItem, OperationFailureKind>,
     },
+    SubmissionTerminal {
+        submission_id: koushi_state::SubmissionId,
+    },
     Shutdown,
 }
 
@@ -1006,7 +1009,7 @@ pub struct TimelineManagerActor {
     session: Option<Arc<MatrixClientSession>>,
     room_list_service: Option<Arc<matrix_sdk_ui::room_list_service::RoomListService>>,
     timelines: HashMap<TimelineKey, TimelineActorHandle>,
-    accepted_submissions: HashMap<koushi_state::SubmissionId, (TimelineKey, String)>,
+    accepted_submissions: SubmissionAdmissionLedger,
     action_tx: mpsc::Sender<Vec<AppAction>>,
     event_tx: broadcast::Sender<CoreEvent>,
     msg_tx: mpsc::Sender<TimelineMessage>,
@@ -1035,6 +1038,42 @@ pub struct TimelineManagerActor {
     test_session_available: bool,
 }
 
+const MAX_SUBMISSION_TOMBSTONES: usize = 128;
+
+#[derive(Default)]
+struct SubmissionAdmissionLedger {
+    active: HashMap<koushi_state::SubmissionId, (TimelineKey, String)>,
+    tombstones: std::collections::VecDeque<(koushi_state::SubmissionId, TimelineKey, String)>,
+}
+
+impl SubmissionAdmissionLedger {
+    fn get(&self, id: &koushi_state::SubmissionId) -> Option<(&TimelineKey, &String)> {
+        self.active
+            .get(id)
+            .map(|(key, txn)| (key, txn))
+            .or_else(|| {
+                self.tombstones
+                    .iter()
+                    .find(|(found, _, _)| found == id)
+                    .map(|(_, key, txn)| (key, txn))
+            })
+    }
+
+    fn accept(&mut self, id: koushi_state::SubmissionId, key: TimelineKey, transaction_id: String) {
+        self.active.insert(id, (key, transaction_id));
+    }
+
+    fn terminal(&mut self, id: &koushi_state::SubmissionId) {
+        let Some((key, transaction_id)) = self.active.remove(id) else {
+            return;
+        };
+        while self.tombstones.len() >= MAX_SUBMISSION_TOMBSTONES {
+            self.tombstones.pop_front();
+        }
+        self.tombstones.push_back((id.clone(), key, transaction_id));
+    }
+}
+
 impl TimelineManagerActor {
     pub(crate) fn spawn(
         action_tx: mpsc::Sender<Vec<AppAction>>,
@@ -1047,7 +1086,7 @@ impl TimelineManagerActor {
             session: None,
             room_list_service: None,
             timelines: HashMap::new(),
-            accepted_submissions: HashMap::new(),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
             event_tx,
             msg_tx: tx.clone(),
@@ -1088,7 +1127,7 @@ impl TimelineManagerActor {
             session: Some(session),
             room_list_service: None,
             timelines: HashMap::new(),
-            accepted_submissions: HashMap::new(),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
             event_tx,
             msg_tx: tx.clone(),
@@ -1138,6 +1177,9 @@ impl TimelineManagerActor {
                 } => {
                     self.handle_thread_root_projection_fetch_finished(key, activity, result)
                         .await;
+                }
+                TimelineMessage::SubmissionTerminal { submission_id } => {
+                    self.accepted_submissions.terminal(&submission_id);
                 }
                 TimelineMessage::Command(command) => {
                     self.handle_command(command).await;
@@ -1501,6 +1543,7 @@ impl TimelineManagerActor {
                     SendComposerProjection::for_send_text(&key),
                     TimelineActorMessage::SendText {
                         request_id,
+                        submission_id: None,
                         transaction_id,
                         body,
                         mentions,
@@ -1527,13 +1570,14 @@ impl TimelineManagerActor {
                 }
                 self.route_submission_to_actor(
                     request_id,
-                    submission_id,
+                    submission_id.clone(),
                     &key,
                     transaction_id.clone(),
                     body.clone(),
                     SendComposerProjection::for_send_text(&key),
                     TimelineActorMessage::SendText {
                         request_id,
+                        submission_id: Some(submission_id.clone()),
                         transaction_id,
                         body,
                         mentions,
@@ -1561,6 +1605,7 @@ impl TimelineManagerActor {
                     SendComposerProjection::for_send_reply(&key),
                     TimelineActorMessage::SendReply {
                         request_id,
+                        submission_id: None,
                         transaction_id,
                         in_reply_to_event_id,
                         body,
@@ -1589,13 +1634,14 @@ impl TimelineManagerActor {
                 }
                 self.route_submission_to_actor(
                     request_id,
-                    submission_id,
+                    submission_id.clone(),
                     &key,
                     transaction_id.clone(),
                     body.clone(),
                     SendComposerProjection::for_send_reply(&key),
                     TimelineActorMessage::SendReply {
                         request_id,
+                        submission_id: Some(submission_id.clone()),
                         transaction_id,
                         in_reply_to_event_id,
                         body,
@@ -1987,6 +2033,15 @@ impl TimelineManagerActor {
             }));
             return;
         };
+        if !handle.send(msg).await {
+            self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                request_id,
+                key: key.clone(),
+                submission_id,
+                kind: TimelineFailureKind::QueueOverflow,
+            }));
+            return;
+        }
         let action = match (projection, &key.kind) {
             (SendComposerProjection::Room, TimelineKind::Room { room_id }) => {
                 Some(AppAction::ComposerSubmissionAccepted {
@@ -2022,17 +2077,11 @@ impl TimelineManagerActor {
                 return;
             }
         }
-        if !handle.send(msg).await {
-            self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
-                request_id,
-                key: key.clone(),
-                submission_id,
-                kind: TimelineFailureKind::QueueOverflow,
-            }));
-            return;
-        }
-        self.accepted_submissions
-            .insert(submission_id.clone(), (key.clone(), transaction_id.clone()));
+        self.accepted_submissions.accept(
+            submission_id.clone(),
+            key.clone(),
+            transaction_id.clone(),
+        );
         self.emit(CoreEvent::Timeline(TimelineEvent::SubmissionAccepted {
             request_id,
             key: key.clone(),
@@ -2399,6 +2448,22 @@ fn send_finished_action(key: &TimelineKey, transaction_id: String) -> Option<App
     }
 }
 
+fn submission_target(key: &TimelineKey) -> Option<koushi_state::ComposerSubmissionTarget> {
+    match &key.kind {
+        TimelineKind::Room { room_id } => Some(koushi_state::ComposerSubmissionTarget::Main {
+            room_id: room_id.clone(),
+        }),
+        TimelineKind::Thread {
+            room_id,
+            root_event_id,
+        } => Some(koushi_state::ComposerSubmissionTarget::Thread {
+            room_id: room_id.clone(),
+            root_event_id: root_event_id.clone(),
+        }),
+        TimelineKind::Focused { .. } => None,
+    }
+}
+
 fn send_failed_action(
     key: &TimelineKey,
     projection: SendComposerProjection,
@@ -2619,12 +2684,14 @@ enum TimelineActorMessage {
     },
     SendText {
         request_id: RequestId,
+        submission_id: Option<koushi_state::SubmissionId>,
         transaction_id: String,
         body: String,
         mentions: MentionIntent,
     },
     SendReply {
         request_id: RequestId,
+        submission_id: Option<koushi_state::SubmissionId>,
         transaction_id: String,
         in_reply_to_event_id: String,
         body: String,
@@ -5345,15 +5412,17 @@ impl TimelineActor {
             }
             TimelineActorMessage::SendText {
                 request_id,
+                submission_id,
                 transaction_id,
                 body,
                 mentions,
             } => {
-                self.handle_send_text(request_id, transaction_id, body, mentions)
+                self.handle_send_text(request_id, submission_id, transaction_id, body, mentions)
                     .await;
             }
             TimelineActorMessage::SendReply {
                 request_id,
+                submission_id,
                 transaction_id,
                 in_reply_to_event_id,
                 body,
@@ -5361,6 +5430,7 @@ impl TimelineActor {
             } => {
                 self.handle_send_reply(
                     request_id,
+                    submission_id,
                     transaction_id,
                     in_reply_to_event_id,
                     body,
@@ -6138,6 +6208,7 @@ impl TimelineActor {
     async fn handle_send_text(
         &mut self,
         request_id: RequestId,
+        submission_id: Option<koushi_state::SubmissionId>,
         client_txn_id: String,
         body: String,
         mentions: MentionIntent,
@@ -6151,7 +6222,11 @@ impl TimelineActor {
         let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_send_failed_action(&client_txn_id).await;
+                self.emit_send_failed_action_with_submission(
+                    &client_txn_id,
+                    submission_id.as_ref(),
+                )
+                .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -6163,7 +6238,8 @@ impl TimelineActor {
         };
         let client = self.session.client();
         if client.get_room(&room_id).is_none() {
-            self.emit_send_failed_action(&client_txn_id).await;
+            self.emit_send_failed_action_with_submission(&client_txn_id, submission_id.as_ref())
+                .await;
             self.emit_failure(
                 request_id,
                 CoreFailure::TimelineOperationFailed {
@@ -6182,7 +6258,11 @@ impl TimelineActor {
         let content = match build_room_message_content_from_composer_body(&body, mentions) {
             Ok(content) => content,
             Err(kind) => {
-                self.emit_send_failed_action(&client_txn_id).await;
+                self.emit_send_failed_action_with_submission(
+                    &client_txn_id,
+                    submission_id.as_ref(),
+                )
+                .await;
                 self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
                 return;
             }
@@ -6198,11 +6278,20 @@ impl TimelineActor {
                     &handle,
                     TimelineSendState::Sending,
                 );
-                if let Some((client_txn_id, request_id, event_id)) = self
-                    .send_completion
-                    .remember_pending_send(sdk_txn_id, client_txn_id, request_id, true)
+                if let Some((client_txn_id, completed_submission_id, request_id, event_id)) =
+                    self.send_completion.remember_pending_send(
+                        sdk_txn_id,
+                        client_txn_id,
+                        submission_id.clone(),
+                        request_id,
+                        true,
+                    )
                 {
-                    self.emit_send_finished_action(&client_txn_id).await;
+                    self.emit_send_finished_action_with_submission(
+                        &client_txn_id,
+                        completed_submission_id.as_ref(),
+                    )
+                    .await;
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
                         key: self.key.clone(),
@@ -6213,7 +6302,11 @@ impl TimelineActor {
             }
             Err(err) => {
                 let kind = classify_timeline_send_error(&err);
-                self.emit_send_failed_action(&client_txn_id).await;
+                self.emit_send_failed_action_with_submission(
+                    &client_txn_id,
+                    submission_id.as_ref(),
+                )
+                .await;
                 self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
             }
         }
@@ -6224,6 +6317,7 @@ impl TimelineActor {
     async fn handle_send_reply(
         &mut self,
         request_id: RequestId,
+        submission_id: Option<koushi_state::SubmissionId>,
         client_txn_id: String,
         in_reply_to_event_id: String,
         body: String,
@@ -6238,7 +6332,11 @@ impl TimelineActor {
         let room_id = match matrix_sdk::ruma::RoomId::parse(&room_id_str) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_send_failed_action(&client_txn_id).await;
+                self.emit_send_failed_action_with_submission(
+                    &client_txn_id,
+                    submission_id.as_ref(),
+                )
+                .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -6252,7 +6350,11 @@ impl TimelineActor {
         let reply_event_id = match matrix_sdk::ruma::EventId::parse(&in_reply_to_event_id) {
             Ok(id) => id,
             Err(_) => {
-                self.emit_send_failed_action(&client_txn_id).await;
+                self.emit_send_failed_action_with_submission(
+                    &client_txn_id,
+                    submission_id.as_ref(),
+                )
+                .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -6265,7 +6367,8 @@ impl TimelineActor {
 
         let client = self.session.client();
         if client.get_room(&room_id).is_none() {
-            self.emit_send_failed_action(&client_txn_id).await;
+            self.emit_send_failed_action_with_submission(&client_txn_id, submission_id.as_ref())
+                .await;
             self.emit_failure(
                 request_id,
                 CoreFailure::TimelineOperationFailed {
@@ -6279,7 +6382,11 @@ impl TimelineActor {
             match build_room_message_content_without_relation_from_composer_body(&body, mentions) {
                 Ok(content) => content,
                 Err(kind) => {
-                    self.emit_send_failed_action(&client_txn_id).await;
+                    self.emit_send_failed_action_with_submission(
+                        &client_txn_id,
+                        submission_id.as_ref(),
+                    )
+                    .await;
                     self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
                     return;
                 }
@@ -6293,7 +6400,11 @@ impl TimelineActor {
         let content = match self.timeline.room().make_reply_event(content, reply).await {
             Ok(content) => content,
             Err(_) => {
-                self.emit_send_failed_action(&client_txn_id).await;
+                self.emit_send_failed_action_with_submission(
+                    &client_txn_id,
+                    submission_id.as_ref(),
+                )
+                .await;
                 self.emit_failure(
                     request_id,
                     CoreFailure::TimelineOperationFailed {
@@ -6313,11 +6424,20 @@ impl TimelineActor {
                     &handle,
                     TimelineSendState::Sending,
                 );
-                if let Some((client_txn_id, request_id, event_id)) = self
-                    .send_completion
-                    .remember_pending_send(sdk_txn_id, client_txn_id, request_id, true)
+                if let Some((client_txn_id, completed_submission_id, request_id, event_id)) =
+                    self.send_completion.remember_pending_send(
+                        sdk_txn_id,
+                        client_txn_id,
+                        submission_id.clone(),
+                        request_id,
+                        true,
+                    )
                 {
-                    self.emit_send_finished_action(&client_txn_id).await;
+                    self.emit_send_finished_action_with_submission(
+                        &client_txn_id,
+                        completed_submission_id.as_ref(),
+                    )
+                    .await;
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
                         key: self.key.clone(),
@@ -6328,7 +6448,11 @@ impl TimelineActor {
             }
             Err(err) => {
                 let kind = classify_timeline_send_error(&err);
-                self.emit_send_failed_action(&client_txn_id).await;
+                self.emit_send_failed_action_with_submission(
+                    &client_txn_id,
+                    submission_id.as_ref(),
+                )
+                .await;
                 self.emit_failure(request_id, CoreFailure::TimelineOperationFailed { kind });
             }
         }
@@ -6515,11 +6639,12 @@ impl TimelineActor {
                 if let Some(room) = self.sdk_room_for_key() {
                     room.send_queue().set_enabled(true);
                 }
-                if let Some((client_txn_id, _request_id, settles_composer)) =
+                if let Some((client_txn_id, submission_id, _request_id, settles_composer)) =
                     self.send_completion.record_cancelled_event(&transaction_id)
                 {
                     if settles_composer {
-                        self.emit_send_finished_action(&client_txn_id).await;
+                        self.emit_send_cancelled_action(&client_txn_id, submission_id.as_ref())
+                            .await;
                     }
                 }
             }
@@ -6622,9 +6747,9 @@ impl TimelineActor {
                     &handle,
                     TimelineSendState::Sending,
                 );
-                if let Some((client_txn_id, request_id, event_id)) = self
+                if let Some((client_txn_id, _submission_id, request_id, event_id)) = self
                     .send_completion
-                    .remember_pending_send(sdk_txn_id, client_txn_id, request_id, false)
+                    .remember_pending_send(sdk_txn_id, client_txn_id, None, request_id, false)
                 {
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
@@ -8615,11 +8740,12 @@ impl TimelineActor {
                 self.send_statuses
                     .insert(sdk_txn_str.clone(), TimelineSendState::Cancelled);
                 self.send_handles.remove(&sdk_txn_str);
-                if let Some((client_txn_id, _request_id, settles_composer)) =
+                if let Some((client_txn_id, submission_id, _request_id, settles_composer)) =
                     self.send_completion.record_cancelled_event(&sdk_txn_str)
                 {
                     if settles_composer {
-                        self.emit_send_finished_action(&client_txn_id).await;
+                        self.emit_send_cancelled_action(&client_txn_id, submission_id.as_ref())
+                            .await;
                     }
                 }
             }
@@ -8639,11 +8765,15 @@ impl TimelineActor {
                         reason: send_failure_reason(is_recoverable),
                     },
                 );
-                if let Some((client_txn_id, _request_id, settles_composer)) =
+                if let Some((client_txn_id, submission_id, _request_id, settles_composer)) =
                     self.send_completion.record_send_error(&sdk_txn_str)
                 {
                     if settles_composer {
-                        self.emit_send_failed_action(&client_txn_id).await;
+                        self.emit_send_failed_action_with_submission(
+                            &client_txn_id,
+                            submission_id.as_ref(),
+                        )
+                        .await;
                     }
                 }
             }
@@ -8662,12 +8792,22 @@ impl TimelineActor {
                 self.send_handles.remove(&sdk_txn_str);
                 self.sent_event_txns
                     .insert(event_id.to_string(), transaction_id.clone());
-                if let Some((client_txn_id, request_id, event_id, settles_composer)) = self
+                if let Some((
+                    client_txn_id,
+                    submission_id,
+                    request_id,
+                    event_id,
+                    settles_composer,
+                )) = self
                     .send_completion
                     .record_sent_event(sdk_txn_str, event_id.to_string())
                 {
                     if settles_composer {
-                        self.emit_send_finished_action(&client_txn_id).await;
+                        self.emit_send_finished_action_with_submission(
+                            &client_txn_id,
+                            submission_id.as_ref(),
+                        )
+                        .await;
                     }
                     self.emit(CoreEvent::Timeline(TimelineEvent::SendCompleted {
                         request_id,
@@ -9029,16 +9169,57 @@ impl TimelineActor {
     /// Drive the reducer's composer completion transition for the matching
     /// pending send. Room timelines settle the main composer; thread timelines
     /// settle the open thread composer; focused timelines own no composer state.
-    async fn emit_send_finished_action(&self, client_txn_id: &str) {
-        if let Some(action) = send_finished_action(&self.key, client_txn_id.to_owned()) {
+    async fn emit_send_finished_action_with_submission(
+        &self,
+        client_txn_id: &str,
+        submission_id: Option<&koushi_state::SubmissionId>,
+    ) {
+        let action = submission_id
+            .zip(submission_target(&self.key))
+            .map(
+                |(submission_id, target)| AppAction::ComposerSubmissionSettled {
+                    submission_id: submission_id.clone(),
+                    transaction_id: client_txn_id.to_owned(),
+                    target,
+                    outcome: koushi_state::ComposerSubmissionTerminalOutcome::Succeeded,
+                },
+            )
+            .or_else(|| send_finished_action(&self.key, client_txn_id.to_owned()));
+        if let Some(action) = action {
             let _ = self.emit_action_reliable(action).await;
         }
+        if let Some(submission_id) = submission_id {
+            self.notify_submission_terminal(submission_id).await;
+        }
+    }
+
+    async fn emit_send_finished_action(&self, client_txn_id: &str) {
+        self.emit_send_finished_action_with_submission(client_txn_id, None)
+            .await;
     }
 
     /// Drive the reducer's composer failure transition for the matching pending
     /// send. Room timelines settle the main composer; thread timelines settle
     /// the open thread composer; focused timelines own no composer state.
-    async fn emit_send_failed_action(&self, client_txn_id: &str) {
+    async fn emit_send_failed_action_with_submission(
+        &self,
+        client_txn_id: &str,
+        submission_id: Option<&koushi_state::SubmissionId>,
+    ) {
+        if let Some((submission_id, target)) = submission_id.zip(submission_target(&self.key)) {
+            let _ = self
+                .emit_action_reliable(AppAction::ComposerSubmissionSettled {
+                    submission_id: submission_id.clone(),
+                    transaction_id: client_txn_id.to_owned(),
+                    target,
+                    outcome: koushi_state::ComposerSubmissionTerminalOutcome::Failed {
+                        message: "send failed".to_owned(),
+                    },
+                })
+                .await;
+            self.notify_submission_terminal(submission_id).await;
+            return;
+        }
         let projection = match self.key.kind {
             TimelineKind::Room { .. } => SendComposerProjection::Room,
             TimelineKind::Thread { .. } => SendComposerProjection::ThreadReply,
@@ -9052,6 +9233,35 @@ impl TimelineActor {
         ) {
             let _ = self.emit_action_reliable(action).await;
         }
+    }
+
+    async fn emit_send_cancelled_action(
+        &self,
+        client_txn_id: &str,
+        submission_id: Option<&koushi_state::SubmissionId>,
+    ) {
+        if let Some((submission_id, target)) = submission_id.zip(submission_target(&self.key)) {
+            let _ = self
+                .emit_action_reliable(AppAction::ComposerSubmissionSettled {
+                    submission_id: submission_id.clone(),
+                    transaction_id: client_txn_id.to_owned(),
+                    target,
+                    outcome: koushi_state::ComposerSubmissionTerminalOutcome::Cancelled,
+                })
+                .await;
+            self.notify_submission_terminal(submission_id).await;
+        } else {
+            self.emit_send_finished_action(client_txn_id).await;
+        }
+    }
+
+    async fn notify_submission_terminal(&self, submission_id: &koushi_state::SubmissionId) {
+        let _ = self
+            .manager_tx
+            .send(TimelineMessage::SubmissionTerminal {
+                submission_id: submission_id.clone(),
+            })
+            .await;
     }
 
     fn emit_typing_users_action(&self, user_ids: Vec<String>) {
@@ -11523,6 +11733,7 @@ struct SendCompletionTracker {
 
 struct PendingSendCompletion {
     client_txn_id: String,
+    submission_id: Option<koushi_state::SubmissionId>,
     request_id: RequestId,
     settles_composer: bool,
     failure_reported: bool,
@@ -11533,16 +11744,23 @@ impl SendCompletionTracker {
         &mut self,
         sdk_txn_id: String,
         client_txn_id: String,
+        submission_id: Option<koushi_state::SubmissionId>,
         request_id: RequestId,
         settles_composer: bool,
-    ) -> Option<(String, RequestId, String)> {
+    ) -> Option<(
+        String,
+        Option<koushi_state::SubmissionId>,
+        RequestId,
+        String,
+    )> {
         if let Some(event_id) = self.completed_sends.remove(&sdk_txn_id) {
-            Some((client_txn_id, request_id, event_id))
+            Some((client_txn_id, submission_id, request_id, event_id))
         } else {
             self.pending_sends.insert(
                 sdk_txn_id,
                 PendingSendCompletion {
                     client_txn_id,
+                    submission_id,
                     request_id,
                     settles_composer,
                     failure_reported: false,
@@ -11556,11 +11774,18 @@ impl SendCompletionTracker {
         &mut self,
         sdk_txn_id: String,
         event_id: String,
-    ) -> Option<(String, RequestId, String, bool)> {
+    ) -> Option<(
+        String,
+        Option<koushi_state::SubmissionId>,
+        RequestId,
+        String,
+        bool,
+    )> {
         if let Some(pending) = self.pending_sends.remove(&sdk_txn_id) {
             let settles_composer = pending.settles_composer && !pending.failure_reported;
             Some((
                 pending.client_txn_id,
+                pending.submission_id,
                 pending.request_id,
                 event_id,
                 settles_composer,
@@ -11571,7 +11796,10 @@ impl SendCompletionTracker {
         }
     }
 
-    fn record_send_error(&mut self, sdk_txn_id: &str) -> Option<(String, RequestId, bool)> {
+    fn record_send_error(
+        &mut self,
+        sdk_txn_id: &str,
+    ) -> Option<(String, Option<koushi_state::SubmissionId>, RequestId, bool)> {
         let pending = self.pending_sends.get_mut(sdk_txn_id)?;
         if pending.failure_reported {
             return None;
@@ -11579,15 +11807,20 @@ impl SendCompletionTracker {
         pending.failure_reported = true;
         Some((
             pending.client_txn_id.clone(),
+            pending.submission_id.clone(),
             pending.request_id,
             pending.settles_composer,
         ))
     }
 
-    fn record_cancelled_event(&mut self, sdk_txn_id: &str) -> Option<(String, RequestId, bool)> {
+    fn record_cancelled_event(
+        &mut self,
+        sdk_txn_id: &str,
+    ) -> Option<(String, Option<koushi_state::SubmissionId>, RequestId, bool)> {
         let pending = self.pending_sends.remove(sdk_txn_id)?;
         Some((
             pending.client_txn_id,
+            pending.submission_id,
             pending.request_id,
             pending.settles_composer && !pending.failure_reported,
         ))
@@ -13363,7 +13596,7 @@ mod tests {
             session: None,
             room_list_service: None,
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
-            accepted_submissions: HashMap::new(),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
             event_tx,
             msg_tx,
@@ -14711,7 +14944,7 @@ mod tests {
             session: None,
             room_list_service: None,
             timelines: HashMap::from([(key.clone(), test_timeline_actor_handle())]),
-            accepted_submissions: HashMap::new(),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
             event_tx,
             msg_tx,
@@ -15183,7 +15416,7 @@ mod tests {
         let (actor_tx, mut actor_rx) = mpsc::channel(4);
         let actor_task = executor::spawn(std::future::pending());
         let (action_tx, mut action_rx) = mpsc::channel(4);
-        let (event_tx, _event_rx) = broadcast::channel(4);
+        let (event_tx, mut event_rx) = broadcast::channel(4);
         let (msg_tx, msg_rx) = mpsc::channel(1);
         let mut manager = TimelineManagerActor {
             session: None,
@@ -15196,7 +15429,7 @@ mod tests {
                     auxiliary_tasks: Vec::new(),
                 },
             )]),
-            accepted_submissions: HashMap::new(),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
             event_tx,
             msg_tx,
@@ -15240,6 +15473,61 @@ mod tests {
             Ok(actions) if matches!(actions.as_slice(), [AppAction::ComposerSubmissionAccepted { submission_id: accepted, .. }] if accepted == &submission_id)
         ));
         assert!(action_rx.try_recv().is_err());
+
+        while event_rx.try_recv().is_ok() {}
+        drop(actor_rx);
+        let rejected_id = SubmissionId::new("closed-actor-submission");
+        manager
+            .handle_command(TimelineCommand::SubmitText {
+                request_id: fake_rid(7302),
+                submission_id: rejected_id.clone(),
+                key: key.clone(),
+                transaction_id: "txn-rejected".to_owned(),
+                body: "body".to_owned(),
+                mentions: MentionIntent::default(),
+            })
+            .await;
+        assert!(action_rx.try_recv().is_err());
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(CoreEvent::Timeline(TimelineEvent::SubmissionRejected {
+                submission_id,
+                ..
+            })) if submission_id == rejected_id
+        ));
+    }
+
+    #[test]
+    fn submission_acceptance_is_emitted_after_actor_enqueue() {
+        let source = include_str!("timeline.rs");
+        let route = source
+            .split("async fn route_submission_to_actor")
+            .nth(1)
+            .expect("submission route exists")
+            .split("async fn route_send_to_actor_or_fail")
+            .next()
+            .expect("submission route body");
+        let actor_enqueue = route.find("handle.send(msg).await").expect("actor enqueue");
+        let reducer_accept = route
+            .find("self.action_tx.send(vec![action]).await")
+            .expect("reducer acceptance");
+        assert!(actor_enqueue < reducer_accept);
+    }
+
+    #[test]
+    fn submission_admission_tombstones_are_bounded_and_active_is_retained() {
+        let mut ledger = SubmissionAdmissionLedger::default();
+        let key = room_key();
+        let active = SubmissionId::new("active");
+        ledger.accept(active.clone(), key.clone(), "active-txn".to_owned());
+        for index in 0..=MAX_SUBMISSION_TOMBSTONES {
+            let id = SubmissionId::new(format!("terminal-{index}"));
+            ledger.accept(id.clone(), key.clone(), format!("txn-{index}"));
+            ledger.terminal(&id);
+        }
+        assert_eq!(ledger.tombstones.len(), MAX_SUBMISSION_TOMBSTONES);
+        assert!(ledger.active.contains_key(&active));
+        assert!(ledger.get(&SubmissionId::new("terminal-0")).is_none());
     }
 
     #[test]
@@ -16292,7 +16580,7 @@ mod tests {
                     auxiliary_tasks: Vec::new(),
                 },
             )]),
-            accepted_submissions: HashMap::new(),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
             event_tx,
             msg_tx: manager_tx.clone(),
@@ -16467,7 +16755,7 @@ mod tests {
                     auxiliary_tasks: Vec::new(),
                 },
             )]),
-            accepted_submissions: HashMap::new(),
+            accepted_submissions: SubmissionAdmissionLedger::default(),
             action_tx,
             event_tx,
             msg_tx: _manager_tx,
@@ -17909,14 +18197,14 @@ mod tests {
             .split("fn send_finished_action")
             .next()
             .expect("send finished projection helper should follow submit helper");
-        let finished_projection_source = source
+        let _finished_projection_source = source
             .split("fn send_finished_action")
             .nth(1)
             .expect("send finished projection helper should exist")
             .split("fn send_failed_action")
             .next()
             .expect("send failed projection helper should follow finished helper");
-        let failed_projection_source = source
+        let _failed_projection_source = source
             .split("fn send_failed_action")
             .nth(1)
             .expect("send failed projection helper should exist")
@@ -17942,10 +18230,9 @@ mod tests {
             "thread SendReply route failures must clear thread composer pending state"
         );
         assert!(
-            actor_completion_source.contains("send_finished_action")
-                && actor_completion_source.contains("send_failed_action")
-                && finished_projection_source.contains("ThreadReplyFinished")
-                && failed_projection_source.contains("ThreadReplyFailed"),
+            actor_completion_source.contains("ComposerSubmissionSettled")
+                && actor_completion_source.contains("ComposerSubmissionTerminalOutcome")
+                && actor_completion_source.contains("submission_target"),
             "thread actor completion and failure must settle thread composer state"
         );
         assert!(
@@ -18773,7 +19060,7 @@ mod tests {
         let event_id = "$event-42".to_owned();
 
         assert_eq!(
-            tracker.remember_pending_send(sdk_txn.clone(), client_txn.clone(), rid, true),
+            tracker.remember_pending_send(sdk_txn.clone(), client_txn.clone(), None, rid, true),
             None
         );
         assert_eq!(
@@ -18782,7 +19069,7 @@ mod tests {
         );
         assert_eq!(
             tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
-            Some((client_txn.clone(), rid, event_id, true))
+            Some((client_txn.clone(), None, rid, event_id, true))
         );
 
         assert!(tracker.pending_sends.is_empty());
@@ -18802,8 +19089,14 @@ mod tests {
             None
         );
         assert_eq!(
-            tracker.remember_pending_send(sdk_txn.clone(), client_txn.clone(), request_id, true),
-            Some((client_txn.clone(), request_id, event_id.clone()))
+            tracker.remember_pending_send(
+                sdk_txn.clone(),
+                client_txn.clone(),
+                None,
+                request_id,
+                true,
+            ),
+            Some((client_txn.clone(), None, request_id, event_id.clone()))
         );
         assert!(tracker.pending_sends.is_empty());
         assert!(tracker.completed_sends.is_empty());
@@ -18818,13 +19111,40 @@ mod tests {
         let event_id = "$event-media".to_owned();
 
         assert_eq!(
-            tracker.remember_pending_send(sdk_txn.clone(), client_txn.clone(), request_id, false),
+            tracker.remember_pending_send(
+                sdk_txn.clone(),
+                client_txn.clone(),
+                None,
+                request_id,
+                false,
+            ),
             None
         );
         assert_eq!(
             tracker.record_sent_event(sdk_txn.clone(), event_id.clone()),
-            Some((client_txn, request_id, event_id, false))
+            Some((client_txn, None, request_id, event_id, false))
         );
+    }
+
+    #[test]
+    fn send_completion_tracker_preserves_submission_id_for_terminal_paths() {
+        let mut tracker = SendCompletionTracker::default();
+        let submission_id = SubmissionId::new("submission-terminal");
+        tracker.remember_pending_send(
+            "sdk-txn".to_owned(),
+            "client-txn".to_owned(),
+            Some(submission_id.clone()),
+            fake_rid(7400),
+            true,
+        );
+        assert!(matches!(
+            tracker.record_send_error("sdk-txn"),
+            Some((_, Some(ref found), _, true)) if found == &submission_id
+        ));
+        assert!(matches!(
+            tracker.record_cancelled_event("sdk-txn"),
+            Some((_, Some(found), _, false)) if found == submission_id
+        ));
     }
 
     #[test]
