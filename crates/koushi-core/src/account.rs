@@ -363,10 +363,22 @@ struct PendingSasVerification {
 struct PendingSessionTeardown {
     generation: u64,
     attempt: u32,
-    request_id: RequestId,
     session: Arc<MatrixClientSession>,
     key_id: Option<SessionKeyId>,
-    server_logout: bool,
+    continuation: SessionTeardownContinuation,
+}
+
+enum SessionTeardownContinuation {
+    Logout {
+        request_id: RequestId,
+        server_logout: bool,
+    },
+    InstallReplacement {
+        session: MatrixClientSession,
+        persistable: PersistableMatrixSession,
+        key_id: SessionKeyId,
+        action: AppAction,
+    },
 }
 
 enum PendingOidcFlow {
@@ -3834,6 +3846,10 @@ impl AccountActor {
     }
 
     async fn handle_complete_oidc_login(&mut self, request_id: RequestId, callback_url: String) {
+        if self.pending_session_teardown.is_some() {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        }
         let Some((start_request_id, pending)) = self.pending_oidc_login.take() else {
             self.send_actions(vec![AppAction::LoginDiscoveryFailed {
                 homeserver: String::new(),
@@ -3964,6 +3980,10 @@ impl AccountActor {
     }
 
     async fn handle_login_password(&mut self, request_id: RequestId, request: LoginRequest) {
+        if self.pending_session_teardown.is_some() {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        }
         // Store bootstrap step 1: the password exchange runs on a storeless
         // client. The device id (and therefore the store path) is unknown
         // before this completes. The storeless client must never sync or
@@ -4056,6 +4076,10 @@ impl AccountActor {
     }
 
     async fn handle_restore_session(&mut self, request_id: RequestId, account_key: AccountKey) {
+        if self.pending_session_teardown.is_some() {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        }
         trace_account_request("restore_session", request_id, "lookup_key");
         let key_id = match self.lookup_session_key_id(&account_key).await {
             Ok(Some(key_id)) => {
@@ -4094,6 +4118,10 @@ impl AccountActor {
     /// A pointer whose session data is missing follows the same not-found
     /// contract (handled inside `restore_account`).
     async fn handle_restore_last_session(&mut self, request_id: RequestId) {
+        if self.pending_session_teardown.is_some() {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        }
         trace_account_request("restore_last_session", request_id, "load_pointer");
         let key_id = match self.store.credential_backend().load_last_session() {
             Ok(Some(key_id)) => {
@@ -4774,6 +4802,10 @@ impl AccountActor {
     }
 
     async fn handle_switch_account(&mut self, request_id: RequestId, account_key: AccountKey) {
+        if self.pending_session_teardown.is_some() {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        }
         // Ordered shutdown of the current account runtime WITHOUT clearing
         // credentials or stores.
         self.stop_current_session_runtime().await;
@@ -4986,10 +5018,12 @@ impl AccountActor {
         self.pending_session_teardown = Some(PendingSessionTeardown {
             generation,
             attempt: 0,
-            request_id,
             session,
             key_id,
-            server_logout,
+            continuation: SessionTeardownContinuation::Logout {
+                request_id,
+                server_logout,
+            },
         });
         self.retry_session_teardown(generation).await;
     }
@@ -5056,7 +5090,6 @@ impl AccountActor {
             .pending_session_teardown
             .take()
             .expect("successful teardown remains pending");
-        let _ = pending.server_logout;
         drop(pending.session);
         let account_key = if let Some(key_id) = &pending.key_id {
             self.clear_account_persistence(key_id).await;
@@ -5065,11 +5098,29 @@ impl AccountActor {
             AccountKey(String::new())
         };
         self.record_lifecycle_probe("session_persistence_deleted");
-        self.send_actions(vec![AppAction::LogoutFinished]).await;
-        self.emit(CoreEvent::Account(AccountEvent::LoggedOut {
-            request_id: pending.request_id,
-            account_key,
-        }));
+        match pending.continuation {
+            SessionTeardownContinuation::Logout {
+                request_id,
+                server_logout,
+            } => {
+                let _ = server_logout;
+                self.send_actions(vec![AppAction::LogoutFinished]).await;
+                self.emit(CoreEvent::Account(AccountEvent::LoggedOut {
+                    request_id,
+                    account_key,
+                }));
+            }
+            SessionTeardownContinuation::InstallReplacement {
+                session,
+                persistable,
+                key_id,
+                action,
+            } => {
+                self.record_lifecycle_probe("replacement_teardown_complete");
+                Box::pin(self.install_provisional_session(session, persistable, key_id, action))
+                    .await;
+            }
+        }
     }
 
     async fn handle_logout(&mut self, request_id: RequestId) {
@@ -5085,6 +5136,27 @@ impl AccountActor {
         key_id: SessionKeyId,
         action: AppAction,
     ) {
+        debug_assert!(self.pending_session_teardown.is_none());
+        if let Some(previous_session) = self.session.take() {
+            let previous_key_id = self.session_key_id.take();
+            self.stop_current_session_runtime().await;
+            self.next_teardown_generation = self.next_teardown_generation.wrapping_add(1);
+            let generation = self.next_teardown_generation;
+            self.pending_session_teardown = Some(PendingSessionTeardown {
+                generation,
+                attempt: 0,
+                session: previous_session,
+                key_id: previous_key_id,
+                continuation: SessionTeardownContinuation::InstallReplacement {
+                    session,
+                    persistable,
+                    key_id,
+                    action,
+                },
+            });
+            self.retry_session_teardown(generation).await;
+            return;
+        }
         self.stop_provisional_runtime().await;
         let session = Arc::new(session);
         self.device_session_ordinals.clear();
@@ -7131,6 +7203,111 @@ mod tests {
         let _ = handle.send(AccountMessage::Shutdown).await;
     }
 
+    #[tokio::test]
+    async fn replacement_close_failure_holds_incoming_until_generation_retry_succeeds() {
+        let first_homeserver = spawn_quarantine_password_server();
+        let second_homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        handle
+            .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+            .await;
+        let first_request = test_request_id();
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: first_request,
+                request: LoginRequest {
+                    homeserver: first_homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ) {}
+        handle
+            .send(AccountMessage::ConfigureCloseStoreResults {
+                results: vec![false, true],
+            })
+            .await;
+        let replacement_request = RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(2),
+            sequence: 2,
+        };
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: replacement_request,
+                request: LoginRequest {
+                    homeserver: second_homeserver.clone(),
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while probe_rx.recv().await != Some("session_store_close_retrying") {}
+        assert_no_login_succeeded_for(&mut action_rx, &second_homeserver);
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (false, false, false, false)
+        );
+
+        let later = RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(3),
+            sequence: 3,
+        };
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: later,
+                request: LoginRequest {
+                    homeserver: "http://127.0.0.1:9".to_owned(),
+                    username: "later".to_owned(),
+                    password: koushi_state::AuthSecret::new("not-used"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        loop {
+            if let CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            } = event_rx.recv().await.expect("later rejection")
+                && request_id == later
+            {
+                assert_eq!(failure, CoreFailure::SessionRequired);
+                break;
+            }
+        }
+        handle
+            .send(AccountMessage::RetrySessionTeardown { generation: 999 })
+            .await;
+        assert_no_login_succeeded_for(&mut action_rx, &second_homeserver);
+        handle
+            .send(AccountMessage::RetrySessionTeardown { generation: 1 })
+            .await;
+        while probe_rx.recv().await != Some("replacement_teardown_complete") {}
+        loop {
+            let actions = action_rx.recv().await.expect("replacement action");
+            if matches!(
+                actions.as_slice(),
+                [AppAction::LoginSucceeded { info, .. }] if info.homeserver == second_homeserver
+            ) {
+                break;
+            }
+        }
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, false, false, true)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
     async fn inspect_session_runtime(handle: &AccountActorHandle) -> (bool, bool, bool, bool) {
         let (response, result) = oneshot::channel();
         assert!(
@@ -7147,6 +7324,18 @@ mod tests {
                 !matches!(actions.as_slice(), [AppAction::LogoutFinished]),
                 "teardown acknowledged logout before close barrier"
             );
+        }
+    }
+
+    fn assert_no_login_succeeded_for(
+        action_rx: &mut mpsc::Receiver<Vec<AppAction>>,
+        homeserver: &str,
+    ) {
+        while let Ok(actions) = action_rx.try_recv() {
+            assert!(!matches!(
+                actions.as_slice(),
+                [AppAction::LoginSucceeded { info, .. }] if info.homeserver == homeserver
+            ));
         }
     }
 
