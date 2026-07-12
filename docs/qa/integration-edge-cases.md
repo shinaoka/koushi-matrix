@@ -42,7 +42,7 @@ under #9/#31 before pre-dogfood audit closure.
 - [ ] [H] identity-change notice fires on verified→unverified transition (RUSTSEC-2024-0434); benign re-login distinguished where possible (RS#4099)
 - [ ] [H] one trust state drives header/room-info/profile/session-list shields consistently (EW#29160)
 - [ ] [H] per-event shield = author device cross-signed, independent of per-user trust (EW#19561)
-- [ ] [H] send to verified user w/ unverified device or changed identity → explicit ack gate, working retry (EW#27943)
+- [ ] [H] eligible unverified peer devices remain non-blocking for ordinary sends; no normal-mode verify/send-anyway prompt. Explicitly blocked devices and cryptographic integrity/key-mismatch failures still reject the affected action (#191; supersedes the broader EW#27943 ack expectation).
 - [ ] [H] late-decrypt within grace window not reported as UTD; permanent UTD reported once even if timeline dropped (RS#4267, EW#25816)
 - [ ] [H] megolm rotation reshares to the **full** current device set, excludes `Withheld` devices from oversharing/rotation (JS#1986, RS#4954)
 

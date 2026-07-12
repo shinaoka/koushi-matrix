@@ -309,6 +309,30 @@ account runtime (without clearing credentials or stores) followed by a
 store-backed restore of the target account; phases that do not yet have the
 affected children treat those shutdown steps as no-ops.
 
+**Keyed SDK media-store invariant.** The account-keyed `SqliteStoreConfig` is
+also the configuration used by the SDK `SqliteMediaStore`; supplying a separate
+`cache_path` does not remove or replace its `MatrixClientStoreKey`. Automatic
+avatar persistence therefore uses the SDK media store and its retention policy,
+not a Koushi-owned disk cache. Koushi may materialize decrypted bytes into a
+session-scoped in-memory `koushi-thumbnail://` cache for rendering, but it must
+never persist automatic avatar/link-preview plaintext or return `file://` URLs
+for them. Legacy plaintext thumbnail directories remain cleanup-only.
+
+**Verified-session admission invariant.** Password/OIDC authentication and
+credential restore first install an AccountActor-owned provisional SDK session;
+they do not publish `Ready` or an active saved session. The actor subscribes to
+the SDK current-device verification stream before reading its current value and
+promotes only an authoritative `Verified` observation. While provisional, only
+a restricted crypto synchronization loop may process the account data,
+device-list, key-query, recovery, and to-device traffic required for trust
+discovery and SAS. It must not start normal Sync/Room/Timeline/Search actors,
+publish room or attention projections, restore drafts/navigation/scheduled
+sends, or authorize ordinary commands. Provisional credentials are not
+persisted; a process restart returns to `SignedOut`. Rejection performs
+best-effort server logout and deletes account-local keyed stores. A later
+non-Verified observation locks a Ready session, stops normal children, and
+clears session views before the main shell can remain usable.
+
 Actor deployment is flexible. The boundaries above define state ownership,
 command routing, event production, and shutdown responsibility; they do not
 require one Tokio task per actor in the first implementation. The runtime may
