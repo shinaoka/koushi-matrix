@@ -3709,33 +3709,7 @@ impl AccountActor {
                 kind,
                 cancelled_by_us,
             } => {
-                #[cfg(not(feature = "qa-bin"))]
                 let _ = (kind, cancelled_by_us);
-                #[cfg(feature = "qa-bin")]
-                if std::env::var_os("KOUSHI_QA_SCENARIO").is_some() {
-                    let role = if self.own_user_verification.is_some() {
-                        "requester"
-                    } else {
-                        "recipient"
-                    };
-                    let sas_phase = self
-                        .sas_verification
-                        .as_ref()
-                        .map(|pending| match pending.handle.state() {
-                            koushi_sdk::MatrixSasState::Created => "created",
-                            koushi_sdk::MatrixSasState::Started => "started",
-                            koushi_sdk::MatrixSasState::Accepted => "accepted",
-                            koushi_sdk::MatrixSasState::SasPresented { .. } => "presented",
-                            koushi_sdk::MatrixSasState::Confirmed => "confirmed",
-                            koushi_sdk::MatrixSasState::Done => "done",
-                            koushi_sdk::MatrixSasState::Cancelled => "cancelled",
-                            koushi_sdk::MatrixSasState::UnsupportedShortAuth => "unsupported",
-                        })
-                        .unwrap_or("none");
-                    eprintln!(
-                        "verification_cancel_kind={kind:?};cancelled_by_us={cancelled_by_us};role={role};sas_phase={sas_phase}"
-                    );
-                }
                 self.project_active_or_missing_verification_failure_with_kind(
                     request_id,
                     request_id.sequence,

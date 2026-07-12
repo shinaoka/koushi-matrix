@@ -465,7 +465,8 @@ class BrowserFakeApi implements DesktopApi {
   async submitRecovery(secret: string): Promise<DesktopSnapshot> {
     if (
       this.snapshot.state.domain.session.kind !== "awaitingVerification" &&
-      this.snapshot.state.domain.session.kind !== "verifying"
+      this.snapshot.state.domain.session.kind !== "verifying" &&
+      this.snapshot.state.domain.session.kind !== "needsRecovery"
     ) {
       return this.getSnapshot();
     }
