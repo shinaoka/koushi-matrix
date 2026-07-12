@@ -5277,8 +5277,11 @@ mod tests {
             inspect_runtime_children(&runtime).await,
             (true, true, true, true)
         );
-        assert_eq!(probe_rx.recv().await, Some("restricted_sync_terminated"));
         assert_eq!(probe_rx.recv().await, Some("ready_projection_ack"));
+        assert!(
+            probe_rx.try_recv().is_err(),
+            "crypto trust lane must remain active in Ready"
+        );
 
         trust_tx
             .send(koushi_state::CurrentDeviceTrustState::Unverified)
@@ -5292,10 +5295,11 @@ mod tests {
             (true, false, false, true)
         );
         let mut tokens = Vec::new();
-        while tokens.len() < 11 {
+        while tokens.len() < 12 {
             tokens.push(probe_rx.recv().await.expect("stop token"));
         }
         assert_eq!(tokens[0], "lock_projection_ack");
+        assert!(tokens.contains(&"restricted_sync_terminated"));
         assert!(tokens.contains(&"stop_sync_actor"));
         assert!(tokens.contains(&"stop_timeline_manager"));
         assert!(tokens.contains(&"clear_room_session"));

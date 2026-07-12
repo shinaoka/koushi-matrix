@@ -6194,6 +6194,7 @@ impl AccountActor {
         if decision == TrustLifecycleDecision::Lock {
             if locked {
                 self.record_lifecycle_probe("lock_projection_ack");
+                self.stop_restricted_sync().await;
                 self.stop_normal_runtime_children().await;
                 self.session_promoted = false;
             }
@@ -6206,6 +6207,9 @@ impl AccountActor {
         let Some(session) = self.session.clone() else {
             return;
         };
+        if self.restricted_sync.is_none() {
+            self.start_promoted_crypto_trust_lane(session.clone(), generation);
+        }
         self.spawn_sync_actor(session.clone()).await;
         self.spawn_account_hydration(session.clone());
         self.start_recovery_observer(session.clone());
@@ -6214,6 +6218,46 @@ impl AccountActor {
         self.session_promoted = true;
         for event in std::mem::take(&mut self.pending_ready_events) {
             self.emit(event);
+        }
+    }
+
+    fn start_promoted_crypto_trust_lane(
+        &mut self,
+        session: Arc<MatrixClientSession>,
+        generation: u64,
+    ) {
+        #[cfg(test)]
+        {
+            let _ = (session, generation);
+            self.restricted_sync = Some(executor::spawn(std::future::pending()));
+            return;
+        }
+        #[cfg(not(test))]
+        {
+            let tx = self.self_tx.clone();
+            self.restricted_sync = Some(executor::spawn(async move {
+                let mut token = None;
+                loop {
+                    match koushi_sdk::restricted_verification_sync_once_with_token(
+                        &session,
+                        token.clone(),
+                    )
+                    .await
+                    {
+                        Ok(next_token) => {
+                            token = Some(next_token);
+                            if tx
+                                .send(AccountMessage::RestrictedSyncSucceeded { generation })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Err(_) => executor::sleep(Duration::from_millis(250)).await,
+                    }
+                }
+            }));
         }
     }
 
