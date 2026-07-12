@@ -3,7 +3,7 @@ use crate::{
     state::{
         AttachmentFilter, AttachmentScope, AttachmentSort, RoomPreferencesState,
         SearchCrawlerSettings, SearchScope, SessionInfo, SettingsValues, VerificationCancelReason,
-        VerificationTarget,
+        VerificationMethod, VerificationTarget,
     },
 };
 
@@ -14,6 +14,13 @@ pub enum AppEffect {
         homeserver: String,
     },
     Login(LoginRequest),
+    CheckCurrentDeviceTrust,
+    DiscoverVerificationMethods,
+    BeginSessionVerification {
+        method: VerificationMethod,
+        flow_id: u64,
+    },
+    RejectProvisionalSession,
     RecoverE2ee(RecoveryRequest),
     RequestVerification {
         request_id: u64,

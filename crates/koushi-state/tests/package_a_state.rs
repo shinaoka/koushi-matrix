@@ -475,8 +475,8 @@ fn soft_logout_reauth_succeeds_and_fails_are_request_correlated() {
         SoftLogoutReauthState::Succeeded { request_id: 1 }
     );
     let effects = reduce(&mut state, AppAction::LoginSucceeded(session_info()));
-    assert!(matches!(state.session, SessionState::Ready(_)));
-    assert!(effects.contains(&AppEffect::StartSync));
+    assert!(matches!(state.session, SessionState::Provisional { .. }));
+    assert!(effects.contains(&AppEffect::CheckCurrentDeviceTrust));
 
     let mut state = AppState::default();
     state.session = SessionState::Ready(session_info());
@@ -788,7 +788,7 @@ fn mark_as_read_clears_unread_state_and_recomputes_room_list_projection() {
 }
 
 #[test]
-fn mark_as_read_success_applies_while_session_is_locked() {
+fn mark_as_read_success_is_ignored_while_session_is_locked() {
     let rooms = vec![room_summary("!room1:example.invalid", false, 3, 1, true)];
     let mut state = ready_state_with_rooms(rooms);
     state.room_list.active_filter = RoomListFilter::Unread;
@@ -810,19 +810,16 @@ fn mark_as_read_success_applies_while_session_is_locked() {
         },
     );
 
-    assert_eq!(
-        effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
-    );
+    assert!(effects.is_empty());
     let room = state
         .rooms
         .iter()
         .find(|r| r.room_id == "!room1:example.invalid")
         .unwrap();
-    assert!(!room.marked_unread);
-    assert_eq!(room.unread_count, 0);
-    assert_eq!(room.notification_count, 0);
-    assert!(state.room_list.items.is_empty());
+    assert!(room.marked_unread);
+    assert_eq!(room.unread_count, 3);
+    assert_eq!(room.notification_count, 1);
+    assert!(!state.room_list.items.is_empty());
 }
 
 #[test]

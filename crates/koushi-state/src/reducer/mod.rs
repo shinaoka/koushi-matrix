@@ -70,6 +70,24 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::RestoreSessionSucceeded(info) | AppAction::LoginSucceeded(info) => {
             session::handle_restore_or_login_succeeded(state, info)
         }
+        AppAction::CurrentDeviceTrustChanged(trust) => {
+            session::handle_current_device_trust_changed(state, trust)
+        }
+        AppAction::VerificationMethodsDiscovered(gate) => {
+            session::handle_verification_methods_discovered(state, gate)
+        }
+        AppAction::VerificationMethodSubmitted { method, flow_id } => {
+            session::handle_verification_method_submitted(state, method, flow_id)
+        }
+        AppAction::VerificationGateAttemptFailed { kind } => {
+            session::handle_verification_gate_attempt_failed(state, kind)
+        }
+        AppAction::VerificationSessionRejected { reason } => {
+            session::handle_verification_session_rejected(state, reason)
+        }
+        AppAction::ProvisionalSessionDiscarded => {
+            session::handle_provisional_session_discarded(state)
+        }
         AppAction::E2eeRecoveryRequired { info, methods } => {
             e2ee::handle_e2ee_recovery_required(state, info, methods)
         }
@@ -1097,22 +1115,20 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
 }
 
 pub(crate) fn is_session_ready(state: &AppState) -> bool {
-    matches!(
-        state.session,
-        SessionState::Ready(_)
-            | SessionState::NeedsRecovery { .. }
-            | SessionState::Recovering { .. }
-    )
+    matches!(state.session, SessionState::Ready(_))
 }
 
 pub(crate) fn has_session_projection_context(state: &AppState) -> bool {
+    matches!(state.session, SessionState::Ready(_))
+}
+
+pub(crate) fn has_verification_gate_projection_context(state: &AppState) -> bool {
     matches!(
         state.session,
-        SessionState::Ready(_)
-            | SessionState::NeedsRecovery { .. }
-            | SessionState::Recovering { .. }
-            | SessionState::Locked(_)
-            | SessionState::SwitchingAccount { .. }
+        SessionState::Provisional { .. }
+            | SessionState::AwaitingVerification { .. }
+            | SessionState::Verifying { .. }
+            | SessionState::Rejecting { .. }
     )
 }
 
@@ -1125,8 +1141,10 @@ pub(crate) fn clear_login_failed_errors(state: &mut AppState) -> bool {
 pub(crate) fn session_user_id(state: &AppState) -> Option<&str> {
     match &state.session {
         SessionState::Ready(info)
-        | SessionState::NeedsRecovery { info, .. }
-        | SessionState::Recovering { info, .. }
+        | SessionState::Provisional { info, .. }
+        | SessionState::AwaitingVerification { info, .. }
+        | SessionState::Verifying { info, .. }
+        | SessionState::Rejecting { info, .. }
         | SessionState::Locked(info)
         | SessionState::SwitchingAccount { info } => Some(info.user_id.as_str()),
         _ => None,
@@ -1135,8 +1153,10 @@ pub(crate) fn session_user_id(state: &AppState) -> Option<&str> {
 
 pub(crate) fn current_session_info(state: &AppState) -> Option<crate::state::SessionInfo> {
     match &state.session {
-        SessionState::NeedsRecovery { info, .. }
-        | SessionState::Recovering { info, .. }
+        SessionState::Provisional { info, .. }
+        | SessionState::AwaitingVerification { info, .. }
+        | SessionState::Verifying { info, .. }
+        | SessionState::Rejecting { info, .. }
         | SessionState::Ready(info)
         | SessionState::Locked(info) => Some(info.clone()),
         SessionState::SignedOut

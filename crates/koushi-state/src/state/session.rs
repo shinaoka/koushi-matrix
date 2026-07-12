@@ -10,17 +10,99 @@ pub enum SessionState {
     Authenticating {
         homeserver: String,
     },
-    NeedsRecovery {
+    Provisional {
         info: SessionInfo,
-        methods: Vec<RecoveryMethod>,
+        phase: ProvisionalPhase,
     },
-    Recovering {
+    AwaitingVerification {
         info: SessionInfo,
-        methods: Vec<RecoveryMethod>,
+        gate: VerificationGateState,
+    },
+    Verifying {
+        info: SessionInfo,
+        gate: VerificationGateState,
+        method: VerificationMethod,
+        flow_id: u64,
+    },
+    Rejecting {
+        info: SessionInfo,
+        reason: VerificationGateRejectReason,
     },
     Ready(SessionInfo),
     Locked(SessionInfo),
     LoggingOut,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CurrentDeviceTrustState {
+    Unknown,
+    Verified,
+    Unverified,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ProvisionalPhase {
+    CheckingTrust,
+    DiscoveringMethods,
+    RecheckingTrust {
+        #[serde(default, rename = "failureKind")]
+        failure: Option<VerificationGateFailureKind>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VerificationGateState {
+    pub methods: Vec<VerificationMethodCapability>,
+    pub account_kind: VerificationAccountKind,
+    #[serde(default, rename = "failureKind")]
+    pub failure: Option<VerificationGateFailureKind>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VerificationMethodCapability {
+    ExistingDeviceSas,
+    RecoveryKey,
+    SecurityPhrase,
+    Bootstrap,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VerificationMethod {
+    ExistingDeviceSas,
+    RecoveryKey,
+    SecurityPhrase,
+    Bootstrap,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VerificationAccountKind {
+    ExistingIdentity,
+    NewIdentity,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VerificationGateFailureKind {
+    Network,
+    Cancelled,
+    Mismatch,
+    Forbidden,
+    Timeout,
+    Sdk,
+    NoProofMethod,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VerificationGateRejectReason {
+    ExistingIdentityWithoutProof,
+    UserRejected,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

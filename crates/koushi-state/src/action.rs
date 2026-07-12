@@ -5,19 +5,20 @@ use crate::{ComposerSubmissionTarget, ComposerSubmissionTerminalOutcome, Submiss
 use crate::state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityStream, ActivityTab,
     AttachmentFilter, AttachmentResult, AttachmentScope, AttachmentSort, AuthFailureKind,
-    AvatarThumbnailState, BasicOperationRequest, CrossSigningStatus, DelegatedAuthLinks,
-    DeviceSessionSummary, DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState, FilesViewScope,
-    IdentityResetAuthType, InviteDestinationResult, InviteScopeSelection, JapaneseCatalogProfile,
-    LiveEventReceipts, LocalEncryptionHealth, LoginFlow, NativeAttentionDispatchId,
-    NativeAttentionSoundOutcome, NativeAttentionState, NavigationState, OperationFailureKind,
-    OwnProfile, PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryKeyDeliveryState,
-    RecoveryMethod, RoomListFilter, RoomListProjection, RoomModerationAction, RoomPreferencesState,
-    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
-    SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult,
-    SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
-    StagedUploadCompressionChoice, StagedUploadItem, SyncLifecycleStatus, SyncMode,
-    TimelineMediaDownloadState, TimelineMediaGalleryItem, TimelineScrollAnchor,
-    TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
+    AvatarThumbnailState, BasicOperationRequest, CrossSigningStatus, CurrentDeviceTrustState,
+    DelegatedAuthLinks, DeviceSessionSummary, DirectoryQuery, DirectoryRoomSummary,
+    E2eeRecoveryState, FilesViewScope, IdentityResetAuthType, InviteDestinationResult,
+    InviteScopeSelection, JapaneseCatalogProfile, LiveEventReceipts, LocalEncryptionHealth,
+    LoginFlow, NativeAttentionDispatchId, NativeAttentionSoundOutcome, NativeAttentionState,
+    NavigationState, OperationFailureKind, OwnProfile, PinnedEvent, PresenceKind,
+    ProfileUpdateRequest, RecoveryKeyDeliveryState, RecoveryMethod, RoomListFilter,
+    RoomListProjection, RoomModerationAction, RoomPreferencesState, RoomSettingChange,
+    RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji,
+    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope,
+    SessionInfo, SettingsPatch, SettingsValues, SpaceSummary, StagedUploadCompressionChoice,
+    StagedUploadItem, SyncLifecycleStatus, SyncMode, TimelineMediaDownloadState,
+    TimelineMediaGalleryItem, TimelineScrollAnchor, TrustOperationFailureKind, UserProfile,
+    VerificationCancelReason, VerificationGateState, VerificationMethod, VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
@@ -186,6 +187,19 @@ pub enum AppAction {
     },
     LoginSubmitted(LoginRequest),
     LoginSucceeded(SessionInfo),
+    CurrentDeviceTrustChanged(CurrentDeviceTrustState),
+    VerificationMethodsDiscovered(VerificationGateState),
+    VerificationMethodSubmitted {
+        method: VerificationMethod,
+        flow_id: u64,
+    },
+    VerificationGateAttemptFailed {
+        kind: crate::state::VerificationGateFailureKind,
+    },
+    VerificationSessionRejected {
+        reason: crate::state::VerificationGateRejectReason,
+    },
+    ProvisionalSessionDiscarded,
     E2eeRecoveryRequired {
         info: SessionInfo,
         methods: Vec<RecoveryMethod>,

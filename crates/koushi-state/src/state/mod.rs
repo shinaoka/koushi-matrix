@@ -48,9 +48,12 @@ pub use sync::{SyncLifecycleStatus, SyncMode, SyncModeFailureKind, SyncState};
 // ── Re-exports: session ─────────────────────────────────────────────────────
 pub use session::{
     AccountManagementCapabilities, AccountManagementOperation, AccountManagementState,
-    AuthDiscoveryState, AuthFailureKind, CapabilityState, DelegatedAuthLinks,
-    DeviceSessionListState, DeviceSessionSummary, LoginFlow, LoginFlowKind, QrLoginState,
-    RecoveryMethod, SessionInfo, SessionState, SoftLogoutReauthState,
+    AuthDiscoveryState, AuthFailureKind, CapabilityState, CurrentDeviceTrustState,
+    DelegatedAuthLinks, DeviceSessionListState, DeviceSessionSummary, LoginFlow, LoginFlowKind,
+    ProvisionalPhase, QrLoginState, RecoveryMethod, SessionInfo, SessionState,
+    SoftLogoutReauthState, VerificationAccountKind, VerificationGateFailureKind,
+    VerificationGateRejectReason, VerificationGateState, VerificationMethod,
+    VerificationMethodCapability,
 };
 
 // ── Re-exports: settings ────────────────────────────────────────────────────
