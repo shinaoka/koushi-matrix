@@ -330,7 +330,7 @@ mod tests {
             .next()
             .expect("avatar helper body");
         assert!(account_body.contains("get_media_content"));
-        assert!(account_body.contains("false,"));
+        assert!(account_body.contains("true,"));
         assert!(!account_body.contains("avatar_thumbnails"));
         assert!(!account_body.contains("file://"));
 

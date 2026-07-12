@@ -5222,7 +5222,7 @@ async fn download_avatar_thumbnail(
                 source: SdkMediaSource::Plain(uri),
                 format: MediaFormat::File,
             },
-            false,
+            true,
         )
         .await
         .map_err(|_| AvatarThumbnailFailureKind::Network)?;
@@ -5655,12 +5655,114 @@ fn classify_auth_error(error: &koushi_sdk::PasswordLoginError) -> AuthFailureKin
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::Path};
+
     use futures_util::stream;
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
     use tempfile::tempdir;
     use tokio::sync::{broadcast, mpsc, oneshot};
 
     use super::*;
     use crate::store::CredentialStoreBackend;
+
+    async fn restore_media_test_session(
+        server: &MatrixMockServer,
+        data_dir: &Path,
+    ) -> MatrixClientSession {
+        let persisted = PersistableMatrixSession::from_json(
+            &serde_json::json!({
+                "homeserver": server.uri(),
+                "access_token": "1234",
+                "device_id": "AVATARCACHEDEVICE",
+                "user_id": "@avatar-cache:localhost"
+            })
+            .to_string(),
+        )
+        .expect("synthetic Matrix session");
+        let store_config = koushi_sdk::MatrixClientStoreConfig::new(
+            data_dir.join("matrix-store"),
+            koushi_sdk::MatrixClientStoreKey::new([41; 32]),
+        )
+        .with_cache_path(data_dir.join("matrix-cache"));
+
+        koushi_sdk::restore_session_with_store(&persisted, Some(&store_config))
+            .await
+            .expect("restore media test session")
+    }
+
+    fn assert_directory_does_not_contain_plaintext(root: &Path, plaintext: &[u8]) {
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(path) = pending.pop() {
+            for entry in fs::read_dir(path).expect("read test store directory") {
+                let entry = entry.expect("read test store entry");
+                let file_type = entry.file_type().expect("read test store entry type");
+                if file_type.is_dir() {
+                    pending.push(entry.path());
+                } else if file_type.is_file() {
+                    let bytes = fs::read(entry.path()).expect("read test store file");
+                    assert!(
+                        !bytes
+                            .windows(plaintext.len())
+                            .any(|window| window == plaintext),
+                        "keyed SDK media store must not persist renderable avatar plaintext"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn avatar_download_survives_restart_and_offline_via_keyed_sdk_media_store() {
+        let server = MatrixMockServer::new().await;
+        server.mock_versions().ok().mount().await;
+        server
+            .mock_authed_media_download()
+            .ok_image()
+            .named("avatar fetched from network exactly once")
+            .expect(1)
+            .mount()
+            .await;
+        let data_dir = tempdir().expect("data tempdir");
+        let mxc_uri = "mxc://localhost/persisted-avatar";
+
+        let online_session = restore_media_test_session(&server, data_dir.path()).await;
+        let online = download_avatar_thumbnail(&online_session, mxc_uri)
+            .await
+            .expect("online avatar fetch");
+        let AvatarThumbnailState::Ready { source_url, .. } = online else {
+            panic!("online avatar should be ready");
+        };
+        assert!(source_url.starts_with("koushi-thumbnail://"));
+        assert!(!source_url.starts_with("file://"));
+        drop(online_session);
+        clear_renderable_thumbnail_cache();
+
+        let offline_session = restore_media_test_session(&server, data_dir.path()).await;
+        let offline = download_avatar_thumbnail(&offline_session, mxc_uri)
+            .await
+            .expect("cached avatar should load without a second network request");
+        let AvatarThumbnailState::Ready { source_url, .. } = offline else {
+            panic!("offline cached avatar should be ready");
+        };
+        assert!(source_url.starts_with("koushi-thumbnail://"));
+        assert!(!source_url.starts_with("file://"));
+        assert!(!data_dir.path().join("avatar_thumbnails").exists());
+        assert_directory_does_not_contain_plaintext(data_dir.path(), b"binaryjpegfullimagedata");
+    }
+
+    #[tokio::test]
+    async fn uncached_avatar_offline_preserves_network_failure() {
+        let server = MatrixMockServer::new().await;
+        server.mock_versions().ok().mount().await;
+        let data_dir = tempdir().expect("data tempdir");
+        let session = restore_media_test_session(&server, data_dir.path()).await;
+
+        assert_eq!(
+            download_avatar_thumbnail(&session, "mxc://localhost/uncached-avatar").await,
+            Err(AvatarThumbnailFailureKind::Network)
+        );
+        assert!(!data_dir.path().join("avatar_thumbnails").exists());
+    }
 
     #[test]
     fn account_trace_preserves_typed_request_fields_without_environment_switch() {
