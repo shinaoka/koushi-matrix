@@ -1100,6 +1100,33 @@ function useUiLatencyDiagnostics(): UiLatencyDiagnostics {
   return diagnostics;
 }
 
+function SessionVerificationGate({ snapshot, busy, onSnapshot, onSignOut }: { snapshot: DesktopSnapshot; busy: boolean; onSnapshot: (snapshot: DesktopSnapshot) => void; onSignOut: () => void }) {
+  const session = snapshot.state.domain.session;
+  const recoveryRef = useRef<HTMLInputElement>(null);
+  const passphraseRef = useRef<HTMLInputElement>(null);
+  const destinationRef = useRef<HTMLInputElement>(null);
+  const flowId = session.flow_id ?? 0;
+  const methods = session.gate?.methods ?? [];
+  const verification = snapshot.state.domain.e2ee_trust.verification;
+  const run = async (operation: Promise<DesktopSnapshot>) => onSnapshot(await operation);
+  return <main className="session-verification-gate" aria-label="Session verification">
+    <h1>Verify this session</h1>
+    {session.kind === "provisional" && <p>Checking device trust…</p>}
+    {session.kind === "rejecting" && <p>Rejecting unverified session…</p>}
+    {session.kind === "locked" && <p>This session must be verified again.</p>}
+    {session.gate?.failureKind && <p role="alert">{session.gate.failureKind}</p>}
+    {methods.includes("existingDeviceSas") && <button disabled={busy} onClick={() => void run(api.startOwnUserSas(flowId))}>Verify with another device</button>}
+    {verification.kind === "sasPresented" && <div className="session-verification-emojis">{verification.emojis.slice(0, 7).map((emoji, index) => <span key={index}>{emoji.symbol} {emoji.description}</span>)}</div>}
+    {verification.kind === "sasPresented" && <><button onClick={() => void run(api.confirmSasVerification(flowId))}>They match</button><button onClick={() => void run(api.mismatchSasVerification(flowId))}>They do not match</button></>}
+    {(methods.includes("recoveryKey") || methods.includes("securityPhrase")) && <form onSubmit={(event) => { event.preventDefault(); const secret = recoveryRef.current?.value.trim() ?? ""; if (secret) void run(api.submitRecovery(secret)); if (recoveryRef.current) recoveryRef.current.value = ""; }}><input ref={recoveryRef} type="password" aria-label="Recovery secret" autoComplete="off"/><button type="submit">Recover</button></form>}
+    {methods.includes("bootstrap") && <form onSubmit={(event) => { event.preventDefault(); const destination = destinationRef.current?.value.trim() ?? ""; if (destination) void run(api.startSessionBootstrap(flowId, passphraseRef.current?.value || null, destination)); }}><input ref={destinationRef} aria-label="Recovery key destination"/><input ref={passphraseRef} type="password" aria-label="Backup passphrase" autoComplete="new-password"/><button type="submit">Create secure backup</button></form>}
+    {session.kind === "awaitingBootstrapConfirmation" && <button onClick={() => void run(api.confirmSessionBootstrapSaved(flowId))}>I saved the recovery key</button>}
+    <button onClick={() => void run(api.retryCurrentDeviceTrustDiscovery())}>Retry</button>
+    {flowId > 0 && <button onClick={() => void run(api.cancelVerification(flowId))}>Cancel</button>}
+    <button onClick={onSignOut}>Sign out</button>
+  </main>;
+}
+
 export function App() {
   const snapshot = useAppStore(selectSnapshot);
   const [schemaMismatchVersion, setSchemaMismatchVersion] = useState<number | null>(null);
@@ -3524,7 +3551,6 @@ export function App() {
   }
 
   const sessionKind = snapshot.state.domain.session.kind;
-  const recoveryRequired = sessionKind === "needsRecovery" || sessionKind === "recovering";
 
   if (sessionKind === "restoring" || sessionKind === "loggingOut") {
     return <div className="boot-screen">{t("app.title")}</div>;
@@ -3535,7 +3561,12 @@ export function App() {
     snapshot.state.domain.locale_profile.pseudo_locale
   );
 
-  if (sessionKind !== "ready" && !recoveryRequired) {
+  const verificationGate = ["provisional", "awaitingVerification", "verifying", "awaitingBootstrapConfirmation", "rejecting", "locked"].includes(sessionKind);
+  if (verificationGate) {
+    return <SessionVerificationGate snapshot={snapshot} busy={isBusy} onSnapshot={setSnapshot} onSignOut={() => void logout()} />;
+  }
+
+  if (sessionKind !== "ready") {
     return (
       <AuthScreen
         deviceName={loginDeviceName}
@@ -3878,7 +3909,7 @@ export function App() {
           activeSpace={activeSpace ?? null}
           activeSpaceName={activeSpaceName}
           displayDensity={displayDensity}
-          isRecoveryBusy={isBusy || sessionKind === "recovering"}
+          isRecoveryBusy={isBusy}
           mode={effectiveRightPanelMode}
           peoplePanelScope={peoplePanelScope}
           selectedProfileUserId={selectedProfileUserId}

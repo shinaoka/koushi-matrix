@@ -112,6 +112,11 @@ export interface DesktopApi {
     recoveryKeyDestinationPath: string | null
   ): Promise<DesktopSnapshot>;
   acceptVerification(flowId: number): Promise<DesktopSnapshot>;
+  startOwnUserSas(flowId: number): Promise<DesktopSnapshot>;
+  retryCurrentDeviceTrustDiscovery(): Promise<DesktopSnapshot>;
+  mismatchSasVerification(flowId: number): Promise<DesktopSnapshot>;
+  startSessionBootstrap(flowId: number, passphrase: string | null, recoveryKeyDestinationPath: string): Promise<DesktopSnapshot>;
+  confirmSessionBootstrapSaved(flowId: number): Promise<DesktopSnapshot>;
   confirmSasVerification(flowId: number): Promise<DesktopSnapshot>;
   cancelVerification(flowId: number): Promise<DesktopSnapshot>;
   resetIdentity(): Promise<DesktopSnapshot>;
@@ -899,6 +904,12 @@ class BrowserFakeApi implements DesktopApi {
     }
     return this.getSnapshot();
   }
+
+  async startOwnUserSas(_flowId: number): Promise<DesktopSnapshot> { return clone(this.snapshot); }
+  async retryCurrentDeviceTrustDiscovery(): Promise<DesktopSnapshot> { return clone(this.snapshot); }
+  async mismatchSasVerification(_flowId: number): Promise<DesktopSnapshot> { return clone(this.snapshot); }
+  async startSessionBootstrap(_flowId: number, _passphrase: string | null, _recoveryKeyDestinationPath: string): Promise<DesktopSnapshot> { return clone(this.snapshot); }
+  async confirmSessionBootstrapSaved(_flowId: number): Promise<DesktopSnapshot> { return clone(this.snapshot); }
 
   async confirmSasVerification(flowId: number): Promise<DesktopSnapshot> {
     if (!this.isReady()) {

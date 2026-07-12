@@ -1443,14 +1443,15 @@ describe("Tauri state refresh wiring", () => {
     expect(actionSource).toContain("api.markRoomAsRead(target.roomId, eventId)");
   });
 
-  test("keeps post-login recovery in the desktop render path", () => {
+  test("renders verification states before and mutually exclusive with the desktop shell", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 
     expect(source).not.toMatch(
       /snapshot\.state\.session\.kind === "needsRecovery"[\s\S]{0,240}<RecoveryScreen/
     );
-    expect(source).toContain("recoveryRequired");
-    expect(source).toContain('"recovery"');
+    expect(source).toContain("SessionVerificationGate");
+    expect(source).toContain('sessionKind !== "ready"');
+    expect(source).not.toContain("recoveryRequired");
   });
 
   test("search result selection is snapshot-driven and does not scroll the DOM", () => {
