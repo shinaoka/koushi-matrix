@@ -92,12 +92,26 @@ test("Ready to Locked replaces the shell with the gate", async ({ page }) => {
   await expect(page.getByRole("main", { name: "Verify this session" })).toHaveCount(0);
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
+    window.__harness.clearInvocations();
+    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, native_attention: { summary: { unread_count: 1, highlight_count: 1, badge_count: 1, candidate: { room_display_name: "Attention", kind: "mention", unread_count: 1, highlight_count: 1 }, capabilities: { notifications: "available", badge: "available", overlay_icon: "unavailable", sound: "available", tray: "available", activation: "available" } }, dispatch: { kind: "idle" } } } } });
+    window.__harness.pushStateChanged();
+  });
+  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("play_native_attention_sound").length)).toBeGreaterThanOrEqual(1);
+  const attentionCount = await page.evaluate(() => window.__harness.invocationsOf("play_native_attention_sound").length);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
     window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { kind: "locked", homeserver: "https://example.invalid", user_id: "@gate:example.invalid", device_id: "DEVICE" } } } });
     window.__harness.pushStateChanged();
   });
   await expect(page.getByRole("main", { name: "Verify this session" })).toBeVisible();
   await expect(page.getByRole("main", { name: "Conversation timeline" })).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Message composer" })).toHaveCount(0);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, native_attention: { ...snapshot.state.domain.native_attention, summary: { ...snapshot.state.domain.native_attention.summary, unread_count: 2, highlight_count: 2, candidate: { room_display_name: "Locked attention", kind: "mention", unread_count: 2, highlight_count: 2 } }, dispatch: { kind: "idle" } } } } });
+    window.__harness.pushStateChanged();
+  });
+  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("play_native_attention_sound").length)).toBe(attentionCount);
 });
 
 test("SAS actions stay flow-correlated through retry and cancellation", async ({ page }) => {
@@ -179,4 +193,9 @@ test("start retries allocate distinct opaque flows and stale terminals are ignor
   await page.getByRole("button", { name: "Verify with another device" }).click();
   const second = await expect.poll(() => page.evaluate(() => window.__harness.currentSnapshot().state.domain.session.flow_id)).not.toBe(first).then(() => page.evaluate(() => window.__harness.currentSnapshot().state.domain.session.flow_id!));
   expect(second).not.toBe(first);
+  const beforeStale = await page.evaluate(() => JSON.stringify(window.__harness.currentSnapshot().state.domain.session));
+  await page.evaluate((flowId) => window.__harness.invoke("mismatch_sas_verification", { flowId }), first);
+  expect(await page.evaluate(() => JSON.stringify(window.__harness.currentSnapshot().state.domain.session))).toBe(beforeStale);
+  await page.evaluate((flowId) => window.__harness.invoke("mismatch_sas_verification", { flowId }), second);
+  await expect.poll(() => page.evaluate(() => window.__harness.currentSnapshot().state.domain.session.kind)).toBe("awaitingVerification");
 });

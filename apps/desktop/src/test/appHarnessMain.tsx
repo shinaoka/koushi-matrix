@@ -70,6 +70,7 @@ interface AppHarnessControl {
   invocations(): readonly IpcInvocation[];
   invocationsOf(command: string): IpcInvocation[];
   clearInvocations(): void;
+  invoke(command: string, args?: Record<string, unknown>): Promise<unknown>;
    
   setCommandResponse(command: string, response: any): void;
   setSnapshot(snapshot: DesktopSnapshot): void;
@@ -2253,6 +2254,7 @@ const harnessControl: AppHarnessControl = {
   invocations: () => mock.recordedInvocations(),
   invocationsOf: (command) => mock.invocationsOf(command),
   clearInvocations: () => mock.clearInvocations(),
+  invoke: (command, args = {}) => mock.invoke(command, args),
   setCommandResponse: (command, response) =>
     mock.setCommandResponse(command, (args: Record<string, any>) => {
       const value = typeof response === "function" ? response(args) : response;
