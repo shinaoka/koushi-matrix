@@ -127,11 +127,33 @@ impl NativeAttentionSoundBackend for PlatformNativeAttentionSoundBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koushi_core::{CoreEvent, CoreRuntime, executor};
+    use koushi_core::{CoreConnection, CoreEvent, CoreRuntime, executor};
     use koushi_state::{
-        NativeAttentionCandidate, NativeAttentionCapabilities, NativeAttentionDispatchState,
-        NativeAttentionState, NativeAttentionSummary, RoomAttentionKind,
+        AppAction, CurrentDeviceTrustState, NativeAttentionCandidate, NativeAttentionCapabilities,
+        NativeAttentionDispatchState, NativeAttentionState, NativeAttentionSummary,
+        RoomAttentionKind, SessionInfo,
     };
+
+    async fn seed_ready(runtime: &CoreRuntime, connection: &mut CoreConnection) {
+        runtime
+            .inject_actions(vec![
+                AppAction::AppStarted,
+                AppAction::RestoreSessionSucceeded(SessionInfo {
+                    homeserver: "https://example.invalid".to_owned(),
+                    user_id: "@me:example.invalid".to_owned(),
+                    device_id: "DEVICE".to_owned(),
+                }),
+                AppAction::CurrentDeviceTrustChanged(CurrentDeviceTrustState::Verified),
+            ])
+            .await;
+        executor::timeout(Duration::from_secs(1), async {
+            loop {
+                if matches!(connection.recv_event().await, Ok(CoreEvent::StateChanged(snapshot)) if matches!(snapshot.session, koushi_state::SessionState::Ready(_))) {
+                    break;
+                }
+            }
+        }).await.expect("canonical Ready fixture must reach reducer");
+    }
     use std::cell::Cell;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
@@ -199,6 +221,7 @@ mod tests {
     async fn command_helper_crosses_core_runtime_and_settles_the_matching_dispatch() {
         let runtime = CoreRuntime::start();
         let mut observer = runtime.attach();
+        seed_ready(&runtime, &mut observer).await;
         let seed_request = observer.next_request_id();
         observer
             .command(CoreCommand::App(AppCommand::UpdateNativeAttentionState {
@@ -221,6 +244,13 @@ mod tests {
             }))
             .await
             .expect("seed native attention candidate through core command");
+        executor::timeout(Duration::from_secs(1), async {
+            loop {
+                if matches!(observer.recv_event().await, Ok(CoreEvent::StateChanged(snapshot)) if snapshot.native_attention.summary.candidate.is_some()) {
+                    break;
+                }
+            }
+        }).await.expect("seed candidate must reach reducer before dispatch");
 
         let backend = FakeBackend {
             calls: Cell::new(0),
@@ -258,7 +288,8 @@ mod tests {
     #[tokio::test]
     async fn concurrent_command_helpers_admit_only_one_native_backend_call() {
         let runtime = CoreRuntime::start();
-        let seeder = runtime.attach();
+        let mut seeder = runtime.attach();
+        seed_ready(&runtime, &mut seeder).await;
         let request_id = seeder.next_request_id();
         seeder
             .command(CoreCommand::App(AppCommand::UpdateNativeAttentionState {
@@ -281,6 +312,13 @@ mod tests {
             }))
             .await
             .expect("seed candidate");
+        executor::timeout(Duration::from_secs(1), async {
+            loop {
+                if matches!(seeder.recv_event().await, Ok(CoreEvent::StateChanged(snapshot)) if snapshot.native_attention.summary.candidate.is_some()) {
+                    break;
+                }
+            }
+        }).await.expect("seed candidate must reach reducer before concurrent dispatch");
         let backend = ControlledBackend {
             calls: AtomicU32::new(0),
             entered: Notify::new(),

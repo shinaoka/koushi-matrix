@@ -1430,6 +1430,67 @@ mod tests {
     }
 
     #[test]
+    fn frontend_session_gate_variants_are_private_safe_json() {
+        let info = SessionInfo {
+            homeserver: "https://example.invalid".into(),
+            user_id: "@private:example.invalid".into(),
+            device_id: "PRIVATEDEVICE".into(),
+        };
+        let gate = koushi_state::VerificationGateState {
+            methods: vec![
+                koushi_state::VerificationMethodCapability::ExistingDeviceSas,
+                koushi_state::VerificationMethodCapability::Bootstrap,
+            ],
+            account_kind: koushi_state::VerificationAccountKind::ExistingIdentity,
+            failure: Some(koushi_state::VerificationGateFailureKind::Network),
+        };
+        let sessions = [
+            SessionState::Provisional {
+                info: info.clone(),
+                phase: koushi_state::ProvisionalPhase::RecheckingTrust {
+                    failure: Some(koushi_state::VerificationGateFailureKind::Timeout),
+                },
+            },
+            SessionState::AwaitingVerification {
+                info: info.clone(),
+                gate: gate.clone(),
+            },
+            SessionState::Verifying {
+                info: info.clone(),
+                gate: gate.clone(),
+                method: koushi_state::VerificationMethod::ExistingDeviceSas,
+                flow_id: 7,
+            },
+            SessionState::AwaitingBootstrapConfirmation {
+                info: info.clone(),
+                gate: gate.clone(),
+                flow_id: 8,
+                destination_written: true,
+            },
+            SessionState::Rejecting {
+                info,
+                reason: koushi_state::VerificationGateRejectReason::UserRejected,
+            },
+        ];
+        let expected = [
+            "provisional",
+            "awaitingVerification",
+            "verifying",
+            "awaitingBootstrapConfirmation",
+            "rejecting",
+        ];
+        for (session, kind) in sessions.into_iter().zip(expected) {
+            let value =
+                serde_json::to_value(super::FrontendSessionState::from(session)).expect("gate DTO");
+            assert_eq!(value["kind"], kind);
+            let wire = value.to_string();
+            assert!(!wire.contains("secret"));
+            assert!(!wire.contains("destination_path"));
+            assert!(!wire.contains("target_user"));
+        }
+    }
+
+    #[test]
     fn frontend_sync_state_serializes_failed_and_reconnecting() {
         assert_eq!(
             serde_json::to_value(FrontendSyncState::from(SyncState::Failed {

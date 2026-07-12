@@ -2360,6 +2360,9 @@ impl AccountActor {
             } => {
                 self.handle_start_own_user_sas(request_id, flow_id).await;
             }
+            AccountCommand::RetryCurrentDeviceTrustDiscovery { request_id: _ } => {
+                self.request_authoritative_trust_recheck().await;
+            }
             AccountCommand::AcceptVerification {
                 request_id,
                 flow_id,

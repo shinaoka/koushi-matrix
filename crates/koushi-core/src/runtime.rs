@@ -3142,6 +3142,18 @@ fn is_ready_session_for_commands(session: &SessionState) -> bool {
 }
 
 fn is_verification_gate_command(command: &CoreCommand, session: &SessionState) -> bool {
+    if matches!(
+        command,
+        CoreCommand::Account(AccountCommand::RetryCurrentDeviceTrustDiscovery { .. })
+    ) {
+        return matches!(
+            session,
+            SessionState::Provisional {
+                phase: koushi_state::ProvisionalPhase::RecheckingTrust { .. },
+                ..
+            } | SessionState::AwaitingVerification { .. }
+        );
+    }
     if !matches!(
         session,
         SessionState::Provisional { .. }
@@ -3155,6 +3167,7 @@ fn is_verification_gate_command(command: &CoreCommand, session: &SessionState) -
         command,
         CoreCommand::Account(
             AccountCommand::RequestVerification { .. }
+                | AccountCommand::RetryCurrentDeviceTrustDiscovery { .. }
                 | AccountCommand::SubmitRecovery { .. }
                 | AccountCommand::StartSessionBootstrap { .. }
                 | AccountCommand::ConfirmSessionBootstrapSaved { .. }
@@ -3428,6 +3441,7 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         | AccountCommand::DownloadAvatarThumbnail { .. }
         | AccountCommand::Logout { .. }
         | AccountCommand::CancelVerification { .. }
+        | AccountCommand::RetryCurrentDeviceTrustDiscovery { .. }
         | AccountCommand::SwitchAccount { .. } => None,
     }
 }
@@ -5019,6 +5033,51 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn trust_discovery_retry_is_admitted_only_in_retryable_gate_states() {
+        let command = CoreCommand::Account(AccountCommand::RetryCurrentDeviceTrustDiscovery {
+            request_id: RequestId {
+                connection_id: RuntimeConnectionId(1),
+                sequence: 77,
+            },
+        });
+        let info = SessionInfo {
+            homeserver: "https://example.invalid".into(),
+            user_id: "@me:example.invalid".into(),
+            device_id: "DEVICE".into(),
+        };
+        let gate = koushi_state::VerificationGateState {
+            methods: vec![],
+            account_kind: koushi_state::VerificationAccountKind::ExistingIdentity,
+            failure: Some(koushi_state::VerificationGateFailureKind::Network),
+        };
+        assert!(is_verification_gate_command(
+            &command,
+            &SessionState::Provisional {
+                info: info.clone(),
+                phase: koushi_state::ProvisionalPhase::RecheckingTrust {
+                    failure: Some(koushi_state::VerificationGateFailureKind::Network)
+                }
+            }
+        ));
+        assert!(is_verification_gate_command(
+            &command,
+            &SessionState::AwaitingVerification {
+                info: info.clone(),
+                gate: gate.clone()
+            }
+        ));
+        assert!(!is_verification_gate_command(
+            &command,
+            &SessionState::Verifying {
+                info,
+                gate,
+                method: koushi_state::VerificationMethod::RecoveryKey,
+                flow_id: 77
+            }
+        ));
     }
 
     #[test]

@@ -105,6 +105,7 @@ impl CoreCommand {
                 | AccountCommand::StartSessionBootstrap { request_id, .. }
                 | AccountCommand::ConfirmSessionBootstrapSaved { request_id, .. }
                 | AccountCommand::StartOwnUserSas { request_id, .. }
+                | AccountCommand::RetryCurrentDeviceTrustDiscovery { request_id }
                 | AccountCommand::RequestVerification { request_id, .. }
                 | AccountCommand::AcceptVerification { request_id, .. }
                 | AccountCommand::ConfirmSasVerification { request_id, .. }
@@ -977,6 +978,9 @@ pub enum AccountCommand {
         request_id: RequestId,
         flow_id: u64,
     },
+    RetryCurrentDeviceTrustDiscovery {
+        request_id: RequestId,
+    },
     RequestVerification {
         request_id: RequestId,
         target: VerificationTarget,
@@ -1067,6 +1071,7 @@ impl AccountCommand {
         matches!(
             self,
             Self::RequestVerification { .. }
+                | Self::RetryCurrentDeviceTrustDiscovery { .. }
                 | Self::AcceptVerification { .. }
                 | Self::ConfirmSasVerification { .. }
                 | Self::CancelVerification { .. }
@@ -1291,6 +1296,10 @@ impl fmt::Debug for AccountCommand {
                 .debug_struct("StartOwnUserSas")
                 .field("request_id", request_id)
                 .field("flow_id", flow_id)
+                .finish(),
+            Self::RetryCurrentDeviceTrustDiscovery { request_id } => formatter
+                .debug_struct("RetryCurrentDeviceTrustDiscovery")
+                .field("request_id", request_id)
                 .finish(),
             Self::RequestVerification { request_id, .. } => formatter
                 .debug_struct("RequestVerification")

@@ -1394,6 +1394,12 @@ pub(crate) fn build_start_own_user_sas_command(request_id: RequestId, flow_id: u
     })
 }
 
+pub(crate) fn build_retry_current_device_trust_discovery_command(
+    request_id: RequestId,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::RetryCurrentDeviceTrustDiscovery { request_id })
+}
+
 pub(crate) fn build_start_session_bootstrap_command(
     request_id: RequestId,
     flow_id: u64,
@@ -6017,6 +6023,44 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn verification_gate_transport_builders_preserve_flow_and_redact_secrets() {
+        assert!(matches!(
+            super::build_start_own_user_sas_command(fake_request_id(40), 400),
+            CoreCommand::Account(AccountCommand::StartOwnUserSas { flow_id: 400, .. })
+        ));
+        assert!(matches!(
+            super::build_retry_current_device_trust_discovery_command(fake_request_id(41)),
+            CoreCommand::Account(AccountCommand::RetryCurrentDeviceTrustDiscovery { .. })
+        ));
+        assert!(matches!(
+            build_cancel_verification_command(
+                fake_request_id(42),
+                402,
+                VerificationCancelReason::Mismatch
+            ),
+            CoreCommand::Account(AccountCommand::CancelVerification {
+                flow_id: 402,
+                reason: VerificationCancelReason::Mismatch,
+                ..
+            })
+        ));
+        let bootstrap = super::build_start_session_bootstrap_command(
+            fake_request_id(43),
+            403,
+            Some(AuthSecret::new("private-passphrase")),
+            "/private/recovery-key".to_owned(),
+        );
+        let debug = format!("{bootstrap:?}");
+        assert!(debug.contains("StartSessionBootstrap"), "{debug}");
+        assert!(!debug.contains("private-passphrase"), "{debug}");
+        assert!(!debug.contains("/private/recovery-key"), "{debug}");
+        assert!(matches!(
+            super::build_confirm_session_bootstrap_saved_command(fake_request_id(44), 403),
+            CoreCommand::Account(AccountCommand::ConfirmSessionBootstrapSaved { flow_id: 403, .. })
+        ));
     }
 
     #[test]

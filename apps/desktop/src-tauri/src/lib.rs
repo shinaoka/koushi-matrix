@@ -1041,6 +1041,7 @@ pub fn run() {
             commands::local_encryption::reset_local_data,
             commands::e2ee::bootstrap_cross_signing,
             commands::e2ee::start_own_user_sas,
+            commands::e2ee::retry_current_device_trust_discovery,
             commands::e2ee::mismatch_sas_verification,
             commands::e2ee::start_session_bootstrap,
             commands::e2ee::confirm_session_bootstrap_saved,
