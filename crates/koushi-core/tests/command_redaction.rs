@@ -495,7 +495,7 @@ fn room_tag_commands_are_correlated_ready_gated_and_redact_room_ids() {
 }
 
 #[test]
-fn sync_commands_are_correlated_but_not_ready_gated() {
+fn sync_commands_are_correlated_and_ready_gated() {
     let request_id = fake_request_id();
     let commands = vec![
         CoreCommand::Sync(SyncCommand::Start { request_id }),
@@ -507,8 +507,8 @@ fn sync_commands_are_correlated_but_not_ready_gated() {
     for command in commands {
         assert_eq!(command.request_id(), request_id);
         assert!(
-            !command.requires_ready_session(),
-            "sync commands are allowed while E2EE recovery is pending; AccountActor still requires a store-backed session"
+            command.requires_ready_session(),
+            "external sync commands require exact Ready; the E2EE crypto lane is actor-owned"
         );
     }
 }

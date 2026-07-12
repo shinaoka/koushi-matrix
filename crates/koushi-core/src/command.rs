@@ -213,14 +213,9 @@ impl CoreCommand {
         }
     }
 
-    /// Commands that require an authenticated Matrix-capable session before
-    /// they are routed. Runtime gating uses the reducer's "Ready session"
-    /// contract: `Ready`, `NeedsRecovery`, or `Recovering`.
-    ///
-    /// `SyncCommand` is intentionally not included here: the reducer's
-    /// authenticated-session contract allows sync while E2EE recovery is
-    /// pending, and `AccountActor` / `SyncActor` still enforce that a
-    /// store-backed Matrix session exists.
+    /// Commands that require an exact `Ready` session before they are routed.
+    /// External `SyncCommand`s are included; the restricted E2EE crypto lane
+    /// used while gated is owned internally by `AccountActor`.
     pub fn requires_ready_session(&self) -> bool {
         matches!(
             self,
