@@ -935,6 +935,38 @@ fn sdk_e2ee_recovery_state_stream_emits_initial_state_without_secret_material() 
     assert!(!format!("{state:?}").contains("synthetic-password"));
 }
 
+#[test]
+fn current_device_trust_subscribes_before_reading_current_value() {
+    let homeserver = spawn_password_login_server(200);
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let session =
+        koushi_sdk::login_with_password_blocking(&request).expect("password login should succeed");
+
+    let observation = session.observe_current_device_trust();
+    let current = observation.current;
+    let mut updates = observation.updates;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+    let first = runtime
+        .block_on(async { updates.next().await })
+        .expect("trust stream should emit the subscribed current value");
+
+    assert_eq!(first, current);
+    assert!(matches!(
+        current,
+        koushi_state::CurrentDeviceTrustState::Unknown
+            | koushi_state::CurrentDeviceTrustState::Verified
+            | koushi_state::CurrentDeviceTrustState::Unverified
+    ));
+}
+
 fn assert_error_redacts(error: &(impl std::fmt::Display + std::fmt::Debug), forbidden: &[&str]) {
     let display = error.to_string();
     let debug = format!("{error:?}");
