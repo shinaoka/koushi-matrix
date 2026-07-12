@@ -1558,9 +1558,15 @@ impl AppActor {
                     &display_label_user_ids,
                 )
                 .await;
-                let should_route =
-                    !matches!(&account_command, AccountCommand::ResetLocalData { .. })
-                        || projected_state_changed;
+                let requires_projection_acceptance = matches!(
+                    &account_command,
+                    AccountCommand::ResetLocalData { .. }
+                        | AccountCommand::SubmitRecovery { .. }
+                        | AccountCommand::StartSessionBootstrap { .. }
+                        | AccountCommand::ConfirmSessionBootstrapSaved { .. }
+                        | AccountCommand::StartOwnUserSas { .. }
+                );
+                let should_route = !requires_projection_acceptance || projected_state_changed;
                 if !should_route {
                     return false;
                 }
@@ -2963,6 +2969,7 @@ impl AppActor {
             SessionState::Provisional { info, .. }
             | SessionState::AwaitingVerification { info, .. }
             | SessionState::Verifying { info, .. }
+            | SessionState::AwaitingBootstrapConfirmation { info, .. }
             | SessionState::Rejecting { info, .. }
             | SessionState::Ready(info)
             | SessionState::Locked(info) => Some(AccountKey(info.user_id.clone())),
@@ -3140,6 +3147,7 @@ fn is_verification_gate_command(command: &CoreCommand, session: &SessionState) -
         SessionState::Provisional { .. }
             | SessionState::AwaitingVerification { .. }
             | SessionState::Verifying { .. }
+            | SessionState::AwaitingBootstrapConfirmation { .. }
     ) {
         return false;
     }
@@ -3147,10 +3155,13 @@ fn is_verification_gate_command(command: &CoreCommand, session: &SessionState) -
         command,
         CoreCommand::Account(
             AccountCommand::RequestVerification { .. }
+                | AccountCommand::SubmitRecovery { .. }
+                | AccountCommand::StartSessionBootstrap { .. }
+                | AccountCommand::ConfirmSessionBootstrapSaved { .. }
+                | AccountCommand::StartOwnUserSas { .. }
                 | AccountCommand::AcceptVerification { .. }
                 | AccountCommand::ConfirmSasVerification { .. }
                 | AccountCommand::CancelVerification { .. }
-                | AccountCommand::BootstrapCrossSigning { .. }
         )
     )
 }
@@ -3165,6 +3176,7 @@ fn composer_draft_session_key(state: &AppState) -> Option<koushi_key::SessionKey
         | SessionState::Provisional { .. }
         | SessionState::AwaitingVerification { .. }
         | SessionState::Verifying { .. }
+        | SessionState::AwaitingBootstrapConfirmation { .. }
         | SessionState::Rejecting { .. }
         | SessionState::LoggingOut
         | SessionState::Locked(_) => None,
@@ -3217,6 +3229,24 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 request_id: request_id.sequence,
                 target: target.clone(),
             })
+        }
+        AccountCommand::SubmitRecovery { request, .. } => {
+            Some(AppAction::E2eeRecoverySubmitted(request.clone()))
+        }
+        AccountCommand::StartSessionBootstrap { flow_id, .. } => {
+            Some(AppAction::VerificationMethodSubmitted {
+                method: koushi_state::VerificationMethod::Bootstrap,
+                flow_id: *flow_id,
+            })
+        }
+        AccountCommand::StartOwnUserSas { flow_id, .. } => {
+            Some(AppAction::VerificationMethodSubmitted {
+                method: koushi_state::VerificationMethod::ExistingDeviceSas,
+                flow_id: *flow_id,
+            })
+        }
+        AccountCommand::ConfirmSessionBootstrapSaved { flow_id, .. } => {
+            Some(AppAction::BootstrapRecoverySavedConfirmed { flow_id: *flow_id })
         }
         AccountCommand::AcceptVerification { flow_id, .. } => {
             Some(AppAction::VerificationAccepted {
@@ -3400,7 +3430,6 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         | AccountCommand::RestoreSession { .. }
         | AccountCommand::RestoreLastSession { .. }
         | AccountCommand::QuerySavedSessions { .. }
-        | AccountCommand::SubmitRecovery { .. }
         | AccountCommand::SetPresence { .. }
         | AccountCommand::DownloadAvatarThumbnail { .. }
         | AccountCommand::Logout { .. }
@@ -4998,6 +5027,57 @@ mod tests {
                 reason: koushi_state::VerificationCancelReason::User,
             })
         );
+    }
+
+    #[test]
+    fn gate_sas_and_bootstrap_commands_project_only_opaque_flow_state() {
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(5),
+            sequence: 90,
+        };
+        assert_eq!(
+            account_command_projected_action(&AccountCommand::StartOwnUserSas {
+                request_id,
+                flow_id: 31,
+            }),
+            Some(AppAction::VerificationMethodSubmitted {
+                method: koushi_state::VerificationMethod::ExistingDeviceSas,
+                flow_id: 31,
+            })
+        );
+        assert_eq!(
+            account_command_projected_action(&AccountCommand::ConfirmSessionBootstrapSaved {
+                request_id,
+                flow_id: 32,
+            }),
+            Some(AppAction::BootstrapRecoverySavedConfirmed { flow_id: 32 })
+        );
+        let debug = format!(
+            "{:?}",
+            AccountCommand::StartOwnUserSas {
+                request_id,
+                flow_id: 31,
+            }
+        );
+        assert!(!debug.contains('@'));
+        assert!(!debug.contains("DEVICE"));
+        let bootstrap_debug = format!(
+            "{:?}",
+            AccountCommand::StartSessionBootstrap {
+                request_id,
+                flow_id: 32,
+                auth: Some(koushi_state::AuthSecret::new("private-auth")),
+                request: crate::command::SecureBackupSetupRequest {
+                    passphrase: Some(koushi_state::AuthSecret::new("private-passphrase")),
+                    recovery_key_destination_path: Some(std::path::PathBuf::from(
+                        "/private/recovery-key.txt",
+                    )),
+                },
+            }
+        );
+        for forbidden in ["private-auth", "private-passphrase", "/private/"] {
+            assert!(!bootstrap_debug.contains(forbidden));
+        }
     }
 
     fn thread_key(root_event_id: &str) -> TimelineKey {

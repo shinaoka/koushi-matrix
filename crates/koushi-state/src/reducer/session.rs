@@ -193,6 +193,11 @@ pub(crate) fn handle_verification_method_submitted(
     if !gate.methods.contains(&method_capability(method)) {
         return Vec::new();
     }
+    if matches!(method, VerificationMethod::Bootstrap)
+        != matches!(gate.account_kind, VerificationAccountKind::NewIdentity)
+    {
+        return Vec::new();
+    }
     let info = info.clone();
     let gate = gate.clone();
     state.session = SessionState::Verifying {
@@ -223,6 +228,83 @@ pub(crate) fn handle_verification_gate_attempt_failed(
     vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
 }
 
+pub(crate) fn handle_bootstrap_recovery_key_delivered(
+    state: &mut AppState,
+    flow_id: u64,
+) -> Vec<AppEffect> {
+    let SessionState::Verifying {
+        info,
+        gate,
+        method: VerificationMethod::Bootstrap,
+        flow_id: active_flow_id,
+    } = &state.session
+    else {
+        return Vec::new();
+    };
+    if *active_flow_id != flow_id || gate.account_kind != VerificationAccountKind::NewIdentity {
+        return Vec::new();
+    }
+    state.session = SessionState::AwaitingBootstrapConfirmation {
+        info: info.clone(),
+        gate: gate.clone(),
+        flow_id,
+        destination_written: true,
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+}
+
+pub(crate) fn handle_bootstrap_recovery_key_delivery_failed(
+    state: &mut AppState,
+    flow_id: u64,
+    kind: VerificationGateFailureKind,
+) -> Vec<AppEffect> {
+    let SessionState::Verifying {
+        info,
+        gate,
+        method: VerificationMethod::Bootstrap,
+        flow_id: active_flow_id,
+    } = &state.session
+    else {
+        return Vec::new();
+    };
+    if *active_flow_id != flow_id || gate.account_kind != VerificationAccountKind::NewIdentity {
+        return Vec::new();
+    }
+    let mut gate = gate.clone();
+    gate.failure = Some(kind);
+    state.session = SessionState::AwaitingVerification {
+        info: info.clone(),
+        gate,
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+}
+
+pub(crate) fn handle_bootstrap_recovery_saved_confirmed(
+    state: &mut AppState,
+    flow_id: u64,
+) -> Vec<AppEffect> {
+    let SessionState::AwaitingBootstrapConfirmation {
+        info,
+        flow_id: active_flow_id,
+        destination_written: true,
+        ..
+    } = &state.session
+    else {
+        return Vec::new();
+    };
+    if *active_flow_id != flow_id {
+        return Vec::new();
+    }
+    state.session = SessionState::Provisional {
+        info: info.clone(),
+        phase: ProvisionalPhase::RecheckingTrust { failure: None },
+    };
+    vec![
+        AppEffect::CheckCurrentDeviceTrust,
+        AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+    ]
+}
+
 pub(crate) fn handle_verification_session_rejected(
     state: &mut AppState,
     reason: VerificationGateRejectReason,
@@ -235,6 +317,7 @@ pub(crate) fn handle_verification_session_rejected(
         SessionState::Provisional { .. }
             | SessionState::AwaitingVerification { .. }
             | SessionState::Verifying { .. }
+            | SessionState::AwaitingBootstrapConfirmation { .. }
     ) {
         return Vec::new();
     }

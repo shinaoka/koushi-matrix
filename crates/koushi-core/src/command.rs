@@ -102,6 +102,9 @@ impl CoreCommand {
                 | AccountCommand::ProbeLocalEncryptionHealth { request_id }
                 | AccountCommand::ResetLocalData { request_id }
                 | AccountCommand::SubmitRecovery { request_id, .. }
+                | AccountCommand::StartSessionBootstrap { request_id, .. }
+                | AccountCommand::ConfirmSessionBootstrapSaved { request_id, .. }
+                | AccountCommand::StartOwnUserSas { request_id, .. }
                 | AccountCommand::RequestVerification { request_id, .. }
                 | AccountCommand::AcceptVerification { request_id, .. }
                 | AccountCommand::ConfirmSasVerification { request_id, .. }
@@ -960,6 +963,20 @@ pub enum AccountCommand {
         request_id: RequestId,
         request: RecoveryRequest,
     },
+    StartSessionBootstrap {
+        request_id: RequestId,
+        flow_id: u64,
+        auth: Option<koushi_state::AuthSecret>,
+        request: SecureBackupSetupRequest,
+    },
+    ConfirmSessionBootstrapSaved {
+        request_id: RequestId,
+        flow_id: u64,
+    },
+    StartOwnUserSas {
+        request_id: RequestId,
+        flow_id: u64,
+    },
     RequestVerification {
         request_id: RequestId,
         target: VerificationTarget,
@@ -1246,6 +1263,34 @@ impl fmt::Debug for AccountCommand {
                 .debug_struct("SubmitRecovery")
                 .field("request_id", request_id)
                 .field("request", request)
+                .finish(),
+            Self::StartSessionBootstrap {
+                request_id,
+                flow_id,
+                auth,
+                request,
+            } => formatter
+                .debug_struct("StartSessionBootstrap")
+                .field("request_id", request_id)
+                .field("flow_id", flow_id)
+                .field("has_auth", &auth.is_some())
+                .field("request", request)
+                .finish(),
+            Self::ConfirmSessionBootstrapSaved {
+                request_id,
+                flow_id,
+            } => formatter
+                .debug_struct("ConfirmSessionBootstrapSaved")
+                .field("request_id", request_id)
+                .field("flow_id", flow_id)
+                .finish(),
+            Self::StartOwnUserSas {
+                request_id,
+                flow_id,
+            } => formatter
+                .debug_struct("StartOwnUserSas")
+                .field("request_id", request_id)
+                .field("flow_id", flow_id)
                 .finish(),
             Self::RequestVerification { request_id, .. } => formatter
                 .debug_struct("RequestVerification")

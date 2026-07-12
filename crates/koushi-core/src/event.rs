@@ -1994,6 +1994,7 @@ pub fn timeline_projection_own_user_id(state: &AppState) -> Option<&str> {
         | SessionState::Provisional { .. }
         | SessionState::AwaitingVerification { .. }
         | SessionState::Verifying { .. }
+        | SessionState::AwaitingBootstrapConfirmation { .. }
         | SessionState::Rejecting { .. }
         | SessionState::LoggingOut
         | SessionState::Locked(_)

@@ -294,8 +294,8 @@ pub(crate) fn handle_verification_cancelled(
     if let SessionState::Verifying {
         info,
         gate,
-        method: VerificationMethod::ExistingDeviceSas,
         flow_id,
+        ..
     } = &state.session
         && *flow_id == request_id
     {

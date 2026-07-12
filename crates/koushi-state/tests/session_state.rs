@@ -8,9 +8,10 @@ use koushi_state::{
     ProvisionalPhase, RecoveryMethod, RecoveryRequest, RoomAttentionKind, RoomSummary, RoomTags,
     SearchCrawlerLastActive, SearchCrawlerLastActiveStatus, SearchCrawlerRoomState,
     SearchCrawlerState, SearchScope, SearchState, SessionInfo, SessionState, SpaceSummary,
-    SubmissionId, SyncState, ThreadAttentionState, ThreadPaneState, TimelinePaneState, UiEvent,
-    VerificationAccountKind, VerificationGateFailureKind, VerificationGateRejectReason,
-    VerificationGateState, VerificationMethod, VerificationMethodCapability, reduce,
+    SubmissionId, SyncState, ThreadAttentionState, ThreadPaneState, TimelinePaneState,
+    TrustOperationFailureKind, UiEvent, VerificationAccountKind, VerificationGateFailureKind,
+    VerificationGateRejectReason, VerificationGateState, VerificationMethod,
+    VerificationMethodCapability, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -616,6 +617,330 @@ fn existing_identity_without_proof_rejects_then_discards() {
 }
 
 #[test]
+fn new_identity_bootstrap_requires_written_destination_and_matching_confirmation() {
+    let info = session_info();
+    let gate = VerificationGateState {
+        methods: vec![VerificationMethodCapability::Bootstrap],
+        account_kind: VerificationAccountKind::NewIdentity,
+        failure: None,
+    };
+    let mut state = AppState {
+        session: SessionState::Verifying {
+            info: info.clone(),
+            gate: gate.clone(),
+            method: VerificationMethod::Bootstrap,
+            flow_id: 41,
+        },
+        ..AppState::default()
+    };
+    let effects = reduce(
+        &mut state,
+        AppAction::BootstrapRecoveryKeyDelivered { flow_id: 41 },
+    );
+    assert_eq!(
+        state.session,
+        SessionState::AwaitingBootstrapConfirmation {
+            info: info.clone(),
+            gate: gate.clone(),
+            flow_id: 41,
+            destination_written: true,
+        }
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+    );
+
+    let before = state.clone();
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::BootstrapRecoverySavedConfirmed { flow_id: 40 }
+        )
+        .is_empty()
+    );
+    assert_eq!(state, before);
+    let effects = reduce(
+        &mut state,
+        AppAction::BootstrapRecoverySavedConfirmed { flow_id: 41 },
+    );
+    assert_eq!(
+        state.session,
+        SessionState::Provisional {
+            info,
+            phase: ProvisionalPhase::RecheckingTrust { failure: None },
+        }
+    );
+    assert_eq!(
+        effects,
+        vec![
+            AppEffect::CheckCurrentDeviceTrust,
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+        ]
+    );
+}
+
+#[test]
+fn bootstrap_delivery_failure_is_retryable_and_unknown_is_never_new_identity() {
+    let info = session_info();
+    let gate = VerificationGateState {
+        methods: vec![VerificationMethodCapability::Bootstrap],
+        account_kind: VerificationAccountKind::NewIdentity,
+        failure: None,
+    };
+    let mut state = AppState {
+        session: SessionState::Verifying {
+            info: info.clone(),
+            gate: gate.clone(),
+            method: VerificationMethod::Bootstrap,
+            flow_id: 9,
+        },
+        ..AppState::default()
+    };
+    reduce(
+        &mut state,
+        AppAction::BootstrapRecoveryKeyDeliveryFailed {
+            flow_id: 9,
+            kind: VerificationGateFailureKind::Sdk,
+        },
+    );
+    assert!(matches!(
+        state.session,
+        SessionState::AwaitingVerification {
+            gate: VerificationGateState {
+                account_kind: VerificationAccountKind::NewIdentity,
+                failure: Some(VerificationGateFailureKind::Sdk),
+                ..
+            },
+            ..
+        }
+    ));
+
+    let mut unknown = AppState {
+        session: SessionState::Provisional {
+            info,
+            phase: ProvisionalPhase::DiscoveringMethods,
+        },
+        ..AppState::default()
+    };
+    reduce(
+        &mut unknown,
+        AppAction::VerificationMethodsDiscovered(VerificationGateState {
+            methods: Vec::new(),
+            account_kind: VerificationAccountKind::Unknown,
+            failure: Some(VerificationGateFailureKind::Network),
+        }),
+    );
+    assert!(matches!(
+        unknown.session,
+        SessionState::AwaitingVerification {
+            gate: VerificationGateState {
+                account_kind: VerificationAccountKind::Unknown,
+                ..
+            },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn gate_sas_terminals_are_retryable_and_done_only_requests_trust_recheck() {
+    let info = session_info();
+    let gate = VerificationGateState {
+        methods: vec![VerificationMethodCapability::ExistingDeviceSas],
+        account_kind: VerificationAccountKind::ExistingIdentity,
+        failure: None,
+    };
+    for (kind, expected) in [
+        (
+            TrustOperationFailureKind::Cancelled,
+            VerificationGateFailureKind::Cancelled,
+        ),
+        (
+            TrustOperationFailureKind::Mismatch,
+            VerificationGateFailureKind::Mismatch,
+        ),
+        (
+            TrustOperationFailureKind::Timeout,
+            VerificationGateFailureKind::Timeout,
+        ),
+        (
+            TrustOperationFailureKind::Forbidden,
+            VerificationGateFailureKind::Forbidden,
+        ),
+        (
+            TrustOperationFailureKind::Network,
+            VerificationGateFailureKind::Network,
+        ),
+        (
+            TrustOperationFailureKind::Sdk,
+            VerificationGateFailureKind::Sdk,
+        ),
+    ] {
+        let mut state = AppState {
+            session: SessionState::Verifying {
+                info: info.clone(),
+                gate: gate.clone(),
+                method: VerificationMethod::ExistingDeviceSas,
+                flow_id: 77,
+            },
+            ..AppState::default()
+        };
+        reduce(
+            &mut state,
+            AppAction::VerificationFailed {
+                request_id: 77,
+                kind,
+            },
+        );
+        assert!(matches!(
+            state.session,
+            SessionState::AwaitingVerification {
+                gate: VerificationGateState { failure: Some(value), .. },
+                ..
+            } if value == expected
+        ));
+    }
+
+    let mut done = AppState {
+        session: SessionState::Verifying {
+            info: info.clone(),
+            gate,
+            method: VerificationMethod::ExistingDeviceSas,
+            flow_id: 77,
+        },
+        ..AppState::default()
+    };
+    let effects = reduce(
+        &mut done,
+        AppAction::VerificationCompleted { request_id: 77 },
+    );
+    assert_eq!(
+        done.session,
+        SessionState::Provisional {
+            info,
+            phase: ProvisionalPhase::RecheckingTrust { failure: None },
+        }
+    );
+    assert_eq!(effects[0], AppEffect::CheckCurrentDeviceTrust);
+    assert!(!matches!(done.session, SessionState::Ready(_)));
+}
+
+#[test]
+fn gate_sas_start_mismatch_cancel_and_retry_remain_correlated() {
+    let info = session_info();
+    let gate = VerificationGateState {
+        methods: vec![VerificationMethodCapability::ExistingDeviceSas],
+        account_kind: VerificationAccountKind::ExistingIdentity,
+        failure: None,
+    };
+    let mut state = AppState {
+        session: SessionState::AwaitingVerification {
+            info: info.clone(),
+            gate: gate.clone(),
+        },
+        ..AppState::default()
+    };
+    reduce(
+        &mut state,
+        AppAction::VerificationMethodSubmitted {
+            method: VerificationMethod::ExistingDeviceSas,
+            flow_id: 10,
+        },
+    );
+    assert!(matches!(
+        state.session,
+        SessionState::Verifying { flow_id: 10, .. }
+    ));
+    let before = state.clone();
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::VerificationCancelled {
+                request_id: 9,
+                reason: koushi_state::VerificationCancelReason::Mismatch,
+            },
+        )
+        .is_empty()
+    );
+    assert_eq!(state, before);
+    reduce(
+        &mut state,
+        AppAction::VerificationCancelled {
+            request_id: 10,
+            reason: koushi_state::VerificationCancelReason::Mismatch,
+        },
+    );
+    assert!(matches!(
+        state.session,
+        SessionState::AwaitingVerification {
+            gate: VerificationGateState {
+                failure: Some(VerificationGateFailureKind::Mismatch),
+                ..
+            },
+            ..
+        }
+    ));
+    reduce(
+        &mut state,
+        AppAction::VerificationMethodSubmitted {
+            method: VerificationMethod::ExistingDeviceSas,
+            flow_id: 11,
+        },
+    );
+    assert!(matches!(
+        state.session,
+        SessionState::Verifying { flow_id: 11, .. }
+    ));
+}
+
+#[test]
+fn recovery_cancel_and_retry_never_escape_the_gate() {
+    let info = session_info();
+    let gate = recovery_gate();
+    let mut state = AppState {
+        session: SessionState::AwaitingVerification { info, gate },
+        ..AppState::default()
+    };
+    reduce(
+        &mut state,
+        AppAction::VerificationMethodSubmitted {
+            method: VerificationMethod::RecoveryKey,
+            flow_id: 21,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::VerificationCancelled {
+            request_id: 21,
+            reason: koushi_state::VerificationCancelReason::User,
+        },
+    );
+    assert!(matches!(
+        state.session,
+        SessionState::AwaitingVerification {
+            gate: VerificationGateState {
+                failure: Some(VerificationGateFailureKind::Cancelled),
+                ..
+            },
+            ..
+        }
+    ));
+    reduce(
+        &mut state,
+        AppAction::VerificationMethodSubmitted {
+            method: VerificationMethod::RecoveryKey,
+            flow_id: 22,
+        },
+    );
+    assert!(matches!(
+        state.session,
+        SessionState::Verifying { flow_id: 22, .. }
+    ));
+    assert!(!matches!(state.session, SessionState::Ready(_)));
+}
+
+#[test]
 fn normal_room_commands_are_rejected_in_every_verification_gate_state() {
     let info = session_info();
     let states = [
@@ -632,6 +957,16 @@ fn normal_room_commands_are_rejected_in_every_verification_gate_state() {
             gate: recovery_gate(),
             method: VerificationMethod::RecoveryKey,
             flow_id: 17,
+        },
+        SessionState::AwaitingBootstrapConfirmation {
+            info: info.clone(),
+            gate: VerificationGateState {
+                methods: vec![VerificationMethodCapability::Bootstrap],
+                account_kind: VerificationAccountKind::NewIdentity,
+                failure: None,
+            },
+            flow_id: 18,
+            destination_written: true,
         },
         SessionState::Rejecting {
             info,

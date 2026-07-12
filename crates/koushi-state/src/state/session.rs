@@ -27,6 +27,12 @@ pub enum SessionState {
         method: VerificationMethod,
         flow_id: u64,
     },
+    AwaitingBootstrapConfirmation {
+        info: SessionInfo,
+        gate: VerificationGateState,
+        flow_id: u64,
+        destination_written: bool,
+    },
     Rejecting {
         info: SessionInfo,
         reason: VerificationGateRejectReason,

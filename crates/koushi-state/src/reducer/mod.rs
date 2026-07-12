@@ -91,6 +91,15 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::VerificationSessionRejected { reason } => {
             session::handle_verification_session_rejected(state, reason)
         }
+        AppAction::BootstrapRecoveryKeyDelivered { flow_id } => {
+            session::handle_bootstrap_recovery_key_delivered(state, flow_id)
+        }
+        AppAction::BootstrapRecoveryKeyDeliveryFailed { flow_id, kind } => {
+            session::handle_bootstrap_recovery_key_delivery_failed(state, flow_id, kind)
+        }
+        AppAction::BootstrapRecoverySavedConfirmed { flow_id } => {
+            session::handle_bootstrap_recovery_saved_confirmed(state, flow_id)
+        }
         AppAction::ProvisionalSessionDiscarded => {
             session::handle_provisional_session_discarded(state)
         }
@@ -1144,6 +1153,7 @@ pub(crate) fn has_verification_gate_projection_context(state: &AppState) -> bool
         SessionState::Provisional { .. }
             | SessionState::AwaitingVerification { .. }
             | SessionState::Verifying { .. }
+            | SessionState::AwaitingBootstrapConfirmation { .. }
             | SessionState::Rejecting { .. }
     )
 }
@@ -1160,6 +1170,7 @@ pub(crate) fn session_user_id(state: &AppState) -> Option<&str> {
         | SessionState::Provisional { info, .. }
         | SessionState::AwaitingVerification { info, .. }
         | SessionState::Verifying { info, .. }
+        | SessionState::AwaitingBootstrapConfirmation { info, .. }
         | SessionState::Rejecting { info, .. }
         | SessionState::Locked(info)
         | SessionState::SwitchingAccount { info } => Some(info.user_id.as_str()),
@@ -1172,6 +1183,7 @@ pub(crate) fn current_session_info(state: &AppState) -> Option<crate::state::Ses
         SessionState::Provisional { info, .. }
         | SessionState::AwaitingVerification { info, .. }
         | SessionState::Verifying { info, .. }
+        | SessionState::AwaitingBootstrapConfirmation { info, .. }
         | SessionState::Rejecting { info, .. }
         | SessionState::Ready(info)
         | SessionState::Locked(info) => Some(info.clone()),

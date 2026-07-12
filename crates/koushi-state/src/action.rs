@@ -213,6 +213,16 @@ pub enum AppAction {
     VerificationSessionRejected {
         reason: crate::state::VerificationGateRejectReason,
     },
+    BootstrapRecoveryKeyDelivered {
+        flow_id: u64,
+    },
+    BootstrapRecoveryKeyDeliveryFailed {
+        flow_id: u64,
+        kind: crate::state::VerificationGateFailureKind,
+    },
+    BootstrapRecoverySavedConfirmed {
+        flow_id: u64,
+    },
     ProvisionalSessionDiscarded,
     E2eeRecoveryRequired {
         info: SessionInfo,

@@ -268,6 +268,9 @@ pub enum AccountMessage {
         target: VerificationTarget,
         state: koushi_sdk::MatrixSasState,
     },
+    SasVerificationTimedOut {
+        flow_id: u64,
+    },
     IncomingVerificationRequest {
         target: VerificationTarget,
         handle: koushi_sdk::MatrixVerificationRequestHandle,
@@ -519,10 +522,12 @@ pub struct AccountActor {
     /// Pending SDK SAS continuation, held only inside AccountActor and never
     /// projected into AppState.
     sas_verification: Option<PendingSasVerification>,
+    own_user_verification: Option<(u64, koushi_sdk::MatrixOwnUserVerificationHandle)>,
     /// SDK verification request observer task for the active flow.
     verification_request_observer: Option<VerificationObservation>,
     /// SDK SAS observer task for the active flow.
     sas_verification_observer: Option<VerificationObservation>,
+    sas_timeout_task: Option<crate::executor::JoinHandle<()>>,
     /// SDK incoming verification request observer for the active session.
     incoming_verification_observer: Option<IncomingVerificationObservation>,
     /// SDK session-change observer for auth invalidation / soft logout.
@@ -628,8 +633,10 @@ impl AccountActor {
             oidc_completion_override: None,
             verification_request: None,
             sas_verification: None,
+            own_user_verification: None,
             verification_request_observer: None,
             sas_verification_observer: None,
+            sas_timeout_task: None,
             incoming_verification_observer: None,
             session_change_observer: None,
             account_hydration_task: None,
@@ -853,6 +860,9 @@ impl AccountActor {
                 } => {
                     self.handle_sas_verification_progress(request_id, target, state)
                         .await;
+                }
+                AccountMessage::SasVerificationTimedOut { flow_id } => {
+                    self.handle_sas_verification_timeout(flow_id).await;
                 }
                 AccountMessage::IncomingVerificationRequest { target, handle } => {
                     let request_id = self.next_incoming_verification_request_id();
@@ -1982,6 +1992,7 @@ impl AccountActor {
     }
 
     async fn cancel_verification_handles(&mut self) {
+        self.stop_sas_timeout().await;
         self.stop_verification_request_observer().await;
         self.stop_sas_verification_observer().await;
         if let Some(pending) = self.sas_verification.take() {
@@ -1989,6 +2000,9 @@ impl AccountActor {
         }
         if let Some(pending) = self.verification_request.take() {
             let _ = koushi_sdk::cancel_verification_request(&pending.handle).await;
+        }
+        if let Some((_, handle)) = self.own_user_verification.take() {
+            let _ = koushi_sdk::cancel_own_user_sas_verification(&handle).await;
         }
     }
 
@@ -2138,6 +2152,21 @@ impl AccountActor {
             } => {
                 self.handle_submit_recovery(request_id, request).await;
             }
+            AccountCommand::StartSessionBootstrap {
+                request_id,
+                flow_id,
+                auth,
+                request,
+            } => {
+                self.handle_start_session_bootstrap(request_id, flow_id, auth, request)
+                    .await;
+            }
+            AccountCommand::ConfirmSessionBootstrapSaved {
+                request_id: _,
+                flow_id: _,
+            } => {
+                self.request_authoritative_trust_recheck().await;
+            }
             AccountCommand::BootstrapCrossSigning { request_id, auth } => {
                 self.handle_bootstrap_cross_signing(request_id, auth).await;
             }
@@ -2227,6 +2256,12 @@ impl AccountActor {
             AccountCommand::RequestVerification { request_id, target } => {
                 self.handle_request_verification(request_id, target).await;
             }
+            AccountCommand::StartOwnUserSas {
+                request_id,
+                flow_id,
+            } => {
+                self.handle_start_own_user_sas(request_id, flow_id).await;
+            }
             AccountCommand::AcceptVerification {
                 request_id,
                 flow_id,
@@ -2299,6 +2334,133 @@ impl AccountActor {
                 .await;
             }
         }
+    }
+
+    async fn handle_start_own_user_sas(&mut self, request_id: RequestId, flow_id: u64) {
+        let Some(session) = self.session.clone() else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        self.cancel_verification_handles().await;
+        let own_handle = match koushi_sdk::request_own_user_sas_verification(&session).await {
+            Ok(handle) => handle,
+            Err(error) => {
+                self.send_actions(vec![AppAction::VerificationFailed {
+                    request_id: flow_id,
+                    kind: classify_e2ee_trust_error(&error),
+                }])
+                .await;
+                return;
+            }
+        };
+        let sas = match koushi_sdk::start_own_user_sas_verification(&own_handle).await {
+            Ok(Some(sas)) => sas,
+            Ok(None) => {
+                self.own_user_verification = Some((flow_id, own_handle));
+                self.start_sas_timeout(flow_id);
+                self.observe_own_user_verification(request_id, flow_id);
+                return;
+            }
+            Err(error) => {
+                self.send_actions(vec![AppAction::VerificationFailed {
+                    request_id: flow_id,
+                    kind: classify_e2ee_trust_error(&error),
+                }])
+                .await;
+                return;
+            }
+        };
+        self.own_user_verification = Some((flow_id, own_handle));
+        self.store_sas_verification(
+            RequestId {
+                connection_id: request_id.connection_id,
+                sequence: flow_id,
+            },
+            VerificationTarget {
+                user_id: "current-user".to_owned(),
+                device_id: "eligible-device".to_owned(),
+            },
+            sas,
+        )
+        .await;
+    }
+
+    fn start_sas_timeout(&mut self, flow_id: u64) {
+        if let Some(task) = self.sas_timeout_task.take() {
+            task.abort();
+        }
+        let tx = self.self_tx.clone();
+        self.sas_timeout_task = Some(executor::spawn(async move {
+            executor::sleep(Duration::from_secs(120)).await;
+            let _ = tx
+                .send(AccountMessage::SasVerificationTimedOut { flow_id })
+                .await;
+        }));
+    }
+
+    async fn stop_sas_timeout(&mut self) {
+        if let Some(task) = self.sas_timeout_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+
+    async fn handle_sas_verification_timeout(&mut self, flow_id: u64) {
+        let active = self
+            .sas_verification
+            .as_ref()
+            .is_some_and(|pending| pending.request_id.sequence == flow_id)
+            || self
+                .own_user_verification
+                .as_ref()
+                .is_some_and(|(active_flow_id, _)| *active_flow_id == flow_id);
+        if !active {
+            return;
+        }
+        self.cancel_verification_handles().await;
+        self.send_actions(vec![AppAction::VerificationFailed {
+            request_id: flow_id,
+            kind: TrustOperationFailureKind::Timeout,
+        }])
+        .await;
+    }
+
+    fn observe_own_user_verification(&mut self, request_id: RequestId, flow_id: u64) {
+        let Some((_, handle)) = self.own_user_verification.as_ref() else {
+            return;
+        };
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let mut states = handle.changes();
+        let tx = self.self_tx.clone();
+        let request_id = RequestId {
+            connection_id: request_id.connection_id,
+            sequence: flow_id,
+        };
+        let target = VerificationTarget {
+            user_id: "current-user".to_owned(),
+            device_id: "eligible-device".to_owned(),
+        };
+        let task = executor::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut stop_rx => break,
+                    state = states.next() => {
+                        let Some(state) = state else { break };
+                        let terminal = matches!(state,
+                            koushi_sdk::MatrixVerificationRequestState::Done
+                            | koushi_sdk::MatrixVerificationRequestState::Cancelled
+                            | koushi_sdk::MatrixVerificationRequestState::UnsupportedMethod);
+                        if tx.send(AccountMessage::VerificationRequestProgress {
+                            request_id,
+                            target: target.clone(),
+                            state,
+                        }).await.is_err() { break; }
+                        if terminal { break; }
+                    }
+                }
+            }
+        });
+        self.verification_request_observer = Some(VerificationObservation { stop_tx, task });
     }
 
     async fn handle_incoming_verification_request(
@@ -2954,6 +3116,9 @@ impl AccountActor {
                 target: VerificationTarget,
                 handle: koushi_sdk::MatrixVerificationRequestHandle,
             },
+            Own {
+                handle: koushi_sdk::MatrixOwnUserVerificationHandle,
+            },
         }
 
         let sas_target = self
@@ -2966,15 +3131,24 @@ impl AccountActor {
             });
         let cancel_target = match reason {
             VerificationCancelReason::Mismatch => sas_target,
-            VerificationCancelReason::User => sas_target.or_else(|| {
-                self.verification_request
-                    .as_ref()
-                    .filter(|pending| pending.request_id.sequence == flow_id)
-                    .map(|pending| CancelTarget::Request {
-                        target: pending.target.clone(),
-                        handle: pending.handle.clone(),
-                    })
-            }),
+            VerificationCancelReason::User => sas_target
+                .or_else(|| {
+                    self.verification_request
+                        .as_ref()
+                        .filter(|pending| pending.request_id.sequence == flow_id)
+                        .map(|pending| CancelTarget::Request {
+                            target: pending.target.clone(),
+                            handle: pending.handle.clone(),
+                        })
+                })
+                .or_else(|| {
+                    self.own_user_verification
+                        .as_ref()
+                        .filter(|(active_flow_id, _)| *active_flow_id == flow_id)
+                        .map(|(_, handle)| CancelTarget::Own {
+                            handle: handle.clone(),
+                        })
+                }),
         };
 
         let Some(cancel_target) = cancel_target else {
@@ -2991,6 +3165,10 @@ impl AccountActor {
             CancelTarget::Sas { target, .. } | CancelTarget::Request { target, .. } => {
                 target.clone()
             }
+            CancelTarget::Own { .. } => VerificationTarget {
+                user_id: "current-user".to_owned(),
+                device_id: "eligible-device".to_owned(),
+            },
         };
         let result = match cancel_target {
             CancelTarget::Sas { handle, .. } => match reason {
@@ -3004,12 +3182,16 @@ impl AccountActor {
             CancelTarget::Request { handle, .. } => {
                 koushi_sdk::cancel_verification_request(&handle).await
             }
+            CancelTarget::Own { handle } => {
+                koushi_sdk::cancel_own_user_sas_verification(&handle).await
+            }
         };
 
         self.stop_verification_request_observer().await;
         self.stop_sas_verification_observer().await;
         self.verification_request = None;
         self.sas_verification = None;
+        self.own_user_verification = None;
 
         if let Err(error) = result {
             self.project_verification_failure(flow_id, target, classify_e2ee_trust_error(&error))
@@ -3111,6 +3293,10 @@ impl AccountActor {
             .verification_request
             .as_ref()
             .is_some_and(|pending| pending.request_id.sequence == request_id.sequence)
+            && !self
+                .own_user_verification
+                .as_ref()
+                .is_some_and(|(flow_id, _)| *flow_id == request_id.sequence)
         {
             return;
         }
@@ -3147,14 +3333,50 @@ impl AccountActor {
                     request_id: request_id.sequence,
                 }])
                 .await;
+                if let Some((flow_id, handle)) = self.own_user_verification.as_ref()
+                    && *flow_id == request_id.sequence
+                {
+                    let handle = handle.clone();
+                    match koushi_sdk::start_own_user_sas_verification(&handle).await {
+                        Ok(Some(sas)) => {
+                            self.store_sas_verification(
+                                request_id,
+                                VerificationTarget {
+                                    user_id: "current-user".to_owned(),
+                                    device_id: "eligible-device".to_owned(),
+                                },
+                                sas,
+                            )
+                            .await;
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            self.send_actions(vec![AppAction::VerificationFailed {
+                                request_id: request_id.sequence,
+                                kind: classify_e2ee_trust_error(&error),
+                            }])
+                            .await;
+                        }
+                    }
+                }
             }
             koushi_sdk::MatrixVerificationRequestState::SasStarted(sas) => {
-                let Some(target) = self
+                let target = self
                     .verification_request
                     .as_ref()
                     .filter(|pending| pending.request_id.sequence == request_id.sequence)
                     .map(|pending| pending.target.clone())
-                else {
+                    .or_else(|| {
+                        self.own_user_verification
+                            .as_ref()
+                            .and_then(|(flow_id, _)| {
+                                (*flow_id == request_id.sequence).then(|| VerificationTarget {
+                                    user_id: "current-user".to_owned(),
+                                    device_id: "eligible-device".to_owned(),
+                                })
+                            })
+                    });
+                let Some(target) = target else {
                     return;
                 };
                 self.store_sas_verification(request_id, target, sas).await;
@@ -3192,6 +3414,7 @@ impl AccountActor {
             target: target.clone(),
             handle: handle.clone(),
         });
+        self.start_sas_timeout(request_id.sequence);
         self.observe_sas_verification(request_id, target.clone(), handle.clone());
         if matches!(handle.state(), koushi_sdk::MatrixSasState::Started)
             && let Err(error) = koushi_sdk::accept_sas_verification(&handle).await
@@ -3219,6 +3442,15 @@ impl AccountActor {
             | koushi_sdk::MatrixSasState::Started
             | koushi_sdk::MatrixSasState::Accepted => {}
             koushi_sdk::MatrixSasState::SasPresented { emojis } => {
+                if emojis.len() != 7 {
+                    self.project_verification_failure(
+                        request_id.sequence,
+                        target,
+                        TrustOperationFailureKind::Sdk,
+                    )
+                    .await;
+                    return;
+                }
                 self.send_actions(vec![AppAction::VerificationSasPresented {
                     request_id: request_id.sequence,
                     emojis: emojis.clone(),
@@ -3269,6 +3501,7 @@ impl AccountActor {
             return;
         };
 
+        self.stop_sas_timeout().await;
         self.stop_verification_request_observer().await;
         self.stop_sas_verification_observer().await;
         self.verification_request = None;
@@ -3277,6 +3510,7 @@ impl AccountActor {
             request_id: request_id.sequence,
         }])
         .await;
+        self.request_authoritative_trust_recheck().await;
         self.emit_verification_progress(VerificationFlowState::Done {
             request_id: request_id.sequence,
             target,
@@ -4941,6 +5175,68 @@ impl AccountActor {
         }
     }
 
+    async fn handle_start_session_bootstrap(
+        &mut self,
+        request_id: RequestId,
+        flow_id: u64,
+        auth: Option<koushi_state::AuthSecret>,
+        request: SecureBackupSetupRequest,
+    ) {
+        let Some(session) = self.session.clone() else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        if request.recovery_key_destination_path.is_none() {
+            self.send_actions(vec![AppAction::BootstrapRecoveryKeyDeliveryFailed {
+                flow_id,
+                kind: koushi_state::VerificationGateFailureKind::Sdk,
+            }])
+            .await;
+            return;
+        }
+        if let Err(error) = koushi_sdk::bootstrap_cross_signing(&session, auth.as_ref()).await {
+            drop(auth);
+            self.send_actions(vec![AppAction::BootstrapRecoveryKeyDeliveryFailed {
+                flow_id,
+                kind: verification_gate_failure_kind(&error),
+            }])
+            .await;
+            return;
+        }
+        drop(auth);
+        let SecureBackupSetupRequest {
+            passphrase,
+            recovery_key_destination_path,
+        } = request;
+        let result = koushi_sdk::bootstrap_secure_backup(
+            &session,
+            passphrase.as_ref(),
+            recovery_key_destination_path,
+        )
+        .await;
+        drop(passphrase);
+        match result {
+            Ok(summary) if summary.recovery_key_written => {
+                self.send_actions(vec![AppAction::BootstrapRecoveryKeyDelivered { flow_id }])
+                    .await;
+            }
+            Ok(_) => {
+                self.send_actions(vec![AppAction::BootstrapRecoveryKeyDeliveryFailed {
+                    flow_id,
+                    kind: koushi_state::VerificationGateFailureKind::Sdk,
+                }])
+                .await;
+            }
+            Err(error) => {
+                self.send_actions(vec![AppAction::BootstrapRecoveryKeyDeliveryFailed {
+                    flow_id,
+                    kind: verification_gate_failure_kind(&error),
+                }])
+                .await;
+            }
+        }
+    }
+
     /// Submit a recovery secret. Calls the auth crate's `recover_e2ee`
     /// primitive. On success: project E2eeRecoverySucceeded (→ Ready) and emit
     /// RecoveryCompleted. On failure: classify conservatively to
@@ -4960,11 +5256,6 @@ impl AccountActor {
 
         let account_key = AccountKey(session.info.user_id.clone());
 
-        // Project E2eeRecoverySubmitted so the reducer transitions
-        // NeedsRecovery → Recovering while the async call runs.
-        self.send_actions(vec![AppAction::E2eeRecoverySubmitted(request.clone())])
-            .await;
-
         let result = koushi_sdk::recover_e2ee(&session, &request).await;
 
         // Zero the request secret now — it has been consumed.
@@ -4972,9 +5263,11 @@ impl AccountActor {
 
         match result {
             Ok(()) => {
-                // Project success: Recovering → Ready.
+                // SDK success remains gated; the subsequent authoritative
+                // trust observation is the only promotion authority.
                 self.send_actions(vec![AppAction::E2eeRecoverySucceeded])
                     .await;
+                self.request_authoritative_trust_recheck().await;
                 self.send_actions(vec![AppAction::RestoreKeyBackupRequested {
                     request_id: request_id.sequence,
                     version: None,
@@ -5006,6 +5299,19 @@ impl AccountActor {
                 self.emit_failure(request_id, CoreFailure::RecoveryFailed { kind });
             }
         }
+    }
+
+    async fn request_authoritative_trust_recheck(&self) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let _ = self
+            .self_tx
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: self.trust_generation,
+                trust: session.current_device_trust(),
+            })
+            .await;
     }
 
     async fn perform_logout(&mut self, request_id: RequestId, server_logout: bool) {
@@ -5945,6 +6251,25 @@ fn classify_e2ee_trust_error(error: &koushi_sdk::E2eeTrustError) -> TrustOperati
             } else {
                 TrustOperationFailureKind::Sdk
             }
+        }
+    }
+}
+
+fn verification_gate_failure_kind(
+    error: &koushi_sdk::E2eeTrustError,
+) -> koushi_state::VerificationGateFailureKind {
+    match classify_e2ee_trust_error(error) {
+        TrustOperationFailureKind::Cancelled => {
+            koushi_state::VerificationGateFailureKind::Cancelled
+        }
+        TrustOperationFailureKind::Mismatch => koushi_state::VerificationGateFailureKind::Mismatch,
+        TrustOperationFailureKind::Network => koushi_state::VerificationGateFailureKind::Network,
+        TrustOperationFailureKind::Forbidden => {
+            koushi_state::VerificationGateFailureKind::Forbidden
+        }
+        TrustOperationFailureKind::Timeout => koushi_state::VerificationGateFailureKind::Timeout,
+        TrustOperationFailureKind::InvalidPassphrase | TrustOperationFailureKind::Sdk => {
+            koushi_state::VerificationGateFailureKind::Sdk
         }
     }
 }
@@ -8414,8 +8739,10 @@ mod tests {
             pending_uia_operations: BTreeMap::new(),
             verification_request: None,
             sas_verification: None,
+            own_user_verification: None,
             verification_request_observer: None,
             sas_verification_observer: None,
+            sas_timeout_task: None,
             incoming_verification_observer: None,
             session_change_observer: None,
             account_hydration_task: None,
