@@ -4806,13 +4806,6 @@ impl AccountActor {
             self.emit_failure(request_id, CoreFailure::SessionRequired);
             return;
         }
-        // Ordered shutdown of the current account runtime WITHOUT clearing
-        // credentials or stores.
-        self.stop_current_session_runtime().await;
-        // Drop the SDK handle inside the runtime context (Async rule 11).
-        drop(self.session.take());
-        self.session_key_id = None;
-
         let key_id = match self.lookup_session_key_id(&account_key).await {
             Ok(Some(key_id)) => key_id,
             Ok(None) => {
@@ -5091,19 +5084,19 @@ impl AccountActor {
             .take()
             .expect("successful teardown remains pending");
         drop(pending.session);
-        let account_key = if let Some(key_id) = &pending.key_id {
-            self.clear_account_persistence(key_id).await;
-            AccountKey(key_id.user_id.clone())
-        } else {
-            AccountKey(String::new())
-        };
-        self.record_lifecycle_probe("session_persistence_deleted");
         match pending.continuation {
             SessionTeardownContinuation::Logout {
                 request_id,
                 server_logout,
             } => {
                 let _ = server_logout;
+                let account_key = if let Some(key_id) = &pending.key_id {
+                    self.clear_account_persistence(key_id).await;
+                    AccountKey(key_id.user_id.clone())
+                } else {
+                    AccountKey(String::new())
+                };
+                self.record_lifecycle_probe("session_persistence_deleted");
                 self.send_actions(vec![AppAction::LogoutFinished]).await;
                 self.emit(CoreEvent::Account(AccountEvent::LoggedOut {
                     request_id,
@@ -5116,6 +5109,9 @@ impl AccountActor {
                 key_id,
                 action,
             } => {
+                // Account replacement must preserve the source account's
+                // credentials, saved-session index entry, last pointer, and
+                // keyed store. Only its live SDK handles are drained/dropped.
                 self.record_lifecycle_probe("replacement_teardown_complete");
                 Box::pin(self.install_provisional_session(session, persistable, key_id, action))
                     .await;
@@ -7308,6 +7304,140 @@ mod tests {
         let _ = handle.send(AccountMessage::Shutdown).await;
     }
 
+    #[tokio::test]
+    async fn real_store_switch_a_to_b_preserves_both_accounts_and_switches_back() {
+        let server_a = spawn_named_quarantine_password_server("@alpha:example.invalid", "DEVICEA");
+        let server_b = spawn_named_quarantine_password_server("@beta:example.invalid", "DEVICEB");
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+
+        for (sequence, homeserver) in [(1, server_a.clone()), (2, server_b.clone())] {
+            configure_verified_trust(&handle).await;
+            let request_id = RequestId {
+                connection_id: crate::ids::RuntimeConnectionId(9),
+                sequence,
+            };
+            handle
+                .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                    request_id,
+                    request: LoginRequest {
+                        homeserver,
+                        username: "fixture".to_owned(),
+                        password: koushi_state::AuthSecret::new("synthetic-password"),
+                        device_display_name: None,
+                    },
+                }))
+                .await;
+            acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        }
+
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        let saved = backend.load_saved_sessions().expect("saved index");
+        assert_eq!(saved.sessions().len(), 2);
+        let alpha_key = saved
+            .sessions()
+            .iter()
+            .find(|key| key.user_id == "@alpha:example.invalid")
+            .expect("alpha saved")
+            .clone();
+        let beta_key = saved
+            .sessions()
+            .iter()
+            .find(|key| key.user_id == "@beta:example.invalid")
+            .expect("beta saved")
+            .clone();
+        assert!(backend.load_matrix_session(&alpha_key).is_ok());
+        assert!(backend.load_matrix_session(&beta_key).is_ok());
+
+        for (sequence, user_id) in [(3, "@alpha:example.invalid"), (4, "@beta:example.invalid")] {
+            configure_verified_trust(&handle).await;
+            handle
+                .send(AccountMessage::Command(AccountCommand::SwitchAccount {
+                    request_id: RequestId {
+                        connection_id: crate::ids::RuntimeConnectionId(9),
+                        sequence,
+                    },
+                    account_key: AccountKey(user_id.to_owned()),
+                }))
+                .await;
+            acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+            let saved = backend
+                .load_saved_sessions()
+                .expect("saved index after switch");
+            assert_eq!(saved.sessions().len(), 2);
+            assert!(backend.load_matrix_session(&alpha_key).is_ok());
+            assert!(backend.load_matrix_session(&beta_key).is_ok());
+            assert_eq!(
+                backend
+                    .load_last_session()
+                    .expect("last pointer after switch")
+                    .expect("last pointer present")
+                    .user_id,
+                user_id
+            );
+        }
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn same_key_replacement_preserves_open_store_and_restores_again_once() {
+        let homeserver =
+            spawn_named_quarantine_password_server("@same-key:example.invalid", "SAMEDEVICE");
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        for sequence in [1, 2] {
+            configure_verified_trust(&handle).await;
+            handle
+                .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                    request_id: RequestId {
+                        connection_id: crate::ids::RuntimeConnectionId(11),
+                        sequence,
+                    },
+                    request: LoginRequest {
+                        homeserver: homeserver.clone(),
+                        username: "same-key".to_owned(),
+                        password: koushi_state::AuthSecret::new("synthetic-password"),
+                        device_display_name: None,
+                    },
+                }))
+                .await;
+            acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        }
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        let saved = backend.load_saved_sessions().expect("saved same-key index");
+        assert_eq!(saved.sessions().len(), 1);
+        let key_id = saved.sessions()[0].clone();
+        assert!(backend.load_matrix_session(&key_id).is_ok());
+        assert!(recursive_file_count(data_dir.path()) > 0);
+
+        configure_verified_trust(&handle).await;
+        handle
+            .send(AccountMessage::Command(AccountCommand::SwitchAccount {
+                request_id: RequestId {
+                    connection_id: crate::ids::RuntimeConnectionId(11),
+                    sequence: 3,
+                },
+                account_key: AccountKey("@same-key:example.invalid".to_owned()),
+            }))
+            .await;
+        acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        assert!(backend.load_matrix_session(&key_id).is_ok());
+        assert!(recursive_file_count(data_dir.path()) > 0);
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, true, true, true)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
     async fn inspect_session_runtime(handle: &AccountActorHandle) -> (bool, bool, bool, bool) {
         let (response, result) = oneshot::channel();
         assert!(
@@ -7316,6 +7446,51 @@ mod tests {
                 .await
         );
         result.await.expect("runtime inspection")
+    }
+
+    async fn configure_verified_trust(handle: &AccountActorHandle) {
+        let updates = futures_util::stream::pending();
+        assert!(
+            handle
+                .send(AccountMessage::ConfigureTrustObservation {
+                    observation: koushi_sdk::CurrentDeviceTrustObservation {
+                        current: koushi_state::CurrentDeviceTrustState::Verified,
+                        updates: Box::pin(updates),
+                    },
+                })
+                .await
+        );
+    }
+
+    async fn acknowledge_next_verified_projection(
+        handle: &AccountActorHandle,
+        action_rx: &mut mpsc::Receiver<Vec<AppAction>>,
+    ) {
+        let generation = loop {
+            let actions = action_rx.recv().await.expect("account actions");
+            if let [
+                AppAction::AuthoritativeDeviceTrustChanged {
+                    generation,
+                    trust: koushi_state::CurrentDeviceTrustState::Verified,
+                },
+            ] = actions.as_slice()
+            {
+                break *generation;
+            }
+        };
+        assert!(
+            handle
+                .send(AccountMessage::TrustProjectionApplied {
+                    generation,
+                    ready: true,
+                    locked: false,
+                })
+                .await
+        );
+        assert_eq!(
+            inspect_session_runtime(handle).await,
+            (true, true, true, true)
+        );
     }
 
     fn assert_no_logout_finished(action_rx: &mut mpsc::Receiver<Vec<AppAction>>) {
@@ -7423,11 +7598,18 @@ mod tests {
     }
 
     fn spawn_quarantine_password_server() -> String {
+        spawn_named_quarantine_password_server("@fixture-user:example.invalid", "FIXTUREDEVICE")
+    }
+
+    fn spawn_named_quarantine_password_server(
+        user_id: &'static str,
+        device_id: &'static str,
+    ) -> String {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("address");
         std::thread::spawn(move || {
-            for _ in 0..8 {
+            for _ in 0..256 {
                 let Ok((mut stream, _)) = listener.accept() else {
                     return;
                 };
@@ -7451,11 +7633,16 @@ mod tests {
                 }
                 let text = String::from_utf8_lossy(&request);
                 let body = if text.starts_with("GET /_matrix/client/versions ") {
-                    r#"{"versions":["v1.7"]}"#
+                    r#"{"versions":["v1.7"]}"#.to_owned()
                 } else if text.contains("/_matrix/client/") && text.contains("login") {
-                    r#"{"access_token":"fixture-token","device_id":"FIXTUREDEVICE","user_id":"@fixture-user:example.invalid"}"#
+                    format!(
+                        r#"{{"access_token":"fixture-token","device_id":"{device_id}","user_id":"{user_id}"}}"#
+                    )
+                } else if text.contains("/_matrix/client/") && text.contains("/sync") {
+                    std::thread::sleep(Duration::from_millis(20));
+                    r#"{"next_batch":"batch","device_lists":{"changed":[],"left":[]},"rooms":{"invite":{},"join":{},"leave":{},"knock":{}},"to_device":{"events":[]},"presence":{"events":[]},"account_data":{"events":[]},"device_one_time_keys_count":{}}"#.to_owned()
                 } else {
-                    r#"{"errcode":"M_NOT_FOUND","error":"not found"}"#
+                    r#"{"errcode":"M_NOT_FOUND","error":"not found"}"#.to_owned()
                 };
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -7463,9 +7650,6 @@ mod tests {
                     body
                 );
                 stream.write_all(response.as_bytes()).expect("write");
-                if text.contains("login") {
-                    return;
-                }
             }
         });
         format!("http://{addr}")
