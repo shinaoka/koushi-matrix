@@ -223,12 +223,22 @@ pub enum AccountMessage {
         request_id: RequestId,
     },
     #[cfg(test)]
-    ConfigureTrustLifecycleProbe {
-        generation: u64,
-        promoted: bool,
-        observer_active: bool,
-        pending_promotion: bool,
+    AttachLifecycleProbe {
         probe_tx: mpsc::UnboundedSender<&'static str>,
+    },
+    #[cfg(test)]
+    ConfigureTrustObservation {
+        observation: koushi_sdk::CurrentDeviceTrustObservation,
+    },
+    #[cfg(test)]
+    InspectSessionRuntime {
+        response: oneshot::Sender<(bool, bool, bool, bool)>,
+    },
+    #[cfg(test)]
+    ConfigureOidcCompletion {
+        start_request_id: RequestId,
+        homeserver: String,
+        session: MatrixClientSession,
     },
     /// Forward `AppEffect::InvalidateSearchCrawlerCache` to the actor so it
     /// drops its completed-room cache before the subsequent re-enqueue.
@@ -342,6 +352,24 @@ struct PendingSasVerification {
     handle: koushi_sdk::MatrixSasVerificationHandle,
 }
 
+enum PendingOidcFlow {
+    Sdk(PendingOidcLogin),
+    #[cfg(test)]
+    Synthetic {
+        homeserver: String,
+    },
+}
+
+impl PendingOidcFlow {
+    fn homeserver(&self) -> &str {
+        match self {
+            Self::Sdk(pending) => pending.homeserver(),
+            #[cfg(test)]
+            Self::Synthetic { homeserver } => homeserver,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TrustLifecycleDecision {
     IgnoreStale,
@@ -387,6 +415,8 @@ pub struct AccountActor {
     pending_trust_transition: Option<(u64, TrustLifecycleDecision)>,
     #[cfg(test)]
     lifecycle_probe: Option<mpsc::UnboundedSender<&'static str>>,
+    #[cfg(test)]
+    trust_observation_override: std::sync::Mutex<Option<koushi_sdk::CurrentDeviceTrustObservation>>,
     /// Store actor — owns the credential store backend and per-account paths.
     store: StoreActor,
     /// App-level action channel to drive the reducer.
@@ -442,7 +472,9 @@ pub struct AccountActor {
     pending_uia_operations: BTreeMap<u64, PendingUiaOperation>,
     /// Pending OAuth authorization-code flow, keyed by originating request id.
     /// Holds SDK client, PKCE verifier, and CSRF validation data inside Rust.
-    pending_oidc_login: Option<(RequestId, PendingOidcLogin)>,
+    pending_oidc_login: Option<(RequestId, PendingOidcFlow)>,
+    #[cfg(test)]
+    oidc_completion_override: Option<MatrixClientSession>,
     /// Pending SDK verification request continuation, held only inside
     /// AccountActor and never projected into AppState.
     verification_request: Option<PendingVerificationRequest>,
@@ -527,6 +559,8 @@ impl AccountActor {
             pending_trust_transition: None,
             #[cfg(test)]
             lifecycle_probe: None,
+            #[cfg(test)]
+            trust_observation_override: std::sync::Mutex::new(None),
             store: store_actor,
             action_tx,
             event_tx,
@@ -547,6 +581,8 @@ impl AccountActor {
             device_session_ordinals: BTreeMap::new(),
             pending_uia_operations: BTreeMap::new(),
             pending_oidc_login: None,
+            #[cfg(test)]
+            oidc_completion_override: None,
             verification_request: None,
             sas_verification: None,
             verification_request_observer: None,
@@ -700,23 +736,34 @@ impl AccountActor {
                     self.perform_logout(request_id, true).await;
                 }
                 #[cfg(test)]
-                AccountMessage::ConfigureTrustLifecycleProbe {
-                    generation,
-                    promoted,
-                    observer_active,
-                    pending_promotion,
-                    probe_tx,
-                } => {
-                    self.trust_generation = generation;
-                    self.session_promoted = promoted;
+                AccountMessage::AttachLifecycleProbe { probe_tx } => {
                     self.lifecycle_probe = Some(probe_tx);
-                    if pending_promotion {
-                        self.pending_trust_transition =
-                            Some((generation, TrustLifecycleDecision::Promote));
-                    }
-                    if observer_active {
-                        self.trust_observer = Some(executor::spawn(std::future::pending()));
-                    }
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureTrustObservation { observation } => {
+                    *self
+                        .trust_observation_override
+                        .lock()
+                        .expect("trust observation override lock") = Some(observation);
+                }
+                #[cfg(test)]
+                AccountMessage::InspectSessionRuntime { response } => {
+                    let _ = response.send((
+                        self.session.is_some(),
+                        self.session_promoted,
+                        self.sync_actor.is_some(),
+                        self.trust_observer.is_some(),
+                    ));
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureOidcCompletion {
+                    start_request_id,
+                    homeserver,
+                    session,
+                } => {
+                    self.pending_oidc_login =
+                        Some((start_request_id, PendingOidcFlow::Synthetic { homeserver }));
+                    self.oidc_completion_override = Some(session);
                 }
                 AccountMessage::InvalidateSearchCrawlerCache => {
                     if let Some(handle) = &self.search_actor {
@@ -3731,7 +3778,7 @@ impl AccountActor {
     async fn handle_start_oidc_login(&mut self, request_id: RequestId, homeserver: String) {
         match koushi_sdk::start_oidc_login(&homeserver, OIDC_REDIRECT_URI).await {
             Ok((pending, authorization)) => {
-                self.pending_oidc_login = Some((request_id, pending));
+                self.pending_oidc_login = Some((request_id, PendingOidcFlow::Sdk(pending)));
                 self.emit(CoreEvent::Account(AccountEvent::OidcAuthorizationCreated {
                     request_id,
                     authorization_url: authorization.authorization_url,
@@ -3774,7 +3821,26 @@ impl AccountActor {
         }])
         .await;
 
-        let login_session = match koushi_sdk::finish_oidc_login(pending, &callback_url).await {
+        #[cfg(test)]
+        let login_result = match self.oidc_completion_override.take() {
+            Some(session) => Ok(session),
+            None => match pending {
+                PendingOidcFlow::Sdk(pending) => {
+                    koushi_sdk::finish_oidc_login(pending, &callback_url).await
+                }
+                PendingOidcFlow::Synthetic { .. } => {
+                    unreachable!("synthetic OIDC completion requires a session override")
+                }
+            },
+        };
+        #[cfg(not(test))]
+        let login_result = match pending {
+            PendingOidcFlow::Sdk(pending) => {
+                koushi_sdk::finish_oidc_login(pending, &callback_url).await
+            }
+        };
+
+        let login_session = match login_result {
             Ok(session) => session,
             Err(error) => {
                 let kind = classify_auth_error(&error);
@@ -4918,6 +4984,14 @@ impl AccountActor {
     async fn start_provisional_runtime(&mut self, session: Arc<MatrixClientSession>) {
         self.trust_generation = self.trust_generation.wrapping_add(1);
         let generation = self.trust_generation;
+        #[cfg(test)]
+        let observation = self
+            .trust_observation_override
+            .lock()
+            .expect("trust observation override lock")
+            .take()
+            .unwrap_or_else(|| session.observe_current_device_trust());
+        #[cfg(not(test))]
         let observation = session.observe_current_device_trust();
         let _ = self
             .self_tx
@@ -6527,128 +6601,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_trust_observer_waits_for_projection_ack_and_stops_every_normal_child_on_lock() {
-        let cred_dir = tempdir().expect("tempdir");
-        let data_dir = tempdir().expect("tempdir");
-        let (handle, mut action_rx, _event_rx) =
-            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
-        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
-        assert!(
-            handle
-                .send(AccountMessage::ConfigureTrustLifecycleProbe {
-                    generation: 9,
-                    promoted: true,
-                    observer_active: true,
-                    pending_promotion: false,
-                    probe_tx,
-                })
-                .await
-        );
-
-        assert!(
-            handle
-                .send(AccountMessage::CurrentDeviceTrustChanged {
-                    generation: 9,
-                    trust: koushi_state::CurrentDeviceTrustState::Unverified,
-                })
-                .await
-        );
-        let actions = action_rx.recv().await.expect("lock projection");
-        assert!(matches!(
-            actions.as_slice(),
-            [AppAction::AuthoritativeDeviceTrustChanged {
-                generation: 9,
-                trust: koushi_state::CurrentDeviceTrustState::Unverified,
-            }]
-        ));
-        assert!(
-            probe_rx.try_recv().is_err(),
-            "children stopped before reducer ack"
-        );
-
-        assert!(
-            handle
-                .send(AccountMessage::TrustProjectionApplied {
-                    generation: 9,
-                    ready: false,
-                    locked: true,
-                })
-                .await
-        );
-        let mut tokens = Vec::new();
-        while tokens.len() < 11 {
-            tokens.push(probe_rx.recv().await.expect("lifecycle token"));
-        }
-        assert_eq!(tokens[0], "lock_projection_ack");
-        for required in [
-            "stop_recovery_observer",
-            "stop_incoming_verification_observer",
-            "stop_session_change_observer",
-            "stop_timeline_manager",
-            "stop_threads_manager",
-            "stop_search_actor",
-            "stop_sync_actor",
-            "clear_room_session",
-            "abort_hydration",
-            "abort_attention_media_tasks",
-        ] {
-            assert!(tokens.contains(&required), "missing {required}");
-        }
-
-        // The trust observer remains alive after promotion/lock and can drive
-        // another authoritative state update for the same generation.
-        assert!(
-            handle
-                .send(AccountMessage::CurrentDeviceTrustChanged {
-                    generation: 9,
-                    trust: koushi_state::CurrentDeviceTrustState::Unknown,
-                })
-                .await
-        );
-        let actions = action_rx.recv().await.expect("continued trust projection");
-        assert!(matches!(
-            actions.as_slice(),
-            [AppAction::AuthoritativeDeviceTrustChanged {
-                generation: 9,
-                trust: koushi_state::CurrentDeviceTrustState::Unknown,
-            }]
-        ));
-        let _ = handle.send(AccountMessage::Shutdown).await;
-    }
-
-    #[tokio::test]
-    async fn verified_promotion_waits_for_ready_projection_ack_before_child_start_barrier() {
-        let cred_dir = tempdir().expect("tempdir");
-        let data_dir = tempdir().expect("tempdir");
-        let (handle, _action_rx, _event_rx) =
-            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
-        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
-        assert!(
-            handle
-                .send(AccountMessage::ConfigureTrustLifecycleProbe {
-                    generation: 12,
-                    promoted: false,
-                    observer_active: true,
-                    pending_promotion: true,
-                    probe_tx,
-                })
-                .await
-        );
-        assert!(probe_rx.try_recv().is_err());
-        assert!(
-            handle
-                .send(AccountMessage::TrustProjectionApplied {
-                    generation: 12,
-                    ready: true,
-                    locked: false,
-                })
-                .await
-        );
-        assert_eq!(probe_rx.recv().await, Some("ready_projection_ack"));
-        let _ = handle.send(AccountMessage::Shutdown).await;
-    }
-
-    #[tokio::test]
     async fn password_quarantine_persists_no_credentials_and_restart_is_signed_out() {
         let homeserver = spawn_quarantine_password_server();
         let cred_dir = tempdir().expect("tempdir");
@@ -6710,6 +6662,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oidc_completion_installs_only_a_provisional_quarantined_session() {
+        let homeserver = spawn_quarantine_password_server();
+        let login_session = koushi_sdk::login_with_password_with_store(
+            &LoginRequest {
+                homeserver: homeserver.clone(),
+                username: "fixture-user".to_owned(),
+                password: koushi_state::AuthSecret::new("synthetic-password"),
+                device_display_name: Some("OIDC Quarantine Test".to_owned()),
+            },
+            None,
+        )
+        .await
+        .expect("fixture login");
+
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (_trust_tx, trust_rx) = mpsc::unbounded_channel();
+        let updates = futures_util::stream::unfold(trust_rx, |mut rx| async move {
+            rx.recv().await.map(|trust| (trust, rx))
+        });
+        assert!(
+            handle
+                .send(AccountMessage::ConfigureTrustObservation {
+                    observation: koushi_sdk::CurrentDeviceTrustObservation {
+                        current: koushi_state::CurrentDeviceTrustState::Unknown,
+                        updates: Box::pin(updates),
+                    },
+                })
+                .await
+        );
+        let start_request_id = test_request_id();
+        assert!(
+            handle
+                .send(AccountMessage::ConfigureOidcCompletion {
+                    start_request_id,
+                    homeserver: homeserver.clone(),
+                    session: login_session,
+                })
+                .await
+        );
+        let completion_request_id = RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(41),
+            sequence: 7,
+        };
+        assert!(
+            handle
+                .send(AccountMessage::Command(AccountCommand::CompleteOidcLogin {
+                    request_id: completion_request_id,
+                    callback_url: "http://127.0.0.1/callback?code=fixture&state=fixture".to_owned(),
+                },))
+                .await
+        );
+        assert!(matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::AuthenticationStarted {
+                attempt_id,
+                homeserver: projected_homeserver,
+            }]) if *attempt_id == LoginAttemptId::new(41, 7)
+                && projected_homeserver == &homeserver
+        ));
+        assert!(matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { attempt_id, .. }])
+                if *attempt_id == LoginAttemptId::new(41, 7)
+        ));
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, false, false, true)
+        );
+
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        assert!(backend.load_last_session().expect("pointer read").is_none());
+        assert!(
+            backend
+                .load_saved_sessions()
+                .expect("index read")
+                .sessions()
+                .is_empty()
+        );
+        assert!(
+            executor::timeout(Duration::from_millis(100), async {
+                loop {
+                    match event_rx.recv().await.expect("event stream") {
+                        CoreEvent::Account(AccountEvent::LoggedIn { .. }) | CoreEvent::Sync(_) => {
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+            })
+            .await
+            .is_err(),
+            "OIDC completion escaped quarantine before Verified"
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
     async fn provisional_rejection_deletes_keyed_store_before_signed_out_ack() {
         let homeserver = spawn_quarantine_password_server();
         let cred_dir = tempdir().expect("tempdir");
@@ -6768,6 +6822,193 @@ mod tests {
                 .is_empty()
         );
         let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn injected_live_trust_observation_drives_real_promotion_lock_and_repromotion() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        assert!(
+            handle
+                .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+                .await
+        );
+        let (trust_tx, trust_rx) = mpsc::unbounded_channel();
+        let updates = futures_util::stream::unfold(trust_rx, |mut rx| async move {
+            rx.recv().await.map(|trust| (trust, rx))
+        });
+        assert!(
+            handle
+                .send(AccountMessage::ConfigureTrustObservation {
+                    observation: koushi_sdk::CurrentDeviceTrustObservation {
+                        current: koushi_state::CurrentDeviceTrustState::Verified,
+                        updates: Box::pin(updates),
+                    },
+                })
+                .await
+        );
+        let request_id = test_request_id();
+        assert!(
+            handle
+                .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                    request_id,
+                    request: LoginRequest {
+                        homeserver,
+                        username: "fixture-user".to_owned(),
+                        password: koushi_state::AuthSecret::new("synthetic-password"),
+                        device_display_name: Some("Quarantine Test".to_owned()),
+                    },
+                }))
+                .await
+        );
+        assert!(matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ));
+        let generation = recv_authoritative_trust(
+            &mut action_rx,
+            koushi_state::CurrentDeviceTrustState::Verified,
+        )
+        .await;
+        assert!(
+            handle
+                .send(AccountMessage::TrustProjectionApplied {
+                    generation,
+                    ready: true,
+                    locked: false,
+                })
+                .await
+        );
+        loop {
+            if matches!(
+                event_rx.recv().await.expect("event"),
+                CoreEvent::Account(AccountEvent::LoggedIn { .. })
+            ) {
+                break;
+            }
+        }
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, true, true, true)
+        );
+        assert_eq!(probe_rx.recv().await, Some("ready_projection_ack"));
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        assert!(backend.load_last_session().expect("pointer").is_some());
+
+        trust_tx
+            .send(koushi_state::CurrentDeviceTrustState::Unverified)
+            .expect("trust update");
+        assert_eq!(
+            recv_authoritative_trust(
+                &mut action_rx,
+                koushi_state::CurrentDeviceTrustState::Unverified,
+            )
+            .await,
+            generation
+        );
+        handle
+            .send(AccountMessage::TrustProjectionApplied {
+                generation,
+                ready: false,
+                locked: true,
+            })
+            .await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, false, false, true)
+        );
+        let mut stop_tokens = Vec::new();
+        while stop_tokens.len() < 11 {
+            stop_tokens.push(probe_rx.recv().await.expect("stop token"));
+        }
+        assert_eq!(stop_tokens[0], "lock_projection_ack");
+        for required in [
+            "stop_timeline_manager",
+            "stop_search_actor",
+            "stop_sync_actor",
+            "clear_room_session",
+            "abort_hydration",
+        ] {
+            assert!(stop_tokens.contains(&required), "missing {required}");
+        }
+
+        trust_tx
+            .send(koushi_state::CurrentDeviceTrustState::Verified)
+            .expect("trust update");
+        assert_eq!(
+            recv_authoritative_trust(
+                &mut action_rx,
+                koushi_state::CurrentDeviceTrustState::Verified,
+            )
+            .await,
+            generation
+        );
+        handle
+            .send(AccountMessage::TrustProjectionApplied {
+                generation,
+                ready: true,
+                locked: false,
+            })
+            .await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, true, true, true)
+        );
+        assert_eq!(probe_rx.recv().await, Some("ready_projection_ack"));
+
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: generation.wrapping_sub(1),
+                trust: koushi_state::CurrentDeviceTrustState::Unknown,
+            })
+            .await;
+        assert!(
+            executor::timeout(Duration::from_millis(50), async {
+                loop {
+                    if matches!(
+                        action_rx.recv().await.as_deref(),
+                        Some([AppAction::AuthoritativeDeviceTrustChanged { .. }])
+                    ) {
+                        return;
+                    }
+                }
+            })
+            .await
+            .is_err(),
+            "stale trust generation projected"
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    async fn recv_authoritative_trust(
+        action_rx: &mut mpsc::Receiver<Vec<AppAction>>,
+        expected: koushi_state::CurrentDeviceTrustState,
+    ) -> u64 {
+        loop {
+            let actions = action_rx.recv().await.expect("actions");
+            if let [AppAction::AuthoritativeDeviceTrustChanged { generation, trust }] =
+                actions.as_slice()
+                && *trust == expected
+            {
+                return *generation;
+            }
+        }
+    }
+
+    async fn inspect_session_runtime(handle: &AccountActorHandle) -> (bool, bool, bool, bool) {
+        let (response, result) = oneshot::channel();
+        assert!(
+            handle
+                .send(AccountMessage::InspectSessionRuntime { response })
+                .await
+        );
+        result.await.expect("runtime inspection")
     }
 
     #[tokio::test]
@@ -7445,6 +7686,7 @@ mod tests {
             pending_ready_events: Vec::new(),
             pending_trust_transition: None,
             lifecycle_probe: None,
+            trust_observation_override: std::sync::Mutex::new(None),
             store,
             action_tx,
             event_tx,
@@ -7457,6 +7699,7 @@ mod tests {
             data_dir: data_dir_path,
             link_preview_policy: LinkPreviewContext::default(),
             pending_oidc_login: None,
+            oidc_completion_override: None,
             search_actor: None,
             threads_list_actor: None,
             recovery_observer: None,

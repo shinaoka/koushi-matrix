@@ -855,6 +855,37 @@ fn sdk_sync_loop_reports_running_and_can_stop_after_callback() {
 }
 
 #[test]
+fn restricted_verification_sync_sends_the_restricted_filter_and_processes_top_level_data() {
+    let restricted_sync_seen = Arc::new(AtomicBool::new(false));
+    let homeserver =
+        spawn_password_login_server_with_restricted_sync(Arc::clone(&restricted_sync_seen));
+    let request = LoginRequest {
+        homeserver,
+        username: "fixture-user".to_owned(),
+        password: AuthSecret::new("synthetic-password"),
+        device_display_name: Some("Matrix Desktop Test".to_owned()),
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime should build");
+
+    runtime.block_on(async {
+        let session = koushi_sdk::login_with_password(&request)
+            .await
+            .expect("password login should succeed");
+        koushi_sdk::restricted_verification_sync_once(&session)
+            .await
+            .expect("restricted sync should process top-level verification data");
+        assert!(session.client().rooms().is_empty());
+    });
+    assert!(
+        restricted_sync_seen.load(Ordering::SeqCst),
+        "restricted sync request was not observed"
+    );
+}
+
+#[test]
 fn sdk_e2ee_recovery_failure_does_not_include_secret() {
     let homeserver = spawn_password_login_server(200);
     let request = LoginRequest {
@@ -989,6 +1020,73 @@ fn spawn_password_login_server(status: u16) -> String {
 
 fn spawn_password_login_server_with_sync(sync_seen: Arc<AtomicUsize>) -> String {
     spawn_password_login_server_with_options(200, Arc::new(AtomicBool::new(false)), Some(sync_seen))
+}
+
+fn spawn_password_login_server_with_restricted_sync(sync_seen: Arc<AtomicBool>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server should have an address");
+
+    thread::spawn(move || {
+        for _ in 0..16 {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("test server should accept a request");
+            let request = read_http_request(&mut stream);
+            if request.starts_with("GET /_matrix/client/versions ") {
+                write_json(&mut stream, 200, MATRIX_VERSIONS_RESPONSE);
+                continue;
+            }
+            if write_common_sdk_bootstrap_response(&mut stream, &request) {
+                continue;
+            }
+            if request.starts_with("GET /_matrix/client/") && request.contains("/sync") {
+                assert!(
+                    request.contains("%22presence%22") && request.contains("%22room%22"),
+                    "restricted sync omitted its inline filter: {request}"
+                );
+                assert!(
+                    request.contains("%22types%22%3A%5B%5D")
+                        && request.contains("%22rooms%22%3A%5B%5D"),
+                    "restricted sync did not suppress presence and rooms: {request}"
+                );
+                sync_seen.store(true, Ordering::SeqCst);
+                write_json(
+                    &mut stream,
+                    200,
+                    r#"{
+                        "device_one_time_keys_count": {},
+                        "next_batch": "restricted-batch",
+                        "device_lists": {"changed": [], "left": []},
+                        "rooms": {"invite": {}, "join": {}, "leave": {}, "knock": {}},
+                        "to_device": {"events": []},
+                        "presence": {"events": []},
+                        "account_data": {"events": [{"type":"m.direct","content":{}}]}
+                    }"#,
+                );
+                return;
+            }
+            if request.starts_with("POST /_matrix/client/")
+                && request.contains("fixture-user")
+                && request.contains("synthetic-password")
+                && request.contains("Matrix Desktop Test")
+            {
+                write_json(
+                    &mut stream,
+                    200,
+                    r#"{"access_token":"fixture-access-token","device_id":"FIXTUREDEVICE","user_id":"@fixture-user:example.invalid"}"#,
+                );
+                continue;
+            }
+            write_json(
+                &mut stream,
+                404,
+                r#"{"errcode":"M_NOT_FOUND","error":"Unexpected test request"}"#,
+            );
+        }
+    });
+    format!("http://{addr}")
 }
 
 fn spawn_password_login_server_with_space_sync() -> String {
