@@ -1991,8 +1991,11 @@ pub fn timeline_projection_own_user_id(state: &AppState) -> Option<&str> {
         SessionState::SignedOut
         | SessionState::Restoring
         | SessionState::Authenticating { .. }
-        | SessionState::NeedsRecovery { .. }
-        | SessionState::Recovering { .. }
+        | SessionState::Provisional { .. }
+        | SessionState::AwaitingVerification { .. }
+        | SessionState::Verifying { .. }
+        | SessionState::AwaitingBootstrapConfirmation { .. }
+        | SessionState::Rejecting { .. }
         | SessionState::LoggingOut
         | SessionState::Locked(_)
         | SessionState::SwitchingAccount { .. } => None,

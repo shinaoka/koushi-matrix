@@ -12,8 +12,10 @@
 //! store paths derive from homeserver|user|device, so the device id is unknown
 //! until the password exchange completes. First login runs on a storeless
 //! client that never syncs or initializes encryption; immediately after login
-//! the session is persisted and restored into the per-account encrypted store,
-//! and only the store-backed session may start sync or E2EE traffic. The
+//! the session is restored into the per-account encrypted store without being
+//! entered into the active credential index. Only a restricted verification
+//! sync may run until authoritative device trust promotes the session; normal
+//! sync and persistence start after that promotion. The
 //! fail-closed local-encryption rule applies to the store creation step: if it
 //! fails, the storeless session is NOT kept as a fallback.
 //!
@@ -40,10 +42,11 @@ use koushi_sdk::{MatrixClientSession, PendingOidcLogin, PersistableMatrixSession
 use koushi_state::{
     AccountManagementOperation, AppAction, AuthFailureKind, AvatarImage,
     AvatarThumbnailFailureKind, AvatarThumbnailState, CrossSigningStatus, DeviceSessionSummary,
-    E2eeRecoveryState, IdentityResetAuthType, IdentityResetState, LoginRequest,
+    E2eeRecoveryState, IdentityResetAuthType, IdentityResetState, LoginAttemptId, LoginRequest,
     OperationFailureKind, OwnProfile, PresenceKind, RecoveryKeyDeliveryState, RecoveryMethod,
-    RecoveryRequest, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SessionInfo,
-    TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState, VerificationTarget,
+    RecoveryRequest, SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem,
+    SessionInfo, TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState,
+    VerificationTarget,
 };
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
 use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
@@ -208,6 +211,86 @@ pub enum AccountMessage {
         room_ids: Vec<String>,
         settings: koushi_state::SearchCrawlerSettings,
     },
+    CurrentDeviceTrustChanged {
+        generation: u64,
+        trust: koushi_state::CurrentDeviceTrustState,
+    },
+    FirstRestrictedSyncFinished {
+        generation: u64,
+        succeeded: bool,
+    },
+    RestrictedSyncSucceeded {
+        generation: u64,
+    },
+    VerificationMethodsDiscovered {
+        generation: u64,
+        serial: u64,
+        gate: koushi_state::VerificationGateState,
+    },
+    RecoveryFinished {
+        generation: u64,
+        flow_id: u64,
+        request_id: RequestId,
+        result: Result<(), koushi_sdk::E2eeRecoveryError>,
+    },
+    TrustProjectionApplied {
+        generation: u64,
+        ready: bool,
+        locked: bool,
+    },
+    RejectProvisionalSession {
+        request_id: RequestId,
+    },
+    RetrySessionTeardown {
+        generation: u64,
+    },
+    #[cfg(test)]
+    AttachLifecycleProbe {
+        probe_tx: mpsc::UnboundedSender<&'static str>,
+    },
+    #[cfg(test)]
+    ConfigureTrustObservation {
+        observation: koushi_sdk::CurrentDeviceTrustObservation,
+    },
+    #[cfg(test)]
+    InspectSessionRuntime {
+        response: oneshot::Sender<(bool, bool, bool, bool)>,
+    },
+    #[cfg(test)]
+    ConfigureSyntheticRecoveryTask {
+        flow_id: u64,
+    },
+    #[cfg(test)]
+    InspectRecoveryTask {
+        response: oneshot::Sender<bool>,
+    },
+    #[cfg(test)]
+    ConfigureSyntheticVerification {
+        flow_id: u64,
+    },
+    #[cfg(test)]
+    SettleSyntheticVerification {
+        flow_id: u64,
+        terminal: SyntheticVerificationTerminal,
+    },
+    #[cfg(test)]
+    InspectVerificationRuntime {
+        response: oneshot::Sender<(bool, bool, bool, bool, bool, bool, bool)>,
+    },
+    #[cfg(test)]
+    ConfigureOidcCompletion {
+        start_request_id: RequestId,
+        homeserver: String,
+        session: MatrixClientSession,
+    },
+    #[cfg(test)]
+    ConfigureCloseStoreResults {
+        results: Vec<bool>,
+    },
+    #[cfg(test)]
+    ShutdownWithAck {
+        acknowledged: oneshot::Sender<()>,
+    },
     /// Forward `AppEffect::InvalidateSearchCrawlerCache` to the actor so it
     /// drops its completed-room cache before the subsequent re-enqueue.
     InvalidateSearchCrawlerCache,
@@ -224,6 +307,15 @@ pub enum AccountMessage {
         request_id: RequestId,
         target: VerificationTarget,
         state: koushi_sdk::MatrixSasState,
+    },
+    SasVerificationTimedOut {
+        flow_id: u64,
+    },
+    VerificationRequestObserverEnded {
+        flow_id: u64,
+    },
+    SasVerificationObserverEnded {
+        flow_id: u64,
     },
     IncomingVerificationRequest {
         target: VerificationTarget,
@@ -257,6 +349,7 @@ pub enum AccountMessage {
 }
 
 /// Handle to the AccountActor background task.
+#[derive(Clone)]
 pub struct AccountActorHandle {
     tx: mpsc::Sender<AccountMessage>,
 }
@@ -301,6 +394,13 @@ struct PendingVerificationRequest {
     handle: koushi_sdk::MatrixVerificationRequestHandle,
 }
 
+struct PendingRecoveryTask {
+    generation: u64,
+    flow_id: u64,
+    request_id: RequestId,
+    task: crate::executor::JoinHandle<()>,
+}
+
 struct PendingUiaOperation {
     operation: AccountManagementOperation,
     raw_device_ids: Vec<String>,
@@ -320,12 +420,115 @@ struct PendingSasVerification {
     handle: koushi_sdk::MatrixSasVerificationHandle,
 }
 
+struct PendingSessionTeardown {
+    generation: u64,
+    attempt: u32,
+    session: Arc<MatrixClientSession>,
+    key_id: Option<SessionKeyId>,
+    continuation: SessionTeardownContinuation,
+}
+
+enum SessionTeardownContinuation {
+    Logout {
+        request_id: RequestId,
+        server_logout: bool,
+    },
+    InstallReplacement {
+        session: MatrixClientSession,
+        persistable: PersistableMatrixSession,
+        key_id: SessionKeyId,
+        action: AppAction,
+    },
+}
+
+enum PendingOidcFlow {
+    Sdk(PendingOidcLogin),
+    #[cfg(test)]
+    Synthetic {
+        homeserver: String,
+    },
+}
+
+impl PendingOidcFlow {
+    fn homeserver(&self) -> &str {
+        match self {
+            Self::Sdk(pending) => pending.homeserver(),
+            #[cfg(test)]
+            Self::Synthetic { homeserver } => homeserver,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TrustLifecycleDecision {
+    IgnoreStale,
+    StayGated,
+    Promote,
+    Lock,
+    AlreadyReady,
+}
+
+#[derive(Clone, Copy)]
+enum VerificationTerminal {
+    Success,
+    Cancelled(VerificationCancelReason),
+    Failed(TrustOperationFailureKind),
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub enum SyntheticVerificationTerminal {
+    Success,
+    Cancelled(VerificationCancelReason),
+    Failed(TrustOperationFailureKind),
+}
+
+fn trust_lifecycle_decision(
+    generation: u64,
+    active_generation: u64,
+    promoted: bool,
+    trust: koushi_state::CurrentDeviceTrustState,
+) -> TrustLifecycleDecision {
+    if generation != active_generation {
+        TrustLifecycleDecision::IgnoreStale
+    } else if promoted {
+        if matches!(trust, koushi_state::CurrentDeviceTrustState::Verified) {
+            TrustLifecycleDecision::AlreadyReady
+        } else {
+            TrustLifecycleDecision::Lock
+        }
+    } else if matches!(trust, koushi_state::CurrentDeviceTrustState::Verified) {
+        TrustLifecycleDecision::Promote
+    } else {
+        TrustLifecycleDecision::StayGated
+    }
+}
+
 /// The account actor's internal state.
 pub struct AccountActor {
     /// Active store-backed session, if any.
     session: Option<Arc<MatrixClientSession>>,
     /// Session key for credential store operations.
     session_key_id: Option<SessionKeyId>,
+    provisional_persistable: Option<PersistableMatrixSession>,
+    session_promoted: bool,
+    trust_generation: u64,
+    trust_observer: Option<crate::executor::JoinHandle<()>>,
+    verification_method_discovery_task: Option<crate::executor::JoinHandle<()>>,
+    verification_method_discovery_serial: u64,
+    recovery_task: Option<PendingRecoveryTask>,
+    restricted_sync: Option<crate::executor::JoinHandle<()>>,
+    pending_ready_events: Vec<CoreEvent>,
+    pending_trust_transition: Option<(u64, TrustLifecycleDecision)>,
+    pending_session_teardown: Option<PendingSessionTeardown>,
+    next_teardown_generation: u64,
+    teardown_retry_task: Option<crate::executor::JoinHandle<()>>,
+    #[cfg(test)]
+    lifecycle_probe: Option<mpsc::UnboundedSender<&'static str>>,
+    #[cfg(test)]
+    trust_observation_override: std::sync::Mutex<Option<koushi_sdk::CurrentDeviceTrustObservation>>,
+    #[cfg(test)]
+    close_store_results: std::collections::VecDeque<bool>,
     /// Store actor — owns the credential store backend and per-account paths.
     store: StoreActor,
     /// App-level action channel to drive the reducer.
@@ -381,17 +584,23 @@ pub struct AccountActor {
     pending_uia_operations: BTreeMap<u64, PendingUiaOperation>,
     /// Pending OAuth authorization-code flow, keyed by originating request id.
     /// Holds SDK client, PKCE verifier, and CSRF validation data inside Rust.
-    pending_oidc_login: Option<(RequestId, PendingOidcLogin)>,
+    pending_oidc_login: Option<(RequestId, PendingOidcFlow)>,
+    #[cfg(test)]
+    oidc_completion_override: Option<MatrixClientSession>,
     /// Pending SDK verification request continuation, held only inside
     /// AccountActor and never projected into AppState.
     verification_request: Option<PendingVerificationRequest>,
     /// Pending SDK SAS continuation, held only inside AccountActor and never
     /// projected into AppState.
     sas_verification: Option<PendingSasVerification>,
+    own_user_verification: Option<(u64, koushi_sdk::MatrixOwnUserVerificationHandle)>,
     /// SDK verification request observer task for the active flow.
     verification_request_observer: Option<VerificationObservation>,
     /// SDK SAS observer task for the active flow.
     sas_verification_observer: Option<VerificationObservation>,
+    sas_timeout_task: Option<crate::executor::JoinHandle<()>>,
+    #[cfg(test)]
+    synthetic_verification: Option<(u64, VerificationTarget)>,
     /// SDK incoming verification request observer for the active session.
     incoming_verification_observer: Option<IncomingVerificationObservation>,
     /// SDK session-change observer for auth invalidation / soft logout.
@@ -457,6 +666,25 @@ impl AccountActor {
         let actor = AccountActor {
             session: None,
             session_key_id: None,
+            provisional_persistable: None,
+            session_promoted: false,
+            trust_generation: 0,
+            trust_observer: None,
+            verification_method_discovery_task: None,
+            verification_method_discovery_serial: 0,
+            recovery_task: None,
+            restricted_sync: None,
+            pending_ready_events: Vec::new(),
+            pending_trust_transition: None,
+            pending_session_teardown: None,
+            next_teardown_generation: 0,
+            teardown_retry_task: None,
+            #[cfg(test)]
+            lifecycle_probe: None,
+            #[cfg(test)]
+            trust_observation_override: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            close_store_results: std::collections::VecDeque::new(),
             store: store_actor,
             action_tx,
             event_tx,
@@ -477,10 +705,16 @@ impl AccountActor {
             device_session_ordinals: BTreeMap::new(),
             pending_uia_operations: BTreeMap::new(),
             pending_oidc_login: None,
+            #[cfg(test)]
+            oidc_completion_override: None,
             verification_request: None,
             sas_verification: None,
+            own_user_verification: None,
             verification_request_observer: None,
             sas_verification_observer: None,
+            sas_timeout_task: None,
+            #[cfg(test)]
+            synthetic_verification: None,
             incoming_verification_observer: None,
             session_change_observer: None,
             account_hydration_task: None,
@@ -498,9 +732,16 @@ impl AccountActor {
     }
 
     async fn run(mut self) {
+        #[cfg(test)]
+        let mut shutdown_ack = None;
         while let Some(msg) = self.command_rx.recv().await {
             match msg {
                 AccountMessage::Shutdown => break,
+                #[cfg(test)]
+                AccountMessage::ShutdownWithAck { acknowledged } => {
+                    shutdown_ack = Some(acknowledged);
+                    break;
+                }
                 AccountMessage::Command(command) => {
                     self.handle_command(command).await;
                 }
@@ -615,6 +856,189 @@ impl AccountActor {
                     self.pending_crawler_notification = Some((room_ids, settings));
                     self.flush_pending_crawler_notification();
                 }
+                AccountMessage::CurrentDeviceTrustChanged { generation, trust } => {
+                    self.handle_current_device_trust(generation, trust).await;
+                }
+                AccountMessage::FirstRestrictedSyncFinished {
+                    generation,
+                    succeeded,
+                } => {
+                    if first_restricted_sync_is_current(
+                        generation,
+                        self.trust_generation,
+                        self.session.is_some(),
+                        self.session_promoted,
+                    ) {
+                        if succeeded {
+                            self.discover_verification_methods(generation).await;
+                        } else {
+                            self.send_actions(vec![AppAction::VerificationMethodsDiscovered(
+                                unknown_verification_gate(),
+                            )])
+                            .await;
+                        }
+                    }
+                }
+                AccountMessage::RestrictedSyncSucceeded { generation } => {
+                    if promoted_trust_refresh_is_current(
+                        generation,
+                        self.trust_generation,
+                        self.session.is_some(),
+                        self.session_promoted,
+                    ) {
+                        self.request_authoritative_trust_recheck().await;
+                        continue;
+                    }
+                    let eligible = own_user_sas_recheck_is_current(
+                        generation,
+                        self.trust_generation,
+                        self.session.is_some(),
+                        self.session_promoted,
+                        self.own_user_verification.is_some(),
+                        self.sas_verification.is_some(),
+                    );
+                    if eligible {
+                        self.recheck_own_user_sas_after_sync().await;
+                    }
+                }
+                AccountMessage::VerificationMethodsDiscovered {
+                    generation,
+                    serial,
+                    gate,
+                } => {
+                    if method_discovery_is_current(
+                        generation,
+                        self.trust_generation,
+                        serial,
+                        self.verification_method_discovery_serial,
+                        self.session.is_some(),
+                    ) {
+                        self.send_actions(vec![AppAction::VerificationMethodsDiscovered(gate)])
+                            .await;
+                    }
+                }
+                AccountMessage::RecoveryFinished {
+                    generation,
+                    flow_id,
+                    request_id,
+                    result,
+                } => {
+                    self.handle_recovery_finished(generation, flow_id, request_id, result)
+                        .await;
+                }
+                AccountMessage::TrustProjectionApplied {
+                    generation,
+                    ready,
+                    locked,
+                } => {
+                    self.handle_trust_projection_applied(generation, ready, locked)
+                        .await;
+                }
+                AccountMessage::RejectProvisionalSession { request_id } => {
+                    self.perform_logout(request_id, true).await;
+                }
+                AccountMessage::RetrySessionTeardown { generation } => {
+                    self.retry_session_teardown(generation).await;
+                }
+                #[cfg(test)]
+                AccountMessage::AttachLifecycleProbe { probe_tx } => {
+                    self.lifecycle_probe = Some(probe_tx);
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureTrustObservation { observation } => {
+                    *self
+                        .trust_observation_override
+                        .lock()
+                        .expect("trust observation override lock") = Some(observation);
+                }
+                #[cfg(test)]
+                AccountMessage::InspectSessionRuntime { response } => {
+                    let _ = response.send((
+                        self.session.is_some(),
+                        self.session_promoted,
+                        self.sync_actor.is_some(),
+                        self.trust_observer.is_some(),
+                    ));
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureSyntheticRecoveryTask { flow_id } => {
+                    self.stop_recovery_task().await;
+                    let request_id = incoming_verification_request_id(flow_id);
+                    self.recovery_task = Some(PendingRecoveryTask {
+                        generation: self.trust_generation,
+                        flow_id,
+                        request_id,
+                        task: crate::executor::spawn(std::future::pending()),
+                    });
+                }
+                #[cfg(test)]
+                AccountMessage::InspectRecoveryTask { response } => {
+                    let _ = response.send(self.recovery_task.is_some());
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureSyntheticVerification { flow_id } => {
+                    self.synthetic_verification = Some((
+                        flow_id,
+                        VerificationTarget {
+                            user_id: "@self:example.test".to_owned(),
+                            device_id: "DEVICE".to_owned(),
+                        },
+                    ));
+                    let (request_stop, request_stopped) = oneshot::channel();
+                    self.verification_request_observer = Some(VerificationObservation {
+                        stop_tx: request_stop,
+                        task: executor::spawn(async move {
+                            let _ = request_stopped.await;
+                        }),
+                    });
+                    let (sas_stop, sas_stopped) = oneshot::channel();
+                    self.sas_verification_observer = Some(VerificationObservation {
+                        stop_tx: sas_stop,
+                        task: executor::spawn(async move {
+                            let _ = sas_stopped.await;
+                        }),
+                    });
+                    self.sas_timeout_task = Some(executor::spawn(std::future::pending()));
+                }
+                #[cfg(test)]
+                AccountMessage::SettleSyntheticVerification { flow_id, terminal } => {
+                    let terminal = match terminal {
+                        SyntheticVerificationTerminal::Success => VerificationTerminal::Success,
+                        SyntheticVerificationTerminal::Cancelled(reason) => {
+                            VerificationTerminal::Cancelled(reason)
+                        }
+                        SyntheticVerificationTerminal::Failed(kind) => {
+                            VerificationTerminal::Failed(kind)
+                        }
+                    };
+                    self.settle_verification(flow_id, terminal).await;
+                }
+                #[cfg(test)]
+                AccountMessage::InspectVerificationRuntime { response } => {
+                    let _ = response.send((
+                        self.verification_request.is_some(),
+                        self.sas_verification.is_some(),
+                        self.own_user_verification.is_some(),
+                        self.verification_request_observer.is_some(),
+                        self.sas_verification_observer.is_some(),
+                        self.sas_timeout_task.is_some(),
+                        self.synthetic_verification.is_some(),
+                    ));
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureOidcCompletion {
+                    start_request_id,
+                    homeserver,
+                    session,
+                } => {
+                    self.pending_oidc_login =
+                        Some((start_request_id, PendingOidcFlow::Synthetic { homeserver }));
+                    self.oidc_completion_override = Some(session);
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureCloseStoreResults { results } => {
+                    self.close_store_results = results.into();
+                }
                 AccountMessage::InvalidateSearchCrawlerCache => {
                     if let Some(handle) = &self.search_actor {
                         handle.invalidate_crawler_cache().await;
@@ -647,6 +1071,19 @@ impl AccountActor {
                     self.handle_sas_verification_progress(request_id, target, state)
                         .await;
                 }
+                AccountMessage::SasVerificationTimedOut { flow_id } => {
+                    self.handle_sas_verification_timeout(flow_id).await;
+                }
+                AccountMessage::VerificationRequestObserverEnded { flow_id }
+                | AccountMessage::SasVerificationObserverEnded { flow_id } => {
+                    if self.active_verification_target(flow_id).is_some() {
+                        self.settle_verification(
+                            flow_id,
+                            VerificationTerminal::Failed(TrustOperationFailureKind::Sdk),
+                        )
+                        .await;
+                    }
+                }
                 AccountMessage::IncomingVerificationRequest { target, handle } => {
                     let request_id = self.next_incoming_verification_request_id();
                     self.handle_incoming_verification_request(request_id, target, handle)
@@ -677,25 +1114,12 @@ impl AccountActor {
             }
             self.flush_pending_crawler_notification();
         }
-        // Ordered shutdown (overview.md Async rule 12):
-        // recovery/incoming observers → timelines → search → room → sync → SDK handles.
-        self.stop_recovery_observer().await;
-        self.stop_incoming_verification_observer().await;
-        self.stop_session_change_observer().await;
-        self.stop_timeline_actor().await;
-        self.stop_threads_list_actor().await;
-        self.stop_search_actor().await;
+        self.shutdown_owned_runtime().await;
         self.stop_room_actor().await;
-        self.stop_sync_actor().await;
-        self.cancel_verification_handles().await;
-        self.cancel_identity_reset_handle().await;
-        self.invalidate_account_hydration();
-        self.abort_avatar_fetch_tasks();
-        self.device_session_ordinals.clear();
-        self.pending_uia_operations.clear();
-        // Drop the session handle inside the runtime context
-        // (overview.md Async rule 11 — deadpool-runtime panic prevention).
-        drop(self.session.take());
+        #[cfg(test)]
+        if let Some(acknowledged) = shutdown_ack {
+            let _ = acknowledged.send(());
+        }
     }
 
     /// Route a RoomCommand to the RoomActor. The RoomActor handles the
@@ -780,6 +1204,31 @@ impl AccountActor {
                 }
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
             }
+        }
+    }
+
+    async fn shutdown_owned_runtime(&mut self) {
+        if let Some(task) = self.teardown_retry_task.take() {
+            task.abort();
+            let _ = task.await;
+            self.record_lifecycle_probe("teardown_retry_terminated");
+        }
+        self.stop_current_session_runtime().await;
+        if let Some(session) = self.session.take() {
+            let _ = koushi_sdk::close_session_stores(&session).await;
+            drop(session);
+            self.record_lifecycle_probe("current_session_released");
+        }
+        if let Some(pending) = self.pending_session_teardown.take() {
+            let _ = koushi_sdk::close_session_stores(&pending.session).await;
+            drop(pending.session);
+            if let SessionTeardownContinuation::InstallReplacement { session, .. } =
+                pending.continuation
+            {
+                let _ = koushi_sdk::close_session_stores(&session).await;
+                drop(session);
+            }
+            self.record_lifecycle_probe("pending_teardown_sessions_released");
         }
     }
 
@@ -1348,13 +1797,19 @@ impl AccountActor {
     }
 
     async fn stop_current_session_runtime(&mut self) {
+        self.stop_recovery_task().await;
+        self.stop_provisional_runtime().await;
         self.stop_recovery_observer().await;
         self.stop_incoming_verification_observer().await;
         self.stop_session_change_observer().await;
+        self.record_lifecycle_probe("shutdown_stop_timeline_actor");
         self.stop_timeline_actor().await;
         self.stop_threads_list_actor().await;
+        self.record_lifecycle_probe("shutdown_stop_search_actor");
         self.stop_search_actor().await;
+        self.record_lifecycle_probe("shutdown_stop_sync_actor");
         self.stop_sync_actor().await;
+        self.record_lifecycle_probe("shutdown_clear_room_session");
         self.clear_room_actor_session().await;
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
@@ -1362,6 +1817,10 @@ impl AccountActor {
         self.abort_avatar_fetch_tasks();
         self.device_session_ordinals.clear();
         self.pending_uia_operations.clear();
+        self.provisional_persistable = None;
+        self.session_promoted = false;
+        self.pending_ready_events.clear();
+        self.pending_trust_transition = None;
     }
 
     /// Ordered shutdown of the ThreadsListActor. Dropping the handle cancels
@@ -1754,6 +2213,7 @@ impl AccountActor {
     }
 
     async fn cancel_verification_handles(&mut self) {
+        self.stop_sas_timeout().await;
         self.stop_verification_request_observer().await;
         self.stop_sas_verification_observer().await;
         if let Some(pending) = self.sas_verification.take() {
@@ -1761,6 +2221,9 @@ impl AccountActor {
         }
         if let Some(pending) = self.verification_request.take() {
             let _ = koushi_sdk::cancel_verification_request(&pending.handle).await;
+        }
+        if let Some((_, handle)) = self.own_user_verification.take() {
+            let _ = koushi_sdk::cancel_own_user_sas_verification(&handle).await;
         }
     }
 
@@ -1910,6 +2373,21 @@ impl AccountActor {
             } => {
                 self.handle_submit_recovery(request_id, request).await;
             }
+            AccountCommand::StartSessionBootstrap {
+                request_id,
+                flow_id,
+                auth,
+                request,
+            } => {
+                self.handle_start_session_bootstrap(request_id, flow_id, auth, request)
+                    .await;
+            }
+            AccountCommand::ConfirmSessionBootstrapSaved {
+                request_id: _,
+                flow_id: _,
+            } => {
+                self.request_authoritative_trust_recheck().await;
+            }
             AccountCommand::BootstrapCrossSigning { request_id, auth } => {
                 self.handle_bootstrap_cross_signing(request_id, auth).await;
             }
@@ -1926,6 +2404,32 @@ impl AccountActor {
             } => {
                 self.handle_restore_key_backup(request_id, version, request)
                     .await;
+            }
+            #[cfg(feature = "qa-bin")]
+            AccountCommand::QaSetLocalDeviceBlacklisted {
+                target,
+                acknowledged,
+                ..
+            } => {
+                let result = async {
+                    let session = self.session.as_ref().ok_or(())?;
+                    let user_id =
+                        matrix_sdk::ruma::UserId::parse(target.user_id).map_err(|_| ())?;
+                    let device_id = matrix_sdk::ruma::OwnedDeviceId::from(target.device_id);
+                    let device = session
+                        .client()
+                        .encryption()
+                        .get_device(&user_id, &device_id)
+                        .await
+                        .map_err(|_| ())?
+                        .ok_or(())?;
+                    device
+                        .set_local_trust(matrix_sdk_base::crypto::LocalTrust::BlackListed)
+                        .await
+                        .map_err(|_| ())
+                }
+                .await;
+                let _ = acknowledged.send(result);
             }
             AccountCommand::ResetIdentity { request_id } => {
                 self.handle_reset_identity(request_id).await;
@@ -1999,6 +2503,15 @@ impl AccountActor {
             AccountCommand::RequestVerification { request_id, target } => {
                 self.handle_request_verification(request_id, target).await;
             }
+            AccountCommand::StartOwnUserSas {
+                request_id,
+                flow_id,
+            } => {
+                self.handle_start_own_user_sas(request_id, flow_id).await;
+            }
+            AccountCommand::RetryCurrentDeviceTrustDiscovery { request_id: _ } => {
+                self.request_authoritative_trust_recheck().await;
+            }
             AccountCommand::AcceptVerification {
                 request_id,
                 flow_id,
@@ -2071,6 +2584,176 @@ impl AccountActor {
                 .await;
             }
         }
+    }
+
+    async fn handle_start_own_user_sas(&mut self, request_id: RequestId, flow_id: u64) {
+        let Some(session) = self.session.clone() else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        self.cancel_verification_handles().await;
+        let own_handle = match koushi_sdk::request_own_user_sas_verification(&session).await {
+            Ok(handle) => handle,
+            Err(error) => {
+                self.send_actions(vec![AppAction::VerificationFailed {
+                    request_id: flow_id,
+                    kind: classify_e2ee_trust_error(&error),
+                }])
+                .await;
+                return;
+            }
+        };
+        let sas = match koushi_sdk::start_own_user_sas_verification(&own_handle).await {
+            Ok(Some(sas)) => sas,
+            Ok(None) => {
+                self.own_user_verification = Some((flow_id, own_handle));
+                self.start_sas_timeout(flow_id);
+                self.observe_own_user_verification(request_id, flow_id);
+                return;
+            }
+            Err(error) => {
+                self.send_actions(vec![AppAction::VerificationFailed {
+                    request_id: flow_id,
+                    kind: classify_e2ee_trust_error(&error),
+                }])
+                .await;
+                return;
+            }
+        };
+        self.own_user_verification = Some((flow_id, own_handle));
+        self.store_sas_verification(
+            RequestId {
+                connection_id: request_id.connection_id,
+                sequence: flow_id,
+            },
+            VerificationTarget {
+                user_id: "current-user".to_owned(),
+                device_id: "eligible-device".to_owned(),
+            },
+            sas,
+        )
+        .await;
+    }
+
+    async fn recheck_own_user_sas_after_sync(&mut self) {
+        if self.sas_verification.is_some() {
+            return;
+        }
+        let Some((flow_id, handle)) = self.own_user_verification.as_ref() else {
+            return;
+        };
+        let state = handle.state();
+        if !matches!(state, koushi_sdk::MatrixVerificationRequestState::Ready) {
+            return;
+        }
+        let flow_id = *flow_id;
+        let handle = handle.clone();
+        match koushi_sdk::start_own_user_sas_verification(&handle).await {
+            Ok(Some(sas)) => {
+                self.store_sas_verification(
+                    RequestId {
+                        connection_id: RuntimeConnectionId(0),
+                        sequence: flow_id,
+                    },
+                    VerificationTarget {
+                        user_id: "current-user".to_owned(),
+                        device_id: "eligible-device".to_owned(),
+                    },
+                    sas,
+                )
+                .await;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.send_actions(vec![AppAction::VerificationFailed {
+                    request_id: flow_id,
+                    kind: classify_e2ee_trust_error(&error),
+                }])
+                .await;
+            }
+        }
+    }
+
+    fn start_sas_timeout(&mut self, flow_id: u64) {
+        if let Some(task) = self.sas_timeout_task.take() {
+            task.abort();
+        }
+        let tx = self.self_tx.clone();
+        self.sas_timeout_task = Some(executor::spawn(async move {
+            executor::sleep(Duration::from_secs(120)).await;
+            let _ = tx
+                .send(AccountMessage::SasVerificationTimedOut { flow_id })
+                .await;
+        }));
+    }
+
+    async fn stop_sas_timeout(&mut self) {
+        if let Some(task) = self.sas_timeout_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+
+    async fn handle_sas_verification_timeout(&mut self, flow_id: u64) {
+        let active = self
+            .sas_verification
+            .as_ref()
+            .is_some_and(|pending| pending.request_id.sequence == flow_id)
+            || self
+                .own_user_verification
+                .as_ref()
+                .is_some_and(|(active_flow_id, _)| *active_flow_id == flow_id);
+        if !active {
+            return;
+        }
+        self.settle_verification(
+            flow_id,
+            VerificationTerminal::Failed(TrustOperationFailureKind::Timeout),
+        )
+        .await;
+    }
+
+    fn observe_own_user_verification(&mut self, request_id: RequestId, flow_id: u64) {
+        let Some((_, handle)) = self.own_user_verification.as_ref() else {
+            return;
+        };
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let mut states = handle.changes();
+        let tx = self.self_tx.clone();
+        let request_id = RequestId {
+            connection_id: request_id.connection_id,
+            sequence: flow_id,
+        };
+        let target = VerificationTarget {
+            user_id: "current-user".to_owned(),
+            device_id: "eligible-device".to_owned(),
+        };
+        let task = executor::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut stop_rx => break,
+                    state = states.next() => {
+                        let Some(state) = state else {
+                            let _ = tx.send(AccountMessage::VerificationRequestObserverEnded {
+                                flow_id: request_id.sequence,
+                            }).await;
+                            break;
+                        };
+                        let terminal = matches!(state,
+                            koushi_sdk::MatrixVerificationRequestState::Done
+                            | koushi_sdk::MatrixVerificationRequestState::Cancelled { .. }
+                            | koushi_sdk::MatrixVerificationRequestState::UnsupportedMethod);
+                        if tx.send(AccountMessage::VerificationRequestProgress {
+                            request_id,
+                            target: target.clone(),
+                            state,
+                        }).await.is_err() { break; }
+                        if terminal { break; }
+                    }
+                }
+            }
+        });
+        self.verification_request_observer = Some(VerificationObservation { stop_tx, task });
     }
 
     async fn handle_incoming_verification_request(
@@ -2673,7 +3356,7 @@ impl AccountActor {
                     .await;
             }
             koushi_sdk::MatrixVerificationRequestState::Created
-            | koushi_sdk::MatrixVerificationRequestState::Cancelled
+            | koushi_sdk::MatrixVerificationRequestState::Cancelled { .. }
             | koushi_sdk::MatrixVerificationRequestState::UnsupportedMethod => {
                 self.project_verification_failure(flow_id, target, TrustOperationFailureKind::Sdk)
                     .await;
@@ -2717,6 +3400,23 @@ impl AccountActor {
         flow_id: u64,
         reason: VerificationCancelReason,
     ) {
+        if self
+            .recovery_task
+            .as_ref()
+            .is_some_and(|pending| pending.flow_id == flow_id)
+        {
+            self.stop_recovery_task().await;
+            self.send_actions(vec![AppAction::VerificationGateAttemptFailed {
+                kind: koushi_state::VerificationGateFailureKind::Cancelled,
+            }])
+            .await;
+            return;
+        }
+        if self.active_verification_target(flow_id).is_some() {
+            self.settle_verification(flow_id, VerificationTerminal::Cancelled(reason))
+                .await;
+            return;
+        }
         enum CancelTarget {
             Sas {
                 target: VerificationTarget,
@@ -2725,6 +3425,9 @@ impl AccountActor {
             Request {
                 target: VerificationTarget,
                 handle: koushi_sdk::MatrixVerificationRequestHandle,
+            },
+            Own {
+                handle: koushi_sdk::MatrixOwnUserVerificationHandle,
             },
         }
 
@@ -2738,15 +3441,24 @@ impl AccountActor {
             });
         let cancel_target = match reason {
             VerificationCancelReason::Mismatch => sas_target,
-            VerificationCancelReason::User => sas_target.or_else(|| {
-                self.verification_request
-                    .as_ref()
-                    .filter(|pending| pending.request_id.sequence == flow_id)
-                    .map(|pending| CancelTarget::Request {
-                        target: pending.target.clone(),
-                        handle: pending.handle.clone(),
-                    })
-            }),
+            VerificationCancelReason::User => sas_target
+                .or_else(|| {
+                    self.verification_request
+                        .as_ref()
+                        .filter(|pending| pending.request_id.sequence == flow_id)
+                        .map(|pending| CancelTarget::Request {
+                            target: pending.target.clone(),
+                            handle: pending.handle.clone(),
+                        })
+                })
+                .or_else(|| {
+                    self.own_user_verification
+                        .as_ref()
+                        .filter(|(active_flow_id, _)| *active_flow_id == flow_id)
+                        .map(|(_, handle)| CancelTarget::Own {
+                            handle: handle.clone(),
+                        })
+                }),
         };
 
         let Some(cancel_target) = cancel_target else {
@@ -2763,6 +3475,10 @@ impl AccountActor {
             CancelTarget::Sas { target, .. } | CancelTarget::Request { target, .. } => {
                 target.clone()
             }
+            CancelTarget::Own { .. } => VerificationTarget {
+                user_id: "current-user".to_owned(),
+                device_id: "eligible-device".to_owned(),
+            },
         };
         let result = match cancel_target {
             CancelTarget::Sas { handle, .. } => match reason {
@@ -2776,12 +3492,16 @@ impl AccountActor {
             CancelTarget::Request { handle, .. } => {
                 koushi_sdk::cancel_verification_request(&handle).await
             }
+            CancelTarget::Own { handle } => {
+                koushi_sdk::cancel_own_user_sas_verification(&handle).await
+            }
         };
 
         self.stop_verification_request_observer().await;
         self.stop_sas_verification_observer().await;
         self.verification_request = None;
         self.sas_verification = None;
+        self.own_user_verification = None;
 
         if let Err(error) = result {
             self.project_verification_failure(flow_id, target, classify_e2ee_trust_error(&error))
@@ -2803,11 +3523,16 @@ impl AccountActor {
                 tokio::select! {
                     _ = &mut stop_rx => break,
                     state = states.next() => {
-                        let Some(state) = state else { break };
+                        let Some(state) = state else {
+                            let _ = tx.send(AccountMessage::VerificationRequestObserverEnded {
+                                flow_id: request_id.sequence,
+                            }).await;
+                            break;
+                        };
                         let terminal = matches!(
                             state,
                             koushi_sdk::MatrixVerificationRequestState::Done
-                                | koushi_sdk::MatrixVerificationRequestState::Cancelled
+                                | koushi_sdk::MatrixVerificationRequestState::Cancelled { .. }
                                 | koushi_sdk::MatrixVerificationRequestState::UnsupportedMethod
                         );
                         if tx
@@ -2845,7 +3570,12 @@ impl AccountActor {
                 tokio::select! {
                     _ = &mut stop_rx => break,
                     state = states.next() => {
-                        let Some(state) = state else { break };
+                        let Some(state) = state else {
+                            let _ = tx.send(AccountMessage::SasVerificationObserverEnded {
+                                flow_id: request_id.sequence,
+                            }).await;
+                            break;
+                        };
                         let terminal = matches!(
                             state,
                             koushi_sdk::MatrixSasState::Done
@@ -2883,6 +3613,10 @@ impl AccountActor {
             .verification_request
             .as_ref()
             .is_some_and(|pending| pending.request_id.sequence == request_id.sequence)
+            && !self
+                .own_user_verification
+                .as_ref()
+                .is_some_and(|(flow_id, _)| *flow_id == request_id.sequence)
         {
             return;
         }
@@ -2919,14 +3653,51 @@ impl AccountActor {
                     request_id: request_id.sequence,
                 }])
                 .await;
+                if let Some((flow_id, handle)) = self.own_user_verification.as_ref()
+                    && *flow_id == request_id.sequence
+                    && self.sas_verification.is_none()
+                {
+                    let handle = handle.clone();
+                    match koushi_sdk::start_own_user_sas_verification(&handle).await {
+                        Ok(Some(sas)) => {
+                            self.store_sas_verification(
+                                request_id,
+                                VerificationTarget {
+                                    user_id: "current-user".to_owned(),
+                                    device_id: "eligible-device".to_owned(),
+                                },
+                                sas,
+                            )
+                            .await;
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            self.send_actions(vec![AppAction::VerificationFailed {
+                                request_id: request_id.sequence,
+                                kind: classify_e2ee_trust_error(&error),
+                            }])
+                            .await;
+                        }
+                    }
+                }
             }
             koushi_sdk::MatrixVerificationRequestState::SasStarted(sas) => {
-                let Some(target) = self
+                let target = self
                     .verification_request
                     .as_ref()
                     .filter(|pending| pending.request_id.sequence == request_id.sequence)
                     .map(|pending| pending.target.clone())
-                else {
+                    .or_else(|| {
+                        self.own_user_verification
+                            .as_ref()
+                            .and_then(|(flow_id, _)| {
+                                (*flow_id == request_id.sequence).then(|| VerificationTarget {
+                                    user_id: "current-user".to_owned(),
+                                    device_id: "eligible-device".to_owned(),
+                                })
+                            })
+                    });
+                let Some(target) = target else {
                     return;
                 };
                 self.store_sas_verification(request_id, target, sas).await;
@@ -2934,7 +3705,11 @@ impl AccountActor {
             koushi_sdk::MatrixVerificationRequestState::Done => {
                 self.project_verification_completed(request_id).await;
             }
-            koushi_sdk::MatrixVerificationRequestState::Cancelled => {
+            koushi_sdk::MatrixVerificationRequestState::Cancelled {
+                kind,
+                cancelled_by_us,
+            } => {
+                let _ = (kind, cancelled_by_us);
                 self.project_active_or_missing_verification_failure_with_kind(
                     request_id,
                     request_id.sequence,
@@ -2964,6 +3739,7 @@ impl AccountActor {
             target: target.clone(),
             handle: handle.clone(),
         });
+        self.start_sas_timeout(request_id.sequence);
         self.observe_sas_verification(request_id, target.clone(), handle.clone());
         if matches!(handle.state(), koushi_sdk::MatrixSasState::Started)
             && let Err(error) = koushi_sdk::accept_sas_verification(&handle).await
@@ -2991,11 +3767,22 @@ impl AccountActor {
             | koushi_sdk::MatrixSasState::Started
             | koushi_sdk::MatrixSasState::Accepted => {}
             koushi_sdk::MatrixSasState::SasPresented { emojis } => {
-                self.send_actions(vec![AppAction::VerificationSasPresented {
-                    request_id: request_id.sequence,
-                    emojis: emojis.clone(),
-                }])
-                .await;
+                if emojis.len() != 7 {
+                    self.project_verification_failure(
+                        request_id.sequence,
+                        target,
+                        TrustOperationFailureKind::Sdk,
+                    )
+                    .await;
+                    return;
+                }
+                let own_user_flow = self
+                    .own_user_verification
+                    .as_ref()
+                    .is_some_and(|(flow_id, _)| *flow_id == request_id.sequence);
+                let action =
+                    sas_projection_action(own_user_flow, request_id.sequence, emojis.clone());
+                self.send_actions(vec![action]).await;
                 self.emit_verification_progress(VerificationFlowState::SasPresented {
                     request_id: request_id.sequence,
                     target,
@@ -3025,34 +3812,117 @@ impl AccountActor {
         }
     }
 
-    async fn project_verification_completed(&mut self, request_id: RequestId) {
-        let target = self
-            .sas_verification
+    fn active_verification_target(&self, flow_id: u64) -> Option<VerificationTarget> {
+        self.sas_verification
             .as_ref()
-            .filter(|pending| pending.request_id.sequence == request_id.sequence)
+            .filter(|pending| pending.request_id.sequence == flow_id)
             .map(|pending| pending.target.clone())
             .or_else(|| {
                 self.verification_request
                     .as_ref()
-                    .filter(|pending| pending.request_id.sequence == request_id.sequence)
+                    .filter(|pending| pending.request_id.sequence == flow_id)
                     .map(|pending| pending.target.clone())
-            });
-        let Some(target) = target else {
+            })
+            .or_else(|| {
+                self.own_user_verification
+                    .as_ref()
+                    .and_then(|(active_flow_id, _)| {
+                        (*active_flow_id == flow_id).then(|| VerificationTarget {
+                            user_id: "current-user".to_owned(),
+                            device_id: "eligible-device".to_owned(),
+                        })
+                    })
+            })
+            .or_else(|| {
+                #[cfg(test)]
+                {
+                    return self.synthetic_verification.as_ref().and_then(
+                        |(active_flow_id, target)| {
+                            (*active_flow_id == flow_id).then(|| target.clone())
+                        },
+                    );
+                }
+                #[cfg(not(test))]
+                None
+            })
+    }
+
+    async fn settle_verification(&mut self, flow_id: u64, terminal: VerificationTerminal) {
+        let Some(target) = self.active_verification_target(flow_id) else {
             return;
         };
-
+        self.stop_sas_timeout().await;
         self.stop_verification_request_observer().await;
         self.stop_sas_verification_observer().await;
-        self.verification_request = None;
-        self.sas_verification = None;
-        self.send_actions(vec![AppAction::VerificationCompleted {
-            request_id: request_id.sequence,
-        }])
-        .await;
-        self.emit_verification_progress(VerificationFlowState::Done {
-            request_id: request_id.sequence,
-            target,
-        });
+        let sas = self.sas_verification.take();
+        let request = self.verification_request.take();
+        let own = self.own_user_verification.take();
+        #[cfg(test)]
+        {
+            self.synthetic_verification = None;
+        }
+
+        if !matches!(terminal, VerificationTerminal::Success) {
+            if let Some(pending) = sas.as_ref() {
+                let _ = match terminal {
+                    VerificationTerminal::Cancelled(VerificationCancelReason::Mismatch) => {
+                        koushi_sdk::mismatch_sas_verification(&pending.handle).await
+                    }
+                    _ => koushi_sdk::cancel_sas_verification(&pending.handle).await,
+                };
+            } else if let Some(pending) = request.as_ref() {
+                let _ = koushi_sdk::cancel_verification_request(&pending.handle).await;
+            } else if let Some((_, handle)) = own.as_ref() {
+                let _ = koushi_sdk::cancel_own_user_sas_verification(handle).await;
+            }
+        }
+        drop(sas);
+        drop(request);
+        drop(own);
+
+        match terminal {
+            VerificationTerminal::Success => {
+                self.send_actions(vec![AppAction::VerificationCompleted {
+                    request_id: flow_id,
+                }])
+                .await;
+                self.request_authoritative_trust_recheck().await;
+                self.emit_verification_progress(VerificationFlowState::Done {
+                    request_id: flow_id,
+                    target,
+                });
+            }
+            VerificationTerminal::Cancelled(reason) => {
+                self.send_actions(vec![AppAction::VerificationCancelled {
+                    request_id: flow_id,
+                    reason,
+                }])
+                .await;
+            }
+            VerificationTerminal::Failed(kind) => {
+                self.send_actions(vec![AppAction::VerificationFailed {
+                    request_id: flow_id,
+                    kind,
+                }])
+                .await;
+                self.emit_verification_progress(VerificationFlowState::Failed {
+                    request_id: flow_id,
+                    target,
+                    kind,
+                });
+            }
+        }
+    }
+
+    async fn project_verification_completed(&mut self, request_id: RequestId) {
+        if self
+            .active_verification_target(request_id.sequence)
+            .is_none()
+        {
+            return;
+        }
+        self.settle_verification(request_id.sequence, VerificationTerminal::Success)
+            .await;
     }
 
     async fn project_active_or_missing_verification_failure(
@@ -3074,58 +3944,32 @@ impl AccountActor {
         flow_id: u64,
         kind: TrustOperationFailureKind,
     ) {
-        let target = self
-            .sas_verification
-            .as_ref()
-            .filter(|pending| pending.request_id.sequence == flow_id)
-            .map(|pending| pending.target.clone())
-            .or_else(|| {
-                self.verification_request
-                    .as_ref()
-                    .filter(|pending| pending.request_id.sequence == flow_id)
-                    .map(|pending| pending.target.clone())
-            });
-        match target {
-            Some(target) => {
-                self.project_verification_failure(flow_id, target, kind)
-                    .await
-            }
-            None => {
-                self.send_actions(vec![AppAction::VerificationFailed {
-                    request_id: flow_id,
-                    kind,
-                }])
+        if self.active_verification_target(flow_id).is_some() {
+            self.settle_verification(flow_id, VerificationTerminal::Failed(kind))
                 .await;
-                let failure = if self.session.is_some() {
-                    CoreFailure::LocalEncryptionUnavailable
-                } else {
-                    CoreFailure::SessionRequired
-                };
-                self.emit_failure(request_id, failure);
-            }
+        } else {
+            self.send_actions(vec![AppAction::VerificationFailed {
+                request_id: flow_id,
+                kind,
+            }])
+            .await;
+            let failure = if self.session.is_some() {
+                CoreFailure::LocalEncryptionUnavailable
+            } else {
+                CoreFailure::SessionRequired
+            };
+            self.emit_failure(request_id, failure);
         }
     }
 
     async fn project_verification_failure(
         &mut self,
         flow_id: u64,
-        target: VerificationTarget,
+        _target: VerificationTarget,
         kind: TrustOperationFailureKind,
     ) {
-        self.stop_verification_request_observer().await;
-        self.stop_sas_verification_observer().await;
-        self.verification_request = None;
-        self.sas_verification = None;
-        self.send_actions(vec![AppAction::VerificationFailed {
-            request_id: flow_id,
-            kind,
-        }])
-        .await;
-        self.emit_verification_progress(VerificationFlowState::Failed {
-            request_id: flow_id,
-            target,
-            kind,
-        });
+        self.settle_verification(flow_id, VerificationTerminal::Failed(kind))
+            .await;
     }
 
     fn emit_verification_progress(&self, state: VerificationFlowState) {
@@ -3623,7 +4467,7 @@ impl AccountActor {
     async fn handle_start_oidc_login(&mut self, request_id: RequestId, homeserver: String) {
         match koushi_sdk::start_oidc_login(&homeserver, OIDC_REDIRECT_URI).await {
             Ok((pending, authorization)) => {
-                self.pending_oidc_login = Some((request_id, pending));
+                self.pending_oidc_login = Some((request_id, PendingOidcFlow::Sdk(pending)));
                 self.emit(CoreEvent::Account(AccountEvent::OidcAuthorizationCreated {
                     request_id,
                     authorization_url: authorization.authorization_url,
@@ -3640,6 +4484,10 @@ impl AccountActor {
     }
 
     async fn handle_complete_oidc_login(&mut self, request_id: RequestId, callback_url: String) {
+        if self.pending_session_teardown.is_some() {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        }
         let Some((start_request_id, pending)) = self.pending_oidc_login.take() else {
             self.send_actions(vec![AppAction::LoginDiscoveryFailed {
                 homeserver: String::new(),
@@ -3652,17 +4500,54 @@ impl AccountActor {
                     kind: AuthFailureKind::Cancelled,
                 },
             );
+            self.send_actions(vec![AppAction::LoginFailed {
+                attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
+                message: "login failed".to_owned(),
+            }])
+            .await;
             return;
         };
         let homeserver = pending.homeserver().to_owned();
+        self.send_actions(vec![AppAction::AuthenticationStarted {
+            attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
+            homeserver: homeserver.clone(),
+        }])
+        .await;
 
-        let login_session = match koushi_sdk::finish_oidc_login(pending, &callback_url).await {
+        #[cfg(test)]
+        let login_result = match self.oidc_completion_override.take() {
+            Some(session) => Ok(session),
+            None => match pending {
+                PendingOidcFlow::Sdk(pending) => {
+                    koushi_sdk::finish_oidc_login(pending, &callback_url).await
+                }
+                PendingOidcFlow::Synthetic { .. } => {
+                    unreachable!("synthetic OIDC completion requires a session override")
+                }
+            },
+        };
+        #[cfg(not(test))]
+        let login_result = match pending {
+            PendingOidcFlow::Sdk(pending) => {
+                koushi_sdk::finish_oidc_login(pending, &callback_url).await
+            }
+        };
+
+        let login_session = match login_result {
             Ok(session) => session,
             Err(error) => {
                 let kind = classify_auth_error(&error);
                 self.send_actions(vec![AppAction::LoginDiscoveryFailed { homeserver, kind }])
                     .await;
                 self.emit_failure(request_id, CoreFailure::AccountOperationFailed { kind });
+                self.send_actions(vec![AppAction::LoginFailed {
+                    attempt_id: LoginAttemptId::new(
+                        request_id.connection_id.0,
+                        request_id.sequence,
+                    ),
+                    message: "login failed".to_owned(),
+                }])
+                .await;
                 return;
             }
         };
@@ -3671,12 +4556,16 @@ impl AccountActor {
         let key_id = session_key_id_from_info(&info);
         let account_key = account_key_from_info(&info);
 
-        let persistable = match self.persist_session(&login_session, &key_id).await {
+        let persistable = match login_session.persistable_session() {
             Ok(persistable) => persistable,
-            Err(failure) => {
+            Err(_) => {
                 self.abort_login(login_session, &key_id, false).await;
-                self.emit_failure(request_id, failure);
+                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 self.send_actions(vec![AppAction::LoginFailed {
+                    attempt_id: LoginAttemptId::new(
+                        request_id.connection_id.0,
+                        request_id.sequence,
+                    ),
                     message: "login failed".to_owned(),
                 }])
                 .await;
@@ -3687,9 +4576,13 @@ impl AccountActor {
         let store_backed = match self.restore_into_store(&persistable, &key_id).await {
             Ok(session) => session,
             Err(failure) => {
-                self.abort_login(login_session, &key_id, true).await;
+                self.abort_login(login_session, &key_id, false).await;
                 self.emit_failure(request_id, failure);
                 self.send_actions(vec![AppAction::LoginFailed {
+                    attempt_id: LoginAttemptId::new(
+                        request_id.connection_id.0,
+                        request_id.sequence,
+                    ),
                     message: "login failed".to_owned(),
                 }])
                 .await;
@@ -3699,35 +4592,36 @@ impl AccountActor {
 
         drop(login_session);
 
-        let session_arc = Arc::new(store_backed);
-        self.device_session_ordinals.clear();
-        self.pending_uia_operations.clear();
-        self.session = Some(session_arc.clone());
-        self.session_key_id = Some(key_id);
+        self.install_provisional_session(
+            store_backed,
+            persistable,
+            key_id,
+            AppAction::LoginSucceeded {
+                attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
+                info,
+            },
+        )
+        .await;
 
-        self.spawn_sync_actor(session_arc.clone()).await;
-
-        self.send_actions(vec![AppAction::LoginSucceeded(info)])
-            .await;
-
-        self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
-            request_id: start_request_id,
-            account_key: account_key.clone(),
-        }));
-        if request_id != start_request_id {
-            self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
-                request_id,
-                account_key,
+        self.pending_ready_events
+            .push(CoreEvent::Account(AccountEvent::LoggedIn {
+                request_id: start_request_id,
+                account_key: account_key.clone(),
             }));
+        if request_id != start_request_id {
+            self.pending_ready_events
+                .push(CoreEvent::Account(AccountEvent::LoggedIn {
+                    request_id,
+                    account_key,
+                }));
         }
-        self.spawn_account_hydration(session_arc.clone());
-
-        self.start_recovery_observer(session_arc.clone());
-        self.start_incoming_verification_observer(session_arc.clone());
-        self.start_session_change_observer(session_arc);
     }
 
     async fn handle_login_password(&mut self, request_id: RequestId, request: LoginRequest) {
+        if self.pending_session_teardown.is_some() {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        }
         // Store bootstrap step 1: the password exchange runs on a storeless
         // client. The device id (and therefore the store path) is unknown
         // before this completes. The storeless client must never sync or
@@ -3739,6 +4633,10 @@ impl AccountActor {
                 let kind = classify_login_error(&error);
                 self.emit_failure(request_id, CoreFailure::LoginFailed { kind });
                 self.send_actions(vec![AppAction::LoginFailed {
+                    attempt_id: LoginAttemptId::new(
+                        request_id.connection_id.0,
+                        request_id.sequence,
+                    ),
                     message: "login failed".to_owned(),
                 }])
                 .await;
@@ -3751,13 +4649,18 @@ impl AccountActor {
         let key_id = session_key_id_from_info(&info);
         let account_key = account_key_from_info(&info);
 
-        // Store bootstrap step 2a: persist the session credentials.
-        let persistable = match self.persist_session(&login_session, &key_id).await {
+        // Build a restorable in-memory session shape without writing the
+        // active credential index or last-session pointer before verification.
+        let persistable = match login_session.persistable_session() {
             Ok(persistable) => persistable,
-            Err(failure) => {
+            Err(_) => {
                 self.abort_login(login_session, &key_id, false).await;
-                self.emit_failure(request_id, failure);
+                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 self.send_actions(vec![AppAction::LoginFailed {
+                    attempt_id: LoginAttemptId::new(
+                        request_id.connection_id.0,
+                        request_id.sequence,
+                    ),
                     message: "login failed".to_owned(),
                 }])
                 .await;
@@ -3773,9 +4676,13 @@ impl AccountActor {
         let store_backed = match self.restore_into_store(&persistable, &key_id).await {
             Ok(session) => session,
             Err(failure) => {
-                self.abort_login(login_session, &key_id, true).await;
+                self.abort_login(login_session, &key_id, false).await;
                 self.emit_failure(request_id, failure);
                 self.send_actions(vec![AppAction::LoginFailed {
+                    attempt_id: LoginAttemptId::new(
+                        request_id.connection_id.0,
+                        request_id.sequence,
+                    ),
                     message: "login failed".to_owned(),
                 }])
                 .await;
@@ -3787,37 +4694,30 @@ impl AccountActor {
         // context (Async rule 11).
         drop(login_session);
 
-        let session_arc = Arc::new(store_backed);
-        self.device_session_ordinals.clear();
-        self.pending_uia_operations.clear();
-        self.session = Some(session_arc.clone());
-        self.session_key_id = Some(key_id);
-
-        // Spawn the SyncActor now that we have a store-backed session
-        // (store bootstrap invariant: sync only on the store-backed session).
-        self.spawn_sync_actor(session_arc.clone()).await;
-
-        // Project login success through the reducer (session → Ready), then
-        // hydrate Rust-owned profile/account-data projections. Fetch failure is
-        // non-fatal to login.
-        self.send_actions(vec![AppAction::LoginSucceeded(info)])
-            .await;
+        self.install_provisional_session(
+            store_backed,
+            persistable,
+            key_id,
+            AppAction::LoginSucceeded {
+                attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
+                info,
+            },
+        )
+        .await;
 
         // Emit domain event carrying the request_id for command correlation.
-        self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
-            request_id,
-            account_key,
-        }));
-        self.spawn_account_hydration(session_arc.clone());
-
-        // Observe the SDK recovery stream asynchronously. New-device recovery
-        // can arrive after login completes, once account data syncs in.
-        self.start_recovery_observer(session_arc.clone());
-        self.start_incoming_verification_observer(session_arc.clone());
-        self.start_session_change_observer(session_arc);
+        self.pending_ready_events
+            .push(CoreEvent::Account(AccountEvent::LoggedIn {
+                request_id,
+                account_key,
+            }));
     }
 
     async fn handle_restore_session(&mut self, request_id: RequestId, account_key: AccountKey) {
+        if self.pending_session_teardown.is_some() {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        }
         trace_account_request("restore_session", request_id, "lookup_key");
         let key_id = match self.lookup_session_key_id(&account_key).await {
             Ok(Some(key_id)) => {
@@ -3856,6 +4756,10 @@ impl AccountActor {
     /// A pointer whose session data is missing follows the same not-found
     /// contract (handled inside `restore_account`).
     async fn handle_restore_last_session(&mut self, request_id: RequestId) {
+        if self.pending_session_teardown.is_some() {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        }
         trace_account_request("restore_last_session", request_id, "load_pointer");
         let key_id = match self.store.credential_backend().load_last_session() {
             Ok(Some(key_id)) => {
@@ -4502,7 +5406,10 @@ impl AccountActor {
             AppAction::SoftLogoutReauthSucceeded {
                 request_id: request_id.sequence,
             },
-            AppAction::LoginSucceeded(info),
+            AppAction::LoginSucceeded {
+                attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
+                info,
+            },
         ])
         .await;
         self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
@@ -4533,13 +5440,10 @@ impl AccountActor {
     }
 
     async fn handle_switch_account(&mut self, request_id: RequestId, account_key: AccountKey) {
-        // Ordered shutdown of the current account runtime WITHOUT clearing
-        // credentials or stores.
-        self.stop_current_session_runtime().await;
-        // Drop the SDK handle inside the runtime context (Async rule 11).
-        drop(self.session.take());
-        self.session_key_id = None;
-
+        if self.pending_session_teardown.is_some() {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        }
         let key_id = match self.lookup_session_key_id(&account_key).await {
             Ok(Some(key_id)) => key_id,
             Ok(None) => {
@@ -4630,33 +5534,87 @@ impl AccountActor {
                 let info = session.info.clone();
                 let account_key = account_key_from_info(&info);
 
-                let session_arc = Arc::new(session);
-                self.device_session_ordinals.clear();
-                self.pending_uia_operations.clear();
-                self.session = Some(session_arc.clone());
-                self.session_key_id = Some(key_id);
+                self.install_provisional_session(
+                    session,
+                    persistable,
+                    key_id,
+                    AppAction::RestoreSessionSucceeded(info),
+                )
+                .await;
 
-                // Spawn the SyncActor for the newly restored store-backed session.
-                self.spawn_sync_actor(session_arc.clone()).await;
-                trace_account_request("restore_account", request_id, "sync_actor_spawned");
-                self.send_actions(vec![AppAction::RestoreSessionSucceeded(info)])
+                self.pending_ready_events
+                    .push(CoreEvent::Account(match outcome {
+                        RestoreOutcome::Restored => AccountEvent::SessionRestored {
+                            request_id,
+                            account_key,
+                        },
+                        RestoreOutcome::Switched => AccountEvent::AccountSwitched {
+                            request_id,
+                            account_key,
+                        },
+                    }));
+            }
+        }
+    }
+
+    async fn handle_start_session_bootstrap(
+        &mut self,
+        request_id: RequestId,
+        flow_id: u64,
+        auth: Option<koushi_state::AuthSecret>,
+        request: SecureBackupSetupRequest,
+    ) {
+        let Some(session) = self.session.clone() else {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        };
+        if request.recovery_key_destination_path.is_none() {
+            self.send_actions(vec![AppAction::BootstrapRecoveryKeyDeliveryFailed {
+                flow_id,
+                kind: koushi_state::VerificationGateFailureKind::Sdk,
+            }])
+            .await;
+            return;
+        }
+        if let Err(error) = koushi_sdk::bootstrap_cross_signing(&session, auth.as_ref()).await {
+            drop(auth);
+            self.send_actions(vec![AppAction::BootstrapRecoveryKeyDeliveryFailed {
+                flow_id,
+                kind: verification_gate_failure_kind(&error),
+            }])
+            .await;
+            return;
+        }
+        drop(auth);
+        let SecureBackupSetupRequest {
+            passphrase,
+            recovery_key_destination_path,
+        } = request;
+        let result = koushi_sdk::bootstrap_secure_backup(
+            &session,
+            passphrase.as_ref(),
+            recovery_key_destination_path,
+        )
+        .await;
+        drop(passphrase);
+        match result {
+            Ok(summary) if summary.recovery_key_written => {
+                self.send_actions(vec![AppAction::BootstrapRecoveryKeyDelivered { flow_id }])
                     .await;
-
-                self.emit(CoreEvent::Account(match outcome {
-                    RestoreOutcome::Restored => AccountEvent::SessionRestored {
-                        request_id,
-                        account_key,
-                    },
-                    RestoreOutcome::Switched => AccountEvent::AccountSwitched {
-                        request_id,
-                        account_key,
-                    },
-                }));
-                self.spawn_account_hydration(session_arc.clone());
-
-                self.start_recovery_observer(session_arc.clone());
-                self.start_incoming_verification_observer(session_arc.clone());
-                self.start_session_change_observer(session_arc);
+            }
+            Ok(_) => {
+                self.send_actions(vec![AppAction::BootstrapRecoveryKeyDeliveryFailed {
+                    flow_id,
+                    kind: koushi_state::VerificationGateFailureKind::Sdk,
+                }])
+                .await;
+            }
+            Err(error) => {
+                self.send_actions(vec![AppAction::BootstrapRecoveryKeyDeliveryFailed {
+                    flow_id,
+                    kind: verification_gate_failure_kind(&error),
+                }])
+                .await;
             }
         }
     }
@@ -4678,23 +5636,65 @@ impl AccountActor {
             }
         };
 
+        self.stop_recovery_task().await;
+        let generation = self.trust_generation;
+        let flow_id = request_id.sequence;
+        let tx = self.self_tx.clone();
+        let task = crate::executor::spawn(async move {
+            let result = koushi_sdk::recover_e2ee(&session, &request).await;
+            drop(request);
+            let _ = tx
+                .send(AccountMessage::RecoveryFinished {
+                    generation,
+                    flow_id,
+                    request_id,
+                    result,
+                })
+                .await;
+        });
+        self.recovery_task = Some(PendingRecoveryTask {
+            generation,
+            flow_id,
+            request_id,
+            task,
+        });
+    }
+
+    async fn handle_recovery_finished(
+        &mut self,
+        generation: u64,
+        flow_id: u64,
+        request_id: RequestId,
+        result: Result<(), koushi_sdk::E2eeRecoveryError>,
+    ) {
+        let is_current = self.recovery_task.as_ref().is_some_and(|pending| {
+            recovery_result_is_current(
+                generation,
+                self.trust_generation,
+                flow_id,
+                pending.flow_id,
+                request_id,
+                pending.request_id,
+                self.session.is_some(),
+            ) && pending.generation == generation
+        });
+        if !is_current {
+            return;
+        }
+        if let Some(pending) = self.recovery_task.take() {
+            let _ = pending.task.await;
+        }
+        let Some(session) = self.session.clone() else {
+            return;
+        };
         let account_key = AccountKey(session.info.user_id.clone());
-
-        // Project E2eeRecoverySubmitted so the reducer transitions
-        // NeedsRecovery → Recovering while the async call runs.
-        self.send_actions(vec![AppAction::E2eeRecoverySubmitted(request.clone())])
-            .await;
-
-        let result = koushi_sdk::recover_e2ee(&session, &request).await;
-
-        // Zero the request secret now — it has been consumed.
-        drop(request);
-
         match result {
             Ok(()) => {
-                // Project success: Recovering → Ready.
+                // SDK success remains gated; the subsequent authoritative
+                // trust observation is the only promotion authority.
                 self.send_actions(vec![AppAction::E2eeRecoverySucceeded])
                     .await;
+                self.request_authoritative_trust_recheck().await;
                 self.send_actions(vec![AppAction::RestoreKeyBackupRequested {
                     request_id: request_id.sequence,
                     version: None,
@@ -4728,7 +5728,32 @@ impl AccountActor {
         }
     }
 
+    async fn stop_recovery_task(&mut self) -> Option<u64> {
+        let pending = self.recovery_task.take()?;
+        let flow_id = pending.flow_id;
+        pending.task.abort();
+        let _ = pending.task.await;
+        Some(flow_id)
+    }
+
+    async fn request_authoritative_trust_recheck(&self) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let _ = self
+            .self_tx
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: self.trust_generation,
+                trust: session.current_device_trust(),
+            })
+            .await;
+    }
+
     async fn perform_logout(&mut self, request_id: RequestId, server_logout: bool) {
+        if self.pending_session_teardown.is_some() {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        }
         let session = match self.session.take() {
             Some(s) => s,
             None => {
@@ -4744,22 +5769,117 @@ impl AccountActor {
             let _ = logout_server_best_effort(&session).await;
         }
 
-        // Drop the SDK handle inside the Tokio runtime context (Async rule 11).
-        drop(session);
+        self.next_teardown_generation = self.next_teardown_generation.wrapping_add(1);
+        let generation = self.next_teardown_generation;
+        self.pending_session_teardown = Some(PendingSessionTeardown {
+            generation,
+            attempt: 0,
+            session,
+            key_id,
+            continuation: SessionTeardownContinuation::Logout {
+                request_id,
+                server_logout,
+            },
+        });
+        self.retry_session_teardown(generation).await;
+    }
 
-        // Clean up credentials and stores for this account only.
-        let account_key = if let Some(key_id) = &key_id {
-            self.clear_account_persistence(key_id).await;
-            AccountKey(key_id.user_id.clone())
-        } else {
-            AccountKey(String::new())
+    async fn close_pending_session_stores(
+        &mut self,
+        session: &MatrixClientSession,
+    ) -> Result<(), ()> {
+        #[cfg(test)]
+        if let Some(success) = self.close_store_results.pop_front()
+            && !success
+        {
+            return Err(());
+        }
+        koushi_sdk::close_session_stores(session)
+            .await
+            .map_err(|_| ())
+    }
+
+    async fn retry_session_teardown(&mut self, generation: u64) {
+        let Some(pending) = self.pending_session_teardown.as_ref() else {
+            return;
         };
-
-        self.send_actions(vec![AppAction::LogoutFinished]).await;
-        self.emit(CoreEvent::Account(AccountEvent::LoggedOut {
-            request_id,
-            account_key,
-        }));
+        if pending.generation != generation {
+            return;
+        }
+        let session = pending.session.clone();
+        if self.close_pending_session_stores(&session).await.is_err() {
+            let pending = self
+                .pending_session_teardown
+                .as_mut()
+                .expect("teardown remains pending after close failure");
+            pending.attempt = pending.attempt.saturating_add(1);
+            let shift = pending.attempt.min(5);
+            let delay_ms = 25_u64.saturating_mul(1_u64 << shift).min(1_000);
+            record(
+                DiagnosticEvent::new(
+                    DiagnosticLevel::Warn,
+                    "core.account",
+                    "session_store_close_retrying",
+                )
+                .field(DiagnosticField::count("attempt", pending.attempt as u64)),
+            );
+            self.record_lifecycle_probe("session_store_close_retrying");
+            let tx = self.self_tx.clone();
+            self.teardown_retry_task = Some(executor::spawn(async move {
+                executor::sleep(Duration::from_millis(delay_ms)).await;
+                let _ = tx
+                    .send(AccountMessage::RetrySessionTeardown { generation })
+                    .await;
+            }));
+            return;
+        }
+        if let Some(task) = self.teardown_retry_task.take() {
+            task.abort();
+        }
+        self.record_lifecycle_probe("session_store_closed");
+        record(DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.account",
+            "session_store_closed",
+        ));
+        let pending = self
+            .pending_session_teardown
+            .take()
+            .expect("successful teardown remains pending");
+        drop(pending.session);
+        match pending.continuation {
+            SessionTeardownContinuation::Logout {
+                request_id,
+                server_logout,
+            } => {
+                let _ = server_logout;
+                let account_key = if let Some(key_id) = &pending.key_id {
+                    self.clear_account_persistence(key_id).await;
+                    AccountKey(key_id.user_id.clone())
+                } else {
+                    AccountKey(String::new())
+                };
+                self.record_lifecycle_probe("session_persistence_deleted");
+                self.send_actions(vec![AppAction::LogoutFinished]).await;
+                self.emit(CoreEvent::Account(AccountEvent::LoggedOut {
+                    request_id,
+                    account_key,
+                }));
+            }
+            SessionTeardownContinuation::InstallReplacement {
+                session,
+                persistable,
+                key_id,
+                action,
+            } => {
+                // Account replacement must preserve the source account's
+                // credentials, saved-session index entry, last pointer, and
+                // keyed store. Only its live SDK handles are drained/dropped.
+                self.record_lifecycle_probe("replacement_teardown_complete");
+                Box::pin(self.install_provisional_session(session, persistable, key_id, action))
+                    .await;
+            }
+        }
     }
 
     async fn handle_logout(&mut self, request_id: RequestId) {
@@ -4767,6 +5887,364 @@ impl AccountActor {
     }
 
     // --- helpers ---
+
+    async fn install_provisional_session(
+        &mut self,
+        session: MatrixClientSession,
+        persistable: PersistableMatrixSession,
+        key_id: SessionKeyId,
+        action: AppAction,
+    ) {
+        debug_assert!(self.pending_session_teardown.is_none());
+        if let Some(previous_session) = self.session.take() {
+            let previous_key_id = self.session_key_id.take();
+            self.stop_current_session_runtime().await;
+            self.next_teardown_generation = self.next_teardown_generation.wrapping_add(1);
+            let generation = self.next_teardown_generation;
+            self.pending_session_teardown = Some(PendingSessionTeardown {
+                generation,
+                attempt: 0,
+                session: previous_session,
+                key_id: previous_key_id,
+                continuation: SessionTeardownContinuation::InstallReplacement {
+                    session,
+                    persistable,
+                    key_id,
+                    action,
+                },
+            });
+            self.retry_session_teardown(generation).await;
+            return;
+        }
+        self.stop_provisional_runtime().await;
+        let session = Arc::new(session);
+        self.device_session_ordinals.clear();
+        self.pending_uia_operations.clear();
+        self.session = Some(session.clone());
+        self.session_key_id = Some(key_id);
+        self.provisional_persistable = Some(persistable);
+        self.session_promoted = false;
+        self.send_actions(vec![action]).await;
+        self.start_provisional_runtime(session).await;
+    }
+
+    async fn start_provisional_runtime(&mut self, session: Arc<MatrixClientSession>) {
+        self.trust_generation = self.trust_generation.wrapping_add(1);
+        let generation = self.trust_generation;
+        #[cfg(test)]
+        let (observation, synthetic_trust_observation) = {
+            let override_observation = self
+                .trust_observation_override
+                .lock()
+                .expect("trust observation override lock")
+                .take();
+            let synthetic = override_observation.is_some();
+            (
+                override_observation.unwrap_or_else(|| session.observe_current_device_trust()),
+                synthetic,
+            )
+        };
+        #[cfg(not(test))]
+        let observation = session.observe_current_device_trust();
+        let _ = self
+            .self_tx
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation,
+                trust: observation.current,
+            })
+            .await;
+        let tx = self.self_tx.clone();
+        let mut updates = observation.updates;
+        self.trust_observer = Some(executor::spawn(async move {
+            while let Some(trust) = updates.next().await {
+                if tx
+                    .send(AccountMessage::CurrentDeviceTrustChanged { generation, trust })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+        #[cfg(test)]
+        if synthetic_trust_observation {
+            self.restricted_sync = Some(executor::spawn(std::future::pending()));
+            return;
+        }
+        let tx = self.self_tx.clone();
+        self.restricted_sync = Some(executor::spawn(async move {
+            let first_sync = executor::timeout(
+                Duration::from_secs(15),
+                koushi_sdk::restricted_verification_sync_once_with_token(&session, None),
+            )
+            .await;
+            let mut token = match first_sync {
+                Ok(Ok(token)) => Some(token),
+                _ => None,
+            };
+            let succeeded = token.is_some();
+            if tx
+                .send(AccountMessage::FirstRestrictedSyncFinished {
+                    generation,
+                    succeeded,
+                })
+                .await
+                .is_err()
+                || !succeeded
+            {
+                return;
+            }
+            loop {
+                match koushi_sdk::restricted_verification_sync_once_with_token(
+                    &session,
+                    token.clone(),
+                )
+                .await
+                {
+                    Ok(next_token) => {
+                        token = Some(next_token);
+                        if tx
+                            .send(AccountMessage::RestrictedSyncSucceeded { generation })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(_) => {}
+                }
+                executor::sleep(Duration::from_millis(250)).await;
+            }
+        }));
+    }
+
+    async fn stop_provisional_runtime(&mut self) {
+        self.trust_generation = self.trust_generation.wrapping_add(1);
+        if let Some(task) = self.trust_observer.take() {
+            task.abort();
+            let _ = task.await;
+            self.record_lifecycle_probe("trust_observer_terminated");
+        }
+        if let Some(task) = self.verification_method_discovery_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        self.stop_restricted_sync().await;
+    }
+
+    async fn stop_restricted_sync(&mut self) {
+        if let Some(task) = self.restricted_sync.take() {
+            task.abort();
+            let _ = task.await;
+            self.record_lifecycle_probe("restricted_sync_terminated");
+        }
+    }
+
+    async fn stop_normal_runtime_children(&mut self) {
+        self.record_lifecycle_probe("stop_recovery_observer");
+        self.stop_recovery_observer().await;
+        self.record_lifecycle_probe("stop_incoming_verification_observer");
+        self.stop_incoming_verification_observer().await;
+        self.record_lifecycle_probe("stop_session_change_observer");
+        self.stop_session_change_observer().await;
+        self.record_lifecycle_probe("stop_timeline_manager");
+        self.stop_timeline_actor().await;
+        self.timeline_manager = crate::timeline::TimelineManagerActor::spawn(
+            self.action_tx.clone(),
+            self.event_tx.clone(),
+            Some(self.data_dir.clone()),
+            self.messages_backpressure.clone(),
+        );
+        self.record_lifecycle_probe("stop_threads_manager");
+        self.stop_threads_list_actor().await;
+        self.record_lifecycle_probe("stop_search_actor");
+        self.stop_search_actor().await;
+        self.record_lifecycle_probe("stop_sync_actor");
+        self.stop_sync_actor().await;
+        self.record_lifecycle_probe("clear_room_session");
+        self.clear_room_actor_session().await;
+        self.record_lifecycle_probe("abort_hydration");
+        self.invalidate_account_hydration();
+        self.record_lifecycle_probe("abort_attention_media_tasks");
+        self.abort_avatar_fetch_tasks();
+    }
+
+    fn record_lifecycle_probe(&self, token: &'static str) {
+        #[cfg(test)]
+        if let Some(probe) = &self.lifecycle_probe {
+            let _ = probe.send(token);
+        }
+        #[cfg(not(test))]
+        let _ = token;
+    }
+
+    async fn handle_current_device_trust(
+        &mut self,
+        generation: u64,
+        trust: koushi_state::CurrentDeviceTrustState,
+    ) {
+        match trust_lifecycle_decision(
+            generation,
+            self.trust_generation,
+            self.session_promoted,
+            trust,
+        ) {
+            TrustLifecycleDecision::IgnoreStale | TrustLifecycleDecision::AlreadyReady => return,
+            TrustLifecycleDecision::StayGated => {
+                self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
+                    generation,
+                    trust,
+                }])
+                .await;
+                return;
+            }
+            TrustLifecycleDecision::Lock => {
+                self.pending_trust_transition = Some((generation, TrustLifecycleDecision::Lock));
+                self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
+                    generation,
+                    trust,
+                }])
+                .await;
+                return;
+            }
+            TrustLifecycleDecision::Promote => {}
+        }
+        if !matches!(trust, koushi_state::CurrentDeviceTrustState::Verified) {
+            self.send_actions(vec![AppAction::CurrentDeviceTrustChanged(trust)])
+                .await;
+            return;
+        }
+        let (Some(session), Some(key_id)) = (self.session.clone(), self.session_key_id.clone())
+        else {
+            return;
+        };
+        if self.persist_session(&session, &key_id).await.is_err() {
+            self.send_actions(vec![AppAction::SessionPersistenceFailed {
+                message: "session persistence failed".to_owned(),
+            }])
+            .await;
+            return;
+        }
+        self.provisional_persistable = None;
+        // Restricted crypto sync deliberately omits rooms while gated but
+        // runs on a separate classic-sync token lane from Sliding Sync. Keep
+        // it alive after promotion for event-driven current-device trust
+        // refreshes; it never projects rooms/presence into normal consumers.
+        // Before exposing Ready, catch up full room state once.
+        let _ = koushi_sdk::promotion_full_state_sync_once(&session).await;
+        self.pending_trust_transition = Some((generation, TrustLifecycleDecision::Promote));
+        self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
+            generation,
+            trust,
+        }])
+        .await;
+    }
+
+    async fn discover_verification_methods(&mut self, generation: u64) {
+        if let Some(task) = self.verification_method_discovery_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        self.verification_method_discovery_serial =
+            self.verification_method_discovery_serial.wrapping_add(1);
+        let serial = self.verification_method_discovery_serial;
+        let tx = self.self_tx.clone();
+        self.verification_method_discovery_task = Some(executor::spawn(async move {
+            let gate = koushi_sdk::discover_current_session_verification_methods(&session).await;
+            let _ = tx
+                .send(AccountMessage::VerificationMethodsDiscovered {
+                    generation,
+                    serial,
+                    gate,
+                })
+                .await;
+        }));
+    }
+
+    async fn handle_trust_projection_applied(
+        &mut self,
+        generation: u64,
+        ready: bool,
+        locked: bool,
+    ) {
+        let Some((pending_generation, decision)) = self.pending_trust_transition.take() else {
+            return;
+        };
+        if generation != pending_generation || generation != self.trust_generation {
+            return;
+        }
+        if decision == TrustLifecycleDecision::Lock {
+            if locked {
+                self.record_lifecycle_probe("lock_projection_ack");
+                self.stop_restricted_sync().await;
+                self.stop_normal_runtime_children().await;
+                self.session_promoted = false;
+            }
+            return;
+        }
+        if decision != TrustLifecycleDecision::Promote || !ready {
+            return;
+        }
+        self.record_lifecycle_probe("ready_projection_ack");
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        if self.restricted_sync.is_none() {
+            self.start_promoted_crypto_trust_lane(session.clone(), generation);
+        }
+        self.spawn_sync_actor(session.clone()).await;
+        self.spawn_account_hydration(session.clone());
+        self.start_recovery_observer(session.clone());
+        self.start_incoming_verification_observer(session.clone());
+        self.start_session_change_observer(session);
+        self.session_promoted = true;
+        for event in std::mem::take(&mut self.pending_ready_events) {
+            self.emit(event);
+        }
+    }
+
+    fn start_promoted_crypto_trust_lane(
+        &mut self,
+        session: Arc<MatrixClientSession>,
+        generation: u64,
+    ) {
+        #[cfg(test)]
+        {
+            let _ = (session, generation);
+            self.restricted_sync = Some(executor::spawn(std::future::pending()));
+            return;
+        }
+        #[cfg(not(test))]
+        {
+            let tx = self.self_tx.clone();
+            self.restricted_sync = Some(executor::spawn(async move {
+                let mut token = None;
+                loop {
+                    match koushi_sdk::restricted_verification_sync_once_with_token(
+                        &session,
+                        token.clone(),
+                    )
+                    .await
+                    {
+                        Ok(next_token) => {
+                            token = Some(next_token);
+                            if tx
+                                .send(AccountMessage::RestrictedSyncSucceeded { generation })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Err(_) => executor::sleep(Duration::from_millis(250)).await,
+                    }
+                }
+            }));
+        }
+    }
 
     /// Persist session credentials, mirroring the src-tauri flow: session
     /// JSON, saved-session index entry, last-session pointer — with rollback
@@ -5010,6 +6488,92 @@ impl AccountActor {
     }
 }
 
+fn method_discovery_is_current(
+    generation: u64,
+    current_generation: u64,
+    serial: u64,
+    current_serial: u64,
+    has_session: bool,
+) -> bool {
+    has_session && generation == current_generation && serial == current_serial
+}
+
+fn recovery_result_is_current(
+    generation: u64,
+    current_generation: u64,
+    flow_id: u64,
+    current_flow_id: u64,
+    request_id: RequestId,
+    current_request_id: RequestId,
+    has_session: bool,
+) -> bool {
+    has_session
+        && generation == current_generation
+        && flow_id == current_flow_id
+        && request_id == current_request_id
+}
+
+fn first_restricted_sync_is_current(
+    generation: u64,
+    current_generation: u64,
+    has_session: bool,
+    session_promoted: bool,
+) -> bool {
+    has_session && !session_promoted && generation == current_generation
+}
+
+fn own_user_sas_recheck_is_current(
+    generation: u64,
+    current_generation: u64,
+    has_session: bool,
+    session_promoted: bool,
+    has_own_user_flow: bool,
+    has_sas: bool,
+) -> bool {
+    generation == current_generation
+        && has_session
+        && !session_promoted
+        && has_own_user_flow
+        && !has_sas
+}
+
+fn promoted_trust_refresh_is_current(
+    generation: u64,
+    current_generation: u64,
+    has_session: bool,
+    session_promoted: bool,
+) -> bool {
+    generation == current_generation && has_session && session_promoted
+}
+
+fn unknown_verification_gate() -> koushi_state::VerificationGateState {
+    koushi_state::VerificationGateState {
+        methods: Vec::new(),
+        account_kind: koushi_state::VerificationAccountKind::Unknown,
+        failure: None,
+    }
+}
+
+#[cfg(test)]
+fn should_discover_verification_methods(trust: koushi_state::CurrentDeviceTrustState) -> bool {
+    matches!(
+        trust,
+        koushi_state::CurrentDeviceTrustState::Unknown
+            | koushi_state::CurrentDeviceTrustState::Unverified
+    )
+}
+
+fn sas_projection_action(own_user_flow: bool, flow_id: u64, emojis: Vec<SasEmoji>) -> AppAction {
+    if own_user_flow {
+        AppAction::GateSasPresented { flow_id, emojis }
+    } else {
+        AppAction::VerificationSasPresented {
+            request_id: flow_id,
+            emojis,
+        }
+    }
+}
+
 fn trace_room_route(stage: &'static str, command: &RoomCommand) {
     match command {
         RoomCommand::CreateRoom { request_id, .. } => {
@@ -5222,7 +6786,7 @@ async fn download_avatar_thumbnail(
                 source: SdkMediaSource::Plain(uri),
                 format: MediaFormat::File,
             },
-            false,
+            true,
         )
         .await
         .map_err(|_| AvatarThumbnailFailureKind::Network)?;
@@ -5335,6 +6899,25 @@ fn classify_e2ee_trust_error(error: &koushi_sdk::E2eeTrustError) -> TrustOperati
             } else {
                 TrustOperationFailureKind::Sdk
             }
+        }
+    }
+}
+
+fn verification_gate_failure_kind(
+    error: &koushi_sdk::E2eeTrustError,
+) -> koushi_state::VerificationGateFailureKind {
+    match classify_e2ee_trust_error(error) {
+        TrustOperationFailureKind::Cancelled => {
+            koushi_state::VerificationGateFailureKind::Cancelled
+        }
+        TrustOperationFailureKind::Mismatch => koushi_state::VerificationGateFailureKind::Mismatch,
+        TrustOperationFailureKind::Network => koushi_state::VerificationGateFailureKind::Network,
+        TrustOperationFailureKind::Forbidden => {
+            koushi_state::VerificationGateFailureKind::Forbidden
+        }
+        TrustOperationFailureKind::Timeout => koushi_state::VerificationGateFailureKind::Timeout,
+        TrustOperationFailureKind::InvalidPassphrase | TrustOperationFailureKind::Sdk => {
+            koushi_state::VerificationGateFailureKind::Sdk
         }
     }
 }
@@ -5655,12 +7238,302 @@ fn classify_auth_error(error: &koushi_sdk::PasswordLoginError) -> AuthFailureKin
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::Path};
+
     use futures_util::stream;
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
     use tempfile::tempdir;
     use tokio::sync::{broadcast, mpsc, oneshot};
 
     use super::*;
     use crate::store::CredentialStoreBackend;
+
+    #[test]
+    fn own_user_sas_projects_gate_action_while_peer_sas_keeps_peer_projection() {
+        let emojis = vec![
+            SasEmoji {
+                symbol: "x".into(),
+                description: "opaque".into()
+            };
+            7
+        ];
+        assert!(
+            matches!(sas_projection_action(true, 41, emojis.clone()), AppAction::GateSasPresented { flow_id: 41, emojis: projected } if projected == emojis)
+        );
+        assert!(
+            matches!(sas_projection_action(false, 42, emojis.clone()), AppAction::VerificationSasPresented { request_id: 42, emojis: projected } if projected == emojis)
+        );
+    }
+
+    #[test]
+    fn method_discovery_rejects_stale_generation_serial_and_missing_session() {
+        assert!(method_discovery_is_current(4, 4, 9, 9, true));
+        assert!(!method_discovery_is_current(3, 4, 9, 9, true));
+        assert!(!method_discovery_is_current(4, 4, 8, 9, true));
+        assert!(!method_discovery_is_current(4, 4, 9, 9, false));
+    }
+
+    #[test]
+    fn recovery_result_requires_current_generation_flow_request_and_session() {
+        let current = test_request_id();
+        let other = RequestId {
+            connection_id: current.connection_id,
+            sequence: current.sequence + 1,
+        };
+
+        assert!(recovery_result_is_current(
+            4, 4, 9, 9, current, current, true
+        ));
+        assert!(!recovery_result_is_current(
+            3, 4, 9, 9, current, current, true
+        ));
+        assert!(!recovery_result_is_current(
+            4, 4, 8, 9, current, current, true
+        ));
+        assert!(!recovery_result_is_current(
+            4, 4, 9, 9, other, current, true
+        ));
+        assert!(!recovery_result_is_current(
+            4, 4, 9, 9, current, current, false
+        ));
+    }
+
+    #[test]
+    fn promoted_crypto_trust_refresh_requires_current_live_promoted_session() {
+        assert!(promoted_trust_refresh_is_current(7, 7, true, true));
+        assert!(!promoted_trust_refresh_is_current(6, 7, true, true));
+        assert!(!promoted_trust_refresh_is_current(7, 7, false, true));
+        assert!(!promoted_trust_refresh_is_current(7, 7, true, false));
+    }
+
+    #[test]
+    fn first_restricted_sync_ack_rejects_stale_torn_down_and_promoted_sessions() {
+        assert!(first_restricted_sync_is_current(4, 4, true, false));
+        assert!(!first_restricted_sync_is_current(3, 4, true, false));
+        assert!(!first_restricted_sync_is_current(4, 4, false, false));
+        assert!(!first_restricted_sync_is_current(4, 4, true, true));
+        assert_eq!(unknown_verification_gate().methods, Vec::new());
+        assert_eq!(
+            unknown_verification_gate().account_kind,
+            koushi_state::VerificationAccountKind::Unknown
+        );
+    }
+
+    #[test]
+    fn restricted_sync_rechecks_only_current_unstarted_own_user_flow() {
+        assert!(own_user_sas_recheck_is_current(
+            4, 4, true, false, true, false
+        ));
+        assert!(!own_user_sas_recheck_is_current(
+            3, 4, true, false, true, false
+        ));
+        assert!(!own_user_sas_recheck_is_current(
+            4, 4, false, false, true, false
+        ));
+        assert!(!own_user_sas_recheck_is_current(
+            4, 4, true, true, true, false
+        ));
+        assert!(!own_user_sas_recheck_is_current(
+            4, 4, true, false, false, false
+        ));
+        assert!(!own_user_sas_recheck_is_current(
+            4, 4, true, false, true, true
+        ));
+    }
+
+    #[test]
+    fn unknown_trust_discovers_methods_without_becoming_verified() {
+        assert!(should_discover_verification_methods(
+            koushi_state::CurrentDeviceTrustState::Unknown
+        ));
+        assert!(should_discover_verification_methods(
+            koushi_state::CurrentDeviceTrustState::Unverified
+        ));
+        assert!(!should_discover_verification_methods(
+            koushi_state::CurrentDeviceTrustState::Verified
+        ));
+    }
+
+    #[tokio::test]
+    async fn actor_sas_settlement_emits_exactly_one_terminal_and_clears_runtime() {
+        let cred_dir = tempdir().expect("credential tempdir");
+        let data_dir = tempdir().expect("data tempdir");
+        let store = StoreActor::with_backend(
+            CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+                cred_dir.path(),
+            )),
+            data_dir.path(),
+        );
+        let (action_tx, mut action_rx) = mpsc::channel(16);
+        let (event_tx, _) = broadcast::channel(16);
+        let handle = AccountActor::spawn(store, action_tx, event_tx, LinkPreviewContext::default());
+
+        let cases = [
+            SyntheticVerificationTerminal::Success,
+            SyntheticVerificationTerminal::Cancelled(VerificationCancelReason::User),
+            SyntheticVerificationTerminal::Cancelled(VerificationCancelReason::Mismatch),
+            SyntheticVerificationTerminal::Failed(TrustOperationFailureKind::Timeout),
+            SyntheticVerificationTerminal::Failed(TrustOperationFailureKind::Sdk),
+        ];
+        for (index, terminal) in cases.into_iter().enumerate() {
+            let flow_id = index as u64 + 100;
+            assert!(
+                handle
+                    .send(AccountMessage::ConfigureSyntheticVerification { flow_id })
+                    .await
+            );
+            assert!(
+                handle
+                    .send(AccountMessage::SettleSyntheticVerification { flow_id, terminal })
+                    .await
+            );
+            let actions = action_rx.recv().await.expect("one terminal action");
+            assert_eq!(
+                actions.len(),
+                1,
+                "flow {flow_id} must emit one terminal action"
+            );
+            let terminal_request_id = match (&terminal, actions.as_slice()) {
+                (
+                    SyntheticVerificationTerminal::Success,
+                    [AppAction::VerificationCompleted { request_id }],
+                )
+                | (
+                    SyntheticVerificationTerminal::Cancelled(_),
+                    [AppAction::VerificationCancelled { request_id, .. }],
+                )
+                | (
+                    SyntheticVerificationTerminal::Failed(_),
+                    [AppAction::VerificationFailed { request_id, .. }],
+                ) => *request_id,
+                unexpected => panic!("unexpected terminal projection: {unexpected:?}"),
+            };
+            assert_eq!(terminal_request_id, flow_id);
+
+            let (response, inspected) = oneshot::channel();
+            assert!(
+                handle
+                    .send(AccountMessage::InspectVerificationRuntime { response })
+                    .await
+            );
+            assert_eq!(
+                inspected.await.expect("runtime inspection"),
+                (false, false, false, false, false, false, false)
+            );
+
+            assert!(
+                handle
+                    .send(AccountMessage::SettleSyntheticVerification { flow_id, terminal })
+                    .await
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), action_rx.recv())
+                    .await
+                    .is_err(),
+                "stale terminal duplicated flow {flow_id}"
+            );
+        }
+        shutdown_and_ack(&handle).await;
+    }
+
+    async fn restore_media_test_session(
+        server: &MatrixMockServer,
+        data_dir: &Path,
+    ) -> MatrixClientSession {
+        let persisted = PersistableMatrixSession::from_json(
+            &serde_json::json!({
+                "homeserver": server.uri(),
+                "access_token": "1234",
+                "device_id": "AVATARCACHEDEVICE",
+                "user_id": "@avatar-cache:localhost"
+            })
+            .to_string(),
+        )
+        .expect("synthetic Matrix session");
+        let store_config = koushi_sdk::MatrixClientStoreConfig::new(
+            data_dir.join("matrix-store"),
+            koushi_sdk::MatrixClientStoreKey::new([41; 32]),
+        )
+        .with_cache_path(data_dir.join("matrix-cache"));
+
+        koushi_sdk::restore_session_with_store(&persisted, Some(&store_config))
+            .await
+            .expect("restore media test session")
+    }
+
+    fn assert_directory_does_not_contain_plaintext(root: &Path, plaintext: &[u8]) {
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(path) = pending.pop() {
+            for entry in fs::read_dir(path).expect("read test store directory") {
+                let entry = entry.expect("read test store entry");
+                let file_type = entry.file_type().expect("read test store entry type");
+                if file_type.is_dir() {
+                    pending.push(entry.path());
+                } else if file_type.is_file() {
+                    let bytes = fs::read(entry.path()).expect("read test store file");
+                    assert!(
+                        !bytes
+                            .windows(plaintext.len())
+                            .any(|window| window == plaintext),
+                        "keyed SDK media store must not persist renderable avatar plaintext"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn avatar_download_survives_restart_and_offline_via_keyed_sdk_media_store() {
+        let server = MatrixMockServer::new().await;
+        server.mock_versions().ok().mount().await;
+        server
+            .mock_authed_media_download()
+            .ok_image()
+            .named("avatar fetched from network exactly once")
+            .expect(1)
+            .mount()
+            .await;
+        let data_dir = tempdir().expect("data tempdir");
+        let mxc_uri = "mxc://localhost/persisted-avatar";
+
+        let online_session = restore_media_test_session(&server, data_dir.path()).await;
+        let online = download_avatar_thumbnail(&online_session, mxc_uri)
+            .await
+            .expect("online avatar fetch");
+        let AvatarThumbnailState::Ready { source_url, .. } = online else {
+            panic!("online avatar should be ready");
+        };
+        assert!(source_url.starts_with("koushi-thumbnail://"));
+        assert!(!source_url.starts_with("file://"));
+        drop(online_session);
+        clear_renderable_thumbnail_cache();
+
+        let offline_session = restore_media_test_session(&server, data_dir.path()).await;
+        let offline = download_avatar_thumbnail(&offline_session, mxc_uri)
+            .await
+            .expect("cached avatar should load without a second network request");
+        let AvatarThumbnailState::Ready { source_url, .. } = offline else {
+            panic!("offline cached avatar should be ready");
+        };
+        assert!(source_url.starts_with("koushi-thumbnail://"));
+        assert!(!source_url.starts_with("file://"));
+        assert!(!data_dir.path().join("avatar_thumbnails").exists());
+        assert_directory_does_not_contain_plaintext(data_dir.path(), b"binaryjpegfullimagedata");
+    }
+
+    #[tokio::test]
+    async fn uncached_avatar_offline_preserves_network_failure() {
+        let server = MatrixMockServer::new().await;
+        server.mock_versions().ok().mount().await;
+        let data_dir = tempdir().expect("data tempdir");
+        let session = restore_media_test_session(&server, data_dir.path()).await;
+
+        assert_eq!(
+            download_avatar_thumbnail(&session, "mxc://localhost/uncached-avatar").await,
+            Err(AvatarThumbnailFailureKind::Network)
+        );
+        assert!(!data_dir.path().join("avatar_thumbnails").exists());
+    }
 
     #[test]
     fn account_trace_preserves_typed_request_fields_without_environment_switch() {
@@ -5887,42 +7760,198 @@ mod tests {
         }
     }
 
-    #[test]
-    fn logout_cleanup_is_bounded_and_ordered_before_persistence_removal() {
-        let source = include_str!("account.rs");
-        let body = source
-            .split("    async fn perform_logout")
-            .nth(1)
-            .and_then(|rest| rest.split("    async fn handle_logout").next())
-            .expect("perform_logout body");
+    #[tokio::test]
+    async fn logout_cleanup_is_bounded_and_ordered_before_persistence_removal() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let baseline_files = recursive_file_count(data_dir.path());
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        handle
+            .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+            .await;
+        handle
+            .send(AccountMessage::ConfigureCloseStoreResults {
+                results: vec![false, true],
+            })
+            .await;
+        let request_id = test_request_id();
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id,
+                request: LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ) {}
+        let files_before_logout = recursive_file_count(data_dir.path());
+        assert!(files_before_logout > baseline_files);
 
-        let shutdown = body
-            .find("self.stop_current_session_runtime().await")
-            .expect("logout must stop child actors before cleanup");
-        let server_logout = body
-            .find("logout_server_best_effort(&session).await")
-            .expect("server logout must be bounded best-effort");
-        let drop_session = body.find("drop(session)").expect("session drop");
-        let clear_persistence = body
-            .find("self.clear_account_persistence(key_id).await")
-            .expect("clear account persistence");
+        handle
+            .send(AccountMessage::RejectProvisionalSession { request_id })
+            .await;
+        while probe_rx.recv().await != Some("session_store_close_retrying") {}
+        assert_eq!(recursive_file_count(data_dir.path()), files_before_logout);
+        assert_no_logout_finished(&mut action_rx);
 
-        assert!(
-            shutdown < server_logout,
-            "child actors must release SDK handles before the server logout request"
-        );
-        assert!(
-            server_logout < drop_session,
-            "server logout uses the live session but must not replace local cleanup"
-        );
-        assert!(
-            drop_session < clear_persistence,
-            "SDK handles must be dropped before deleting local persistence"
-        );
-        assert!(
-            !body.contains("koushi_sdk::logout(&session).await"),
-            "logout must not await the network request without a product timeout"
-        );
+        handle
+            .send(AccountMessage::RetrySessionTeardown { generation: 1 })
+            .await;
+        assert_eq!(probe_rx.recv().await, Some("session_store_closed"));
+        assert_eq!(probe_rx.recv().await, Some("session_persistence_deleted"));
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LogoutFinished])
+        ) {}
+        assert_eq!(recursive_file_count(data_dir.path()), baseline_files);
+        loop {
+            if let CoreEvent::Account(AccountEvent::LoggedOut {
+                request_id: terminal,
+                ..
+            }) = event_rx.recv().await.expect("logout event")
+            {
+                assert_eq!(terminal, request_id);
+                break;
+            }
+        }
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_quiesces_provisional_tasks_and_releases_session_without_logout_terminal() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        handle
+            .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+            .await;
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: test_request_id(),
+                request: LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ) {}
+        shutdown_and_ack(&handle).await;
+        let tokens: Vec<_> = std::iter::from_fn(|| probe_rx.try_recv().ok()).collect();
+        assert!(tokens.contains(&"trust_observer_terminated"));
+        assert!(tokens.contains(&"restricted_sync_terminated"));
+        assert!(tokens.contains(&"current_session_released"));
+        assert_no_logout_finished(&mut action_rx);
+        while let Ok(event) = event_rx.try_recv() {
+            assert!(!matches!(
+                event,
+                CoreEvent::Account(AccountEvent::LoggedOut { .. })
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_quiesces_promoted_children_before_releasing_session() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        handle
+            .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+            .await;
+        configure_verified_trust(&handle).await;
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: test_request_id(),
+                request: LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        while probe_rx.try_recv().is_ok() {}
+        shutdown_and_ack(&handle).await;
+        let tokens: Vec<_> = std::iter::from_fn(|| probe_rx.try_recv().ok()).collect();
+        assert!(tokens.contains(&"trust_observer_terminated"));
+        assert!(tokens.contains(&"shutdown_stop_sync_actor"));
+        assert!(tokens.contains(&"shutdown_clear_room_session"));
+        assert_eq!(tokens.last(), Some(&"current_session_released"));
+    }
+
+    #[tokio::test]
+    async fn shutdown_aborts_pending_teardown_retry_and_releases_held_sessions_without_terminal() {
+        let first_homeserver = spawn_quarantine_password_server();
+        let second_homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        handle
+            .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+            .await;
+        let request_id = test_request_id();
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id,
+                request: LoginRequest {
+                    homeserver: first_homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ) {}
+        handle
+            .send(AccountMessage::ConfigureCloseStoreResults {
+                results: vec![false; 8],
+            })
+            .await;
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: RequestId {
+                    connection_id: crate::ids::RuntimeConnectionId(4),
+                    sequence: 2,
+                },
+                request: LoginRequest {
+                    homeserver: second_homeserver,
+                    username: "replacement".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while probe_rx.recv().await != Some("session_store_close_retrying") {}
+        shutdown_and_ack(&handle).await;
+        let tokens: Vec<_> = std::iter::from_fn(|| probe_rx.try_recv().ok()).collect();
+        assert!(tokens.contains(&"teardown_retry_terminated"));
+        assert!(tokens.contains(&"pending_teardown_sessions_released"));
+        assert_no_logout_finished(&mut action_rx);
     }
 
     #[test]
@@ -6040,6 +8069,962 @@ mod tests {
     }
 
     #[test]
+    fn authentication_completion_installs_quarantine_before_ready_side_effects() {
+        let source = include_str!("account.rs");
+        let password = source
+            .split("async fn handle_login_password")
+            .nth(1)
+            .and_then(|body| body.split("async fn handle_restore_session").next())
+            .expect("password handler");
+        let before_success = password
+            .split("AppAction::LoginSucceeded")
+            .next()
+            .expect("password pre-success body");
+        assert!(!before_success.contains("persist_session("));
+        assert!(!before_success.contains("spawn_sync_actor("));
+        assert!(before_success.contains("install_provisional_session"));
+
+        let restore = source
+            .split("async fn restore_account")
+            .nth(1)
+            .and_then(|body| body.split("async fn").next())
+            .expect("restore handler");
+        let before_restore_success = restore
+            .split("AppAction::RestoreSessionSucceeded")
+            .next()
+            .expect("restore pre-success body");
+        assert!(!before_restore_success.contains("spawn_sync_actor("));
+        assert!(before_restore_success.contains("install_provisional_session"));
+    }
+
+    #[test]
+    fn trust_lifecycle_is_generation_safe_and_fail_closed() {
+        use koushi_state::CurrentDeviceTrustState::{Unknown, Unverified, Verified};
+
+        assert_eq!(
+            trust_lifecycle_decision(4, 5, false, Verified),
+            TrustLifecycleDecision::IgnoreStale
+        );
+        assert_eq!(
+            trust_lifecycle_decision(5, 5, false, Unknown),
+            TrustLifecycleDecision::StayGated
+        );
+        assert_eq!(
+            trust_lifecycle_decision(5, 5, false, Unverified),
+            TrustLifecycleDecision::StayGated
+        );
+        assert_eq!(
+            trust_lifecycle_decision(5, 5, false, Verified),
+            TrustLifecycleDecision::Promote
+        );
+        assert_eq!(
+            trust_lifecycle_decision(5, 5, true, Unverified),
+            TrustLifecycleDecision::Lock
+        );
+        assert_eq!(
+            trust_lifecycle_decision(5, 5, true, Unknown),
+            TrustLifecycleDecision::Lock
+        );
+    }
+
+    #[tokio::test]
+    async fn password_quarantine_persists_no_credentials_and_restart_is_signed_out() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let request_id = test_request_id();
+        assert!(
+            handle
+                .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                    request_id,
+                    request: LoginRequest {
+                        homeserver,
+                        username: "fixture-user".to_owned(),
+                        password: koushi_state::AuthSecret::new("synthetic-password"),
+                        device_display_name: Some("Quarantine Test".to_owned()),
+                    },
+                }))
+                .await
+        );
+        let actions = action_rx.recv().await.expect("provisional login action");
+        assert!(matches!(
+            actions.as_slice(),
+            [AppAction::LoginSucceeded { .. }]
+        ));
+
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        assert!(
+            backend
+                .load_last_session()
+                .expect("last pointer read")
+                .is_none()
+        );
+        assert!(
+            backend
+                .load_saved_sessions()
+                .expect("saved index read")
+                .sessions()
+                .is_empty()
+        );
+
+        let _ = handle.send(AccountMessage::Shutdown).await;
+        let (restarted, mut restarted_actions, _events) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        assert!(
+            restarted
+                .send(AccountMessage::Command(
+                    AccountCommand::RestoreLastSession { request_id }
+                ))
+                .await
+        );
+        assert!(matches!(
+            restarted_actions.recv().await.as_deref(),
+            Some([AppAction::RestoreSessionNotFound])
+        ));
+        let _ = restarted.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn oidc_completion_installs_only_a_provisional_quarantined_session() {
+        let homeserver = spawn_quarantine_password_server();
+        let login_session = koushi_sdk::login_with_password_with_store(
+            &LoginRequest {
+                homeserver: homeserver.clone(),
+                username: "fixture-user".to_owned(),
+                password: koushi_state::AuthSecret::new("synthetic-password"),
+                device_display_name: Some("OIDC Quarantine Test".to_owned()),
+            },
+            None,
+        )
+        .await
+        .expect("fixture login");
+
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (_trust_tx, trust_rx) = mpsc::unbounded_channel();
+        let updates = futures_util::stream::unfold(trust_rx, |mut rx| async move {
+            rx.recv().await.map(|trust| (trust, rx))
+        });
+        assert!(
+            handle
+                .send(AccountMessage::ConfigureTrustObservation {
+                    observation: koushi_sdk::CurrentDeviceTrustObservation {
+                        current: koushi_state::CurrentDeviceTrustState::Unknown,
+                        updates: Box::pin(updates),
+                    },
+                })
+                .await
+        );
+        let start_request_id = test_request_id();
+        assert!(
+            handle
+                .send(AccountMessage::ConfigureOidcCompletion {
+                    start_request_id,
+                    homeserver: homeserver.clone(),
+                    session: login_session,
+                })
+                .await
+        );
+        let completion_request_id = RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(41),
+            sequence: 7,
+        };
+        assert!(
+            handle
+                .send(AccountMessage::Command(AccountCommand::CompleteOidcLogin {
+                    request_id: completion_request_id,
+                    callback_url: "http://127.0.0.1/callback?code=fixture&state=fixture".to_owned(),
+                },))
+                .await
+        );
+        assert!(matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::AuthenticationStarted {
+                attempt_id,
+                homeserver: projected_homeserver,
+            }]) if *attempt_id == LoginAttemptId::new(41, 7)
+                && projected_homeserver == &homeserver
+        ));
+        assert!(matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { attempt_id, .. }])
+                if *attempt_id == LoginAttemptId::new(41, 7)
+        ));
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, false, false, true)
+        );
+
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        assert!(backend.load_last_session().expect("pointer read").is_none());
+        assert!(
+            backend
+                .load_saved_sessions()
+                .expect("index read")
+                .sessions()
+                .is_empty()
+        );
+        assert!(
+            executor::timeout(Duration::from_millis(100), async {
+                loop {
+                    match event_rx.recv().await.expect("event stream") {
+                        CoreEvent::Account(AccountEvent::LoggedIn { .. }) | CoreEvent::Sync(_) => {
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+            })
+            .await
+            .is_err(),
+            "OIDC completion escaped quarantine before Verified"
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn provisional_rejection_deletes_keyed_store_before_signed_out_ack() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        assert!(
+            handle
+                .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+                .await
+        );
+        let baseline_files = recursive_file_count(data_dir.path());
+        let request_id = test_request_id();
+        assert!(
+            handle
+                .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                    request_id,
+                    request: LoginRequest {
+                        homeserver,
+                        username: "fixture-user".to_owned(),
+                        password: koushi_state::AuthSecret::new("synthetic-password"),
+                        device_display_name: Some("Quarantine Test".to_owned()),
+                    },
+                }))
+                .await
+        );
+        assert!(matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ));
+        assert!(
+            recursive_file_count(data_dir.path()) > baseline_files,
+            "keyed store was not created"
+        );
+
+        assert!(
+            handle
+                .send(AccountMessage::RejectProvisionalSession { request_id })
+                .await
+        );
+        loop {
+            let actions = action_rx.recv().await.expect("rejection action");
+            if matches!(actions.as_slice(), [AppAction::LogoutFinished]) {
+                assert_eq!(
+                    probe_rx.try_recv(),
+                    Ok("trust_observer_terminated"),
+                    "LogoutFinished preceded trust-observer termination"
+                );
+                assert_eq!(
+                    probe_rx.try_recv(),
+                    Ok("restricted_sync_terminated"),
+                    "LogoutFinished preceded restricted-sync termination"
+                );
+                assert_eq!(
+                    recursive_file_count(data_dir.path()),
+                    baseline_files,
+                    "SignedOut ack preceded keyed-store deletion"
+                );
+                break;
+            }
+        }
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        assert!(backend.load_last_session().expect("pointer read").is_none());
+        assert!(
+            backend
+                .load_saved_sessions()
+                .expect("index read")
+                .sessions()
+                .is_empty()
+        );
+        shutdown_and_ack(&handle).await;
+        let (restarted, mut restarted_actions, _restarted_events) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let restore_id = RequestId {
+            connection_id: RuntimeConnectionId(19),
+            sequence: 1,
+        };
+        assert!(
+            restarted
+                .send(AccountMessage::Command(
+                    AccountCommand::RestoreLastSession {
+                        request_id: restore_id,
+                    },
+                ))
+                .await
+        );
+        assert!(matches!(
+            restarted_actions.recv().await.as_deref(),
+            Some([AppAction::RestoreSessionNotFound])
+        ));
+        shutdown_and_ack(&restarted).await;
+    }
+
+    #[tokio::test]
+    async fn teardown_close_failure_retries_without_early_ack_and_preserves_request_correlation() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        handle
+            .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+            .await;
+        handle
+            .send(AccountMessage::ConfigureCloseStoreResults {
+                results: vec![false, true],
+            })
+            .await;
+        let original = test_request_id();
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: original,
+                request: LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: Some("Teardown Retry Test".to_owned()),
+                },
+            }))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ) {}
+        handle
+            .send(AccountMessage::RejectProvisionalSession {
+                request_id: original,
+            })
+            .await;
+        while probe_rx.recv().await != Some("session_store_close_retrying") {}
+        assert_no_logout_finished(&mut action_rx);
+
+        let later = RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(77),
+            sequence: 2,
+        };
+        handle
+            .send(AccountMessage::RejectProvisionalSession { request_id: later })
+            .await;
+        loop {
+            if let CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            } = event_rx.recv().await.expect("failure event")
+                && request_id == later
+            {
+                assert_eq!(failure, CoreFailure::SessionRequired);
+                break;
+            }
+        }
+        handle
+            .send(AccountMessage::RetrySessionTeardown { generation: 999 })
+            .await;
+        assert_no_logout_finished(&mut action_rx);
+        handle
+            .send(AccountMessage::RetrySessionTeardown { generation: 1 })
+            .await;
+        assert_eq!(probe_rx.recv().await, Some("session_store_closed"));
+        assert_eq!(probe_rx.recv().await, Some("session_persistence_deleted"));
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LogoutFinished])
+        ) {}
+        loop {
+            if let CoreEvent::Account(AccountEvent::LoggedOut { request_id, .. }) =
+                event_rx.recv().await.expect("logout event")
+            {
+                assert_eq!(request_id, original);
+                break;
+            }
+        }
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn permanent_close_failures_never_ack_before_a_success_barrier() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        handle
+            .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+            .await;
+        handle
+            .send(AccountMessage::ConfigureCloseStoreResults {
+                results: vec![false; 16],
+            })
+            .await;
+        let request_id = test_request_id();
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id,
+                request: LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ) {}
+        handle
+            .send(AccountMessage::RejectProvisionalSession { request_id })
+            .await;
+        for _ in 0..4 {
+            while probe_rx.recv().await != Some("session_store_close_retrying") {}
+            assert_no_logout_finished(&mut action_rx);
+            handle
+                .send(AccountMessage::RetrySessionTeardown { generation: 1 })
+                .await;
+        }
+        assert_no_logout_finished(&mut action_rx);
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn replacement_install_waits_for_provisional_tasks_to_terminate() {
+        let first_homeserver = spawn_quarantine_password_server();
+        let second_homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        assert!(
+            handle
+                .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+                .await
+        );
+        for homeserver in [first_homeserver, second_homeserver] {
+            let request_id = test_request_id();
+            assert!(
+                handle
+                    .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                        request_id,
+                        request: LoginRequest {
+                            homeserver,
+                            username: "fixture-user".to_owned(),
+                            password: koushi_state::AuthSecret::new("synthetic-password"),
+                            device_display_name: Some("Replacement Barrier Test".to_owned()),
+                        },
+                    }))
+                    .await
+            );
+            loop {
+                if matches!(
+                    action_rx.recv().await.as_deref(),
+                    Some([AppAction::LoginSucceeded { .. }])
+                ) {
+                    break;
+                }
+            }
+        }
+        assert_eq!(probe_rx.try_recv(), Ok("trust_observer_terminated"));
+        assert_eq!(probe_rx.try_recv(), Ok("restricted_sync_terminated"));
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn replacement_close_failure_holds_incoming_until_generation_retry_succeeds() {
+        let first_homeserver = spawn_quarantine_password_server();
+        let second_homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        handle
+            .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+            .await;
+        let first_request = test_request_id();
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: first_request,
+                request: LoginRequest {
+                    homeserver: first_homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ) {}
+        handle
+            .send(AccountMessage::ConfigureCloseStoreResults {
+                results: vec![false, true],
+            })
+            .await;
+        let replacement_request = RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(2),
+            sequence: 2,
+        };
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: replacement_request,
+                request: LoginRequest {
+                    homeserver: second_homeserver.clone(),
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while probe_rx.recv().await != Some("session_store_close_retrying") {}
+        assert_no_login_succeeded_for(&mut action_rx, &second_homeserver);
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (false, false, false, false)
+        );
+
+        let later = RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(3),
+            sequence: 3,
+        };
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: later,
+                request: LoginRequest {
+                    homeserver: "http://127.0.0.1:9".to_owned(),
+                    username: "later".to_owned(),
+                    password: koushi_state::AuthSecret::new("not-used"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        loop {
+            if let CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            } = event_rx.recv().await.expect("later rejection")
+                && request_id == later
+            {
+                assert_eq!(failure, CoreFailure::SessionRequired);
+                break;
+            }
+        }
+        handle
+            .send(AccountMessage::RetrySessionTeardown { generation: 999 })
+            .await;
+        assert_no_login_succeeded_for(&mut action_rx, &second_homeserver);
+        handle
+            .send(AccountMessage::RetrySessionTeardown { generation: 1 })
+            .await;
+        while probe_rx.recv().await != Some("replacement_teardown_complete") {}
+        loop {
+            let actions = action_rx.recv().await.expect("replacement action");
+            if matches!(
+                actions.as_slice(),
+                [AppAction::LoginSucceeded { info, .. }] if info.homeserver == second_homeserver
+            ) {
+                break;
+            }
+        }
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, false, false, true)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn real_store_switch_a_to_b_preserves_both_accounts_and_switches_back() {
+        let server_a = spawn_named_quarantine_password_server("@alpha:example.invalid", "DEVICEA");
+        let server_b = spawn_named_quarantine_password_server("@beta:example.invalid", "DEVICEB");
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+
+        for (sequence, homeserver) in [(1, server_a.clone()), (2, server_b.clone())] {
+            configure_verified_trust(&handle).await;
+            let request_id = RequestId {
+                connection_id: crate::ids::RuntimeConnectionId(9),
+                sequence,
+            };
+            handle
+                .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                    request_id,
+                    request: LoginRequest {
+                        homeserver,
+                        username: "fixture".to_owned(),
+                        password: koushi_state::AuthSecret::new("synthetic-password"),
+                        device_display_name: None,
+                    },
+                }))
+                .await;
+            acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        }
+
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        let saved = backend.load_saved_sessions().expect("saved index");
+        assert_eq!(saved.sessions().len(), 2);
+        let alpha_key = saved
+            .sessions()
+            .iter()
+            .find(|key| key.user_id == "@alpha:example.invalid")
+            .expect("alpha saved")
+            .clone();
+        let beta_key = saved
+            .sessions()
+            .iter()
+            .find(|key| key.user_id == "@beta:example.invalid")
+            .expect("beta saved")
+            .clone();
+        assert!(backend.load_matrix_session(&alpha_key).is_ok());
+        assert!(backend.load_matrix_session(&beta_key).is_ok());
+
+        for (sequence, user_id) in [(3, "@alpha:example.invalid"), (4, "@beta:example.invalid")] {
+            configure_verified_trust(&handle).await;
+            handle
+                .send(AccountMessage::Command(AccountCommand::SwitchAccount {
+                    request_id: RequestId {
+                        connection_id: crate::ids::RuntimeConnectionId(9),
+                        sequence,
+                    },
+                    account_key: AccountKey(user_id.to_owned()),
+                }))
+                .await;
+            acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+            let saved = backend
+                .load_saved_sessions()
+                .expect("saved index after switch");
+            assert_eq!(saved.sessions().len(), 2);
+            assert!(backend.load_matrix_session(&alpha_key).is_ok());
+            assert!(backend.load_matrix_session(&beta_key).is_ok());
+            assert_eq!(
+                backend
+                    .load_last_session()
+                    .expect("last pointer after switch")
+                    .expect("last pointer present")
+                    .user_id,
+                user_id
+            );
+        }
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn same_key_replacement_preserves_open_store_and_restores_again_once() {
+        let homeserver =
+            spawn_named_quarantine_password_server("@same-key:example.invalid", "SAMEDEVICE");
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        for sequence in [1, 2] {
+            configure_verified_trust(&handle).await;
+            handle
+                .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                    request_id: RequestId {
+                        connection_id: crate::ids::RuntimeConnectionId(11),
+                        sequence,
+                    },
+                    request: LoginRequest {
+                        homeserver: homeserver.clone(),
+                        username: "same-key".to_owned(),
+                        password: koushi_state::AuthSecret::new("synthetic-password"),
+                        device_display_name: None,
+                    },
+                }))
+                .await;
+            acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        }
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        let saved = backend.load_saved_sessions().expect("saved same-key index");
+        assert_eq!(saved.sessions().len(), 1);
+        let key_id = saved.sessions()[0].clone();
+        assert!(backend.load_matrix_session(&key_id).is_ok());
+        assert!(recursive_file_count(data_dir.path()) > 0);
+
+        configure_verified_trust(&handle).await;
+        handle
+            .send(AccountMessage::Command(AccountCommand::SwitchAccount {
+                request_id: RequestId {
+                    connection_id: crate::ids::RuntimeConnectionId(11),
+                    sequence: 3,
+                },
+                account_key: AccountKey("@same-key:example.invalid".to_owned()),
+            }))
+            .await;
+        acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        assert!(backend.load_matrix_session(&key_id).is_ok());
+        assert!(recursive_file_count(data_dir.path()) > 0);
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, true, true, true)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    async fn inspect_session_runtime(handle: &AccountActorHandle) -> (bool, bool, bool, bool) {
+        let (response, result) = oneshot::channel();
+        assert!(
+            handle
+                .send(AccountMessage::InspectSessionRuntime { response })
+                .await
+        );
+        result.await.expect("runtime inspection")
+    }
+
+    async fn shutdown_and_ack(handle: &AccountActorHandle) {
+        let (acknowledged, ack) = oneshot::channel();
+        assert!(
+            handle
+                .send(AccountMessage::ShutdownWithAck { acknowledged })
+                .await
+        );
+        ack.await.expect("account shutdown acknowledgement");
+    }
+
+    async fn configure_verified_trust(handle: &AccountActorHandle) {
+        let updates = futures_util::stream::pending();
+        assert!(
+            handle
+                .send(AccountMessage::ConfigureTrustObservation {
+                    observation: koushi_sdk::CurrentDeviceTrustObservation {
+                        current: koushi_state::CurrentDeviceTrustState::Verified,
+                        updates: Box::pin(updates),
+                    },
+                })
+                .await
+        );
+    }
+
+    async fn acknowledge_next_verified_projection(
+        handle: &AccountActorHandle,
+        action_rx: &mut mpsc::Receiver<Vec<AppAction>>,
+    ) {
+        let generation = loop {
+            let actions = action_rx.recv().await.expect("account actions");
+            if let [
+                AppAction::AuthoritativeDeviceTrustChanged {
+                    generation,
+                    trust: koushi_state::CurrentDeviceTrustState::Verified,
+                },
+            ] = actions.as_slice()
+            {
+                break *generation;
+            }
+        };
+        assert!(
+            handle
+                .send(AccountMessage::TrustProjectionApplied {
+                    generation,
+                    ready: true,
+                    locked: false,
+                })
+                .await
+        );
+        assert_eq!(
+            inspect_session_runtime(handle).await,
+            (true, true, true, true)
+        );
+    }
+
+    fn assert_no_logout_finished(action_rx: &mut mpsc::Receiver<Vec<AppAction>>) {
+        while let Ok(actions) = action_rx.try_recv() {
+            assert!(
+                !matches!(actions.as_slice(), [AppAction::LogoutFinished]),
+                "teardown acknowledged logout before close barrier"
+            );
+        }
+    }
+
+    fn assert_no_login_succeeded_for(
+        action_rx: &mut mpsc::Receiver<Vec<AppAction>>,
+        homeserver: &str,
+    ) {
+        while let Ok(actions) = action_rx.try_recv() {
+            assert!(!matches!(
+                actions.as_slice(),
+                [AppAction::LoginSucceeded { info, .. }] if info.homeserver == homeserver
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_installs_provisional_without_normal_sync_or_public_ready_event() {
+        let homeserver = spawn_quarantine_password_server();
+        let login = koushi_sdk::login_with_password_with_store(
+            &LoginRequest {
+                homeserver,
+                username: "fixture-user".to_owned(),
+                password: koushi_state::AuthSecret::new("synthetic-password"),
+                device_display_name: Some("Quarantine Test".to_owned()),
+            },
+            None,
+        )
+        .await
+        .expect("fixture login");
+        let key_id = session_key_id_from_info(&login.info);
+        let stored = StoredMatrixSession::new(
+            login
+                .persistable_session()
+                .expect("persistable")
+                .to_json()
+                .expect("json"),
+        );
+        drop(login);
+
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        backend
+            .save_matrix_session(&key_id, &stored)
+            .expect("session seed");
+        backend.remember_saved_session(&key_id).expect("index seed");
+        backend.save_last_session(&key_id).expect("pointer seed");
+
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let request_id = test_request_id();
+        assert!(
+            handle
+                .send(AccountMessage::Command(
+                    AccountCommand::RestoreLastSession { request_id }
+                ))
+                .await
+        );
+        assert!(matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::RestoreSessionSucceeded(_)])
+        ));
+        let public_ready = executor::timeout(Duration::from_millis(100), async {
+            loop {
+                match event_rx.recv().await.expect("event stream") {
+                    CoreEvent::Account(AccountEvent::SessionRestored { .. })
+                    | CoreEvent::Sync(_) => return true,
+                    _ => {}
+                }
+            }
+        })
+        .await;
+        assert!(
+            public_ready.is_err(),
+            "restore escaped quarantine before Verified"
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    fn recursive_file_count(path: &std::path::Path) -> usize {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .map(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    recursive_file_count(&path)
+                } else {
+                    1
+                }
+            })
+            .sum()
+    }
+
+    fn spawn_quarantine_password_server() -> String {
+        spawn_named_quarantine_password_server("@fixture-user:example.invalid", "FIXTUREDEVICE")
+    }
+
+    fn spawn_named_quarantine_password_server(
+        user_id: &'static str,
+        device_id: &'static str,
+    ) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("address");
+        std::thread::spawn(move || {
+            for _ in 0..256 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    let count = stream.read(&mut buffer).expect("read");
+                    request.extend_from_slice(&buffer[..count]);
+                    let text = String::from_utf8_lossy(&request);
+                    let Some(end) = text.find("\r\n\r\n") else {
+                        continue;
+                    };
+                    let length = text
+                        .lines()
+                        .find_map(|line| line.strip_prefix("Content-Length: "))
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let body = if text.starts_with("GET /_matrix/client/versions ") {
+                    r#"{"versions":["v1.7"]}"#.to_owned()
+                } else if text.contains("/_matrix/client/") && text.contains("login") {
+                    format!(
+                        r#"{{"access_token":"fixture-token","device_id":"{device_id}","user_id":"{user_id}"}}"#
+                    )
+                } else if text.contains("/_matrix/client/") && text.contains("/sync") {
+                    std::thread::sleep(Duration::from_millis(20));
+                    r#"{"next_batch":"batch","device_lists":{"changed":[],"left":[]},"rooms":{"invite":{},"join":{},"leave":{},"knock":{}},"to_device":{"events":[]},"presence":{"events":[]},"account_data":{"events":[]},"device_one_time_keys_count":{}}"#.to_owned()
+                } else {
+                    r#"{"errcode":"M_NOT_FOUND","error":"not found"}"#.to_owned()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).expect("write");
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[test]
     fn restore_trace_covers_startup_restore_boundaries_without_private_ids() {
         let source = include_str!("account.rs");
         let restore_last = source
@@ -6081,12 +9066,8 @@ mod tests {
             ),
             "restore must log successful SDK store restore before sync starts"
         );
-        assert!(
-            restore_account.contains(
-                "trace_account_request(\"restore_account\", request_id, \"sync_actor_spawned\")"
-            ),
-            "restore must log that the SyncActor was spawned"
-        );
+        assert!(restore_account.contains("install_provisional_session"));
+        assert!(!restore_account.contains("sync_actor_spawned"));
         assert!(
             source.contains("DiagnosticField::request_id"),
             "restore diagnostics must include request ids for correlation"
@@ -6123,17 +9104,20 @@ mod tests {
                 );
             }
         }
-        assert!(
-            login_body.contains("self.spawn_account_hydration(session_arc.clone())"),
-            "login should schedule optional profile/account-data hydration after emitting LoggedIn"
-        );
+        assert!(!login_body.contains("spawn_account_hydration"));
+        let promotion = source
+            .split("async fn handle_current_device_trust")
+            .nth(1)
+            .and_then(|body| body.split("async fn persist_session").next())
+            .expect("trust promotion handler");
+        assert!(promotion.contains("spawn_account_hydration"));
     }
 
     #[test]
     fn async_account_hydration_is_generation_gated() {
         let source = include_str!("account.rs");
         let production_source = source
-            .split("#[cfg(test)]")
+            .split("#[cfg(test)]\nmod tests")
             .next()
             .expect("production source should precede tests");
         assert!(
@@ -6243,7 +9227,7 @@ mod tests {
     fn account_actor_reducer_actions_use_reliable_delivery() {
         let source = include_str!("account.rs");
         let production_source = source
-            .split("#[cfg(test)]")
+            .split("#[cfg(test)]\nmod tests")
             .next()
             .expect("production source should precede tests");
         let send_actions_body = production_source
@@ -6327,6 +9311,66 @@ mod tests {
         let (event_tx, event_rx) = broadcast::channel(16);
         let handle = AccountActor::spawn(store, action_tx, event_tx, LinkPreviewContext::default());
         (handle, action_rx, event_rx)
+    }
+
+    #[tokio::test]
+    async fn recovery_cancel_is_processed_while_task_is_pending_and_stale_result_is_ignored() {
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let flow_id = 71;
+        assert!(
+            handle
+                .send(AccountMessage::ConfigureSyntheticRecoveryTask { flow_id })
+                .await
+        );
+        assert!(
+            handle
+                .send(AccountMessage::Command(
+                    AccountCommand::CancelVerification {
+                        request_id: test_request_id(),
+                        flow_id,
+                        reason: VerificationCancelReason::User,
+                    },
+                ))
+                .await
+        );
+        let actions = tokio::time::timeout(std::time::Duration::from_secs(1), action_rx.recv())
+            .await
+            .expect("cancel projection timeout")
+            .expect("cancel projection");
+        assert_eq!(
+            actions,
+            vec![AppAction::VerificationGateAttemptFailed {
+                kind: koushi_state::VerificationGateFailureKind::Cancelled,
+            }]
+        );
+        let (response, pending) = oneshot::channel();
+        assert!(
+            handle
+                .send(AccountMessage::InspectRecoveryTask { response })
+                .await
+        );
+        assert!(!pending.await.expect("recovery task inspection"));
+
+        assert!(
+            handle
+                .send(AccountMessage::RecoveryFinished {
+                    generation: 0,
+                    flow_id,
+                    request_id: incoming_verification_request_id(flow_id),
+                    result: Ok(()),
+                })
+                .await
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), action_rx.recv())
+                .await
+                .is_err(),
+            "stale recovery result must not project a second terminal"
+        );
+        shutdown_and_ack(&handle).await;
     }
 
     /// Network-free: `RestoreLastSession` with no last-session pointer is the
@@ -6575,6 +9619,22 @@ mod tests {
         let mut actor = AccountActor {
             session: None,
             session_key_id: Some(key_id.clone()),
+            provisional_persistable: None,
+            session_promoted: false,
+            trust_generation: 0,
+            trust_observer: None,
+            verification_method_discovery_task: None,
+            verification_method_discovery_serial: 0,
+            recovery_task: None,
+            restricted_sync: None,
+            pending_ready_events: Vec::new(),
+            pending_trust_transition: None,
+            pending_session_teardown: None,
+            next_teardown_generation: 0,
+            teardown_retry_task: None,
+            lifecycle_probe: None,
+            trust_observation_override: std::sync::Mutex::new(None),
+            close_store_results: std::collections::VecDeque::new(),
             store,
             action_tx,
             event_tx,
@@ -6587,6 +9647,7 @@ mod tests {
             data_dir: data_dir_path,
             link_preview_policy: LinkPreviewContext::default(),
             pending_oidc_login: None,
+            oidc_completion_override: None,
             search_actor: None,
             threads_list_actor: None,
             recovery_observer: None,
@@ -6597,8 +9658,11 @@ mod tests {
             pending_uia_operations: BTreeMap::new(),
             verification_request: None,
             sas_verification: None,
+            own_user_verification: None,
             verification_request_observer: None,
             sas_verification_observer: None,
+            sas_timeout_task: None,
+            synthetic_verification: None,
             incoming_verification_observer: None,
             session_change_observer: None,
             account_hydration_task: None,

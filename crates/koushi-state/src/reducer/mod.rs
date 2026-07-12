@@ -67,14 +67,51 @@ pub(crate) fn recompute_room_list_projection(state: &mut AppState) {
 pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
     match action {
         AppAction::AppStarted => session::handle_app_started(state),
-        AppAction::RestoreSessionSucceeded(info) | AppAction::LoginSucceeded(info) => {
-            session::handle_restore_or_login_succeeded(state, info)
+        AppAction::RestoreSessionRequested => session::handle_restore_session_requested(state),
+        AppAction::RestoreSessionSucceeded(info) => {
+            session::handle_restore_session_succeeded(state, info)
+        }
+        AppAction::LoginSucceeded { attempt_id, info } => {
+            session::handle_login_succeeded(state, attempt_id, info)
+        }
+        AppAction::CurrentDeviceTrustChanged(trust) => {
+            session::handle_current_device_trust_changed(state, trust)
+        }
+        AppAction::AuthoritativeDeviceTrustChanged { trust, .. } => {
+            session::handle_authoritative_device_trust_changed(state, trust)
+        }
+        AppAction::VerificationMethodsDiscovered(gate) => {
+            session::handle_verification_methods_discovered(state, gate)
+        }
+        AppAction::VerificationMethodSubmitted { method, flow_id } => {
+            session::handle_verification_method_submitted(state, method, flow_id)
+        }
+        AppAction::GateSasPresented { flow_id, emojis } => {
+            e2ee::handle_gate_sas_presented(state, flow_id, emojis)
+        }
+        AppAction::VerificationGateAttemptFailed { kind } => {
+            session::handle_verification_gate_attempt_failed(state, kind)
+        }
+        AppAction::VerificationSessionRejected { reason } => {
+            session::handle_verification_session_rejected(state, reason)
+        }
+        AppAction::BootstrapRecoveryKeyDelivered { flow_id } => {
+            session::handle_bootstrap_recovery_key_delivered(state, flow_id)
+        }
+        AppAction::BootstrapRecoveryKeyDeliveryFailed { flow_id, kind } => {
+            session::handle_bootstrap_recovery_key_delivery_failed(state, flow_id, kind)
+        }
+        AppAction::BootstrapRecoverySavedConfirmed { flow_id } => {
+            session::handle_bootstrap_recovery_saved_confirmed(state, flow_id)
+        }
+        AppAction::ProvisionalSessionDiscarded => {
+            session::handle_provisional_session_discarded(state)
         }
         AppAction::E2eeRecoveryRequired { info, methods } => {
             e2ee::handle_e2ee_recovery_required(state, info, methods)
         }
-        AppAction::E2eeRecoverySubmitted(request) => {
-            e2ee::handle_e2ee_recovery_submitted(state, request)
+        AppAction::E2eeRecoverySubmitted { flow_id, request } => {
+            e2ee::handle_e2ee_recovery_submitted(state, flow_id, request)
         }
         AppAction::E2eeRecoverySucceeded => e2ee::handle_e2ee_recovery_succeeded(state),
         AppAction::E2eeRecoveryFailed { message } => {
@@ -227,8 +264,18 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::RestoreSessionFailed { message } => {
             session::handle_restore_session_failed(state, message)
         }
-        AppAction::LoginSubmitted(request) => session::handle_login_submitted(state, request),
-        AppAction::LoginFailed { message } => session::handle_login_failed(state, message),
+        AppAction::LoginSubmitted {
+            attempt_id,
+            request,
+        } => session::handle_login_submitted(state, attempt_id, request),
+        AppAction::AuthenticationStarted {
+            attempt_id,
+            homeserver,
+        } => session::handle_authentication_started(state, attempt_id, homeserver),
+        AppAction::LoginFailed {
+            attempt_id,
+            message,
+        } => session::handle_login_failed(state, attempt_id, message),
         AppAction::LoginDiscoveryRequested { homeserver } => {
             session::handle_login_discovery_requested(state, homeserver)
         }
@@ -1097,22 +1144,21 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
 }
 
 pub(crate) fn is_session_ready(state: &AppState) -> bool {
-    matches!(
-        state.session,
-        SessionState::Ready(_)
-            | SessionState::NeedsRecovery { .. }
-            | SessionState::Recovering { .. }
-    )
+    matches!(state.session, SessionState::Ready(_))
 }
 
 pub(crate) fn has_session_projection_context(state: &AppState) -> bool {
+    matches!(state.session, SessionState::Ready(_))
+}
+
+pub(crate) fn has_verification_gate_projection_context(state: &AppState) -> bool {
     matches!(
         state.session,
-        SessionState::Ready(_)
-            | SessionState::NeedsRecovery { .. }
-            | SessionState::Recovering { .. }
-            | SessionState::Locked(_)
-            | SessionState::SwitchingAccount { .. }
+        SessionState::Provisional { .. }
+            | SessionState::AwaitingVerification { .. }
+            | SessionState::Verifying { .. }
+            | SessionState::AwaitingBootstrapConfirmation { .. }
+            | SessionState::Rejecting { .. }
     )
 }
 
@@ -1125,8 +1171,11 @@ pub(crate) fn clear_login_failed_errors(state: &mut AppState) -> bool {
 pub(crate) fn session_user_id(state: &AppState) -> Option<&str> {
     match &state.session {
         SessionState::Ready(info)
-        | SessionState::NeedsRecovery { info, .. }
-        | SessionState::Recovering { info, .. }
+        | SessionState::Provisional { info, .. }
+        | SessionState::AwaitingVerification { info, .. }
+        | SessionState::Verifying { info, .. }
+        | SessionState::AwaitingBootstrapConfirmation { info, .. }
+        | SessionState::Rejecting { info, .. }
         | SessionState::Locked(info)
         | SessionState::SwitchingAccount { info } => Some(info.user_id.as_str()),
         _ => None,
@@ -1135,8 +1184,11 @@ pub(crate) fn session_user_id(state: &AppState) -> Option<&str> {
 
 pub(crate) fn current_session_info(state: &AppState) -> Option<crate::state::SessionInfo> {
     match &state.session {
-        SessionState::NeedsRecovery { info, .. }
-        | SessionState::Recovering { info, .. }
+        SessionState::Provisional { info, .. }
+        | SessionState::AwaitingVerification { info, .. }
+        | SessionState::Verifying { info, .. }
+        | SessionState::AwaitingBootstrapConfirmation { info, .. }
+        | SessionState::Rejecting { info, .. }
         | SessionState::Ready(info)
         | SessionState::Locked(info) => Some(info.clone()),
         SessionState::SignedOut

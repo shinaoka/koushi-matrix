@@ -18,12 +18,13 @@ use koushi_state::{
     DeviceSessionListState, DirectoryState, DisplayPlatform, E2eeTrustState, FilesViewState,
     FocusedContextState, InvitePreview, InviteWorkflowState, LinkPreviewSettingsState,
     LiveSignalsState, LocalEncryptionState, LocaleDisplayProfile, NativeAttentionCapabilities,
-    NativeAttentionState, NavigationState, ProfileState, QrLoginState, RecoveryMethod,
+    NativeAttentionState, NavigationState, ProfileState, ProvisionalPhase, QrLoginState,
     RoomInteractionState, RoomListProjection, RoomManagementState, RoomNotificationSettings,
     RoomPreferencesState, RoomSummary, SearchCrawlerState, SearchMatchField, SearchMatchKind,
     SearchResult, SearchScope, SearchState, SessionState, SettingsState, SidebarModel,
     SoftLogoutReauthState, SpaceSummary, SyncMode, SyncState, ThreadAttentionState,
     ThreadPaneState, ThreadsListState, TimelinePaneState, TypographyDisplayProfile,
+    VerificationGateRejectReason, VerificationGateState, VerificationMethod,
     native_attention_capabilities_for_platform, resolve_locale_display_profile,
     resolve_typography_display_profile,
 };
@@ -482,18 +483,42 @@ pub enum FrontendSessionState {
     },
     Authenticating {
         homeserver: String,
+        attempt_id: FrontendLoginAttemptId,
     },
-    NeedsRecovery {
+    Provisional {
         homeserver: String,
         user_id: String,
         device_id: String,
-        recovery_methods: Vec<RecoveryMethod>,
+        phase: ProvisionalPhase,
     },
-    Recovering {
+    AwaitingVerification {
         homeserver: String,
         user_id: String,
         device_id: String,
-        recovery_methods: Vec<RecoveryMethod>,
+        gate: VerificationGateState,
+    },
+    Verifying {
+        homeserver: String,
+        user_id: String,
+        device_id: String,
+        gate: VerificationGateState,
+        method: VerificationMethod,
+        flow_id: u64,
+        sas_emojis: Vec<koushi_state::SasEmoji>,
+    },
+    AwaitingBootstrapConfirmation {
+        homeserver: String,
+        user_id: String,
+        device_id: String,
+        gate: VerificationGateState,
+        flow_id: u64,
+        destination_written: bool,
+    },
+    Rejecting {
+        homeserver: String,
+        user_id: String,
+        device_id: String,
+        reason: VerificationGateRejectReason,
     },
     Ready {
         homeserver: String,
@@ -508,6 +533,12 @@ pub enum FrontendSessionState {
     LoggingOut,
 }
 
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct FrontendLoginAttemptId {
+    pub connection_id: u64,
+    pub sequence: u64,
+}
+
 impl From<SessionState> for FrontendSessionState {
     fn from(session: SessionState) -> Self {
         match session {
@@ -518,18 +549,61 @@ impl From<SessionState> for FrontendSessionState {
                 user_id: info.user_id,
                 device_id: info.device_id,
             },
-            SessionState::Authenticating { homeserver } => Self::Authenticating { homeserver },
-            SessionState::NeedsRecovery { info, methods } => Self::NeedsRecovery {
-                homeserver: info.homeserver,
-                user_id: info.user_id,
-                device_id: info.device_id,
-                recovery_methods: methods,
+            SessionState::Authenticating {
+                homeserver,
+                attempt_id,
+            } => Self::Authenticating {
+                homeserver,
+                attempt_id: FrontendLoginAttemptId {
+                    connection_id: attempt_id.connection_id(),
+                    sequence: attempt_id.sequence(),
+                },
             },
-            SessionState::Recovering { info, methods } => Self::Recovering {
+            SessionState::Provisional { info, phase } => Self::Provisional {
                 homeserver: info.homeserver,
                 user_id: info.user_id,
                 device_id: info.device_id,
-                recovery_methods: methods,
+                phase,
+            },
+            SessionState::AwaitingVerification { info, gate } => Self::AwaitingVerification {
+                homeserver: info.homeserver,
+                user_id: info.user_id,
+                device_id: info.device_id,
+                gate,
+            },
+            SessionState::Verifying {
+                info,
+                gate,
+                method,
+                flow_id,
+                sas_emojis,
+            } => Self::Verifying {
+                homeserver: info.homeserver,
+                user_id: info.user_id,
+                device_id: info.device_id,
+                gate,
+                method,
+                flow_id,
+                sas_emojis,
+            },
+            SessionState::AwaitingBootstrapConfirmation {
+                info,
+                gate,
+                flow_id,
+                destination_written,
+            } => Self::AwaitingBootstrapConfirmation {
+                homeserver: info.homeserver,
+                user_id: info.user_id,
+                device_id: info.device_id,
+                gate,
+                flow_id,
+                destination_written,
+            },
+            SessionState::Rejecting { info, reason } => Self::Rejecting {
+                homeserver: info.homeserver,
+                user_id: info.user_id,
+                device_id: info.device_id,
+                reason,
             },
             SessionState::Ready(info) => Self::Ready {
                 homeserver: info.homeserver,
@@ -792,9 +866,9 @@ mod tests {
     use super::{FrontendDesktopSnapshot, FrontendSyncState, frontend_display_platform};
     use koushi_state::{
         AppState, AvatarImage, AvatarThumbnailState, EmojiPreference, FontPreference,
-        InvitePreview, LocaleSettings, OwnProfile, RecoveryMethod, RoomSummary, RoomTags,
-        SessionInfo, SessionState, SpaceSummary, SyncState, TextDirectionPreference,
-        TypographySettings, UserProfile, native_attention_capabilities_for_platform,
+        InvitePreview, LocaleSettings, OwnProfile, RoomSummary, RoomTags, SessionInfo,
+        SessionState, SpaceSummary, SyncState, TextDirectionPreference, TypographySettings,
+        UserProfile, native_attention_capabilities_for_platform,
     };
 
     fn booted_app_state() -> AppState {
@@ -1323,15 +1397,22 @@ mod tests {
     }
 
     #[test]
-    fn frontend_snapshot_serializes_e2ee_recovery_step() {
+    fn frontend_snapshot_serializes_verification_gate() {
         let state = AppState {
-            session: SessionState::NeedsRecovery {
+            session: SessionState::AwaitingVerification {
                 info: SessionInfo {
                     homeserver: "https://matrix.org".to_owned(),
                     user_id: "@user:matrix.org".to_owned(),
                     device_id: "DEVICE".to_owned(),
                 },
-                methods: vec![RecoveryMethod::RecoveryKey, RecoveryMethod::SecurityPhrase],
+                gate: koushi_state::VerificationGateState {
+                    methods: vec![
+                        koushi_state::VerificationMethodCapability::RecoveryKey,
+                        koushi_state::VerificationMethodCapability::SecurityPhrase,
+                    ],
+                    account_kind: koushi_state::VerificationAccountKind::ExistingIdentity,
+                    failure: None,
+                },
             },
             sync: SyncState::Running,
             ..AppState::default()
@@ -1342,13 +1423,81 @@ mod tests {
 
         assert_eq!(
             value["state"]["domain"]["session"]["kind"],
-            json!("needsRecovery")
+            json!("awaitingVerification")
         );
         assert_eq!(
-            value["state"]["domain"]["session"]["recovery_methods"],
+            value["state"]["domain"]["session"]["gate"]["methods"],
             json!(["recoveryKey", "securityPhrase"])
         );
         assert_eq!(value["state"]["domain"]["sync"], json!("running"));
+    }
+
+    #[test]
+    fn frontend_session_gate_variants_are_private_safe_json() {
+        let info = SessionInfo {
+            homeserver: "https://example.invalid".into(),
+            user_id: "@private:example.invalid".into(),
+            device_id: "PRIVATEDEVICE".into(),
+        };
+        let gate = koushi_state::VerificationGateState {
+            methods: vec![
+                koushi_state::VerificationMethodCapability::ExistingDeviceSas,
+                koushi_state::VerificationMethodCapability::Bootstrap,
+            ],
+            account_kind: koushi_state::VerificationAccountKind::ExistingIdentity,
+            failure: Some(koushi_state::VerificationGateFailureKind::Network),
+        };
+        let sessions = [
+            SessionState::Provisional {
+                info: info.clone(),
+                phase: koushi_state::ProvisionalPhase::RecheckingTrust {
+                    failure: Some(koushi_state::VerificationGateFailureKind::Timeout),
+                },
+            },
+            SessionState::AwaitingVerification {
+                info: info.clone(),
+                gate: gate.clone(),
+            },
+            SessionState::Verifying {
+                info: info.clone(),
+                gate: gate.clone(),
+                method: koushi_state::VerificationMethod::ExistingDeviceSas,
+                flow_id: 7,
+                sas_emojis: vec![
+                    koushi_state::SasEmoji {
+                        symbol: "🐶".into(),
+                        description: "dog".into()
+                    };
+                    7
+                ],
+            },
+            SessionState::AwaitingBootstrapConfirmation {
+                info: info.clone(),
+                gate: gate.clone(),
+                flow_id: 8,
+                destination_written: true,
+            },
+            SessionState::Rejecting {
+                info,
+                reason: koushi_state::VerificationGateRejectReason::UserRejected,
+            },
+        ];
+        let expected = [
+            "provisional",
+            "awaitingVerification",
+            "verifying",
+            "awaitingBootstrapConfirmation",
+            "rejecting",
+        ];
+        for (session, kind) in sessions.into_iter().zip(expected) {
+            let value =
+                serde_json::to_value(super::FrontendSessionState::from(session)).expect("gate DTO");
+            assert_eq!(value["kind"], kind);
+            let wire = value.to_string();
+            assert!(!wire.contains("secret"));
+            assert!(!wire.contains("destination_path"));
+            assert!(!wire.contains("target_user"));
+        }
     }
 
     #[test]

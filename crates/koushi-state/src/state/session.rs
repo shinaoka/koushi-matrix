@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -9,18 +11,137 @@ pub enum SessionState {
     },
     Authenticating {
         homeserver: String,
+        attempt_id: LoginAttemptId,
     },
-    NeedsRecovery {
+    Provisional {
         info: SessionInfo,
-        methods: Vec<RecoveryMethod>,
+        phase: ProvisionalPhase,
     },
-    Recovering {
+    AwaitingVerification {
         info: SessionInfo,
-        methods: Vec<RecoveryMethod>,
+        gate: VerificationGateState,
+    },
+    Verifying {
+        info: SessionInfo,
+        gate: VerificationGateState,
+        method: VerificationMethod,
+        flow_id: u64,
+        #[serde(default)]
+        sas_emojis: Vec<crate::state::SasEmoji>,
+    },
+    AwaitingBootstrapConfirmation {
+        info: SessionInfo,
+        gate: VerificationGateState,
+        flow_id: u64,
+        destination_written: bool,
+    },
+    Rejecting {
+        info: SessionInfo,
+        reason: VerificationGateRejectReason,
     },
     Ready(SessionInfo),
     Locked(SessionInfo),
     LoggingOut,
+}
+
+#[derive(Clone, Copy, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub struct LoginAttemptId {
+    connection_id: u64,
+    sequence: u64,
+}
+
+impl LoginAttemptId {
+    pub fn new(connection_id: u64, sequence: u64) -> Self {
+        Self {
+            connection_id,
+            sequence,
+        }
+    }
+
+    pub fn connection_id(self) -> u64 {
+        self.connection_id
+    }
+    pub fn sequence(self) -> u64 {
+        self.sequence
+    }
+}
+
+impl fmt::Debug for LoginAttemptId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("LoginAttemptId(..)")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CurrentDeviceTrustState {
+    Unknown,
+    Verified,
+    Unverified,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ProvisionalPhase {
+    CheckingTrust,
+    DiscoveringMethods,
+    RecheckingTrust {
+        #[serde(default, rename = "failureKind")]
+        failure: Option<VerificationGateFailureKind>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VerificationGateState {
+    pub methods: Vec<VerificationMethodCapability>,
+    pub account_kind: VerificationAccountKind,
+    #[serde(default, rename = "failureKind")]
+    pub failure: Option<VerificationGateFailureKind>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VerificationMethodCapability {
+    ExistingDeviceSas,
+    RecoveryKey,
+    SecurityPhrase,
+    Bootstrap,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VerificationMethod {
+    ExistingDeviceSas,
+    RecoveryKey,
+    SecurityPhrase,
+    Bootstrap,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VerificationAccountKind {
+    ExistingIdentity,
+    NewIdentity,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VerificationGateFailureKind {
+    Network,
+    Cancelled,
+    Mismatch,
+    Forbidden,
+    Timeout,
+    Sdk,
+    NoProofMethod,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VerificationGateRejectReason {
+    ExistingIdentityWithoutProof,
+    UserRejected,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -222,6 +222,12 @@ class TauriDesktopApi implements DesktopApi {
     return invoke<DesktopSnapshot>("accept_verification", { flowId });
   }
 
+  async startOwnUserSas(): Promise<DesktopSnapshot> { return invoke("start_own_user_sas"); }
+  async retryCurrentDeviceTrustDiscovery(): Promise<DesktopSnapshot> { return invoke("retry_current_device_trust_discovery"); }
+  async mismatchSasVerification(flowId: number): Promise<DesktopSnapshot> { return invoke("mismatch_sas_verification", { flowId }); }
+  async startSessionBootstrap(passphrase: string | null, recoveryKeyDestinationPath: string): Promise<DesktopSnapshot> { return invoke("start_session_bootstrap", { passphrase, recoveryKeyDestinationPath }); }
+  async confirmSessionBootstrapSaved(flowId: number): Promise<DesktopSnapshot> { return invoke("confirm_session_bootstrap_saved", { flowId }); }
+
   async confirmSasVerification(flowId: number): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("confirm_sas_verification", { flowId });
   }

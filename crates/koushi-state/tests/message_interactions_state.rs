@@ -146,7 +146,7 @@ fn stale_pin_completion_is_ignored() {
 }
 
 #[test]
-fn pin_completion_settles_pending_operation_while_session_is_locked_or_switching() {
+fn pin_completion_is_ignored_after_session_leaves_ready() {
     for session in [
         SessionState::Locked(SessionInfo {
             homeserver: "https://server.example.invalid".to_owned(),
@@ -186,12 +186,14 @@ fn pin_completion_settles_pending_operation_while_session_is_locked_or_switching
                 .get("!room:example.invalid")
                 .expect("room interaction state")
                 .pin_operation,
-            PinOperationState::Idle
+            PinOperationState::Pending {
+                request_id: 7,
+                room_id: "!room:example.invalid".to_owned(),
+                event_id: "$event:example.invalid".to_owned(),
+                op: koushi_state::PinOp::Pin,
+            }
         );
-        assert_eq!(
-            effects,
-            vec![AppEffect::EmitUiEvent(UiEvent::RoomInteractionsChanged)]
-        );
+        assert!(effects.is_empty());
     }
 }
 

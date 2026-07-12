@@ -19,8 +19,7 @@ async fn navigation_selection_persists_when_runtime_restarts() {
         );
         let mut connection = runtime.attach();
         runtime
-            .inject_actions(vec![
-                AppAction::RestoreSessionSucceeded(session_info()),
+            .inject_actions(restore_ready_actions![
                 AppAction::RoomListUpdated {
                     spaces: vec![space_summary(
                         "!space-a:example.test",
@@ -53,19 +52,16 @@ async fn navigation_selection_persists_when_runtime_restarts() {
     );
     let mut connection = restarted.attach();
     restarted
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
-            AppAction::RoomListUpdated {
-                spaces: vec![space_summary(
-                    "!space-a:example.test",
-                    &["!room-a:example.test"],
-                )],
-                rooms: vec![
-                    room_in_space("!room-a:example.test", "!space-a:example.test"),
-                    room_summary("!room-home:example.test"),
-                ],
-            },
-        ])
+        .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+            spaces: vec![space_summary(
+                "!space-a:example.test",
+                &["!room-a:example.test"],
+            )],
+            rooms: vec![
+                room_in_space("!room-a:example.test", "!space-a:example.test"),
+                room_summary("!room-home:example.test"),
+            ],
+        },])
         .await;
 
     let snapshot = executor::timeout(Duration::from_secs(1), async {

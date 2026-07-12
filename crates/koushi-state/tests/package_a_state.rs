@@ -2,11 +2,11 @@ use koushi_state::compute_room_list_projection;
 use koushi_state::{
     AccountManagementOperation, AccountManagementState, AppAction, AppEffect, AppState,
     AuthDiscoveryState, AuthFailureKind, DelegatedAuthLinks, DeviceSessionListState,
-    DeviceSessionSummary, E2eeKeyManagementState, LoginFlow, LoginFlowKind, OperationFailureKind,
-    QrLoginState, RecoveryKeyDeliveryState, RoomKeyExportState, RoomKeyImportState,
-    RoomListEntryKind, RoomListFilter, RoomListProjectionItem, RoomSummary, RoomTagInfo,
-    SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionInfo, SessionState,
-    SoftLogoutReauthState, SyncMode, TrustOperationFailureKind, UiEvent, reduce,
+    DeviceSessionSummary, E2eeKeyManagementState, LoginAttemptId, LoginFlow, LoginFlowKind,
+    OperationFailureKind, QrLoginState, RecoveryKeyDeliveryState, RoomKeyExportState,
+    RoomKeyImportState, RoomListEntryKind, RoomListFilter, RoomListProjectionItem, RoomSummary,
+    RoomTagInfo, SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionInfo,
+    SessionState, SoftLogoutReauthState, SyncMode, TrustOperationFailureKind, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -474,9 +474,19 @@ fn soft_logout_reauth_succeeds_and_fails_are_request_correlated() {
         state.soft_logout_reauth,
         SoftLogoutReauthState::Succeeded { request_id: 1 }
     );
-    let effects = reduce(&mut state, AppAction::LoginSucceeded(session_info()));
-    assert!(matches!(state.session, SessionState::Ready(_)));
-    assert!(effects.contains(&AppEffect::StartSync));
+    state.session = SessionState::Authenticating {
+        homeserver: session_info().homeserver,
+        attempt_id: LoginAttemptId::new(0, 1),
+    };
+    let effects = reduce(
+        &mut state,
+        AppAction::LoginSucceeded {
+            attempt_id: LoginAttemptId::new(0, 1),
+            info: session_info(),
+        },
+    );
+    assert!(matches!(state.session, SessionState::Provisional { .. }));
+    assert!(effects.contains(&AppEffect::CheckCurrentDeviceTrust));
 
     let mut state = AppState::default();
     state.session = SessionState::Ready(session_info());
@@ -788,7 +798,7 @@ fn mark_as_read_clears_unread_state_and_recomputes_room_list_projection() {
 }
 
 #[test]
-fn mark_as_read_success_applies_while_session_is_locked() {
+fn mark_as_read_success_is_ignored_while_session_is_locked() {
     let rooms = vec![room_summary("!room1:example.invalid", false, 3, 1, true)];
     let mut state = ready_state_with_rooms(rooms);
     state.room_list.active_filter = RoomListFilter::Unread;
@@ -810,19 +820,16 @@ fn mark_as_read_success_applies_while_session_is_locked() {
         },
     );
 
-    assert_eq!(
-        effects,
-        vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
-    );
+    assert!(effects.is_empty());
     let room = state
         .rooms
         .iter()
         .find(|r| r.room_id == "!room1:example.invalid")
         .unwrap();
-    assert!(!room.marked_unread);
-    assert_eq!(room.unread_count, 0);
-    assert_eq!(room.notification_count, 0);
-    assert!(state.room_list.items.is_empty());
+    assert!(room.marked_unread);
+    assert_eq!(room.unread_count, 3);
+    assert_eq!(room.notification_count, 1);
+    assert!(!state.room_list.items.is_empty());
 }
 
 #[test]

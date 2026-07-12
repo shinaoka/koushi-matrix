@@ -75,7 +75,7 @@ fn invite_list_is_rust_owned_and_replaces_by_snapshot() {
 }
 
 #[test]
-fn invite_list_is_ignored_when_signed_out_applies_when_locked_and_clears_on_logout() {
+fn invite_list_requires_exact_ready_and_clears_on_logout() {
     let mut signed_out = AppState::default();
     reduce(
         &mut signed_out,
@@ -97,10 +97,7 @@ fn invite_list_is_ignored_when_signed_out_applies_when_locked_and_clears_on_logo
             invites: vec![invite_preview("!room:localhost", false)],
         },
     );
-    assert_eq!(
-        locked.invites,
-        vec![invite_preview("!room:localhost", false)]
-    );
+    assert!(locked.invites.is_empty());
 
     let mut state = ready_state();
     reduce(

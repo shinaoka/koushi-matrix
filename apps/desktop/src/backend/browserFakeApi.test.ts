@@ -18,6 +18,26 @@ function receipt(
 }
 
 describe("BrowserFakeApi settings preview", () => {
+  test("gate SAS confirm rechecks trust only for the matching flow", async () => {
+    const api = createBrowserFakeApi();
+    const mutable = api as unknown as { snapshot: DesktopSnapshot };
+    mutable.snapshot.state.domain.session = {
+      kind: "verifying",
+      homeserver: "https://example.invalid",
+      user_id: "@gate:example.invalid",
+      device_id: "DEVICE",
+      method: "existingDeviceSas",
+      flow_id: 51,
+      gate: { methods: ["existingDeviceSas"], account_kind: "existingIdentity", failureKind: null }
+    };
+    expect((await api.confirmSasVerification(50)).state.domain.session.flow_id).toBe(51);
+    const confirmed = await api.confirmSasVerification(51);
+    expect(confirmed.state.domain.session).toMatchObject({
+      kind: "provisional",
+      phase: { recheckingTrust: { failureKind: null } }
+    });
+    expect(confirmed.state.domain.e2ee_trust.verification).toEqual({ kind: "idle" });
+  });
   test("projects disabled badge settings to zero without frontend recomputation", async () => {
     const api = createBrowserFakeApi();
     const mutable = api as unknown as { snapshot: DesktopSnapshot };

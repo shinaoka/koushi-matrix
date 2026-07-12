@@ -423,7 +423,7 @@ fn room_list_update_replaces_state_and_emits_room_list_event() {
 }
 
 #[test]
-fn room_list_update_applies_projection_while_session_is_locked() {
+fn room_list_update_is_ignored_while_session_is_locked() {
     let mut state = ready_state();
     state.session = SessionState::Locked(session_info());
 
@@ -435,10 +435,9 @@ fn room_list_update_applies_projection_while_session_is_locked() {
         },
     );
 
-    assert_eq!(state.spaces.len(), 1);
-    assert_eq!(state.rooms.len(), 3);
-    assert_eq!(state.rooms[0].notification_count, 5);
-    assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::RoomListChanged)));
+    assert!(state.spaces.is_empty());
+    assert!(state.rooms.is_empty());
+    assert!(effects.is_empty());
 }
 
 #[test]

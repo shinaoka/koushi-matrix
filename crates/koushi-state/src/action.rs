@@ -5,24 +5,26 @@ use crate::{ComposerSubmissionTarget, ComposerSubmissionTerminalOutcome, Submiss
 use crate::state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityStream, ActivityTab,
     AttachmentFilter, AttachmentResult, AttachmentScope, AttachmentSort, AuthFailureKind,
-    AvatarThumbnailState, BasicOperationRequest, CrossSigningStatus, DelegatedAuthLinks,
-    DeviceSessionSummary, DirectoryQuery, DirectoryRoomSummary, E2eeRecoveryState, FilesViewScope,
-    IdentityResetAuthType, InviteDestinationResult, InviteScopeSelection, JapaneseCatalogProfile,
-    LiveEventReceipts, LocalEncryptionHealth, LoginFlow, NativeAttentionDispatchId,
-    NativeAttentionSoundOutcome, NativeAttentionState, NavigationState, OperationFailureKind,
-    OwnProfile, PinnedEvent, PresenceKind, ProfileUpdateRequest, RecoveryKeyDeliveryState,
-    RecoveryMethod, RoomListFilter, RoomListProjection, RoomModerationAction, RoomPreferencesState,
-    RoomSettingChange, RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags,
-    SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult,
-    SearchScope, SessionInfo, SettingsPatch, SettingsValues, SpaceSummary,
-    StagedUploadCompressionChoice, StagedUploadItem, SyncLifecycleStatus, SyncMode,
-    TimelineMediaDownloadState, TimelineMediaGalleryItem, TimelineScrollAnchor,
-    TrustOperationFailureKind, UserProfile, VerificationCancelReason, VerificationTarget,
+    AvatarThumbnailState, BasicOperationRequest, CrossSigningStatus, CurrentDeviceTrustState,
+    DelegatedAuthLinks, DeviceSessionSummary, DirectoryQuery, DirectoryRoomSummary,
+    E2eeRecoveryState, FilesViewScope, IdentityResetAuthType, InviteDestinationResult,
+    InviteScopeSelection, JapaneseCatalogProfile, LiveEventReceipts, LocalEncryptionHealth,
+    LoginAttemptId, LoginFlow, NativeAttentionDispatchId, NativeAttentionSoundOutcome,
+    NativeAttentionState, NavigationState, OperationFailureKind, OwnProfile, PinnedEvent,
+    PresenceKind, ProfileUpdateRequest, RecoveryKeyDeliveryState, RecoveryMethod, RoomListFilter,
+    RoomListProjection, RoomModerationAction, RoomPreferencesState, RoomSettingChange,
+    RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji,
+    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope,
+    SessionInfo, SettingsPatch, SettingsValues, SpaceSummary, StagedUploadCompressionChoice,
+    StagedUploadItem, SyncLifecycleStatus, SyncMode, TimelineMediaDownloadState,
+    TimelineMediaGalleryItem, TimelineScrollAnchor, TrustOperationFailureKind, UserProfile,
+    VerificationCancelReason, VerificationGateState, VerificationMethod, VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum AppAction {
     AppStarted,
+    RestoreSessionRequested,
     RestoreSessionSucceeded(SessionInfo),
     RestoreSessionNotFound,
     RestoreSessionFailed {
@@ -184,13 +186,57 @@ pub enum AppAction {
         mxc_uri: String,
         thumbnail: AvatarThumbnailState,
     },
-    LoginSubmitted(LoginRequest),
-    LoginSucceeded(SessionInfo),
+    LoginSubmitted {
+        attempt_id: LoginAttemptId,
+        request: LoginRequest,
+    },
+    AuthenticationStarted {
+        attempt_id: LoginAttemptId,
+        homeserver: String,
+    },
+    LoginSucceeded {
+        attempt_id: LoginAttemptId,
+        info: SessionInfo,
+    },
+    CurrentDeviceTrustChanged(CurrentDeviceTrustState),
+    AuthoritativeDeviceTrustChanged {
+        generation: u64,
+        trust: CurrentDeviceTrustState,
+    },
+    VerificationMethodsDiscovered(VerificationGateState),
+    VerificationMethodSubmitted {
+        method: VerificationMethod,
+        flow_id: u64,
+    },
+    GateSasPresented {
+        flow_id: u64,
+        emojis: Vec<SasEmoji>,
+    },
+    VerificationGateAttemptFailed {
+        kind: crate::state::VerificationGateFailureKind,
+    },
+    VerificationSessionRejected {
+        reason: crate::state::VerificationGateRejectReason,
+    },
+    BootstrapRecoveryKeyDelivered {
+        flow_id: u64,
+    },
+    BootstrapRecoveryKeyDeliveryFailed {
+        flow_id: u64,
+        kind: crate::state::VerificationGateFailureKind,
+    },
+    BootstrapRecoverySavedConfirmed {
+        flow_id: u64,
+    },
+    ProvisionalSessionDiscarded,
     E2eeRecoveryRequired {
         info: SessionInfo,
         methods: Vec<RecoveryMethod>,
     },
-    E2eeRecoverySubmitted(RecoveryRequest),
+    E2eeRecoverySubmitted {
+        flow_id: u64,
+        request: RecoveryRequest,
+    },
     E2eeRecoverySucceeded,
     E2eeRecoveryFailed {
         message: String,
@@ -349,6 +395,7 @@ pub enum AppAction {
         kind: AuthFailureKind,
     },
     LoginFailed {
+        attempt_id: LoginAttemptId,
         message: String,
     },
     SessionPersistenceFailed {
@@ -1017,9 +1064,13 @@ pub enum AppAction {
 impl fmt::Debug for AppAction {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::LoginSubmitted(request) => formatter
-                .debug_tuple("LoginSubmitted")
-                .field(request)
+            Self::LoginSubmitted {
+                attempt_id,
+                request,
+            } => formatter
+                .debug_struct("LoginSubmitted")
+                .field("attempt_id", attempt_id)
+                .field("request", request)
                 .finish(),
             Self::DirectoryQueryRequested { request_id, query } => formatter
                 .debug_struct("DirectoryQueryRequested")

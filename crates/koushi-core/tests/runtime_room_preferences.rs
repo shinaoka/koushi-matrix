@@ -20,13 +20,10 @@ async fn room_url_preview_override_persists_when_runtime_restarts() {
         );
         let mut connection = runtime.attach();
         runtime
-            .inject_actions(vec![
-                AppAction::RestoreSessionSucceeded(session_info()),
-                AppAction::RoomListUpdated {
-                    spaces: vec![],
-                    rooms: vec![room_summary("!room:example.test")],
-                },
-            ])
+            .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("!room:example.test")],
+            },])
             .await;
         wait_for_state(&mut connection, |state| {
             matches!(state.session, SessionState::Ready(_))
@@ -63,13 +60,10 @@ async fn room_url_preview_override_persists_when_runtime_restarts() {
     );
     let mut connection = restarted.attach();
     restarted
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
-            AppAction::RoomListUpdated {
-                spaces: vec![],
-                rooms: vec![room_summary("!room:example.test")],
-            },
-        ])
+        .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![room_summary("!room:example.test")],
+        },])
         .await;
 
     let snapshot = executor::timeout(Duration::from_secs(1), async {
@@ -106,13 +100,10 @@ async fn room_notification_mode_persists_when_runtime_restarts() {
         );
         let mut connection = runtime.attach();
         runtime
-            .inject_actions(vec![
-                AppAction::RestoreSessionSucceeded(session_info()),
-                AppAction::RoomListUpdated {
-                    spaces: vec![],
-                    rooms: vec![room_summary("!room:example.test")],
-                },
-            ])
+            .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+                spaces: vec![],
+                rooms: vec![room_summary("!room:example.test")],
+            },])
             .await;
         wait_for_state(&mut connection, |state| {
             matches!(state.session, SessionState::Ready(_))
@@ -155,13 +146,10 @@ async fn room_notification_mode_persists_when_runtime_restarts() {
     );
     let mut connection = restarted.attach();
     restarted
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
-            AppAction::RoomListUpdated {
-                spaces: vec![],
-                rooms: vec![room_summary("!room:example.test")],
-            },
-        ])
+        .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![room_summary("!room:example.test")],
+        },])
         .await;
 
     let snapshot = executor::timeout(Duration::from_secs(1), async {

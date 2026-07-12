@@ -402,6 +402,13 @@ export type SoftLogoutReauthState =
 
 export type RecoveryMethod = "recoveryKey" | "securityPhrase";
 
+export type VerificationMethodCapability = "existingDeviceSas" | "recoveryKey" | "securityPhrase" | "bootstrap";
+export type VerificationMethod = VerificationMethodCapability;
+export type VerificationAccountKind = "existingIdentity" | "newIdentity" | "unknown";
+export type VerificationGateFailureKind = "network" | "cancelled" | "mismatch" | "forbidden" | "timeout" | "sdk" | "noProofMethod";
+export interface VerificationGateState { methods: VerificationMethodCapability[]; account_kind: VerificationAccountKind; failureKind?: VerificationGateFailureKind | null }
+export type ProvisionalPhase = "checkingTrust" | "discoveringMethods" | { recheckingTrust: { failureKind?: VerificationGateFailureKind | null } };
+
 export interface SessionState {
   kind:
     | "signedOut"
@@ -410,12 +417,25 @@ export interface SessionState {
     | "authenticating"
     | "needsRecovery"
     | "recovering"
+    | "provisional"
+    | "awaitingVerification"
+    | "verifying"
+    | "awaitingBootstrapConfirmation"
+    | "rejecting"
     | "ready"
     | "locked"
     | "loggingOut";
   homeserver?: string;
   user_id?: string;
   device_id?: string;
+  attempt_id?: { connection_id: number; sequence: number };
+  phase?: ProvisionalPhase;
+  gate?: VerificationGateState;
+  method?: VerificationMethod;
+  flow_id?: number;
+  sas_emojis?: SasEmoji[];
+  destination_written?: boolean;
+  reason?: "existingIdentityWithoutProof" | "userRejected";
   recovery_methods?: RecoveryMethod[];
 }
 

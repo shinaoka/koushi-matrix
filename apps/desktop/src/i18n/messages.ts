@@ -597,6 +597,27 @@ export type MessageId =
   | "trust.userUnverified"
   | "trust.userVerified"
   | "trust.verification"
+  | "gate.title"
+  | "gate.checking"
+  | "gate.rejecting"
+  | "gate.locked"
+  | "gate.otherDevice"
+  | "gate.match"
+  | "gate.mismatch"
+  | "gate.recoverySecret"
+  | "gate.recover"
+  | "gate.destination"
+  | "gate.passphrase"
+  | "gate.bootstrap"
+  | "gate.saved"
+  | "gate.retry"
+  | "gate.signOut"
+  | "gate.failureCancelled"
+  | "gate.failureForbidden"
+  | "gate.failureNoProof"
+  | "gate.failureSdk"
+  | "gate.rejectNoProof"
+  | "gate.rejectUser"
   | "space.allRooms"
   | "space.childRooms"
   | "space.directMessages"
@@ -1574,6 +1595,27 @@ const en: Catalog = {
   "trust.userUnverified": "Unverified",
   "trust.userVerified": "Verified",
   "trust.verification": "Device verification",
+  "gate.title": "Verify this session",
+  "gate.checking": "Checking device trust…",
+  "gate.rejecting": "Rejecting unverified session…",
+  "gate.locked": "This session must be verified again.",
+  "gate.otherDevice": "Verify with another device",
+  "gate.match": "They match",
+  "gate.mismatch": "They do not match",
+  "gate.recoverySecret": "Recovery secret",
+  "gate.recover": "Recover",
+  "gate.destination": "Recovery key destination",
+  "gate.passphrase": "Backup passphrase",
+  "gate.bootstrap": "Create secure backup",
+  "gate.saved": "I saved the recovery key",
+  "gate.retry": "Retry",
+  "gate.signOut": "Sign out",
+  "gate.failureCancelled": "Verification was cancelled.",
+  "gate.failureForbidden": "Verification was not permitted.",
+  "gate.failureNoProof": "No proof method is available.",
+  "gate.failureSdk": "Verification failed.",
+  "gate.rejectNoProof": "This existing identity has no acceptable proof method.",
+  "gate.rejectUser": "This session was rejected.",
   "space.allRooms": "All rooms",
   "space.childRooms": "Child rooms",
   "space.directMessages": "Direct Messages",
@@ -2437,6 +2479,27 @@ const ja: Catalog = {
   "trust.userUnverified": "未検証",
   "trust.userVerified": "検証済み",
   "trust.verification": "デバイス検証",
+  "gate.title": "このセッションを検証",
+  "gate.checking": "デバイスの信頼状態を確認中…",
+  "gate.rejecting": "未検証セッションを拒否中…",
+  "gate.locked": "このセッションは再検証が必要です。",
+  "gate.otherDevice": "別のデバイスで検証",
+  "gate.match": "一致しています",
+  "gate.mismatch": "一致していません",
+  "gate.recoverySecret": "リカバリーシークレット",
+  "gate.recover": "復旧",
+  "gate.destination": "リカバリーキーの保存先",
+  "gate.passphrase": "バックアップ用パスフレーズ",
+  "gate.bootstrap": "安全なバックアップを作成",
+  "gate.saved": "リカバリーキーを保存しました",
+  "gate.retry": "再試行",
+  "gate.signOut": "サインアウト",
+  "gate.failureCancelled": "検証がキャンセルされました。",
+  "gate.failureForbidden": "検証は許可されませんでした。",
+  "gate.failureNoProof": "利用可能な証明方法がありません。",
+  "gate.failureSdk": "検証に失敗しました。",
+  "gate.rejectNoProof": "既存の識別情報に利用可能な証明方法がありません。",
+  "gate.rejectUser": "このセッションは拒否されました。",
   "space.allRooms": "すべてのルーム",
   "space.childRooms": "子ルーム",
   "space.directMessages": "Direct Messages",

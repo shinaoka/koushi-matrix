@@ -11,8 +11,8 @@ use koushi_core::executor;
 use koushi_core::ids::{RequestId, RuntimeConnectionId};
 use koushi_core::runtime::{CoreConnection, CoreRuntime};
 use koushi_state::{
-    ActivityRow, AppearanceSettings, RoomSummary, RoomTags, SessionInfo, SettingsPatch,
-    ThemePreference,
+    ActivityRow, AppAction, AppearanceSettings, CurrentDeviceTrustState, RoomSummary, RoomTags,
+    SessionInfo, SettingsPatch, ThemePreference,
 };
 
 pub const PASSWORD: &str = "p4ssw0rd-very-secret";
@@ -33,6 +33,23 @@ pub fn fake_request_id() -> RequestId {
         connection_id: RuntimeConnectionId(999),
         sequence: 1,
     }
+}
+
+pub fn restore_ready_actions() -> Vec<AppAction> {
+    vec![
+        AppAction::RestoreSessionRequested,
+        AppAction::RestoreSessionSucceeded(session_info()),
+        AppAction::CurrentDeviceTrustChanged(CurrentDeviceTrustState::Verified),
+    ]
+}
+
+#[macro_export]
+macro_rules! restore_ready_actions {
+    ($($action:expr),* $(,)?) => {{
+        let mut actions = $crate::support::restore_ready_actions();
+        actions.extend([$($action),*]);
+        actions
+    }};
 }
 
 pub fn dark_theme_settings_patch() -> SettingsPatch {
@@ -125,8 +142,7 @@ pub async fn ready_room_conn(
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![room_summary(room_id)],

@@ -2438,6 +2438,47 @@ test("markdown toolbar and slash composer input dispatch Rust-owned send bodies"
   });
 });
 
+test("eligible unverified peer devices do not gate ordinary sends", async ({ page }) => {
+  await gotoReadyShell(page);
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          e2ee_trust: {
+            ...snapshot.state.domain.e2ee_trust,
+            verification: { kind: "idle" },
+            devices: [
+              {
+                user_id: "@peer:example.invalid",
+                device_id: "PEERDEVICE",
+                trust_level: "unverified"
+              }
+            ]
+          }
+        }
+      }
+    });
+    window.__harness.clearInvocations();
+  });
+
+  const composer = page.getByRole("textbox", { name: "Message composer" });
+  await composer.fill("peer trust remains non-blocking");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+
+  await expect
+    .poll(async () => page.evaluate(() => window.__harness.invocationsOf("send_text")[0]?.args))
+    .toMatchObject({
+      roomId: HARNESS_ROOM_ID,
+      body: "peer trust remains non-blocking"
+    });
+  await expect(page.locator(".trust-verification-dialog")).toHaveCount(0);
+  await expect(page.getByText(/send anyway/i)).toHaveCount(0);
+});
+
 test("main composer draft is Rust snapshot scoped per room", async ({ page }) => {
   await gotoReadyShell(page);
   await page.evaluate(() => {

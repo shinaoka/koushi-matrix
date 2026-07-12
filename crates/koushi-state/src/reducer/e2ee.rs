@@ -2,47 +2,119 @@ use crate::{
     effect::{AppEffect, UiEvent},
     state::{
         AppState, AuthFailureKind, CrossSigningStatus, IdentityResetState, KeyBackupStatus,
-        QrLoginState, RoomKeyExportState, RoomKeyImportState, SasEmoji,
+        ProvisionalPhase, QrLoginState, RoomKeyExportState, RoomKeyImportState, SasEmoji,
         SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionState,
-        TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState,
-        VerificationTarget,
+        TrustOperationFailureKind, VerificationAccountKind, VerificationCancelReason,
+        VerificationFlowState, VerificationGateFailureKind, VerificationGateState,
+        VerificationMethod, VerificationMethodCapability, VerificationTarget,
     },
 };
 
-use super::{clear_login_failed_errors, is_session_ready};
+use super::{
+    clear_login_failed_errors, clear_session_views, has_verification_gate_projection_context,
+    is_session_ready,
+};
+
+fn recovery_gate(
+    methods: Vec<crate::state::RecoveryMethod>,
+    failure: Option<VerificationGateFailureKind>,
+) -> VerificationGateState {
+    VerificationGateState {
+        methods: methods
+            .into_iter()
+            .map(|method| match method {
+                crate::state::RecoveryMethod::RecoveryKey => {
+                    VerificationMethodCapability::RecoveryKey
+                }
+                crate::state::RecoveryMethod::SecurityPhrase => {
+                    VerificationMethodCapability::SecurityPhrase
+                }
+            })
+            .collect(),
+        account_kind: VerificationAccountKind::ExistingIdentity,
+        failure,
+    }
+}
 
 pub(crate) fn handle_e2ee_recovery_required(
     state: &mut AppState,
     info: crate::state::SessionInfo,
     methods: Vec<crate::state::RecoveryMethod>,
 ) -> Vec<AppEffect> {
+    if !matches!(
+        &state.session,
+        SessionState::Provisional {
+            info: current,
+            phase: ProvisionalPhase::DiscoveringMethods,
+        } if current == &info
+    ) {
+        return Vec::new();
+    }
     let cleared_login_error = clear_login_failed_errors(state);
-    state.session = SessionState::NeedsRecovery {
-        info: info.clone(),
-        methods,
+    state.session = SessionState::AwaitingVerification {
+        info,
+        gate: recovery_gate(methods, None),
     };
-    state.sync = crate::state::SyncState::Starting;
-    let mut effects = vec![
-        AppEffect::PersistSession(info),
-        AppEffect::StartSync,
-        AppEffect::EmitUiEvent(UiEvent::SessionChanged),
-    ];
+    state.sync = crate::state::SyncState::Stopped;
+    let mut effects = vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)];
+    effects.extend(clear_session_views(state));
     if cleared_login_error {
         effects.push(AppEffect::EmitUiEvent(UiEvent::ErrorChanged));
     }
     effects
 }
 
-pub(crate) fn handle_e2ee_recovery_submitted(
+pub(crate) fn handle_gate_sas_presented(
     state: &mut AppState,
-    request: crate::action::RecoveryRequest,
+    flow_id: u64,
+    emojis: Vec<SasEmoji>,
 ) -> Vec<AppEffect> {
-    let SessionState::NeedsRecovery { info, methods } = &state.session else {
+    if emojis.len() != 7 {
+        return Vec::new();
+    }
+    let SessionState::Verifying {
+        method: VerificationMethod::ExistingDeviceSas,
+        flow_id: active_flow_id,
+        sas_emojis,
+        ..
+    } = &mut state.session
+    else {
         return Vec::new();
     };
-    state.session = SessionState::Recovering {
+    if *active_flow_id != flow_id {
+        return Vec::new();
+    }
+    *sas_emojis = emojis;
+    vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+}
+
+pub(crate) fn handle_e2ee_recovery_submitted(
+    state: &mut AppState,
+    flow_id: u64,
+    request: crate::action::RecoveryRequest,
+) -> Vec<AppEffect> {
+    let SessionState::AwaitingVerification { info, gate } = &state.session else {
+        return Vec::new();
+    };
+    let method = if gate
+        .methods
+        .contains(&VerificationMethodCapability::RecoveryKey)
+    {
+        VerificationMethod::RecoveryKey
+    } else if gate
+        .methods
+        .contains(&VerificationMethodCapability::SecurityPhrase)
+    {
+        VerificationMethod::SecurityPhrase
+    } else {
+        return Vec::new();
+    };
+    state.session = SessionState::Verifying {
         info: info.clone(),
-        methods: methods.clone(),
+        gate: gate.clone(),
+        method,
+        flow_id,
+        sas_emojis: Vec::new(),
     };
     vec![
         AppEffect::RecoverE2ee(request),
@@ -51,26 +123,44 @@ pub(crate) fn handle_e2ee_recovery_submitted(
 }
 
 pub(crate) fn handle_e2ee_recovery_succeeded(state: &mut AppState) -> Vec<AppEffect> {
-    let SessionState::Recovering { info, .. } = &state.session else {
+    let SessionState::Verifying { info, method, .. } = &state.session else {
         return Vec::new();
     };
+    if !matches!(
+        method,
+        VerificationMethod::RecoveryKey | VerificationMethod::SecurityPhrase
+    ) {
+        return Vec::new();
+    }
     let info = info.clone();
-    state.session = SessionState::Ready(info.clone());
-    state.sync = crate::state::SyncState::Starting;
+    state.session = SessionState::Provisional {
+        info,
+        phase: ProvisionalPhase::RecheckingTrust { failure: None },
+    };
     vec![
-        AppEffect::PersistSession(info),
-        AppEffect::StartSync,
+        AppEffect::CheckCurrentDeviceTrust,
         AppEffect::EmitUiEvent(UiEvent::SessionChanged),
     ]
 }
 
 pub(crate) fn handle_e2ee_recovery_failed(state: &mut AppState, message: String) -> Vec<AppEffect> {
-    let SessionState::Recovering { info, methods } = &state.session else {
+    let SessionState::Verifying {
+        info, gate, method, ..
+    } = &state.session
+    else {
         return Vec::new();
     };
-    state.session = SessionState::NeedsRecovery {
+    if !matches!(
+        method,
+        VerificationMethod::RecoveryKey | VerificationMethod::SecurityPhrase
+    ) {
+        return Vec::new();
+    }
+    let mut gate = gate.clone();
+    gate.failure = Some(VerificationGateFailureKind::Sdk);
+    state.session = SessionState::AwaitingVerification {
         info: info.clone(),
-        methods: methods.clone(),
+        gate,
     };
     state.errors.push(crate::state::AppError {
         code: "e2ee_recovery_failed".to_owned(),
@@ -91,24 +181,30 @@ pub(crate) fn handle_e2ee_recovery_state_changed(
     match recovery_state {
         crate::state::E2eeRecoveryState::Unknown => Vec::new(),
         crate::state::E2eeRecoveryState::Incomplete => {
-            let SessionState::Ready(info) = &state.session else {
+            let Some(info) = super::current_session_info(state) else {
                 return Vec::new();
             };
-            let info = info.clone();
-            state.session = SessionState::NeedsRecovery { info, methods };
+            if !has_verification_gate_projection_context(state) {
+                return Vec::new();
+            }
+            state.session = SessionState::AwaitingVerification {
+                info,
+                gate: recovery_gate(methods, None),
+            };
             vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
         }
         crate::state::E2eeRecoveryState::Enabled | crate::state::E2eeRecoveryState::Disabled => {
             let info = match &state.session {
-                SessionState::NeedsRecovery { info, .. }
-                | SessionState::Recovering { info, .. } => info.clone(),
+                SessionState::AwaitingVerification { info, .. }
+                | SessionState::Verifying { info, .. } => info.clone(),
                 _ => return Vec::new(),
             };
-            state.session = SessionState::Ready(info.clone());
-            state.sync = crate::state::SyncState::Starting;
+            state.session = SessionState::Provisional {
+                info,
+                phase: ProvisionalPhase::RecheckingTrust { failure: None },
+            };
             vec![
-                AppEffect::PersistSession(info),
-                AppEffect::StartSync,
+                AppEffect::CheckCurrentDeviceTrust,
                 AppEffect::EmitUiEvent(UiEvent::SessionChanged),
             ]
         }
@@ -221,6 +317,28 @@ pub(crate) fn handle_verification_cancelled(
     request_id: u64,
     reason: VerificationCancelReason,
 ) -> Vec<AppEffect> {
+    if let SessionState::Verifying {
+        info,
+        gate,
+        flow_id,
+        ..
+    } = &state.session
+        && *flow_id == request_id
+    {
+        let mut gate = gate.clone();
+        gate.failure = Some(match reason {
+            VerificationCancelReason::User => VerificationGateFailureKind::Cancelled,
+            VerificationCancelReason::Mismatch => VerificationGateFailureKind::Mismatch,
+        });
+        state.session = SessionState::AwaitingVerification {
+            info: info.clone(),
+            gate,
+        };
+        return vec![
+            AppEffect::CancelVerification { request_id, reason },
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+        ];
+    }
     if !verification_is_active(&state.e2ee_trust.verification)
         || verification_request_id(&state.e2ee_trust.verification) != Some(request_id)
     {
@@ -257,6 +375,23 @@ pub(crate) fn handle_verification_completed(
     state: &mut AppState,
     request_id: u64,
 ) -> Vec<AppEffect> {
+    if let SessionState::Verifying {
+        info,
+        method: VerificationMethod::ExistingDeviceSas,
+        flow_id,
+        ..
+    } = &state.session
+        && *flow_id == request_id
+    {
+        state.session = SessionState::Provisional {
+            info: info.clone(),
+            phase: ProvisionalPhase::RecheckingTrust { failure: None },
+        };
+        return vec![
+            AppEffect::CheckCurrentDeviceTrust,
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+        ];
+    }
     if !verification_is_active(&state.e2ee_trust.verification)
         || verification_request_id(&state.e2ee_trust.verification) != Some(request_id)
     {
@@ -275,6 +410,31 @@ pub(crate) fn handle_verification_failed(
     request_id: u64,
     kind: TrustOperationFailureKind,
 ) -> Vec<AppEffect> {
+    if let SessionState::Verifying {
+        info,
+        gate,
+        method: VerificationMethod::ExistingDeviceSas,
+        flow_id,
+        ..
+    } = &state.session
+        && *flow_id == request_id
+    {
+        let mut gate = gate.clone();
+        gate.failure = Some(match kind {
+            TrustOperationFailureKind::Cancelled => VerificationGateFailureKind::Cancelled,
+            TrustOperationFailureKind::Mismatch => VerificationGateFailureKind::Mismatch,
+            TrustOperationFailureKind::InvalidPassphrase => VerificationGateFailureKind::Sdk,
+            TrustOperationFailureKind::Network => VerificationGateFailureKind::Network,
+            TrustOperationFailureKind::Forbidden => VerificationGateFailureKind::Forbidden,
+            TrustOperationFailureKind::Timeout => VerificationGateFailureKind::Timeout,
+            TrustOperationFailureKind::Sdk => VerificationGateFailureKind::Sdk,
+        });
+        state.session = SessionState::AwaitingVerification {
+            info: info.clone(),
+            gate,
+        };
+        return vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)];
+    }
     if !verification_is_active(&state.e2ee_trust.verification)
         || verification_request_id(&state.e2ee_trust.verification) != Some(request_id)
     {

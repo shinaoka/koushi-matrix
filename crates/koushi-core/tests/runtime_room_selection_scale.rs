@@ -125,10 +125,7 @@ async fn select_room_deep_in_large_account_lands_on_clicked_room() {
     let mut conn = runtime.attach();
 
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
-            room_list_updated(),
-        ])
+        .inject_actions(restore_ready_actions![room_list_updated(),])
         .await;
 
     // The reducer auto-selects a startup room when none is active.
@@ -183,10 +180,7 @@ async fn select_room_missing_from_state_rooms_is_a_silent_noop_today() {
 
     // Snapshot N: full list including the room the user will click.
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
-            room_list_updated(),
-        ])
+        .inject_actions(restore_ready_actions![room_list_updated(),])
         .await;
     let startup = wait_for_state(&mut conn, |state| {
         matches!(state.session, SessionState::Ready(_)) && state.navigation.active_room_id.is_some()
@@ -241,10 +235,7 @@ async fn select_room_survives_background_room_list_storm() {
     let mut conn = runtime.attach();
 
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
-            room_list_updated(),
-        ])
+        .inject_actions(restore_ready_actions![room_list_updated(),])
         .await;
     wait_for_state(&mut conn, |state| {
         matches!(state.session, SessionState::Ready(_)) && state.navigation.active_room_id.is_some()

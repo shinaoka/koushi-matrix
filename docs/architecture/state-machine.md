@@ -38,19 +38,17 @@ reset/reconnect, or explicit command-response projections only. A delta
 generation gap forces a full-snapshot reset whose `state_generation` restores
 ordering before later deltas apply.
 
-Reducer guard phrase: "Ready session" means a Matrix-capable authenticated
-session whose runtime may accept room, timeline, thread, search, and composer
-actions: `SessionState::Ready(_)`, `SessionState::NeedsRecovery { .. }`, or
-`SessionState::Recovering { .. }`. It does not include `SignedOut`, `Restoring`,
-`SwitchingAccount`, `Authenticating`, `Locked`, or `LoggingOut`. Recovery states
-may show degraded encrypted-content behavior, but product state still remains
-Rust-owned and guarded.
+Reducer guard phrase: "Ready session" means exactly `SessionState::Ready(_)`:
+the SDK has authoritatively reported that the current device is verified.
+Authenticated provisional, awaiting-verification, verifying, and rejecting
+states never authorize room, timeline, thread, search, composer, directory,
+notification, attention, or normal sync actions.
 
 Actor-delivered projections and request-correlated settles use a wider
-"session projection context": `Ready`, recovery states, `Locked`, and
-`SwitchingAccount`. These actions normalize state instead of being dropped by a
-transient display-state guard. Request starts still require a Ready session;
-logout/session-clear transitions explicitly reset session-scoped state.
+"session projection context". It may include verification-gate states only for
+gate rendering and request-correlated recovery/SAS/trust settles; it must never
+be reused as a normal command-admission predicate. Logout, rejection, trust
+loss, and session-clear transitions explicitly reset session-scoped state.
 
 ## Maintenance Contract
 
@@ -75,16 +73,42 @@ than applied.
 stateDiagram-v2
     [*] --> SignedOut
     SignedOut --> Restoring: AppStarted
-    Restoring --> Ready: RestoreSessionSucceeded
+    Restoring --> Provisional: AuthenticatedSessionInstalled
     Restoring --> SignedOut: RestoreSessionFailed
     SignedOut --> Authenticating: LoginSubmitted / CompleteOidcLogin
-    Authenticating --> Ready: LoginSucceeded
+    Authenticating --> Provisional: AuthenticatedSessionInstalled
     Authenticating --> SignedOut: LoginFailed
-    Ready --> Locked: SessionLocked
+    Provisional --> AwaitingVerification: TrustUnverified / methods discovered
+    Provisional --> Ready: CurrentDeviceTrustChanged(Verified)
+    Provisional --> Rejecting: ExistingIdentityWithoutProof
+    AwaitingVerification --> Verifying: VerificationMethodSubmitted
+    AwaitingVerification --> Rejecting: RejectSession / no proof
+    Verifying --> AwaitingVerification: Cancelled / failed / timeout
+    Verifying --> Ready: CurrentDeviceTrustChanged(Verified)
+    Verifying --> Rejecting: RejectSession
+    Rejecting --> SignedOut: ProvisionalSessionDiscarded
+    Ready --> Locked: CurrentDeviceTrustChanged(non-Verified) / SessionLocked
     Ready --> LoggingOut: LogoutRequested
     Locked --> LoggingOut: LogoutRequested
     LoggingOut --> SignedOut: LogoutFinished
 ```
+
+- `Provisional`, `AwaitingVerification`, `Verifying`, and `Rejecting` are
+  authenticated but not Ready. Their DTOs contain only coarse method/account
+  capability and failure kinds plus app-owned opaque correlation IDs. SDK
+  handles, raw target device IDs, recovery secrets, and raw errors stay in
+  `AccountActor`/`koushi-sdk`.
+- Recovery completion, SAS `Done`, cross-signing bootstrap, or save confirmation
+  requests a fresh current-device trust probe; none directly transitions to
+  `Ready`.
+- Restricted crypto sync is AccountActor-internal and cannot publish normal
+  projections or active saved-session state. Unknown trust remains fail closed.
+- A genuine missing cross-signing identity may enter mandatory bootstrap. An
+  existing identity without a verified other device or usable recovery method
+  enters `Rejecting`; identity reset, skip, and verify-later are not gate exits.
+- Current-device strictness does not create a peer-device send gate. Eligible
+  unverified peer devices remain non-blocking; blocked devices and cryptographic
+  integrity/key-mismatch failures remain failures.
 
 ```mermaid
 stateDiagram-v2
@@ -191,13 +215,14 @@ stateDiagram-v2
   from sliding-sync dynamic adapters). It is accepted only when the projection
   changes.
 - `RoomListUpdated` and `InviteListUpdated` recompute the projection for the
-  current `active_filter`. They are applied in session projection context
-  (`Ready`, recovery, `Locked`, or `SwitchingAccount`) so a transient lock or
-  account switch window cannot lose a Rust-owned snapshot.
+  current `active_filter`. They are applied only for the current Ready session;
+  updates delivered after provisional entry, trust loss, logout, or account
+  switching are stale and must not repopulate cleared normal projections.
 - `RoomMarkedAsReadSucceeded` clears `marked_unread`, `unread_count`,
   `notification_count`, and `highlight_count` for the room and recomputes the
-  projection. Success/failure settles are accepted in session projection
-  context for known rooms.
+  projection. Success/failure settles may normalize matching in-flight request
+  bookkeeping outside Ready, but must not recreate room projections after the
+  session has left Ready.
 - `RoomMarkedAsUnreadSucceeded { unread: true }` sets `marked_unread` and bumps
   `unread_count` to at least 1 when it was zero, then recomputes the projection.
   `unread: false` clears the flag and resets `unread_count`.
@@ -1942,10 +1967,11 @@ stateDiagram-v2
   `CancelVerification`, `BootstrapCrossSigning`, `EnableKeyBackup`,
   `RestoreKeyBackup`, `ResetIdentity`, and `SubmitIdentityResetAuth`. These
   commands redact verification targets, backup versions, and auth secrets in
-  `Debug`. Trust commands are ready-session gated except
-  `RestoreKeyBackup`, which must also be accepted while the authenticated
-  session is `NeedsRecovery` / `Recovering`; the `AccountActor` still enforces
-  that a store-backed Matrix session exists.
+  `Debug`. Ordinary trust-management commands are Ready-session gated. During
+  admission, only the verification/recovery/bootstrap commands explicitly
+  offered by the current `AwaitingVerification` or `Verifying` gate state are
+  accepted; the `AccountActor` still enforces the matching opaque flow handle
+  and a keyed store-backed provisional Matrix session.
 - Phase B GUI controls are thin transport clients for that command surface.
   Tauri handlers allocate a fresh command `request_id`, pass the Rust-owned
   verification/identity-reset `flow_id` from the snapshot when required, and
@@ -2330,10 +2356,11 @@ stateDiagram-v2
     Failed --> Idle: LogoutRequested/SwitchAccountRequested/SessionCleared
 ```
 
-- `RestoreKeyBackupRequested` is accepted for a Ready, `NeedsRecovery`, or
-  `Recovering` authenticated session with an encrypted store-backed SDK client.
-  The recovery secret stays inside `CoreCommand::Account` / `AccountActor` and
-  never enters reducer state or snapshots.
+- `RestoreKeyBackupRequested` is accepted for a Ready session or when recovery
+  is the explicitly selected method of the current `AwaitingVerification` or
+  `Verifying` admission flow, with a keyed store-backed SDK client and matching
+  opaque flow handle. The recovery secret stays inside `CoreCommand::Account` /
+  `AccountActor` and never enters reducer state or snapshots.
 - Progress counters describe the joined-room hydration set only:
   `restored_rooms` / `total_rooms` are not backup-wide counts. Product copy,
   issue evidence, and QA tokens must use "joined-room restore" language unless

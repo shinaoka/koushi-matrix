@@ -3,10 +3,22 @@ use koushi_state::{
     NativeAttentionCapability, NativeAttentionDispatchId, NativeAttentionDispatchState,
     NativeAttentionObservationKind, NativeAttentionProjectionInput, NativeAttentionSoundOutcome,
     NativeAttentionSuppressionReason, NotificationSettings, RoomAttentionKind, RoomSummary,
-    RoomTagInfo, RoomTags, SettingsPatch, native_attention_capabilities_for_platform,
-    native_attention_state_from_rooms, reduce, room_attention_summary,
+    RoomTagInfo, RoomTags, SessionInfo, SessionState, SettingsPatch,
+    native_attention_capabilities_for_platform, native_attention_state_from_rooms, reduce,
+    room_attention_summary,
 };
 use serde_json::json;
+
+fn ready_state() -> AppState {
+    AppState {
+        session: SessionState::Ready(SessionInfo {
+            homeserver: "https://matrix.example.invalid".to_owned(),
+            user_id: "@attention:example.invalid".to_owned(),
+            device_id: "ATTENTION".to_owned(),
+        }),
+        ..AppState::default()
+    }
+}
 
 fn room(
     room_id: &str,
@@ -388,7 +400,7 @@ fn native_attention_reducer_preserves_dispatch_state_not_only_summary() {
         capabilities: available_capabilities(),
     });
 
-    let mut app_state = AppState::default();
+    let mut app_state = ready_state();
     let effects = reduce(
         &mut app_state,
         AppAction::NativeAttentionUpdated {
@@ -437,7 +449,7 @@ fn native_sound_dispatch_outcomes_are_correlated_and_stale_safe() {
         (NativeAttentionSoundOutcome::Unsupported, "unsupported"),
         (NativeAttentionSoundOutcome::Failed, "failed"),
     ] {
-        let mut state = AppState::default();
+        let mut state = ready_state();
         state.native_attention.summary.candidate = Some(NativeAttentionCandidate {
             room_display_name: "Room".to_owned(),
             kind: RoomAttentionKind::Message,
@@ -477,7 +489,7 @@ fn native_sound_dispatch_outcomes_are_correlated_and_stale_safe() {
 
 #[test]
 fn native_attention_projection_preserves_and_does_not_replace_active_dispatch() {
-    let mut state = AppState::default();
+    let mut state = ready_state();
     state.native_attention.summary.candidate = Some(NativeAttentionCandidate {
         room_display_name: "Room".to_owned(),
         kind: RoomAttentionKind::Message,

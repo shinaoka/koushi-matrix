@@ -20,13 +20,10 @@ async fn set_room_notification_mode_for_known_room_projects_pending_then_complet
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
-            AppAction::RoomListUpdated {
-                spaces: vec![],
-                rooms: vec![room_summary("!room:example.test")],
-            },
-        ])
+        .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![room_summary("!room:example.test")],
+        },])
         .await;
 
     wait_for_state(&mut conn, |state| {
@@ -81,13 +78,10 @@ async fn set_room_notification_mode_for_unknown_room_is_ignored_by_reducer() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
-            AppAction::RoomListUpdated {
-                spaces: vec![],
-                rooms: vec![room_summary("!room:example.test")],
-            },
-        ])
+        .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![room_summary("!room:example.test")],
+        },])
         .await;
 
     wait_for_state(&mut conn, |state| {

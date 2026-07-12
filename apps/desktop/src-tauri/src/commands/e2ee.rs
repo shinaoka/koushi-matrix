@@ -1,6 +1,94 @@
 use super::*;
 
 #[tauri::command]
+pub async fn retry_current_device_trust_discovery(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_retry_current_device_trust_discovery_command(request_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn start_own_user_sas(
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    // The persistent CoreConnection request sequence is process-unique and
+    // therefore owns the opaque verification flow identity across retries.
+    let flow_id = request_id.sequence;
+    submit_core_command(
+        state.inner(),
+        build_start_own_user_sas_command(request_id, flow_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn mismatch_sas_verification(
+    flow_id: u64,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_cancel_verification_command(request_id, flow_id, VerificationCancelReason::Mismatch),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn start_session_bootstrap(
+    passphrase: Option<String>,
+    recovery_key_destination_path: String,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    let flow_id = request_id.sequence;
+    submit_core_command(
+        state.inner(),
+        build_start_session_bootstrap_command(
+            request_id,
+            flow_id,
+            passphrase.map(AuthSecret::new),
+            recovery_key_destination_path,
+        ),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
+pub async fn confirm_session_bootstrap_saved(
+    flow_id: u64,
+    app: AppHandle,
+    state: State<'_, CoreRuntimeState>,
+) -> Result<FrontendDesktopSnapshot, String> {
+    let request_id = next_request_id(state.inner()).await;
+    submit_core_command(
+        state.inner(),
+        build_confirm_session_bootstrap_saved_command(request_id, flow_id),
+    )
+    .await?;
+    update_qa_window_title_from_state(&app, state.inner()).await;
+    current_snapshot(state.inner()).await
+}
+
+#[tauri::command]
 pub async fn bootstrap_cross_signing(
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,

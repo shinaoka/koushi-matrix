@@ -17,9 +17,9 @@ use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, reco
 use koushi_state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityRowKind,
     ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState, ComposerDraftStore,
-    ProfileUpdateRequest, RoomNotificationMode, RoomSummary, ScheduledSendCapability,
-    ScheduledSendHandle, ScheduledSendItem, SearchScope as AppSearchScope, SessionState,
-    SpaceSummary, ThreadPaneState, UiEvent, reduce, room_activity_unread_count,
+    LoginAttemptId, ProfileUpdateRequest, RoomNotificationMode, RoomSummary,
+    ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchScope as AppSearchScope,
+    SessionState, SpaceSummary, ThreadPaneState, UiEvent, reduce, room_activity_unread_count,
 };
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
@@ -156,6 +156,8 @@ pub struct CoreRuntime {
     // the reducer with this in later phases; tests inject through it today.
     #[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
     action_tx: mpsc::Sender<Vec<AppAction>>,
+    #[cfg(test)]
+    account_actor_test_handle: AccountActorHandle,
     actor: executor::JoinHandle<()>,
 }
 
@@ -267,6 +269,8 @@ impl CoreRuntime {
             crate::link_preview::LinkPreviewContext::from_settings(&initial_state.settings.values),
         );
 
+        #[cfg(test)]
+        let account_actor_test_handle = account_actor.clone();
         let actor = AppActor {
             command_rx,
             action_rx,
@@ -294,6 +298,8 @@ impl CoreRuntime {
             snapshot_rx,
             next_connection_id: AtomicU64::new(1),
             action_tx,
+            #[cfg(test)]
+            account_actor_test_handle,
             actor,
         }
     }
@@ -321,6 +327,23 @@ impl CoreRuntime {
 
     pub fn shutdown_handle(&self) -> &executor::JoinHandle<()> {
         &self.actor
+    }
+
+    /// Close the command inbox and wait until AppActor has completed its
+    /// ordered AccountActor/store shutdown barrier.
+    pub async fn shutdown(self) {
+        let Self {
+            command_tx,
+            event_tx: _,
+            snapshot_rx: _,
+            next_connection_id: _,
+            action_tx: _,
+            #[cfg(test)]
+                account_actor_test_handle: _,
+            actor,
+        } = self;
+        drop(command_tx);
+        let _ = actor.await;
     }
 }
 
@@ -1032,6 +1055,12 @@ impl AppActor {
                     let clone_ms = loop_started.elapsed().as_millis();
                     let mut state_changed = false;
                     for action in actions {
+                        let trust_projection_generation = match &action {
+                            AppAction::AuthoritativeDeviceTrustChanged { generation, .. } => {
+                                Some(*generation)
+                            }
+                            _ => None,
+                        };
                         if let AppAction::ActivityRowsObserved { rows } = &action {
                             self.activity_projection.ingest(rows.clone());
                         }
@@ -1044,8 +1073,6 @@ impl AppActor {
                                 let session_ready = matches!(
                                     self.state.session,
                                     SessionState::Ready(_)
-                                        | SessionState::NeedsRecovery { .. }
-                                        | SessionState::Recovering { .. }
                                 );
                                 let found =
                                     self.state.rooms.iter().any(|r| r.room_id == *room_id);
@@ -1085,6 +1112,16 @@ impl AppActor {
                                 None
                             };
                         let post_projection_effects = self.reduce_app_action(action).await;
+                        if let Some(generation) = trust_projection_generation {
+                            let _ = self
+                                .account_actor
+                                .send(AccountMessage::TrustProjectionApplied {
+                                    generation,
+                                    ready: matches!(self.state.session, SessionState::Ready(_)),
+                                    locked: matches!(self.state.session, SessionState::Locked(_)),
+                                })
+                                .await;
+                        }
                         // After reduce: determine outcome and emit IntentLifecycle
                         // for correlated pending SelectRoom intents.
                         if let Some((room_id, session_ready, found, already, rooms_len)) =
@@ -1480,7 +1517,10 @@ impl AppActor {
 
     /// Returns whether `AppState` changed.
     async fn handle_command(&mut self, command: CoreCommand) -> bool {
-        if command.requires_ready_session() && !is_ready_session_for_commands(&self.state.session) {
+        if command.requires_ready_session()
+            && !is_ready_session_for_commands(&self.state.session)
+            && !is_verification_gate_command(&command, &self.state.session)
+        {
             trace_runtime_sync!(
                 "command_rejected",
                 [
@@ -1504,6 +1544,20 @@ impl AppActor {
 
         match command {
             CoreCommand::Account(account_command) => {
+                if let AccountCommand::LoginPassword { request_id, .. }
+                | AccountCommand::CompleteOidcLogin { request_id, .. } = &account_command
+                {
+                    if !matches!(
+                        self.state.session,
+                        SessionState::SignedOut | SessionState::Authenticating { .. }
+                    ) {
+                        self.emit(CoreEvent::OperationFailed {
+                            request_id: *request_id,
+                            failure: CoreFailure::SessionRequired,
+                        });
+                        return false;
+                    }
+                }
                 let display_label_user_id = match &account_command {
                     AccountCommand::SetLocalUserAlias { user_id, .. } => Some(user_id.as_str()),
                     _ => None,
@@ -1521,9 +1575,17 @@ impl AppActor {
                     &display_label_user_ids,
                 )
                 .await;
-                let should_route =
-                    !matches!(&account_command, AccountCommand::ResetLocalData { .. })
-                        || projected_state_changed;
+                let requires_projection_acceptance = matches!(
+                    &account_command,
+                    AccountCommand::RestoreSession { .. }
+                        | AccountCommand::RestoreLastSession { .. }
+                        | AccountCommand::ResetLocalData { .. }
+                        | AccountCommand::SubmitRecovery { .. }
+                        | AccountCommand::StartSessionBootstrap { .. }
+                        | AccountCommand::ConfirmSessionBootstrapSaved { .. }
+                        | AccountCommand::StartOwnUserSas { .. }
+                );
+                let should_route = !requires_projection_acceptance || projected_state_changed;
                 if !should_route {
                     return false;
                 }
@@ -2648,9 +2710,18 @@ impl AppActor {
                 AppEffect::EmitUiEvent(ui_event) => {
                     self.handle_ui_event_effect(&ui_event, &[]).await;
                 }
+                AppEffect::RejectProvisionalSession => {
+                    let _ = self
+                        .account_actor
+                        .send(AccountMessage::RejectProvisionalSession { request_id })
+                        .await;
+                }
                 AppEffect::RestoreSession
                 | AppEffect::DiscoverLogin { .. }
-                | AppEffect::Login(_)
+                | AppEffect::Login { .. }
+                | AppEffect::CheckCurrentDeviceTrust
+                | AppEffect::DiscoverVerificationMethods
+                | AppEffect::BeginSessionVerification { .. }
                 | AppEffect::RecoverE2ee(_)
                 | AppEffect::RequestVerification { .. }
                 | AppEffect::AcceptVerification { .. }
@@ -2743,9 +2814,19 @@ impl AppActor {
                 AppEffect::PersistRoomPreferences { preferences, .. } => {
                     self.persist_room_preferences(preferences).await;
                 }
+                AppEffect::RejectProvisionalSession => {
+                    let request_id = self.next_internal_request_id();
+                    let _ = self
+                        .account_actor
+                        .send(AccountMessage::RejectProvisionalSession { request_id })
+                        .await;
+                }
                 AppEffect::RestoreSession
                 | AppEffect::DiscoverLogin { .. }
-                | AppEffect::Login(_)
+                | AppEffect::Login { .. }
+                | AppEffect::CheckCurrentDeviceTrust
+                | AppEffect::DiscoverVerificationMethods
+                | AppEffect::BeginSessionVerification { .. }
                 | AppEffect::RecoverE2ee(_)
                 | AppEffect::RequestVerification { .. }
                 | AppEffect::AcceptVerification { .. }
@@ -2904,8 +2985,11 @@ impl AppActor {
 
     fn current_account_key(&self) -> Option<AccountKey> {
         match &self.state.session {
-            SessionState::NeedsRecovery { info, .. }
-            | SessionState::Recovering { info, .. }
+            SessionState::Provisional { info, .. }
+            | SessionState::AwaitingVerification { info, .. }
+            | SessionState::Verifying { info, .. }
+            | SessionState::AwaitingBootstrapConfirmation { info, .. }
+            | SessionState::Rejecting { info, .. }
             | SessionState::Ready(info)
             | SessionState::Locked(info) => Some(AccountKey(info.user_id.clone())),
             SessionState::SignedOut
@@ -3073,23 +3157,59 @@ fn cancel_replaced_room_timeline_link_previews_key(
 }
 
 fn is_ready_session_for_commands(session: &SessionState) -> bool {
-    matches!(
+    matches!(session, SessionState::Ready(_))
+}
+
+fn is_verification_gate_command(command: &CoreCommand, session: &SessionState) -> bool {
+    if matches!(
+        command,
+        CoreCommand::Account(AccountCommand::RetryCurrentDeviceTrustDiscovery { .. })
+    ) {
+        return matches!(
+            session,
+            SessionState::Provisional {
+                phase: koushi_state::ProvisionalPhase::RecheckingTrust { .. },
+                ..
+            } | SessionState::AwaitingVerification { .. }
+        );
+    }
+    if !matches!(
         session,
-        SessionState::Ready(_)
-            | SessionState::NeedsRecovery { .. }
-            | SessionState::Recovering { .. }
+        SessionState::Provisional { .. }
+            | SessionState::AwaitingVerification { .. }
+            | SessionState::Verifying { .. }
+            | SessionState::AwaitingBootstrapConfirmation { .. }
+    ) {
+        return false;
+    }
+    matches!(
+        command,
+        CoreCommand::Account(
+            AccountCommand::RequestVerification { .. }
+                | AccountCommand::RetryCurrentDeviceTrustDiscovery { .. }
+                | AccountCommand::SubmitRecovery { .. }
+                | AccountCommand::StartSessionBootstrap { .. }
+                | AccountCommand::ConfirmSessionBootstrapSaved { .. }
+                | AccountCommand::StartOwnUserSas { .. }
+                | AccountCommand::AcceptVerification { .. }
+                | AccountCommand::ConfirmSasVerification { .. }
+                | AccountCommand::CancelVerification { .. }
+        )
     )
 }
 
 fn composer_draft_session_key(state: &AppState) -> Option<koushi_key::SessionKeyId> {
     match &state.session {
-        SessionState::NeedsRecovery { info, .. }
-        | SessionState::Recovering { info, .. }
-        | SessionState::Ready(info) => Some(session_key_id_from_info(info)),
+        SessionState::Ready(info) => Some(session_key_id_from_info(info)),
         SessionState::SignedOut
         | SessionState::Restoring
         | SessionState::SwitchingAccount { .. }
         | SessionState::Authenticating { .. }
+        | SessionState::Provisional { .. }
+        | SessionState::AwaitingVerification { .. }
+        | SessionState::Verifying { .. }
+        | SessionState::AwaitingBootstrapConfirmation { .. }
+        | SessionState::Rejecting { .. }
         | SessionState::LoggingOut
         | SessionState::Locked(_) => None,
     }
@@ -3142,6 +3262,28 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 target: target.clone(),
             })
         }
+        AccountCommand::SubmitRecovery {
+            request_id,
+            request,
+        } => Some(AppAction::E2eeRecoverySubmitted {
+            flow_id: request_id.sequence,
+            request: request.clone(),
+        }),
+        AccountCommand::StartSessionBootstrap { flow_id, .. } => {
+            Some(AppAction::VerificationMethodSubmitted {
+                method: koushi_state::VerificationMethod::Bootstrap,
+                flow_id: *flow_id,
+            })
+        }
+        AccountCommand::StartOwnUserSas { flow_id, .. } => {
+            Some(AppAction::VerificationMethodSubmitted {
+                method: koushi_state::VerificationMethod::ExistingDeviceSas,
+                flow_id: *flow_id,
+            })
+        }
+        AccountCommand::ConfirmSessionBootstrapSaved { flow_id, .. } => {
+            Some(AppAction::BootstrapRecoverySavedConfirmed { flow_id: *flow_id })
+        }
         AccountCommand::AcceptVerification { flow_id, .. } => {
             Some(AppAction::VerificationAccepted {
                 request_id: *flow_id,
@@ -3152,12 +3294,6 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 request_id: *flow_id,
             })
         }
-        AccountCommand::CancelVerification {
-            flow_id, reason, ..
-        } => Some(AppAction::VerificationCancelled {
-            request_id: *flow_id,
-            reason: *reason,
-        }),
         AccountCommand::BootstrapCrossSigning { request_id, .. } => {
             Some(AppAction::BootstrapCrossSigningRequested {
                 request_id: request_id.sequence,
@@ -3313,15 +3449,25 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
             ignored: false,
         }),
         AccountCommand::ReportUser { .. } => None,
-        AccountCommand::LoginPassword { .. }
-        | AccountCommand::CompleteOidcLogin { .. }
-        | AccountCommand::RestoreSession { .. }
-        | AccountCommand::RestoreLastSession { .. }
+        AccountCommand::LoginPassword {
+            request_id,
+            request,
+        } => Some(AppAction::AuthenticationStarted {
+            attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
+            homeserver: request.homeserver.clone(),
+        }),
+        AccountCommand::RestoreSession { .. } | AccountCommand::RestoreLastSession { .. } => {
+            Some(AppAction::RestoreSessionRequested)
+        }
+        #[cfg(feature = "qa-bin")]
+        AccountCommand::QaSetLocalDeviceBlacklisted { .. } => None,
+        AccountCommand::CompleteOidcLogin { .. }
         | AccountCommand::QuerySavedSessions { .. }
-        | AccountCommand::SubmitRecovery { .. }
         | AccountCommand::SetPresence { .. }
         | AccountCommand::DownloadAvatarThumbnail { .. }
         | AccountCommand::Logout { .. }
+        | AccountCommand::CancelVerification { .. }
+        | AccountCommand::RetryCurrentDeviceTrustDiscovery { .. }
         | AccountCommand::SwitchAccount { .. } => None,
     }
 }
@@ -3826,11 +3972,17 @@ mod tests {
         let mut connection = runtime.attach();
 
         runtime
-            .inject_actions(vec![AppAction::RestoreSessionSucceeded(SessionInfo {
-                homeserver: "https://example.invalid".to_owned(),
-                user_id: "@me:example.invalid".to_owned(),
-                device_id: "DEVICE".to_owned(),
-            })])
+            .inject_actions(vec![
+                AppAction::AppStarted,
+                AppAction::RestoreSessionSucceeded(SessionInfo {
+                    homeserver: "https://example.invalid".to_owned(),
+                    user_id: "@me:example.invalid".to_owned(),
+                    device_id: "DEVICE".to_owned(),
+                }),
+                AppAction::CurrentDeviceTrustChanged(
+                    koushi_state::CurrentDeviceTrustState::Verified,
+                ),
+            ])
             .await;
 
         let mut delta = None;
@@ -3862,6 +4014,7 @@ mod tests {
         let (command_tx, _command_rx) = mpsc::channel(1);
         let (event_tx, event_rx) = broadcast::channel(4);
         let mut state = AppState::default();
+        reduce(&mut state, AppAction::AppStarted);
         reduce(
             &mut state,
             AppAction::RestoreSessionSucceeded(SessionInfo {
@@ -3869,6 +4022,10 @@ mod tests {
                 user_id: "@me:example.invalid".to_owned(),
                 device_id: "DEVICE".to_owned(),
             }),
+        );
+        reduce(
+            &mut state,
+            AppAction::CurrentDeviceTrustChanged(koushi_state::CurrentDeviceTrustState::Verified),
         );
         state.profile = ProfileState {
             own: OwnProfile {
@@ -4077,11 +4234,15 @@ mod tests {
 
         runtime
             .inject_actions(vec![
+                AppAction::AppStarted,
                 AppAction::RestoreSessionSucceeded(SessionInfo {
                     homeserver: "https://example.invalid".to_owned(),
                     user_id: "@me:example.invalid".to_owned(),
                     device_id: "DEVICE".to_owned(),
                 }),
+                AppAction::CurrentDeviceTrustChanged(
+                    koushi_state::CurrentDeviceTrustState::Verified,
+                ),
                 AppAction::UserProfilesUpdated {
                     profiles: vec![UserProfile {
                         user_id: "@alice:example.invalid".to_owned(),
@@ -4180,11 +4341,15 @@ mod tests {
 
         runtime
             .inject_actions(vec![
+                AppAction::AppStarted,
                 AppAction::RestoreSessionSucceeded(SessionInfo {
                     homeserver: "https://example.invalid".to_owned(),
                     user_id: "@me:example.invalid".to_owned(),
                     device_id: "DEVICE".to_owned(),
                 }),
+                AppAction::CurrentDeviceTrustChanged(
+                    koushi_state::CurrentDeviceTrustState::Verified,
+                ),
                 AppAction::LocalUserAliasesLoaded {
                     aliases: BTreeMap::from([(user_id.to_owned(), "Unknown Alias".to_owned())]),
                 },
@@ -4729,7 +4894,7 @@ mod tests {
     }
 
     #[test]
-    fn oidc_completion_has_no_runtime_projection_before_actor_completion() {
+    fn oidc_completion_has_no_speculative_appactor_projection() {
         let request_id = RequestId {
             connection_id: RuntimeConnectionId(1),
             sequence: 8,
@@ -4741,6 +4906,24 @@ mod tests {
                 callback_url: "koushi-desktop://auth/callback?code=secret".to_owned(),
             }),
             None
+        );
+    }
+
+    #[test]
+    fn oidc_authorization_start_only_projects_discovery() {
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(1),
+            sequence: 7,
+        };
+
+        assert_eq!(
+            account_command_projected_action(&AccountCommand::StartOidcLogin {
+                request_id,
+                homeserver: "https://matrix.example.org".to_owned(),
+            }),
+            Some(AppAction::LoginDiscoveryRequested {
+                homeserver: "https://matrix.example.org".to_owned(),
+            })
         );
     }
 
@@ -4843,7 +5026,7 @@ mod tests {
     }
 
     #[test]
-    fn verification_followup_commands_project_flow_id_not_command_request_id() {
+    fn verification_followup_commands_project_flow_id_without_speculative_cancel() {
         let request_id = RequestId {
             connection_id: RuntimeConnectionId(1),
             sequence: 9,
@@ -4874,11 +5057,105 @@ mod tests {
                 flow_id,
                 reason: koushi_state::VerificationCancelReason::User,
             }),
-            Some(AppAction::VerificationCancelled {
-                request_id: flow_id,
-                reason: koushi_state::VerificationCancelReason::User,
+            None
+        );
+    }
+
+    #[test]
+    fn trust_discovery_retry_is_admitted_only_in_retryable_gate_states() {
+        let command = CoreCommand::Account(AccountCommand::RetryCurrentDeviceTrustDiscovery {
+            request_id: RequestId {
+                connection_id: RuntimeConnectionId(1),
+                sequence: 77,
+            },
+        });
+        let info = SessionInfo {
+            homeserver: "https://example.invalid".into(),
+            user_id: "@me:example.invalid".into(),
+            device_id: "DEVICE".into(),
+        };
+        let gate = koushi_state::VerificationGateState {
+            methods: vec![],
+            account_kind: koushi_state::VerificationAccountKind::ExistingIdentity,
+            failure: Some(koushi_state::VerificationGateFailureKind::Network),
+        };
+        assert!(is_verification_gate_command(
+            &command,
+            &SessionState::Provisional {
+                info: info.clone(),
+                phase: koushi_state::ProvisionalPhase::RecheckingTrust {
+                    failure: Some(koushi_state::VerificationGateFailureKind::Network)
+                }
+            }
+        ));
+        assert!(is_verification_gate_command(
+            &command,
+            &SessionState::AwaitingVerification {
+                info: info.clone(),
+                gate: gate.clone()
+            }
+        ));
+        assert!(!is_verification_gate_command(
+            &command,
+            &SessionState::Verifying {
+                info,
+                gate,
+                method: koushi_state::VerificationMethod::RecoveryKey,
+                flow_id: 77,
+                sas_emojis: vec![]
+            }
+        ));
+    }
+
+    #[test]
+    fn gate_sas_and_bootstrap_commands_project_only_opaque_flow_state() {
+        let request_id = RequestId {
+            connection_id: RuntimeConnectionId(5),
+            sequence: 90,
+        };
+        assert_eq!(
+            account_command_projected_action(&AccountCommand::StartOwnUserSas {
+                request_id,
+                flow_id: 31,
+            }),
+            Some(AppAction::VerificationMethodSubmitted {
+                method: koushi_state::VerificationMethod::ExistingDeviceSas,
+                flow_id: 31,
             })
         );
+        assert_eq!(
+            account_command_projected_action(&AccountCommand::ConfirmSessionBootstrapSaved {
+                request_id,
+                flow_id: 32,
+            }),
+            Some(AppAction::BootstrapRecoverySavedConfirmed { flow_id: 32 })
+        );
+        let debug = format!(
+            "{:?}",
+            AccountCommand::StartOwnUserSas {
+                request_id,
+                flow_id: 31,
+            }
+        );
+        assert!(!debug.contains('@'));
+        assert!(!debug.contains("DEVICE"));
+        let bootstrap_debug = format!(
+            "{:?}",
+            AccountCommand::StartSessionBootstrap {
+                request_id,
+                flow_id: 32,
+                auth: Some(koushi_state::AuthSecret::new("private-auth")),
+                request: crate::command::SecureBackupSetupRequest {
+                    passphrase: Some(koushi_state::AuthSecret::new("private-passphrase")),
+                    recovery_key_destination_path: Some(std::path::PathBuf::from(
+                        "/private/recovery-key.txt",
+                    )),
+                },
+            }
+        );
+        for forbidden in ["private-auth", "private-passphrase", "/private/"] {
+            assert!(!bootstrap_debug.contains(forbidden));
+        }
     }
 
     fn thread_key(root_event_id: &str) -> TimelineKey {
@@ -4899,5 +5176,214 @@ mod tests {
                 event_id: event_id.to_owned(),
             },
         }
+    }
+
+    #[tokio::test]
+    async fn authoritative_trust_runs_through_app_actor_ack_and_restarts_real_children() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let homeserver = format!("http://{}", listener.local_addr().expect("address"));
+        std::thread::spawn(move || {
+            for _ in 0..32 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    let count = stream.read(&mut buffer).expect("read");
+                    request.extend_from_slice(&buffer[..count]);
+                    let text = String::from_utf8_lossy(&request);
+                    let Some(end) = text.find("\r\n\r\n") else {
+                        continue;
+                    };
+                    let length = text
+                        .lines()
+                        .find_map(|line| line.strip_prefix("Content-Length: "))
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let body = if text.starts_with("GET /_matrix/client/versions ") {
+                    r#"{"versions":["v1.7"]}"#
+                } else if text.contains("/_matrix/client/") && text.contains("login") {
+                    r#"{"access_token":"fixture-token","device_id":"FIXTUREDEVICE","user_id":"@fixture-user:example.invalid"}"#
+                } else if text.contains("/_matrix/client/") && text.contains("/sync") {
+                    r#"{"next_batch":"batch","device_lists":{"changed":[],"left":[]},"rooms":{"invite":{},"join":{},"leave":{},"knock":{}},"to_device":{"events":[]},"presence":{"events":[]},"account_data":{"events":[]},"device_one_time_keys_count":{}}"#
+                } else {
+                    r#"{"errcode":"M_NOT_FOUND","error":"not found"}"#
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).expect("write");
+            }
+        });
+
+        let data_dir = tempfile::tempdir().expect("data tempdir");
+        let credential_dir = tempfile::tempdir().expect("credential tempdir");
+        let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+            data_dir.path().to_path_buf(),
+            credential_dir.path().to_path_buf(),
+        );
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        assert!(
+            runtime
+                .account_actor_test_handle
+                .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+                .await
+        );
+        let (trust_tx, trust_rx) = mpsc::unbounded_channel();
+        let updates = futures_util::stream::unfold(trust_rx, |mut rx| async move {
+            rx.recv().await.map(|trust| (trust, rx))
+        });
+        assert!(
+            runtime
+                .account_actor_test_handle
+                .send(AccountMessage::ConfigureTrustObservation {
+                    observation: koushi_sdk::CurrentDeviceTrustObservation {
+                        current: koushi_state::CurrentDeviceTrustState::Verified,
+                        updates: Box::pin(updates),
+                    },
+                })
+                .await
+        );
+        let connection = runtime.attach();
+        let request_id = connection.next_request_id();
+        connection
+            .command(CoreCommand::Account(AccountCommand::LoginPassword {
+                request_id,
+                request: koushi_state::LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: Some("Runtime Trust Test".to_owned()),
+                },
+            }))
+            .await
+            .expect("login command");
+
+        wait_for_runtime_session(&runtime, "initial promotion", |session| {
+            matches!(session, SessionState::Ready(_))
+        })
+        .await;
+        assert_eq!(
+            inspect_runtime_children(&runtime).await,
+            (true, true, true, true)
+        );
+        assert_eq!(probe_rx.recv().await, Some("ready_projection_ack"));
+        assert_eq!(
+            probe_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty),
+            "crypto trust lane must remain active in Ready"
+        );
+
+        trust_tx
+            .send(koushi_state::CurrentDeviceTrustState::Unverified)
+            .expect("lock update");
+        wait_for_runtime_session(&runtime, "trust revocation lock", |session| {
+            matches!(session, SessionState::Locked(_))
+        })
+        .await;
+        assert_eq!(
+            inspect_runtime_children(&runtime).await,
+            (true, false, false, true)
+        );
+        let mut tokens = Vec::new();
+        while tokens.len() < 12 {
+            tokens.push(probe_rx.recv().await.expect("stop token"));
+        }
+        assert_eq!(tokens[0], "lock_projection_ack");
+        assert!(tokens.contains(&"restricted_sync_terminated"));
+        assert!(tokens.contains(&"stop_sync_actor"));
+        assert!(tokens.contains(&"stop_timeline_manager"));
+        assert!(tokens.contains(&"clear_room_session"));
+
+        trust_tx
+            .send(koushi_state::CurrentDeviceTrustState::Verified)
+            .expect("repromotion update");
+        wait_for_runtime_session(&runtime, "verified repromotion", |session| {
+            matches!(session, SessionState::Ready(_))
+        })
+        .await;
+        assert_eq!(
+            inspect_runtime_children(&runtime).await,
+            (true, true, true, true)
+        );
+        assert_eq!(probe_rx.recv().await, Some("ready_projection_ack"));
+
+        let before = runtime.snapshot_rx.borrow().state.session.clone();
+        assert!(
+            runtime
+                .account_actor_test_handle
+                .send(AccountMessage::CurrentDeviceTrustChanged {
+                    generation: 0,
+                    trust: koushi_state::CurrentDeviceTrustState::Unverified,
+                })
+                .await
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            runtime.snapshot_rx.borrow().state.session,
+            before,
+            "stale/wrong-account trust changed state"
+        );
+        runtime.shutdown_handle().abort();
+    }
+
+    #[tokio::test]
+    async fn explicit_shutdown_is_a_barrier_before_same_data_dir_reopen() {
+        let data_dir = tempfile::tempdir().expect("runtime data dir");
+        let runtime = CoreRuntime::start_with_data_dir(data_dir.path().to_owned());
+        let connection = runtime.attach();
+        drop(connection);
+        tokio::time::timeout(Duration::from_secs(3), runtime.shutdown())
+            .await
+            .expect("first runtime shutdown barrier");
+
+        let reopened = CoreRuntime::start_with_data_dir(data_dir.path().to_owned());
+        let connection = reopened.attach();
+        drop(connection);
+        tokio::time::timeout(Duration::from_secs(3), reopened.shutdown())
+            .await
+            .expect("reopened runtime shutdown barrier");
+    }
+
+    async fn inspect_runtime_children(runtime: &CoreRuntime) -> (bool, bool, bool, bool) {
+        let (response, result) = oneshot::channel();
+        assert!(
+            runtime
+                .account_actor_test_handle
+                .send(AccountMessage::InspectSessionRuntime { response })
+                .await
+        );
+        result.await.expect("runtime inspection")
+    }
+
+    async fn wait_for_runtime_session(
+        runtime: &CoreRuntime,
+        stage: &'static str,
+        predicate: impl Fn(&SessionState) -> bool,
+    ) {
+        let mut snapshot_rx = runtime.snapshot_rx.clone();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if predicate(&snapshot_rx.borrow().state.session) {
+                    return;
+                }
+                snapshot_rx
+                    .changed()
+                    .await
+                    .unwrap_or_else(|_| panic!("snapshot channel closed during {stage}"));
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("session transition timed out during {stage}"));
     }
 }

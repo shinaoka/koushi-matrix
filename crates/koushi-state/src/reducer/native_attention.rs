@@ -3,10 +3,15 @@ use crate::{
     state::AppState,
 };
 
+use super::is_session_ready;
+
 pub(crate) fn handle_dispatch_started(
     state: &mut AppState,
     dispatch_id: crate::state::NativeAttentionDispatchId,
 ) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
     if state.native_attention.summary.candidate.is_none() {
         return Vec::new();
     }
@@ -27,6 +32,9 @@ pub(crate) fn handle_dispatch_settled(
     dispatch_id: crate::state::NativeAttentionDispatchId,
     outcome: crate::state::NativeAttentionSoundOutcome,
 ) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
     if state.native_attention.dispatch
         != (crate::state::NativeAttentionDispatchState::Dispatching { dispatch_id })
     {
@@ -54,6 +62,9 @@ pub(crate) fn handle_native_attention_updated(
     state: &mut AppState,
     mut attention: crate::state::NativeAttentionState,
 ) -> Vec<AppEffect> {
+    if !is_session_ready(state) {
+        return Vec::new();
+    }
     if !state.settings.values.notifications.badges {
         attention.summary.badge_count = 0;
     }

@@ -38,6 +38,9 @@ const checks = [
   "scenario safety",
   "scenario login_sync",
   "scenario e2ee_trust",
+  "scenario gate_restore",
+  "scenario gate_negative",
+  "scenario gate_no_proof",
   "scenario invites_dm",
   "scenario room_space",
   "scenario directory",
@@ -592,7 +595,7 @@ function defaultCoreBackendForScenario(value, cargoProfile) {
     return "probed";
   }
   const scenarios = selectedScenarios(value);
-  if (scenarios.some((scenario) => ["all", "e2ee_trust", "timeline_stress"].includes(scenario))) {
+  if (scenarios.some((scenario) => ["all", "e2ee_trust", "gate_restore", "gate_negative", "gate_no_proof", "timeline_stress"].includes(scenario))) {
     return "probed";
   }
   return "both";

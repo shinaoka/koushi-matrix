@@ -5,9 +5,9 @@ use koushi_search::SensitiveString;
 use koushi_search::{SearchDocumentStore, SearchEdit, SearchableEvent};
 use koushi_state::{
     AppAction, AppEffect, AppState, AttachmentFilter, AttachmentResult, AttachmentScope,
-    AttachmentSort, AuthFailureKind, DelegatedAuthLinks, LoginFlow, LoginRequest, RecoveryMethod,
-    RecoveryRequest, RoomSummary, RoomTags, SearchResult, SearchScope, SessionInfo, SidebarModel,
-    SpaceSummary, ThreadPaneState, TrustOperationFailureKind,
+    AttachmentSort, AuthFailureKind, DelegatedAuthLinks, LoginAttemptId, LoginFlow, LoginRequest,
+    RecoveryMethod, RecoveryRequest, RoomSummary, RoomTags, SearchResult, SearchScope, SessionInfo,
+    SessionState, SidebarModel, SpaceSummary, ThreadPaneState, TrustOperationFailureKind,
     compose_sidebar_with_room_notification_settings, reduce,
 };
 use serde::{Deserialize, Serialize};
@@ -83,6 +83,8 @@ pub struct FakeDesktopBackend {
     timeline_messages: Vec<TimelineMessage>,
     thread_replies: Vec<ThreadMessage>,
     matrix_session: Option<koushi_sdk::MatrixClientSession>,
+    active_login_attempt: Option<LoginAttemptId>,
+    recovery_completed: bool,
     next_search_request_id: u64,
     backward_timeline_messages: Vec<TimelineMessage>,
 }
@@ -108,6 +110,8 @@ impl FakeDesktopBackend {
             timeline_messages,
             thread_replies,
             matrix_session: None,
+            active_login_attempt: None,
+            recovery_completed: false,
             next_search_request_id: 1,
             backward_timeline_messages,
         }
@@ -334,6 +338,11 @@ impl FakeDesktopBackend {
     }
 
     pub fn dispatch(&mut self, action: AppAction) -> Vec<AppEffect> {
+        if matches!(action, AppAction::LogoutFinished) {
+            self.matrix_session = None;
+            self.recovery_completed = false;
+            self.active_login_attempt = None;
+        }
         let mut emitted = Vec::new();
         let mut queue = VecDeque::from(reduce(&mut self.state, action));
 
@@ -450,7 +459,35 @@ impl FakeDesktopBackend {
                     kind: TrustOperationFailureKind::Sdk,
                 }]
             }
-            AppEffect::Login(request) => self.login(request),
+            AppEffect::CheckCurrentDeviceTrust => {
+                let trust = if self.e2ee_recovery_is_required() && !self.recovery_completed {
+                    koushi_state::CurrentDeviceTrustState::Unverified
+                } else {
+                    koushi_state::CurrentDeviceTrustState::Verified
+                };
+                vec![AppAction::CurrentDeviceTrustChanged(trust)]
+            }
+            AppEffect::DiscoverVerificationMethods => {
+                let info = match &self.state.session {
+                    SessionState::Provisional { info, .. }
+                    | SessionState::AwaitingVerification { info, .. }
+                    | SessionState::Verifying { info, .. } => info.clone(),
+                    _ => return Vec::new(),
+                };
+                vec![AppAction::E2eeRecoveryRequired {
+                    info,
+                    methods: default_recovery_methods(),
+                }]
+            }
+            AppEffect::BeginSessionVerification { .. }
+            | AppEffect::RejectProvisionalSession => Vec::new(),
+            AppEffect::Login {
+                attempt_id,
+                request,
+            } => {
+                self.active_login_attempt = Some(*attempt_id);
+                self.login(*attempt_id, request)
+            }
             AppEffect::RecoverE2ee(request) => self.recover_e2ee(request),
         }
     }
@@ -486,9 +523,10 @@ impl FakeDesktopBackend {
         }
     }
 
-    fn login(&mut self, request: &LoginRequest) -> Vec<AppAction> {
+    fn login(&mut self, attempt_id: LoginAttemptId, request: &LoginRequest) -> Vec<AppAction> {
         match self.config.login {
             LoginMode::FixtureFailure => vec![AppAction::LoginFailed {
+                attempt_id,
                 message: "real Matrix login is not wired in this pre-login foundation".to_owned(),
             }],
             LoginMode::MatrixSdk => match koushi_sdk::login_with_password_blocking(request) {
@@ -498,6 +536,7 @@ impl FakeDesktopBackend {
                     vec![self.authenticated_session_action(info)]
                 }
                 Err(error) => vec![AppAction::LoginFailed {
+                    attempt_id,
                     message: error.to_string(),
                 }],
             },
@@ -524,7 +563,11 @@ impl FakeDesktopBackend {
     }
 
     pub fn fail_login(&mut self, message: impl Into<String>) -> Vec<AppEffect> {
+        let attempt_id = self
+            .active_login_attempt
+            .unwrap_or_else(|| LoginAttemptId::new(0, 0));
         self.dispatch(AppAction::LoginFailed {
+            attempt_id,
             message: message.into(),
         })
     }
@@ -539,25 +582,16 @@ impl FakeDesktopBackend {
     }
 
     fn authenticated_session_action(&self, info: SessionInfo) -> AppAction {
-        if self.e2ee_recovery_is_required() {
-            AppAction::E2eeRecoveryRequired {
-                info,
-                methods: default_recovery_methods(),
-            }
-        } else {
-            AppAction::LoginSucceeded(info)
+        AppAction::LoginSucceeded {
+            attempt_id: self
+                .active_login_attempt
+                .unwrap_or_else(|| LoginAttemptId::new(0, 0)),
+            info,
         }
     }
 
     fn restored_session_action(&self, info: SessionInfo) -> AppAction {
-        if self.e2ee_recovery_is_required() {
-            AppAction::E2eeRecoveryRequired {
-                info,
-                methods: default_recovery_methods(),
-            }
-        } else {
-            AppAction::RestoreSessionSucceeded(info)
-        }
+        AppAction::RestoreSessionSucceeded(info)
     }
 
     fn e2ee_recovery_is_required(&self) -> bool {
@@ -570,12 +604,15 @@ impl FakeDesktopBackend {
             }))
     }
 
-    fn recover_e2ee(&self, _request: &RecoveryRequest) -> Vec<AppAction> {
+    fn recover_e2ee(&mut self, _request: &RecoveryRequest) -> Vec<AppAction> {
         match self.config.e2ee_recovery {
             E2eeRecoveryMode::NotRequired
             | E2eeRecoveryMode::SdkState
             | E2eeRecoveryMode::RequiredDeferred => Vec::new(),
-            E2eeRecoveryMode::RequiredFixtureSuccess => vec![AppAction::E2eeRecoverySucceeded],
+            E2eeRecoveryMode::RequiredFixtureSuccess => {
+                self.recovery_completed = true;
+                vec![AppAction::E2eeRecoverySucceeded]
+            }
         }
     }
 

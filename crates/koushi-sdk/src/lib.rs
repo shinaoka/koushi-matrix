@@ -2,11 +2,93 @@ use futures_util::{Stream, StreamExt};
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 pub use koushi_state::E2eeRecoveryState;
 use koushi_state::{
-    AuthSecret, CrossSigningStatus, DelegatedAuthLinks, IdentityResetAuthRequest,
-    IdentityResetAuthType, KeyBackupStatus, LoginFlow, LoginFlowKind, LoginRequest,
-    RecoveryRequest, RoomAttentionSummary, SasEmoji, SessionInfo, VerificationTarget,
-    room_attention_summary,
+    AuthSecret, CrossSigningStatus, CurrentDeviceTrustState, DelegatedAuthLinks,
+    IdentityResetAuthRequest, IdentityResetAuthType, KeyBackupStatus, LoginFlow, LoginFlowKind,
+    LoginRequest, RecoveryRequest, RoomAttentionSummary, SasEmoji, SessionInfo,
+    VerificationAccountKind, VerificationGateState, VerificationMethodCapability,
+    VerificationTarget, room_attention_summary,
 };
+
+pub type CurrentDeviceTrustStream = Pin<Box<dyn Stream<Item = CurrentDeviceTrustState> + Send>>;
+
+pub struct CurrentDeviceTrustObservation {
+    pub current: CurrentDeviceTrustState,
+    pub updates: CurrentDeviceTrustStream,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IdentityFact {
+    Existing,
+    Missing,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecoveryFact {
+    Available,
+    Unavailable,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VerificationMethodFacts {
+    identity: IdentityFact,
+    verified_other_device_count: u64,
+    recovery: RecoveryFact,
+}
+
+fn map_sdk_verification_state(
+    state: matrix_sdk::encryption::VerificationState,
+) -> CurrentDeviceTrustState {
+    match state {
+        matrix_sdk::encryption::VerificationState::Unknown => CurrentDeviceTrustState::Unknown,
+        matrix_sdk::encryption::VerificationState::Verified => CurrentDeviceTrustState::Verified,
+        matrix_sdk::encryption::VerificationState::Unverified => {
+            CurrentDeviceTrustState::Unverified
+        }
+    }
+}
+
+fn map_verification_method_facts(facts: VerificationMethodFacts) -> VerificationGateState {
+    let (account_kind, methods) = match facts.identity {
+        IdentityFact::Unknown => (VerificationAccountKind::Unknown, Vec::new()),
+        IdentityFact::Missing => (
+            VerificationAccountKind::NewIdentity,
+            vec![VerificationMethodCapability::Bootstrap],
+        ),
+        IdentityFact::Existing
+            if matches!(facts.recovery, RecoveryFact::Unknown)
+                && facts.verified_other_device_count == 0 =>
+        {
+            (VerificationAccountKind::Unknown, Vec::new())
+        }
+        IdentityFact::Existing => {
+            let mut methods = Vec::new();
+            if facts.verified_other_device_count > 0 {
+                methods.push(VerificationMethodCapability::ExistingDeviceSas);
+            }
+            if matches!(facts.recovery, RecoveryFact::Available) {
+                methods.push(VerificationMethodCapability::RecoveryKey);
+                methods.push(VerificationMethodCapability::SecurityPhrase);
+            }
+            (VerificationAccountKind::ExistingIdentity, methods)
+        }
+    };
+    VerificationGateState {
+        methods,
+        account_kind,
+        failure: None,
+    }
+}
+
+fn is_eligible_own_user_proof_device(
+    current_device_id: &str,
+    candidate_device_id: &str,
+    cross_signed_by_owner: bool,
+    blocked: bool,
+) -> bool {
+    candidate_device_id != current_device_id && cross_signed_by_owner && !blocked
+}
 use matrix_sdk::{
     authentication::{
         matrix::MatrixSession,
@@ -32,6 +114,7 @@ use matrix_sdk::{
     },
     utils::UrlOrQuery,
 };
+use matrix_sdk_base::crypto::CollectStrategy;
 use matrix_sdk_search::error::IndexError;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -50,6 +133,7 @@ use zeroize::Zeroizing;
 
 const LOGIN_DISCOVERY_PATH: &str = "_matrix/client/v3/login";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+const RESTRICTED_VERIFICATION_SYNC_SERVER_TIMEOUT: Duration = Duration::from_secs(3);
 const MATRIX_ROOM_LIST_SNAPSHOT_LIMIT: usize = 4096;
 pub const LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE: &str = "app.koushi.local_aliases";
 
@@ -282,6 +366,35 @@ impl MatrixVerificationRequestHandle {
 }
 
 #[derive(Clone)]
+pub struct MatrixOwnUserVerificationHandle {
+    request: MatrixVerificationRequestHandle,
+    eligible_device_count: u64,
+}
+
+impl fmt::Debug for MatrixOwnUserVerificationHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MatrixOwnUserVerificationHandle")
+            .field("eligible_device_count", &self.eligible_device_count)
+            .finish_non_exhaustive()
+    }
+}
+
+impl MatrixOwnUserVerificationHandle {
+    pub fn eligible_device_count(&self) -> u64 {
+        self.eligible_device_count
+    }
+
+    pub fn state(&self) -> MatrixVerificationRequestState {
+        self.request.state()
+    }
+
+    pub fn changes(&self) -> MatrixVerificationRequestStateStream {
+        self.request.changes()
+    }
+}
+
+#[derive(Clone)]
 pub struct MatrixIncomingVerificationRequest {
     target: VerificationTarget,
     handle: MatrixVerificationRequestHandle,
@@ -379,8 +492,32 @@ pub enum MatrixVerificationRequestState {
     Ready,
     SasStarted(MatrixSasVerificationHandle),
     Done,
-    Cancelled,
+    Cancelled {
+        kind: MatrixVerificationCancelKind,
+        cancelled_by_us: bool,
+    },
     UnsupportedMethod,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixVerificationCancelKind {
+    UnknownMethod,
+    KeyMismatch,
+    User,
+    Timeout,
+    AcceptedElsewhere,
+    Other,
+}
+
+fn map_verification_cancel_kind(code: &str) -> MatrixVerificationCancelKind {
+    match code {
+        "m.unknown_method" => MatrixVerificationCancelKind::UnknownMethod,
+        "m.key_mismatch" => MatrixVerificationCancelKind::KeyMismatch,
+        "m.user" => MatrixVerificationCancelKind::User,
+        "m.timeout" => MatrixVerificationCancelKind::Timeout,
+        "m.accepted" => MatrixVerificationCancelKind::AcceptedElsewhere,
+        _ => MatrixVerificationCancelKind::Other,
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -545,7 +682,10 @@ fn map_sdk_verification_request_state(
             _ => MatrixVerificationRequestState::UnsupportedMethod,
         },
         SdkVerificationRequestState::Done => MatrixVerificationRequestState::Done,
-        SdkVerificationRequestState::Cancelled(_) => MatrixVerificationRequestState::Cancelled,
+        SdkVerificationRequestState::Cancelled(info) => MatrixVerificationRequestState::Cancelled {
+            kind: map_verification_cancel_kind(info.cancel_code().as_str()),
+            cancelled_by_us: info.cancelled_by_us(),
+        },
     }
 }
 
@@ -871,21 +1011,14 @@ pub async fn list_devices(
     for device in response.devices {
         let device_id = device.device_id.clone();
         let is_current = device_id.as_str() == session.info.device_id;
-        let verified = if is_current {
-            // The current device is implicitly verified from the session's
-            // own perspective; the crypto store lookup is still safe but
-            // avoids extra work.
-            true
-        } else {
-            match session
-                .client()
-                .encryption()
-                .get_device(&user_id, &device_id)
-                .await
-            {
-                Ok(Some(crypto_device)) => crypto_device.is_verified(),
-                Ok(None) | Err(_) => false,
-            }
+        let verified = match session
+            .client()
+            .encryption()
+            .get_device(&user_id, &device_id)
+            .await
+        {
+            Ok(Some(crypto_device)) => crypto_device.is_verified_with_cross_signing(),
+            Ok(None) | Err(_) => false,
         };
         let inactive = device
             .last_seen_ts
@@ -1107,6 +1240,124 @@ pub async fn request_device_verification(
     Ok(MatrixVerificationRequestHandle { inner })
 }
 
+pub async fn discover_current_session_verification_methods(
+    session: &MatrixClientSession,
+) -> VerificationGateState {
+    let Ok(user_id) = matrix_sdk::ruma::OwnedUserId::try_from(session.info.user_id.as_str()) else {
+        return map_verification_method_facts(VerificationMethodFacts {
+            identity: IdentityFact::Unknown,
+            verified_other_device_count: 0,
+            recovery: RecoveryFact::Unknown,
+        });
+    };
+    let encryption = session.client().encryption();
+    let identity = match encryption.request_user_identity(&user_id).await {
+        Ok(Some(_)) => IdentityFact::Existing,
+        Ok(None) => IdentityFact::Missing,
+        Err(_) => IdentityFact::Unknown,
+    };
+    if !matches!(identity, IdentityFact::Existing) {
+        return map_verification_method_facts(VerificationMethodFacts {
+            identity,
+            verified_other_device_count: 0,
+            recovery: if matches!(identity, IdentityFact::Unknown) {
+                RecoveryFact::Unknown
+            } else {
+                RecoveryFact::Unavailable
+            },
+        });
+    }
+    let verified_other_device_count = match encryption.get_user_devices(&user_id).await {
+        Ok(devices) => devices
+            .devices()
+            .filter(|device| {
+                // A provisional device does not trust the owner identity yet,
+                // so local cross-signing trust creates a chicken-and-egg
+                // dependency. Proof eligibility is the authoritative owner
+                // signature on a distinct, non-blocked device.
+                is_eligible_own_user_proof_device(
+                    &session.info.device_id,
+                    device.device_id().as_str(),
+                    device.is_cross_signed_by_owner(),
+                    device.is_blacklisted(),
+                )
+            })
+            .count() as u64,
+        Err(_) => {
+            return map_verification_method_facts(VerificationMethodFacts {
+                identity: IdentityFact::Unknown,
+                verified_other_device_count: 0,
+                recovery: RecoveryFact::Unknown,
+            });
+        }
+    };
+    let recovery = match session.e2ee_recovery_state() {
+        E2eeRecoveryState::Enabled | E2eeRecoveryState::Incomplete => RecoveryFact::Available,
+        E2eeRecoveryState::Disabled => RecoveryFact::Unavailable,
+        E2eeRecoveryState::Unknown => RecoveryFact::Unknown,
+    };
+    map_verification_method_facts(VerificationMethodFacts {
+        identity,
+        verified_other_device_count,
+        recovery,
+    })
+}
+
+pub async fn request_own_user_sas_verification(
+    session: &MatrixClientSession,
+) -> Result<MatrixOwnUserVerificationHandle, E2eeTrustError> {
+    let user_id = matrix_sdk::ruma::OwnedUserId::try_from(session.info.user_id.as_str())
+        .map_err(|_| E2eeTrustError::Sdk("invalid verification user id".to_owned()))?;
+    let encryption = session.client().encryption();
+    let identity = encryption
+        .request_user_identity(&user_id)
+        .await
+        .map_err(|_| E2eeTrustError::Sdk("verification identity unavailable".to_owned()))?
+        .ok_or_else(|| E2eeTrustError::Sdk("verification identity unavailable".to_owned()))?;
+    let devices = encryption
+        .get_user_devices(&user_id)
+        .await
+        .map_err(|_| E2eeTrustError::Sdk("verification devices unavailable".to_owned()))?;
+    let eligible_device_count = devices
+        .devices()
+        .filter(|device| {
+            is_eligible_own_user_proof_device(
+                &session.info.device_id,
+                device.device_id().as_str(),
+                device.is_cross_signed_by_owner(),
+                device.is_blacklisted(),
+            )
+        })
+        .count() as u64;
+    if eligible_device_count == 0 {
+        return Err(E2eeTrustError::Sdk(
+            "verification device unavailable".to_owned(),
+        ));
+    }
+    let inner = identity
+        .request_verification_with_methods(vec![
+            matrix_sdk::ruma::events::key::verification::VerificationMethod::SasV1,
+        ])
+        .await
+        .map_err(|_| E2eeTrustError::Sdk("verification request failed".to_owned()))?;
+    Ok(MatrixOwnUserVerificationHandle {
+        request: MatrixVerificationRequestHandle { inner },
+        eligible_device_count,
+    })
+}
+
+pub async fn start_own_user_sas_verification(
+    handle: &MatrixOwnUserVerificationHandle,
+) -> Result<Option<MatrixSasVerificationHandle>, E2eeTrustError> {
+    start_sas_verification(&handle.request).await
+}
+
+pub async fn cancel_own_user_sas_verification(
+    handle: &MatrixOwnUserVerificationHandle,
+) -> Result<(), E2eeTrustError> {
+    cancel_verification_request(&handle.request).await
+}
+
 pub fn observe_incoming_verification_requests(
     session: &MatrixClientSession,
 ) -> MatrixIncomingVerificationRequestObserver {
@@ -1271,23 +1522,26 @@ pub fn map_backup_state_to_desktop(
 #[cfg(test)]
 mod e2ee_trust_tests {
     use koushi_state::{
-        AuthSecret, CrossSigningStatus, IdentityResetAuthType, KeyBackupStatus, SasEmoji,
+        AuthSecret, CrossSigningStatus, CurrentDeviceTrustState, IdentityResetAuthType,
+        KeyBackupStatus, SasEmoji, VerificationAccountKind, VerificationMethodCapability,
     };
     use matrix_sdk::encryption::backups::BackupState;
 
     use super::{
-        E2eeTrustError, KeyBackupRestoreScope, KeyBackupRestoreSummary, MatrixCrossSigningStatus,
-        MatrixDeviceSessionSummary, MatrixIdentityResetAuthType, MatrixIncomingVerificationRequest,
-        MatrixIncomingVerificationRequestObserver, PersistableMatrixSession, RoomKeyExportSummary,
-        RoomKeyImportSummary, SecureBackupSetupSummary, accept_sas_verification,
+        E2eeTrustError, IdentityFact, KeyBackupRestoreScope, KeyBackupRestoreSummary,
+        MatrixCrossSigningStatus, MatrixDeviceSessionSummary, MatrixIdentityResetAuthType,
+        MatrixIncomingVerificationRequest, MatrixIncomingVerificationRequestObserver,
+        PersistableMatrixSession, RecoveryFact, RoomKeyExportSummary, RoomKeyImportSummary,
+        SecureBackupSetupSummary, VerificationMethodFacts, accept_sas_verification,
         accept_verification_request, bootstrap_cross_signing, bootstrap_secure_backup,
         cancel_sas_verification, cancel_verification_request, change_secure_backup_passphrase,
         complete_identity_reset, confirm_sas_verification, cross_signing_status, delete_devices,
         enable_key_backup, export_room_keys_to_file, import_room_keys_from_file, list_devices,
         map_backup_state_to_desktop, map_cross_signing_status_to_desktop,
         map_identity_reset_auth_type_to_desktop, map_sdk_sas_emojis_to_desktop,
-        mismatch_sas_verification, observe_incoming_verification_requests, rename_device,
-        request_device_verification, reset_identity, restore_key_backup, restore_session,
+        map_sdk_verification_state, map_verification_method_facts, mismatch_sas_verification,
+        observe_incoming_verification_requests, rename_device, request_device_verification,
+        reset_identity, restore_key_backup, restore_session, restricted_verification_sync_filter,
         start_sas_verification, write_recovery_key_if_requested,
     };
 
@@ -1331,6 +1585,167 @@ GYW19pdjg0qdXNk/eqZsQTsNWVo6A\n\
             })),
             CrossSigningStatus::NotTrusted
         );
+    }
+
+    #[test]
+    fn current_device_trust_maps_all_sdk_verification_states() {
+        use matrix_sdk::encryption::VerificationState;
+
+        assert_eq!(
+            map_sdk_verification_state(VerificationState::Unknown),
+            CurrentDeviceTrustState::Unknown
+        );
+        assert_eq!(
+            map_sdk_verification_state(VerificationState::Verified),
+            CurrentDeviceTrustState::Verified
+        );
+        assert_eq!(
+            map_sdk_verification_state(VerificationState::Unverified),
+            CurrentDeviceTrustState::Unverified
+        );
+    }
+
+    #[test]
+    fn verification_method_discovery_distinguishes_identity_facts() {
+        let existing_with_sas = map_verification_method_facts(VerificationMethodFacts {
+            identity: IdentityFact::Existing,
+            verified_other_device_count: 2,
+            recovery: RecoveryFact::Unavailable,
+        });
+        assert_eq!(
+            existing_with_sas.account_kind,
+            VerificationAccountKind::ExistingIdentity
+        );
+        assert_eq!(
+            existing_with_sas.methods,
+            vec![VerificationMethodCapability::ExistingDeviceSas]
+        );
+
+        let new_identity = map_verification_method_facts(VerificationMethodFacts {
+            identity: IdentityFact::Missing,
+            verified_other_device_count: 0,
+            recovery: RecoveryFact::Unavailable,
+        });
+        assert_eq!(
+            new_identity.account_kind,
+            VerificationAccountKind::NewIdentity
+        );
+        assert_eq!(
+            new_identity.methods,
+            vec![VerificationMethodCapability::Bootstrap]
+        );
+
+        let unknown = map_verification_method_facts(VerificationMethodFacts {
+            identity: IdentityFact::Unknown,
+            verified_other_device_count: 0,
+            recovery: RecoveryFact::Available,
+        });
+        assert_eq!(unknown.account_kind, VerificationAccountKind::Unknown);
+        assert!(unknown.methods.is_empty());
+
+        let existing_with_recovery = map_verification_method_facts(VerificationMethodFacts {
+            identity: IdentityFact::Existing,
+            verified_other_device_count: 0,
+            recovery: RecoveryFact::Available,
+        });
+        assert_eq!(
+            existing_with_recovery.methods,
+            vec![
+                VerificationMethodCapability::RecoveryKey,
+                VerificationMethodCapability::SecurityPhrase,
+            ]
+        );
+
+        let existing_without_proof = map_verification_method_facts(VerificationMethodFacts {
+            identity: IdentityFact::Existing,
+            verified_other_device_count: 0,
+            recovery: RecoveryFact::Unavailable,
+        });
+        assert_eq!(
+            existing_without_proof.account_kind,
+            VerificationAccountKind::ExistingIdentity
+        );
+        assert!(existing_without_proof.methods.is_empty());
+
+        let sas_survives_unknown_recovery =
+            map_verification_method_facts(VerificationMethodFacts {
+                identity: IdentityFact::Existing,
+                verified_other_device_count: 1,
+                recovery: RecoveryFact::Unknown,
+            });
+        assert_eq!(
+            sas_survives_unknown_recovery.methods,
+            vec![VerificationMethodCapability::ExistingDeviceSas]
+        );
+
+        let unknown_without_known_proof = map_verification_method_facts(VerificationMethodFacts {
+            identity: IdentityFact::Existing,
+            verified_other_device_count: 0,
+            recovery: RecoveryFact::Unknown,
+        });
+        assert_eq!(
+            unknown_without_known_proof.account_kind,
+            VerificationAccountKind::Unknown
+        );
+    }
+
+    #[test]
+    fn own_user_proof_eligibility_requires_distinct_owner_signed_unblocked_device() {
+        assert!(super::is_eligible_own_user_proof_device(
+            "CURRENT", "OTHER", true, false
+        ));
+        assert!(!super::is_eligible_own_user_proof_device(
+            "CURRENT", "CURRENT", true, false
+        ));
+        assert!(!super::is_eligible_own_user_proof_device(
+            "CURRENT", "OTHER", false, false
+        ));
+        assert!(!super::is_eligible_own_user_proof_device(
+            "CURRENT", "OTHER", true, true
+        ));
+    }
+
+    #[test]
+    fn verification_cancel_codes_map_to_closed_private_safe_categories() {
+        use super::MatrixVerificationCancelKind as Kind;
+
+        assert_eq!(
+            super::map_verification_cancel_kind("m.unknown_method"),
+            Kind::UnknownMethod
+        );
+        assert_eq!(
+            super::map_verification_cancel_kind("m.key_mismatch"),
+            Kind::KeyMismatch
+        );
+        assert_eq!(super::map_verification_cancel_kind("m.user"), Kind::User);
+        assert_eq!(
+            super::map_verification_cancel_kind("m.timeout"),
+            Kind::Timeout
+        );
+        assert_eq!(
+            super::map_verification_cancel_kind("m.accepted"),
+            Kind::AcceptedElsewhere
+        );
+        assert_eq!(
+            super::map_verification_cancel_kind("m.future_code"),
+            Kind::Other
+        );
+    }
+
+    #[test]
+    fn own_user_sas_api_returns_only_an_opaque_adapter_handle() {
+        let _ = super::request_own_user_sas_verification;
+        let _opaque: Option<super::MatrixOwnUserVerificationHandle> = None;
+        assert!(!std::any::type_name::<super::MatrixOwnUserVerificationHandle>().contains('@'));
+    }
+
+    #[test]
+    fn restricted_sync_filter_suppresses_rooms_and_presence_but_keeps_account_data() {
+        let filter = restricted_verification_sync_filter();
+        let json = serde_json::to_value(filter).expect("filter serializes");
+        assert_eq!(json["presence"]["types"], serde_json::json!([]));
+        assert_eq!(json["room"]["rooms"], serde_json::json!([]));
+        assert!(json.get("account_data").is_none());
     }
 
     #[test]
@@ -1798,6 +2213,20 @@ impl MatrixClientSession {
                 .state_stream()
                 .map(map_sdk_recovery_state),
         )
+    }
+
+    pub fn current_device_trust(&self) -> CurrentDeviceTrustState {
+        let subscriber = self.client().encryption().verification_state();
+        map_sdk_verification_state(subscriber.get())
+    }
+
+    pub fn observe_current_device_trust(&self) -> CurrentDeviceTrustObservation {
+        // Subscribe first, then read from the same subscriber so an update
+        // cannot be lost between the current-value probe and stream creation.
+        let subscriber = self.client().encryption().verification_state();
+        let current = map_sdk_verification_state(subscriber.get());
+        let updates = Box::pin(subscriber.map(map_sdk_verification_state));
+        CurrentDeviceTrustObservation { current, updates }
     }
 }
 
@@ -3149,6 +3578,7 @@ fn desktop_client_builder_defaults(
 ) -> matrix_sdk::ClientBuilder {
     builder
         .handle_refresh_tokens()
+        .with_room_key_recipient_strategy(desktop_room_key_recipient_strategy())
         .with_encryption_settings(EncryptionSettings {
             backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
             ..Default::default()
@@ -3156,6 +3586,10 @@ fn desktop_client_builder_defaults(
         .with_threading_support(matrix_sdk::ThreadingSupport::Enabled {
             with_subscriptions: true,
         })
+}
+
+fn desktop_room_key_recipient_strategy() -> CollectStrategy {
+    CollectStrategy::AllDevices
 }
 
 pub async fn recover_e2ee(
@@ -3384,11 +3818,18 @@ pub async fn send_text_message(
     let content =
         matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(body);
 
-    room.send(content)
+    let result = room
+        .send(content)
         .with_transaction_id(txn_id)
         .await
-        .map(|_| ())
-        .map_err(MatrixRoomOperationError::from_sdk_error)
+        .map(|_| ());
+    map_room_send_result(result)
+}
+
+fn map_room_send_result(
+    result: Result<(), matrix_sdk::Error>,
+) -> Result<(), MatrixRoomOperationError> {
+    result.map_err(MatrixRoomOperationError::from_sdk_error)
 }
 
 pub async fn room_can_send_text_message(
@@ -4362,6 +4803,76 @@ pub async fn sync_once(session: &MatrixClientSession) -> Result<(), MatrixSyncEr
     session
         .client()
         .sync_once(matrix_sdk::config::SyncSettings::default())
+        .await
+        .map(|_| ())
+        .map_err(|_| MatrixSyncError::Sdk)
+}
+
+/// Close every SDK store connection for a session before deleting its keyed
+/// on-disk store. Completion is a barrier: all in-flight store operations and
+/// SQLite pools have drained when this returns.
+pub async fn close_session_stores(session: &MatrixClientSession) -> Result<(), MatrixSyncError> {
+    session
+        .client()
+        .pause()
+        .await
+        .map_err(|_| MatrixSyncError::Sdk)
+}
+
+fn restricted_verification_sync_filter() -> matrix_sdk::ruma::api::client::filter::FilterDefinition
+{
+    let mut filter = matrix_sdk::ruma::api::client::filter::FilterDefinition::default();
+    filter.presence = matrix_sdk::ruma::api::client::filter::Filter::ignore_all();
+    filter.room = matrix_sdk::ruma::api::client::filter::RoomFilter::ignore_all();
+    filter
+}
+
+fn restricted_verification_sync_settings() -> matrix_sdk::config::SyncSettings {
+    matrix_sdk::config::SyncSettings::new()
+        .timeout(RESTRICTED_VERIFICATION_SYNC_SERVER_TIMEOUT)
+        .filter(
+            matrix_sdk::ruma::api::client::sync::sync_events::v3::Filter::FilterDefinition(
+                restricted_verification_sync_filter(),
+            ),
+        )
+}
+
+fn promotion_full_state_sync_settings() -> matrix_sdk::config::SyncSettings {
+    matrix_sdk::config::SyncSettings::new()
+        .timeout(RESTRICTED_VERIFICATION_SYNC_SERVER_TIMEOUT)
+        .full_state(true)
+}
+
+pub async fn restricted_verification_sync_once(
+    session: &MatrixClientSession,
+) -> Result<(), MatrixSyncError> {
+    restricted_verification_sync_once_with_token(session, None)
+        .await
+        .map(|_| ())
+}
+
+pub async fn restricted_verification_sync_once_with_token(
+    session: &MatrixClientSession,
+    token: Option<String>,
+) -> Result<String, MatrixSyncError> {
+    let mut settings = restricted_verification_sync_settings();
+    if let Some(token) = token {
+        settings = settings.token(token);
+    }
+    session
+        .client()
+        .sync_once(settings)
+        .await
+        .map(|response| response.next_batch)
+        .map_err(|_| MatrixSyncError::Sdk)
+}
+
+pub async fn promotion_full_state_sync_once(
+    session: &MatrixClientSession,
+) -> Result<(), MatrixSyncError> {
+    session
+        .client()
+        .sync_once(promotion_full_state_sync_settings())
         .await
         .map(|_| ())
         .map_err(|_| MatrixSyncError::Sdk)
@@ -5702,6 +6213,24 @@ mod tests {
 
         assert!(defaults_body.contains("with_encryption_settings"));
         assert!(defaults_body.contains("BackupDownloadStrategy::AfterDecryptionFailure"));
+    }
+
+    #[test]
+    fn typed_peer_policy_is_all_devices_not_only_trusted() {
+        assert!(matches!(
+            super::desktop_room_key_recipient_strategy(),
+            matrix_sdk_base::crypto::CollectStrategy::AllDevices
+        ));
+    }
+
+    #[test]
+    fn send_wrapper_propagates_recipient_collection_failure() {
+        assert_eq!(
+            super::map_room_send_result(Err(matrix_sdk::Error::NoOlmMachine)),
+            Err(super::MatrixRoomOperationError::Sdk(
+                super::MatrixRoomOperationFailureKind::Encryption
+            ))
+        );
     }
 
     #[test]

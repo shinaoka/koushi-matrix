@@ -869,7 +869,7 @@ describe("desktop model", () => {
 
     snapshot = await api.submitRecovery("synthetic-recovery-secret");
 
-    expect(snapshot.state.domain.session.kind).toBe("ready");
+    expect(snapshot.state.domain.session.kind).toBe("verifying");
     expect(snapshot.state.domain.sync).toBe("running");
     expect(JSON.stringify(snapshot)).not.toContain("synthetic-recovery-secret");
   });

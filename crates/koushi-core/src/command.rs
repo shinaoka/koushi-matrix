@@ -80,6 +80,8 @@ impl CoreCommand {
                 | AppCommand::SelectRoomListFilter { request_id, .. },
             ) => *request_id,
             Self::Account(command) => match command {
+                #[cfg(feature = "qa-bin")]
+                AccountCommand::QaSetLocalDeviceBlacklisted { request_id, .. } => *request_id,
                 AccountCommand::LoginPassword { request_id, .. }
                 | AccountCommand::DiscoverLogin { request_id, .. }
                 | AccountCommand::StartOidcLogin { request_id, .. }
@@ -102,6 +104,10 @@ impl CoreCommand {
                 | AccountCommand::ProbeLocalEncryptionHealth { request_id }
                 | AccountCommand::ResetLocalData { request_id }
                 | AccountCommand::SubmitRecovery { request_id, .. }
+                | AccountCommand::StartSessionBootstrap { request_id, .. }
+                | AccountCommand::ConfirmSessionBootstrapSaved { request_id, .. }
+                | AccountCommand::StartOwnUserSas { request_id, .. }
+                | AccountCommand::RetryCurrentDeviceTrustDiscovery { request_id }
                 | AccountCommand::RequestVerification { request_id, .. }
                 | AccountCommand::AcceptVerification { request_id, .. }
                 | AccountCommand::ConfirmSasVerification { request_id, .. }
@@ -207,42 +213,38 @@ impl CoreCommand {
         }
     }
 
-    /// Commands that require an authenticated Matrix-capable session before
-    /// they are routed. Runtime gating uses the reducer's "Ready session"
-    /// contract: `Ready`, `NeedsRecovery`, or `Recovering`.
-    ///
-    /// `SyncCommand` is intentionally not included here: the reducer's
-    /// authenticated-session contract allows sync while E2EE recovery is
-    /// pending, and `AccountActor` / `SyncActor` still enforce that a
-    /// store-backed Matrix session exists.
+    /// Commands that require an exact `Ready` session before they are routed.
+    /// External `SyncCommand`s are included; the restricted E2EE crypto lane
+    /// used while gated is owned internally by `AccountActor`.
     pub fn requires_ready_session(&self) -> bool {
-        matches!(self, Self::Room(_) | Self::Timeline(_) | Self::Search(_))
-            || matches!(
-                self,
-                Self::Account(command) if command.requires_ready_session()
+        matches!(
+            self,
+            Self::Room(_) | Self::Timeline(_) | Self::Search(_) | Self::Sync(_)
+        ) || matches!(
+            self,
+            Self::Account(command) if command.requires_ready_session()
+        ) || matches!(
+            self,
+            Self::App(
+                AppCommand::OpenTimelineAtTimestamp { .. }
+                    | AppCommand::ResetRoomTimelineCache { .. }
+                    | AppCommand::EnterAnchoredTimeline { .. }
+                    | AppCommand::ScheduleSend { .. }
+                    | AppCommand::CancelScheduledSend { .. }
+                    | AppCommand::RescheduleScheduledSend { .. }
+                    | AppCommand::SetUploadStaging { .. }
+                    | AppCommand::UpdateStagedUploadCaption { .. }
+                    | AppCommand::UpdateStagedUploadCompression { .. }
+                    | AppCommand::ClearUploadStaging { .. }
+                    | AppCommand::RebuildSearchIndex { .. }
+                    | AppCommand::SetRoomUrlPreviewOverride { .. }
+                    | AppCommand::OpenFilesView { .. }
+                    | AppCommand::OpenThreadsList { .. }
+                    | AppCommand::CloseThreadsList { .. }
+                    | AppCommand::PaginateThreadsList { .. }
+                    | AppCommand::TimelineScrollAnchorUpdated { .. }
             )
-            || matches!(
-                self,
-                Self::App(
-                    AppCommand::OpenTimelineAtTimestamp { .. }
-                        | AppCommand::ResetRoomTimelineCache { .. }
-                        | AppCommand::EnterAnchoredTimeline { .. }
-                        | AppCommand::ScheduleSend { .. }
-                        | AppCommand::CancelScheduledSend { .. }
-                        | AppCommand::RescheduleScheduledSend { .. }
-                        | AppCommand::SetUploadStaging { .. }
-                        | AppCommand::UpdateStagedUploadCaption { .. }
-                        | AppCommand::UpdateStagedUploadCompression { .. }
-                        | AppCommand::ClearUploadStaging { .. }
-                        | AppCommand::RebuildSearchIndex { .. }
-                        | AppCommand::SetRoomUrlPreviewOverride { .. }
-                        | AppCommand::OpenFilesView { .. }
-                        | AppCommand::OpenThreadsList { .. }
-                        | AppCommand::CloseThreadsList { .. }
-                        | AppCommand::PaginateThreadsList { .. }
-                        | AppCommand::TimelineScrollAnchorUpdated { .. }
-                )
-            )
+        )
     }
 }
 
@@ -959,6 +961,23 @@ pub enum AccountCommand {
         request_id: RequestId,
         request: RecoveryRequest,
     },
+    StartSessionBootstrap {
+        request_id: RequestId,
+        flow_id: u64,
+        auth: Option<koushi_state::AuthSecret>,
+        request: SecureBackupSetupRequest,
+    },
+    ConfirmSessionBootstrapSaved {
+        request_id: RequestId,
+        flow_id: u64,
+    },
+    StartOwnUserSas {
+        request_id: RequestId,
+        flow_id: u64,
+    },
+    RetryCurrentDeviceTrustDiscovery {
+        request_id: RequestId,
+    },
     RequestVerification {
         request_id: RequestId,
         target: VerificationTarget,
@@ -988,6 +1007,12 @@ pub enum AccountCommand {
         request_id: RequestId,
         version: Option<String>,
         request: RecoveryRequest,
+    },
+    #[cfg(feature = "qa-bin")]
+    QaSetLocalDeviceBlacklisted {
+        request_id: RequestId,
+        target: VerificationTarget,
+        acknowledged: tokio::sync::oneshot::Sender<Result<(), ()>>,
     },
     ResetIdentity {
         request_id: RequestId,
@@ -1049,6 +1074,7 @@ impl AccountCommand {
         matches!(
             self,
             Self::RequestVerification { .. }
+                | Self::RetryCurrentDeviceTrustDiscovery { .. }
                 | Self::AcceptVerification { .. }
                 | Self::ConfirmSasVerification { .. }
                 | Self::CancelVerification { .. }
@@ -1246,6 +1272,38 @@ impl fmt::Debug for AccountCommand {
                 .field("request_id", request_id)
                 .field("request", request)
                 .finish(),
+            Self::StartSessionBootstrap {
+                request_id,
+                flow_id,
+                auth,
+                request,
+            } => formatter
+                .debug_struct("StartSessionBootstrap")
+                .field("request_id", request_id)
+                .field("flow_id", flow_id)
+                .field("has_auth", &auth.is_some())
+                .field("request", request)
+                .finish(),
+            Self::ConfirmSessionBootstrapSaved {
+                request_id,
+                flow_id,
+            } => formatter
+                .debug_struct("ConfirmSessionBootstrapSaved")
+                .field("request_id", request_id)
+                .field("flow_id", flow_id)
+                .finish(),
+            Self::StartOwnUserSas {
+                request_id,
+                flow_id,
+            } => formatter
+                .debug_struct("StartOwnUserSas")
+                .field("request_id", request_id)
+                .field("flow_id", flow_id)
+                .finish(),
+            Self::RetryCurrentDeviceTrustDiscovery { request_id } => formatter
+                .debug_struct("RetryCurrentDeviceTrustDiscovery")
+                .field("request_id", request_id)
+                .finish(),
             Self::RequestVerification { request_id, .. } => formatter
                 .debug_struct("RequestVerification")
                 .field("request_id", request_id)
@@ -1299,6 +1357,12 @@ impl fmt::Debug for AccountCommand {
                 .field("request_id", request_id)
                 .field("version", &version.as_ref().map(|_| "BackupVersion(..)"))
                 .field("request", request)
+                .finish(),
+            #[cfg(feature = "qa-bin")]
+            Self::QaSetLocalDeviceBlacklisted { request_id, .. } => formatter
+                .debug_struct("QaSetLocalDeviceBlacklisted")
+                .field("request_id", request_id)
+                .field("target", &"<redacted>")
                 .finish(),
             Self::ResetIdentity { request_id } => formatter
                 .debug_struct("ResetIdentity")

@@ -35,4 +35,5 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSWindow"] }
 
 [dev-dependencies]
+koushi-core = { path = "../../../crates/koushi-core", features = ["test-hooks"] }
 tempfile = "3"

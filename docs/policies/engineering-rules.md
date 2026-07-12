@@ -7,7 +7,7 @@ build gates. AGENTS.md remains the operational how-to (permissions, install
 caveats, recovery steps); durable rules discovered there are promoted to
 REPOSITORY_RULES.md or this document.
 
-Last amended: 2026-06-18.
+Last amended: 2026-07-12.
 
 ## Secrets and Private Data
 
@@ -161,6 +161,25 @@ Rules:
    QA tokens, screenshots, or issue comments. Desktop recovery-key delivery
    writes through a Rust/Tauri native artifact path and reports only a boolean
    or coarse status.
+   Authentication alone is not session admission. Until the SDK
+   current-device verification state is authoritatively `Verified`, the SDK
+   session is AccountActor-owned and quarantined: no normal sync children,
+   rooms/timelines/search, drafts/navigation/scheduled sends, notifications,
+   native attention, main shell, active saved-session publication, or ordinary
+   Matrix command may be exposed. Restricted crypto sync is internal and may
+   process only trust-discovery, recovery, device-list/key-query, and to-device
+   verification traffic. Recovery/SAS/bootstrap UI completion never substitutes
+   for the authoritative trust observation. Provisional credentials are not
+   persisted; rejection/logout erases local keyed stores and attempts server
+   logout before projecting `SignedOut`.
+   Gate method/target discovery exposes no additional raw device identifiers;
+   current-device SAS selection uses actor-owned opaque handles. A generated
+   recovery key is delivered only to a user-selected native destination and
+   confirmed through coarse Rust state, never displayed or returned to the
+   WebView. Current-device admission remains separate from peer trust:
+   unverified eligible peer devices do not require a normal-mode send prompt,
+   while blocked devices and cryptographic integrity/key-mismatch failures
+   remain hard failures.
 12. Credential-store health diagnostics are kind-only. Public state may report
    only `unknown`, `healthy`, `unavailable`, `locked_or_inaccessible`,
    `missing_credential`, or `reset_required`, with optional private-data-free
@@ -202,6 +221,13 @@ Rules:
    Avatar MXC URIs, thumbnail state, and user-room avatar associations are
    account-scoped sensitive metadata. Debug, logs, tests, QA tokens, fixtures,
    and issue evidence must redact real values.
+   Persistent automatic avatar bytes belong only to the account-keyed Matrix
+   SDK SQLite media store. A separated SDK `cache_path` must retain the same
+   required `MatrixClientStoreKey`, and SDK media retention is the sole
+   persistent retention policy. Koushi may keep decrypted renderable bytes only
+   in the account/session-scoped in-memory `koushi-thumbnail://` cache. A
+   separate plaintext avatar/link-preview cache and automatic `file://` URLs are
+   prohibited; legacy plaintext directories are cleanup-only.
    Personal local user aliases are private account-data-backed profile state:
    they must not be sent as Matrix profile updates, room events, message content,
    notification text, QA tokens, logs, issue evidence, or normal `Debug` output.

@@ -6,9 +6,16 @@ use koushi_backend::{
 use koushi_search::SearchCandidate;
 use koushi_state::{
     AppAction, AppEffect, AuthDiscoveryState, AuthFailureKind, AuthSecret, E2eeRecoveryState,
-    LoginFlowKind, LoginRequest, RecoveryMethod, RecoveryRequest, SearchMatchField, SearchScope,
+    LoginAttemptId, LoginFlowKind, LoginRequest, RecoveryRequest, SearchMatchField, SearchScope,
     SearchState, SessionState, SyncState, ThreadPaneState, compose_sidebar,
 };
+
+fn login_submitted(request: LoginRequest) -> AppAction {
+    AppAction::LoginSubmitted {
+        attempt_id: LoginAttemptId::new(0, 1),
+        request,
+    }
+}
 use std::{
     io::{Read, Write},
     net::TcpListener,
@@ -283,7 +290,7 @@ fn fake_backend_login_boundary_fails_explicitly_before_real_sdk_wiring() {
         ..FakeDesktopBackendConfig::default()
     });
 
-    backend.dispatch(AppAction::LoginSubmitted(LoginRequest {
+    backend.dispatch(login_submitted(LoginRequest {
         homeserver: "https://matrix.example.org".to_owned(),
         username: "demo-user".to_owned(),
         password: AuthSecret::new("synthetic-password"),
@@ -313,7 +320,7 @@ fn sdk_login_backend_enters_ready_session_without_exposing_secret() {
         ..FakeDesktopBackendConfig::default()
     });
 
-    backend.dispatch(AppAction::LoginSubmitted(LoginRequest {
+    backend.dispatch(login_submitted(LoginRequest {
         homeserver: homeserver.clone(),
         username: "fixture-user".to_owned(),
         password: AuthSecret::new("synthetic-password"),
@@ -340,7 +347,7 @@ fn deferred_sdk_login_returns_login_effect_without_holding_backend_execution() {
         ..FakeDesktopBackendConfig::default()
     });
 
-    let effects = backend.dispatch(AppAction::LoginSubmitted(LoginRequest {
+    let effects = backend.dispatch(login_submitted(LoginRequest {
         homeserver: homeserver.clone(),
         username: "fixture-user".to_owned(),
         password: AuthSecret::new("synthetic-password"),
@@ -354,7 +361,7 @@ fn deferred_sdk_login_returns_login_effect_without_holding_backend_execution() {
     assert!(effects.iter().any(|effect| {
         matches!(
             effect,
-            AppEffect::Login(request) if request.homeserver == homeserver
+            AppEffect::Login { request, .. } if request.homeserver == homeserver
         )
     }));
     assert!(!format!("{effects:?}").contains("synthetic-password"));
@@ -368,7 +375,7 @@ fn deferred_sdk_login_completion_stores_session_and_enters_ready_state() {
         login: koushi_backend::LoginMode::Deferred,
         ..FakeDesktopBackendConfig::default()
     });
-    backend.dispatch(AppAction::LoginSubmitted(LoginRequest {
+    backend.dispatch(login_submitted(LoginRequest {
         homeserver: homeserver.clone(),
         username: "fixture-user".to_owned(),
         password: AuthSecret::new("synthetic-password"),
@@ -404,7 +411,7 @@ fn deferred_sdk_login_completion_can_enter_e2ee_recovery_step() {
         e2ee_recovery: E2eeRecoveryMode::RequiredDeferred,
         ..FakeDesktopBackendConfig::default()
     });
-    backend.dispatch(AppAction::LoginSubmitted(LoginRequest {
+    backend.dispatch(login_submitted(LoginRequest {
         homeserver: homeserver.clone(),
         username: "fixture-user".to_owned(),
         password: AuthSecret::new("synthetic-password"),
@@ -422,21 +429,18 @@ fn deferred_sdk_login_completion_can_enter_e2ee_recovery_step() {
     let effects = backend.complete_matrix_login(session);
 
     let snapshot = backend.snapshot();
-    let SessionState::NeedsRecovery { info, methods } = &snapshot.state.session else {
+    let SessionState::AwaitingVerification { info, gate } = &snapshot.state.session else {
         panic!("expected e2ee recovery step");
     };
     assert_eq!(info.homeserver, homeserver);
-    assert_eq!(
-        methods,
-        &vec![RecoveryMethod::RecoveryKey, RecoveryMethod::SecurityPhrase]
-    );
+    assert_eq!(gate.methods.len(), 2);
     assert!(
         effects
             .iter()
-            .any(|effect| matches!(effect, AppEffect::StartSync))
+            .all(|effect| !matches!(effect, AppEffect::StartSync))
     );
-    assert_eq!(snapshot.state.sync, SyncState::Running);
-    assert!(!snapshot.state.rooms.is_empty());
+    assert_eq!(snapshot.state.sync, SyncState::Stopped);
+    assert!(snapshot.state.rooms.is_empty());
 }
 
 #[test]
@@ -448,7 +452,7 @@ fn sdk_state_recovery_mode_does_not_prompt_before_sdk_reports_incomplete() {
         e2ee_recovery: E2eeRecoveryMode::SdkState,
         ..FakeDesktopBackendConfig::default()
     });
-    backend.dispatch(AppAction::LoginSubmitted(LoginRequest {
+    backend.dispatch(login_submitted(LoginRequest {
         homeserver: homeserver.clone(),
         username: "fixture-user".to_owned(),
         password: AuthSecret::new("synthetic-password"),
@@ -479,7 +483,7 @@ fn deferred_sync_mode_emits_start_sync_without_fixture_room_updates() {
         sync: SyncMode::Deferred,
         ..FakeDesktopBackendConfig::default()
     });
-    backend.dispatch(AppAction::LoginSubmitted(LoginRequest {
+    backend.dispatch(login_submitted(LoginRequest {
         homeserver: homeserver.clone(),
         username: "fixture-user".to_owned(),
         password: AuthSecret::new("synthetic-password"),
@@ -521,7 +525,7 @@ fn deferred_sync_mode_does_not_seed_fixture_rooms_after_sync_failure() {
         sync: SyncMode::Deferred,
         ..FakeDesktopBackendConfig::default()
     });
-    backend.dispatch(AppAction::LoginSubmitted(LoginRequest {
+    backend.dispatch(login_submitted(LoginRequest {
         homeserver: homeserver.clone(),
         username: "fixture-user".to_owned(),
         password: AuthSecret::new("synthetic-password"),
@@ -719,7 +723,7 @@ fn logout_clears_backend_matrix_session_handle() {
         login: koushi_backend::LoginMode::Deferred,
         ..FakeDesktopBackendConfig::default()
     });
-    backend.dispatch(AppAction::LoginSubmitted(LoginRequest {
+    backend.dispatch(login_submitted(LoginRequest {
         homeserver: homeserver.clone(),
         username: "fixture-user".to_owned(),
         password: AuthSecret::new("synthetic-password"),
@@ -746,7 +750,7 @@ fn logout_clears_backend_matrix_session_handle() {
 }
 
 #[test]
-fn observed_incomplete_e2ee_recovery_state_prompts_without_stopping_sync() {
+fn observed_incomplete_recovery_does_not_reopen_a_gate_after_verified_ready() {
     let mut backend = FakeDesktopBackend::booted_with_config(FakeDesktopBackendConfig {
         restore_session: true,
         e2ee_recovery: E2eeRecoveryMode::SdkState,
@@ -756,10 +760,7 @@ fn observed_incomplete_e2ee_recovery_state_prompts_without_stopping_sync() {
     backend.observe_e2ee_recovery_state(E2eeRecoveryState::Incomplete);
 
     let snapshot = backend.snapshot();
-    assert!(matches!(
-        snapshot.state.session,
-        SessionState::NeedsRecovery { .. }
-    ));
+    assert!(matches!(snapshot.state.session, SessionState::Ready(_)));
     assert_eq!(snapshot.state.sync, SyncState::Running);
     assert!(!snapshot.state.rooms.is_empty());
 }
@@ -788,13 +789,16 @@ fn e2ee_recovery_submission_can_be_deferred_without_exposing_secret() {
         ..FakeDesktopBackendConfig::default()
     });
 
-    let effects = backend.dispatch(AppAction::E2eeRecoverySubmitted(RecoveryRequest {
-        secret: AuthSecret::new("synthetic-recovery-secret"),
-    }));
+    let effects = backend.dispatch(AppAction::E2eeRecoverySubmitted {
+        flow_id: 77,
+        request: RecoveryRequest {
+            secret: AuthSecret::new("synthetic-recovery-secret"),
+        },
+    });
 
     assert!(matches!(
         backend.snapshot().state.session,
-        SessionState::Recovering { .. }
+        SessionState::Verifying { .. }
     ));
     assert!(
         effects
@@ -812,9 +816,12 @@ fn e2ee_recovery_fixture_success_enters_ready_session() {
         ..FakeDesktopBackendConfig::default()
     });
 
-    backend.dispatch(AppAction::E2eeRecoverySubmitted(RecoveryRequest {
-        secret: AuthSecret::new("synthetic-recovery-secret"),
-    }));
+    backend.dispatch(AppAction::E2eeRecoverySubmitted {
+        flow_id: 77,
+        request: RecoveryRequest {
+            secret: AuthSecret::new("synthetic-recovery-secret"),
+        },
+    });
 
     let snapshot = backend.snapshot();
     assert!(matches!(snapshot.state.session, SessionState::Ready(_)));
