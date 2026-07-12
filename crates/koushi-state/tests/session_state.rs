@@ -228,8 +228,54 @@ fn same_sequence_from_another_connection_is_a_stale_login_terminal() {
 
 #[test]
 fn authentication_start_cannot_hide_an_active_or_gated_session() {
+    for session in invalid_auth_admission_sessions() {
+        let mut state = AppState {
+            session,
+            ..AppState::default()
+        };
+        let before = state.clone();
+        assert!(
+            reduce(
+                &mut state,
+                AppAction::AuthenticationStarted {
+                    attempt_id: LoginAttemptId::new(2, 8),
+                    homeserver: "https://replacement.invalid".to_owned(),
+                },
+            )
+            .is_empty()
+        );
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn login_submitted_emits_no_login_effect_in_active_or_gated_states() {
+    for session in invalid_auth_admission_sessions() {
+        let mut state = AppState {
+            session,
+            ..AppState::default()
+        };
+        let before = state.clone();
+        let effects = reduce(
+            &mut state,
+            AppAction::LoginSubmitted {
+                attempt_id: LoginAttemptId::new(2, 8),
+                request: LoginRequest {
+                    homeserver: "https://replacement.invalid".to_owned(),
+                    username: "replacement".to_owned(),
+                    password: AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            },
+        );
+        assert!(effects.is_empty());
+        assert_eq!(state, before);
+    }
+}
+
+fn invalid_auth_admission_sessions() -> Vec<SessionState> {
     let info = session_info();
-    let invalid_sessions = vec![
+    vec![
         SessionState::Restoring,
         SessionState::SwitchingAccount { info: info.clone() },
         SessionState::Provisional {
@@ -251,28 +297,9 @@ fn authentication_start_cannot_hide_an_active_or_gated_session() {
             reason: VerificationGateRejectReason::UserRejected,
         },
         SessionState::Ready(info.clone()),
-        SessionState::Locked(info.clone()),
+        SessionState::Locked(info),
         SessionState::LoggingOut,
-    ];
-
-    for session in invalid_sessions {
-        let mut state = AppState {
-            session,
-            ..AppState::default()
-        };
-        let before = state.clone();
-        assert!(
-            reduce(
-                &mut state,
-                AppAction::AuthenticationStarted {
-                    attempt_id: LoginAttemptId::new(2, 8),
-                    homeserver: "https://replacement.invalid".to_owned(),
-                },
-            )
-            .is_empty()
-        );
-        assert_eq!(state, before);
-    }
+    ]
 }
 
 #[test]

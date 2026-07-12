@@ -437,10 +437,10 @@ fn deferred_sdk_login_completion_can_enter_e2ee_recovery_step() {
     assert!(
         effects
             .iter()
-            .any(|effect| matches!(effect, AppEffect::StartSync))
+            .all(|effect| !matches!(effect, AppEffect::StartSync))
     );
-    assert_eq!(snapshot.state.sync, SyncState::Running);
-    assert!(!snapshot.state.rooms.is_empty());
+    assert_eq!(snapshot.state.sync, SyncState::Stopped);
+    assert!(snapshot.state.rooms.is_empty());
 }
 
 #[test]
@@ -750,7 +750,7 @@ fn logout_clears_backend_matrix_session_handle() {
 }
 
 #[test]
-fn observed_incomplete_e2ee_recovery_state_prompts_without_stopping_sync() {
+fn observed_incomplete_recovery_does_not_reopen_a_gate_after_verified_ready() {
     let mut backend = FakeDesktopBackend::booted_with_config(FakeDesktopBackendConfig {
         restore_session: true,
         e2ee_recovery: E2eeRecoveryMode::SdkState,
@@ -760,10 +760,7 @@ fn observed_incomplete_e2ee_recovery_state_prompts_without_stopping_sync() {
     backend.observe_e2ee_recovery_state(E2eeRecoveryState::Incomplete);
 
     let snapshot = backend.snapshot();
-    assert!(matches!(
-        snapshot.state.session,
-        SessionState::AwaitingVerification { .. }
-    ));
+    assert!(matches!(snapshot.state.session, SessionState::Ready(_)));
     assert_eq!(snapshot.state.sync, SyncState::Running);
     assert!(!snapshot.state.rooms.is_empty());
 }
