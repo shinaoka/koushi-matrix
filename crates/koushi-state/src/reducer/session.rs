@@ -18,7 +18,7 @@ pub(crate) fn handle_app_started(state: &mut AppState) -> Vec<AppEffect> {
     vec![AppEffect::RestoreSession]
 }
 
-pub(crate) fn handle_restore_or_login_succeeded(
+fn install_provisional_session(
     state: &mut AppState,
     info: crate::state::SessionInfo,
 ) -> Vec<AppEffect> {
@@ -36,6 +36,35 @@ pub(crate) fn handle_restore_or_login_succeeded(
         effects.push(AppEffect::EmitUiEvent(UiEvent::ErrorChanged));
     }
     effects
+}
+
+pub(crate) fn handle_restore_session_succeeded(
+    state: &mut AppState,
+    info: crate::state::SessionInfo,
+) -> Vec<AppEffect> {
+    if !matches!(state.session, SessionState::Restoring) {
+        return Vec::new();
+    }
+    install_provisional_session(state, info)
+}
+
+fn homeservers_match(expected: &str, actual: &str) -> bool {
+    expected
+        .trim_end_matches('/')
+        .eq_ignore_ascii_case(actual.trim_end_matches('/'))
+}
+
+pub(crate) fn handle_login_succeeded(
+    state: &mut AppState,
+    info: crate::state::SessionInfo,
+) -> Vec<AppEffect> {
+    let SessionState::Authenticating { homeserver } = &state.session else {
+        return Vec::new();
+    };
+    if !homeservers_match(homeserver, &info.homeserver) {
+        return Vec::new();
+    }
+    install_provisional_session(state, info)
 }
 
 fn promote_verified_session(

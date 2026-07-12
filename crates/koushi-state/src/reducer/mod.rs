@@ -67,9 +67,10 @@ pub(crate) fn recompute_room_list_projection(state: &mut AppState) {
 pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
     match action {
         AppAction::AppStarted => session::handle_app_started(state),
-        AppAction::RestoreSessionSucceeded(info) | AppAction::LoginSucceeded(info) => {
-            session::handle_restore_or_login_succeeded(state, info)
+        AppAction::RestoreSessionSucceeded(info) => {
+            session::handle_restore_session_succeeded(state, info)
         }
+        AppAction::LoginSucceeded(info) => session::handle_login_succeeded(state, info),
         AppAction::CurrentDeviceTrustChanged(trust) => {
             session::handle_current_device_trust_changed(state, trust)
         }

@@ -474,6 +474,9 @@ fn soft_logout_reauth_succeeds_and_fails_are_request_correlated() {
         state.soft_logout_reauth,
         SoftLogoutReauthState::Succeeded { request_id: 1 }
     );
+    state.session = SessionState::Authenticating {
+        homeserver: session_info().homeserver,
+    };
     let effects = reduce(&mut state, AppAction::LoginSucceeded(session_info()));
     assert!(matches!(state.session, SessionState::Provisional { .. }));
     assert!(effects.contains(&AppEffect::CheckCurrentDeviceTrust));

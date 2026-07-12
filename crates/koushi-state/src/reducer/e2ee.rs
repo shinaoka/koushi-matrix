@@ -41,6 +41,15 @@ pub(crate) fn handle_e2ee_recovery_required(
     info: crate::state::SessionInfo,
     methods: Vec<crate::state::RecoveryMethod>,
 ) -> Vec<AppEffect> {
+    if !matches!(
+        &state.session,
+        SessionState::Provisional {
+            info: current,
+            phase: ProvisionalPhase::DiscoveringMethods,
+        } if current == &info
+    ) {
+        return Vec::new();
+    }
     let cleared_login_error = clear_login_failed_errors(state);
     state.session = SessionState::AwaitingVerification {
         info,

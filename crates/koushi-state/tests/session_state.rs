@@ -125,6 +125,118 @@ fn authenticated_install_is_provisional_for_login_and_restore() {
 }
 
 #[test]
+fn stale_or_wrong_state_authentication_success_is_ignored() {
+    let info = session_info();
+    let cases = [
+        (
+            SessionState::SignedOut,
+            AppAction::LoginSucceeded(info.clone()),
+        ),
+        (
+            SessionState::SignedOut,
+            AppAction::RestoreSessionSucceeded(info.clone()),
+        ),
+        (
+            SessionState::Ready(info.clone()),
+            AppAction::LoginSucceeded(info.clone()),
+        ),
+        (
+            SessionState::Locked(info.clone()),
+            AppAction::RestoreSessionSucceeded(info.clone()),
+        ),
+        (
+            SessionState::Rejecting {
+                info: info.clone(),
+                reason: VerificationGateRejectReason::UserRejected,
+            },
+            AppAction::LoginSucceeded(info.clone()),
+        ),
+        (
+            SessionState::Restoring,
+            AppAction::LoginSucceeded(info.clone()),
+        ),
+        (
+            SessionState::Authenticating {
+                homeserver: "https://other.example.org".to_owned(),
+            },
+            AppAction::LoginSucceeded(info.clone()),
+        ),
+        (
+            SessionState::Authenticating {
+                homeserver: info.homeserver.clone(),
+            },
+            AppAction::RestoreSessionSucceeded(info.clone()),
+        ),
+    ];
+
+    for (session, action) in cases {
+        let mut state = AppState {
+            session,
+            ..AppState::default()
+        };
+        let before = state.clone();
+        assert!(reduce(&mut state, action).is_empty());
+        assert_eq!(state, before);
+    }
+
+    let mut logged_out = AppState {
+        session: SessionState::Authenticating {
+            homeserver: info.homeserver.clone(),
+        },
+        ..AppState::default()
+    };
+    reduce(&mut logged_out, AppAction::LogoutRequested);
+    let before = logged_out.clone();
+    assert!(
+        reduce(&mut logged_out, AppAction::LoginSucceeded(info)).is_empty(),
+        "late login success after logout must be stale"
+    );
+    assert_eq!(logged_out, before);
+}
+
+#[test]
+fn legacy_recovery_required_only_migrates_matching_provisional_discovery() {
+    let info = session_info();
+    let action = AppAction::E2eeRecoveryRequired {
+        info: info.clone(),
+        methods: vec![RecoveryMethod::RecoveryKey],
+    };
+    for session in [
+        SessionState::SignedOut,
+        SessionState::Ready(info.clone()),
+        SessionState::Provisional {
+            info: info.clone(),
+            phase: ProvisionalPhase::CheckingTrust,
+        },
+        SessionState::Provisional {
+            info: alternate_session_info(),
+            phase: ProvisionalPhase::DiscoveringMethods,
+        },
+    ] {
+        let mut state = AppState {
+            session,
+            ..AppState::default()
+        };
+        let before = state.clone();
+        assert!(reduce(&mut state, action.clone()).is_empty());
+        assert_eq!(state, before);
+    }
+
+    let mut matching = AppState {
+        session: SessionState::Provisional {
+            info: info.clone(),
+            phase: ProvisionalPhase::DiscoveringMethods,
+        },
+        ..AppState::default()
+    };
+    reduce(&mut matching, action);
+    assert!(matches!(
+        matching.session,
+        SessionState::AwaitingVerification { info: current, .. } if current == info
+    ));
+}
+
+#[test]
 fn verification_gate_transition_table_is_fail_closed() {
     let info = session_info();
     let cases = [
@@ -264,20 +376,58 @@ fn normal_room_commands_are_rejected_in_every_verification_gate_state() {
         },
     ];
 
-    for session in states {
-        let mut state = AppState {
-            session,
-            ..AppState::default()
-        };
-        let before = state.clone();
-        let effects = reduce(
-            &mut state,
-            AppAction::RoomListFilterSelected {
-                filter: koushi_state::RoomListFilter::Unread,
+    let mut attention = NativeAttentionState::default();
+    attention.summary.unread_count = 1;
+    let actions = vec![
+        AppAction::RoomListFilterSelected {
+            filter: koushi_state::RoomListFilter::Unread,
+        },
+        AppAction::TimelineBackPaginationRequested {
+            room_id: "room-a".to_owned(),
+        },
+        AppAction::OpenThread {
+            room_id: "room-a".to_owned(),
+            root_event_id: "event-a".to_owned(),
+        },
+        AppAction::SearchSubmitted {
+            request_id: 1,
+            query: "query".to_owned(),
+            scope: SearchScope::AllRooms,
+        },
+        AppAction::SendTextSubmitted {
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-a".to_owned(),
+            body: "body".to_owned(),
+        },
+        AppAction::ComposerSubmissionAccepted {
+            submission_id: SubmissionId::new("submission-a"),
+            room_id: "room-a".to_owned(),
+            transaction_id: "txn-a".to_owned(),
+            body: "body".to_owned(),
+        },
+        AppAction::DirectoryQueryRequested {
+            request_id: 1,
+            query: koushi_state::DirectoryQuery {
+                term: Some("query".to_owned()),
+                server_name: None,
+                limit: Some(10),
+                since: None,
             },
-        );
-        assert_eq!(state, before);
-        assert!(effects.is_empty());
+        },
+        AppAction::NativeAttentionUpdated { attention },
+    ];
+
+    for session in states {
+        for action in &actions {
+            let mut state = AppState {
+                session: session.clone(),
+                ..AppState::default()
+            };
+            let before = state.clone();
+            let effects = reduce(&mut state, action.clone());
+            assert_eq!(state, before, "gate accepted normal action: {action:?}");
+            assert!(effects.is_empty(), "gate emitted effect for: {action:?}");
+        }
     }
 }
 
@@ -526,8 +676,9 @@ fn login_request_debug_redacts_password() {
 #[test]
 fn login_failure_returns_to_signed_out_and_records_error() {
     let mut state = AppState {
-        session: SessionState::Authenticating {
-            homeserver: "https://matrix.example.org".to_owned(),
+        session: SessionState::Provisional {
+            info: session_info(),
+            phase: ProvisionalPhase::DiscoveringMethods,
         },
         ..AppState::default()
     };
@@ -680,8 +831,9 @@ fn account_switch_request_enters_switching_state_and_clears_views() {
 #[test]
 fn e2ee_recovery_required_after_login_enters_gate_without_normal_sync() {
     let mut state = AppState {
-        session: SessionState::Authenticating {
-            homeserver: "https://matrix.example.org".to_owned(),
+        session: SessionState::Provisional {
+            info: session_info(),
+            phase: ProvisionalPhase::DiscoveringMethods,
         },
         ..AppState::default()
     };
@@ -723,8 +875,9 @@ fn e2ee_recovery_required_after_login_enters_gate_without_normal_sync() {
 #[test]
 fn e2ee_recovery_required_after_failed_login_clears_login_error() {
     let mut state = AppState {
-        session: SessionState::Authenticating {
-            homeserver: "https://matrix.example.org".to_owned(),
+        session: SessionState::Provisional {
+            info: session_info(),
+            phase: ProvisionalPhase::DiscoveringMethods,
         },
         errors: vec![AppError {
             code: "login_failed".to_owned(),
