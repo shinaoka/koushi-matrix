@@ -27,7 +27,6 @@ test("verification states replace the complete desktop shell", async ({ page }) 
               homeserver: "https://example.invalid",
               user_id: "@gate:example.invalid",
               device_id: "DEVICE",
-              flow_id: 71,
               gate: {
                 methods: ["existingDeviceSas", "recoveryKey", "bootstrap"],
                 account_kind: "existingIdentity",
@@ -53,20 +52,21 @@ test("recovery and bootstrap actions preserve secrets outside observable state",
   await page.goto("/appHarness.html");
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
-    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { kind: "awaitingVerification", homeserver: "https://example.invalid", user_id: "@gate:example.invalid", device_id: "DEVICE", flow_id: 72, gate: { methods: ["recoveryKey", "bootstrap"], account_kind: "newIdentity", failureKind: null } } } } });
+    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { kind: "awaitingVerification", homeserver: "https://example.invalid", user_id: "@gate:example.invalid", device_id: "DEVICE", gate: { methods: ["recoveryKey", "bootstrap"], account_kind: "newIdentity", failureKind: null } } } } });
     window.__harness.pushStateChanged();
     window.__harness.clearInvocations();
   });
   const secret = "SYNTHETIC_RECOVERY_SECRET_8842";
   await page.getByLabel("Recovery secret").fill(secret);
   await page.getByRole("button", { name: "Recover", exact: true }).click();
+  await expect(page.getByLabel("Recovery secret")).toHaveValue("");
   await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("submit_recovery")[0]?.args)).toEqual({ secret: "[REDACTED]" });
   await expect(page.locator("body")).not.toContainText(secret);
   expect(await page.evaluate((sentinel) => JSON.stringify(window.__harness.currentSnapshot()).includes(sentinel), secret)).toBe(false);
 
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
-    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { ...snapshot.state.domain.session, kind: "awaitingVerification", gate: { methods: ["bootstrap"], account_kind: "newIdentity", failureKind: null }, flow_id: 73 } } } });
+    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { ...snapshot.state.domain.session, kind: "awaitingVerification", gate: { methods: ["bootstrap"], account_kind: "newIdentity", failureKind: null }, flow_id: undefined } } } });
     window.__harness.pushStateChanged();
     window.__harness.clearInvocations();
   });
@@ -75,9 +75,11 @@ test("recovery and bootstrap actions preserve secrets outside observable state",
   await page.getByLabel("Recovery key destination").fill(destination);
   await page.getByLabel("Backup passphrase").fill(passphrase);
   await page.getByRole("button", { name: "Create secure backup" }).click();
+  await expect(page.getByLabel("Recovery key destination")).toHaveValue("");
+  await expect(page.getByLabel("Backup passphrase")).toHaveValue("");
   const bootstrapArgs = await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("start_session_bootstrap")[0]?.args)).toBeTruthy().then(() => page.evaluate(() => window.__harness.invocationsOf("start_session_bootstrap")[0]!.args));
   expect(bootstrapArgs).toMatchObject({ passphrase: "[REDACTED]", recoveryKeyDestinationPath: "[REDACTED]" });
-  expect([72, 73]).toContain(bootstrapArgs.flowId);
+  expect(bootstrapArgs.flowId).toBeUndefined();
   await expect(page.getByRole("button", { name: "I saved the recovery key" })).toBeVisible();
   const observable = await page.evaluate(() => `${JSON.stringify(window.__harness.currentSnapshot())}\n${document.body.textContent ?? ""}`);
   expect(observable).not.toContain(passphrase);
@@ -102,21 +104,22 @@ test("SAS actions stay flow-correlated through retry and cancellation", async ({
   await page.goto("/appHarness.html");
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
-    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { kind: "awaitingVerification", homeserver: "https://example.invalid", user_id: "@gate:example.invalid", device_id: "DEVICE", flow_id: 81, gate: { methods: ["existingDeviceSas"], account_kind: "existingIdentity", failureKind: null } } } } });
+    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { kind: "awaitingVerification", homeserver: "https://example.invalid", user_id: "@gate:example.invalid", device_id: "DEVICE", gate: { methods: ["existingDeviceSas"], account_kind: "existingIdentity", failureKind: null } } } } });
     window.__harness.pushStateChanged();
     window.__harness.clearInvocations();
   });
   await page.getByRole("button", { name: "Verify with another device" }).click();
-  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("start_own_user_sas")[0]?.args)).toEqual({ flowId: 81 });
+  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("start_own_user_sas")[0]?.args)).toEqual({});
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
     const emojis = ["🐶", "🐱", "🦁", "🐎", "🦄", "🐷", "🐘"].map((symbol, index) => ({ symbol, description: `emoji-${index}` }));
-    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, e2ee_trust: { ...snapshot.state.domain.e2ee_trust, verification: { kind: "sasPresented", request_id: 81, target: { user_id: "opaque-current-user", device_id: "opaque-device" }, emojis } } } } });
+    const flowId = snapshot.state.domain.session.flow_id!;
+    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, e2ee_trust: { ...snapshot.state.domain.e2ee_trust, verification: { kind: "sasPresented", request_id: flowId, target: { user_id: "opaque-current-user", device_id: "opaque-device" }, emojis } } } } });
     window.__harness.pushStateChanged();
   });
   await expect(page.locator(".session-verification-emojis span")).toHaveCount(7);
   await page.getByRole("button", { name: "They match" }).click();
-  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("confirm_sas_verification")[0]?.args)).toEqual({ flowId: 81 });
+  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("confirm_sas_verification")[0]?.args.flowId)).toBeGreaterThan(0);
 
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
@@ -157,4 +160,23 @@ test("saved confirmation and sign out use matching gate commands", async ({ page
   await expect(page.getByTestId("auth-screen")).toBeVisible();
   await expect(page.getByRole("main", { name: "Verify this session" })).toHaveCount(0);
   await expect(page.getByRole("main", { name: "Conversation timeline" })).toHaveCount(0);
+});
+
+test("start retries allocate distinct opaque flows and stale terminals are ignored", async ({ page }) => {
+  await page.goto("/appHarness.html");
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { kind: "awaitingVerification", homeserver: "https://example.invalid", user_id: "@gate:example.invalid", device_id: "DEVICE", gate: { methods: ["existingDeviceSas"], account_kind: "existingIdentity", failureKind: null } } } } });
+    window.__harness.pushStateChanged();
+  });
+  await page.getByRole("button", { name: "Verify with another device" }).click();
+  const first = await expect.poll(() => page.evaluate(() => window.__harness.currentSnapshot().state.domain.session.flow_id)).toBeTruthy().then(() => page.evaluate(() => window.__harness.currentSnapshot().state.domain.session.flow_id!));
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { ...snapshot.state.domain.session, kind: "awaitingVerification", flow_id: undefined } } } });
+    window.__harness.pushStateChanged();
+  });
+  await page.getByRole("button", { name: "Verify with another device" }).click();
+  const second = await expect.poll(() => page.evaluate(() => window.__harness.currentSnapshot().state.domain.session.flow_id)).not.toBe(first).then(() => page.evaluate(() => window.__harness.currentSnapshot().state.domain.session.flow_id!));
+  expect(second).not.toBe(first);
 });

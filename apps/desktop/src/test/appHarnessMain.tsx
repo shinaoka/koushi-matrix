@@ -564,6 +564,7 @@ function afterCreateSpaceSnapshot(): DesktopSnapshot {
 
 const mock = new TauriIpcMock();
 let currentSnapshot = readySnapshot();
+let nextGateFlowId = 80;
 
 function setCurrentSnapshot(next: DesktopSnapshot): DesktopSnapshot {
   const rooms = next.state.domain.rooms.map(normalizeHarnessRoomSummary);
@@ -1374,7 +1375,8 @@ mock.setCommandResponse("accept_verification", ({ flowId }: { flowId: number }) 
     }
   });
 });
-mock.setCommandResponse("start_own_user_sas", ({ flowId }: { flowId: number }) => {
+mock.setCommandResponse("start_own_user_sas", () => {
+  const flowId = nextGateFlowId++;
   const next = structuredClone(currentSnapshot);
   const session = next.state.domain.session;
   if (session.kind === "awaitingVerification") next.state.domain.session = { ...session, kind: "verifying", method: "existingDeviceSas", flow_id: flowId };
@@ -1392,7 +1394,8 @@ mock.setCommandResponse("mismatch_sas_verification", ({ flowId }: { flowId: numb
   if (session.flow_id === flowId && session.gate) next.state.domain.session = { ...session, kind: "awaitingVerification", gate: { ...session.gate, failureKind: "mismatch" }, method: undefined, flow_id: undefined };
   return setCurrentSnapshot(next);
 });
-mock.setCommandResponse("start_session_bootstrap", ({ flowId, recoveryKeyDestinationPath }: { flowId: number; recoveryKeyDestinationPath: string }) => {
+mock.setCommandResponse("start_session_bootstrap", ({ recoveryKeyDestinationPath }: { recoveryKeyDestinationPath: string }) => {
+  const flowId = nextGateFlowId++;
   const next = structuredClone(currentSnapshot);
   const session = next.state.domain.session;
   if (session.gate && recoveryKeyDestinationPath.trim()) next.state.domain.session = { ...session, kind: "awaitingBootstrapConfirmation", flow_id: flowId, destination_written: true };

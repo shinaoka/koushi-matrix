@@ -17,11 +17,13 @@ pub async fn retry_current_device_trust_discovery(
 
 #[tauri::command]
 pub async fn start_own_user_sas(
-    flow_id: u64,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
     let request_id = next_request_id(state.inner()).await;
+    // The persistent CoreConnection request sequence is process-unique and
+    // therefore owns the opaque verification flow identity across retries.
+    let flow_id = request_id.sequence;
     submit_core_command(
         state.inner(),
         build_start_own_user_sas_command(request_id, flow_id),
@@ -49,13 +51,13 @@ pub async fn mismatch_sas_verification(
 
 #[tauri::command]
 pub async fn start_session_bootstrap(
-    flow_id: u64,
     passphrase: Option<String>,
     recovery_key_destination_path: String,
     app: AppHandle,
     state: State<'_, CoreRuntimeState>,
 ) -> Result<FrontendDesktopSnapshot, String> {
     let request_id = next_request_id(state.inner()).await;
+    let flow_id = request_id.sequence;
     submit_core_command(
         state.inner(),
         build_start_session_bootstrap_command(
