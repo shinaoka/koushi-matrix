@@ -1109,21 +1109,21 @@ function SessionVerificationGate({ snapshot, busy, onSnapshot, onSignOut }: { sn
   const methods = session.gate?.methods ?? [];
   const verification = snapshot.state.domain.e2ee_trust.verification;
   const run = async (operation: Promise<DesktopSnapshot>) => onSnapshot(await operation);
-  return <main className="session-verification-gate" aria-label="Session verification">
-    <h1>Verify this session</h1>
-    {session.kind === "provisional" && <p>Checking device trust…</p>}
-    {session.kind === "rejecting" && <p>Rejecting unverified session…</p>}
-    {session.kind === "locked" && <p>This session must be verified again.</p>}
+  return <main className="session-verification-gate" aria-label={t("gate.title")}>
+    <h1>{t("gate.title")}</h1>
+    {session.kind === "provisional" && <p>{t("gate.checking")}</p>}
+    {session.kind === "rejecting" && <p>{t("gate.rejecting")}</p>}
+    {session.kind === "locked" && <p>{t("gate.locked")}</p>}
     {session.gate?.failureKind && <p role="alert">{session.gate.failureKind}</p>}
-    {methods.includes("existingDeviceSas") && <button disabled={busy} onClick={() => void run(api.startOwnUserSas(flowId))}>Verify with another device</button>}
+    {methods.includes("existingDeviceSas") && <button disabled={busy} onClick={() => void run(api.startOwnUserSas(flowId))}>{t("gate.otherDevice")}</button>}
     {verification.kind === "sasPresented" && <div className="session-verification-emojis">{verification.emojis.slice(0, 7).map((emoji, index) => <span key={index}>{emoji.symbol} {emoji.description}</span>)}</div>}
-    {verification.kind === "sasPresented" && <><button onClick={() => void run(api.confirmSasVerification(flowId))}>They match</button><button onClick={() => void run(api.mismatchSasVerification(flowId))}>They do not match</button></>}
-    {(methods.includes("recoveryKey") || methods.includes("securityPhrase")) && <form onSubmit={(event) => { event.preventDefault(); const secret = recoveryRef.current?.value.trim() ?? ""; if (secret) void run(api.submitRecovery(secret)); if (recoveryRef.current) recoveryRef.current.value = ""; }}><input ref={recoveryRef} type="password" aria-label="Recovery secret" autoComplete="off"/><button type="submit">Recover</button></form>}
-    {methods.includes("bootstrap") && <form onSubmit={(event) => { event.preventDefault(); const destination = destinationRef.current?.value.trim() ?? ""; if (destination) void run(api.startSessionBootstrap(flowId, passphraseRef.current?.value || null, destination)); }}><input ref={destinationRef} aria-label="Recovery key destination"/><input ref={passphraseRef} type="password" aria-label="Backup passphrase" autoComplete="new-password"/><button type="submit">Create secure backup</button></form>}
-    {session.kind === "awaitingBootstrapConfirmation" && <button onClick={() => void run(api.confirmSessionBootstrapSaved(flowId))}>I saved the recovery key</button>}
-    <button onClick={() => void run(api.retryCurrentDeviceTrustDiscovery())}>Retry</button>
-    {flowId > 0 && <button onClick={() => void run(api.cancelVerification(flowId))}>Cancel</button>}
-    <button onClick={onSignOut}>Sign out</button>
+    {verification.kind === "sasPresented" && <><button onClick={() => void run(api.confirmSasVerification(flowId))}>{t("gate.match")}</button><button onClick={() => void run(api.mismatchSasVerification(flowId))}>{t("gate.mismatch")}</button></>}
+    {(methods.includes("recoveryKey") || methods.includes("securityPhrase")) && <form onSubmit={(event) => { event.preventDefault(); const secret = recoveryRef.current?.value.trim() ?? ""; if (secret) void run(api.submitRecovery(secret)); if (recoveryRef.current) recoveryRef.current.value = ""; }}><input ref={recoveryRef} type="password" aria-label={t("gate.recoverySecret")} autoComplete="off"/><button type="submit">{t("gate.recover")}</button></form>}
+    {methods.includes("bootstrap") && <form onSubmit={(event) => { event.preventDefault(); const destination = destinationRef.current?.value.trim() ?? ""; if (destination) void run(api.startSessionBootstrap(flowId, passphraseRef.current?.value || null, destination)); }}><input ref={destinationRef} aria-label={t("gate.destination")}/><input ref={passphraseRef} type="password" aria-label={t("gate.passphrase")} autoComplete="new-password"/><button type="submit">{t("gate.bootstrap")}</button></form>}
+    {session.kind === "awaitingBootstrapConfirmation" && <button onClick={() => void run(api.confirmSessionBootstrapSaved(flowId))}>{t("gate.saved")}</button>}
+    <button onClick={() => void run(api.retryCurrentDeviceTrustDiscovery())}>{t("gate.retry")}</button>
+    {flowId > 0 && <button onClick={() => void run(api.cancelVerification(flowId))}>{t("action.cancel")}</button>}
+    <button onClick={onSignOut}>{t("gate.signOut")}</button>
   </main>;
 }
 
