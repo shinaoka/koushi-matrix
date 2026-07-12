@@ -214,8 +214,21 @@ pub enum AccountMessage {
         generation: u64,
         trust: koushi_state::CurrentDeviceTrustState,
     },
+    TrustProjectionApplied {
+        generation: u64,
+        ready: bool,
+        locked: bool,
+    },
     RejectProvisionalSession {
         request_id: RequestId,
+    },
+    #[cfg(test)]
+    ConfigureTrustLifecycleProbe {
+        generation: u64,
+        promoted: bool,
+        observer_active: bool,
+        pending_promotion: bool,
+        probe_tx: mpsc::UnboundedSender<&'static str>,
     },
     /// Forward `AppEffect::InvalidateSearchCrawlerCache` to the actor so it
     /// drops its completed-room cache before the subsequent re-enqueue.
@@ -371,6 +384,9 @@ pub struct AccountActor {
     trust_observer: Option<crate::executor::JoinHandle<()>>,
     restricted_sync: Option<crate::executor::JoinHandle<()>>,
     pending_ready_events: Vec<CoreEvent>,
+    pending_trust_transition: Option<(u64, TrustLifecycleDecision)>,
+    #[cfg(test)]
+    lifecycle_probe: Option<mpsc::UnboundedSender<&'static str>>,
     /// Store actor — owns the credential store backend and per-account paths.
     store: StoreActor,
     /// App-level action channel to drive the reducer.
@@ -508,6 +524,9 @@ impl AccountActor {
             trust_observer: None,
             restricted_sync: None,
             pending_ready_events: Vec::new(),
+            pending_trust_transition: None,
+            #[cfg(test)]
+            lifecycle_probe: None,
             store: store_actor,
             action_tx,
             event_tx,
@@ -669,8 +688,35 @@ impl AccountActor {
                 AccountMessage::CurrentDeviceTrustChanged { generation, trust } => {
                     self.handle_current_device_trust(generation, trust).await;
                 }
+                AccountMessage::TrustProjectionApplied {
+                    generation,
+                    ready,
+                    locked,
+                } => {
+                    self.handle_trust_projection_applied(generation, ready, locked)
+                        .await;
+                }
                 AccountMessage::RejectProvisionalSession { request_id } => {
                     self.perform_logout(request_id, true).await;
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureTrustLifecycleProbe {
+                    generation,
+                    promoted,
+                    observer_active,
+                    pending_promotion,
+                    probe_tx,
+                } => {
+                    self.trust_generation = generation;
+                    self.session_promoted = promoted;
+                    self.lifecycle_probe = Some(probe_tx);
+                    if pending_promotion {
+                        self.pending_trust_transition =
+                            Some((generation, TrustLifecycleDecision::Promote));
+                    }
+                    if observer_active {
+                        self.trust_observer = Some(executor::spawn(std::future::pending()));
+                    }
                 }
                 AccountMessage::InvalidateSearchCrawlerCache => {
                     if let Some(handle) = &self.search_actor {
@@ -1423,6 +1469,7 @@ impl AccountActor {
         self.provisional_persistable = None;
         self.session_promoted = false;
         self.pending_ready_events.clear();
+        self.pending_trust_transition = None;
     }
 
     /// Ordered shutdown of the ThreadsListActor. Dropping the handle cancels
@@ -4905,9 +4952,51 @@ impl AccountActor {
         if let Some(task) = self.trust_observer.take() {
             task.abort();
         }
+        self.stop_restricted_sync();
+    }
+
+    fn stop_restricted_sync(&mut self) {
         if let Some(task) = self.restricted_sync.take() {
             task.abort();
         }
+    }
+
+    async fn stop_normal_runtime_children(&mut self) {
+        self.record_lifecycle_probe("stop_recovery_observer");
+        self.stop_recovery_observer().await;
+        self.record_lifecycle_probe("stop_incoming_verification_observer");
+        self.stop_incoming_verification_observer().await;
+        self.record_lifecycle_probe("stop_session_change_observer");
+        self.stop_session_change_observer().await;
+        self.record_lifecycle_probe("stop_timeline_manager");
+        self.stop_timeline_actor().await;
+        self.timeline_manager = crate::timeline::TimelineManagerActor::spawn(
+            self.action_tx.clone(),
+            self.event_tx.clone(),
+            Some(self.data_dir.clone()),
+            self.messages_backpressure.clone(),
+        );
+        self.record_lifecycle_probe("stop_threads_manager");
+        self.stop_threads_list_actor().await;
+        self.record_lifecycle_probe("stop_search_actor");
+        self.stop_search_actor().await;
+        self.record_lifecycle_probe("stop_sync_actor");
+        self.stop_sync_actor().await;
+        self.record_lifecycle_probe("clear_room_session");
+        self.clear_room_actor_session().await;
+        self.record_lifecycle_probe("abort_hydration");
+        self.invalidate_account_hydration();
+        self.record_lifecycle_probe("abort_attention_media_tasks");
+        self.abort_avatar_fetch_tasks();
+    }
+
+    fn record_lifecycle_probe(&self, token: &'static str) {
+        #[cfg(test)]
+        if let Some(probe) = &self.lifecycle_probe {
+            let _ = probe.send(token);
+        }
+        #[cfg(not(test))]
+        let _ = token;
     }
 
     async fn handle_current_device_trust(
@@ -4923,17 +5012,20 @@ impl AccountActor {
         ) {
             TrustLifecycleDecision::IgnoreStale | TrustLifecycleDecision::AlreadyReady => return,
             TrustLifecycleDecision::StayGated => {
-                self.send_actions(vec![AppAction::CurrentDeviceTrustChanged(trust)])
-                    .await;
+                self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
+                    generation,
+                    trust,
+                }])
+                .await;
                 return;
             }
             TrustLifecycleDecision::Lock => {
-                // Reducer lock is enqueued before normal children are stopped.
-                self.send_actions(vec![AppAction::CurrentDeviceTrustChanged(trust)])
-                    .await;
-                self.invalidate_account_hydration();
-                self.stop_sync_actor().await;
-                self.session_promoted = false;
+                self.pending_trust_transition = Some((generation, TrustLifecycleDecision::Lock));
+                self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
+                    generation,
+                    trust,
+                }])
+                .await;
                 return;
             }
             TrustLifecycleDecision::Promote => {}
@@ -4955,9 +5047,42 @@ impl AccountActor {
             return;
         }
         self.provisional_persistable = None;
-        self.stop_provisional_runtime();
-        self.send_actions(vec![AppAction::CurrentDeviceTrustChanged(trust)])
-            .await;
+        self.stop_restricted_sync();
+        self.pending_trust_transition = Some((generation, TrustLifecycleDecision::Promote));
+        self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
+            generation,
+            trust,
+        }])
+        .await;
+    }
+
+    async fn handle_trust_projection_applied(
+        &mut self,
+        generation: u64,
+        ready: bool,
+        locked: bool,
+    ) {
+        let Some((pending_generation, decision)) = self.pending_trust_transition.take() else {
+            return;
+        };
+        if generation != pending_generation || generation != self.trust_generation {
+            return;
+        }
+        if decision == TrustLifecycleDecision::Lock {
+            if locked {
+                self.record_lifecycle_probe("lock_projection_ack");
+                self.stop_normal_runtime_children().await;
+                self.session_promoted = false;
+            }
+            return;
+        }
+        if decision != TrustLifecycleDecision::Promote || !ready {
+            return;
+        }
+        self.record_lifecycle_probe("ready_projection_ack");
+        let Some(session) = self.session.clone() else {
+            return;
+        };
         self.spawn_sync_actor(session.clone()).await;
         self.spawn_account_hydration(session.clone());
         self.start_recovery_observer(session.clone());
@@ -6401,6 +6526,382 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn live_trust_observer_waits_for_projection_ack_and_stops_every_normal_child_on_lock() {
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        assert!(
+            handle
+                .send(AccountMessage::ConfigureTrustLifecycleProbe {
+                    generation: 9,
+                    promoted: true,
+                    observer_active: true,
+                    pending_promotion: false,
+                    probe_tx,
+                })
+                .await
+        );
+
+        assert!(
+            handle
+                .send(AccountMessage::CurrentDeviceTrustChanged {
+                    generation: 9,
+                    trust: koushi_state::CurrentDeviceTrustState::Unverified,
+                })
+                .await
+        );
+        let actions = action_rx.recv().await.expect("lock projection");
+        assert!(matches!(
+            actions.as_slice(),
+            [AppAction::AuthoritativeDeviceTrustChanged {
+                generation: 9,
+                trust: koushi_state::CurrentDeviceTrustState::Unverified,
+            }]
+        ));
+        assert!(
+            probe_rx.try_recv().is_err(),
+            "children stopped before reducer ack"
+        );
+
+        assert!(
+            handle
+                .send(AccountMessage::TrustProjectionApplied {
+                    generation: 9,
+                    ready: false,
+                    locked: true,
+                })
+                .await
+        );
+        let mut tokens = Vec::new();
+        while tokens.len() < 11 {
+            tokens.push(probe_rx.recv().await.expect("lifecycle token"));
+        }
+        assert_eq!(tokens[0], "lock_projection_ack");
+        for required in [
+            "stop_recovery_observer",
+            "stop_incoming_verification_observer",
+            "stop_session_change_observer",
+            "stop_timeline_manager",
+            "stop_threads_manager",
+            "stop_search_actor",
+            "stop_sync_actor",
+            "clear_room_session",
+            "abort_hydration",
+            "abort_attention_media_tasks",
+        ] {
+            assert!(tokens.contains(&required), "missing {required}");
+        }
+
+        // The trust observer remains alive after promotion/lock and can drive
+        // another authoritative state update for the same generation.
+        assert!(
+            handle
+                .send(AccountMessage::CurrentDeviceTrustChanged {
+                    generation: 9,
+                    trust: koushi_state::CurrentDeviceTrustState::Unknown,
+                })
+                .await
+        );
+        let actions = action_rx.recv().await.expect("continued trust projection");
+        assert!(matches!(
+            actions.as_slice(),
+            [AppAction::AuthoritativeDeviceTrustChanged {
+                generation: 9,
+                trust: koushi_state::CurrentDeviceTrustState::Unknown,
+            }]
+        ));
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn verified_promotion_waits_for_ready_projection_ack_before_child_start_barrier() {
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, _action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        assert!(
+            handle
+                .send(AccountMessage::ConfigureTrustLifecycleProbe {
+                    generation: 12,
+                    promoted: false,
+                    observer_active: true,
+                    pending_promotion: true,
+                    probe_tx,
+                })
+                .await
+        );
+        assert!(probe_rx.try_recv().is_err());
+        assert!(
+            handle
+                .send(AccountMessage::TrustProjectionApplied {
+                    generation: 12,
+                    ready: true,
+                    locked: false,
+                })
+                .await
+        );
+        assert_eq!(probe_rx.recv().await, Some("ready_projection_ack"));
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn password_quarantine_persists_no_credentials_and_restart_is_signed_out() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let request_id = test_request_id();
+        assert!(
+            handle
+                .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                    request_id,
+                    request: LoginRequest {
+                        homeserver,
+                        username: "fixture-user".to_owned(),
+                        password: koushi_state::AuthSecret::new("synthetic-password"),
+                        device_display_name: Some("Quarantine Test".to_owned()),
+                    },
+                }))
+                .await
+        );
+        let actions = action_rx.recv().await.expect("provisional login action");
+        assert!(matches!(
+            actions.as_slice(),
+            [AppAction::LoginSucceeded { .. }]
+        ));
+
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        assert!(
+            backend
+                .load_last_session()
+                .expect("last pointer read")
+                .is_none()
+        );
+        assert!(
+            backend
+                .load_saved_sessions()
+                .expect("saved index read")
+                .sessions()
+                .is_empty()
+        );
+
+        let _ = handle.send(AccountMessage::Shutdown).await;
+        let (restarted, mut restarted_actions, _events) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        assert!(
+            restarted
+                .send(AccountMessage::Command(
+                    AccountCommand::RestoreLastSession { request_id }
+                ))
+                .await
+        );
+        assert!(matches!(
+            restarted_actions.recv().await.as_deref(),
+            Some([AppAction::RestoreSessionNotFound])
+        ));
+        let _ = restarted.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn provisional_rejection_deletes_keyed_store_before_signed_out_ack() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let baseline_files = recursive_file_count(data_dir.path());
+        let request_id = test_request_id();
+        assert!(
+            handle
+                .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                    request_id,
+                    request: LoginRequest {
+                        homeserver,
+                        username: "fixture-user".to_owned(),
+                        password: koushi_state::AuthSecret::new("synthetic-password"),
+                        device_display_name: Some("Quarantine Test".to_owned()),
+                    },
+                }))
+                .await
+        );
+        assert!(matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ));
+        assert!(
+            recursive_file_count(data_dir.path()) > baseline_files,
+            "keyed store was not created"
+        );
+
+        assert!(
+            handle
+                .send(AccountMessage::RejectProvisionalSession { request_id })
+                .await
+        );
+        loop {
+            let actions = action_rx.recv().await.expect("rejection action");
+            if matches!(actions.as_slice(), [AppAction::LogoutFinished]) {
+                assert_eq!(
+                    recursive_file_count(data_dir.path()),
+                    baseline_files,
+                    "SignedOut ack preceded keyed-store deletion"
+                );
+                break;
+            }
+        }
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        assert!(backend.load_last_session().expect("pointer read").is_none());
+        assert!(
+            backend
+                .load_saved_sessions()
+                .expect("index read")
+                .sessions()
+                .is_empty()
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn restore_installs_provisional_without_normal_sync_or_public_ready_event() {
+        let homeserver = spawn_quarantine_password_server();
+        let login = koushi_sdk::login_with_password_with_store(
+            &LoginRequest {
+                homeserver,
+                username: "fixture-user".to_owned(),
+                password: koushi_state::AuthSecret::new("synthetic-password"),
+                device_display_name: Some("Quarantine Test".to_owned()),
+            },
+            None,
+        )
+        .await
+        .expect("fixture login");
+        let key_id = session_key_id_from_info(&login.info);
+        let stored = StoredMatrixSession::new(
+            login
+                .persistable_session()
+                .expect("persistable")
+                .to_json()
+                .expect("json"),
+        );
+        drop(login);
+
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+            cred_dir.path(),
+        ));
+        backend
+            .save_matrix_session(&key_id, &stored)
+            .expect("session seed");
+        backend.remember_saved_session(&key_id).expect("index seed");
+        backend.save_last_session(&key_id).expect("pointer seed");
+
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let request_id = test_request_id();
+        assert!(
+            handle
+                .send(AccountMessage::Command(
+                    AccountCommand::RestoreLastSession { request_id }
+                ))
+                .await
+        );
+        assert!(matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::RestoreSessionSucceeded(_)])
+        ));
+        let public_ready = executor::timeout(Duration::from_millis(100), async {
+            loop {
+                match event_rx.recv().await.expect("event stream") {
+                    CoreEvent::Account(AccountEvent::SessionRestored { .. })
+                    | CoreEvent::Sync(_) => return true,
+                    _ => {}
+                }
+            }
+        })
+        .await;
+        assert!(
+            public_ready.is_err(),
+            "restore escaped quarantine before Verified"
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    fn recursive_file_count(path: &std::path::Path) -> usize {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .map(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    recursive_file_count(&path)
+                } else {
+                    1
+                }
+            })
+            .sum()
+    }
+
+    fn spawn_quarantine_password_server() -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("address");
+        std::thread::spawn(move || {
+            for _ in 0..8 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    let count = stream.read(&mut buffer).expect("read");
+                    request.extend_from_slice(&buffer[..count]);
+                    let text = String::from_utf8_lossy(&request);
+                    let Some(end) = text.find("\r\n\r\n") else {
+                        continue;
+                    };
+                    let length = text
+                        .lines()
+                        .find_map(|line| line.strip_prefix("Content-Length: "))
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let body = if text.starts_with("GET /_matrix/client/versions ") {
+                    r#"{"versions":["v1.7"]}"#
+                } else if text.contains("/_matrix/client/") && text.contains("login") {
+                    r#"{"access_token":"fixture-token","device_id":"FIXTUREDEVICE","user_id":"@fixture-user:example.invalid"}"#
+                } else {
+                    r#"{"errcode":"M_NOT_FOUND","error":"not found"}"#
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).expect("write");
+                if text.contains("login") {
+                    return;
+                }
+            }
+        });
+        format!("http://{addr}")
+    }
+
     #[test]
     fn restore_trace_covers_startup_restore_boundaries_without_private_ids() {
         let source = include_str!("account.rs");
@@ -6942,6 +7443,8 @@ mod tests {
             trust_observer: None,
             restricted_sync: None,
             pending_ready_events: Vec::new(),
+            pending_trust_transition: None,
+            lifecycle_probe: None,
             store,
             action_tx,
             event_tx,

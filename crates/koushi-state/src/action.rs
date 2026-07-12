@@ -198,6 +198,10 @@ pub enum AppAction {
         info: SessionInfo,
     },
     CurrentDeviceTrustChanged(CurrentDeviceTrustState),
+    AuthoritativeDeviceTrustChanged {
+        generation: u64,
+        trust: CurrentDeviceTrustState,
+    },
     VerificationMethodsDiscovered(VerificationGateState),
     VerificationMethodSubmitted {
         method: VerificationMethod,

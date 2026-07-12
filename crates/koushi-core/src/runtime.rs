@@ -1032,6 +1032,12 @@ impl AppActor {
                     let clone_ms = loop_started.elapsed().as_millis();
                     let mut state_changed = false;
                     for action in actions {
+                        let trust_projection_generation = match &action {
+                            AppAction::AuthoritativeDeviceTrustChanged { generation, .. } => {
+                                Some(*generation)
+                            }
+                            _ => None,
+                        };
                         if let AppAction::ActivityRowsObserved { rows } = &action {
                             self.activity_projection.ingest(rows.clone());
                         }
@@ -1083,6 +1089,16 @@ impl AppActor {
                                 None
                             };
                         let post_projection_effects = self.reduce_app_action(action).await;
+                        if let Some(generation) = trust_projection_generation {
+                            let _ = self
+                                .account_actor
+                                .send(AccountMessage::TrustProjectionApplied {
+                                    generation,
+                                    ready: matches!(self.state.session, SessionState::Ready(_)),
+                                    locked: matches!(self.state.session, SessionState::Locked(_)),
+                                })
+                                .await;
+                        }
                         // After reduce: determine outcome and emit IntentLifecycle
                         // for correlated pending SelectRoom intents.
                         if let Some((room_id, session_ready, found, already, rooms_len)) =
