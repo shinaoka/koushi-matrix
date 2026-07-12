@@ -677,6 +677,17 @@ function isDesktopSnapshotLike(value: unknown): value is DesktopSnapshot {
 // any unanticipated snapshot read still renders the shell.
 mock.setCommandResponse("get_snapshot", () => currentSnapshot);
 mock.setCommandResponse("list_saved_sessions", () => []);
+mock.setCommandResponse("logout", () => {
+  const next = structuredClone(currentSnapshot);
+  next.state.domain.session = { kind: "signedOut" };
+  return setCurrentSnapshot(next);
+});
+mock.setCommandResponse("submit_recovery", () => {
+  const next = structuredClone(currentSnapshot);
+  const session = next.state.domain.session;
+  if (session.kind === "awaitingVerification" || session.kind === "verifying") next.state.domain.session = { ...session, kind: "verifying", method: "recoveryKey", flow_id: session.flow_id ?? 72 };
+  return setCurrentSnapshot(next);
+});
 mock.setCommandResponse("select_space", ({ spaceId }: { spaceId: string | null }) => {
   const nextSpaceId =
     spaceId && currentSnapshot.state.domain.spaces.some((space) => space.space_id === spaceId)
@@ -1362,6 +1373,36 @@ mock.setCommandResponse("accept_verification", ({ flowId }: { flowId: number }) 
       },
     }
   });
+});
+mock.setCommandResponse("start_own_user_sas", ({ flowId }: { flowId: number }) => {
+  const next = structuredClone(currentSnapshot);
+  const session = next.state.domain.session;
+  if (session.kind === "awaitingVerification") next.state.domain.session = { ...session, kind: "verifying", method: "existingDeviceSas", flow_id: flowId };
+  return setCurrentSnapshot(next);
+});
+mock.setCommandResponse("retry_current_device_trust_discovery", () => {
+  const next = structuredClone(currentSnapshot);
+  const session = next.state.domain.session;
+  if (session.kind === "awaitingVerification" || session.kind === "provisional") next.state.domain.session = { ...session, kind: "provisional", phase: { recheckingTrust: {} } };
+  return setCurrentSnapshot(next);
+});
+mock.setCommandResponse("mismatch_sas_verification", ({ flowId }: { flowId: number }) => {
+  const next = structuredClone(currentSnapshot);
+  const session = next.state.domain.session;
+  if (session.flow_id === flowId && session.gate) next.state.domain.session = { ...session, kind: "awaitingVerification", gate: { ...session.gate, failureKind: "mismatch" }, method: undefined, flow_id: undefined };
+  return setCurrentSnapshot(next);
+});
+mock.setCommandResponse("start_session_bootstrap", ({ flowId, recoveryKeyDestinationPath }: { flowId: number; recoveryKeyDestinationPath: string }) => {
+  const next = structuredClone(currentSnapshot);
+  const session = next.state.domain.session;
+  if (session.gate && recoveryKeyDestinationPath.trim()) next.state.domain.session = { ...session, kind: "awaitingBootstrapConfirmation", flow_id: flowId, destination_written: true };
+  return setCurrentSnapshot(next);
+});
+mock.setCommandResponse("confirm_session_bootstrap_saved", ({ flowId }: { flowId: number }) => {
+  const next = structuredClone(currentSnapshot);
+  const session = next.state.domain.session;
+  if (session.kind === "awaitingBootstrapConfirmation" && session.flow_id === flowId) next.state.domain.session = { ...session, kind: "provisional", phase: { recheckingTrust: {} }, flow_id: undefined, destination_written: undefined };
+  return setCurrentSnapshot(next);
 });
 mock.setCommandResponse("confirm_sas_verification", ({ flowId }: { flowId: number }) => {
   const verification = currentSnapshot.state.domain.e2ee_trust.verification;
