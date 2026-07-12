@@ -6577,42 +6577,70 @@ mod tests {
         }
     }
 
-    #[test]
-    fn logout_cleanup_is_bounded_and_ordered_before_persistence_removal() {
-        let source = include_str!("account.rs");
-        let body = source
-            .split("    async fn perform_logout")
-            .nth(1)
-            .and_then(|rest| rest.split("    async fn handle_logout").next())
-            .expect("perform_logout body");
+    #[tokio::test]
+    async fn logout_cleanup_is_bounded_and_ordered_before_persistence_removal() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let baseline_files = recursive_file_count(data_dir.path());
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        handle
+            .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+            .await;
+        handle
+            .send(AccountMessage::ConfigureCloseStoreResults {
+                results: vec![false, true],
+            })
+            .await;
+        let request_id = test_request_id();
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id,
+                request: LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ) {}
+        let files_before_logout = recursive_file_count(data_dir.path());
+        assert!(files_before_logout > baseline_files);
 
-        let shutdown = body
-            .find("self.stop_current_session_runtime().await")
-            .expect("logout must stop child actors before cleanup");
-        let server_logout = body
-            .find("logout_server_best_effort(&session).await")
-            .expect("server logout must be bounded best-effort");
-        let drop_session = body.find("drop(session)").expect("session drop");
-        let clear_persistence = body
-            .find("self.clear_account_persistence(key_id).await")
-            .expect("clear account persistence");
+        handle
+            .send(AccountMessage::RejectProvisionalSession { request_id })
+            .await;
+        while probe_rx.recv().await != Some("session_store_close_retrying") {}
+        assert_eq!(recursive_file_count(data_dir.path()), files_before_logout);
+        assert_no_logout_finished(&mut action_rx);
 
-        assert!(
-            shutdown < server_logout,
-            "child actors must release SDK handles before the server logout request"
-        );
-        assert!(
-            server_logout < drop_session,
-            "server logout uses the live session but must not replace local cleanup"
-        );
-        assert!(
-            drop_session < clear_persistence,
-            "SDK handles must be dropped before deleting local persistence"
-        );
-        assert!(
-            !body.contains("koushi_sdk::logout(&session).await"),
-            "logout must not await the network request without a product timeout"
-        );
+        handle
+            .send(AccountMessage::RetrySessionTeardown { generation: 1 })
+            .await;
+        assert_eq!(probe_rx.recv().await, Some("session_store_closed"));
+        assert_eq!(probe_rx.recv().await, Some("session_persistence_deleted"));
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LogoutFinished])
+        ) {}
+        assert_eq!(recursive_file_count(data_dir.path()), baseline_files);
+        loop {
+            if let CoreEvent::Account(AccountEvent::LoggedOut {
+                request_id: terminal,
+                ..
+            }) = event_rx.recv().await.expect("logout event")
+            {
+                assert_eq!(terminal, request_id);
+                break;
+            }
+        }
+        let _ = handle.send(AccountMessage::Shutdown).await;
     }
 
     #[test]
