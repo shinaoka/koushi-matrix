@@ -12,8 +12,10 @@
 //! store paths derive from homeserver|user|device, so the device id is unknown
 //! until the password exchange completes. First login runs on a storeless
 //! client that never syncs or initializes encryption; immediately after login
-//! the session is persisted and restored into the per-account encrypted store,
-//! and only the store-backed session may start sync or E2EE traffic. The
+//! the session is restored into the per-account encrypted store without being
+//! entered into the active credential index. Only a restricted verification
+//! sync may run until authoritative device trust promotes the session; normal
+//! sync and persistence start after that promotion. The
 //! fail-closed local-encryption rule applies to the store creation step: if it
 //! fails, the storeless session is NOT kept as a fallback.
 //!
@@ -208,6 +210,13 @@ pub enum AccountMessage {
         room_ids: Vec<String>,
         settings: koushi_state::SearchCrawlerSettings,
     },
+    CurrentDeviceTrustChanged {
+        generation: u64,
+        trust: koushi_state::CurrentDeviceTrustState,
+    },
+    RejectProvisionalSession {
+        request_id: RequestId,
+    },
     /// Forward `AppEffect::InvalidateSearchCrawlerCache` to the actor so it
     /// drops its completed-room cache before the subsequent re-enqueue.
     InvalidateSearchCrawlerCache,
@@ -320,12 +329,48 @@ struct PendingSasVerification {
     handle: koushi_sdk::MatrixSasVerificationHandle,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TrustLifecycleDecision {
+    IgnoreStale,
+    StayGated,
+    Promote,
+    Lock,
+    AlreadyReady,
+}
+
+fn trust_lifecycle_decision(
+    generation: u64,
+    active_generation: u64,
+    promoted: bool,
+    trust: koushi_state::CurrentDeviceTrustState,
+) -> TrustLifecycleDecision {
+    if generation != active_generation {
+        TrustLifecycleDecision::IgnoreStale
+    } else if promoted {
+        if matches!(trust, koushi_state::CurrentDeviceTrustState::Verified) {
+            TrustLifecycleDecision::AlreadyReady
+        } else {
+            TrustLifecycleDecision::Lock
+        }
+    } else if matches!(trust, koushi_state::CurrentDeviceTrustState::Verified) {
+        TrustLifecycleDecision::Promote
+    } else {
+        TrustLifecycleDecision::StayGated
+    }
+}
+
 /// The account actor's internal state.
 pub struct AccountActor {
     /// Active store-backed session, if any.
     session: Option<Arc<MatrixClientSession>>,
     /// Session key for credential store operations.
     session_key_id: Option<SessionKeyId>,
+    provisional_persistable: Option<PersistableMatrixSession>,
+    session_promoted: bool,
+    trust_generation: u64,
+    trust_observer: Option<crate::executor::JoinHandle<()>>,
+    restricted_sync: Option<crate::executor::JoinHandle<()>>,
+    pending_ready_events: Vec<CoreEvent>,
     /// Store actor — owns the credential store backend and per-account paths.
     store: StoreActor,
     /// App-level action channel to drive the reducer.
@@ -457,6 +502,12 @@ impl AccountActor {
         let actor = AccountActor {
             session: None,
             session_key_id: None,
+            provisional_persistable: None,
+            session_promoted: false,
+            trust_generation: 0,
+            trust_observer: None,
+            restricted_sync: None,
+            pending_ready_events: Vec::new(),
             store: store_actor,
             action_tx,
             event_tx,
@@ -614,6 +665,12 @@ impl AccountActor {
                     // crawler mailbox pressure.
                     self.pending_crawler_notification = Some((room_ids, settings));
                     self.flush_pending_crawler_notification();
+                }
+                AccountMessage::CurrentDeviceTrustChanged { generation, trust } => {
+                    self.handle_current_device_trust(generation, trust).await;
+                }
+                AccountMessage::RejectProvisionalSession { request_id } => {
+                    self.perform_logout(request_id, true).await;
                 }
                 AccountMessage::InvalidateSearchCrawlerCache => {
                     if let Some(handle) = &self.search_actor {
@@ -1348,6 +1405,7 @@ impl AccountActor {
     }
 
     async fn stop_current_session_runtime(&mut self) {
+        self.stop_provisional_runtime();
         self.stop_recovery_observer().await;
         self.stop_incoming_verification_observer().await;
         self.stop_session_change_observer().await;
@@ -1362,6 +1420,9 @@ impl AccountActor {
         self.abort_avatar_fetch_tasks();
         self.device_session_ordinals.clear();
         self.pending_uia_operations.clear();
+        self.provisional_persistable = None;
+        self.session_promoted = false;
+        self.pending_ready_events.clear();
     }
 
     /// Ordered shutdown of the ThreadsListActor. Dropping the handle cancels
@@ -3689,11 +3750,11 @@ impl AccountActor {
         let key_id = session_key_id_from_info(&info);
         let account_key = account_key_from_info(&info);
 
-        let persistable = match self.persist_session(&login_session, &key_id).await {
+        let persistable = match login_session.persistable_session() {
             Ok(persistable) => persistable,
-            Err(failure) => {
+            Err(_) => {
                 self.abort_login(login_session, &key_id, false).await;
-                self.emit_failure(request_id, failure);
+                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 self.send_actions(vec![AppAction::LoginFailed {
                     attempt_id: LoginAttemptId::new(
                         request_id.connection_id.0,
@@ -3709,7 +3770,7 @@ impl AccountActor {
         let store_backed = match self.restore_into_store(&persistable, &key_id).await {
             Ok(session) => session,
             Err(failure) => {
-                self.abort_login(login_session, &key_id, true).await;
+                self.abort_login(login_session, &key_id, false).await;
                 self.emit_failure(request_id, failure);
                 self.send_actions(vec![AppAction::LoginFailed {
                     attempt_id: LoginAttemptId::new(
@@ -3725,35 +3786,29 @@ impl AccountActor {
 
         drop(login_session);
 
-        let session_arc = Arc::new(store_backed);
-        self.device_session_ordinals.clear();
-        self.pending_uia_operations.clear();
-        self.session = Some(session_arc.clone());
-        self.session_key_id = Some(key_id);
-
-        self.spawn_sync_actor(session_arc.clone()).await;
-
-        self.send_actions(vec![AppAction::LoginSucceeded {
-            attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
-            info,
-        }])
+        self.install_provisional_session(
+            store_backed,
+            persistable,
+            key_id,
+            AppAction::LoginSucceeded {
+                attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
+                info,
+            },
+        )
         .await;
 
-        self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
-            request_id: start_request_id,
-            account_key: account_key.clone(),
-        }));
-        if request_id != start_request_id {
-            self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
-                request_id,
-                account_key,
+        self.pending_ready_events
+            .push(CoreEvent::Account(AccountEvent::LoggedIn {
+                request_id: start_request_id,
+                account_key: account_key.clone(),
             }));
+        if request_id != start_request_id {
+            self.pending_ready_events
+                .push(CoreEvent::Account(AccountEvent::LoggedIn {
+                    request_id,
+                    account_key,
+                }));
         }
-        self.spawn_account_hydration(session_arc.clone());
-
-        self.start_recovery_observer(session_arc.clone());
-        self.start_incoming_verification_observer(session_arc.clone());
-        self.start_session_change_observer(session_arc);
     }
 
     async fn handle_login_password(&mut self, request_id: RequestId, request: LoginRequest) {
@@ -3784,12 +3839,13 @@ impl AccountActor {
         let key_id = session_key_id_from_info(&info);
         let account_key = account_key_from_info(&info);
 
-        // Store bootstrap step 2a: persist the session credentials.
-        let persistable = match self.persist_session(&login_session, &key_id).await {
+        // Build a restorable in-memory session shape without writing the
+        // active credential index or last-session pointer before verification.
+        let persistable = match login_session.persistable_session() {
             Ok(persistable) => persistable,
-            Err(failure) => {
+            Err(_) => {
                 self.abort_login(login_session, &key_id, false).await;
-                self.emit_failure(request_id, failure);
+                self.emit_failure(request_id, CoreFailure::StoreUnavailable);
                 self.send_actions(vec![AppAction::LoginFailed {
                     attempt_id: LoginAttemptId::new(
                         request_id.connection_id.0,
@@ -3810,7 +3866,7 @@ impl AccountActor {
         let store_backed = match self.restore_into_store(&persistable, &key_id).await {
             Ok(session) => session,
             Err(failure) => {
-                self.abort_login(login_session, &key_id, true).await;
+                self.abort_login(login_session, &key_id, false).await;
                 self.emit_failure(request_id, failure);
                 self.send_actions(vec![AppAction::LoginFailed {
                     attempt_id: LoginAttemptId::new(
@@ -3828,37 +3884,23 @@ impl AccountActor {
         // context (Async rule 11).
         drop(login_session);
 
-        let session_arc = Arc::new(store_backed);
-        self.device_session_ordinals.clear();
-        self.pending_uia_operations.clear();
-        self.session = Some(session_arc.clone());
-        self.session_key_id = Some(key_id);
-
-        // Spawn the SyncActor now that we have a store-backed session
-        // (store bootstrap invariant: sync only on the store-backed session).
-        self.spawn_sync_actor(session_arc.clone()).await;
-
-        // Project login success through the reducer (session → Ready), then
-        // hydrate Rust-owned profile/account-data projections. Fetch failure is
-        // non-fatal to login.
-        self.send_actions(vec![AppAction::LoginSucceeded {
-            attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
-            info,
-        }])
+        self.install_provisional_session(
+            store_backed,
+            persistable,
+            key_id,
+            AppAction::LoginSucceeded {
+                attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
+                info,
+            },
+        )
         .await;
 
         // Emit domain event carrying the request_id for command correlation.
-        self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
-            request_id,
-            account_key,
-        }));
-        self.spawn_account_hydration(session_arc.clone());
-
-        // Observe the SDK recovery stream asynchronously. New-device recovery
-        // can arrive after login completes, once account data syncs in.
-        self.start_recovery_observer(session_arc.clone());
-        self.start_incoming_verification_observer(session_arc.clone());
-        self.start_session_change_observer(session_arc);
+        self.pending_ready_events
+            .push(CoreEvent::Account(AccountEvent::LoggedIn {
+                request_id,
+                account_key,
+            }));
     }
 
     async fn handle_restore_session(&mut self, request_id: RequestId, account_key: AccountKey) {
@@ -4677,33 +4719,25 @@ impl AccountActor {
                 let info = session.info.clone();
                 let account_key = account_key_from_info(&info);
 
-                let session_arc = Arc::new(session);
-                self.device_session_ordinals.clear();
-                self.pending_uia_operations.clear();
-                self.session = Some(session_arc.clone());
-                self.session_key_id = Some(key_id);
+                self.install_provisional_session(
+                    session,
+                    persistable,
+                    key_id,
+                    AppAction::RestoreSessionSucceeded(info),
+                )
+                .await;
 
-                // Spawn the SyncActor for the newly restored store-backed session.
-                self.spawn_sync_actor(session_arc.clone()).await;
-                trace_account_request("restore_account", request_id, "sync_actor_spawned");
-                self.send_actions(vec![AppAction::RestoreSessionSucceeded(info)])
-                    .await;
-
-                self.emit(CoreEvent::Account(match outcome {
-                    RestoreOutcome::Restored => AccountEvent::SessionRestored {
-                        request_id,
-                        account_key,
-                    },
-                    RestoreOutcome::Switched => AccountEvent::AccountSwitched {
-                        request_id,
-                        account_key,
-                    },
-                }));
-                self.spawn_account_hydration(session_arc.clone());
-
-                self.start_recovery_observer(session_arc.clone());
-                self.start_incoming_verification_observer(session_arc.clone());
-                self.start_session_change_observer(session_arc);
+                self.pending_ready_events
+                    .push(CoreEvent::Account(match outcome {
+                        RestoreOutcome::Restored => AccountEvent::SessionRestored {
+                            request_id,
+                            account_key,
+                        },
+                        RestoreOutcome::Switched => AccountEvent::AccountSwitched {
+                            request_id,
+                            account_key,
+                        },
+                    }));
             }
         }
     }
@@ -4814,6 +4848,126 @@ impl AccountActor {
     }
 
     // --- helpers ---
+
+    async fn install_provisional_session(
+        &mut self,
+        session: MatrixClientSession,
+        persistable: PersistableMatrixSession,
+        key_id: SessionKeyId,
+        action: AppAction,
+    ) {
+        self.stop_provisional_runtime();
+        let session = Arc::new(session);
+        self.device_session_ordinals.clear();
+        self.pending_uia_operations.clear();
+        self.session = Some(session.clone());
+        self.session_key_id = Some(key_id);
+        self.provisional_persistable = Some(persistable);
+        self.session_promoted = false;
+        self.send_actions(vec![action]).await;
+        self.start_provisional_runtime(session).await;
+    }
+
+    async fn start_provisional_runtime(&mut self, session: Arc<MatrixClientSession>) {
+        self.trust_generation = self.trust_generation.wrapping_add(1);
+        let generation = self.trust_generation;
+        let observation = session.observe_current_device_trust();
+        let _ = self
+            .self_tx
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation,
+                trust: observation.current,
+            })
+            .await;
+        let tx = self.self_tx.clone();
+        let mut updates = observation.updates;
+        self.trust_observer = Some(executor::spawn(async move {
+            while let Some(trust) = updates.next().await {
+                if tx
+                    .send(AccountMessage::CurrentDeviceTrustChanged { generation, trust })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+        self.restricted_sync = Some(executor::spawn(async move {
+            loop {
+                let _ = koushi_sdk::restricted_verification_sync_once(&session).await;
+                executor::sleep(Duration::from_millis(250)).await;
+            }
+        }));
+    }
+
+    fn stop_provisional_runtime(&mut self) {
+        self.trust_generation = self.trust_generation.wrapping_add(1);
+        if let Some(task) = self.trust_observer.take() {
+            task.abort();
+        }
+        if let Some(task) = self.restricted_sync.take() {
+            task.abort();
+        }
+    }
+
+    async fn handle_current_device_trust(
+        &mut self,
+        generation: u64,
+        trust: koushi_state::CurrentDeviceTrustState,
+    ) {
+        match trust_lifecycle_decision(
+            generation,
+            self.trust_generation,
+            self.session_promoted,
+            trust,
+        ) {
+            TrustLifecycleDecision::IgnoreStale | TrustLifecycleDecision::AlreadyReady => return,
+            TrustLifecycleDecision::StayGated => {
+                self.send_actions(vec![AppAction::CurrentDeviceTrustChanged(trust)])
+                    .await;
+                return;
+            }
+            TrustLifecycleDecision::Lock => {
+                // Reducer lock is enqueued before normal children are stopped.
+                self.send_actions(vec![AppAction::CurrentDeviceTrustChanged(trust)])
+                    .await;
+                self.invalidate_account_hydration();
+                self.stop_sync_actor().await;
+                self.session_promoted = false;
+                return;
+            }
+            TrustLifecycleDecision::Promote => {}
+        }
+        if !matches!(trust, koushi_state::CurrentDeviceTrustState::Verified) {
+            self.send_actions(vec![AppAction::CurrentDeviceTrustChanged(trust)])
+                .await;
+            return;
+        }
+        let (Some(session), Some(key_id)) = (self.session.clone(), self.session_key_id.clone())
+        else {
+            return;
+        };
+        if self.persist_session(&session, &key_id).await.is_err() {
+            self.send_actions(vec![AppAction::SessionPersistenceFailed {
+                message: "session persistence failed".to_owned(),
+            }])
+            .await;
+            return;
+        }
+        self.provisional_persistable = None;
+        self.stop_provisional_runtime();
+        self.send_actions(vec![AppAction::CurrentDeviceTrustChanged(trust)])
+            .await;
+        self.spawn_sync_actor(session.clone()).await;
+        self.spawn_account_hydration(session.clone());
+        self.start_recovery_observer(session.clone());
+        self.start_incoming_verification_observer(session.clone());
+        self.start_session_change_observer(session);
+        self.session_promoted = true;
+        for event in std::mem::take(&mut self.pending_ready_events) {
+            self.emit(event);
+        }
+    }
 
     /// Persist session credentials, mirroring the src-tauri flow: session
     /// JSON, saved-session index entry, last-session pointer — with rollback
@@ -6189,6 +6343,65 @@ mod tests {
     }
 
     #[test]
+    fn authentication_completion_installs_quarantine_before_ready_side_effects() {
+        let source = include_str!("account.rs");
+        let password = source
+            .split("async fn handle_login_password")
+            .nth(1)
+            .and_then(|body| body.split("async fn handle_restore_session").next())
+            .expect("password handler");
+        let before_success = password
+            .split("AppAction::LoginSucceeded")
+            .next()
+            .expect("password pre-success body");
+        assert!(!before_success.contains("persist_session("));
+        assert!(!before_success.contains("spawn_sync_actor("));
+        assert!(before_success.contains("install_provisional_session"));
+
+        let restore = source
+            .split("async fn restore_account")
+            .nth(1)
+            .and_then(|body| body.split("async fn").next())
+            .expect("restore handler");
+        let before_restore_success = restore
+            .split("AppAction::RestoreSessionSucceeded")
+            .next()
+            .expect("restore pre-success body");
+        assert!(!before_restore_success.contains("spawn_sync_actor("));
+        assert!(before_restore_success.contains("install_provisional_session"));
+    }
+
+    #[test]
+    fn trust_lifecycle_is_generation_safe_and_fail_closed() {
+        use koushi_state::CurrentDeviceTrustState::{Unknown, Unverified, Verified};
+
+        assert_eq!(
+            trust_lifecycle_decision(4, 5, false, Verified),
+            TrustLifecycleDecision::IgnoreStale
+        );
+        assert_eq!(
+            trust_lifecycle_decision(5, 5, false, Unknown),
+            TrustLifecycleDecision::StayGated
+        );
+        assert_eq!(
+            trust_lifecycle_decision(5, 5, false, Unverified),
+            TrustLifecycleDecision::StayGated
+        );
+        assert_eq!(
+            trust_lifecycle_decision(5, 5, false, Verified),
+            TrustLifecycleDecision::Promote
+        );
+        assert_eq!(
+            trust_lifecycle_decision(5, 5, true, Unverified),
+            TrustLifecycleDecision::Lock
+        );
+        assert_eq!(
+            trust_lifecycle_decision(5, 5, true, Unknown),
+            TrustLifecycleDecision::Lock
+        );
+    }
+
+    #[test]
     fn restore_trace_covers_startup_restore_boundaries_without_private_ids() {
         let source = include_str!("account.rs");
         let restore_last = source
@@ -6230,12 +6443,8 @@ mod tests {
             ),
             "restore must log successful SDK store restore before sync starts"
         );
-        assert!(
-            restore_account.contains(
-                "trace_account_request(\"restore_account\", request_id, \"sync_actor_spawned\")"
-            ),
-            "restore must log that the SyncActor was spawned"
-        );
+        assert!(restore_account.contains("install_provisional_session"));
+        assert!(!restore_account.contains("sync_actor_spawned"));
         assert!(
             source.contains("DiagnosticField::request_id"),
             "restore diagnostics must include request ids for correlation"
@@ -6272,10 +6481,13 @@ mod tests {
                 );
             }
         }
-        assert!(
-            login_body.contains("self.spawn_account_hydration(session_arc.clone())"),
-            "login should schedule optional profile/account-data hydration after emitting LoggedIn"
-        );
+        assert!(!login_body.contains("spawn_account_hydration"));
+        let promotion = source
+            .split("async fn handle_current_device_trust")
+            .nth(1)
+            .and_then(|body| body.split("async fn persist_session").next())
+            .expect("trust promotion handler");
+        assert!(promotion.contains("spawn_account_hydration"));
     }
 
     #[test]
@@ -6724,6 +6936,12 @@ mod tests {
         let mut actor = AccountActor {
             session: None,
             session_key_id: Some(key_id.clone()),
+            provisional_persistable: None,
+            session_promoted: false,
+            trust_generation: 0,
+            trust_observer: None,
+            restricted_sync: None,
+            pending_ready_events: Vec::new(),
             store,
             action_tx,
             event_tx,

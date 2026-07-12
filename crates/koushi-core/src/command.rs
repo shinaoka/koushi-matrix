@@ -216,33 +216,34 @@ impl CoreCommand {
     /// pending, and `AccountActor` / `SyncActor` still enforce that a
     /// store-backed Matrix session exists.
     pub fn requires_ready_session(&self) -> bool {
-        matches!(self, Self::Room(_) | Self::Timeline(_) | Self::Search(_))
-            || matches!(
-                self,
-                Self::Account(command) if command.requires_ready_session()
+        matches!(
+            self,
+            Self::Room(_) | Self::Timeline(_) | Self::Search(_) | Self::Sync(_)
+        ) || matches!(
+            self,
+            Self::Account(command) if command.requires_ready_session()
+        ) || matches!(
+            self,
+            Self::App(
+                AppCommand::OpenTimelineAtTimestamp { .. }
+                    | AppCommand::ResetRoomTimelineCache { .. }
+                    | AppCommand::EnterAnchoredTimeline { .. }
+                    | AppCommand::ScheduleSend { .. }
+                    | AppCommand::CancelScheduledSend { .. }
+                    | AppCommand::RescheduleScheduledSend { .. }
+                    | AppCommand::SetUploadStaging { .. }
+                    | AppCommand::UpdateStagedUploadCaption { .. }
+                    | AppCommand::UpdateStagedUploadCompression { .. }
+                    | AppCommand::ClearUploadStaging { .. }
+                    | AppCommand::RebuildSearchIndex { .. }
+                    | AppCommand::SetRoomUrlPreviewOverride { .. }
+                    | AppCommand::OpenFilesView { .. }
+                    | AppCommand::OpenThreadsList { .. }
+                    | AppCommand::CloseThreadsList { .. }
+                    | AppCommand::PaginateThreadsList { .. }
+                    | AppCommand::TimelineScrollAnchorUpdated { .. }
             )
-            || matches!(
-                self,
-                Self::App(
-                    AppCommand::OpenTimelineAtTimestamp { .. }
-                        | AppCommand::ResetRoomTimelineCache { .. }
-                        | AppCommand::EnterAnchoredTimeline { .. }
-                        | AppCommand::ScheduleSend { .. }
-                        | AppCommand::CancelScheduledSend { .. }
-                        | AppCommand::RescheduleScheduledSend { .. }
-                        | AppCommand::SetUploadStaging { .. }
-                        | AppCommand::UpdateStagedUploadCaption { .. }
-                        | AppCommand::UpdateStagedUploadCompression { .. }
-                        | AppCommand::ClearUploadStaging { .. }
-                        | AppCommand::RebuildSearchIndex { .. }
-                        | AppCommand::SetRoomUrlPreviewOverride { .. }
-                        | AppCommand::OpenFilesView { .. }
-                        | AppCommand::OpenThreadsList { .. }
-                        | AppCommand::CloseThreadsList { .. }
-                        | AppCommand::PaginateThreadsList { .. }
-                        | AppCommand::TimelineScrollAnchorUpdated { .. }
-                )
-            )
+        )
     }
 }
 

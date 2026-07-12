@@ -1491,8 +1491,8 @@ mod e2ee_trust_tests {
         map_identity_reset_auth_type_to_desktop, map_sdk_sas_emojis_to_desktop,
         map_sdk_verification_state, map_verification_method_facts, mismatch_sas_verification,
         observe_incoming_verification_requests, rename_device, request_device_verification,
-        reset_identity, restore_key_backup, restore_session, start_sas_verification,
-        write_recovery_key_if_requested,
+        reset_identity, restore_key_backup, restore_session, restricted_verification_sync_filter,
+        start_sas_verification, write_recovery_key_if_requested,
     };
 
     const MATRIX_KEY_EXPORT_HEADER: &str = "-----BEGIN MEGOLM SESSION DATA-----";
@@ -1644,6 +1644,15 @@ GYW19pdjg0qdXNk/eqZsQTsNWVo6A\n\
         let _ = super::request_own_user_sas_verification;
         let _opaque: Option<super::MatrixOwnUserVerificationHandle> = None;
         assert!(!std::any::type_name::<super::MatrixOwnUserVerificationHandle>().contains('@'));
+    }
+
+    #[test]
+    fn restricted_sync_filter_suppresses_rooms_and_presence_but_keeps_account_data() {
+        let filter = restricted_verification_sync_filter();
+        let json = serde_json::to_value(filter).expect("filter serializes");
+        assert_eq!(json["presence"]["types"], serde_json::json!([]));
+        assert_eq!(json["room"]["rooms"], serde_json::json!([]));
+        assert!(json.get("account_data").is_none());
     }
 
     #[test]
@@ -4689,6 +4698,30 @@ pub async fn sync_once(session: &MatrixClientSession) -> Result<(), MatrixSyncEr
     session
         .client()
         .sync_once(matrix_sdk::config::SyncSettings::default())
+        .await
+        .map(|_| ())
+        .map_err(|_| MatrixSyncError::Sdk)
+}
+
+fn restricted_verification_sync_filter() -> matrix_sdk::ruma::api::client::filter::FilterDefinition
+{
+    let mut filter = matrix_sdk::ruma::api::client::filter::FilterDefinition::default();
+    filter.presence = matrix_sdk::ruma::api::client::filter::Filter::ignore_all();
+    filter.room = matrix_sdk::ruma::api::client::filter::RoomFilter::ignore_all();
+    filter
+}
+
+pub async fn restricted_verification_sync_once(
+    session: &MatrixClientSession,
+) -> Result<(), MatrixSyncError> {
+    let settings = matrix_sdk::config::SyncSettings::new().filter(
+        matrix_sdk::ruma::api::client::sync::sync_events::v3::Filter::FilterDefinition(
+            restricted_verification_sync_filter(),
+        ),
+    );
+    session
+        .client()
+        .sync_once(settings)
         .await
         .map(|_| ())
         .map_err(|_| MatrixSyncError::Sdk)

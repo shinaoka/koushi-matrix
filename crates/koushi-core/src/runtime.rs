@@ -1478,7 +1478,10 @@ impl AppActor {
 
     /// Returns whether `AppState` changed.
     async fn handle_command(&mut self, command: CoreCommand) -> bool {
-        if command.requires_ready_session() && !is_ready_session_for_commands(&self.state.session) {
+        if command.requires_ready_session()
+            && !is_ready_session_for_commands(&self.state.session)
+            && !is_verification_gate_command(&command, &self.state.session)
+        {
             trace_runtime_sync!(
                 "command_rejected",
                 [
@@ -2660,13 +2663,18 @@ impl AppActor {
                 AppEffect::EmitUiEvent(ui_event) => {
                     self.handle_ui_event_effect(&ui_event, &[]).await;
                 }
+                AppEffect::RejectProvisionalSession => {
+                    let _ = self
+                        .account_actor
+                        .send(AccountMessage::RejectProvisionalSession { request_id })
+                        .await;
+                }
                 AppEffect::RestoreSession
                 | AppEffect::DiscoverLogin { .. }
                 | AppEffect::Login { .. }
                 | AppEffect::CheckCurrentDeviceTrust
                 | AppEffect::DiscoverVerificationMethods
                 | AppEffect::BeginSessionVerification { .. }
-                | AppEffect::RejectProvisionalSession
                 | AppEffect::RecoverE2ee(_)
                 | AppEffect::RequestVerification { .. }
                 | AppEffect::AcceptVerification { .. }
@@ -2759,13 +2767,19 @@ impl AppActor {
                 AppEffect::PersistRoomPreferences { preferences, .. } => {
                     self.persist_room_preferences(preferences).await;
                 }
+                AppEffect::RejectProvisionalSession => {
+                    let request_id = self.next_internal_request_id();
+                    let _ = self
+                        .account_actor
+                        .send(AccountMessage::RejectProvisionalSession { request_id })
+                        .await;
+                }
                 AppEffect::RestoreSession
                 | AppEffect::DiscoverLogin { .. }
                 | AppEffect::Login { .. }
                 | AppEffect::CheckCurrentDeviceTrust
                 | AppEffect::DiscoverVerificationMethods
                 | AppEffect::BeginSessionVerification { .. }
-                | AppEffect::RejectProvisionalSession
                 | AppEffect::RecoverE2ee(_)
                 | AppEffect::RequestVerification { .. }
                 | AppEffect::AcceptVerification { .. }
@@ -3096,6 +3110,27 @@ fn cancel_replaced_room_timeline_link_previews_key(
 
 fn is_ready_session_for_commands(session: &SessionState) -> bool {
     matches!(session, SessionState::Ready(_))
+}
+
+fn is_verification_gate_command(command: &CoreCommand, session: &SessionState) -> bool {
+    if !matches!(
+        session,
+        SessionState::Provisional { .. }
+            | SessionState::AwaitingVerification { .. }
+            | SessionState::Verifying { .. }
+    ) {
+        return false;
+    }
+    matches!(
+        command,
+        CoreCommand::Account(
+            AccountCommand::RequestVerification { .. }
+                | AccountCommand::AcceptVerification { .. }
+                | AccountCommand::ConfirmSasVerification { .. }
+                | AccountCommand::CancelVerification { .. }
+                | AccountCommand::BootstrapCrossSigning { .. }
+        )
+    )
 }
 
 fn composer_draft_session_key(state: &AppState) -> Option<koushi_key::SessionKeyId> {
@@ -3851,11 +3886,17 @@ mod tests {
         let mut connection = runtime.attach();
 
         runtime
-            .inject_actions(vec![AppAction::RestoreSessionSucceeded(SessionInfo {
-                homeserver: "https://example.invalid".to_owned(),
-                user_id: "@me:example.invalid".to_owned(),
-                device_id: "DEVICE".to_owned(),
-            })])
+            .inject_actions(vec![
+                AppAction::AppStarted,
+                AppAction::RestoreSessionSucceeded(SessionInfo {
+                    homeserver: "https://example.invalid".to_owned(),
+                    user_id: "@me:example.invalid".to_owned(),
+                    device_id: "DEVICE".to_owned(),
+                }),
+                AppAction::CurrentDeviceTrustChanged(
+                    koushi_state::CurrentDeviceTrustState::Verified,
+                ),
+            ])
             .await;
 
         let mut delta = None;
@@ -3887,6 +3928,7 @@ mod tests {
         let (command_tx, _command_rx) = mpsc::channel(1);
         let (event_tx, event_rx) = broadcast::channel(4);
         let mut state = AppState::default();
+        reduce(&mut state, AppAction::AppStarted);
         reduce(
             &mut state,
             AppAction::RestoreSessionSucceeded(SessionInfo {
@@ -3894,6 +3936,10 @@ mod tests {
                 user_id: "@me:example.invalid".to_owned(),
                 device_id: "DEVICE".to_owned(),
             }),
+        );
+        reduce(
+            &mut state,
+            AppAction::CurrentDeviceTrustChanged(koushi_state::CurrentDeviceTrustState::Verified),
         );
         state.profile = ProfileState {
             own: OwnProfile {
@@ -4102,11 +4148,15 @@ mod tests {
 
         runtime
             .inject_actions(vec![
+                AppAction::AppStarted,
                 AppAction::RestoreSessionSucceeded(SessionInfo {
                     homeserver: "https://example.invalid".to_owned(),
                     user_id: "@me:example.invalid".to_owned(),
                     device_id: "DEVICE".to_owned(),
                 }),
+                AppAction::CurrentDeviceTrustChanged(
+                    koushi_state::CurrentDeviceTrustState::Verified,
+                ),
                 AppAction::UserProfilesUpdated {
                     profiles: vec![UserProfile {
                         user_id: "@alice:example.invalid".to_owned(),
@@ -4205,11 +4255,15 @@ mod tests {
 
         runtime
             .inject_actions(vec![
+                AppAction::AppStarted,
                 AppAction::RestoreSessionSucceeded(SessionInfo {
                     homeserver: "https://example.invalid".to_owned(),
                     user_id: "@me:example.invalid".to_owned(),
                     device_id: "DEVICE".to_owned(),
                 }),
+                AppAction::CurrentDeviceTrustChanged(
+                    koushi_state::CurrentDeviceTrustState::Verified,
+                ),
                 AppAction::LocalUserAliasesLoaded {
                     aliases: BTreeMap::from([(user_id.to_owned(), "Unknown Alias".to_owned())]),
                 },
