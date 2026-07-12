@@ -247,6 +247,10 @@ pub enum AccountMessage {
     ConfigureCloseStoreResults {
         results: Vec<bool>,
     },
+    #[cfg(test)]
+    ShutdownWithAck {
+        acknowledged: oneshot::Sender<()>,
+    },
     /// Forward `AppEffect::InvalidateSearchCrawlerCache` to the actor so it
     /// drops its completed-room cache before the subsequent re-enqueue.
     InvalidateSearchCrawlerCache,
@@ -643,12 +647,14 @@ impl AccountActor {
     }
 
     async fn run(mut self) {
+        #[cfg(test)]
+        let mut shutdown_ack = None;
         while let Some(msg) = self.command_rx.recv().await {
             match msg {
-                AccountMessage::Shutdown => {
-                    if let Some(task) = self.teardown_retry_task.take() {
-                        task.abort();
-                    }
+                AccountMessage::Shutdown => break,
+                #[cfg(test)]
+                AccountMessage::ShutdownWithAck { acknowledged } => {
+                    shutdown_ack = Some(acknowledged);
                     break;
                 }
                 AccountMessage::Command(command) => {
@@ -878,25 +884,12 @@ impl AccountActor {
             }
             self.flush_pending_crawler_notification();
         }
-        // Ordered shutdown (overview.md Async rule 12):
-        // recovery/incoming observers → timelines → search → room → sync → SDK handles.
-        self.stop_recovery_observer().await;
-        self.stop_incoming_verification_observer().await;
-        self.stop_session_change_observer().await;
-        self.stop_timeline_actor().await;
-        self.stop_threads_list_actor().await;
-        self.stop_search_actor().await;
+        self.shutdown_owned_runtime().await;
         self.stop_room_actor().await;
-        self.stop_sync_actor().await;
-        self.cancel_verification_handles().await;
-        self.cancel_identity_reset_handle().await;
-        self.invalidate_account_hydration();
-        self.abort_avatar_fetch_tasks();
-        self.device_session_ordinals.clear();
-        self.pending_uia_operations.clear();
-        // Drop the session handle inside the runtime context
-        // (overview.md Async rule 11 — deadpool-runtime panic prevention).
-        drop(self.session.take());
+        #[cfg(test)]
+        if let Some(acknowledged) = shutdown_ack {
+            let _ = acknowledged.send(());
+        }
     }
 
     /// Route a RoomCommand to the RoomActor. The RoomActor handles the
@@ -981,6 +974,31 @@ impl AccountActor {
                 }
                 self.emit_failure(request_id, CoreFailure::SessionRequired);
             }
+        }
+    }
+
+    async fn shutdown_owned_runtime(&mut self) {
+        if let Some(task) = self.teardown_retry_task.take() {
+            task.abort();
+            let _ = task.await;
+            self.record_lifecycle_probe("teardown_retry_terminated");
+        }
+        self.stop_current_session_runtime().await;
+        if let Some(session) = self.session.take() {
+            let _ = koushi_sdk::close_session_stores(&session).await;
+            drop(session);
+            self.record_lifecycle_probe("current_session_released");
+        }
+        if let Some(pending) = self.pending_session_teardown.take() {
+            let _ = koushi_sdk::close_session_stores(&pending.session).await;
+            drop(pending.session);
+            if let SessionTeardownContinuation::InstallReplacement { session, .. } =
+                pending.continuation
+            {
+                let _ = koushi_sdk::close_session_stores(&session).await;
+                drop(session);
+            }
+            self.record_lifecycle_probe("pending_teardown_sessions_released");
         }
     }
 
@@ -1553,10 +1571,14 @@ impl AccountActor {
         self.stop_recovery_observer().await;
         self.stop_incoming_verification_observer().await;
         self.stop_session_change_observer().await;
+        self.record_lifecycle_probe("shutdown_stop_timeline_actor");
         self.stop_timeline_actor().await;
         self.stop_threads_list_actor().await;
+        self.record_lifecycle_probe("shutdown_stop_search_actor");
         self.stop_search_actor().await;
+        self.record_lifecycle_probe("shutdown_stop_sync_actor");
         self.stop_sync_actor().await;
+        self.record_lifecycle_probe("shutdown_clear_room_session");
         self.clear_room_actor_session().await;
         self.cancel_verification_handles().await;
         self.cancel_identity_reset_handle().await;
@@ -6643,6 +6665,134 @@ mod tests {
         let _ = handle.send(AccountMessage::Shutdown).await;
     }
 
+    #[tokio::test]
+    async fn shutdown_quiesces_provisional_tasks_and_releases_session_without_logout_terminal() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        handle
+            .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+            .await;
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: test_request_id(),
+                request: LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ) {}
+        shutdown_and_ack(&handle).await;
+        let tokens: Vec<_> = std::iter::from_fn(|| probe_rx.try_recv().ok()).collect();
+        assert!(tokens.contains(&"trust_observer_terminated"));
+        assert!(tokens.contains(&"restricted_sync_terminated"));
+        assert!(tokens.contains(&"current_session_released"));
+        assert_no_logout_finished(&mut action_rx);
+        while let Ok(event) = event_rx.try_recv() {
+            assert!(!matches!(
+                event,
+                CoreEvent::Account(AccountEvent::LoggedOut { .. })
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_quiesces_promoted_children_before_releasing_session() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        handle
+            .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+            .await;
+        configure_verified_trust(&handle).await;
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: test_request_id(),
+                request: LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        while probe_rx.try_recv().is_ok() {}
+        shutdown_and_ack(&handle).await;
+        let tokens: Vec<_> = std::iter::from_fn(|| probe_rx.try_recv().ok()).collect();
+        assert!(tokens.contains(&"trust_observer_terminated"));
+        assert!(tokens.contains(&"shutdown_stop_sync_actor"));
+        assert!(tokens.contains(&"shutdown_clear_room_session"));
+        assert_eq!(tokens.last(), Some(&"current_session_released"));
+    }
+
+    #[tokio::test]
+    async fn shutdown_aborts_pending_teardown_retry_and_releases_held_sessions_without_terminal() {
+        let first_homeserver = spawn_quarantine_password_server();
+        let second_homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        handle
+            .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+            .await;
+        let request_id = test_request_id();
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id,
+                request: LoginRequest {
+                    homeserver: first_homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ) {}
+        handle
+            .send(AccountMessage::ConfigureCloseStoreResults {
+                results: vec![false; 8],
+            })
+            .await;
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: RequestId {
+                    connection_id: crate::ids::RuntimeConnectionId(4),
+                    sequence: 2,
+                },
+                request: LoginRequest {
+                    homeserver: second_homeserver,
+                    username: "replacement".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while probe_rx.recv().await != Some("session_store_close_retrying") {}
+        shutdown_and_ack(&handle).await;
+        let tokens: Vec<_> = std::iter::from_fn(|| probe_rx.try_recv().ok()).collect();
+        assert!(tokens.contains(&"teardown_retry_terminated"));
+        assert!(tokens.contains(&"pending_teardown_sessions_released"));
+        assert_no_logout_finished(&mut action_rx);
+    }
+
     #[test]
     fn search_crawler_room_notifications_are_latest_wins_and_nonblocking() {
         let source = include_str!("account.rs");
@@ -7474,6 +7624,16 @@ mod tests {
                 .await
         );
         result.await.expect("runtime inspection")
+    }
+
+    async fn shutdown_and_ack(handle: &AccountActorHandle) {
+        let (acknowledged, ack) = oneshot::channel();
+        assert!(
+            handle
+                .send(AccountMessage::ShutdownWithAck { acknowledged })
+                .await
+        );
+        ack.await.expect("account shutdown acknowledgement");
     }
 
     async fn configure_verified_trust(handle: &AccountActorHandle) {
