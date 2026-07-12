@@ -105,6 +105,7 @@ use matrix_sdk::{
     },
     utils::UrlOrQuery,
 };
+use matrix_sdk_base::crypto::CollectStrategy;
 use matrix_sdk_search::error::IndexError;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -3485,6 +3486,7 @@ fn desktop_client_builder_defaults(
 ) -> matrix_sdk::ClientBuilder {
     builder
         .handle_refresh_tokens()
+        .with_room_key_recipient_strategy(desktop_room_key_recipient_strategy())
         .with_encryption_settings(EncryptionSettings {
             backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
             ..Default::default()
@@ -3492,6 +3494,10 @@ fn desktop_client_builder_defaults(
         .with_threading_support(matrix_sdk::ThreadingSupport::Enabled {
             with_subscriptions: true,
         })
+}
+
+fn desktop_room_key_recipient_strategy() -> CollectStrategy {
+    CollectStrategy::AllDevices
 }
 
 pub async fn recover_e2ee(
@@ -6073,6 +6079,73 @@ mod tests {
 
         assert!(defaults_body.contains("with_encryption_settings"));
         assert!(defaults_body.contains("BackupDownloadStrategy::AfterDecryptionFailure"));
+    }
+
+    #[test]
+    fn ordinary_send_delegates_peer_device_policy_to_matrix_encryption() {
+        let source = include_str!("lib.rs");
+        let body = source
+            .split("pub async fn send_text_message")
+            .nth(1)
+            .expect("send_text_message should exist")
+            .split("pub async fn room_can_send_text_message")
+            .next()
+            .expect("room_can_send_text_message should follow send_text_message");
+
+        assert!(body.contains("room.send(content)"));
+        assert!(body.contains("map_err(MatrixRoomOperationError::from_sdk_error)"));
+        for forbidden_preflight in [
+            "contains_only_verified_devices",
+            "request_verification",
+            "send_anyway",
+            "trust_level",
+        ] {
+            assert!(
+                !body.contains(forbidden_preflight),
+                "ordinary send must not gate eligible unverified peer devices via {forbidden_preflight}"
+            );
+        }
+    }
+
+    #[test]
+    fn client_builder_selects_typed_non_blocking_peer_policy() {
+        let source = include_str!("lib.rs");
+        let defaults = source
+            .split("fn desktop_client_builder_defaults")
+            .nth(1)
+            .expect("desktop defaults should exist")
+            .split("pub async fn recover_e2ee")
+            .next()
+            .expect("recover_e2ee should bound defaults");
+
+        assert!(defaults.contains("with_room_key_recipient_strategy"));
+        assert!(!defaults.contains("OnlyTrustedDevices"));
+        assert!(!defaults.contains("ErrorOnVerifiedUserProblem"));
+    }
+
+    #[test]
+    fn typed_peer_policy_is_all_devices_not_only_trusted() {
+        assert!(matches!(
+            super::desktop_room_key_recipient_strategy(),
+            matrix_sdk_base::crypto::CollectStrategy::AllDevices
+        ));
+    }
+
+    #[test]
+    fn encryption_integrity_and_key_failures_remain_rejected() {
+        let source = include_str!("lib.rs");
+        let classifier = source
+            .split("fn matrix_room_operation_failure_kind")
+            .nth(1)
+            .expect("room failure classifier should exist")
+            .split("fn matrix_room_state")
+            .next()
+            .expect("next helper should bound classifier");
+
+        assert!(classifier.contains("MegolmError"));
+        assert!(classifier.contains("OlmError"));
+        assert!(classifier.contains("DecryptorError"));
+        assert!(classifier.contains("MatrixRoomOperationFailureKind::Encryption"));
     }
 
     #[test]
