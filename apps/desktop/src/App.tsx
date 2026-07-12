@@ -1646,7 +1646,7 @@ export function App() {
   ]);
 
   useEffect(() => {
-    if (!snapshot) {
+    if (!snapshot || snapshot.state.domain.session.kind !== "ready") {
       return;
     }
 

@@ -111,7 +111,16 @@ test("Ready to Locked replaces the shell with the gate", async ({ page }) => {
     window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, native_attention: { ...snapshot.state.domain.native_attention, summary: { ...snapshot.state.domain.native_attention.summary, unread_count: 2, highlight_count: 2, candidate: { room_display_name: "Locked attention", kind: "mention", unread_count: 2, highlight_count: 2 } }, dispatch: { kind: "idle" } } } } });
     window.__harness.pushStateChanged();
   });
-  await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("play_native_attention_sound").length)).toBe(attentionCount);
+  const unexpectedAttention = await page
+    .waitForFunction(
+      (baseline) => window.__harness.invocationsOf("play_native_attention_sound").length > baseline,
+      attentionCount,
+      { timeout: 400 }
+    )
+    .then(() => true)
+    .catch(() => false);
+  expect(unexpectedAttention).toBe(false);
+  expect(await page.evaluate(() => window.__harness.invocationsOf("play_native_attention_sound").length)).toBe(attentionCount);
 });
 
 test("SAS actions stay flow-correlated through retry and cancellation", async ({ page }) => {
@@ -134,6 +143,7 @@ test("SAS actions stay flow-correlated through retry and cancellation", async ({
   await expect(page.locator(".session-verification-emojis span")).toHaveCount(7);
   await page.getByRole("button", { name: "They match" }).click();
   await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("confirm_sas_verification")[0]?.args.flowId)).toBeGreaterThan(0);
+  await expect(page.getByText("Checking device trust…")).toBeVisible();
 
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();

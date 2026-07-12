@@ -1409,6 +1409,13 @@ mock.setCommandResponse("confirm_session_bootstrap_saved", ({ flowId }: { flowId
   return setCurrentSnapshot(next);
 });
 mock.setCommandResponse("confirm_sas_verification", ({ flowId }: { flowId: number }) => {
+  const session = currentSnapshot.state.domain.session;
+  if (session.kind === "verifying" && session.method === "existingDeviceSas" && session.flow_id === flowId) {
+    const next = structuredClone(currentSnapshot);
+    next.state.domain.session = { ...session, kind: "provisional", phase: { recheckingTrust: { failureKind: null } }, method: undefined, flow_id: undefined };
+    next.state.domain.e2ee_trust.verification = { kind: "idle" };
+    return setCurrentSnapshot(next);
+  }
   const verification = currentSnapshot.state.domain.e2ee_trust.verification;
   if (
     (verification.kind !== "sasPresented" && verification.kind !== "confirming") ||

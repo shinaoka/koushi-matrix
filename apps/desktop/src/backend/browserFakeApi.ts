@@ -936,6 +936,22 @@ class BrowserFakeApi implements DesktopApi {
   }
 
   async confirmSasVerification(flowId: number): Promise<DesktopSnapshot> {
+    const session = this.snapshot.state.domain.session;
+    if (
+      session.kind === "verifying" &&
+      session.method === "existingDeviceSas" &&
+      session.flow_id === flowId
+    ) {
+      this.snapshot.state.domain.session = {
+        ...session,
+        kind: "provisional",
+        phase: { recheckingTrust: { failureKind: null } },
+        method: undefined,
+        flow_id: undefined
+      };
+      this.snapshot.state.domain.e2ee_trust.verification = { kind: "idle" };
+      return this.getSnapshot();
+    }
     if (!this.isReady()) {
       return this.getSnapshot();
     }
