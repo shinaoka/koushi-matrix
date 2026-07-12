@@ -3660,6 +3660,11 @@ impl AccountActor {
             return;
         };
         let homeserver = pending.homeserver().to_owned();
+        self.send_actions(vec![AppAction::AuthenticationStarted {
+            attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
+            homeserver: homeserver.clone(),
+        }])
+        .await;
 
         let login_session = match koushi_sdk::finish_oidc_login(pending, &callback_url).await {
             Ok(session) => session,

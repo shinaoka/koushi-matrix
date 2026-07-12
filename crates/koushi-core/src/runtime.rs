@@ -16,8 +16,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 use koushi_state::{
     AccountManagementOperation, ActivityMarkReadTarget, ActivityRow, ActivityRowKind,
-    ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState, AuthDiscoveryState,
-    ComposerDraftStore, LoginAttemptId, ProfileUpdateRequest, RoomNotificationMode, RoomSummary,
+    ActivityState, ActivityStream, ActivityTab, AppAction, AppEffect, AppState, ComposerDraftStore,
+    LoginAttemptId, ProfileUpdateRequest, RoomNotificationMode, RoomSummary,
     ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchScope as AppSearchScope,
     SessionState, SpaceSummary, ThreadPaneState, UiEvent, reduce, room_activity_unread_count,
 };
@@ -1502,18 +1502,31 @@ impl AppActor {
 
         match command {
             CoreCommand::Account(account_command) => {
+                if let AccountCommand::LoginPassword { request_id, .. }
+                | AccountCommand::CompleteOidcLogin { request_id, .. } = &account_command
+                {
+                    if !matches!(
+                        self.state.session,
+                        SessionState::SignedOut | SessionState::Authenticating { .. }
+                    ) {
+                        self.emit(CoreEvent::OperationFailed {
+                            request_id: *request_id,
+                            failure: CoreFailure::SessionRequired,
+                        });
+                        return false;
+                    }
+                }
                 let display_label_user_id = match &account_command {
                     AccountCommand::SetLocalUserAlias { user_id, .. } => Some(user_id.as_str()),
                     _ => None,
                 };
                 let display_label_user_ids = display_label_user_id.into_iter().collect::<Vec<_>>();
-                let effects = if let Some(action) =
-                    account_command_projected_action_for_state(&account_command, &self.state)
-                {
-                    self.reduce_app_action(action).await
-                } else {
-                    Vec::new()
-                };
+                let effects =
+                    if let Some(action) = account_command_projected_action(&account_command) {
+                        self.reduce_app_action(action).await
+                    } else {
+                        Vec::new()
+                    };
                 let projected_state_changed = !effects.is_empty();
                 self.handle_ui_event_effects_with_display_label_users(
                     &effects,
@@ -3338,25 +3351,6 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
     }
 }
 
-fn account_command_projected_action_for_state(
-    command: &AccountCommand,
-    state: &AppState,
-) -> Option<AppAction> {
-    if let AccountCommand::CompleteOidcLogin { request_id, .. } = command {
-        let homeserver = match &state.auth {
-            AuthDiscoveryState::Ready { homeserver, .. } => homeserver.clone(),
-            AuthDiscoveryState::Unknown
-            | AuthDiscoveryState::Discovering { .. }
-            | AuthDiscoveryState::Failed { .. } => return None,
-        };
-        return Some(AppAction::AuthenticationStarted {
-            attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
-            homeserver,
-        });
-    }
-    account_command_projected_action(command)
-}
-
 fn map_state_search_scope_to_core(scope: AppSearchScope) -> SearchScope {
     match scope {
         AppSearchScope::AllRooms => SearchScope::AllRooms,
@@ -4760,30 +4754,18 @@ mod tests {
     }
 
     #[test]
-    fn oidc_completion_projects_authentication_before_actor_completion() {
+    fn oidc_completion_has_no_speculative_appactor_projection() {
         let request_id = RequestId {
             connection_id: RuntimeConnectionId(1),
             sequence: 8,
         };
 
-        let mut state = AppState::default();
-        state.auth = AuthDiscoveryState::Ready {
-            homeserver: "https://matrix.example.org".to_owned(),
-            flows: vec![],
-            delegated: Default::default(),
-        };
         assert_eq!(
-            account_command_projected_action_for_state(
-                &AccountCommand::CompleteOidcLogin {
-                    request_id,
-                    callback_url: "koushi-desktop://auth/callback?code=secret".to_owned(),
-                },
-                &state
-            ),
-            Some(AppAction::AuthenticationStarted {
-                attempt_id: LoginAttemptId::new(1, 8),
-                homeserver: "https://matrix.example.org".to_owned(),
-            })
+            account_command_projected_action(&AccountCommand::CompleteOidcLogin {
+                request_id,
+                callback_url: "koushi-desktop://auth/callback?code=secret".to_owned(),
+            }),
+            None
         );
     }
 
@@ -4795,13 +4777,10 @@ mod tests {
         };
 
         assert_eq!(
-            account_command_projected_action_for_state(
-                &AccountCommand::StartOidcLogin {
-                    request_id,
-                    homeserver: "https://matrix.example.org".to_owned(),
-                },
-                &AppState::default(),
-            ),
+            account_command_projected_action(&AccountCommand::StartOidcLogin {
+                request_id,
+                homeserver: "https://matrix.example.org".to_owned(),
+            }),
             Some(AppAction::LoginDiscoveryRequested {
                 homeserver: "https://matrix.example.org".to_owned(),
             })

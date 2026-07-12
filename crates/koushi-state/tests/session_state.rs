@@ -227,6 +227,88 @@ fn same_sequence_from_another_connection_is_a_stale_login_terminal() {
 }
 
 #[test]
+fn authentication_start_cannot_hide_an_active_or_gated_session() {
+    let info = session_info();
+    let invalid_sessions = vec![
+        SessionState::Restoring,
+        SessionState::SwitchingAccount { info: info.clone() },
+        SessionState::Provisional {
+            info: info.clone(),
+            phase: ProvisionalPhase::CheckingTrust,
+        },
+        SessionState::AwaitingVerification {
+            info: info.clone(),
+            gate: recovery_gate(),
+        },
+        SessionState::Verifying {
+            info: info.clone(),
+            gate: recovery_gate(),
+            method: VerificationMethod::RecoveryKey,
+            flow_id: 9,
+        },
+        SessionState::Rejecting {
+            info: info.clone(),
+            reason: VerificationGateRejectReason::UserRejected,
+        },
+        SessionState::Ready(info.clone()),
+        SessionState::Locked(info.clone()),
+        SessionState::LoggingOut,
+    ];
+
+    for session in invalid_sessions {
+        let mut state = AppState {
+            session,
+            ..AppState::default()
+        };
+        let before = state.clone();
+        assert!(
+            reduce(
+                &mut state,
+                AppAction::AuthenticationStarted {
+                    attempt_id: LoginAttemptId::new(2, 8),
+                    homeserver: "https://replacement.invalid".to_owned(),
+                },
+            )
+            .is_empty()
+        );
+        assert_eq!(state, before);
+    }
+}
+
+#[test]
+fn oidc_pending_flow_homeserver_wins_over_mutated_discovery_state() {
+    let attempt_id = LoginAttemptId::new(4, 12);
+    let mut state = AppState::default();
+    state.auth = AuthDiscoveryState::Ready {
+        homeserver: "https://flow-b.invalid".to_owned(),
+        flows: vec![],
+        delegated: DelegatedAuthLinks::default(),
+    };
+
+    reduce(
+        &mut state,
+        AppAction::AuthenticationStarted {
+            attempt_id,
+            homeserver: "https://flow-a.invalid".to_owned(),
+        },
+    );
+    assert!(matches!(
+        &state.session,
+        SessionState::Authenticating { homeserver, attempt_id: active }
+            if homeserver == "https://flow-a.invalid" && *active == attempt_id
+    ));
+
+    reduce(
+        &mut state,
+        AppAction::LoginFailed {
+            attempt_id,
+            message: "login failed".to_owned(),
+        },
+    );
+    assert!(matches!(state.session, SessionState::SignedOut));
+}
+
+#[test]
 fn stale_or_wrong_state_authentication_success_is_ignored() {
     let info = session_info();
     let cases = [

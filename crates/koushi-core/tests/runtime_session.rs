@@ -55,6 +55,50 @@ async fn password_command_projects_authentication_before_account_actor_completio
     }
 }
 
+#[tokio::test]
+async fn active_session_rejects_a_new_password_login_before_account_routing() {
+    let runtime = CoreRuntime::start();
+    let mut connection = runtime.attach();
+    runtime
+        .inject_actions(vec![
+            AppAction::AppStarted,
+            AppAction::RestoreSessionSucceeded(session_info()),
+            AppAction::CurrentDeviceTrustChanged(koushi_state::CurrentDeviceTrustState::Verified),
+        ])
+        .await;
+    wait_for_state(&mut connection, |state| {
+        matches!(state.session, SessionState::Ready(_))
+    })
+    .await;
+
+    let request_id = connection.next_request_id();
+    connection
+        .command(CoreCommand::Account(AccountCommand::LoginPassword {
+            request_id,
+            request: LoginRequest {
+                homeserver: "http://127.0.0.1:9".to_owned(),
+                username: "user".to_owned(),
+                password: AuthSecret::new("synthetic-password"),
+                device_display_name: None,
+            },
+        }))
+        .await
+        .expect("submit");
+
+    loop {
+        match connection.recv_event().await.expect("event") {
+            CoreEvent::OperationFailed {
+                request_id: failed,
+                failure: CoreFailure::SessionRequired,
+            } if failed == request_id => return,
+            CoreEvent::OperationFailed {
+                request_id: failed, ..
+            } if failed == request_id => panic!("login reached AccountActor"),
+            _ => {}
+        }
+    }
+}
+
 mod support;
 use support::*;
 

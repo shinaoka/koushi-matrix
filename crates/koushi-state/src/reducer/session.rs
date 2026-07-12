@@ -273,6 +273,12 @@ pub(crate) fn handle_authentication_started(
     attempt_id: LoginAttemptId,
     homeserver: String,
 ) -> Vec<AppEffect> {
+    if !matches!(
+        state.session,
+        SessionState::SignedOut | SessionState::Authenticating { .. }
+    ) {
+        return Vec::new();
+    }
     state.session = SessionState::Authenticating {
         homeserver,
         attempt_id,
