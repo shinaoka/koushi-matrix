@@ -17297,11 +17297,17 @@ mod tests {
 
         // Inject a Ready session so commands are not gated.
         runtime
-            .inject_actions(vec![AppAction::RestoreSessionSucceeded(SessionInfo {
-                homeserver: "https://test.test".to_owned(),
-                user_id: "@a:test".to_owned(),
-                device_id: "DEV".to_owned(),
-            })])
+            .inject_actions(vec![
+                AppAction::RestoreSessionRequested,
+                AppAction::RestoreSessionSucceeded(SessionInfo {
+                    homeserver: "https://test.test".to_owned(),
+                    user_id: "@a:test".to_owned(),
+                    device_id: "DEV".to_owned(),
+                }),
+                AppAction::CurrentDeviceTrustChanged(
+                    koushi_state::CurrentDeviceTrustState::Verified,
+                ),
+            ])
             .await;
 
         // Wait for Ready.
@@ -18701,11 +18707,17 @@ mod tests {
         let mut conn = runtime.attach();
 
         runtime
-            .inject_actions(vec![AppAction::RestoreSessionSucceeded(SessionInfo {
-                homeserver: "https://test.test".to_owned(),
-                user_id: "@a:test".to_owned(),
-                device_id: "DEV".to_owned(),
-            })])
+            .inject_actions(vec![
+                AppAction::RestoreSessionRequested,
+                AppAction::RestoreSessionSucceeded(SessionInfo {
+                    homeserver: "https://test.test".to_owned(),
+                    user_id: "@a:test".to_owned(),
+                    device_id: "DEV".to_owned(),
+                }),
+                AppAction::CurrentDeviceTrustChanged(
+                    koushi_state::CurrentDeviceTrustState::Verified,
+                ),
+            ])
             .await;
         loop {
             if matches!(conn.snapshot().session, SessionState::Ready(_)) {
@@ -18788,11 +18800,17 @@ mod tests {
         let mut conn = runtime.attach();
 
         runtime
-            .inject_actions(vec![AppAction::RestoreSessionSucceeded(SessionInfo {
-                homeserver: "https://test.test".to_owned(),
-                user_id: "@a:test".to_owned(),
-                device_id: "DEV".to_owned(),
-            })])
+            .inject_actions(vec![
+                AppAction::RestoreSessionRequested,
+                AppAction::RestoreSessionSucceeded(SessionInfo {
+                    homeserver: "https://test.test".to_owned(),
+                    user_id: "@a:test".to_owned(),
+                    device_id: "DEV".to_owned(),
+                }),
+                AppAction::CurrentDeviceTrustChanged(
+                    koushi_state::CurrentDeviceTrustState::Verified,
+                ),
+            ])
             .await;
         loop {
             if matches!(conn.snapshot().session, SessionState::Ready(_)) {
@@ -18838,11 +18856,17 @@ mod tests {
         let mut conn = runtime.attach();
 
         runtime
-            .inject_actions(vec![AppAction::RestoreSessionSucceeded(SessionInfo {
-                homeserver: "https://test.test".to_owned(),
-                user_id: "@a:test".to_owned(),
-                device_id: "DEV".to_owned(),
-            })])
+            .inject_actions(vec![
+                AppAction::RestoreSessionRequested,
+                AppAction::RestoreSessionSucceeded(SessionInfo {
+                    homeserver: "https://test.test".to_owned(),
+                    user_id: "@a:test".to_owned(),
+                    device_id: "DEV".to_owned(),
+                }),
+                AppAction::CurrentDeviceTrustChanged(
+                    koushi_state::CurrentDeviceTrustState::Verified,
+                ),
+            ])
             .await;
         loop {
             if matches!(conn.snapshot().session, SessionState::Ready(_)) {
