@@ -80,6 +80,8 @@ impl CoreCommand {
                 | AppCommand::SelectRoomListFilter { request_id, .. },
             ) => *request_id,
             Self::Account(command) => match command {
+                #[cfg(feature = "qa-bin")]
+                AccountCommand::QaSetLocalDeviceBlacklisted { request_id, .. } => *request_id,
                 AccountCommand::LoginPassword { request_id, .. }
                 | AccountCommand::DiscoverLogin { request_id, .. }
                 | AccountCommand::StartOidcLogin { request_id, .. }
@@ -1011,6 +1013,12 @@ pub enum AccountCommand {
         version: Option<String>,
         request: RecoveryRequest,
     },
+    #[cfg(feature = "qa-bin")]
+    QaSetLocalDeviceBlacklisted {
+        request_id: RequestId,
+        target: VerificationTarget,
+        acknowledged: tokio::sync::oneshot::Sender<Result<(), ()>>,
+    },
     ResetIdentity {
         request_id: RequestId,
     },
@@ -1354,6 +1362,12 @@ impl fmt::Debug for AccountCommand {
                 .field("request_id", request_id)
                 .field("version", &version.as_ref().map(|_| "BackupVersion(..)"))
                 .field("request", request)
+                .finish(),
+            #[cfg(feature = "qa-bin")]
+            Self::QaSetLocalDeviceBlacklisted { request_id, .. } => formatter
+                .debug_struct("QaSetLocalDeviceBlacklisted")
+                .field("request_id", request_id)
+                .field("target", &"<redacted>")
                 .finish(),
             Self::ResetIdentity { request_id } => formatter
                 .debug_struct("ResetIdentity")

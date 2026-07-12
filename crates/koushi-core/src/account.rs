@@ -2405,6 +2405,32 @@ impl AccountActor {
                 self.handle_restore_key_backup(request_id, version, request)
                     .await;
             }
+            #[cfg(feature = "qa-bin")]
+            AccountCommand::QaSetLocalDeviceBlacklisted {
+                target,
+                acknowledged,
+                ..
+            } => {
+                let result = async {
+                    let session = self.session.as_ref().ok_or(())?;
+                    let user_id =
+                        matrix_sdk::ruma::UserId::parse(target.user_id).map_err(|_| ())?;
+                    let device_id = matrix_sdk::ruma::OwnedDeviceId::from(target.device_id);
+                    let device = session
+                        .client()
+                        .encryption()
+                        .get_device(&user_id, &device_id)
+                        .await
+                        .map_err(|_| ())?
+                        .ok_or(())?;
+                    device
+                        .set_local_trust(matrix_sdk_base::crypto::LocalTrust::BlackListed)
+                        .await
+                        .map_err(|_| ())
+                }
+                .await;
+                let _ = acknowledged.send(result);
+            }
             AccountCommand::ResetIdentity { request_id } => {
                 self.handle_reset_identity(request_id).await;
             }

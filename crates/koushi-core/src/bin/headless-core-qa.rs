@@ -166,6 +166,7 @@ enum QaScenario {
     E2eeTrust,
     GateRestore,
     GateNegative,
+    GateNoProof,
     InvitesDm,
     RoomSpace,
     Directory,
@@ -197,6 +198,7 @@ enum QaStage {
     E2eeTrust,
     GateRestore,
     GateNegative,
+    GateNoProof,
     InvitesDm,
     RoomSpace,
     Directory,
@@ -313,6 +315,7 @@ impl QaScenario {
             "e2ee_trust" => Ok(Self::E2eeTrust),
             "gate_restore" => Ok(Self::GateRestore),
             "gate_negative" => Ok(Self::GateNegative),
+            "gate_no_proof" => Ok(Self::GateNoProof),
             "invites_dm" => Ok(Self::InvitesDm),
             "room_space" => Ok(Self::RoomSpace),
             "directory" => Ok(Self::Directory),
@@ -366,6 +369,7 @@ impl QaScenario {
                 stage,
                 QaStage::Safety | QaStage::LoginSync | QaStage::GateNegative
             ),
+            Self::GateNoProof => matches!(stage, QaStage::Safety | QaStage::GateNoProof),
             Self::InvitesDm => matches!(
                 stage,
                 QaStage::Safety | QaStage::LoginSync | QaStage::InvitesDm
@@ -557,6 +561,10 @@ fn tokens_for_stage(stage: QaStage) -> &'static [&'static str] {
             "gate_recovery_cancel_retry_ready=ok",
             "gate_trust_loss_locked=ok",
             "gate_trust_loss_commands_blocked=ok",
+        ],
+        QaStage::GateNoProof => &[
+            "gate_no_proof_rejected=ok",
+            "gate_no_proof_restart_signed_out=ok",
         ],
         QaStage::InvitesDm => &[
             "invite_recv=ok",
@@ -752,6 +760,7 @@ fn stages_for_scenario(scenario: QaScenario) -> Vec<QaStage> {
         QaScenario::GateNegative => {
             vec![QaStage::Safety, QaStage::LoginSync, QaStage::GateNegative]
         }
+        QaScenario::GateNoProof => vec![QaStage::Safety, QaStage::GateNoProof],
         QaScenario::InvitesDm => {
             vec![QaStage::Safety, QaStage::LoginSync, QaStage::InvitesDm]
         }
@@ -938,7 +947,8 @@ fn final_tokens_for_scenario(scenario: QaScenario) -> Vec<&'static str> {
         QaScenario::TimelineReconnect
         | QaScenario::CacheRestore
         | QaScenario::GateRestore
-        | QaScenario::GateNegative => stages_for_scenario(scenario)
+        | QaScenario::GateNegative
+        | QaScenario::GateNoProof => stages_for_scenario(scenario)
             .into_iter()
             .flat_map(|stage| tokens_for_stage(stage).iter().copied())
             .collect(),
@@ -1015,6 +1025,101 @@ async fn run_gate_restore_stage(
     tokio::time::timeout(EVENT_TIMEOUT, reopened.shutdown())
         .await
         .map_err(|_| "gate restore reopened shutdown timed out".to_owned())?;
+    Ok(())
+}
+
+async fn run_gate_no_proof_stage(config: &QaConfig) -> Result<(), String> {
+    let raw = koushi_sdk::login_with_password(&koushi_state::LoginRequest {
+        homeserver: config.homeserver.clone(),
+        username: config.user_a.clone(),
+        password: AuthSecret::new(config.password_a.clone()),
+        device_display_name: Some("Koushi No Proof Fixture".to_owned()),
+    })
+    .await
+    .map_err(|_| "no-proof fixture login failed".to_owned())?;
+    koushi_sdk::sync_once(&raw)
+        .await
+        .map_err(|_| "no-proof fixture sync failed".to_owned())?;
+    koushi_sdk::bootstrap_cross_signing(&raw, Some(&AuthSecret::new(config.password_a.clone())))
+        .await
+        .map_err(|_| "no-proof cross-signing bootstrap failed".to_owned())?;
+    let device_ids = vec![raw.info.device_id.clone()];
+    let uiaa_session = match koushi_sdk::delete_devices(&raw, &device_ids, None, None).await {
+        Err(koushi_sdk::DeleteDevicesError::UiaaChallenge { session }) => session,
+        Ok(()) => None,
+        Err(_) => return Err("no-proof initial device delete failed".to_owned()),
+    };
+    if uiaa_session.is_some() {
+        koushi_sdk::delete_devices(
+            &raw,
+            &device_ids,
+            Some(&IdentityResetAuthRequest::UiaaPassword {
+                password: AuthSecret::new(config.password_a.clone()),
+            }),
+            uiaa_session.as_deref(),
+        )
+        .await
+        .map_err(|_| "no-proof authenticated device delete failed".to_owned())?;
+    }
+    let _ = koushi_sdk::close_session_stores(&raw).await;
+    drop(raw);
+
+    let data_dir = qa_data_dir("gate-no-proof");
+    let runtime = CoreRuntime::start_with_data_dir(data_dir.clone());
+    let mut conn = runtime.attach();
+    let login_id = conn.next_request_id();
+    conn.command(CoreCommand::Account(AccountCommand::LoginPassword {
+        request_id: login_id,
+        request: koushi_state::LoginRequest {
+            homeserver: config.homeserver.clone(),
+            username: config.user_a.clone(),
+            password: AuthSecret::new(config.password_a.clone()),
+            device_display_name: Some("Koushi No Proof Core".to_owned()),
+        },
+    }))
+    .await
+    .map_err(|_| "no-proof Core login submit failed".to_owned())?;
+    let deadline = tokio::time::Instant::now() + E2EE_EVENT_TIMEOUT;
+    let mut saw_rejecting = false;
+    loop {
+        saw_rejecting |= matches!(conn.snapshot().session, SessionState::Rejecting { .. });
+        if matches!(conn.snapshot().session, SessionState::SignedOut) && saw_rejecting {
+            break;
+        }
+        tokio::time::timeout_at(deadline, conn.recv_event())
+            .await
+            .map_err(|_| "no-proof rejection timed out".to_owned())?
+            .map_err(|_| "no-proof event stream closed".to_owned())?;
+    }
+    println!("gate_no_proof_rejected=ok");
+    drop(conn);
+    runtime.shutdown().await;
+
+    let reopened = CoreRuntime::start_with_data_dir(data_dir);
+    let mut reopened_conn = reopened.attach();
+    let restore_id = reopened_conn.next_request_id();
+    reopened_conn
+        .command(CoreCommand::Account(AccountCommand::RestoreLastSession {
+            request_id: restore_id,
+        }))
+        .await
+        .map_err(|_| "no-proof restart restore submit failed".to_owned())?;
+    let failure =
+        wait_for_operation_failed(&mut reopened_conn, restore_id, "no-proof restart restore")
+            .await?;
+    if failure != CoreFailure::SessionNotFound {
+        return Err("no-proof restart did not remain SignedOut".to_owned());
+    }
+    let signed_out_deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    while !matches!(reopened_conn.snapshot().session, SessionState::SignedOut) {
+        tokio::time::timeout_at(signed_out_deadline, reopened_conn.recv_event())
+            .await
+            .map_err(|_| "no-proof restart SignedOut projection timed out".to_owned())?
+            .map_err(|_| "no-proof restart event stream closed".to_owned())?;
+    }
+    println!("gate_no_proof_restart_signed_out=ok");
+    drop(reopened_conn);
+    reopened.shutdown().await;
     Ok(())
 }
 
@@ -4120,6 +4225,11 @@ async fn run_async(config: QaConfig, scenario: QaScenario) -> Result<String, Str
     if scenario == QaScenario::TimelineReconnect {
         println!("safety=ok");
         run_timeline_reconnect_scenario(&config).await?;
+        return Ok(scenario_report(&config.server_kind, scenario));
+    }
+    if scenario == QaScenario::GateNoProof {
+        println!("safety=ok");
+        run_gate_no_proof_stage(&config).await?;
         return Ok(scenario_report(&config.server_kind, scenario));
     }
 
@@ -9082,7 +9192,8 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
         }))
         .await
         .map_err(|error| format!("e2ee unverified peer login submit: {error}"))?;
-    wait_for_existing_identity_gate(&mut conn_b3, "e2ee unverified peer gate").await?;
+    let session_b3 =
+        wait_for_existing_identity_gate(&mut conn_b3, "e2ee unverified peer gate").await?;
     best_effort_sync_once_for_qa(conn_a, "e2ee discover unverified peer device").await?;
 
     if env_flag_enabled(ENV_E2EE_PAUSE_SYNC_BEFORE_MULTI_DEVICE_SEND)? {
@@ -9120,8 +9231,6 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
     )
     .await?;
     println!("e2ee_unverified_peer_send_nonblocking=ok");
-    drop(conn_b3);
-    runtime_b3.shutdown().await;
 
     wait_for_item_with_body_or_decryption_failure_with_sync(
         conn_a2,
@@ -9138,8 +9247,80 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
     )
     .await?;
 
-    verify_blocked_device_withheld_for_qa(config, &room_id).await?;
+    let (acknowledged, ack) = tokio::sync::oneshot::channel();
+    let blacklist_id = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Account(
+            AccountCommand::QaSetLocalDeviceBlacklisted {
+                request_id: blacklist_id,
+                target: VerificationTarget {
+                    user_id: session_b3.user_id.clone(),
+                    device_id: session_b3.device_id.clone(),
+                },
+                acknowledged,
+            },
+        ))
+        .await
+        .map_err(|_| "blocked QA blacklist submit failed".to_owned())?;
+    tokio::time::timeout(EVENT_TIMEOUT, ack)
+        .await
+        .map_err(|_| "blocked QA blacklist ack timeout".to_owned())?
+        .map_err(|_| "blocked QA blacklist ack closed".to_owned())?
+        .map_err(|_| "blocked QA blacklist failed".to_owned())?;
+    let blocked_body = "Koushi blocked-device withheld probe";
+    let blocked_txn = "qa-e2ee-blocked-device-withheld".to_owned();
+    let blocked_send = conn_a.next_request_id();
+    conn_a
+        .command(CoreCommand::Timeline(TimelineCommand::SendText {
+            request_id: blocked_send,
+            key: key_a.clone(),
+            transaction_id: blocked_txn.clone(),
+            body: blocked_body.to_owned(),
+            mentions: MentionIntent::default(),
+        }))
+        .await
+        .map_err(|_| "blocked QA Core send submit failed".to_owned())?;
+    wait_for_send_flow_completion_with_timeout(
+        conn_a,
+        blocked_send,
+        &key_a,
+        &blocked_txn,
+        blocked_body,
+        "blocked QA Core send",
+        E2EE_EVENT_TIMEOUT,
+    )
+    .await?;
+    wait_for_item_with_body_or_decryption_failure_with_sync(
+        &mut conn_b,
+        &key_b,
+        blocked_body,
+        "blocked QA nonblocked receive",
+    )
+    .await?;
+    let session_b = authenticated_session_info(&mut conn_b, "blocked QA B session")?;
+    verify_provisional_second_device_for_qa(
+        &mut conn_b,
+        &mut conn_b3,
+        &session_b,
+        &session_b3,
+        "blocked QA promote B3",
+        SasQaOutcome::Success,
+    )
+    .await?;
+    let account_key_b3 = wait_for_logged_in(&mut conn_b3, login_b3, "blocked QA B3 login").await?;
+    wait_for_ready_snapshot(&mut conn_b3, "blocked QA B3 Ready").await?;
+    start_sync_for_qa(&mut conn_b3, "blocked QA B3 sync").await?;
+    wait_for_room_in_room_list(&mut conn_b3, &room_id, "blocked QA B3 room").await?;
+    let key_b3 = TimelineKey::room(account_key_b3.clone(), room_id.clone());
+    let initial_b3 =
+        subscribe_timeline_for_qa(&mut conn_b3, &key_b3, "blocked QA B3 timeline").await?;
+    if !initial_b3.iter().any(timeline_item_is_decryption_failure)
+        || find_timeline_item_with_body(&initial_b3, blocked_body).is_some()
+    {
+        return Err("blocked QA B3 did not retain withheld/undecryptable event".to_owned());
+    }
     println!("e2ee_blocked_device_withheld=ok");
+    cleanup_logged_in_runtime(conn_b3, runtime_b3, account_key_b3, "e2ee cleanup B3").await?;
 
     if let Some((runtime_b2, mut conn_b2, account_key_b2, key_b2)) = maybe_recipient_second_device {
         wait_for_item_with_body_or_decryption_failure_with_sync(
@@ -9154,107 +9335,6 @@ async fn verify_multi_user_multi_device_room_key_delivery_for_qa(
     }
 
     cleanup_logged_in_runtime(conn_b, runtime_b, account_key_b, "e2ee cleanup B").await?;
-    Ok(())
-}
-
-async fn verify_blocked_device_withheld_for_qa(
-    config: &QaConfig,
-    room_id: &str,
-) -> Result<(), String> {
-    async fn raw_login(
-        config: &QaConfig,
-        username: &str,
-        password: &str,
-        label: &str,
-    ) -> Result<koushi_sdk::MatrixClientSession, String> {
-        let session = koushi_sdk::login_with_password(&koushi_state::LoginRequest {
-            homeserver: config.homeserver.clone(),
-            username: username.to_owned(),
-            password: AuthSecret::new(password.to_owned()),
-            device_display_name: Some(label.to_owned()),
-        })
-        .await
-        .map_err(|_| format!("{label}: raw login failed"))?;
-        koushi_sdk::sync_once(&session)
-            .await
-            .map_err(|_| format!("{label}: raw sync failed"))?;
-        Ok(session)
-    }
-
-    let good = raw_login(
-        config,
-        &config.user_b,
-        &config.password_b,
-        "Koushi blocked QA good",
-    )
-    .await?;
-    let blocked = raw_login(
-        config,
-        &config.user_b,
-        &config.password_b,
-        "Koushi blocked QA blocked",
-    )
-    .await?;
-    let sender = raw_login(
-        config,
-        &config.user_a,
-        &config.password_a,
-        "Koushi blocked QA sender",
-    )
-    .await?;
-    let user_b =
-        matrix_sdk::ruma::UserId::parse(format!("@{}:{}", config.user_b, config.server_name))
-            .map_err(|_| "blocked QA user id parse failed".to_owned())?;
-    let device = sender
-        .client()
-        .encryption()
-        .get_device(&user_b, blocked.info.device_id.as_str().into())
-        .await
-        .map_err(|_| "blocked QA device query failed".to_owned())?
-        .ok_or_else(|| "blocked QA device missing".to_owned())?;
-    device
-        .set_local_trust(matrix_sdk_base::crypto::LocalTrust::BlackListed)
-        .await
-        .map_err(|_| "blocked QA local blacklist failed".to_owned())?;
-    let parsed_room = matrix_sdk::ruma::RoomId::parse(room_id)
-        .map_err(|_| "blocked QA room id parse failed".to_owned())?;
-    let room = sender
-        .client()
-        .get_room(&parsed_room)
-        .ok_or_else(|| "blocked QA sender room missing".to_owned())?;
-    let response = room
-        .send(
-            matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(
-                "Koushi blocked-device withheld probe",
-            ),
-        )
-        .await
-        .map_err(|_| "blocked QA encrypted send failed".to_owned())?;
-    koushi_sdk::sync_once(&good)
-        .await
-        .map_err(|_| "blocked QA good sync failed".to_owned())?;
-    koushi_sdk::sync_once(&blocked)
-        .await
-        .map_err(|_| "blocked QA blocked sync failed".to_owned())?;
-    let good_room = good
-        .client()
-        .get_room(&parsed_room)
-        .ok_or_else(|| "blocked QA good room missing".to_owned())?;
-    let blocked_room = blocked
-        .client()
-        .get_room(&parsed_room)
-        .ok_or_else(|| "blocked QA blocked room missing".to_owned())?;
-    let good_event = good_room
-        .event(&response.response.event_id, None)
-        .await
-        .map_err(|_| "blocked QA good event fetch failed".to_owned())?;
-    let blocked_event = blocked_room
-        .event(&response.response.event_id, None)
-        .await
-        .map_err(|_| "blocked QA blocked event fetch failed".to_owned())?;
-    if good_event.encryption_info().is_none() || blocked_event.encryption_info().is_some() {
-        return Err("blocked QA key withholding contract failed".to_owned());
-    }
     Ok(())
 }
 

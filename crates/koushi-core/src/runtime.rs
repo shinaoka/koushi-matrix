@@ -3459,6 +3459,8 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         AccountCommand::RestoreSession { .. } | AccountCommand::RestoreLastSession { .. } => {
             Some(AppAction::RestoreSessionRequested)
         }
+        #[cfg(feature = "qa-bin")]
+        AccountCommand::QaSetLocalDeviceBlacklisted { .. } => None,
         AccountCommand::CompleteOidcLogin { .. }
         | AccountCommand::QuerySavedSessions { .. }
         | AccountCommand::SetPresence { .. }
