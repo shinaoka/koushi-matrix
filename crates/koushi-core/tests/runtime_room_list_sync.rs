@@ -12,16 +12,13 @@ async fn select_room_list_filter_command_updates_projection_through_runtime() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
-            AppAction::RoomListUpdated {
-                spaces: vec![],
-                rooms: vec![
-                    unread_room_summary("!room:example.test", 5),
-                    unread_room_summary("!dm:example.test", 0),
-                ],
-            },
-        ])
+        .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![
+                unread_room_summary("!room:example.test", 5),
+                unread_room_summary("!dm:example.test", 0),
+            ],
+        },])
         .await;
     wait_for_state(&mut conn, |state| {
         matches!(state.session, SessionState::Ready(_)) && state.rooms.len() == 2
@@ -59,13 +56,10 @@ async fn mark_as_read_and_unread_success_actions_update_room_list_projection() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
-            AppAction::RoomListUpdated {
-                spaces: vec![],
-                rooms: vec![unread_room_summary("!room:example.test", 3)],
-            },
-        ])
+        .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![unread_room_summary("!room:example.test", 3)],
+        },])
         .await;
     wait_for_state(&mut conn, |state| {
         matches!(state.session, SessionState::Ready(_)) && state.rooms.len() == 1

@@ -144,6 +144,11 @@ async fn disabled_badges_remain_rust_projected_to_zero_after_runtime_restart() {
     let restarted = CoreRuntime::start_with_data_dir(data_dir.path().to_path_buf());
     let mut connection = restarted.attach();
     assert!(!connection.snapshot().settings.values.notifications.badges);
+    restarted.inject_actions(restore_ready_actions()).await;
+    wait_for_state(&mut connection, |state| {
+        matches!(state.session, koushi_state::SessionState::Ready(_))
+    })
+    .await;
 
     let request_id = connection.next_request_id();
     connection
@@ -171,20 +176,10 @@ async fn disabled_badges_remain_rust_projected_to_zero_after_runtime_restart() {
         .await
         .expect("project attention after restart");
 
-    let snapshot = executor::timeout(Duration::from_secs(1), async {
-        loop {
-            match connection.recv_event().await.expect("event") {
-                CoreEvent::StateChanged(snapshot)
-                    if snapshot.native_attention.summary.unread_count == 5 =>
-                {
-                    return snapshot;
-                }
-                _ => continue,
-            }
-        }
+    let snapshot = wait_for_state(&mut connection, |state| {
+        state.native_attention.summary.unread_count == 5
     })
-    .await
-    .expect("attention should project after restored settings load");
+    .await;
 
     assert!(!snapshot.settings.values.notifications.badges);
     assert_eq!(snapshot.native_attention.summary.badge_count, 0);

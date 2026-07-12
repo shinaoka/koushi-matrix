@@ -59,13 +59,7 @@ async fn password_command_projects_authentication_before_account_actor_completio
 async fn active_session_rejects_a_new_password_login_before_account_routing() {
     let runtime = CoreRuntime::start();
     let mut connection = runtime.attach();
-    runtime
-        .inject_actions(vec![
-            AppAction::AppStarted,
-            AppAction::RestoreSessionSucceeded(session_info()),
-            AppAction::CurrentDeviceTrustChanged(koushi_state::CurrentDeviceTrustState::Verified),
-        ])
-        .await;
+    runtime.inject_actions(restore_ready_actions()).await;
     wait_for_state(&mut connection, |state| {
         matches!(state.session, SessionState::Ready(_))
     })
@@ -148,13 +142,7 @@ async fn ready_session_routes_past_appactor_session_gate() {
     // short-circuit it with a different failure.
     let runtime = CoreRuntime::start();
     let mut connection = runtime.attach();
-    runtime
-        .inject_actions(vec![
-            AppAction::AppStarted,
-            AppAction::RestoreSessionSucceeded(session_info()),
-            AppAction::CurrentDeviceTrustChanged(koushi_state::CurrentDeviceTrustState::Verified),
-        ])
-        .await;
+    runtime.inject_actions(restore_ready_actions()).await;
     // Wait for the Ready snapshot before submitting.
     loop {
         if matches!(connection.snapshot().session, SessionState::Ready(_)) {
@@ -204,13 +192,7 @@ async fn actor_projected_session_lock_executes_stop_sync_effect() {
     let runtime = CoreRuntime::start();
     let mut connection = runtime.attach();
 
-    runtime
-        .inject_actions(vec![
-            AppAction::AppStarted,
-            AppAction::RestoreSessionSucceeded(session_info()),
-            AppAction::CurrentDeviceTrustChanged(koushi_state::CurrentDeviceTrustState::Verified),
-        ])
-        .await;
+    runtime.inject_actions(restore_ready_actions()).await;
     wait_for_state(&mut connection, |state| {
         matches!(state.session, SessionState::Ready(_))
     })

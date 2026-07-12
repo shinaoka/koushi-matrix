@@ -4,19 +4,17 @@ use koushi_core::command::{CoreCommand, SearchCommand, SearchScope};
 use koushi_core::event::CoreEvent;
 use koushi_core::executor;
 use koushi_core::runtime::CoreRuntime;
-use koushi_state::{AppAction, SearchState, SessionState};
+use koushi_state::{SearchState, SessionState};
 
 mod support;
-use support::session_info;
+use support::restore_ready_actions;
 
 #[tokio::test]
 async fn search_query_projects_search_state_before_routing() {
     let runtime = CoreRuntime::start();
     let mut connection = runtime.attach();
 
-    runtime
-        .inject_actions(vec![AppAction::RestoreSessionSucceeded(session_info())])
-        .await;
+    runtime.inject_actions(restore_ready_actions()).await;
 
     loop {
         if matches!(connection.snapshot().session, SessionState::Ready(_)) {

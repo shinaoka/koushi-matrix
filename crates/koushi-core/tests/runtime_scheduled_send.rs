@@ -17,8 +17,7 @@ async fn app_command_schedules_cancel_and_reschedules_local_fallback_send() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![room_summary("!room:example.test")],
@@ -128,8 +127,7 @@ async fn local_fallback_scheduled_send_is_retained_when_delivery_cannot_start() 
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![room_summary("!room:example.test")],
@@ -178,8 +176,7 @@ async fn server_scheduled_send_items_are_not_dispatched_by_local_fallback_timer(
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![room_summary("!room:example.test")],
@@ -445,8 +442,7 @@ async fn cancelled_local_fallback_scheduled_send_does_not_resurrect_on_restart()
 
 async fn inject_ready_local_fallback_room(runtime: &CoreRuntime, room_id: &str) {
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![room_summary(room_id)],

@@ -6,7 +6,7 @@ use koushi_core::command::{AccountCommand, CoreCommand};
 use koushi_core::event::CoreEvent;
 use koushi_core::executor;
 use koushi_core::runtime::CoreRuntime;
-use koushi_state::{AppAction, CrossSigningStatus, SessionState};
+use koushi_state::{CrossSigningStatus, SessionState};
 
 mod support;
 use support::*;
@@ -16,9 +16,7 @@ async fn e2ee_trust_account_command_projects_pending_state_before_routing() {
     let runtime = CoreRuntime::start();
     let mut connection = runtime.attach();
 
-    runtime
-        .inject_actions(vec![AppAction::RestoreSessionSucceeded(session_info())])
-        .await;
+    runtime.inject_actions(restore_ready_actions()).await;
 
     loop {
         if matches!(connection.snapshot().session, SessionState::Ready(_)) {

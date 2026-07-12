@@ -13,8 +13,7 @@ async fn app_command_sets_and_clears_reply_target() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![room_summary("!room:example.test")],
@@ -74,8 +73,7 @@ async fn app_command_sets_open_thread_composer_draft() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![room_summary("!room:example.test")],
@@ -140,8 +138,7 @@ async fn app_command_sets_selected_room_composer_draft() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![room_summary("!room:example.test")],
@@ -188,8 +185,7 @@ async fn composer_drafts_persist_after_debounce_and_load_on_restart() {
         );
         let mut conn = runtime.attach();
         runtime
-            .inject_actions(vec![
-                AppAction::RestoreSessionSucceeded(session_info()),
+            .inject_actions(restore_ready_actions![
                 AppAction::RoomListUpdated {
                     spaces: vec![],
                     rooms: vec![room_summary("!room:example.test")],
@@ -229,8 +225,7 @@ async fn composer_drafts_persist_after_debounce_and_load_on_restart() {
     );
     let mut conn = restarted.attach();
     restarted
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![room_summary("!room:example.test")],
@@ -263,8 +258,7 @@ async fn cleared_composer_drafts_do_not_resurrect_on_restart() {
         );
         let mut conn = runtime.attach();
         runtime
-            .inject_actions(vec![
-                AppAction::RestoreSessionSucceeded(session_info()),
+            .inject_actions(restore_ready_actions![
                 AppAction::RoomListUpdated {
                     spaces: vec![],
                     rooms: vec![room_summary("!room:example.test")],
@@ -313,8 +307,7 @@ async fn cleared_composer_drafts_do_not_resurrect_on_restart() {
     );
     let mut conn = restarted.attach();
     restarted
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![room_summary("!room:example.test")],
@@ -345,8 +338,7 @@ async fn send_completion_clears_reply_mode_through_runtime() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![room_summary("!room:example.test")],

@@ -13,16 +13,14 @@ use koushi_state::{
 };
 
 mod support;
-use support::{session_info, wait_for_state};
+use support::{restore_ready_actions, wait_for_state};
 
 #[tokio::test]
 async fn soft_logout_reauth_command_projects_authenticating_state() {
     let runtime = CoreRuntime::start();
     let mut connection = runtime.attach();
 
-    runtime
-        .inject_actions(vec![AppAction::RestoreSessionSucceeded(session_info())])
-        .await;
+    runtime.inject_actions(restore_ready_actions()).await;
     wait_for_state(&mut connection, |state| {
         matches!(state.session, SessionState::Ready(_))
     })
@@ -70,9 +68,7 @@ async fn submit_account_management_uia_command_projects_auth_submitted_state() {
     let runtime = CoreRuntime::start();
     let mut connection = runtime.attach();
 
-    runtime
-        .inject_actions(vec![AppAction::RestoreSessionSucceeded(session_info())])
-        .await;
+    runtime.inject_actions(restore_ready_actions()).await;
     wait_for_state(&mut connection, |state| {
         matches!(state.session, SessionState::Ready(_))
     })

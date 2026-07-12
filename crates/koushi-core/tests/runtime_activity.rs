@@ -42,8 +42,7 @@ async fn app_command_opens_activity_from_observed_rows_and_mark_read_settles() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(support::session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![
@@ -168,8 +167,7 @@ async fn activity_context_label_reflects_dm_or_space_room() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(support::session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![SpaceSummary {
                     space_id: "!space:example.test".to_owned(),
@@ -242,8 +240,7 @@ async fn activity_recent_preserves_observed_sender_avatar_without_profile_cache(
     });
 
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(support::session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![room_summary("!room:example.test")],
@@ -297,13 +294,10 @@ async fn activity_recent_includes_room_list_latest_event_for_unopened_read_dm() 
     });
 
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(support::session_info()),
-            AppAction::RoomListUpdated {
-                spaces: vec![],
-                rooms: vec![dm],
-            },
-        ])
+        .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![dm],
+        },])
         .await;
     wait_for_state(&mut conn, |state| {
         matches!(state.session, SessionState::Ready(_)) && state.rooms.len() == 1
@@ -348,8 +342,7 @@ async fn activity_room_mark_read_suppresses_unread_room_entry_only_for_cleared_r
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(support::session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![
@@ -466,8 +459,7 @@ async fn activity_unread_uses_room_summary_rows_and_mark_all_does_not_emit_synth
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(support::session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![
@@ -619,8 +611,7 @@ async fn activity_unread_removes_rooms_when_notification_mode_is_mute() {
     let runtime = CoreRuntime::start();
     let mut conn = runtime.attach();
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(support::session_info()),
+        .inject_actions(restore_ready_actions![
             AppAction::RoomListUpdated {
                 spaces: vec![],
                 rooms: vec![

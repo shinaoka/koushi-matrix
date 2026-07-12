@@ -167,13 +167,10 @@ async fn select_room_present_emits_committed() {
     let room_b = "!room-b:example.test";
 
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
-            AppAction::RoomListUpdated {
-                spaces: vec![],
-                rooms: vec![room_summary(room_a), room_summary(room_b)],
-            },
-        ])
+        .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![room_summary(room_a), room_summary(room_b)],
+        },])
         .await;
 
     // Wait for Ready and an auto-selected room (so room_b is NOT already active).
@@ -243,17 +240,14 @@ async fn select_room_commits_within_one_second_during_background_action_flood() 
     let spare_room = "!spare-room:example.test";
 
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
-            AppAction::RoomListUpdated {
-                spaces: vec![],
-                rooms: vec![
-                    room_summary(primary_room),
-                    room_summary(target_room),
-                    room_summary(spare_room),
-                ],
-            },
-        ])
+        .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![
+                room_summary(primary_room),
+                room_summary(target_room),
+                room_summary(spare_room),
+            ],
+        },])
         .await;
 
     let ready = wait_for_state(&mut conn, |state| {
@@ -324,13 +318,10 @@ async fn select_room_missing_from_state_emits_failed_noop_room_not_in_state() {
     let absent_room = "!absent-room:example.test";
 
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
-            AppAction::RoomListUpdated {
-                spaces: vec![],
-                rooms: vec![room_summary(known_room)],
-            },
-        ])
+        .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![room_summary(known_room)],
+        },])
         .await;
 
     // Wait for a Ready session so `session_ready` will be true.
@@ -377,13 +368,10 @@ async fn two_concurrent_select_room_for_same_room_both_receive_terminal_outcome(
     let absent_room = "!absent:example.test";
 
     runtime
-        .inject_actions(vec![
-            AppAction::RestoreSessionSucceeded(session_info()),
-            AppAction::RoomListUpdated {
-                spaces: vec![],
-                rooms: vec![room_summary(known_room)],
-            },
-        ])
+        .inject_actions(restore_ready_actions![AppAction::RoomListUpdated {
+            spaces: vec![],
+            rooms: vec![room_summary(known_room)],
+        },])
         .await;
 
     wait_for_state(&mut conn, |state| {
