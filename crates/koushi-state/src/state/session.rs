@@ -55,6 +55,13 @@ impl LoginAttemptId {
             sequence,
         }
     }
+
+    pub fn connection_id(self) -> u64 {
+        self.connection_id
+    }
+    pub fn sequence(self) -> u64 {
+        self.sequence
+    }
 }
 
 impl fmt::Debug for LoginAttemptId {

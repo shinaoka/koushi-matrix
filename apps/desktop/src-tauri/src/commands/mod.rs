@@ -279,8 +279,11 @@ fn qa_session_label(session: &koushi_state::SessionState) -> &'static str {
         SessionState::Restoring => "restoring",
         SessionState::SwitchingAccount { .. } => "switchingAccount",
         SessionState::Authenticating { .. } => "authenticating",
-        SessionState::NeedsRecovery { .. } => "needsRecovery",
-        SessionState::Recovering { .. } => "recovering",
+        SessionState::Provisional { .. } => "provisional",
+        SessionState::AwaitingVerification { .. } => "awaitingVerification",
+        SessionState::Verifying { .. } => "verifying",
+        SessionState::AwaitingBootstrapConfirmation { .. } => "awaitingBootstrapConfirmation",
+        SessionState::Rejecting { .. } => "rejecting",
         SessionState::Ready(_) => "ready",
         SessionState::Locked(_) => "locked",
         SessionState::LoggingOut => "loggingOut",
@@ -425,12 +428,7 @@ fn snapshot_has_auth_discovery_answer(snapshot: &koushi_state::AppState) -> bool
 }
 
 fn snapshot_has_authenticated_session(snapshot: &koushi_state::AppState) -> bool {
-    matches!(
-        snapshot.session,
-        koushi_state::SessionState::Ready(_)
-            | koushi_state::SessionState::NeedsRecovery { .. }
-            | koushi_state::SessionState::Recovering { .. }
-    )
+    matches!(snapshot.session, koushi_state::SessionState::Ready(_))
 }
 
 fn snapshot_has_focused_context(snapshot: &koushi_state::AppState, room_id: &str) -> bool {
@@ -1384,6 +1382,40 @@ pub(crate) fn build_accept_verification_command(
     flow_id: u64,
 ) -> CoreCommand {
     CoreCommand::Account(AccountCommand::AcceptVerification {
+        request_id,
+        flow_id,
+    })
+}
+
+pub(crate) fn build_start_own_user_sas_command(request_id: RequestId, flow_id: u64) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::StartOwnUserSas {
+        request_id,
+        flow_id,
+    })
+}
+
+pub(crate) fn build_start_session_bootstrap_command(
+    request_id: RequestId,
+    flow_id: u64,
+    passphrase: Option<AuthSecret>,
+    recovery_key_destination_path: String,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::StartSessionBootstrap {
+        request_id,
+        flow_id,
+        auth: None,
+        request: SecureBackupSetupRequest {
+            passphrase,
+            recovery_key_destination_path: Some(PathBuf::from(recovery_key_destination_path)),
+        },
+    })
+}
+
+pub(crate) fn build_confirm_session_bootstrap_saved_command(
+    request_id: RequestId,
+    flow_id: u64,
+) -> CoreCommand {
+    CoreCommand::Account(AccountCommand::ConfirmSessionBootstrapSaved {
         request_id,
         flow_id,
     })
@@ -2768,8 +2800,11 @@ async fn account_key_from_snapshot(state: &CoreRuntimeState) -> AccountKey {
     let snapshot = state.connection.lock().await.snapshot();
     match &snapshot.session {
         koushi_state::SessionState::Ready(info)
-        | koushi_state::SessionState::NeedsRecovery { info, .. }
-        | koushi_state::SessionState::Recovering { info, .. }
+        | koushi_state::SessionState::Provisional { info, .. }
+        | koushi_state::SessionState::AwaitingVerification { info, .. }
+        | koushi_state::SessionState::Verifying { info, .. }
+        | koushi_state::SessionState::AwaitingBootstrapConfirmation { info, .. }
+        | koushi_state::SessionState::Rejecting { info, .. }
         | koushi_state::SessionState::Locked(info)
         | koushi_state::SessionState::SwitchingAccount { info } => AccountKey(info.user_id.clone()),
         _ => AccountKey(String::new()),
@@ -2960,7 +2995,7 @@ async fn wait_for_qa_recovery_prompt(
 pub(crate) fn qa_recovery_prompt_is_available(state: &koushi_state::AppState) -> bool {
     matches!(
         state.session,
-        koushi_state::SessionState::NeedsRecovery { .. }
+        koushi_state::SessionState::AwaitingVerification { .. }
     )
 }
 
@@ -3488,13 +3523,17 @@ mod tests {
         let mut state = AppState::default();
         assert!(!qa_recovery_prompt_is_available(&state));
 
-        state.session = SessionState::NeedsRecovery {
+        state.session = SessionState::AwaitingVerification {
             info: SessionInfo {
                 homeserver: "https://matrix.example.org".to_owned(),
                 user_id: "@user:example.org".to_owned(),
                 device_id: "DEVICE".to_owned(),
             },
-            methods: vec![],
+            gate: koushi_state::VerificationGateState {
+                methods: vec![],
+                account_kind: koushi_state::VerificationAccountKind::Unknown,
+                failure: None,
+            },
         };
         assert!(qa_recovery_prompt_is_available(&state));
     }
@@ -6994,7 +7033,7 @@ mod tests {
     }
 
     #[test]
-    fn login_wait_treats_recovery_states_as_authenticated_sessions() {
+    fn login_wait_does_not_treat_verification_gate_as_ready_session() {
         let mut state = AppState::default();
         assert!(!super::snapshot_has_authenticated_session(&state));
 
@@ -7004,17 +7043,27 @@ mod tests {
             device_id: "DEVICE".to_owned(),
         };
 
-        state.session = SessionState::NeedsRecovery {
+        state.session = SessionState::AwaitingVerification {
             info: info.clone(),
-            methods: vec![],
+            gate: koushi_state::VerificationGateState {
+                methods: vec![],
+                account_kind: koushi_state::VerificationAccountKind::Unknown,
+                failure: None,
+            },
         };
-        assert!(super::snapshot_has_authenticated_session(&state));
+        assert!(!super::snapshot_has_authenticated_session(&state));
 
-        state.session = SessionState::Recovering {
+        state.session = SessionState::Verifying {
             info,
-            methods: vec![],
+            gate: koushi_state::VerificationGateState {
+                methods: vec![],
+                account_kind: koushi_state::VerificationAccountKind::Unknown,
+                failure: None,
+            },
+            method: koushi_state::VerificationMethod::RecoveryKey,
+            flow_id: 1,
         };
-        assert!(super::snapshot_has_authenticated_session(&state));
+        assert!(!super::snapshot_has_authenticated_session(&state));
     }
 
     #[test]
