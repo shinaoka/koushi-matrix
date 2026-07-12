@@ -238,6 +238,19 @@ pub enum AccountMessage {
         response: oneshot::Sender<(bool, bool, bool, bool)>,
     },
     #[cfg(test)]
+    ConfigureSyntheticVerification {
+        flow_id: u64,
+    },
+    #[cfg(test)]
+    SettleSyntheticVerification {
+        flow_id: u64,
+        terminal: SyntheticVerificationTerminal,
+    },
+    #[cfg(test)]
+    InspectVerificationRuntime {
+        response: oneshot::Sender<(bool, bool, bool, bool, bool, bool, bool)>,
+    },
+    #[cfg(test)]
     ConfigureOidcCompletion {
         start_request_id: RequestId,
         homeserver: String,
@@ -269,6 +282,12 @@ pub enum AccountMessage {
         state: koushi_sdk::MatrixSasState,
     },
     SasVerificationTimedOut {
+        flow_id: u64,
+    },
+    VerificationRequestObserverEnded {
+        flow_id: u64,
+    },
+    SasVerificationObserverEnded {
         flow_id: u64,
     },
     IncomingVerificationRequest {
@@ -415,6 +434,21 @@ enum TrustLifecycleDecision {
     AlreadyReady,
 }
 
+#[derive(Clone, Copy)]
+enum VerificationTerminal {
+    Success,
+    Cancelled(VerificationCancelReason),
+    Failed(TrustOperationFailureKind),
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub enum SyntheticVerificationTerminal {
+    Success,
+    Cancelled(VerificationCancelReason),
+    Failed(TrustOperationFailureKind),
+}
+
 fn trust_lifecycle_decision(
     generation: u64,
     active_generation: u64,
@@ -528,6 +562,8 @@ pub struct AccountActor {
     /// SDK SAS observer task for the active flow.
     sas_verification_observer: Option<VerificationObservation>,
     sas_timeout_task: Option<crate::executor::JoinHandle<()>>,
+    #[cfg(test)]
+    synthetic_verification: Option<(u64, VerificationTarget)>,
     /// SDK incoming verification request observer for the active session.
     incoming_verification_observer: Option<IncomingVerificationObservation>,
     /// SDK session-change observer for auth invalidation / soft logout.
@@ -637,6 +673,8 @@ impl AccountActor {
             verification_request_observer: None,
             sas_verification_observer: None,
             sas_timeout_task: None,
+            #[cfg(test)]
+            synthetic_verification: None,
             incoming_verification_observer: None,
             session_change_observer: None,
             account_hydration_task: None,
@@ -816,6 +854,56 @@ impl AccountActor {
                     ));
                 }
                 #[cfg(test)]
+                AccountMessage::ConfigureSyntheticVerification { flow_id } => {
+                    self.synthetic_verification = Some((
+                        flow_id,
+                        VerificationTarget {
+                            user_id: "@self:example.test".to_owned(),
+                            device_id: "DEVICE".to_owned(),
+                        },
+                    ));
+                    let (request_stop, request_stopped) = oneshot::channel();
+                    self.verification_request_observer = Some(VerificationObservation {
+                        stop_tx: request_stop,
+                        task: executor::spawn(async move {
+                            let _ = request_stopped.await;
+                        }),
+                    });
+                    let (sas_stop, sas_stopped) = oneshot::channel();
+                    self.sas_verification_observer = Some(VerificationObservation {
+                        stop_tx: sas_stop,
+                        task: executor::spawn(async move {
+                            let _ = sas_stopped.await;
+                        }),
+                    });
+                    self.sas_timeout_task = Some(executor::spawn(std::future::pending()));
+                }
+                #[cfg(test)]
+                AccountMessage::SettleSyntheticVerification { flow_id, terminal } => {
+                    let terminal = match terminal {
+                        SyntheticVerificationTerminal::Success => VerificationTerminal::Success,
+                        SyntheticVerificationTerminal::Cancelled(reason) => {
+                            VerificationTerminal::Cancelled(reason)
+                        }
+                        SyntheticVerificationTerminal::Failed(kind) => {
+                            VerificationTerminal::Failed(kind)
+                        }
+                    };
+                    self.settle_verification(flow_id, terminal).await;
+                }
+                #[cfg(test)]
+                AccountMessage::InspectVerificationRuntime { response } => {
+                    let _ = response.send((
+                        self.verification_request.is_some(),
+                        self.sas_verification.is_some(),
+                        self.own_user_verification.is_some(),
+                        self.verification_request_observer.is_some(),
+                        self.sas_verification_observer.is_some(),
+                        self.sas_timeout_task.is_some(),
+                        self.synthetic_verification.is_some(),
+                    ));
+                }
+                #[cfg(test)]
                 AccountMessage::ConfigureOidcCompletion {
                     start_request_id,
                     homeserver,
@@ -863,6 +951,16 @@ impl AccountActor {
                 }
                 AccountMessage::SasVerificationTimedOut { flow_id } => {
                     self.handle_sas_verification_timeout(flow_id).await;
+                }
+                AccountMessage::VerificationRequestObserverEnded { flow_id }
+                | AccountMessage::SasVerificationObserverEnded { flow_id } => {
+                    if self.active_verification_target(flow_id).is_some() {
+                        self.settle_verification(
+                            flow_id,
+                            VerificationTerminal::Failed(TrustOperationFailureKind::Sdk),
+                        )
+                        .await;
+                    }
                 }
                 AccountMessage::IncomingVerificationRequest { target, handle } => {
                     let request_id = self.next_incoming_verification_request_id();
@@ -2417,11 +2515,10 @@ impl AccountActor {
         if !active {
             return;
         }
-        self.cancel_verification_handles().await;
-        self.send_actions(vec![AppAction::VerificationFailed {
-            request_id: flow_id,
-            kind: TrustOperationFailureKind::Timeout,
-        }])
+        self.settle_verification(
+            flow_id,
+            VerificationTerminal::Failed(TrustOperationFailureKind::Timeout),
+        )
         .await;
     }
 
@@ -2445,7 +2542,12 @@ impl AccountActor {
                 tokio::select! {
                     _ = &mut stop_rx => break,
                     state = states.next() => {
-                        let Some(state) = state else { break };
+                        let Some(state) = state else {
+                            let _ = tx.send(AccountMessage::VerificationRequestObserverEnded {
+                                flow_id: request_id.sequence,
+                            }).await;
+                            break;
+                        };
                         let terminal = matches!(state,
                             koushi_sdk::MatrixVerificationRequestState::Done
                             | koushi_sdk::MatrixVerificationRequestState::Cancelled
@@ -3107,6 +3209,11 @@ impl AccountActor {
         flow_id: u64,
         reason: VerificationCancelReason,
     ) {
+        if self.active_verification_target(flow_id).is_some() {
+            self.settle_verification(flow_id, VerificationTerminal::Cancelled(reason))
+                .await;
+            return;
+        }
         enum CancelTarget {
             Sas {
                 target: VerificationTarget,
@@ -3213,7 +3320,12 @@ impl AccountActor {
                 tokio::select! {
                     _ = &mut stop_rx => break,
                     state = states.next() => {
-                        let Some(state) = state else { break };
+                        let Some(state) = state else {
+                            let _ = tx.send(AccountMessage::VerificationRequestObserverEnded {
+                                flow_id: request_id.sequence,
+                            }).await;
+                            break;
+                        };
                         let terminal = matches!(
                             state,
                             koushi_sdk::MatrixVerificationRequestState::Done
@@ -3255,7 +3367,12 @@ impl AccountActor {
                 tokio::select! {
                     _ = &mut stop_rx => break,
                     state = states.next() => {
-                        let Some(state) = state else { break };
+                        let Some(state) = state else {
+                            let _ = tx.send(AccountMessage::SasVerificationObserverEnded {
+                                flow_id: request_id.sequence,
+                            }).await;
+                            break;
+                        };
                         let terminal = matches!(
                             state,
                             koushi_sdk::MatrixSasState::Done
@@ -3485,36 +3602,117 @@ impl AccountActor {
         }
     }
 
-    async fn project_verification_completed(&mut self, request_id: RequestId) {
-        let target = self
-            .sas_verification
+    fn active_verification_target(&self, flow_id: u64) -> Option<VerificationTarget> {
+        self.sas_verification
             .as_ref()
-            .filter(|pending| pending.request_id.sequence == request_id.sequence)
+            .filter(|pending| pending.request_id.sequence == flow_id)
             .map(|pending| pending.target.clone())
             .or_else(|| {
                 self.verification_request
                     .as_ref()
-                    .filter(|pending| pending.request_id.sequence == request_id.sequence)
+                    .filter(|pending| pending.request_id.sequence == flow_id)
                     .map(|pending| pending.target.clone())
-            });
-        let Some(target) = target else {
+            })
+            .or_else(|| {
+                self.own_user_verification
+                    .as_ref()
+                    .and_then(|(active_flow_id, _)| {
+                        (*active_flow_id == flow_id).then(|| VerificationTarget {
+                            user_id: "current-user".to_owned(),
+                            device_id: "eligible-device".to_owned(),
+                        })
+                    })
+            })
+            .or_else(|| {
+                #[cfg(test)]
+                {
+                    return self.synthetic_verification.as_ref().and_then(
+                        |(active_flow_id, target)| {
+                            (*active_flow_id == flow_id).then(|| target.clone())
+                        },
+                    );
+                }
+                #[cfg(not(test))]
+                None
+            })
+    }
+
+    async fn settle_verification(&mut self, flow_id: u64, terminal: VerificationTerminal) {
+        let Some(target) = self.active_verification_target(flow_id) else {
             return;
         };
-
         self.stop_sas_timeout().await;
         self.stop_verification_request_observer().await;
         self.stop_sas_verification_observer().await;
-        self.verification_request = None;
-        self.sas_verification = None;
-        self.send_actions(vec![AppAction::VerificationCompleted {
-            request_id: request_id.sequence,
-        }])
-        .await;
-        self.request_authoritative_trust_recheck().await;
-        self.emit_verification_progress(VerificationFlowState::Done {
-            request_id: request_id.sequence,
-            target,
-        });
+        let sas = self.sas_verification.take();
+        let request = self.verification_request.take();
+        let own = self.own_user_verification.take();
+        #[cfg(test)]
+        {
+            self.synthetic_verification = None;
+        }
+
+        if !matches!(terminal, VerificationTerminal::Success) {
+            if let Some(pending) = sas.as_ref() {
+                let _ = match terminal {
+                    VerificationTerminal::Cancelled(VerificationCancelReason::Mismatch) => {
+                        koushi_sdk::mismatch_sas_verification(&pending.handle).await
+                    }
+                    _ => koushi_sdk::cancel_sas_verification(&pending.handle).await,
+                };
+            } else if let Some(pending) = request.as_ref() {
+                let _ = koushi_sdk::cancel_verification_request(&pending.handle).await;
+            } else if let Some((_, handle)) = own.as_ref() {
+                let _ = koushi_sdk::cancel_own_user_sas_verification(handle).await;
+            }
+        }
+        drop(sas);
+        drop(request);
+        drop(own);
+
+        match terminal {
+            VerificationTerminal::Success => {
+                self.send_actions(vec![AppAction::VerificationCompleted {
+                    request_id: flow_id,
+                }])
+                .await;
+                self.request_authoritative_trust_recheck().await;
+                self.emit_verification_progress(VerificationFlowState::Done {
+                    request_id: flow_id,
+                    target,
+                });
+            }
+            VerificationTerminal::Cancelled(reason) => {
+                self.send_actions(vec![AppAction::VerificationCancelled {
+                    request_id: flow_id,
+                    reason,
+                }])
+                .await;
+            }
+            VerificationTerminal::Failed(kind) => {
+                self.send_actions(vec![AppAction::VerificationFailed {
+                    request_id: flow_id,
+                    kind,
+                }])
+                .await;
+                self.emit_verification_progress(VerificationFlowState::Failed {
+                    request_id: flow_id,
+                    target,
+                    kind,
+                });
+            }
+        }
+    }
+
+    async fn project_verification_completed(&mut self, request_id: RequestId) {
+        if self
+            .active_verification_target(request_id.sequence)
+            .is_none()
+        {
+            return;
+        }
+        self.settle_verification(request_id.sequence, VerificationTerminal::Success)
+            .await;
     }
 
     async fn project_active_or_missing_verification_failure(
@@ -3536,58 +3734,32 @@ impl AccountActor {
         flow_id: u64,
         kind: TrustOperationFailureKind,
     ) {
-        let target = self
-            .sas_verification
-            .as_ref()
-            .filter(|pending| pending.request_id.sequence == flow_id)
-            .map(|pending| pending.target.clone())
-            .or_else(|| {
-                self.verification_request
-                    .as_ref()
-                    .filter(|pending| pending.request_id.sequence == flow_id)
-                    .map(|pending| pending.target.clone())
-            });
-        match target {
-            Some(target) => {
-                self.project_verification_failure(flow_id, target, kind)
-                    .await
-            }
-            None => {
-                self.send_actions(vec![AppAction::VerificationFailed {
-                    request_id: flow_id,
-                    kind,
-                }])
+        if self.active_verification_target(flow_id).is_some() {
+            self.settle_verification(flow_id, VerificationTerminal::Failed(kind))
                 .await;
-                let failure = if self.session.is_some() {
-                    CoreFailure::LocalEncryptionUnavailable
-                } else {
-                    CoreFailure::SessionRequired
-                };
-                self.emit_failure(request_id, failure);
-            }
+        } else {
+            self.send_actions(vec![AppAction::VerificationFailed {
+                request_id: flow_id,
+                kind,
+            }])
+            .await;
+            let failure = if self.session.is_some() {
+                CoreFailure::LocalEncryptionUnavailable
+            } else {
+                CoreFailure::SessionRequired
+            };
+            self.emit_failure(request_id, failure);
         }
     }
 
     async fn project_verification_failure(
         &mut self,
         flow_id: u64,
-        target: VerificationTarget,
+        _target: VerificationTarget,
         kind: TrustOperationFailureKind,
     ) {
-        self.stop_verification_request_observer().await;
-        self.stop_sas_verification_observer().await;
-        self.verification_request = None;
-        self.sas_verification = None;
-        self.send_actions(vec![AppAction::VerificationFailed {
-            request_id: flow_id,
-            kind,
-        }])
-        .await;
-        self.emit_verification_progress(VerificationFlowState::Failed {
-            request_id: flow_id,
-            target,
-            kind,
-        });
+        self.settle_verification(flow_id, VerificationTerminal::Failed(kind))
+            .await;
     }
 
     fn emit_verification_progress(&self, state: VerificationFlowState) {
@@ -6600,6 +6772,88 @@ mod tests {
     use super::*;
     use crate::store::CredentialStoreBackend;
 
+    #[tokio::test]
+    async fn actor_sas_settlement_emits_exactly_one_terminal_and_clears_runtime() {
+        let cred_dir = tempdir().expect("credential tempdir");
+        let data_dir = tempdir().expect("data tempdir");
+        let store = StoreActor::with_backend(
+            CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
+                cred_dir.path(),
+            )),
+            data_dir.path(),
+        );
+        let (action_tx, mut action_rx) = mpsc::channel(16);
+        let (event_tx, _) = broadcast::channel(16);
+        let handle = AccountActor::spawn(store, action_tx, event_tx, LinkPreviewContext::default());
+
+        let cases = [
+            SyntheticVerificationTerminal::Success,
+            SyntheticVerificationTerminal::Cancelled(VerificationCancelReason::User),
+            SyntheticVerificationTerminal::Cancelled(VerificationCancelReason::Mismatch),
+            SyntheticVerificationTerminal::Failed(TrustOperationFailureKind::Timeout),
+            SyntheticVerificationTerminal::Failed(TrustOperationFailureKind::Sdk),
+        ];
+        for (index, terminal) in cases.into_iter().enumerate() {
+            let flow_id = index as u64 + 100;
+            assert!(
+                handle
+                    .send(AccountMessage::ConfigureSyntheticVerification { flow_id })
+                    .await
+            );
+            assert!(
+                handle
+                    .send(AccountMessage::SettleSyntheticVerification { flow_id, terminal })
+                    .await
+            );
+            let actions = action_rx.recv().await.expect("one terminal action");
+            assert_eq!(
+                actions.len(),
+                1,
+                "flow {flow_id} must emit one terminal action"
+            );
+            let terminal_request_id = match (&terminal, actions.as_slice()) {
+                (
+                    SyntheticVerificationTerminal::Success,
+                    [AppAction::VerificationCompleted { request_id }],
+                )
+                | (
+                    SyntheticVerificationTerminal::Cancelled(_),
+                    [AppAction::VerificationCancelled { request_id, .. }],
+                )
+                | (
+                    SyntheticVerificationTerminal::Failed(_),
+                    [AppAction::VerificationFailed { request_id, .. }],
+                ) => *request_id,
+                unexpected => panic!("unexpected terminal projection: {unexpected:?}"),
+            };
+            assert_eq!(terminal_request_id, flow_id);
+
+            let (response, inspected) = oneshot::channel();
+            assert!(
+                handle
+                    .send(AccountMessage::InspectVerificationRuntime { response })
+                    .await
+            );
+            assert_eq!(
+                inspected.await.expect("runtime inspection"),
+                (false, false, false, false, false, false, false)
+            );
+
+            assert!(
+                handle
+                    .send(AccountMessage::SettleSyntheticVerification { flow_id, terminal })
+                    .await
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), action_rx.recv())
+                    .await
+                    .is_err(),
+                "stale terminal duplicated flow {flow_id}"
+            );
+        }
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
     async fn restore_media_test_session(
         server: &MatrixMockServer,
         data_dir: &Path,
@@ -8743,6 +8997,7 @@ mod tests {
             verification_request_observer: None,
             sas_verification_observer: None,
             sas_timeout_task: None,
+            synthetic_verification: None,
             incoming_verification_observer: None,
             session_change_observer: None,
             account_hydration_task: None,

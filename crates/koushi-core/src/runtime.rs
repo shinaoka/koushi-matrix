@@ -3258,12 +3258,6 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 request_id: *flow_id,
             })
         }
-        AccountCommand::CancelVerification {
-            flow_id, reason, ..
-        } => Some(AppAction::VerificationCancelled {
-            request_id: *flow_id,
-            reason: *reason,
-        }),
         AccountCommand::BootstrapCrossSigning { request_id, .. } => {
             Some(AppAction::BootstrapCrossSigningRequested {
                 request_id: request_id.sequence,
@@ -3433,6 +3427,7 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
         | AccountCommand::SetPresence { .. }
         | AccountCommand::DownloadAvatarThumbnail { .. }
         | AccountCommand::Logout { .. }
+        | AccountCommand::CancelVerification { .. }
         | AccountCommand::SwitchAccount { .. } => None,
     }
 }
@@ -4991,7 +4986,7 @@ mod tests {
     }
 
     #[test]
-    fn verification_followup_commands_project_flow_id_not_command_request_id() {
+    fn verification_followup_commands_project_flow_id_without_speculative_cancel() {
         let request_id = RequestId {
             connection_id: RuntimeConnectionId(1),
             sequence: 9,
@@ -5022,10 +5017,7 @@ mod tests {
                 flow_id,
                 reason: koushi_state::VerificationCancelReason::User,
             }),
-            Some(AppAction::VerificationCancelled {
-                request_id: flow_id,
-                reason: koushi_state::VerificationCancelReason::User,
-            })
+            None
         );
     }
 
