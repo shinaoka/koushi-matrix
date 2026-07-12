@@ -84,7 +84,7 @@
 - Test: `crates/koushi-sdk/src/lib.rs` tests
 
 - [ ] Add failing tests for mapping SDK `VerificationState::{Unknown,Verified,Unverified}` into an app-owned `CurrentDeviceTrustState`, including a stream whose initial value is observed before updates.
-- [ ] Add failing tests for method discovery distinguishing: existing identity with eligible verified devices; recovery available; genuine missing identity; existing identity with no proof; unknown/error.
+- [ ] Add failing tests for method discovery distinguishing from SDK facts: existing cross-signing identity with eligible verified other devices; recovery available; genuine missing identity; existing identity with no proof; unknown/error. Require a bounded key query and never infer a new identity from recovery state alone.
 - [ ] Add a failing API-shape test for an outgoing own-user SAS request that keeps raw target IDs inside the adapter/core handle and returns only an opaque app flow ID.
 - [ ] Run focused SDK tests and confirm RED due to missing wrappers.
 - [ ] Wrap `client.encryption().verification_state()` and expose a current value plus update stream. Remove the `list_devices` current-device `verified = true` shortcut; use authoritative cross-signing verification.
@@ -104,7 +104,7 @@
 
 - [ ] Invert the existing permissive login/recovery tests and add RED tests proving password, OIDC, and restore completion install only a provisional actor session, do not persist active credentials, do not start normal sync/room/timeline/search/attention actors, and reject all normal commands.
 - [ ] Add RED tests for subscribe-before-current-value trust observation, verified restore promotion, Unknown staying gated, stale-generation trust updates ignored, and Ready trust loss stopping children and clearing projections.
-- [ ] Add RED teardown tests proving no-proof rejection and sign-out cancel restricted sync/SAS handles, best-effort logout, erase provisional credentials and keyed stores, and acknowledge completion before `SignedOut`.
+- [ ] Add RED teardown tests proving no-proof rejection and sign-out cancel restricted sync/SAS handles, best-effort logout, erase provisional credentials and keyed stores, and acknowledge completion before `SignedOut`. Add a crash/restart test proving no active/provisional credential, saved-session index, or last-session pointer was persisted and restart returns SignedOut.
 - [ ] Run focused runtime/account tests and verify RED against immediate `LoginSucceeded`/`StartSync`.
 - [ ] Split authenticated-session installation from Ready promotion. AccountActor owns provisional SDK handles and a generation-tagged trust observer. Restricted sync may process crypto/account/to-device data but must not publish normal room data.
 - [ ] Emit state actions/events for gate discovery and authoritative trust only. On Verified, promote atomically, persist active session, then start normal actors and sync. On later non-Verified, lock first, stop normal actors, and clear views.
@@ -137,6 +137,7 @@
 
 - [ ] Add a RED-or-characterization test proving a Ready current device sends encrypted messages to eligible unverified peer devices without a verification prompt.
 - [ ] Add characterization tests proving blocked devices, sender/key mismatch, and cryptographic integrity failures remain rejected.
+- [ ] Amend the older #31/integration-edge-cases verified-user send-ack expectation where it contradicts #191; scope any remaining acknowledgement to integrity/blocked failures rather than merely unverified peer devices.
 - [ ] Search normal send UI for verify/send-anyway prompts and add a browser assertion that none renders during ordinary composition/send.
 - [ ] If the existing SDK policy already satisfies these tests, make no production change and commit tests only. If not, change the owning SDK/core policy, not React.
 - [ ] Run focused encrypted-send and browser tests; commit as `test: keep peer trust non-blocking` or `fix: separate peer and current-device trust`.

@@ -117,9 +117,12 @@ The DTO must distinguish method capability without secrets:
 - discovery pending/unknown;
 - existing identity with no proof method.
 
-Raw user IDs, device IDs, flow IDs from the SDK, recovery secrets, access
-tokens, and SDK errors do not enter snapshots or diagnostics. App-owned opaque
-request/flow IDs remain permitted where already used.
+Gate method discovery and current-device target selection expose no additional
+raw user/device identifiers. The existing authenticated `SessionInfo` and
+manual peer-verification DTO contracts remain unchanged and continue to follow
+their existing privacy rules. Recovery secrets, access tokens, raw SDK flow
+identifiers, and SDK errors do not enter snapshots or diagnostics. App-owned
+opaque request/flow IDs remain permitted where already used.
 
 `is_session_ready` means exactly `SessionState::Ready`. A separate narrowly
 named projection-context helper may include provisional verification states
@@ -161,9 +164,10 @@ generation already used for actor lifecycle.
 ### Existing Device SAS
 
 The SDK adapter exposes an app-owned outgoing current-user verification request
-that targets an eligible existing verified device without leaking its raw
-identifier into state. Core owns target selection and the handle map. Tauri and
-React dispatch only opaque flow actions. The full-screen gate renders the
+that targets an eligible existing verified device through an actor-owned opaque
+handle/ordinal without leaking its raw identifier into gate state. Core owns
+target selection and the handle map. Tauri and React dispatch only opaque flow
+actions. The full-screen gate renders the
 existing seven-emoji DTO and supports accept/start, match, mismatch, cancel,
 remote rejection, timeout, and retry. A terminal SAS event triggers a fresh
 authoritative trust probe; it never directly promotes the session.
@@ -180,10 +184,13 @@ triggers a fresh authoritative trust probe and promotes only on `Verified`.
 
 Absence of an existing cross-signing identity is distinct from an existing but
 unprovable identity. Only the former may bootstrap cross-signing and secure
-recovery. The generated recovery key is delivered through the existing secure
-destination mechanism, and a Rust-owned confirmation state requires the user to
-confirm it was saved before the final trust probe can promote the session. No
-identity-reset command is exposed from the gate for an existing identity.
+recovery. The generated recovery key is delivered directly through the existing
+secure user-selected destination mechanism, never returned to or displayed by
+the WebView. This is an intentional Koushi security divergence from clients
+that show the key inline. A Rust-owned confirmation state requires the user to
+confirm the destination was saved before the final trust probe can promote the
+session. No identity-reset command is exposed from the gate for an existing
+identity.
 
 ## Peer Device Policy
 
@@ -214,10 +221,11 @@ and Japanese.
 - Rejection and sign-out stop restricted sync, cancel verification handles,
   revoke/logout best-effort, erase persisted provisional material and local
   keyed stores, and acknowledge teardown before `SignedOut`.
-- Restart during a provisional flow restores no active session. If quarantined
-  credentials must be persisted solely to resume verification, they use an
-  explicitly provisional key and may only recreate the gate; they are deleted
-  on rejection. Prefer not persisting them when the SDK flow can be restarted.
+- Provisional credentials are not persisted. A crash/restart during a
+  provisional flow returns to `SignedOut`; the user authenticates again and no
+  active saved-session index or last-session pointer exposes the quarantined
+  token. Graceful rejection/sign-out still performs best-effort server logout
+  and local keyed-store deletion.
 - All diagnostics expose only state names, capability booleans, counts, and
   private-data-free failure kinds.
 
