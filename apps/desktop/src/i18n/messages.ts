@@ -612,6 +612,12 @@ export type MessageId =
   | "gate.saved"
   | "gate.retry"
   | "gate.signOut"
+  | "gate.failureCancelled"
+  | "gate.failureForbidden"
+  | "gate.failureNoProof"
+  | "gate.failureSdk"
+  | "gate.rejectNoProof"
+  | "gate.rejectUser"
   | "space.allRooms"
   | "space.childRooms"
   | "space.directMessages"
@@ -1604,6 +1610,12 @@ const en: Catalog = {
   "gate.saved": "I saved the recovery key",
   "gate.retry": "Retry",
   "gate.signOut": "Sign out",
+  "gate.failureCancelled": "Verification was cancelled.",
+  "gate.failureForbidden": "Verification was not permitted.",
+  "gate.failureNoProof": "No proof method is available.",
+  "gate.failureSdk": "Verification failed.",
+  "gate.rejectNoProof": "This existing identity has no acceptable proof method.",
+  "gate.rejectUser": "This session was rejected.",
   "space.allRooms": "All rooms",
   "space.childRooms": "Child rooms",
   "space.directMessages": "Direct Messages",
@@ -2482,6 +2494,12 @@ const ja: Catalog = {
   "gate.saved": "リカバリーキーを保存しました",
   "gate.retry": "再試行",
   "gate.signOut": "サインアウト",
+  "gate.failureCancelled": "検証がキャンセルされました。",
+  "gate.failureForbidden": "検証は許可されませんでした。",
+  "gate.failureNoProof": "利用可能な証明方法がありません。",
+  "gate.failureSdk": "検証に失敗しました。",
+  "gate.rejectNoProof": "既存の識別情報に利用可能な証明方法がありません。",
+  "gate.rejectUser": "このセッションは拒否されました。",
   "space.allRooms": "すべてのルーム",
   "space.childRooms": "子ルーム",
   "space.directMessages": "Direct Messages",

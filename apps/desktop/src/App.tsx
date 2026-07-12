@@ -1107,23 +1107,35 @@ function SessionVerificationGate({ snapshot, busy, onSnapshot, onSignOut }: { sn
   const destinationRef = useRef<HTMLInputElement>(null);
   const flowId = session.flow_id;
   const methods = session.gate?.methods ?? [];
+  const awaiting = session.kind === "awaitingVerification";
+  const sasVerifying = session.kind === "verifying" && session.method === "existingDeviceSas";
+  const rechecking = session.kind === "provisional" && typeof session.phase === "object" && "recheckingTrust" in session.phase;
   const run = async (operation: Promise<DesktopSnapshot>) => onSnapshot(await operation);
   return <main className="session-verification-gate" aria-label={t("gate.title")}>
     <h1>{t("gate.title")}</h1>
     {session.kind === "provisional" && <p>{t("gate.checking")}</p>}
     {session.kind === "rejecting" && <p>{t("gate.rejecting")}</p>}
     {session.kind === "locked" && <p>{t("gate.locked")}</p>}
-    {session.gate?.failureKind && <p role="alert">{session.gate.failureKind}</p>}
-    {methods.includes("existingDeviceSas") && <button disabled={busy} onClick={() => void run(api.startOwnUserSas())}>{t("gate.otherDevice")}</button>}
-    {session.kind === "verifying" && session.sas_emojis?.length === 7 && <div className="session-verification-emojis">{session.sas_emojis.map((emoji, index) => <span key={index}>{emoji.symbol} {emoji.description}</span>)}</div>}
-    {session.kind === "verifying" && session.sas_emojis?.length === 7 && flowId !== undefined && <><button onClick={() => void run(api.confirmSasVerification(flowId))}>{t("gate.match")}</button><button onClick={() => void run(api.mismatchSasVerification(flowId))}>{t("gate.mismatch")}</button></>}
-    {(methods.includes("recoveryKey") || methods.includes("securityPhrase")) && <form onSubmit={(event) => { event.preventDefault(); const secret = recoveryRef.current?.value.trim() ?? ""; if (secret) void run(api.submitRecovery(secret)); if (recoveryRef.current) recoveryRef.current.value = ""; }}><input ref={recoveryRef} type="password" aria-label={t("gate.recoverySecret")} autoComplete="off"/><button type="submit">{t("gate.recover")}</button></form>}
-    {methods.includes("bootstrap") && <form onSubmit={(event) => { event.preventDefault(); const destination = destinationRef.current?.value.trim() ?? ""; const passphrase = passphraseRef.current?.value || null; if (destinationRef.current) destinationRef.current.value = ""; if (passphraseRef.current) passphraseRef.current.value = ""; if (destination) void run(api.startSessionBootstrap(passphrase, destination)); }}><input ref={destinationRef} aria-label={t("gate.destination")}/><input ref={passphraseRef} type="password" aria-label={t("gate.passphrase")} autoComplete="new-password"/><button type="submit">{t("gate.bootstrap")}</button></form>}
+    {session.gate?.failureKind && <p role="alert">{gateFailureLabel(session.gate.failureKind)}</p>}
+    {session.kind === "rejecting" && session.reason && <p role="alert">{gateRejectLabel(session.reason)}</p>}
+    {awaiting && methods.includes("existingDeviceSas") && <button disabled={busy} onClick={() => void run(api.startOwnUserSas())}>{t("gate.otherDevice")}</button>}
+    {sasVerifying && session.sas_emojis?.length === 7 && <div className="session-verification-emojis">{session.sas_emojis.map((emoji, index) => <span key={index}>{emoji.symbol} {emoji.description}</span>)}</div>}
+    {sasVerifying && session.sas_emojis?.length === 7 && flowId !== undefined && <><button onClick={() => void run(api.confirmSasVerification(flowId))}>{t("gate.match")}</button><button onClick={() => void run(api.mismatchSasVerification(flowId))}>{t("gate.mismatch")}</button></>}
+    {awaiting && (methods.includes("recoveryKey") || methods.includes("securityPhrase")) && <form onSubmit={(event) => { event.preventDefault(); const secret = recoveryRef.current?.value.trim() ?? ""; if (secret) void run(api.submitRecovery(secret)); if (recoveryRef.current) recoveryRef.current.value = ""; }}><input ref={recoveryRef} type="password" aria-label={t("gate.recoverySecret")} autoComplete="off"/><button type="submit">{t("gate.recover")}</button></form>}
+    {awaiting && methods.includes("bootstrap") && <form onSubmit={(event) => { event.preventDefault(); const destination = destinationRef.current?.value.trim() ?? ""; const passphrase = passphraseRef.current?.value || null; if (destinationRef.current) destinationRef.current.value = ""; if (passphraseRef.current) passphraseRef.current.value = ""; if (destination) void run(api.startSessionBootstrap(passphrase, destination)); }}><input ref={destinationRef} aria-label={t("gate.destination")}/><input ref={passphraseRef} type="password" aria-label={t("gate.passphrase")} autoComplete="new-password"/><button type="submit">{t("gate.bootstrap")}</button></form>}
     {session.kind === "awaitingBootstrapConfirmation" && flowId !== undefined && <button onClick={() => void run(api.confirmSessionBootstrapSaved(flowId))}>{t("gate.saved")}</button>}
-    <button onClick={() => void run(api.retryCurrentDeviceTrustDiscovery())}>{t("gate.retry")}</button>
-    {flowId !== undefined && <button onClick={() => void run(api.cancelVerification(flowId))}>{t("action.cancel")}</button>}
+    {(awaiting || rechecking) && <button onClick={() => void run(api.retryCurrentDeviceTrustDiscovery())}>{t("gate.retry")}</button>}
+    {sasVerifying && flowId !== undefined && <button onClick={() => void run(api.cancelVerification(flowId))}>{t("action.cancel")}</button>}
     <button onClick={onSignOut}>{t("gate.signOut")}</button>
   </main>;
+}
+
+function gateFailureLabel(kind: import("./domain/types").VerificationGateFailureKind): string {
+  return t(({ network: "trust.failureNetwork", cancelled: "gate.failureCancelled", mismatch: "trust.failureMismatch", forbidden: "gate.failureForbidden", timeout: "trust.failureTimeout", sdk: "gate.failureSdk", noProofMethod: "gate.failureNoProof" } as const)[kind]);
+}
+
+function gateRejectLabel(reason: NonNullable<import("./domain/types").SessionState["reason"]>): string {
+  return t(reason === "existingIdentityWithoutProof" ? "gate.rejectNoProof" : "gate.rejectUser");
 }
 
 export function App() {

@@ -48,6 +48,30 @@ test("verification states replace the complete desktop shell", async ({ page }) 
   }
 });
 
+test("gate controls follow the Core admission matrix", async ({ page }) => {
+  await page.goto("/appHarness.html");
+  const controls = ["Verify with another device", "Recover", "Create secure backup", "They match", "They do not match", "Cancel", "Retry", "I saved the recovery key"];
+  const cases = [
+    { session: { kind: "awaitingVerification", gate: { methods: ["existingDeviceSas", "recoveryKey", "bootstrap"], account_kind: "existingIdentity", failureKind: null } }, present: ["Verify with another device", "Recover", "Create secure backup", "Retry"] },
+    { session: { kind: "verifying", method: "existingDeviceSas", flow_id: 5, sas_emojis: Array.from({ length: 7 }, (_, i) => ({ symbol: `e${i}`, description: `d${i}` })), gate: { methods: ["existingDeviceSas"], account_kind: "existingIdentity", failureKind: null } }, present: ["They match", "They do not match", "Cancel"] },
+    { session: { kind: "verifying", method: "recoveryKey", flow_id: 6, gate: { methods: ["recoveryKey"], account_kind: "existingIdentity", failureKind: null } }, present: [] },
+    { session: { kind: "awaitingBootstrapConfirmation", flow_id: 7, destination_written: true, gate: { methods: ["bootstrap"], account_kind: "newIdentity", failureKind: null } }, present: ["I saved the recovery key"] },
+    { session: { kind: "provisional", phase: { recheckingTrust: {} } }, present: ["Retry"] },
+    { session: { kind: "locked" }, present: [] }
+  ];
+  for (const entry of cases) {
+    await page.evaluate((session) => {
+      const snapshot = window.__harness.currentSnapshot();
+      window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { homeserver: "https://example.invalid", user_id: "@gate:example.invalid", device_id: "DEVICE", ...session } as any } } });
+      window.__harness.pushStateChanged();
+    }, entry.session);
+    for (const label of controls) {
+      await expect(page.getByRole("button", { name: label, exact: true })).toHaveCount(entry.present.includes(label) ? 1 : 0);
+    }
+    await expect(page.getByRole("button", { name: "Sign out" })).toHaveCount(1);
+  }
+});
+
 test("recovery and bootstrap actions preserve secrets outside observable state", async ({ page }) => {
   await page.goto("/appHarness.html");
   await page.evaluate(() => {
@@ -59,7 +83,7 @@ test("recovery and bootstrap actions preserve secrets outside observable state",
   const secret = "SYNTHETIC_RECOVERY_SECRET_8842";
   await page.getByLabel("Recovery secret").fill(secret);
   await page.getByRole("button", { name: "Recover", exact: true }).click();
-  await expect(page.getByLabel("Recovery secret")).toHaveValue("");
+  await expect(page.getByLabel("Recovery secret")).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("submit_recovery")[0]?.args)).toEqual({ secret: "[REDACTED]" });
   await expect(page.locator("body")).not.toContainText(secret);
   expect(await page.evaluate((sentinel) => JSON.stringify(window.__harness.currentSnapshot()).includes(sentinel), secret)).toBe(false);
@@ -75,8 +99,8 @@ test("recovery and bootstrap actions preserve secrets outside observable state",
   await page.getByLabel("Recovery key destination").fill(destination);
   await page.getByLabel("Backup passphrase").fill(passphrase);
   await page.getByRole("button", { name: "Create secure backup" }).click();
-  await expect(page.getByLabel("Recovery key destination")).toHaveValue("");
-  await expect(page.getByLabel("Backup passphrase")).toHaveValue("");
+  await expect(page.getByLabel("Recovery key destination")).toHaveCount(0);
+  await expect(page.getByLabel("Backup passphrase")).toHaveCount(0);
   const bootstrapArgs = await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("start_session_bootstrap")[0]?.args)).toBeTruthy().then(() => page.evaluate(() => window.__harness.invocationsOf("start_session_bootstrap")[0]!.args));
   expect(bootstrapArgs).toMatchObject({ passphrase: "[REDACTED]", recoveryKeyDestinationPath: "[REDACTED]" });
   expect(bootstrapArgs.flowId).toBeUndefined();
