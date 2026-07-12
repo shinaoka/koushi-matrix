@@ -12,7 +12,7 @@ use koushi_state::{
 
 fn login_submitted(request: LoginRequest) -> AppAction {
     AppAction::LoginSubmitted {
-        attempt_id: LoginAttemptId::new(1),
+        attempt_id: LoginAttemptId::new(0, 1),
         request,
     }
 }

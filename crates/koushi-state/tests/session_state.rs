@@ -30,7 +30,7 @@ fn alternate_session_info() -> SessionInfo {
 }
 
 fn login_attempt_id() -> LoginAttemptId {
-    LoginAttemptId::new(7)
+    LoginAttemptId::new(0, 7)
 }
 
 fn state_with_session_scoped_workflows() -> AppState {
@@ -134,8 +134,8 @@ fn authenticated_install_is_provisional_for_login_and_restore() {
 
 #[test]
 fn same_homeserver_login_attempts_reject_stale_success_and_failure() {
-    let attempt_a = LoginAttemptId::new(41);
-    let attempt_b = LoginAttemptId::new(42);
+    let attempt_a = LoginAttemptId::new(1, 41);
+    let attempt_b = LoginAttemptId::new(1, 42);
     assert_eq!(format!("{attempt_a:?}"), "LoginAttemptId(..)");
     let login = |attempt_id| AppAction::LoginSubmitted {
         attempt_id,
@@ -186,6 +186,44 @@ fn same_homeserver_login_attempts_reject_stale_success_and_failure() {
         },
     );
     assert!(matches!(state.session, SessionState::Provisional { .. }));
+}
+
+#[test]
+fn same_sequence_from_another_connection_is_a_stale_login_terminal() {
+    let stale_attempt = LoginAttemptId::new(1, 7);
+    let active_attempt = LoginAttemptId::new(2, 7);
+    let mut state = AppState::default();
+    reduce(
+        &mut state,
+        AppAction::AuthenticationStarted {
+            attempt_id: active_attempt,
+            homeserver: session_info().homeserver,
+        },
+    );
+
+    let before = state.clone();
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::LoginSucceeded {
+                attempt_id: stale_attempt,
+                info: session_info(),
+            },
+        )
+        .is_empty()
+    );
+    assert_eq!(state, before);
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::LoginFailed {
+                attempt_id: stale_attempt,
+                message: "stale failure".to_owned(),
+            },
+        )
+        .is_empty()
+    );
+    assert_eq!(state, before);
 }
 
 #[test]

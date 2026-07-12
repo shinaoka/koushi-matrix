@@ -189,6 +189,10 @@ pub enum AppAction {
         attempt_id: LoginAttemptId,
         request: LoginRequest,
     },
+    AuthenticationStarted {
+        attempt_id: LoginAttemptId,
+        homeserver: String,
+    },
     LoginSucceeded {
         attempt_id: LoginAttemptId,
         info: SessionInfo,

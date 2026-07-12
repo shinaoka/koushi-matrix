@@ -540,7 +540,7 @@ impl FakeDesktopBackend {
     pub fn fail_login(&mut self, message: impl Into<String>) -> Vec<AppEffect> {
         let attempt_id = self
             .active_login_attempt
-            .unwrap_or_else(|| LoginAttemptId::new(0));
+            .unwrap_or_else(|| LoginAttemptId::new(0, 0));
         self.dispatch(AppAction::LoginFailed {
             attempt_id,
             message: message.into(),
@@ -566,7 +566,7 @@ impl FakeDesktopBackend {
             AppAction::LoginSucceeded {
                 attempt_id: self
                     .active_login_attempt
-                    .unwrap_or_else(|| LoginAttemptId::new(0)),
+                    .unwrap_or_else(|| LoginAttemptId::new(0, 0)),
                 info,
             }
         }

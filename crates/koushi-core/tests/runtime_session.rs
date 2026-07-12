@@ -3,14 +3,57 @@
 use std::time::Duration;
 
 use koushi_core::{
-    AccountKey, AppCommand, CoreCommand, CoreEvent, CoreFailure, CoreRuntime, CreateRoomOptions,
-    CreateRoomVisibility, PaginationDirection, RequestId, RoomCommand, TimelineCommand,
-    TimelineKey, executor,
+    AccountCommand, AccountKey, AppCommand, CoreCommand, CoreEvent, CoreFailure, CoreRuntime,
+    CreateRoomOptions, CreateRoomVisibility, PaginationDirection, RequestId, RoomCommand,
+    TimelineCommand, TimelineKey, executor,
 };
 use koushi_state::{
-    AppAction, AuthSecret, RecoveryMethod, RecoveryRequest, SessionState,
-    StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
+    AppAction, AuthSecret, LoginAttemptId, LoginRequest, RecoveryMethod, RecoveryRequest,
+    SessionState, StagedUploadCompressionChoice, StagedUploadItem, StagedUploadKind,
 };
+
+#[tokio::test]
+async fn password_command_projects_authentication_before_account_actor_completion() {
+    let runtime = CoreRuntime::start();
+    let mut connection = runtime.attach();
+    let request_id = connection.next_request_id();
+    connection
+        .command(CoreCommand::Account(AccountCommand::LoginPassword {
+            request_id,
+            request: LoginRequest {
+                homeserver: "http://127.0.0.1:9".to_owned(),
+                username: "user".to_owned(),
+                password: AuthSecret::new("synthetic-password"),
+                device_display_name: None,
+            },
+        }))
+        .await
+        .expect("submit");
+
+    loop {
+        match connection.recv_event().await.expect("event") {
+            CoreEvent::StateChanged(snapshot)
+                if matches!(
+                    &snapshot.session,
+                    SessionState::Authenticating { homeserver, attempt_id }
+                        if homeserver == "http://127.0.0.1:9"
+                            && *attempt_id == LoginAttemptId::new(
+                                request_id.connection_id.0,
+                                request_id.sequence,
+                            )
+                ) =>
+            {
+                return;
+            }
+            CoreEvent::OperationFailed {
+                request_id: failed, ..
+            } if failed == request_id => {
+                panic!("account actor completed before AuthenticationStarted was observed")
+            }
+            _ => {}
+        }
+    }
+}
 
 mod support;
 use support::*;
@@ -62,7 +105,11 @@ async fn ready_session_routes_past_appactor_session_gate() {
     let runtime = CoreRuntime::start();
     let mut connection = runtime.attach();
     runtime
-        .inject_actions(vec![AppAction::RestoreSessionSucceeded(session_info())])
+        .inject_actions(vec![
+            AppAction::AppStarted,
+            AppAction::RestoreSessionSucceeded(session_info()),
+            AppAction::CurrentDeviceTrustChanged(koushi_state::CurrentDeviceTrustState::Verified),
+        ])
         .await;
     // Wait for the Ready snapshot before submitting.
     loop {
@@ -114,7 +161,11 @@ async fn actor_projected_session_lock_executes_stop_sync_effect() {
     let mut connection = runtime.attach();
 
     runtime
-        .inject_actions(vec![AppAction::RestoreSessionSucceeded(session_info())])
+        .inject_actions(vec![
+            AppAction::AppStarted,
+            AppAction::RestoreSessionSucceeded(session_info()),
+            AppAction::CurrentDeviceTrustChanged(koushi_state::CurrentDeviceTrustState::Verified),
+        ])
         .await;
     wait_for_state(&mut connection, |state| {
         matches!(state.session, SessionState::Ready(_))
@@ -155,7 +206,7 @@ async fn next_session_required_failure(
 }
 
 #[tokio::test]
-async fn recovery_sessions_route_ready_guarded_app_commands() {
+async fn recovery_sessions_reject_ready_guarded_app_commands() {
     for target in [
         RecoveryRouteTarget::NeedsRecovery,
         RecoveryRouteTarget::Recovering,
@@ -174,7 +225,17 @@ async fn assert_upload_staging_command_routes_for_recovery_session(target: Recov
     let runtime = CoreRuntime::start();
     let mut connection = runtime.attach();
     let room_id = "!room:example.test";
+    let attempt_id = LoginAttemptId::new(0, 1);
     let mut actions = vec![
+        AppAction::AuthenticationStarted {
+            attempt_id,
+            homeserver: session_info().homeserver,
+        },
+        AppAction::LoginSucceeded {
+            attempt_id,
+            info: session_info(),
+        },
+        AppAction::CurrentDeviceTrustChanged(koushi_state::CurrentDeviceTrustState::Unverified),
         AppAction::E2eeRecoveryRequired {
             info: session_info(),
             methods: vec![RecoveryMethod::RecoveryKey],
@@ -193,16 +254,13 @@ async fn assert_upload_staging_command_routes_for_recovery_session(target: Recov
         }));
     }
     runtime.inject_actions(actions).await;
-    wait_for_state(&mut connection, |state| {
-        state.navigation.active_room_id.as_deref() == Some(room_id)
-            && match target {
-                RecoveryRouteTarget::NeedsRecovery => {
-                    matches!(state.session, SessionState::AwaitingVerification { .. })
-                }
-                RecoveryRouteTarget::Recovering => {
-                    matches!(state.session, SessionState::Verifying { .. })
-                }
-            }
+    wait_for_state(&mut connection, |state| match target {
+        RecoveryRouteTarget::NeedsRecovery => {
+            matches!(state.session, SessionState::AwaitingVerification { .. })
+        }
+        RecoveryRouteTarget::Recovering => {
+            matches!(state.session, SessionState::Verifying { .. })
+        }
     })
     .await;
 
@@ -227,12 +285,13 @@ async fn assert_upload_staging_command_routes_for_recovery_session(target: Recov
         .await
         .expect("submit");
 
-    wait_for_state(&mut connection, |state| {
-        state
-            .timeline
-            .staged_uploads
-            .iter()
-            .any(|item| item.staged_id == "staged-1" && item.room_id == room_id)
-    })
-    .await;
+    loop {
+        match connection.recv_event().await.expect("event") {
+            CoreEvent::OperationFailed {
+                request_id: failed_id,
+                failure: CoreFailure::SessionRequired,
+            } if failed_id == request_id => return,
+            _ => {}
+        }
+    }
 }

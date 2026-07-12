@@ -37,16 +37,17 @@ pub enum SessionState {
 }
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct LoginAttemptId(u64);
+pub struct LoginAttemptId {
+    connection_id: u64,
+    sequence: u64,
+}
 
 impl LoginAttemptId {
-    pub fn new(value: u64) -> Self {
-        Self(value)
-    }
-
-    pub fn get(self) -> u64 {
-        self.0
+    pub fn new(connection_id: u64, sequence: u64) -> Self {
+        Self {
+            connection_id,
+            sequence,
+        }
     }
 }
 

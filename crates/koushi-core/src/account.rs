@@ -3652,6 +3652,11 @@ impl AccountActor {
                     kind: AuthFailureKind::Cancelled,
                 },
             );
+            self.send_actions(vec![AppAction::LoginFailed {
+                attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
+                message: "login failed".to_owned(),
+            }])
+            .await;
             return;
         };
         let homeserver = pending.homeserver().to_owned();
@@ -3663,6 +3668,14 @@ impl AccountActor {
                 self.send_actions(vec![AppAction::LoginDiscoveryFailed { homeserver, kind }])
                     .await;
                 self.emit_failure(request_id, CoreFailure::AccountOperationFailed { kind });
+                self.send_actions(vec![AppAction::LoginFailed {
+                    attempt_id: LoginAttemptId::new(
+                        request_id.connection_id.0,
+                        request_id.sequence,
+                    ),
+                    message: "login failed".to_owned(),
+                }])
+                .await;
                 return;
             }
         };
@@ -3677,7 +3690,10 @@ impl AccountActor {
                 self.abort_login(login_session, &key_id, false).await;
                 self.emit_failure(request_id, failure);
                 self.send_actions(vec![AppAction::LoginFailed {
-                    attempt_id: LoginAttemptId::new(start_request_id.sequence),
+                    attempt_id: LoginAttemptId::new(
+                        request_id.connection_id.0,
+                        request_id.sequence,
+                    ),
                     message: "login failed".to_owned(),
                 }])
                 .await;
@@ -3691,7 +3707,10 @@ impl AccountActor {
                 self.abort_login(login_session, &key_id, true).await;
                 self.emit_failure(request_id, failure);
                 self.send_actions(vec![AppAction::LoginFailed {
-                    attempt_id: LoginAttemptId::new(start_request_id.sequence),
+                    attempt_id: LoginAttemptId::new(
+                        request_id.connection_id.0,
+                        request_id.sequence,
+                    ),
                     message: "login failed".to_owned(),
                 }])
                 .await;
@@ -3710,7 +3729,7 @@ impl AccountActor {
         self.spawn_sync_actor(session_arc.clone()).await;
 
         self.send_actions(vec![AppAction::LoginSucceeded {
-            attempt_id: LoginAttemptId::new(start_request_id.sequence),
+            attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
             info,
         }])
         .await;
@@ -3744,7 +3763,10 @@ impl AccountActor {
                 let kind = classify_login_error(&error);
                 self.emit_failure(request_id, CoreFailure::LoginFailed { kind });
                 self.send_actions(vec![AppAction::LoginFailed {
-                    attempt_id: LoginAttemptId::new(request_id.sequence),
+                    attempt_id: LoginAttemptId::new(
+                        request_id.connection_id.0,
+                        request_id.sequence,
+                    ),
                     message: "login failed".to_owned(),
                 }])
                 .await;
@@ -3764,7 +3786,10 @@ impl AccountActor {
                 self.abort_login(login_session, &key_id, false).await;
                 self.emit_failure(request_id, failure);
                 self.send_actions(vec![AppAction::LoginFailed {
-                    attempt_id: LoginAttemptId::new(request_id.sequence),
+                    attempt_id: LoginAttemptId::new(
+                        request_id.connection_id.0,
+                        request_id.sequence,
+                    ),
                     message: "login failed".to_owned(),
                 }])
                 .await;
@@ -3783,7 +3808,10 @@ impl AccountActor {
                 self.abort_login(login_session, &key_id, true).await;
                 self.emit_failure(request_id, failure);
                 self.send_actions(vec![AppAction::LoginFailed {
-                    attempt_id: LoginAttemptId::new(request_id.sequence),
+                    attempt_id: LoginAttemptId::new(
+                        request_id.connection_id.0,
+                        request_id.sequence,
+                    ),
                     message: "login failed".to_owned(),
                 }])
                 .await;
@@ -3809,7 +3837,7 @@ impl AccountActor {
         // hydrate Rust-owned profile/account-data projections. Fetch failure is
         // non-fatal to login.
         self.send_actions(vec![AppAction::LoginSucceeded {
-            attempt_id: LoginAttemptId::new(request_id.sequence),
+            attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
             info,
         }])
         .await;
@@ -4514,7 +4542,7 @@ impl AccountActor {
                 request_id: request_id.sequence,
             },
             AppAction::LoginSucceeded {
-                attempt_id: LoginAttemptId::new(request_id.sequence),
+                attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
                 info,
             },
         ])

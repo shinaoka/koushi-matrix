@@ -252,6 +252,10 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             attempt_id,
             request,
         } => session::handle_login_submitted(state, attempt_id, request),
+        AppAction::AuthenticationStarted {
+            attempt_id,
+            homeserver,
+        } => session::handle_authentication_started(state, attempt_id, homeserver),
         AppAction::LoginFailed {
             attempt_id,
             message,

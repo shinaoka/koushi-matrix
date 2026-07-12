@@ -257,17 +257,27 @@ pub(crate) fn handle_login_submitted(
     attempt_id: LoginAttemptId,
     request: LoginRequest,
 ) -> Vec<AppEffect> {
-    state.session = SessionState::Authenticating {
-        homeserver: request.homeserver.clone(),
-        attempt_id,
-    };
-    vec![
+    let mut effects = handle_authentication_started(state, attempt_id, request.homeserver.clone());
+    effects.insert(
+        0,
         AppEffect::Login {
             attempt_id,
             request,
         },
-        AppEffect::EmitUiEvent(UiEvent::SessionChanged),
-    ]
+    );
+    effects
+}
+
+pub(crate) fn handle_authentication_started(
+    state: &mut AppState,
+    attempt_id: LoginAttemptId,
+    homeserver: String,
+) -> Vec<AppEffect> {
+    state.session = SessionState::Authenticating {
+        homeserver,
+        attempt_id,
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
 }
 
 pub(crate) fn handle_login_failed(

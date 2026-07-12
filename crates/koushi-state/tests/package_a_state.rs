@@ -476,12 +476,12 @@ fn soft_logout_reauth_succeeds_and_fails_are_request_correlated() {
     );
     state.session = SessionState::Authenticating {
         homeserver: session_info().homeserver,
-        attempt_id: LoginAttemptId::new(1),
+        attempt_id: LoginAttemptId::new(0, 1),
     };
     let effects = reduce(
         &mut state,
         AppAction::LoginSucceeded {
-            attempt_id: LoginAttemptId::new(1),
+            attempt_id: LoginAttemptId::new(0, 1),
             info: session_info(),
         },
     );
