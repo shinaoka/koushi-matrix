@@ -7106,6 +7106,7 @@ mod tests {
             },
             method: koushi_state::VerificationMethod::RecoveryKey,
             flow_id: 1,
+            sas_emojis: vec![],
         };
         assert!(!super::snapshot_has_authenticated_session(&state));
     }

@@ -207,6 +207,10 @@ pub enum AppAction {
         method: VerificationMethod,
         flow_id: u64,
     },
+    GateSasPresented {
+        flow_id: u64,
+        emojis: Vec<SasEmoji>,
+    },
     VerificationGateAttemptFailed {
         kind: crate::state::VerificationGateFailureKind,
     },

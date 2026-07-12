@@ -433,6 +433,7 @@ export interface SessionState {
   gate?: VerificationGateState;
   method?: VerificationMethod;
   flow_id?: number;
+  sas_emojis?: SasEmoji[];
   destination_written?: boolean;
   reason?: "existingIdentityWithoutProof" | "userRejected";
   recovery_methods?: RecoveryMethod[];

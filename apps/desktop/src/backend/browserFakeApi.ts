@@ -909,7 +909,7 @@ class BrowserFakeApi implements DesktopApi {
   async startOwnUserSas(): Promise<DesktopSnapshot> {
     const flowId = this.nextRequestId();
     const session = this.snapshot.state.domain.session;
-    if (session.kind === "awaitingVerification") this.snapshot.state.domain.session = { ...session, kind: "verifying", method: "existingDeviceSas", flow_id: flowId };
+    if (session.kind === "awaitingVerification") this.snapshot.state.domain.session = { ...session, kind: "verifying", method: "existingDeviceSas", flow_id: flowId, sas_emojis: [] };
     return this.getSnapshot();
   }
   async retryCurrentDeviceTrustDiscovery(): Promise<DesktopSnapshot> {
@@ -919,7 +919,7 @@ class BrowserFakeApi implements DesktopApi {
   }
   async mismatchSasVerification(flowId: number): Promise<DesktopSnapshot> {
     const session = this.snapshot.state.domain.session;
-    if (session.flow_id === flowId && session.gate) this.snapshot.state.domain.session = { ...session, kind: "awaitingVerification", gate: { ...session.gate, failureKind: "mismatch" }, method: undefined, flow_id: undefined };
+    if (session.flow_id === flowId && session.gate) this.snapshot.state.domain.session = { ...session, kind: "awaitingVerification", gate: { ...session.gate, failureKind: "mismatch" }, method: undefined, flow_id: undefined, sas_emojis: undefined };
     return this.getSnapshot();
   }
   async startSessionBootstrap(passphrase: string | null, recoveryKeyDestinationPath: string): Promise<DesktopSnapshot> {
@@ -947,7 +947,8 @@ class BrowserFakeApi implements DesktopApi {
         kind: "provisional",
         phase: { recheckingTrust: { failureKind: null } },
         method: undefined,
-        flow_id: undefined
+        flow_id: undefined,
+        sas_emojis: undefined
       };
       this.snapshot.state.domain.e2ee_trust.verification = { kind: "idle" };
       return this.getSnapshot();
@@ -973,7 +974,7 @@ class BrowserFakeApi implements DesktopApi {
   async cancelVerification(flowId: number): Promise<DesktopSnapshot> {
     const session = this.snapshot.state.domain.session;
     if (session.flow_id === flowId && session.gate) {
-      this.snapshot.state.domain.session = { ...session, kind: "awaitingVerification", gate: { ...session.gate, failureKind: "cancelled" }, method: undefined, flow_id: undefined };
+      this.snapshot.state.domain.session = { ...session, kind: "awaitingVerification", gate: { ...session.gate, failureKind: "cancelled" }, method: undefined, flow_id: undefined, sas_emojis: undefined };
       return this.getSnapshot();
     }
     if (!this.isReady()) {

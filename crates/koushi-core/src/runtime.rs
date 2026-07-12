@@ -5075,7 +5075,8 @@ mod tests {
                 info,
                 gate,
                 method: koushi_state::VerificationMethod::RecoveryKey,
-                flow_id: 77
+                flow_id: 77,
+                sas_emojis: vec![]
             }
         ));
     }

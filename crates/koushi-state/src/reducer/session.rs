@@ -205,6 +205,7 @@ pub(crate) fn handle_verification_method_submitted(
         gate,
         method,
         flow_id,
+        sas_emojis: Vec::new(),
     };
     vec![
         AppEffect::BeginSessionVerification { method, flow_id },
@@ -237,6 +238,7 @@ pub(crate) fn handle_bootstrap_recovery_key_delivered(
         gate,
         method: VerificationMethod::Bootstrap,
         flow_id: active_flow_id,
+        ..
     } = &state.session
     else {
         return Vec::new();
@@ -263,6 +265,7 @@ pub(crate) fn handle_bootstrap_recovery_key_delivery_failed(
         gate,
         method: VerificationMethod::Bootstrap,
         flow_id: active_flow_id,
+        ..
     } = &state.session
     else {
         return Vec::new();

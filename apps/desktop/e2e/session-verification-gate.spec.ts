@@ -137,7 +137,7 @@ test("SAS actions stay flow-correlated through retry and cancellation", async ({
     const snapshot = window.__harness.currentSnapshot();
     const emojis = ["🐶", "🐱", "🦁", "🐎", "🦄", "🐷", "🐘"].map((symbol, index) => ({ symbol, description: `emoji-${index}` }));
     const flowId = snapshot.state.domain.session.flow_id!;
-    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, e2ee_trust: { ...snapshot.state.domain.e2ee_trust, verification: { kind: "sasPresented", request_id: flowId, target: { user_id: "opaque-current-user", device_id: "opaque-device" }, emojis } } } } });
+    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { ...snapshot.state.domain.session, kind: "verifying", flow_id: flowId, method: "existingDeviceSas", sas_emojis: emojis } } } });
     window.__harness.pushStateChanged();
   });
   await expect(page.locator(".session-verification-emojis span")).toHaveCount(7);
@@ -148,7 +148,7 @@ test("SAS actions stay flow-correlated through retry and cancellation", async ({
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
     const emojis = ["🐶", "🐱", "🦁", "🐎", "🦄", "🐷", "🐘"].map((symbol, index) => ({ symbol, description: `emoji-${index}` }));
-    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { ...snapshot.state.domain.session, kind: "verifying", flow_id: 81, method: "existingDeviceSas" }, e2ee_trust: { ...snapshot.state.domain.e2ee_trust, verification: { kind: "sasPresented", request_id: 81, target: { user_id: "opaque-current-user", device_id: "opaque-device" }, emojis } } } } });
+    window.__harness.setSnapshot({ ...snapshot, state: { ...snapshot.state, domain: { ...snapshot.state.domain, session: { ...snapshot.state.domain.session, kind: "verifying", flow_id: 81, method: "existingDeviceSas", sas_emojis: emojis } } } });
     window.__harness.pushStateChanged();
   });
   await page.getByRole("button", { name: "They do not match" }).click();

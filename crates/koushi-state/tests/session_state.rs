@@ -292,6 +292,7 @@ fn invalid_auth_admission_sessions() -> Vec<SessionState> {
             gate: recovery_gate(),
             method: VerificationMethod::RecoveryKey,
             flow_id: 9,
+            sas_emojis: vec![],
         },
         SessionState::Rejecting {
             info: info.clone(),
@@ -513,6 +514,7 @@ fn verification_gate_transition_table_is_fail_closed() {
                 gate: recovery_gate(),
                 method: VerificationMethod::RecoveryKey,
                 flow_id: 17,
+                sas_emojis: vec![],
             },
         ),
     ];
@@ -536,6 +538,7 @@ fn only_authoritative_verified_promotes_and_trust_loss_locks_and_clears() {
             gate: recovery_gate(),
             method: VerificationMethod::RecoveryKey,
             flow_id: 17,
+            sas_emojis: vec![],
         },
         ..AppState::default()
     };
@@ -630,6 +633,7 @@ fn new_identity_bootstrap_requires_written_destination_and_matching_confirmation
             gate: gate.clone(),
             method: VerificationMethod::Bootstrap,
             flow_id: 41,
+            sas_emojis: vec![],
         },
         ..AppState::default()
     };
@@ -694,6 +698,7 @@ fn bootstrap_delivery_failure_is_retryable_and_unknown_is_never_new_identity() {
             gate: gate.clone(),
             method: VerificationMethod::Bootstrap,
             flow_id: 9,
+            sas_emojis: vec![],
         },
         ..AppState::default()
     };
@@ -783,6 +788,7 @@ fn gate_sas_terminals_are_retryable_and_done_only_requests_trust_recheck() {
                 gate: gate.clone(),
                 method: VerificationMethod::ExistingDeviceSas,
                 flow_id: 77,
+                sas_emojis: vec![],
             },
             ..AppState::default()
         };
@@ -808,6 +814,7 @@ fn gate_sas_terminals_are_retryable_and_done_only_requests_trust_recheck() {
             gate,
             method: VerificationMethod::ExistingDeviceSas,
             flow_id: 77,
+            sas_emojis: vec![],
         },
         ..AppState::default()
     };
@@ -957,6 +964,7 @@ fn normal_room_commands_are_rejected_in_every_verification_gate_state() {
             gate: recovery_gate(),
             method: VerificationMethod::RecoveryKey,
             flow_id: 17,
+            sas_emojis: vec![],
         },
         SessionState::AwaitingBootstrapConfirmation {
             info: info.clone(),
@@ -1562,6 +1570,7 @@ fn e2ee_recovery_submission_emits_recover_effect_without_exposing_secret() {
             },
             method: VerificationMethod::RecoveryKey,
             flow_id: 0,
+            sas_emojis: vec![],
         }
     );
     assert_eq!(
@@ -1585,6 +1594,7 @@ fn e2ee_recovery_success_requests_authoritative_trust_recheck() {
             gate: recovery_gate(),
             method: VerificationMethod::RecoveryKey,
             flow_id: 0,
+            sas_emojis: vec![],
         },
         ..AppState::default()
     };
@@ -1606,6 +1616,73 @@ fn e2ee_recovery_success_requests_authoritative_trust_recheck() {
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
         ]
     );
+}
+
+#[test]
+fn gate_sas_projection_requires_matching_flow_and_exactly_seven_emojis() {
+    let emojis = (0..7)
+        .map(|index| koushi_state::SasEmoji {
+            symbol: format!("e{index}"),
+            description: format!("d{index}"),
+        })
+        .collect::<Vec<_>>();
+    let mut state = AppState {
+        session: SessionState::Verifying {
+            info: session_info(),
+            gate: recovery_gate(),
+            method: VerificationMethod::ExistingDeviceSas,
+            flow_id: 44,
+            sas_emojis: vec![],
+        },
+        ..AppState::default()
+    };
+    let before = state.clone();
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::GateSasPresented {
+                flow_id: 43,
+                emojis: emojis.clone()
+            }
+        )
+        .is_empty()
+    );
+    assert_eq!(state, before);
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::GateSasPresented {
+                flow_id: 44,
+                emojis: emojis[..6].to_vec()
+            }
+        )
+        .is_empty()
+    );
+    assert_eq!(state, before);
+    assert!(
+        !reduce(
+            &mut state,
+            AppAction::GateSasPresented {
+                flow_id: 44,
+                emojis: emojis.clone()
+            }
+        )
+        .is_empty()
+    );
+    assert!(
+        matches!(state.session, SessionState::Verifying { sas_emojis: ref projected, .. } if projected == &emojis)
+    );
+    reduce(
+        &mut state,
+        AppAction::VerificationCompleted { request_id: 44 },
+    );
+    assert!(matches!(
+        state.session,
+        SessionState::Provisional {
+            phase: ProvisionalPhase::RecheckingTrust { .. },
+            ..
+        }
+    ));
 }
 
 #[test]

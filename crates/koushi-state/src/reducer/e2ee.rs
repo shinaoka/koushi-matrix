@@ -64,6 +64,30 @@ pub(crate) fn handle_e2ee_recovery_required(
     effects
 }
 
+pub(crate) fn handle_gate_sas_presented(
+    state: &mut AppState,
+    flow_id: u64,
+    emojis: Vec<SasEmoji>,
+) -> Vec<AppEffect> {
+    if emojis.len() != 7 {
+        return Vec::new();
+    }
+    let SessionState::Verifying {
+        method: VerificationMethod::ExistingDeviceSas,
+        flow_id: active_flow_id,
+        sas_emojis,
+        ..
+    } = &mut state.session
+    else {
+        return Vec::new();
+    };
+    if *active_flow_id != flow_id {
+        return Vec::new();
+    }
+    *sas_emojis = emojis;
+    vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+}
+
 pub(crate) fn handle_e2ee_recovery_submitted(
     state: &mut AppState,
     request: crate::action::RecoveryRequest,
@@ -89,6 +113,7 @@ pub(crate) fn handle_e2ee_recovery_submitted(
         gate: gate.clone(),
         method,
         flow_id: 0,
+        sas_emojis: Vec::new(),
     };
     vec![
         AppEffect::RecoverE2ee(request),
@@ -389,6 +414,7 @@ pub(crate) fn handle_verification_failed(
         gate,
         method: VerificationMethod::ExistingDeviceSas,
         flow_id,
+        ..
     } = &state.session
         && *flow_id == request_id
     {

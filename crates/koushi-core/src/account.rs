@@ -44,8 +44,9 @@ use koushi_state::{
     AvatarThumbnailFailureKind, AvatarThumbnailState, CrossSigningStatus, DeviceSessionSummary,
     E2eeRecoveryState, IdentityResetAuthType, IdentityResetState, LoginAttemptId, LoginRequest,
     OperationFailureKind, OwnProfile, PresenceKind, RecoveryKeyDeliveryState, RecoveryMethod,
-    RecoveryRequest, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SessionInfo,
-    TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState, VerificationTarget,
+    RecoveryRequest, SasEmoji, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem,
+    SessionInfo, TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState,
+    VerificationTarget,
 };
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
 use matrix_sdk::ruma::events::room::MediaSource as SdkMediaSource;
@@ -3571,11 +3572,13 @@ impl AccountActor {
                     .await;
                     return;
                 }
-                self.send_actions(vec![AppAction::VerificationSasPresented {
-                    request_id: request_id.sequence,
-                    emojis: emojis.clone(),
-                }])
-                .await;
+                let own_user_flow = self
+                    .own_user_verification
+                    .as_ref()
+                    .is_some_and(|(flow_id, _)| *flow_id == request_id.sequence);
+                let action =
+                    sas_projection_action(own_user_flow, request_id.sequence, emojis.clone());
+                self.send_actions(vec![action]).await;
                 self.emit_verification_progress(VerificationFlowState::SasPresented {
                     request_id: request_id.sequence,
                     target,
@@ -6101,6 +6104,17 @@ impl AccountActor {
     }
 }
 
+fn sas_projection_action(own_user_flow: bool, flow_id: u64, emojis: Vec<SasEmoji>) -> AppAction {
+    if own_user_flow {
+        AppAction::GateSasPresented { flow_id, emojis }
+    } else {
+        AppAction::VerificationSasPresented {
+            request_id: flow_id,
+            emojis,
+        }
+    }
+}
+
 fn trace_room_route(stage: &'static str, command: &RoomCommand) {
     match command {
         RoomCommand::CreateRoom { request_id, .. } => {
@@ -6774,6 +6788,23 @@ mod tests {
 
     use super::*;
     use crate::store::CredentialStoreBackend;
+
+    #[test]
+    fn own_user_sas_projects_gate_action_while_peer_sas_keeps_peer_projection() {
+        let emojis = vec![
+            SasEmoji {
+                symbol: "x".into(),
+                description: "opaque".into()
+            };
+            7
+        ];
+        assert!(
+            matches!(sas_projection_action(true, 41, emojis.clone()), AppAction::GateSasPresented { flow_id: 41, emojis: projected } if projected == emojis)
+        );
+        assert!(
+            matches!(sas_projection_action(false, 42, emojis.clone()), AppAction::VerificationSasPresented { request_id: 42, emojis: projected } if projected == emojis)
+        );
+    }
 
     #[tokio::test]
     async fn actor_sas_settlement_emits_exactly_one_terminal_and_clears_runtime() {

@@ -504,6 +504,7 @@ pub enum FrontendSessionState {
         gate: VerificationGateState,
         method: VerificationMethod,
         flow_id: u64,
+        sas_emojis: Vec<koushi_state::SasEmoji>,
     },
     AwaitingBootstrapConfirmation {
         homeserver: String,
@@ -575,6 +576,7 @@ impl From<SessionState> for FrontendSessionState {
                 gate,
                 method,
                 flow_id,
+                sas_emojis,
             } => Self::Verifying {
                 homeserver: info.homeserver,
                 user_id: info.user_id,
@@ -582,6 +584,7 @@ impl From<SessionState> for FrontendSessionState {
                 gate,
                 method,
                 flow_id,
+                sas_emojis,
             },
             SessionState::AwaitingBootstrapConfirmation {
                 info,
@@ -1460,6 +1463,13 @@ mod tests {
                 gate: gate.clone(),
                 method: koushi_state::VerificationMethod::ExistingDeviceSas,
                 flow_id: 7,
+                sas_emojis: vec![
+                    koushi_state::SasEmoji {
+                        symbol: "🐶".into(),
+                        description: "dog".into()
+                    };
+                    7
+                ],
             },
             SessionState::AwaitingBootstrapConfirmation {
                 info: info.clone(),

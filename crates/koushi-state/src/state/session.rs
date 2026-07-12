@@ -26,6 +26,8 @@ pub enum SessionState {
         gate: VerificationGateState,
         method: VerificationMethod,
         flow_id: u64,
+        #[serde(default)]
+        sas_emojis: Vec<crate::state::SasEmoji>,
     },
     AwaitingBootstrapConfirmation {
         info: SessionInfo,
