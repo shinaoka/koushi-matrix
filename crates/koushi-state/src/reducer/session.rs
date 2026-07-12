@@ -2,10 +2,10 @@ use crate::{
     action::LoginRequest,
     effect::{AppEffect, UiEvent},
     state::{
-        AppError, AppState, CurrentDeviceTrustState, ProvisionalPhase, SessionState,
-        SoftLogoutReauthState, SyncState, VerificationAccountKind, VerificationGateFailureKind,
-        VerificationGateRejectReason, VerificationGateState, VerificationMethod,
-        VerificationMethodCapability,
+        AppError, AppState, CurrentDeviceTrustState, LoginAttemptId, ProvisionalPhase,
+        SessionState, SoftLogoutReauthState, SyncState, VerificationAccountKind,
+        VerificationGateFailureKind, VerificationGateRejectReason, VerificationGateState,
+        VerificationMethod, VerificationMethodCapability,
     },
 };
 
@@ -56,12 +56,17 @@ fn homeservers_match(expected: &str, actual: &str) -> bool {
 
 pub(crate) fn handle_login_succeeded(
     state: &mut AppState,
+    attempt_id: LoginAttemptId,
     info: crate::state::SessionInfo,
 ) -> Vec<AppEffect> {
-    let SessionState::Authenticating { homeserver } = &state.session else {
+    let SessionState::Authenticating {
+        homeserver,
+        attempt_id: active_attempt_id,
+    } = &state.session
+    else {
         return Vec::new();
     };
-    if !homeservers_match(homeserver, &info.homeserver) {
+    if *active_attempt_id != attempt_id || !homeservers_match(homeserver, &info.homeserver) {
         return Vec::new();
     }
     install_provisional_session(state, info)
@@ -249,18 +254,36 @@ pub(crate) fn handle_restore_session_failed(
 
 pub(crate) fn handle_login_submitted(
     state: &mut AppState,
+    attempt_id: LoginAttemptId,
     request: LoginRequest,
 ) -> Vec<AppEffect> {
     state.session = SessionState::Authenticating {
         homeserver: request.homeserver.clone(),
+        attempt_id,
     };
     vec![
-        AppEffect::Login(request),
+        AppEffect::Login {
+            attempt_id,
+            request,
+        },
         AppEffect::EmitUiEvent(UiEvent::SessionChanged),
     ]
 }
 
-pub(crate) fn handle_login_failed(state: &mut AppState, message: String) -> Vec<AppEffect> {
+pub(crate) fn handle_login_failed(
+    state: &mut AppState,
+    attempt_id: LoginAttemptId,
+    message: String,
+) -> Vec<AppEffect> {
+    if !matches!(
+        state.session,
+        SessionState::Authenticating {
+            attempt_id: active_attempt_id,
+            ..
+        } if active_attempt_id == attempt_id
+    ) {
+        return Vec::new();
+    }
     state.session = SessionState::SignedOut;
     state.errors.push(AppError {
         code: "login_failed".to_owned(),

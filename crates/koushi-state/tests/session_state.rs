@@ -2,10 +2,10 @@ use koushi_state::{
     AppAction, AppEffect, AppError, AppState, AuthDiscoveryState, AuthFailureKind, AuthSecret,
     BasicOperationState, ComposerSubmissionTarget, ComposerSubmissionTerminalOutcome,
     CurrentDeviceTrustState, DelegatedAuthLinks, E2eeRecoveryState, InviteOperationState,
-    InviteScopeSelection, InviteTargetQueryState, InviteWorkflowState, LoginFlow, LoginFlowKind,
-    LoginRequest, NativeAttentionCandidate, NativeAttentionCapabilities, NativeAttentionCapability,
-    NativeAttentionState, NativeAttentionSummary, NavigationState, ProvisionalPhase,
-    RecoveryMethod, RecoveryRequest, RoomAttentionKind, RoomSummary, RoomTags,
+    InviteScopeSelection, InviteTargetQueryState, InviteWorkflowState, LoginAttemptId, LoginFlow,
+    LoginFlowKind, LoginRequest, NativeAttentionCandidate, NativeAttentionCapabilities,
+    NativeAttentionCapability, NativeAttentionState, NativeAttentionSummary, NavigationState,
+    ProvisionalPhase, RecoveryMethod, RecoveryRequest, RoomAttentionKind, RoomSummary, RoomTags,
     SearchCrawlerLastActive, SearchCrawlerLastActiveStatus, SearchCrawlerRoomState,
     SearchCrawlerState, SearchScope, SearchState, SessionInfo, SessionState, SpaceSummary,
     SubmissionId, SyncState, ThreadAttentionState, ThreadPaneState, TimelinePaneState, UiEvent,
@@ -27,6 +27,10 @@ fn alternate_session_info() -> SessionInfo {
         user_id: "@user-b:example.invalid".to_owned(),
         device_id: "DEVICE-B".to_owned(),
     }
+}
+
+fn login_attempt_id() -> LoginAttemptId {
+    LoginAttemptId::new(7)
 }
 
 fn state_with_session_scoped_workflows() -> AppState {
@@ -96,8 +100,12 @@ fn authenticated_install_is_provisional_for_login_and_restore() {
         (
             SessionState::Authenticating {
                 homeserver: "https://matrix.example.org".to_owned(),
+                attempt_id: login_attempt_id(),
             },
-            AppAction::LoginSucceeded(session_info()),
+            AppAction::LoginSucceeded {
+                attempt_id: login_attempt_id(),
+                info: session_info(),
+            },
         ),
     ] {
         let mut state = AppState {
@@ -125,12 +133,71 @@ fn authenticated_install_is_provisional_for_login_and_restore() {
 }
 
 #[test]
+fn same_homeserver_login_attempts_reject_stale_success_and_failure() {
+    let attempt_a = LoginAttemptId::new(41);
+    let attempt_b = LoginAttemptId::new(42);
+    assert_eq!(format!("{attempt_a:?}"), "LoginAttemptId(..)");
+    let login = |attempt_id| AppAction::LoginSubmitted {
+        attempt_id,
+        request: LoginRequest {
+            homeserver: session_info().homeserver,
+            username: "user".to_owned(),
+            password: AuthSecret::new("synthetic-password"),
+            device_display_name: None,
+        },
+    };
+    let mut state = AppState::default();
+    reduce(&mut state, login(attempt_a));
+    reduce(&mut state, login(attempt_b));
+    assert!(matches!(
+        state.session,
+        SessionState::Authenticating { attempt_id, .. } if attempt_id == attempt_b
+    ));
+
+    let before = state.clone();
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::LoginSucceeded {
+                attempt_id: attempt_a,
+                info: session_info(),
+            },
+        )
+        .is_empty()
+    );
+    assert_eq!(state, before);
+    assert!(
+        reduce(
+            &mut state,
+            AppAction::LoginFailed {
+                attempt_id: attempt_a,
+                message: "stale failure".to_owned(),
+            },
+        )
+        .is_empty()
+    );
+    assert_eq!(state, before);
+
+    reduce(
+        &mut state,
+        AppAction::LoginSucceeded {
+            attempt_id: attempt_b,
+            info: session_info(),
+        },
+    );
+    assert!(matches!(state.session, SessionState::Provisional { .. }));
+}
+
+#[test]
 fn stale_or_wrong_state_authentication_success_is_ignored() {
     let info = session_info();
     let cases = [
         (
             SessionState::SignedOut,
-            AppAction::LoginSucceeded(info.clone()),
+            AppAction::LoginSucceeded {
+                attempt_id: login_attempt_id(),
+                info: info.clone(),
+            },
         ),
         (
             SessionState::SignedOut,
@@ -138,7 +205,10 @@ fn stale_or_wrong_state_authentication_success_is_ignored() {
         ),
         (
             SessionState::Ready(info.clone()),
-            AppAction::LoginSucceeded(info.clone()),
+            AppAction::LoginSucceeded {
+                attempt_id: login_attempt_id(),
+                info: info.clone(),
+            },
         ),
         (
             SessionState::Locked(info.clone()),
@@ -149,21 +219,32 @@ fn stale_or_wrong_state_authentication_success_is_ignored() {
                 info: info.clone(),
                 reason: VerificationGateRejectReason::UserRejected,
             },
-            AppAction::LoginSucceeded(info.clone()),
+            AppAction::LoginSucceeded {
+                attempt_id: login_attempt_id(),
+                info: info.clone(),
+            },
         ),
         (
             SessionState::Restoring,
-            AppAction::LoginSucceeded(info.clone()),
+            AppAction::LoginSucceeded {
+                attempt_id: login_attempt_id(),
+                info: info.clone(),
+            },
         ),
         (
             SessionState::Authenticating {
                 homeserver: "https://other.example.org".to_owned(),
+                attempt_id: login_attempt_id(),
             },
-            AppAction::LoginSucceeded(info.clone()),
+            AppAction::LoginSucceeded {
+                attempt_id: login_attempt_id(),
+                info: info.clone(),
+            },
         ),
         (
             SessionState::Authenticating {
                 homeserver: info.homeserver.clone(),
+                attempt_id: login_attempt_id(),
             },
             AppAction::RestoreSessionSucceeded(info.clone()),
         ),
@@ -182,13 +263,21 @@ fn stale_or_wrong_state_authentication_success_is_ignored() {
     let mut logged_out = AppState {
         session: SessionState::Authenticating {
             homeserver: info.homeserver.clone(),
+            attempt_id: login_attempt_id(),
         },
         ..AppState::default()
     };
     reduce(&mut logged_out, AppAction::LogoutRequested);
     let before = logged_out.clone();
     assert!(
-        reduce(&mut logged_out, AppAction::LoginSucceeded(info)).is_empty(),
+        reduce(
+            &mut logged_out,
+            AppAction::LoginSucceeded {
+                attempt_id: login_attempt_id(),
+                info,
+            },
+        )
+        .is_empty(),
         "late login success after logout must be stale"
     );
     assert_eq!(logged_out, before);
@@ -403,6 +492,13 @@ fn normal_room_commands_are_rejected_in_every_verification_gate_state() {
             submission_id: SubmissionId::new("submission-a"),
             room_id: "room-a".to_owned(),
             transaction_id: "txn-a".to_owned(),
+            body: "body".to_owned(),
+        },
+        AppAction::ThreadSubmissionAccepted {
+            submission_id: SubmissionId::new("thread-submission-a"),
+            room_id: "room-a".to_owned(),
+            root_event_id: "event-a".to_owned(),
+            transaction_id: "thread-txn-a".to_owned(),
             body: "body".to_owned(),
         },
         AppAction::DirectoryQueryRequested {
@@ -630,29 +726,36 @@ fn login_submitted_enters_authenticating_and_emits_session_event() {
 
     let effects = reduce(
         &mut state,
-        AppAction::LoginSubmitted(LoginRequest {
-            homeserver: "https://matrix.example.org".to_owned(),
-            username: "user-a".to_owned(),
-            password: AuthSecret::new("synthetic-password"),
-            device_display_name: Some("Matrix Desktop Test".to_owned()),
-        }),
+        AppAction::LoginSubmitted {
+            attempt_id: login_attempt_id(),
+            request: LoginRequest {
+                homeserver: "https://matrix.example.org".to_owned(),
+                username: "user-a".to_owned(),
+                password: AuthSecret::new("synthetic-password"),
+                device_display_name: Some("Matrix Desktop Test".to_owned()),
+            },
+        },
     );
 
     assert_eq!(
         state.session,
         SessionState::Authenticating {
-            homeserver: "https://matrix.example.org".to_owned()
+            homeserver: "https://matrix.example.org".to_owned(),
+            attempt_id: login_attempt_id(),
         }
     );
     assert_eq!(
         effects,
         vec![
-            AppEffect::Login(LoginRequest {
-                homeserver: "https://matrix.example.org".to_owned(),
-                username: "user-a".to_owned(),
-                password: AuthSecret::new("synthetic-password"),
-                device_display_name: Some("Matrix Desktop Test".to_owned()),
-            }),
+            AppEffect::Login {
+                attempt_id: login_attempt_id(),
+                request: LoginRequest {
+                    homeserver: "https://matrix.example.org".to_owned(),
+                    username: "user-a".to_owned(),
+                    password: AuthSecret::new("synthetic-password"),
+                    device_display_name: Some("Matrix Desktop Test".to_owned()),
+                },
+            },
             AppEffect::EmitUiEvent(UiEvent::SessionChanged),
         ]
     );
@@ -660,12 +763,15 @@ fn login_submitted_enters_authenticating_and_emits_session_event() {
 
 #[test]
 fn login_request_debug_redacts_password() {
-    let action = AppAction::LoginSubmitted(LoginRequest {
-        homeserver: "https://matrix.example.org".to_owned(),
-        username: "user-a".to_owned(),
-        password: AuthSecret::new("synthetic-password"),
-        device_display_name: Some("Matrix Desktop Test".to_owned()),
-    });
+    let action = AppAction::LoginSubmitted {
+        attempt_id: login_attempt_id(),
+        request: LoginRequest {
+            homeserver: "https://matrix.example.org".to_owned(),
+            username: "user-a".to_owned(),
+            password: AuthSecret::new("synthetic-password"),
+            device_display_name: Some("Matrix Desktop Test".to_owned()),
+        },
+    };
 
     let debug = format!("{action:?}");
 
@@ -676,9 +782,9 @@ fn login_request_debug_redacts_password() {
 #[test]
 fn login_failure_returns_to_signed_out_and_records_error() {
     let mut state = AppState {
-        session: SessionState::Provisional {
-            info: session_info(),
-            phase: ProvisionalPhase::DiscoveringMethods,
+        session: SessionState::Authenticating {
+            homeserver: session_info().homeserver,
+            attempt_id: login_attempt_id(),
         },
         ..AppState::default()
     };
@@ -686,6 +792,7 @@ fn login_failure_returns_to_signed_out_and_records_error() {
     let effects = reduce(
         &mut state,
         AppAction::LoginFailed {
+            attempt_id: login_attempt_id(),
             message: "invalid password".to_owned(),
         },
     );

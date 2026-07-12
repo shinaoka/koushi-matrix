@@ -2,11 +2,11 @@ use koushi_state::compute_room_list_projection;
 use koushi_state::{
     AccountManagementOperation, AccountManagementState, AppAction, AppEffect, AppState,
     AuthDiscoveryState, AuthFailureKind, DelegatedAuthLinks, DeviceSessionListState,
-    DeviceSessionSummary, E2eeKeyManagementState, LoginFlow, LoginFlowKind, OperationFailureKind,
-    QrLoginState, RecoveryKeyDeliveryState, RoomKeyExportState, RoomKeyImportState,
-    RoomListEntryKind, RoomListFilter, RoomListProjectionItem, RoomSummary, RoomTagInfo,
-    SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionInfo, SessionState,
-    SoftLogoutReauthState, SyncMode, TrustOperationFailureKind, UiEvent, reduce,
+    DeviceSessionSummary, E2eeKeyManagementState, LoginAttemptId, LoginFlow, LoginFlowKind,
+    OperationFailureKind, QrLoginState, RecoveryKeyDeliveryState, RoomKeyExportState,
+    RoomKeyImportState, RoomListEntryKind, RoomListFilter, RoomListProjectionItem, RoomSummary,
+    RoomTagInfo, SecureBackupPassphraseChangeState, SecureBackupSetupState, SessionInfo,
+    SessionState, SoftLogoutReauthState, SyncMode, TrustOperationFailureKind, UiEvent, reduce,
 };
 
 fn session_info() -> SessionInfo {
@@ -476,8 +476,15 @@ fn soft_logout_reauth_succeeds_and_fails_are_request_correlated() {
     );
     state.session = SessionState::Authenticating {
         homeserver: session_info().homeserver,
+        attempt_id: LoginAttemptId::new(1),
     };
-    let effects = reduce(&mut state, AppAction::LoginSucceeded(session_info()));
+    let effects = reduce(
+        &mut state,
+        AppAction::LoginSucceeded {
+            attempt_id: LoginAttemptId::new(1),
+            info: session_info(),
+        },
+    );
     assert!(matches!(state.session, SessionState::Provisional { .. }));
     assert!(effects.contains(&AppEffect::CheckCurrentDeviceTrust));
 

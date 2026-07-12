@@ -7,7 +7,7 @@ use crate::{
     },
 };
 
-use super::current_session_info;
+use super::is_session_ready;
 
 pub(crate) fn handle_thread_submission_accepted(
     state: &mut AppState,
@@ -16,7 +16,7 @@ pub(crate) fn handle_thread_submission_accepted(
     root_event_id: String,
     transaction_id: String,
 ) -> Vec<AppEffect> {
-    if current_session_info(state).is_none() {
+    if !is_session_ready(state) {
         return Vec::new();
     }
     state.timeline.submission_registry.remember_accepted(
@@ -39,8 +39,6 @@ pub(crate) fn handle_thread_submission_accepted(
     composer.pending_submission_id = Some(submission_id);
     handle_thread_reply_submitted(state, room_id, root_event_id, transaction_id)
 }
-
-use super::is_session_ready;
 
 pub(crate) fn handle_thread_composer_draft_changed(
     state: &mut AppState,

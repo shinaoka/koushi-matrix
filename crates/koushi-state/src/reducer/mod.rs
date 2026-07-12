@@ -70,7 +70,9 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::RestoreSessionSucceeded(info) => {
             session::handle_restore_session_succeeded(state, info)
         }
-        AppAction::LoginSucceeded(info) => session::handle_login_succeeded(state, info),
+        AppAction::LoginSucceeded { attempt_id, info } => {
+            session::handle_login_succeeded(state, attempt_id, info)
+        }
         AppAction::CurrentDeviceTrustChanged(trust) => {
             session::handle_current_device_trust_changed(state, trust)
         }
@@ -246,8 +248,14 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::RestoreSessionFailed { message } => {
             session::handle_restore_session_failed(state, message)
         }
-        AppAction::LoginSubmitted(request) => session::handle_login_submitted(state, request),
-        AppAction::LoginFailed { message } => session::handle_login_failed(state, message),
+        AppAction::LoginSubmitted {
+            attempt_id,
+            request,
+        } => session::handle_login_submitted(state, attempt_id, request),
+        AppAction::LoginFailed {
+            attempt_id,
+            message,
+        } => session::handle_login_failed(state, attempt_id, message),
         AppAction::LoginDiscoveryRequested { homeserver } => {
             session::handle_login_discovery_requested(state, homeserver)
         }

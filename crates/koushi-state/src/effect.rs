@@ -1,7 +1,7 @@
 use crate::{
     action::{LoginRequest, RecoveryRequest},
     state::{
-        AttachmentFilter, AttachmentScope, AttachmentSort, RoomPreferencesState,
+        AttachmentFilter, AttachmentScope, AttachmentSort, LoginAttemptId, RoomPreferencesState,
         SearchCrawlerSettings, SearchScope, SessionInfo, SettingsValues, VerificationCancelReason,
         VerificationMethod, VerificationTarget,
     },
@@ -13,7 +13,10 @@ pub enum AppEffect {
     DiscoverLogin {
         homeserver: String,
     },
-    Login(LoginRequest),
+    Login {
+        attempt_id: LoginAttemptId,
+        request: LoginRequest,
+    },
     CheckCurrentDeviceTrust,
     DiscoverVerificationMethods,
     BeginSessionVerification {

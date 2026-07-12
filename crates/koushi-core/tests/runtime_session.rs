@@ -197,10 +197,10 @@ async fn assert_upload_staging_command_routes_for_recovery_session(target: Recov
         state.navigation.active_room_id.as_deref() == Some(room_id)
             && match target {
                 RecoveryRouteTarget::NeedsRecovery => {
-                    matches!(state.session, SessionState::NeedsRecovery { .. })
+                    matches!(state.session, SessionState::AwaitingVerification { .. })
                 }
                 RecoveryRouteTarget::Recovering => {
-                    matches!(state.session, SessionState::Recovering { .. })
+                    matches!(state.session, SessionState::Verifying { .. })
                 }
             }
     })

@@ -1044,8 +1044,6 @@ impl AppActor {
                                 let session_ready = matches!(
                                     self.state.session,
                                     SessionState::Ready(_)
-                                        | SessionState::NeedsRecovery { .. }
-                                        | SessionState::Recovering { .. }
                                 );
                                 let found =
                                     self.state.rooms.iter().any(|r| r.room_id == *room_id);
@@ -2650,7 +2648,11 @@ impl AppActor {
                 }
                 AppEffect::RestoreSession
                 | AppEffect::DiscoverLogin { .. }
-                | AppEffect::Login(_)
+                | AppEffect::Login { .. }
+                | AppEffect::CheckCurrentDeviceTrust
+                | AppEffect::DiscoverVerificationMethods
+                | AppEffect::BeginSessionVerification { .. }
+                | AppEffect::RejectProvisionalSession
                 | AppEffect::RecoverE2ee(_)
                 | AppEffect::RequestVerification { .. }
                 | AppEffect::AcceptVerification { .. }
@@ -2745,7 +2747,11 @@ impl AppActor {
                 }
                 AppEffect::RestoreSession
                 | AppEffect::DiscoverLogin { .. }
-                | AppEffect::Login(_)
+                | AppEffect::Login { .. }
+                | AppEffect::CheckCurrentDeviceTrust
+                | AppEffect::DiscoverVerificationMethods
+                | AppEffect::BeginSessionVerification { .. }
+                | AppEffect::RejectProvisionalSession
                 | AppEffect::RecoverE2ee(_)
                 | AppEffect::RequestVerification { .. }
                 | AppEffect::AcceptVerification { .. }
@@ -2904,8 +2910,10 @@ impl AppActor {
 
     fn current_account_key(&self) -> Option<AccountKey> {
         match &self.state.session {
-            SessionState::NeedsRecovery { info, .. }
-            | SessionState::Recovering { info, .. }
+            SessionState::Provisional { info, .. }
+            | SessionState::AwaitingVerification { info, .. }
+            | SessionState::Verifying { info, .. }
+            | SessionState::Rejecting { info, .. }
             | SessionState::Ready(info)
             | SessionState::Locked(info) => Some(AccountKey(info.user_id.clone())),
             SessionState::SignedOut
@@ -3073,23 +3081,20 @@ fn cancel_replaced_room_timeline_link_previews_key(
 }
 
 fn is_ready_session_for_commands(session: &SessionState) -> bool {
-    matches!(
-        session,
-        SessionState::Ready(_)
-            | SessionState::NeedsRecovery { .. }
-            | SessionState::Recovering { .. }
-    )
+    matches!(session, SessionState::Ready(_))
 }
 
 fn composer_draft_session_key(state: &AppState) -> Option<koushi_key::SessionKeyId> {
     match &state.session {
-        SessionState::NeedsRecovery { info, .. }
-        | SessionState::Recovering { info, .. }
-        | SessionState::Ready(info) => Some(session_key_id_from_info(info)),
+        SessionState::Ready(info) => Some(session_key_id_from_info(info)),
         SessionState::SignedOut
         | SessionState::Restoring
         | SessionState::SwitchingAccount { .. }
         | SessionState::Authenticating { .. }
+        | SessionState::Provisional { .. }
+        | SessionState::AwaitingVerification { .. }
+        | SessionState::Verifying { .. }
+        | SessionState::Rejecting { .. }
         | SessionState::LoggingOut
         | SessionState::Locked(_) => None,
     }

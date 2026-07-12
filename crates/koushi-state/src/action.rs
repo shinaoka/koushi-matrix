@@ -9,9 +9,9 @@ use crate::state::{
     DelegatedAuthLinks, DeviceSessionSummary, DirectoryQuery, DirectoryRoomSummary,
     E2eeRecoveryState, FilesViewScope, IdentityResetAuthType, InviteDestinationResult,
     InviteScopeSelection, JapaneseCatalogProfile, LiveEventReceipts, LocalEncryptionHealth,
-    LoginFlow, NativeAttentionDispatchId, NativeAttentionSoundOutcome, NativeAttentionState,
-    NavigationState, OperationFailureKind, OwnProfile, PinnedEvent, PresenceKind,
-    ProfileUpdateRequest, RecoveryKeyDeliveryState, RecoveryMethod, RoomListFilter,
+    LoginAttemptId, LoginFlow, NativeAttentionDispatchId, NativeAttentionSoundOutcome,
+    NativeAttentionState, NavigationState, OperationFailureKind, OwnProfile, PinnedEvent,
+    PresenceKind, ProfileUpdateRequest, RecoveryKeyDeliveryState, RecoveryMethod, RoomListFilter,
     RoomListProjection, RoomModerationAction, RoomPreferencesState, RoomSettingChange,
     RoomSettingsSnapshot, RoomSummary, RoomTagInfo, RoomTagKind, RoomTags, SasEmoji,
     ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SearchResult, SearchScope,
@@ -185,8 +185,14 @@ pub enum AppAction {
         mxc_uri: String,
         thumbnail: AvatarThumbnailState,
     },
-    LoginSubmitted(LoginRequest),
-    LoginSucceeded(SessionInfo),
+    LoginSubmitted {
+        attempt_id: LoginAttemptId,
+        request: LoginRequest,
+    },
+    LoginSucceeded {
+        attempt_id: LoginAttemptId,
+        info: SessionInfo,
+    },
     CurrentDeviceTrustChanged(CurrentDeviceTrustState),
     VerificationMethodsDiscovered(VerificationGateState),
     VerificationMethodSubmitted {
@@ -363,6 +369,7 @@ pub enum AppAction {
         kind: AuthFailureKind,
     },
     LoginFailed {
+        attempt_id: LoginAttemptId,
         message: String,
     },
     SessionPersistenceFailed {
@@ -1031,9 +1038,13 @@ pub enum AppAction {
 impl fmt::Debug for AppAction {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::LoginSubmitted(request) => formatter
-                .debug_tuple("LoginSubmitted")
-                .field(request)
+            Self::LoginSubmitted {
+                attempt_id,
+                request,
+            } => formatter
+                .debug_struct("LoginSubmitted")
+                .field("attempt_id", attempt_id)
+                .field("request", request)
                 .finish(),
             Self::DirectoryQueryRequested { request_id, query } => formatter
                 .debug_struct("DirectoryQueryRequested")

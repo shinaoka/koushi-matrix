@@ -40,7 +40,7 @@ use koushi_sdk::{MatrixClientSession, PendingOidcLogin, PersistableMatrixSession
 use koushi_state::{
     AccountManagementOperation, AppAction, AuthFailureKind, AvatarImage,
     AvatarThumbnailFailureKind, AvatarThumbnailState, CrossSigningStatus, DeviceSessionSummary,
-    E2eeRecoveryState, IdentityResetAuthType, IdentityResetState, LoginRequest,
+    E2eeRecoveryState, IdentityResetAuthType, IdentityResetState, LoginAttemptId, LoginRequest,
     OperationFailureKind, OwnProfile, PresenceKind, RecoveryKeyDeliveryState, RecoveryMethod,
     RecoveryRequest, ScheduledSendCapability, ScheduledSendHandle, ScheduledSendItem, SessionInfo,
     TrustOperationFailureKind, VerificationCancelReason, VerificationFlowState, VerificationTarget,
@@ -3677,6 +3677,7 @@ impl AccountActor {
                 self.abort_login(login_session, &key_id, false).await;
                 self.emit_failure(request_id, failure);
                 self.send_actions(vec![AppAction::LoginFailed {
+                    attempt_id: LoginAttemptId::new(start_request_id.sequence),
                     message: "login failed".to_owned(),
                 }])
                 .await;
@@ -3690,6 +3691,7 @@ impl AccountActor {
                 self.abort_login(login_session, &key_id, true).await;
                 self.emit_failure(request_id, failure);
                 self.send_actions(vec![AppAction::LoginFailed {
+                    attempt_id: LoginAttemptId::new(start_request_id.sequence),
                     message: "login failed".to_owned(),
                 }])
                 .await;
@@ -3707,8 +3709,11 @@ impl AccountActor {
 
         self.spawn_sync_actor(session_arc.clone()).await;
 
-        self.send_actions(vec![AppAction::LoginSucceeded(info)])
-            .await;
+        self.send_actions(vec![AppAction::LoginSucceeded {
+            attempt_id: LoginAttemptId::new(start_request_id.sequence),
+            info,
+        }])
+        .await;
 
         self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
             request_id: start_request_id,
@@ -3739,6 +3744,7 @@ impl AccountActor {
                 let kind = classify_login_error(&error);
                 self.emit_failure(request_id, CoreFailure::LoginFailed { kind });
                 self.send_actions(vec![AppAction::LoginFailed {
+                    attempt_id: LoginAttemptId::new(request_id.sequence),
                     message: "login failed".to_owned(),
                 }])
                 .await;
@@ -3758,6 +3764,7 @@ impl AccountActor {
                 self.abort_login(login_session, &key_id, false).await;
                 self.emit_failure(request_id, failure);
                 self.send_actions(vec![AppAction::LoginFailed {
+                    attempt_id: LoginAttemptId::new(request_id.sequence),
                     message: "login failed".to_owned(),
                 }])
                 .await;
@@ -3776,6 +3783,7 @@ impl AccountActor {
                 self.abort_login(login_session, &key_id, true).await;
                 self.emit_failure(request_id, failure);
                 self.send_actions(vec![AppAction::LoginFailed {
+                    attempt_id: LoginAttemptId::new(request_id.sequence),
                     message: "login failed".to_owned(),
                 }])
                 .await;
@@ -3800,8 +3808,11 @@ impl AccountActor {
         // Project login success through the reducer (session → Ready), then
         // hydrate Rust-owned profile/account-data projections. Fetch failure is
         // non-fatal to login.
-        self.send_actions(vec![AppAction::LoginSucceeded(info)])
-            .await;
+        self.send_actions(vec![AppAction::LoginSucceeded {
+            attempt_id: LoginAttemptId::new(request_id.sequence),
+            info,
+        }])
+        .await;
 
         // Emit domain event carrying the request_id for command correlation.
         self.emit(CoreEvent::Account(AccountEvent::LoggedIn {
@@ -4502,7 +4513,10 @@ impl AccountActor {
             AppAction::SoftLogoutReauthSucceeded {
                 request_id: request_id.sequence,
             },
-            AppAction::LoginSucceeded(info),
+            AppAction::LoginSucceeded {
+                attempt_id: LoginAttemptId::new(request_id.sequence),
+                info,
+            },
         ])
         .await;
         self.emit(CoreEvent::Account(AccountEvent::LoggedIn {

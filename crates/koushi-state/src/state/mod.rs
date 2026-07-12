@@ -49,8 +49,8 @@ pub use sync::{SyncLifecycleStatus, SyncMode, SyncModeFailureKind, SyncState};
 pub use session::{
     AccountManagementCapabilities, AccountManagementOperation, AccountManagementState,
     AuthDiscoveryState, AuthFailureKind, CapabilityState, CurrentDeviceTrustState,
-    DelegatedAuthLinks, DeviceSessionListState, DeviceSessionSummary, LoginFlow, LoginFlowKind,
-    ProvisionalPhase, QrLoginState, RecoveryMethod, SessionInfo, SessionState,
+    DelegatedAuthLinks, DeviceSessionListState, DeviceSessionSummary, LoginAttemptId, LoginFlow,
+    LoginFlowKind, ProvisionalPhase, QrLoginState, RecoveryMethod, SessionInfo, SessionState,
     SoftLogoutReauthState, VerificationAccountKind, VerificationGateFailureKind,
     VerificationGateRejectReason, VerificationGateState, VerificationMethod,
     VerificationMethodCapability,

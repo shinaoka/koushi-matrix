@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -9,6 +11,7 @@ pub enum SessionState {
     },
     Authenticating {
         homeserver: String,
+        attempt_id: LoginAttemptId,
     },
     Provisional {
         info: SessionInfo,
@@ -31,6 +34,26 @@ pub enum SessionState {
     Ready(SessionInfo),
     Locked(SessionInfo),
     LoggingOut,
+}
+
+#[derive(Clone, Copy, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LoginAttemptId(u64);
+
+impl LoginAttemptId {
+    pub fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Debug for LoginAttemptId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("LoginAttemptId(..)")
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
