@@ -67,6 +67,7 @@ pub(crate) fn recompute_room_list_projection(state: &mut AppState) {
 pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
     match action {
         AppAction::AppStarted => session::handle_app_started(state),
+        AppAction::RestoreSessionRequested => session::handle_restore_session_requested(state),
         AppAction::RestoreSessionSucceeded(info) => {
             session::handle_restore_session_succeeded(state, info)
         }
@@ -109,8 +110,8 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::E2eeRecoveryRequired { info, methods } => {
             e2ee::handle_e2ee_recovery_required(state, info, methods)
         }
-        AppAction::E2eeRecoverySubmitted(request) => {
-            e2ee::handle_e2ee_recovery_submitted(state, request)
+        AppAction::E2eeRecoverySubmitted { flow_id, request } => {
+            e2ee::handle_e2ee_recovery_submitted(state, flow_id, request)
         }
         AppAction::E2eeRecoverySucceeded => e2ee::handle_e2ee_recovery_succeeded(state),
         AppAction::E2eeRecoveryFailed { message } => {

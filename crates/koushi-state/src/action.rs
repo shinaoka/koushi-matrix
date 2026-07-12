@@ -24,6 +24,7 @@ use crate::state::{
 #[derive(Clone, Eq, PartialEq)]
 pub enum AppAction {
     AppStarted,
+    RestoreSessionRequested,
     RestoreSessionSucceeded(SessionInfo),
     RestoreSessionNotFound,
     RestoreSessionFailed {
@@ -232,7 +233,10 @@ pub enum AppAction {
         info: SessionInfo,
         methods: Vec<RecoveryMethod>,
     },
-    E2eeRecoverySubmitted(RecoveryRequest),
+    E2eeRecoverySubmitted {
+        flow_id: u64,
+        request: RecoveryRequest,
+    },
     E2eeRecoverySucceeded,
     E2eeRecoveryFailed {
         message: String,

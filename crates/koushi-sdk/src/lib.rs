@@ -80,6 +80,15 @@ fn map_verification_method_facts(facts: VerificationMethodFacts) -> Verification
         failure: None,
     }
 }
+
+fn is_eligible_own_user_proof_device(
+    current_device_id: &str,
+    candidate_device_id: &str,
+    cross_signed_by_owner: bool,
+    blocked: bool,
+) -> bool {
+    candidate_device_id != current_device_id && cross_signed_by_owner && !blocked
+}
 use matrix_sdk::{
     authentication::{
         matrix::MatrixSession,
@@ -124,6 +133,7 @@ use zeroize::Zeroizing;
 
 const LOGIN_DISCOVERY_PATH: &str = "_matrix/client/v3/login";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+const RESTRICTED_VERIFICATION_SYNC_SERVER_TIMEOUT: Duration = Duration::from_secs(3);
 const MATRIX_ROOM_LIST_SNAPSHOT_LIMIT: usize = 4096;
 pub const LOCAL_USER_ALIASES_ACCOUNT_DATA_TYPE: &str = "app.koushi.local_aliases";
 
@@ -482,8 +492,32 @@ pub enum MatrixVerificationRequestState {
     Ready,
     SasStarted(MatrixSasVerificationHandle),
     Done,
-    Cancelled,
+    Cancelled {
+        kind: MatrixVerificationCancelKind,
+        cancelled_by_us: bool,
+    },
     UnsupportedMethod,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatrixVerificationCancelKind {
+    UnknownMethod,
+    KeyMismatch,
+    User,
+    Timeout,
+    AcceptedElsewhere,
+    Other,
+}
+
+fn map_verification_cancel_kind(code: &str) -> MatrixVerificationCancelKind {
+    match code {
+        "m.unknown_method" => MatrixVerificationCancelKind::UnknownMethod,
+        "m.key_mismatch" => MatrixVerificationCancelKind::KeyMismatch,
+        "m.user" => MatrixVerificationCancelKind::User,
+        "m.timeout" => MatrixVerificationCancelKind::Timeout,
+        "m.accepted" => MatrixVerificationCancelKind::AcceptedElsewhere,
+        _ => MatrixVerificationCancelKind::Other,
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -648,7 +682,10 @@ fn map_sdk_verification_request_state(
             _ => MatrixVerificationRequestState::UnsupportedMethod,
         },
         SdkVerificationRequestState::Done => MatrixVerificationRequestState::Done,
-        SdkVerificationRequestState::Cancelled(_) => MatrixVerificationRequestState::Cancelled,
+        SdkVerificationRequestState::Cancelled(info) => MatrixVerificationRequestState::Cancelled {
+            kind: map_verification_cancel_kind(info.cancel_code().as_str()),
+            cancelled_by_us: info.cancelled_by_us(),
+        },
     }
 }
 
@@ -1234,8 +1271,16 @@ pub async fn discover_current_session_verification_methods(
         Ok(devices) => devices
             .devices()
             .filter(|device| {
-                device.device_id().as_str() != session.info.device_id
-                    && device.is_verified_with_cross_signing()
+                // A provisional device does not trust the owner identity yet,
+                // so local cross-signing trust creates a chicken-and-egg
+                // dependency. Proof eligibility is the authoritative owner
+                // signature on a distinct, non-blocked device.
+                is_eligible_own_user_proof_device(
+                    &session.info.device_id,
+                    device.device_id().as_str(),
+                    device.is_cross_signed_by_owner(),
+                    device.is_blacklisted(),
+                )
             })
             .count() as u64,
         Err(_) => {
@@ -1276,8 +1321,12 @@ pub async fn request_own_user_sas_verification(
     let eligible_device_count = devices
         .devices()
         .filter(|device| {
-            device.device_id().as_str() != session.info.device_id
-                && device.is_verified_with_cross_signing()
+            is_eligible_own_user_proof_device(
+                &session.info.device_id,
+                device.device_id().as_str(),
+                device.is_cross_signed_by_owner(),
+                device.is_blacklisted(),
+            )
         })
         .count() as u64;
     if eligible_device_count == 0 {
@@ -1637,6 +1686,49 @@ GYW19pdjg0qdXNk/eqZsQTsNWVo6A\n\
         assert_eq!(
             unknown_without_known_proof.account_kind,
             VerificationAccountKind::Unknown
+        );
+    }
+
+    #[test]
+    fn own_user_proof_eligibility_requires_distinct_owner_signed_unblocked_device() {
+        assert!(super::is_eligible_own_user_proof_device(
+            "CURRENT", "OTHER", true, false
+        ));
+        assert!(!super::is_eligible_own_user_proof_device(
+            "CURRENT", "CURRENT", true, false
+        ));
+        assert!(!super::is_eligible_own_user_proof_device(
+            "CURRENT", "OTHER", false, false
+        ));
+        assert!(!super::is_eligible_own_user_proof_device(
+            "CURRENT", "OTHER", true, true
+        ));
+    }
+
+    #[test]
+    fn verification_cancel_codes_map_to_closed_private_safe_categories() {
+        use super::MatrixVerificationCancelKind as Kind;
+
+        assert_eq!(
+            super::map_verification_cancel_kind("m.unknown_method"),
+            Kind::UnknownMethod
+        );
+        assert_eq!(
+            super::map_verification_cancel_kind("m.key_mismatch"),
+            Kind::KeyMismatch
+        );
+        assert_eq!(super::map_verification_cancel_kind("m.user"), Kind::User);
+        assert_eq!(
+            super::map_verification_cancel_kind("m.timeout"),
+            Kind::Timeout
+        );
+        assert_eq!(
+            super::map_verification_cancel_kind("m.accepted"),
+            Kind::AcceptedElsewhere
+        );
+        assert_eq!(
+            super::map_verification_cancel_kind("m.future_code"),
+            Kind::Other
         );
     }
 
@@ -4735,17 +4827,52 @@ fn restricted_verification_sync_filter() -> matrix_sdk::ruma::api::client::filte
     filter
 }
 
+fn restricted_verification_sync_settings() -> matrix_sdk::config::SyncSettings {
+    matrix_sdk::config::SyncSettings::new()
+        .timeout(RESTRICTED_VERIFICATION_SYNC_SERVER_TIMEOUT)
+        .filter(
+            matrix_sdk::ruma::api::client::sync::sync_events::v3::Filter::FilterDefinition(
+                restricted_verification_sync_filter(),
+            ),
+        )
+}
+
+fn promotion_full_state_sync_settings() -> matrix_sdk::config::SyncSettings {
+    matrix_sdk::config::SyncSettings::new()
+        .timeout(RESTRICTED_VERIFICATION_SYNC_SERVER_TIMEOUT)
+        .full_state(true)
+}
+
 pub async fn restricted_verification_sync_once(
     session: &MatrixClientSession,
 ) -> Result<(), MatrixSyncError> {
-    let settings = matrix_sdk::config::SyncSettings::new().filter(
-        matrix_sdk::ruma::api::client::sync::sync_events::v3::Filter::FilterDefinition(
-            restricted_verification_sync_filter(),
-        ),
-    );
+    restricted_verification_sync_once_with_token(session, None)
+        .await
+        .map(|_| ())
+}
+
+pub async fn restricted_verification_sync_once_with_token(
+    session: &MatrixClientSession,
+    token: Option<String>,
+) -> Result<String, MatrixSyncError> {
+    let mut settings = restricted_verification_sync_settings();
+    if let Some(token) = token {
+        settings = settings.token(token);
+    }
     session
         .client()
         .sync_once(settings)
+        .await
+        .map(|response| response.next_batch)
+        .map_err(|_| MatrixSyncError::Sdk)
+}
+
+pub async fn promotion_full_state_sync_once(
+    session: &MatrixClientSession,
+) -> Result<(), MatrixSyncError> {
+    session
+        .client()
+        .sync_once(promotion_full_state_sync_settings())
         .await
         .map(|_| ())
         .map_err(|_| MatrixSyncError::Sdk)

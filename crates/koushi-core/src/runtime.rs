@@ -328,6 +328,23 @@ impl CoreRuntime {
     pub fn shutdown_handle(&self) -> &executor::JoinHandle<()> {
         &self.actor
     }
+
+    /// Close the command inbox and wait until AppActor has completed its
+    /// ordered AccountActor/store shutdown barrier.
+    pub async fn shutdown(self) {
+        let Self {
+            command_tx,
+            event_tx: _,
+            snapshot_rx: _,
+            next_connection_id: _,
+            action_tx: _,
+            #[cfg(test)]
+                account_actor_test_handle: _,
+            actor,
+        } = self;
+        drop(command_tx);
+        let _ = actor.await;
+    }
 }
 
 /// One attached consumer: allocates request ids, submits commands, and
@@ -1560,7 +1577,9 @@ impl AppActor {
                 .await;
                 let requires_projection_acceptance = matches!(
                     &account_command,
-                    AccountCommand::ResetLocalData { .. }
+                    AccountCommand::RestoreSession { .. }
+                        | AccountCommand::RestoreLastSession { .. }
+                        | AccountCommand::ResetLocalData { .. }
                         | AccountCommand::SubmitRecovery { .. }
                         | AccountCommand::StartSessionBootstrap { .. }
                         | AccountCommand::ConfirmSessionBootstrapSaved { .. }
@@ -3243,9 +3262,13 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
                 target: target.clone(),
             })
         }
-        AccountCommand::SubmitRecovery { request, .. } => {
-            Some(AppAction::E2eeRecoverySubmitted(request.clone()))
-        }
+        AccountCommand::SubmitRecovery {
+            request_id,
+            request,
+        } => Some(AppAction::E2eeRecoverySubmitted {
+            flow_id: request_id.sequence,
+            request: request.clone(),
+        }),
         AccountCommand::StartSessionBootstrap { flow_id, .. } => {
             Some(AppAction::VerificationMethodSubmitted {
                 method: koushi_state::VerificationMethod::Bootstrap,
@@ -3433,9 +3456,10 @@ fn account_command_projected_action(command: &AccountCommand) -> Option<AppActio
             attempt_id: LoginAttemptId::new(request_id.connection_id.0, request_id.sequence),
             homeserver: request.homeserver.clone(),
         }),
+        AccountCommand::RestoreSession { .. } | AccountCommand::RestoreLastSession { .. } => {
+            Some(AppAction::RestoreSessionRequested)
+        }
         AccountCommand::CompleteOidcLogin { .. }
-        | AccountCommand::RestoreSession { .. }
-        | AccountCommand::RestoreLastSession { .. }
         | AccountCommand::QuerySavedSessions { .. }
         | AccountCommand::SetPresence { .. }
         | AccountCommand::DownloadAvatarThumbnail { .. }
@@ -5304,6 +5328,24 @@ mod tests {
             "stale/wrong-account trust changed state"
         );
         runtime.shutdown_handle().abort();
+    }
+
+    #[tokio::test]
+    async fn explicit_shutdown_is_a_barrier_before_same_data_dir_reopen() {
+        let data_dir = tempfile::tempdir().expect("runtime data dir");
+        let runtime = CoreRuntime::start_with_data_dir(data_dir.path().to_owned());
+        let connection = runtime.attach();
+        drop(connection);
+        tokio::time::timeout(Duration::from_secs(3), runtime.shutdown())
+            .await
+            .expect("first runtime shutdown barrier");
+
+        let reopened = CoreRuntime::start_with_data_dir(data_dir.path().to_owned());
+        let connection = reopened.attach();
+        drop(connection);
+        tokio::time::timeout(Duration::from_secs(3), reopened.shutdown())
+            .await
+            .expect("reopened runtime shutdown barrier");
     }
 
     async fn inspect_runtime_children(runtime: &CoreRuntime) -> (bool, bool, bool, bool) {

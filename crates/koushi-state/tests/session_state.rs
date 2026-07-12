@@ -834,6 +834,59 @@ fn gate_sas_terminals_are_retryable_and_done_only_requests_trust_recheck() {
 }
 
 #[test]
+fn active_verification_survives_unknown_and_unverified_trust_observations() {
+    let info = session_info();
+    let gate = VerificationGateState {
+        methods: vec![VerificationMethodCapability::ExistingDeviceSas],
+        account_kind: VerificationAccountKind::ExistingIdentity,
+        failure: None,
+    };
+    for trust in [
+        CurrentDeviceTrustState::Unknown,
+        CurrentDeviceTrustState::Unverified,
+    ] {
+        let expected = SessionState::Verifying {
+            info: info.clone(),
+            gate: gate.clone(),
+            method: VerificationMethod::ExistingDeviceSas,
+            flow_id: 41,
+            sas_emojis: Vec::new(),
+        };
+        let mut state = AppState {
+            session: expected.clone(),
+            ..AppState::default()
+        };
+        let effects = reduce(
+            &mut state,
+            AppAction::AuthoritativeDeviceTrustChanged {
+                generation: 7,
+                trust,
+            },
+        );
+        assert_eq!(state.session, expected);
+        assert!(effects.is_empty());
+    }
+}
+
+#[test]
+fn explicit_restore_enters_restoring_without_triggering_automatic_restore() {
+    let mut state = AppState::default();
+    let effects = reduce(&mut state, AppAction::RestoreSessionRequested);
+    assert!(matches!(state.session, SessionState::Restoring));
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::RestoreSession))
+    );
+
+    reduce(
+        &mut state,
+        AppAction::RestoreSessionSucceeded(session_info()),
+    );
+    assert!(matches!(state.session, SessionState::Provisional { .. }));
+}
+
+#[test]
 fn gate_sas_start_mismatch_cancel_and_retry_remain_correlated() {
     let info = session_info();
     let gate = VerificationGateState {
@@ -1551,9 +1604,12 @@ fn e2ee_recovery_submission_emits_recover_effect_without_exposing_secret() {
 
     let effects = reduce(
         &mut state,
-        AppAction::E2eeRecoverySubmitted(RecoveryRequest {
-            secret: AuthSecret::new("synthetic-recovery-secret"),
-        }),
+        AppAction::E2eeRecoverySubmitted {
+            flow_id: 77,
+            request: RecoveryRequest {
+                secret: AuthSecret::new("synthetic-recovery-secret"),
+            },
+        },
     );
 
     assert_eq!(
@@ -1569,7 +1625,7 @@ fn e2ee_recovery_submission_emits_recover_effect_without_exposing_secret() {
                 failure: None,
             },
             method: VerificationMethod::RecoveryKey,
-            flow_id: 0,
+            flow_id: 77,
             sas_emojis: vec![],
         }
     );

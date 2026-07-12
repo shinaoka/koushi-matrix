@@ -18,6 +18,14 @@ pub(crate) fn handle_app_started(state: &mut AppState) -> Vec<AppEffect> {
     vec![AppEffect::RestoreSession]
 }
 
+pub(crate) fn handle_restore_session_requested(state: &mut AppState) -> Vec<AppEffect> {
+    if !matches!(state.session, SessionState::SignedOut) {
+        return Vec::new();
+    }
+    state.session = SessionState::Restoring;
+    vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+}
+
 fn install_provisional_session(
     state: &mut AppState,
     info: crate::state::SessionInfo,
@@ -96,6 +104,15 @@ pub(crate) fn handle_current_device_trust_changed(
                 handle_session_locked(state)
             }
         };
+    }
+
+    // Unknown/Unverified is the expected authoritative state while an active
+    // proof attempt is in flight. Do not destroy its method, flow correlation,
+    // or SAS projection; only Verified may complete the gate.
+    if matches!(state.session, SessionState::Verifying { .. })
+        && trust != CurrentDeviceTrustState::Verified
+    {
+        return Vec::new();
     }
 
     let info = match &state.session {

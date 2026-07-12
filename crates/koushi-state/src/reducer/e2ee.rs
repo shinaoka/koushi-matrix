@@ -90,6 +90,7 @@ pub(crate) fn handle_gate_sas_presented(
 
 pub(crate) fn handle_e2ee_recovery_submitted(
     state: &mut AppState,
+    flow_id: u64,
     request: crate::action::RecoveryRequest,
 ) -> Vec<AppEffect> {
     let SessionState::AwaitingVerification { info, gate } = &state.session else {
@@ -112,7 +113,7 @@ pub(crate) fn handle_e2ee_recovery_submitted(
         info: info.clone(),
         gate: gate.clone(),
         method,
-        flow_id: 0,
+        flow_id,
         sas_emojis: Vec::new(),
     };
     vec![

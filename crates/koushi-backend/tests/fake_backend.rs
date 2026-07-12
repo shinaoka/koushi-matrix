@@ -789,9 +789,12 @@ fn e2ee_recovery_submission_can_be_deferred_without_exposing_secret() {
         ..FakeDesktopBackendConfig::default()
     });
 
-    let effects = backend.dispatch(AppAction::E2eeRecoverySubmitted(RecoveryRequest {
-        secret: AuthSecret::new("synthetic-recovery-secret"),
-    }));
+    let effects = backend.dispatch(AppAction::E2eeRecoverySubmitted {
+        flow_id: 77,
+        request: RecoveryRequest {
+            secret: AuthSecret::new("synthetic-recovery-secret"),
+        },
+    });
 
     assert!(matches!(
         backend.snapshot().state.session,
@@ -813,9 +816,12 @@ fn e2ee_recovery_fixture_success_enters_ready_session() {
         ..FakeDesktopBackendConfig::default()
     });
 
-    backend.dispatch(AppAction::E2eeRecoverySubmitted(RecoveryRequest {
-        secret: AuthSecret::new("synthetic-recovery-secret"),
-    }));
+    backend.dispatch(AppAction::E2eeRecoverySubmitted {
+        flow_id: 77,
+        request: RecoveryRequest {
+            secret: AuthSecret::new("synthetic-recovery-secret"),
+        },
+    });
 
     let snapshot = backend.snapshot();
     assert!(matches!(snapshot.state.session, SessionState::Ready(_)));

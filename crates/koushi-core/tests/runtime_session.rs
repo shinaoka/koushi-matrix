@@ -293,9 +293,12 @@ async fn assert_upload_staging_command_routes_for_recovery_session(target: Recov
         },
     ];
     if matches!(target, RecoveryRouteTarget::Recovering) {
-        actions.push(AppAction::E2eeRecoverySubmitted(RecoveryRequest {
-            secret: AuthSecret::new("synthetic recovery secret"),
-        }));
+        actions.push(AppAction::E2eeRecoverySubmitted {
+            flow_id: 77,
+            request: RecoveryRequest {
+                secret: AuthSecret::new("synthetic recovery secret"),
+            },
+        });
     }
     runtime.inject_actions(actions).await;
     wait_for_state(&mut connection, |state| match target {
