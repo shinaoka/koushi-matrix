@@ -222,6 +222,9 @@ pub enum AccountMessage {
     RejectProvisionalSession {
         request_id: RequestId,
     },
+    RetrySessionTeardown {
+        generation: u64,
+    },
     #[cfg(test)]
     AttachLifecycleProbe {
         probe_tx: mpsc::UnboundedSender<&'static str>,
@@ -239,6 +242,10 @@ pub enum AccountMessage {
         start_request_id: RequestId,
         homeserver: String,
         session: MatrixClientSession,
+    },
+    #[cfg(test)]
+    ConfigureCloseStoreResults {
+        results: Vec<bool>,
     },
     /// Forward `AppEffect::InvalidateSearchCrawlerCache` to the actor so it
     /// drops its completed-room cache before the subsequent re-enqueue.
@@ -353,6 +360,15 @@ struct PendingSasVerification {
     handle: koushi_sdk::MatrixSasVerificationHandle,
 }
 
+struct PendingSessionTeardown {
+    generation: u64,
+    attempt: u32,
+    request_id: RequestId,
+    session: Arc<MatrixClientSession>,
+    key_id: Option<SessionKeyId>,
+    server_logout: bool,
+}
+
 enum PendingOidcFlow {
     Sdk(PendingOidcLogin),
     #[cfg(test)]
@@ -414,10 +430,15 @@ pub struct AccountActor {
     restricted_sync: Option<crate::executor::JoinHandle<()>>,
     pending_ready_events: Vec<CoreEvent>,
     pending_trust_transition: Option<(u64, TrustLifecycleDecision)>,
+    pending_session_teardown: Option<PendingSessionTeardown>,
+    next_teardown_generation: u64,
+    teardown_retry_task: Option<crate::executor::JoinHandle<()>>,
     #[cfg(test)]
     lifecycle_probe: Option<mpsc::UnboundedSender<&'static str>>,
     #[cfg(test)]
     trust_observation_override: std::sync::Mutex<Option<koushi_sdk::CurrentDeviceTrustObservation>>,
+    #[cfg(test)]
+    close_store_results: std::collections::VecDeque<bool>,
     /// Store actor — owns the credential store backend and per-account paths.
     store: StoreActor,
     /// App-level action channel to drive the reducer.
@@ -558,10 +579,15 @@ impl AccountActor {
             restricted_sync: None,
             pending_ready_events: Vec::new(),
             pending_trust_transition: None,
+            pending_session_teardown: None,
+            next_teardown_generation: 0,
+            teardown_retry_task: None,
             #[cfg(test)]
             lifecycle_probe: None,
             #[cfg(test)]
             trust_observation_override: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            close_store_results: std::collections::VecDeque::new(),
             store: store_actor,
             action_tx,
             event_tx,
@@ -607,7 +633,12 @@ impl AccountActor {
     async fn run(mut self) {
         while let Some(msg) = self.command_rx.recv().await {
             match msg {
-                AccountMessage::Shutdown => break,
+                AccountMessage::Shutdown => {
+                    if let Some(task) = self.teardown_retry_task.take() {
+                        task.abort();
+                    }
+                    break;
+                }
                 AccountMessage::Command(command) => {
                     self.handle_command(command).await;
                 }
@@ -736,6 +767,9 @@ impl AccountActor {
                 AccountMessage::RejectProvisionalSession { request_id } => {
                     self.perform_logout(request_id, true).await;
                 }
+                AccountMessage::RetrySessionTeardown { generation } => {
+                    self.retry_session_teardown(generation).await;
+                }
                 #[cfg(test)]
                 AccountMessage::AttachLifecycleProbe { probe_tx } => {
                     self.lifecycle_probe = Some(probe_tx);
@@ -765,6 +799,10 @@ impl AccountActor {
                     self.pending_oidc_login =
                         Some((start_request_id, PendingOidcFlow::Synthetic { homeserver }));
                     self.oidc_completion_override = Some(session);
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureCloseStoreResults { results } => {
+                    self.close_store_results = results.into();
                 }
                 AccountMessage::InvalidateSearchCrawlerCache => {
                     if let Some(handle) = &self.search_actor {
@@ -4924,6 +4962,10 @@ impl AccountActor {
     }
 
     async fn perform_logout(&mut self, request_id: RequestId, server_logout: bool) {
+        if self.pending_session_teardown.is_some() {
+            self.emit_failure(request_id, CoreFailure::SessionRequired);
+            return;
+        }
         let session = match self.session.take() {
             Some(s) => s,
             None => {
@@ -4939,25 +4981,93 @@ impl AccountActor {
             let _ = logout_server_best_effort(&session).await;
         }
 
-        // The keyed SDK store must be closed before its directory is deleted.
-        // `pause` drains in-flight operations and closes every SQLite pool, so
-        // no background handle can recreate a file after the deletion ack.
-        let _ = koushi_sdk::close_session_stores(&session).await;
+        self.next_teardown_generation = self.next_teardown_generation.wrapping_add(1);
+        let generation = self.next_teardown_generation;
+        self.pending_session_teardown = Some(PendingSessionTeardown {
+            generation,
+            attempt: 0,
+            request_id,
+            session,
+            key_id,
+            server_logout,
+        });
+        self.retry_session_teardown(generation).await;
+    }
 
-        // Drop the SDK handle inside the Tokio runtime context (Async rule 11).
-        drop(session);
+    async fn close_pending_session_stores(
+        &mut self,
+        session: &MatrixClientSession,
+    ) -> Result<(), ()> {
+        #[cfg(test)]
+        if let Some(success) = self.close_store_results.pop_front()
+            && !success
+        {
+            return Err(());
+        }
+        koushi_sdk::close_session_stores(session)
+            .await
+            .map_err(|_| ())
+    }
 
-        // Clean up credentials and stores for this account only.
-        let account_key = if let Some(key_id) = &key_id {
+    async fn retry_session_teardown(&mut self, generation: u64) {
+        let Some(pending) = self.pending_session_teardown.as_ref() else {
+            return;
+        };
+        if pending.generation != generation {
+            return;
+        }
+        let session = pending.session.clone();
+        if self.close_pending_session_stores(&session).await.is_err() {
+            let pending = self
+                .pending_session_teardown
+                .as_mut()
+                .expect("teardown remains pending after close failure");
+            pending.attempt = pending.attempt.saturating_add(1);
+            let shift = pending.attempt.min(5);
+            let delay_ms = 25_u64.saturating_mul(1_u64 << shift).min(1_000);
+            record(
+                DiagnosticEvent::new(
+                    DiagnosticLevel::Warn,
+                    "core.account",
+                    "session_store_close_retrying",
+                )
+                .field(DiagnosticField::count("attempt", pending.attempt as u64)),
+            );
+            self.record_lifecycle_probe("session_store_close_retrying");
+            let tx = self.self_tx.clone();
+            self.teardown_retry_task = Some(executor::spawn(async move {
+                executor::sleep(Duration::from_millis(delay_ms)).await;
+                let _ = tx
+                    .send(AccountMessage::RetrySessionTeardown { generation })
+                    .await;
+            }));
+            return;
+        }
+        if let Some(task) = self.teardown_retry_task.take() {
+            task.abort();
+        }
+        self.record_lifecycle_probe("session_store_closed");
+        record(DiagnosticEvent::new(
+            DiagnosticLevel::Debug,
+            "core.account",
+            "session_store_closed",
+        ));
+        let pending = self
+            .pending_session_teardown
+            .take()
+            .expect("successful teardown remains pending");
+        let _ = pending.server_logout;
+        drop(pending.session);
+        let account_key = if let Some(key_id) = &pending.key_id {
             self.clear_account_persistence(key_id).await;
             AccountKey(key_id.user_id.clone())
         } else {
             AccountKey(String::new())
         };
-
+        self.record_lifecycle_probe("session_persistence_deleted");
         self.send_actions(vec![AppAction::LogoutFinished]).await;
         self.emit(CoreEvent::Account(AccountEvent::LoggedOut {
-            request_id,
+            request_id: pending.request_id,
             account_key,
         }));
     }
@@ -6851,6 +6961,134 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn teardown_close_failure_retries_without_early_ack_and_preserves_request_correlation() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, mut event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        handle
+            .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+            .await;
+        handle
+            .send(AccountMessage::ConfigureCloseStoreResults {
+                results: vec![false, true],
+            })
+            .await;
+        let original = test_request_id();
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: original,
+                request: LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: Some("Teardown Retry Test".to_owned()),
+                },
+            }))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ) {}
+        handle
+            .send(AccountMessage::RejectProvisionalSession {
+                request_id: original,
+            })
+            .await;
+        while probe_rx.recv().await != Some("session_store_close_retrying") {}
+        assert_no_logout_finished(&mut action_rx);
+
+        let later = RequestId {
+            connection_id: crate::ids::RuntimeConnectionId(77),
+            sequence: 2,
+        };
+        handle
+            .send(AccountMessage::RejectProvisionalSession { request_id: later })
+            .await;
+        loop {
+            if let CoreEvent::OperationFailed {
+                request_id,
+                failure,
+            } = event_rx.recv().await.expect("failure event")
+                && request_id == later
+            {
+                assert_eq!(failure, CoreFailure::SessionRequired);
+                break;
+            }
+        }
+        handle
+            .send(AccountMessage::RetrySessionTeardown { generation: 999 })
+            .await;
+        assert_no_logout_finished(&mut action_rx);
+        handle
+            .send(AccountMessage::RetrySessionTeardown { generation: 1 })
+            .await;
+        assert_eq!(probe_rx.recv().await, Some("session_store_closed"));
+        assert_eq!(probe_rx.recv().await, Some("session_persistence_deleted"));
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LogoutFinished])
+        ) {}
+        loop {
+            if let CoreEvent::Account(AccountEvent::LoggedOut { request_id, .. }) =
+                event_rx.recv().await.expect("logout event")
+            {
+                assert_eq!(request_id, original);
+                break;
+            }
+        }
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn permanent_close_failures_never_ack_before_a_success_barrier() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        handle
+            .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+            .await;
+        handle
+            .send(AccountMessage::ConfigureCloseStoreResults {
+                results: vec![false; 16],
+            })
+            .await;
+        let request_id = test_request_id();
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id,
+                request: LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ) {}
+        handle
+            .send(AccountMessage::RejectProvisionalSession { request_id })
+            .await;
+        for _ in 0..4 {
+            while probe_rx.recv().await != Some("session_store_close_retrying") {}
+            assert_no_logout_finished(&mut action_rx);
+            handle
+                .send(AccountMessage::RetrySessionTeardown { generation: 1 })
+                .await;
+        }
+        assert_no_logout_finished(&mut action_rx);
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
     async fn replacement_install_waits_for_provisional_tasks_to_terminate() {
         let first_homeserver = spawn_quarantine_password_server();
         let second_homeserver = spawn_quarantine_password_server();
@@ -6901,6 +7139,15 @@ mod tests {
                 .await
         );
         result.await.expect("runtime inspection")
+    }
+
+    fn assert_no_logout_finished(action_rx: &mut mpsc::Receiver<Vec<AppAction>>) {
+        while let Ok(actions) = action_rx.try_recv() {
+            assert!(
+                !matches!(actions.as_slice(), [AppAction::LogoutFinished]),
+                "teardown acknowledged logout before close barrier"
+            );
+        }
     }
 
     #[tokio::test]
@@ -7577,8 +7824,12 @@ mod tests {
             restricted_sync: None,
             pending_ready_events: Vec::new(),
             pending_trust_transition: None,
+            pending_session_teardown: None,
+            next_teardown_generation: 0,
+            teardown_retry_task: None,
             lifecycle_probe: None,
             trust_observation_override: std::sync::Mutex::new(None),
+            close_store_results: std::collections::VecDeque::new(),
             store,
             action_tx,
             event_tx,
