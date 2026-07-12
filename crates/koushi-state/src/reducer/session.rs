@@ -128,6 +128,28 @@ pub(crate) fn handle_current_device_trust_changed(
     }
 }
 
+pub(crate) fn handle_authoritative_device_trust_changed(
+    state: &mut AppState,
+    trust: CurrentDeviceTrustState,
+) -> Vec<AppEffect> {
+    if let SessionState::Locked(info) = &state.session
+        && trust == CurrentDeviceTrustState::Verified
+    {
+        let info = info.clone();
+        state.session = SessionState::Ready(info);
+        state.sync = SyncState::Starting;
+        return vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)];
+    }
+
+    let mut effects = handle_current_device_trust_changed(state, trust);
+    if trust == CurrentDeviceTrustState::Verified {
+        effects.retain(|effect| {
+            !matches!(effect, AppEffect::PersistSession(_) | AppEffect::StartSync)
+        });
+    }
+    effects
+}
+
 pub(crate) fn handle_verification_methods_discovered(
     state: &mut AppState,
     gate: VerificationGateState,

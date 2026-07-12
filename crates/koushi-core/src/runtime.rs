@@ -156,6 +156,8 @@ pub struct CoreRuntime {
     // the reducer with this in later phases; tests inject through it today.
     #[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
     action_tx: mpsc::Sender<Vec<AppAction>>,
+    #[cfg(test)]
+    account_actor_test_handle: AccountActorHandle,
     actor: executor::JoinHandle<()>,
 }
 
@@ -267,6 +269,8 @@ impl CoreRuntime {
             crate::link_preview::LinkPreviewContext::from_settings(&initial_state.settings.values),
         );
 
+        #[cfg(test)]
+        let account_actor_test_handle = account_actor.clone();
         let actor = AppActor {
             command_rx,
             action_rx,
@@ -294,6 +298,8 @@ impl CoreRuntime {
             snapshot_rx,
             next_connection_id: AtomicU64::new(1),
             action_tx,
+            #[cfg(test)]
+            account_actor_test_handle,
             actor,
         }
     }
@@ -5012,5 +5018,186 @@ mod tests {
                 event_id: event_id.to_owned(),
             },
         }
+    }
+
+    #[tokio::test]
+    async fn authoritative_trust_runs_through_app_actor_ack_and_restarts_real_children() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let homeserver = format!("http://{}", listener.local_addr().expect("address"));
+        std::thread::spawn(move || {
+            for _ in 0..32 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    let count = stream.read(&mut buffer).expect("read");
+                    request.extend_from_slice(&buffer[..count]);
+                    let text = String::from_utf8_lossy(&request);
+                    let Some(end) = text.find("\r\n\r\n") else {
+                        continue;
+                    };
+                    let length = text
+                        .lines()
+                        .find_map(|line| line.strip_prefix("Content-Length: "))
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let body = if text.starts_with("GET /_matrix/client/versions ") {
+                    r#"{"versions":["v1.7"]}"#
+                } else if text.contains("/_matrix/client/") && text.contains("login") {
+                    r#"{"access_token":"fixture-token","device_id":"FIXTUREDEVICE","user_id":"@fixture-user:example.invalid"}"#
+                } else if text.contains("/_matrix/client/") && text.contains("/sync") {
+                    r#"{"next_batch":"batch","device_lists":{"changed":[],"left":[]},"rooms":{"invite":{},"join":{},"leave":{},"knock":{}},"to_device":{"events":[]},"presence":{"events":[]},"account_data":{"events":[]},"device_one_time_keys_count":{}}"#
+                } else {
+                    r#"{"errcode":"M_NOT_FOUND","error":"not found"}"#
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).expect("write");
+            }
+        });
+
+        let data_dir = tempfile::tempdir().expect("data tempdir");
+        let credential_dir = tempfile::tempdir().expect("credential tempdir");
+        let runtime = CoreRuntime::start_with_data_dir_and_file_credentials(
+            data_dir.path().to_path_buf(),
+            credential_dir.path().to_path_buf(),
+        );
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        assert!(
+            runtime
+                .account_actor_test_handle
+                .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+                .await
+        );
+        let (trust_tx, trust_rx) = mpsc::unbounded_channel();
+        let updates = futures_util::stream::unfold(trust_rx, |mut rx| async move {
+            rx.recv().await.map(|trust| (trust, rx))
+        });
+        assert!(
+            runtime
+                .account_actor_test_handle
+                .send(AccountMessage::ConfigureTrustObservation {
+                    observation: koushi_sdk::CurrentDeviceTrustObservation {
+                        current: koushi_state::CurrentDeviceTrustState::Verified,
+                        updates: Box::pin(updates),
+                    },
+                })
+                .await
+        );
+        let connection = runtime.attach();
+        let request_id = connection.next_request_id();
+        connection
+            .command(CoreCommand::Account(AccountCommand::LoginPassword {
+                request_id,
+                request: koushi_state::LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: Some("Runtime Trust Test".to_owned()),
+                },
+            }))
+            .await
+            .expect("login command");
+
+        wait_for_runtime_session(&runtime, |session| {
+            matches!(session, SessionState::Ready(_))
+        })
+        .await;
+        assert_eq!(
+            inspect_runtime_children(&runtime).await,
+            (true, true, true, true)
+        );
+        assert_eq!(probe_rx.recv().await, Some("ready_projection_ack"));
+
+        trust_tx
+            .send(koushi_state::CurrentDeviceTrustState::Unverified)
+            .expect("lock update");
+        wait_for_runtime_session(&runtime, |session| {
+            matches!(session, SessionState::Locked(_))
+        })
+        .await;
+        assert_eq!(
+            inspect_runtime_children(&runtime).await,
+            (true, false, false, true)
+        );
+        let mut tokens = Vec::new();
+        while tokens.len() < 11 {
+            tokens.push(probe_rx.recv().await.expect("stop token"));
+        }
+        assert_eq!(tokens[0], "lock_projection_ack");
+        assert!(tokens.contains(&"stop_sync_actor"));
+        assert!(tokens.contains(&"stop_timeline_manager"));
+        assert!(tokens.contains(&"clear_room_session"));
+
+        trust_tx
+            .send(koushi_state::CurrentDeviceTrustState::Verified)
+            .expect("repromotion update");
+        wait_for_runtime_session(&runtime, |session| {
+            matches!(session, SessionState::Ready(_))
+        })
+        .await;
+        assert_eq!(
+            inspect_runtime_children(&runtime).await,
+            (true, true, true, true)
+        );
+        assert_eq!(probe_rx.recv().await, Some("ready_projection_ack"));
+
+        let before = runtime.snapshot_rx.borrow().state.session.clone();
+        assert!(
+            runtime
+                .account_actor_test_handle
+                .send(AccountMessage::CurrentDeviceTrustChanged {
+                    generation: 0,
+                    trust: koushi_state::CurrentDeviceTrustState::Unverified,
+                })
+                .await
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            runtime.snapshot_rx.borrow().state.session,
+            before,
+            "stale/wrong-account trust changed state"
+        );
+        runtime.shutdown_handle().abort();
+    }
+
+    async fn inspect_runtime_children(runtime: &CoreRuntime) -> (bool, bool, bool, bool) {
+        let (response, result) = oneshot::channel();
+        assert!(
+            runtime
+                .account_actor_test_handle
+                .send(AccountMessage::InspectSessionRuntime { response })
+                .await
+        );
+        result.await.expect("runtime inspection")
+    }
+
+    async fn wait_for_runtime_session(
+        runtime: &CoreRuntime,
+        predicate: impl Fn(&SessionState) -> bool,
+    ) {
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let snapshot = runtime.snapshot_rx.borrow().state.clone();
+                if predicate(&snapshot.session) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("session transition");
     }
 }

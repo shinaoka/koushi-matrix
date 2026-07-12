@@ -77,7 +77,7 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
             session::handle_current_device_trust_changed(state, trust)
         }
         AppAction::AuthoritativeDeviceTrustChanged { trust, .. } => {
-            session::handle_current_device_trust_changed(state, trust)
+            session::handle_authoritative_device_trust_changed(state, trust)
         }
         AppAction::VerificationMethodsDiscovered(gate) => {
             session::handle_verification_methods_discovered(state, gate)

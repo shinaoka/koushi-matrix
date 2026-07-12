@@ -289,6 +289,7 @@ pub enum AccountMessage {
 }
 
 /// Handle to the AccountActor background task.
+#[derive(Clone)]
 pub struct AccountActorHandle {
     tx: mpsc::Sender<AccountMessage>,
 }
@@ -6824,183 +6825,6 @@ mod tests {
         let _ = handle.send(AccountMessage::Shutdown).await;
     }
 
-    #[tokio::test]
-    async fn injected_live_trust_observation_drives_real_promotion_lock_and_repromotion() {
-        let homeserver = spawn_quarantine_password_server();
-        let cred_dir = tempdir().expect("tempdir");
-        let data_dir = tempdir().expect("tempdir");
-        let (handle, mut action_rx, mut event_rx) =
-            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
-        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
-        assert!(
-            handle
-                .send(AccountMessage::AttachLifecycleProbe { probe_tx })
-                .await
-        );
-        let (trust_tx, trust_rx) = mpsc::unbounded_channel();
-        let updates = futures_util::stream::unfold(trust_rx, |mut rx| async move {
-            rx.recv().await.map(|trust| (trust, rx))
-        });
-        assert!(
-            handle
-                .send(AccountMessage::ConfigureTrustObservation {
-                    observation: koushi_sdk::CurrentDeviceTrustObservation {
-                        current: koushi_state::CurrentDeviceTrustState::Verified,
-                        updates: Box::pin(updates),
-                    },
-                })
-                .await
-        );
-        let request_id = test_request_id();
-        assert!(
-            handle
-                .send(AccountMessage::Command(AccountCommand::LoginPassword {
-                    request_id,
-                    request: LoginRequest {
-                        homeserver,
-                        username: "fixture-user".to_owned(),
-                        password: koushi_state::AuthSecret::new("synthetic-password"),
-                        device_display_name: Some("Quarantine Test".to_owned()),
-                    },
-                }))
-                .await
-        );
-        assert!(matches!(
-            action_rx.recv().await.as_deref(),
-            Some([AppAction::LoginSucceeded { .. }])
-        ));
-        let generation = recv_authoritative_trust(
-            &mut action_rx,
-            koushi_state::CurrentDeviceTrustState::Verified,
-        )
-        .await;
-        assert!(
-            handle
-                .send(AccountMessage::TrustProjectionApplied {
-                    generation,
-                    ready: true,
-                    locked: false,
-                })
-                .await
-        );
-        loop {
-            if matches!(
-                event_rx.recv().await.expect("event"),
-                CoreEvent::Account(AccountEvent::LoggedIn { .. })
-            ) {
-                break;
-            }
-        }
-        assert_eq!(
-            inspect_session_runtime(&handle).await,
-            (true, true, true, true)
-        );
-        assert_eq!(probe_rx.recv().await, Some("ready_projection_ack"));
-        let backend = CredentialStoreBackend::FileDir(crate::store::FileCredentialStore::new(
-            cred_dir.path(),
-        ));
-        assert!(backend.load_last_session().expect("pointer").is_some());
-
-        trust_tx
-            .send(koushi_state::CurrentDeviceTrustState::Unverified)
-            .expect("trust update");
-        assert_eq!(
-            recv_authoritative_trust(
-                &mut action_rx,
-                koushi_state::CurrentDeviceTrustState::Unverified,
-            )
-            .await,
-            generation
-        );
-        handle
-            .send(AccountMessage::TrustProjectionApplied {
-                generation,
-                ready: false,
-                locked: true,
-            })
-            .await;
-        assert_eq!(
-            inspect_session_runtime(&handle).await,
-            (true, false, false, true)
-        );
-        let mut stop_tokens = Vec::new();
-        while stop_tokens.len() < 11 {
-            stop_tokens.push(probe_rx.recv().await.expect("stop token"));
-        }
-        assert_eq!(stop_tokens[0], "lock_projection_ack");
-        for required in [
-            "stop_timeline_manager",
-            "stop_search_actor",
-            "stop_sync_actor",
-            "clear_room_session",
-            "abort_hydration",
-        ] {
-            assert!(stop_tokens.contains(&required), "missing {required}");
-        }
-
-        trust_tx
-            .send(koushi_state::CurrentDeviceTrustState::Verified)
-            .expect("trust update");
-        assert_eq!(
-            recv_authoritative_trust(
-                &mut action_rx,
-                koushi_state::CurrentDeviceTrustState::Verified,
-            )
-            .await,
-            generation
-        );
-        handle
-            .send(AccountMessage::TrustProjectionApplied {
-                generation,
-                ready: true,
-                locked: false,
-            })
-            .await;
-        assert_eq!(
-            inspect_session_runtime(&handle).await,
-            (true, true, true, true)
-        );
-        assert_eq!(probe_rx.recv().await, Some("ready_projection_ack"));
-
-        handle
-            .send(AccountMessage::CurrentDeviceTrustChanged {
-                generation: generation.wrapping_sub(1),
-                trust: koushi_state::CurrentDeviceTrustState::Unknown,
-            })
-            .await;
-        assert!(
-            executor::timeout(Duration::from_millis(50), async {
-                loop {
-                    if matches!(
-                        action_rx.recv().await.as_deref(),
-                        Some([AppAction::AuthoritativeDeviceTrustChanged { .. }])
-                    ) {
-                        return;
-                    }
-                }
-            })
-            .await
-            .is_err(),
-            "stale trust generation projected"
-        );
-        let _ = handle.send(AccountMessage::Shutdown).await;
-    }
-
-    async fn recv_authoritative_trust(
-        action_rx: &mut mpsc::Receiver<Vec<AppAction>>,
-        expected: koushi_state::CurrentDeviceTrustState,
-    ) -> u64 {
-        loop {
-            let actions = action_rx.recv().await.expect("actions");
-            if let [AppAction::AuthoritativeDeviceTrustChanged { generation, trust }] =
-                actions.as_slice()
-                && *trust == expected
-            {
-                return *generation;
-            }
-        }
-    }
-
     async fn inspect_session_runtime(handle: &AccountActorHandle) -> (bool, bool, bool, bool) {
         let (response, result) = oneshot::channel();
         assert!(
@@ -7236,7 +7060,7 @@ mod tests {
     fn async_account_hydration_is_generation_gated() {
         let source = include_str!("account.rs");
         let production_source = source
-            .split("#[cfg(test)]")
+            .split("#[cfg(test)]\nmod tests")
             .next()
             .expect("production source should precede tests");
         assert!(
@@ -7346,7 +7170,7 @@ mod tests {
     fn account_actor_reducer_actions_use_reliable_delivery() {
         let source = include_str!("account.rs");
         let production_source = source
-            .split("#[cfg(test)]")
+            .split("#[cfg(test)]\nmod tests")
             .next()
             .expect("production source should precede tests");
         let send_actions_body = production_source

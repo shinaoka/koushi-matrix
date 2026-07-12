@@ -558,6 +558,33 @@ fn only_authoritative_verified_promotes_and_trust_loss_locks_and_clears() {
 }
 
 #[test]
+fn authoritative_verified_repromotes_locked_session_without_replaying_actor_owned_effects() {
+    let info = session_info();
+    let mut state = AppState {
+        session: SessionState::Locked(info.clone()),
+        sync: SyncState::Stopped,
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut state,
+        AppAction::AuthoritativeDeviceTrustChanged {
+            generation: 17,
+            trust: CurrentDeviceTrustState::Verified,
+        },
+    );
+
+    assert_eq!(state.session, SessionState::Ready(info));
+    assert_eq!(state.sync, SyncState::Starting);
+    assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::SessionChanged)));
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, AppEffect::PersistSession(_) | AppEffect::StartSync))
+    );
+}
+
+#[test]
 fn existing_identity_without_proof_rejects_then_discards() {
     let mut state = AppState {
         session: SessionState::Provisional {
