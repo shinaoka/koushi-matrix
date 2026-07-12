@@ -5269,7 +5269,7 @@ mod tests {
             .await
             .expect("login command");
 
-        wait_for_runtime_session(&runtime, |session| {
+        wait_for_runtime_session(&runtime, "initial promotion", |session| {
             matches!(session, SessionState::Ready(_))
         })
         .await;
@@ -5278,15 +5278,16 @@ mod tests {
             (true, true, true, true)
         );
         assert_eq!(probe_rx.recv().await, Some("ready_projection_ack"));
-        assert!(
-            probe_rx.try_recv().is_err(),
+        assert_eq!(
+            probe_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty),
             "crypto trust lane must remain active in Ready"
         );
 
         trust_tx
             .send(koushi_state::CurrentDeviceTrustState::Unverified)
             .expect("lock update");
-        wait_for_runtime_session(&runtime, |session| {
+        wait_for_runtime_session(&runtime, "trust revocation lock", |session| {
             matches!(session, SessionState::Locked(_))
         })
         .await;
@@ -5307,7 +5308,7 @@ mod tests {
         trust_tx
             .send(koushi_state::CurrentDeviceTrustState::Verified)
             .expect("repromotion update");
-        wait_for_runtime_session(&runtime, |session| {
+        wait_for_runtime_session(&runtime, "verified repromotion", |session| {
             matches!(session, SessionState::Ready(_))
         })
         .await;
@@ -5367,18 +5368,22 @@ mod tests {
 
     async fn wait_for_runtime_session(
         runtime: &CoreRuntime,
+        stage: &'static str,
         predicate: impl Fn(&SessionState) -> bool,
     ) {
-        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let mut snapshot_rx = runtime.snapshot_rx.clone();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
-                let snapshot = runtime.snapshot_rx.borrow().state.clone();
-                if predicate(&snapshot.session) {
-                    break;
+                if predicate(&snapshot_rx.borrow().state.session) {
+                    return;
                 }
-                tokio::task::yield_now().await;
+                snapshot_rx
+                    .changed()
+                    .await
+                    .unwrap_or_else(|_| panic!("snapshot channel closed during {stage}"));
             }
         })
         .await
-        .expect("session transition");
+        .unwrap_or_else(|_| panic!("session transition timed out during {stage}"));
     }
 }

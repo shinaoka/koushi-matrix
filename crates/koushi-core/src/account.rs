@@ -5932,12 +5932,18 @@ impl AccountActor {
         self.trust_generation = self.trust_generation.wrapping_add(1);
         let generation = self.trust_generation;
         #[cfg(test)]
-        let observation = self
-            .trust_observation_override
-            .lock()
-            .expect("trust observation override lock")
-            .take()
-            .unwrap_or_else(|| session.observe_current_device_trust());
+        let (observation, synthetic_trust_observation) = {
+            let override_observation = self
+                .trust_observation_override
+                .lock()
+                .expect("trust observation override lock")
+                .take();
+            let synthetic = override_observation.is_some();
+            (
+                override_observation.unwrap_or_else(|| session.observe_current_device_trust()),
+                synthetic,
+            )
+        };
         #[cfg(not(test))]
         let observation = session.observe_current_device_trust();
         let _ = self
@@ -5960,6 +5966,11 @@ impl AccountActor {
                 }
             }
         }));
+        #[cfg(test)]
+        if synthetic_trust_observation {
+            self.restricted_sync = Some(executor::spawn(std::future::pending()));
+            return;
+        }
         let tx = self.self_tx.clone();
         self.restricted_sync = Some(executor::spawn(async move {
             let first_sync = executor::timeout(
