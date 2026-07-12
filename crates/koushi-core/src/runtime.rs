@@ -5119,6 +5119,7 @@ mod tests {
             inspect_runtime_children(&runtime).await,
             (true, true, true, true)
         );
+        assert_eq!(probe_rx.recv().await, Some("restricted_sync_terminated"));
         assert_eq!(probe_rx.recv().await, Some("ready_projection_ack"));
 
         trust_tx

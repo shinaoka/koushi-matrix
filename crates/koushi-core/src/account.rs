@@ -1499,7 +1499,7 @@ impl AccountActor {
     }
 
     async fn stop_current_session_runtime(&mut self) {
-        self.stop_provisional_runtime();
+        self.stop_provisional_runtime().await;
         self.stop_recovery_observer().await;
         self.stop_incoming_verification_observer().await;
         self.stop_session_change_observer().await;
@@ -4939,6 +4939,11 @@ impl AccountActor {
             let _ = logout_server_best_effort(&session).await;
         }
 
+        // The keyed SDK store must be closed before its directory is deleted.
+        // `pause` drains in-flight operations and closes every SQLite pool, so
+        // no background handle can recreate a file after the deletion ack.
+        let _ = koushi_sdk::close_session_stores(&session).await;
+
         // Drop the SDK handle inside the Tokio runtime context (Async rule 11).
         drop(session);
 
@@ -4970,7 +4975,7 @@ impl AccountActor {
         key_id: SessionKeyId,
         action: AppAction,
     ) {
-        self.stop_provisional_runtime();
+        self.stop_provisional_runtime().await;
         let session = Arc::new(session);
         self.device_session_ordinals.clear();
         self.pending_uia_operations.clear();
@@ -5022,17 +5027,21 @@ impl AccountActor {
         }));
     }
 
-    fn stop_provisional_runtime(&mut self) {
+    async fn stop_provisional_runtime(&mut self) {
         self.trust_generation = self.trust_generation.wrapping_add(1);
         if let Some(task) = self.trust_observer.take() {
             task.abort();
+            let _ = task.await;
+            self.record_lifecycle_probe("trust_observer_terminated");
         }
-        self.stop_restricted_sync();
+        self.stop_restricted_sync().await;
     }
 
-    fn stop_restricted_sync(&mut self) {
+    async fn stop_restricted_sync(&mut self) {
         if let Some(task) = self.restricted_sync.take() {
             task.abort();
+            let _ = task.await;
+            self.record_lifecycle_probe("restricted_sync_terminated");
         }
     }
 
@@ -5122,7 +5131,7 @@ impl AccountActor {
             return;
         }
         self.provisional_persistable = None;
-        self.stop_restricted_sync();
+        self.stop_restricted_sync().await;
         self.pending_trust_transition = Some((generation, TrustLifecycleDecision::Promote));
         self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
             generation,
@@ -6771,6 +6780,12 @@ mod tests {
         let data_dir = tempdir().expect("tempdir");
         let (handle, mut action_rx, _event_rx) =
             spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        assert!(
+            handle
+                .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+                .await
+        );
         let baseline_files = recursive_file_count(data_dir.path());
         let request_id = test_request_id();
         assert!(
@@ -6804,6 +6819,16 @@ mod tests {
             let actions = action_rx.recv().await.expect("rejection action");
             if matches!(actions.as_slice(), [AppAction::LogoutFinished]) {
                 assert_eq!(
+                    probe_rx.try_recv(),
+                    Ok("trust_observer_terminated"),
+                    "LogoutFinished preceded trust-observer termination"
+                );
+                assert_eq!(
+                    probe_rx.try_recv(),
+                    Ok("restricted_sync_terminated"),
+                    "LogoutFinished preceded restricted-sync termination"
+                );
+                assert_eq!(
                     recursive_file_count(data_dir.path()),
                     baseline_files,
                     "SignedOut ack preceded keyed-store deletion"
@@ -6822,6 +6847,49 @@ mod tests {
                 .sessions()
                 .is_empty()
         );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn replacement_install_waits_for_provisional_tasks_to_terminate() {
+        let first_homeserver = spawn_quarantine_password_server();
+        let second_homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        let (probe_tx, mut probe_rx) = mpsc::unbounded_channel();
+        assert!(
+            handle
+                .send(AccountMessage::AttachLifecycleProbe { probe_tx })
+                .await
+        );
+        for homeserver in [first_homeserver, second_homeserver] {
+            let request_id = test_request_id();
+            assert!(
+                handle
+                    .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                        request_id,
+                        request: LoginRequest {
+                            homeserver,
+                            username: "fixture-user".to_owned(),
+                            password: koushi_state::AuthSecret::new("synthetic-password"),
+                            device_display_name: Some("Replacement Barrier Test".to_owned()),
+                        },
+                    }))
+                    .await
+            );
+            loop {
+                if matches!(
+                    action_rx.recv().await.as_deref(),
+                    Some([AppAction::LoginSucceeded { .. }])
+                ) {
+                    break;
+                }
+            }
+        }
+        assert_eq!(probe_rx.try_recv(), Ok("trust_observer_terminated"));
+        assert_eq!(probe_rx.try_recv(), Ok("restricted_sync_terminated"));
         let _ = handle.send(AccountMessage::Shutdown).await;
     }
 

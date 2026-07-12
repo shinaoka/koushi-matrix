@@ -4703,6 +4703,17 @@ pub async fn sync_once(session: &MatrixClientSession) -> Result<(), MatrixSyncEr
         .map_err(|_| MatrixSyncError::Sdk)
 }
 
+/// Close every SDK store connection for a session before deleting its keyed
+/// on-disk store. Completion is a barrier: all in-flight store operations and
+/// SQLite pools have drained when this returns.
+pub async fn close_session_stores(session: &MatrixClientSession) -> Result<(), MatrixSyncError> {
+    session
+        .client()
+        .pause()
+        .await
+        .map_err(|_| MatrixSyncError::Sdk)
+}
+
 fn restricted_verification_sync_filter() -> matrix_sdk::ruma::api::client::filter::FilterDefinition
 {
     let mut filter = matrix_sdk::ruma::api::client::filter::FilterDefinition::default();
