@@ -267,6 +267,10 @@ pub enum AccountMessage {
         observation: koushi_sdk::CurrentDeviceTrustObservation,
     },
     #[cfg(test)]
+    ConfigurePromotionFullState {
+        completion: oneshot::Receiver<bool>,
+    },
+    #[cfg(test)]
     InspectSessionRuntime {
         response: oneshot::Sender<(bool, bool, bool, bool)>,
     },
@@ -567,6 +571,8 @@ pub struct AccountActor {
     #[cfg(test)]
     trust_observation_override: std::sync::Mutex<Option<koushi_sdk::CurrentDeviceTrustObservation>>,
     #[cfg(test)]
+    promotion_full_state_override: std::sync::Mutex<Option<oneshot::Receiver<bool>>>,
+    #[cfg(test)]
     close_store_results: std::collections::VecDeque<bool>,
     /// Store actor — owns the credential store backend and per-account paths.
     store: StoreActor,
@@ -724,6 +730,8 @@ impl AccountActor {
             lifecycle_probe: None,
             #[cfg(test)]
             trust_observation_override: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            promotion_full_state_override: std::sync::Mutex::new(None),
             #[cfg(test)]
             close_store_results: std::collections::VecDeque::new(),
             store: store_actor,
@@ -1023,6 +1031,13 @@ impl AccountActor {
                         .trust_observation_override
                         .lock()
                         .expect("trust observation override lock") = Some(observation);
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigurePromotionFullState { completion } => {
+                    *self
+                        .promotion_full_state_override
+                        .lock()
+                        .expect("promotion override lock") = Some(completion);
                 }
                 #[cfg(test)]
                 AccountMessage::InspectSessionRuntime { response } => {
@@ -6225,7 +6240,22 @@ impl AccountActor {
             decision: TrustLifecycleDecision::Promote,
         });
         let tx = self.self_tx.clone();
+        #[cfg(test)]
+        let preparation_override = self
+            .promotion_full_state_override
+            .lock()
+            .expect("promotion override lock")
+            .take();
         self.promotion_full_state_task = Some(executor::spawn(async move {
+            #[cfg(test)]
+            let succeeded = if let Some(completion) = preparation_override {
+                completion.await.unwrap_or(false)
+            } else {
+                koushi_sdk::promotion_full_state_sync_once(&session)
+                    .await
+                    .is_ok()
+            };
+            #[cfg(not(test))]
             let succeeded = koushi_sdk::promotion_full_state_sync_once(&session)
                 .await
                 .is_ok();
@@ -8448,6 +8478,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn promotion_preparation_keeps_mailbox_live_and_stale_ack_cannot_consume_promotion() {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        configure_verified_trust(&handle).await;
+        let (release, completion) = oneshot::channel();
+        handle
+            .send(AccountMessage::ConfigurePromotionFullState { completion })
+            .await;
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: test_request_id(),
+                request: LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ) {}
+
+        handle
+            .send(AccountMessage::TrustProjectionApplied {
+                generation: 1,
+                transition_id: 0,
+                ready: false,
+                locked: false,
+            })
+            .await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, false, false, true)
+        );
+
+        release.send(true).expect("release preparation");
+        acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, true, true, true)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
     async fn provisional_rejection_deletes_keyed_store_before_signed_out_ack() {
         let homeserver = spawn_quarantine_password_server();
         let cred_dir = tempdir().expect("tempdir");
@@ -9828,6 +9908,7 @@ mod tests {
             teardown_retry_task: None,
             lifecycle_probe: None,
             trust_observation_override: std::sync::Mutex::new(None),
+            promotion_full_state_override: std::sync::Mutex::new(None),
             close_store_results: std::collections::VecDeque::new(),
             store,
             action_tx,
