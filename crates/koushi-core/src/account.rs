@@ -618,6 +618,50 @@ fn verification_cancel_reason_token(reason: VerificationCancelReason) -> &'stati
     }
 }
 
+async fn run_own_user_sas_start<T, F>(
+    flow_id: u64,
+    source: &'static str,
+    start: F,
+) -> Result<Option<T>, koushi_sdk::E2eeTrustError>
+where
+    F: Future<Output = Result<Option<T>, koushi_sdk::E2eeTrustError>>,
+{
+    record_sas_verification_event(
+        sas_verification_event("sas_start_attempted", flow_id)
+            .field(DiagnosticField::token("source", source)),
+    );
+    let result = start.await;
+    let mut event = sas_verification_event("sas_start_finished", flow_id)
+        .field(DiagnosticField::token("source", source));
+    event = match &result {
+        Ok(Some(_)) => event.field(DiagnosticField::token("outcome", "started")),
+        Ok(None) => event.field(DiagnosticField::token("outcome", "pending")),
+        Err(error) => {
+            let kind = classify_e2ee_trust_error(error);
+            event
+                .field(DiagnosticField::token("outcome", "failed"))
+                .field(DiagnosticField::token(
+                    "failure_kind",
+                    trust_failure_token(kind),
+                ))
+        }
+    };
+    record_sas_verification_event(event);
+    result
+}
+
+fn should_report_restricted_sync_failure(failure_reported: &mut bool, succeeded: bool) -> bool {
+    if succeeded {
+        *failure_reported = false;
+        false
+    } else if *failure_reported {
+        false
+    } else {
+        *failure_reported = true;
+        true
+    }
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub enum SyntheticVerificationTerminal {
@@ -2864,25 +2908,15 @@ impl AccountActor {
                     return;
                 }
             };
-        record_sas_verification_event(
-            sas_verification_event("sas_start_attempted", flow_id)
-                .field(DiagnosticField::token("source", "initial")),
-        );
-        let sas = match koushi_sdk::start_own_user_sas_verification(&own_handle).await {
-            Ok(Some(sas)) => {
-                record_sas_verification_event(
-                    sas_verification_event("sas_start_finished", flow_id)
-                        .field(DiagnosticField::token("source", "initial"))
-                        .field(DiagnosticField::token("outcome", "started")),
-                );
-                sas
-            }
+        let sas = match run_own_user_sas_start(
+            flow_id,
+            "initial",
+            koushi_sdk::start_own_user_sas_verification(&own_handle),
+        )
+        .await
+        {
+            Ok(Some(sas)) => sas,
             Ok(None) => {
-                record_sas_verification_event(
-                    sas_verification_event("sas_start_finished", flow_id)
-                        .field(DiagnosticField::token("source", "initial"))
-                        .field(DiagnosticField::token("outcome", "pending")),
-                );
                 self.own_user_verification = Some((flow_id, own_handle));
                 self.start_sas_timeout(flow_id);
                 self.observe_own_user_verification(request_id, flow_id);
@@ -2890,15 +2924,6 @@ impl AccountActor {
             }
             Err(error) => {
                 let kind = classify_e2ee_trust_error(&error);
-                record_sas_verification_event(
-                    sas_verification_event("sas_start_finished", flow_id)
-                        .field(DiagnosticField::token("source", "initial"))
-                        .field(DiagnosticField::token("outcome", "failed"))
-                        .field(DiagnosticField::token(
-                            "failure_kind",
-                            trust_failure_token(kind),
-                        )),
-                );
                 self.send_actions(vec![AppAction::VerificationFailed {
                     request_id: flow_id,
                     kind,
@@ -2935,17 +2960,14 @@ impl AccountActor {
         }
         let flow_id = *flow_id;
         let handle = handle.clone();
-        record_sas_verification_event(
-            sas_verification_event("sas_start_attempted", flow_id)
-                .field(DiagnosticField::token("source", "restricted_sync")),
-        );
-        match koushi_sdk::start_own_user_sas_verification(&handle).await {
+        match run_own_user_sas_start(
+            flow_id,
+            "restricted_sync",
+            koushi_sdk::start_own_user_sas_verification(&handle),
+        )
+        .await
+        {
             Ok(Some(sas)) => {
-                record_sas_verification_event(
-                    sas_verification_event("sas_start_finished", flow_id)
-                        .field(DiagnosticField::token("source", "restricted_sync"))
-                        .field(DiagnosticField::token("outcome", "started")),
-                );
                 self.store_sas_verification(
                     RequestId {
                         connection_id: RuntimeConnectionId(0),
@@ -2959,24 +2981,9 @@ impl AccountActor {
                 )
                 .await;
             }
-            Ok(None) => {
-                record_sas_verification_event(
-                    sas_verification_event("sas_start_finished", flow_id)
-                        .field(DiagnosticField::token("source", "restricted_sync"))
-                        .field(DiagnosticField::token("outcome", "pending")),
-                );
-            }
+            Ok(None) => {}
             Err(error) => {
                 let kind = classify_e2ee_trust_error(&error);
-                record_sas_verification_event(
-                    sas_verification_event("sas_start_finished", flow_id)
-                        .field(DiagnosticField::token("source", "restricted_sync"))
-                        .field(DiagnosticField::token("outcome", "failed"))
-                        .field(DiagnosticField::token(
-                            "failure_kind",
-                            trust_failure_token(kind),
-                        )),
-                );
                 self.send_actions(vec![AppAction::VerificationFailed {
                     request_id: flow_id,
                     kind,
@@ -3994,7 +4001,13 @@ impl AccountActor {
                     && self.sas_verification.is_none()
                 {
                     let handle = handle.clone();
-                    match koushi_sdk::start_own_user_sas_verification(&handle).await {
+                    match run_own_user_sas_start(
+                        request_id.sequence,
+                        "request_ready",
+                        koushi_sdk::start_own_user_sas_verification(&handle),
+                    )
+                    .await
+                    {
                         Ok(Some(sas)) => {
                             self.store_sas_verification(
                                 request_id,
@@ -6389,7 +6402,7 @@ impl AccountActor {
                 .await
                 {
                     Ok(next_token) => {
-                        failure_reported = false;
+                        should_report_restricted_sync_failure(&mut failure_reported, true);
                         token = Some(next_token);
                         if tx
                             .send(AccountMessage::RestrictedSyncSucceeded { generation })
@@ -6400,7 +6413,7 @@ impl AccountActor {
                         }
                     }
                     Err(_) => {
-                        if !failure_reported {
+                        if should_report_restricted_sync_failure(&mut failure_reported, false) {
                             if tx
                                 .send(AccountMessage::RestrictedSyncFailed { generation })
                                 .await
@@ -6408,7 +6421,6 @@ impl AccountActor {
                             {
                                 break;
                             }
-                            failure_reported = true;
                         }
                     }
                 }
@@ -8344,6 +8356,81 @@ mod tests {
             )),
             "failed"
         );
+    }
+
+    #[tokio::test]
+    async fn own_user_sas_start_helper_traces_started_pending_and_failed_results() {
+        let diagnostic_start = koushi_diagnostics::snapshot().records.len();
+
+        assert_eq!(
+            run_own_user_sas_start(211, "request_ready", async {
+                Ok::<_, koushi_sdk::E2eeTrustError>(Some(7_u8))
+            })
+            .await
+            .expect("started result"),
+            Some(7)
+        );
+        assert_eq!(
+            run_own_user_sas_start(212, "initial", async {
+                Ok::<Option<u8>, koushi_sdk::E2eeTrustError>(None)
+            })
+            .await
+            .expect("pending result"),
+            None
+        );
+        assert!(
+            run_own_user_sas_start(213, "restricted_sync", async {
+                Err::<Option<u8>, _>(koushi_sdk::E2eeTrustError::Sdk(
+                    "private SDK detail".to_owned(),
+                ))
+            })
+            .await
+            .is_err()
+        );
+
+        let records = koushi_diagnostics::snapshot().records;
+        let events = records[diagnostic_start..]
+            .iter()
+            .filter(|record| record.event.source == "core.sas_verification")
+            .map(|record| koushi_diagnostics::format_event(&record.event))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            events,
+            vec![
+                "stage=sas_start_attempted flow_id=211 source=request_ready",
+                "stage=sas_start_finished flow_id=211 source=request_ready outcome=started",
+                "stage=sas_start_attempted flow_id=212 source=initial",
+                "stage=sas_start_finished flow_id=212 source=initial outcome=pending",
+                "stage=sas_start_attempted flow_id=213 source=restricted_sync",
+                "stage=sas_start_finished flow_id=213 source=restricted_sync outcome=failed failure_kind=sdk",
+            ]
+        );
+        assert!(!events.join(" ").contains("private SDK detail"));
+    }
+
+    #[test]
+    fn restricted_sync_failure_streak_reports_once_and_resets_after_success() {
+        let mut failure_reported = false;
+        assert!(should_report_restricted_sync_failure(
+            &mut failure_reported,
+            false
+        ));
+        assert!(!should_report_restricted_sync_failure(
+            &mut failure_reported,
+            false
+        ));
+        assert!(!should_report_restricted_sync_failure(
+            &mut failure_reported,
+            true
+        ));
+        assert!(should_report_restricted_sync_failure(
+            &mut failure_reported,
+            false
+        ));
+        assert!(!should_report_restricted_sync_failure(
+            &mut failure_reported,
+            false
+        ));
     }
 
     #[test]
