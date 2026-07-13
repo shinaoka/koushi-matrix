@@ -1100,7 +1100,7 @@ function useUiLatencyDiagnostics(): UiLatencyDiagnostics {
   return diagnostics;
 }
 
-export function SessionVerificationGate({ snapshot, onSnapshot, onSignOut, operations = { startOwnUserSas: () => api.startOwnUserSas(), submitRecovery: (secret) => api.submitRecovery(secret) } }: { snapshot: DesktopSnapshot; onSnapshot: (snapshot: DesktopSnapshot) => void; onSignOut: () => void; operations?: { startOwnUserSas: () => Promise<DesktopSnapshot>; submitRecovery: (secret: string) => Promise<DesktopSnapshot> } }) {
+export function SessionVerificationGate({ snapshot, onSnapshot, onSignOut, operations = { startOwnUserSas: () => api.startOwnUserSas(), submitRecovery: (secret) => api.submitRecovery(secret), retryCurrentDeviceTrustDiscovery: () => api.retryCurrentDeviceTrustDiscovery() } }: { snapshot: DesktopSnapshot; onSnapshot: (snapshot: DesktopSnapshot) => void; onSignOut: () => void; operations?: { startOwnUserSas: () => Promise<DesktopSnapshot>; submitRecovery: (secret: string) => Promise<DesktopSnapshot>; retryCurrentDeviceTrustDiscovery: () => Promise<DesktopSnapshot> } }) {
   const session = snapshot.state.domain.session;
   const recoveryRef = useRef<HTMLInputElement>(null);
   const passphraseRef = useRef<HTMLInputElement>(null);
@@ -1109,6 +1109,8 @@ export function SessionVerificationGate({ snapshot, onSnapshot, onSignOut, opera
   const methods = session.gate?.methods ?? [];
   const awaiting = session.kind === "awaitingVerification";
   const sasVerifying = session.kind === "verifying" && session.method === "existingDeviceSas";
+  const checking = session.kind === "provisional" && session.phase === "checkingTrust";
+  const discovering = session.kind === "provisional" && session.phase === "discoveringMethods";
   const rechecking = session.kind === "provisional" && typeof session.phase === "object" && "recheckingTrust" in session.phase;
   const preparationFailure = session.kind === "provisional" && typeof session.phase === "object" && "recheckingTrust" in session.phase
     ? session.phase.recheckingTrust.failureKind
@@ -1128,7 +1130,8 @@ export function SessionVerificationGate({ snapshot, onSnapshot, onSignOut, opera
   const heading = preparing ? t("gate.preparing") : rechecking ? t("gate.finishing") : activelyVerifying ? t("gate.verifying") : t("gate.title");
   return <main className="session-verification-gate" aria-label={heading}>
     <h1>{heading}</h1>
-    {session.kind === "provisional" && <p>{t("gate.checking")}</p>}
+    {checking && <p>{t("gate.checking")}</p>}
+    {discovering && <p>{t("gate.discovering")}</p>}
     {session.kind === "rejecting" && <p>{t("gate.rejecting")}</p>}
     {session.kind === "locked" && <p>{t("gate.locked")}</p>}
     {session.gate?.failureKind && <p role="alert">{gateFailureLabel(session.gate.failureKind)}</p>}
@@ -1141,7 +1144,7 @@ export function SessionVerificationGate({ snapshot, onSnapshot, onSignOut, opera
     {awaiting && (methods.includes("recoveryKey") || methods.includes("securityPhrase")) && <form onSubmit={(event) => { event.preventDefault(); const secret = recoveryRef.current?.value.trim() ?? ""; if (secret) void run("recovery", () => operations.submitRecovery(secret)); if (recoveryRef.current) recoveryRef.current.value = ""; }}><input ref={recoveryRef} type="password" aria-label={t("gate.recoverySecret")} autoComplete="off"/><button disabled={gateOperation === "recovery"} type="submit">{t("gate.recover")}</button></form>}
     {awaiting && methods.includes("bootstrap") && <form onSubmit={(event) => { event.preventDefault(); const destination = destinationRef.current?.value.trim() ?? ""; const passphrase = passphraseRef.current?.value || null; if (destinationRef.current) destinationRef.current.value = ""; if (passphraseRef.current) passphraseRef.current.value = ""; if (destination) void run("recovery", () => api.startSessionBootstrap(passphrase, destination)); }}><input ref={destinationRef} aria-label={t("gate.destination")}/><input ref={passphraseRef} type="password" aria-label={t("gate.passphrase")} autoComplete="new-password"/><button type="submit">{t("gate.bootstrap")}</button></form>}
     {session.kind === "awaitingBootstrapConfirmation" && flowId !== undefined && <button onClick={() => void run("recovery", () => api.confirmSessionBootstrapSaved(flowId))}>{t("gate.saved")}</button>}
-    {(awaiting || rechecking) && <button onClick={() => void run("recovery", () => api.retryCurrentDeviceTrustDiscovery())}>{t("gate.retry")}</button>}
+    {(awaiting || discovering || rechecking) && <button disabled={gateOperation === "recovery"} onClick={() => void run("recovery", operations.retryCurrentDeviceTrustDiscovery)}>{t("gate.retry")}</button>}
     {sasVerifying && flowId !== undefined && <button onClick={() => void run("sas", () => api.cancelVerification(flowId))}>{t("action.cancel")}</button>}
     <button onClick={onSignOut}>{t("gate.signOut")}</button>
   </main>;

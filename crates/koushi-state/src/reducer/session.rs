@@ -191,6 +191,45 @@ pub(crate) fn handle_verification_methods_discovered(
     vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
 }
 
+pub(crate) fn handle_verification_method_discovery_failed(
+    state: &mut AppState,
+    kind: VerificationGateFailureKind,
+) -> Vec<AppEffect> {
+    let SessionState::Provisional {
+        info,
+        phase: ProvisionalPhase::DiscoveringMethods,
+    } = &state.session
+    else {
+        return Vec::new();
+    };
+
+    state.session = SessionState::Provisional {
+        info: info.clone(),
+        phase: ProvisionalPhase::RecheckingTrust {
+            failure: Some(kind),
+        },
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+}
+
+pub(crate) fn handle_verification_method_discovery_retry_started(
+    state: &mut AppState,
+) -> Vec<AppEffect> {
+    let SessionState::Provisional {
+        info,
+        phase: ProvisionalPhase::RecheckingTrust { failure: Some(_) },
+    } = &state.session
+    else {
+        return Vec::new();
+    };
+
+    state.session = SessionState::Provisional {
+        info: info.clone(),
+        phase: ProvisionalPhase::DiscoveringMethods,
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+}
+
 fn method_capability(method: VerificationMethod) -> VerificationMethodCapability {
     match method {
         VerificationMethod::ExistingDeviceSas => VerificationMethodCapability::ExistingDeviceSas,

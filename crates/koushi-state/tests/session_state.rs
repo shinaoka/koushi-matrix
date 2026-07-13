@@ -271,6 +271,12 @@ fn login_submitted_emits_no_login_effect_in_active_or_gated_states() {
         );
         assert!(effects.is_empty());
         assert_eq!(state, before);
+        let effects = reduce(
+            &mut state,
+            AppAction::VerificationMethodDiscoveryRetryStarted { generation: 7 },
+        );
+        assert!(effects.is_empty());
+        assert_eq!(state, before);
     }
 }
 
@@ -527,6 +533,91 @@ fn verification_gate_transition_table_is_fail_closed() {
         reduce(&mut state, action);
         assert_eq!(state.session, expected);
         assert!(!matches!(state.session, SessionState::Ready(_)));
+    }
+}
+
+#[test]
+fn verification_method_discovery_failure_is_retryable_and_phase_scoped() {
+    let info = session_info();
+    let mut discovering = AppState {
+        session: SessionState::Provisional {
+            info: info.clone(),
+            phase: ProvisionalPhase::DiscoveringMethods,
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut discovering,
+        AppAction::VerificationMethodDiscoveryFailed {
+            generation: 7,
+            kind: VerificationGateFailureKind::Timeout,
+        },
+    );
+
+    assert_eq!(
+        discovering.session,
+        SessionState::Provisional {
+            info: info.clone(),
+            phase: ProvisionalPhase::RecheckingTrust {
+                failure: Some(VerificationGateFailureKind::Timeout),
+            },
+        }
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+    );
+
+    let effects = reduce(
+        &mut discovering,
+        AppAction::VerificationMethodDiscoveryRetryStarted { generation: 7 },
+    );
+    assert_eq!(
+        discovering.session,
+        SessionState::Provisional {
+            info: info.clone(),
+            phase: ProvisionalPhase::DiscoveringMethods,
+        }
+    );
+    assert_eq!(
+        effects,
+        vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
+    );
+    reduce(
+        &mut discovering,
+        AppAction::VerificationMethodsDiscovered(recovery_gate()),
+    );
+    assert!(matches!(
+        discovering.session,
+        SessionState::AwaitingVerification { .. }
+    ));
+
+    for session in [
+        SessionState::Provisional {
+            info: info.clone(),
+            phase: ProvisionalPhase::CheckingTrust,
+        },
+        SessionState::AwaitingVerification {
+            info: info.clone(),
+            gate: recovery_gate(),
+        },
+        SessionState::Ready(info.clone()),
+    ] {
+        let mut state = AppState {
+            session,
+            ..AppState::default()
+        };
+        let before = state.clone();
+        let effects = reduce(
+            &mut state,
+            AppAction::VerificationMethodDiscoveryFailed {
+                generation: 7,
+                kind: VerificationGateFailureKind::Timeout,
+            },
+        );
+        assert!(effects.is_empty());
+        assert_eq!(state, before);
     }
 }
 

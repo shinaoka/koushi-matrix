@@ -83,6 +83,12 @@ pub fn reduce(state: &mut AppState, action: AppAction) -> Vec<AppEffect> {
         AppAction::VerificationMethodsDiscovered(gate) => {
             session::handle_verification_methods_discovered(state, gate)
         }
+        AppAction::VerificationMethodDiscoveryFailed { kind, .. } => {
+            session::handle_verification_method_discovery_failed(state, kind)
+        }
+        AppAction::VerificationMethodDiscoveryRetryStarted { .. } => {
+            session::handle_verification_method_discovery_retry_started(state)
+        }
         AppAction::VerificationMethodSubmitted { method, flow_id } => {
             session::handle_verification_method_submitted(state, method, flow_id)
         }
