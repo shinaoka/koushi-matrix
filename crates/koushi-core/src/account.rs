@@ -541,6 +541,80 @@ enum VerificationTerminal {
     Failed(TrustOperationFailureKind),
 }
 
+fn sas_verification_event(stage: &'static str, flow_id: u64) -> DiagnosticEvent {
+    DiagnosticEvent::new(DiagnosticLevel::Info, "core.sas_verification", stage)
+        .field(DiagnosticField::count("flow_id", flow_id))
+}
+
+fn record_sas_verification_event(event: DiagnosticEvent) {
+    koushi_diagnostics::record_and_stderr(event);
+}
+
+fn verification_request_state_token(
+    state: &koushi_sdk::MatrixVerificationRequestState,
+) -> &'static str {
+    match state {
+        koushi_sdk::MatrixVerificationRequestState::Created => "created",
+        koushi_sdk::MatrixVerificationRequestState::Requested => "requested",
+        koushi_sdk::MatrixVerificationRequestState::Ready => "ready",
+        koushi_sdk::MatrixVerificationRequestState::SasStarted(_) => "sas_started",
+        koushi_sdk::MatrixVerificationRequestState::Done => "done",
+        koushi_sdk::MatrixVerificationRequestState::Cancelled { .. } => "cancelled",
+        koushi_sdk::MatrixVerificationRequestState::UnsupportedMethod => "unsupported_method",
+    }
+}
+
+fn verification_cancel_kind_token(kind: koushi_sdk::MatrixVerificationCancelKind) -> &'static str {
+    match kind {
+        koushi_sdk::MatrixVerificationCancelKind::UnknownMethod => "unknown_method",
+        koushi_sdk::MatrixVerificationCancelKind::KeyMismatch => "key_mismatch",
+        koushi_sdk::MatrixVerificationCancelKind::User => "user",
+        koushi_sdk::MatrixVerificationCancelKind::Timeout => "timeout",
+        koushi_sdk::MatrixVerificationCancelKind::AcceptedElsewhere => "accepted_elsewhere",
+        koushi_sdk::MatrixVerificationCancelKind::Other => "other",
+    }
+}
+
+fn sas_state_token(state: &koushi_sdk::MatrixSasState) -> &'static str {
+    match state {
+        koushi_sdk::MatrixSasState::Created => "created",
+        koushi_sdk::MatrixSasState::Started => "started",
+        koushi_sdk::MatrixSasState::Accepted => "accepted",
+        koushi_sdk::MatrixSasState::SasPresented { .. } => "sas_presented",
+        koushi_sdk::MatrixSasState::Confirmed => "confirmed",
+        koushi_sdk::MatrixSasState::Done => "done",
+        koushi_sdk::MatrixSasState::Cancelled => "cancelled",
+        koushi_sdk::MatrixSasState::UnsupportedShortAuth => "unsupported_short_auth",
+    }
+}
+
+fn trust_failure_token(kind: TrustOperationFailureKind) -> &'static str {
+    match kind {
+        TrustOperationFailureKind::Cancelled => "cancelled",
+        TrustOperationFailureKind::Mismatch => "mismatch",
+        TrustOperationFailureKind::InvalidPassphrase => "invalid_passphrase",
+        TrustOperationFailureKind::Network => "network",
+        TrustOperationFailureKind::Forbidden => "forbidden",
+        TrustOperationFailureKind::Timeout => "timeout",
+        TrustOperationFailureKind::Sdk => "sdk",
+    }
+}
+
+fn verification_terminal_token(terminal: VerificationTerminal) -> &'static str {
+    match terminal {
+        VerificationTerminal::Success => "success",
+        VerificationTerminal::Cancelled(_) => "cancelled",
+        VerificationTerminal::Failed(_) => "failed",
+    }
+}
+
+fn verification_cancel_reason_token(reason: VerificationCancelReason) -> &'static str {
+    match reason {
+        VerificationCancelReason::User => "user",
+        VerificationCancelReason::Mismatch => "mismatch",
+    }
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub enum SyntheticVerificationTerminal {
@@ -1206,9 +1280,25 @@ impl AccountActor {
                 AccountMessage::SasVerificationTimedOut { flow_id } => {
                     self.handle_sas_verification_timeout(flow_id).await;
                 }
-                AccountMessage::VerificationRequestObserverEnded { flow_id }
-                | AccountMessage::SasVerificationObserverEnded { flow_id } => {
+                AccountMessage::VerificationRequestObserverEnded { flow_id } => {
                     if self.active_verification_target(flow_id).is_some() {
+                        record_sas_verification_event(
+                            sas_verification_event("observer_ended", flow_id)
+                                .field(DiagnosticField::token("observer", "request")),
+                        );
+                        self.settle_verification(
+                            flow_id,
+                            VerificationTerminal::Failed(TrustOperationFailureKind::Sdk),
+                        )
+                        .await;
+                    }
+                }
+                AccountMessage::SasVerificationObserverEnded { flow_id } => {
+                    if self.active_verification_target(flow_id).is_some() {
+                        record_sas_verification_event(
+                            sas_verification_event("observer_ended", flow_id)
+                                .field(DiagnosticField::token("observer", "sas")),
+                        );
                         self.settle_verification(
                             flow_id,
                             VerificationTerminal::Failed(TrustOperationFailureKind::Sdk),
@@ -2737,18 +2827,44 @@ impl AccountActor {
                     return;
                 }
             };
+        record_sas_verification_event(
+            sas_verification_event("sas_start_attempted", flow_id)
+                .field(DiagnosticField::token("source", "initial")),
+        );
         let sas = match koushi_sdk::start_own_user_sas_verification(&own_handle).await {
-            Ok(Some(sas)) => sas,
+            Ok(Some(sas)) => {
+                record_sas_verification_event(
+                    sas_verification_event("sas_start_finished", flow_id)
+                        .field(DiagnosticField::token("source", "initial"))
+                        .field(DiagnosticField::token("outcome", "started")),
+                );
+                sas
+            }
             Ok(None) => {
+                record_sas_verification_event(
+                    sas_verification_event("sas_start_finished", flow_id)
+                        .field(DiagnosticField::token("source", "initial"))
+                        .field(DiagnosticField::token("outcome", "pending")),
+                );
                 self.own_user_verification = Some((flow_id, own_handle));
                 self.start_sas_timeout(flow_id);
                 self.observe_own_user_verification(request_id, flow_id);
                 return;
             }
             Err(error) => {
+                let kind = classify_e2ee_trust_error(&error);
+                record_sas_verification_event(
+                    sas_verification_event("sas_start_finished", flow_id)
+                        .field(DiagnosticField::token("source", "initial"))
+                        .field(DiagnosticField::token("outcome", "failed"))
+                        .field(DiagnosticField::token(
+                            "failure_kind",
+                            trust_failure_token(kind),
+                        )),
+                );
                 self.send_actions(vec![AppAction::VerificationFailed {
                     request_id: flow_id,
-                    kind: classify_e2ee_trust_error(&error),
+                    kind,
                 }])
                 .await;
                 return;
@@ -2782,8 +2898,17 @@ impl AccountActor {
         }
         let flow_id = *flow_id;
         let handle = handle.clone();
+        record_sas_verification_event(
+            sas_verification_event("sas_start_attempted", flow_id)
+                .field(DiagnosticField::token("source", "restricted_sync")),
+        );
         match koushi_sdk::start_own_user_sas_verification(&handle).await {
             Ok(Some(sas)) => {
+                record_sas_verification_event(
+                    sas_verification_event("sas_start_finished", flow_id)
+                        .field(DiagnosticField::token("source", "restricted_sync"))
+                        .field(DiagnosticField::token("outcome", "started")),
+                );
                 self.store_sas_verification(
                     RequestId {
                         connection_id: RuntimeConnectionId(0),
@@ -2797,11 +2922,27 @@ impl AccountActor {
                 )
                 .await;
             }
-            Ok(None) => {}
+            Ok(None) => {
+                record_sas_verification_event(
+                    sas_verification_event("sas_start_finished", flow_id)
+                        .field(DiagnosticField::token("source", "restricted_sync"))
+                        .field(DiagnosticField::token("outcome", "pending")),
+                );
+            }
             Err(error) => {
+                let kind = classify_e2ee_trust_error(&error);
+                record_sas_verification_event(
+                    sas_verification_event("sas_start_finished", flow_id)
+                        .field(DiagnosticField::token("source", "restricted_sync"))
+                        .field(DiagnosticField::token("outcome", "failed"))
+                        .field(DiagnosticField::token(
+                            "failure_kind",
+                            trust_failure_token(kind),
+                        )),
+                );
                 self.send_actions(vec![AppAction::VerificationFailed {
                     request_id: flow_id,
-                    kind: classify_e2ee_trust_error(&error),
+                    kind,
                 }])
                 .await;
             }
@@ -2840,6 +2981,7 @@ impl AccountActor {
         if !active {
             return;
         }
+        record_sas_verification_event(sas_verification_event("timeout_fired", flow_id));
         self.settle_verification(
             flow_id,
             VerificationTerminal::Failed(TrustOperationFailureKind::Timeout),
@@ -3754,6 +3896,25 @@ impl AccountActor {
         {
             return;
         }
+        let mut event = sas_verification_event("request_state_changed", request_id.sequence).field(
+            DiagnosticField::token("state", verification_request_state_token(&state)),
+        );
+        if let koushi_sdk::MatrixVerificationRequestState::Cancelled {
+            kind,
+            cancelled_by_us,
+        } = &state
+        {
+            event = event
+                .field(DiagnosticField::token(
+                    "cancel_kind",
+                    verification_cancel_kind_token(*kind),
+                ))
+                .field(DiagnosticField::boolean(
+                    "cancelled_by_us",
+                    *cancelled_by_us,
+                ));
+        }
+        record_sas_verification_event(event);
         self.project_verification_request_state(request_id, state)
             .await;
     }
@@ -3771,6 +3932,10 @@ impl AccountActor {
         {
             return;
         }
+        record_sas_verification_event(
+            sas_verification_event("sas_state_changed", request_id.sequence)
+                .field(DiagnosticField::token("state", sas_state_token(&state))),
+        );
         self.project_sas_state(request_id, target, state).await;
     }
 
@@ -3875,7 +4040,13 @@ impl AccountActor {
         });
         self.start_sas_timeout(request_id.sequence);
         self.observe_sas_verification(request_id, target.clone(), handle.clone());
-        if matches!(handle.state(), koushi_sdk::MatrixSasState::Started)
+        let initial_state = handle.state();
+        record_sas_verification_event(
+            sas_verification_event("sas_state_changed", request_id.sequence).field(
+                DiagnosticField::token("state", sas_state_token(&initial_state)),
+            ),
+        );
+        if matches!(initial_state, koushi_sdk::MatrixSasState::Started)
             && let Err(error) = koushi_sdk::accept_sas_verification(&handle).await
         {
             self.project_verification_failure(
@@ -3985,6 +4156,26 @@ impl AccountActor {
         let Some(target) = self.active_verification_target(flow_id) else {
             return;
         };
+        let mut event = sas_verification_event("settled", flow_id).field(DiagnosticField::token(
+            "terminal",
+            verification_terminal_token(terminal),
+        ));
+        match terminal {
+            VerificationTerminal::Success => {}
+            VerificationTerminal::Cancelled(reason) => {
+                event = event.field(DiagnosticField::token(
+                    "reason",
+                    verification_cancel_reason_token(reason),
+                ));
+            }
+            VerificationTerminal::Failed(kind) => {
+                event = event.field(DiagnosticField::token(
+                    "failure_kind",
+                    trust_failure_token(kind),
+                ));
+            }
+        }
+        record_sas_verification_event(event);
         self.stop_sas_timeout().await;
         self.stop_verification_request_observer().await;
         self.stop_sas_verification_observer().await;
@@ -7679,6 +7870,7 @@ mod tests {
 
     #[tokio::test]
     async fn actor_sas_settlement_emits_exactly_one_terminal_and_clears_runtime() {
+        let diagnostic_start = koushi_diagnostics::snapshot().records.len();
         let cred_dir = tempdir().expect("credential tempdir");
         let data_dir = tempdir().expect("data tempdir");
         let store = StoreActor::with_backend(
@@ -7756,6 +7948,24 @@ mod tests {
                 "stale terminal duplicated flow {flow_id}"
             );
         }
+        let settled_flow_ids = koushi_diagnostics::snapshot().records[diagnostic_start..]
+            .iter()
+            .filter(|record| {
+                record.event.source == "core.sas_verification" && record.event.stage == "settled"
+            })
+            .filter_map(|record| {
+                record
+                    .event
+                    .fields
+                    .iter()
+                    .find_map(|field| (field.key == "flow_id").then_some(&field.value))
+            })
+            .filter_map(|value| match value {
+                koushi_diagnostics::DiagnosticValue::Count(flow_id) => Some(*flow_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(settled_flow_ids, vec![100, 101, 102, 103, 104]);
         shutdown_and_ack(&handle).await;
     }
 
@@ -7945,6 +8155,155 @@ mod tests {
             .field(DiagnosticField::count("transition_id", 11))
             .field(DiagnosticField::boolean("success", false))
             .field(DiagnosticField::milliseconds("elapsed_ms", 42)),
+        );
+        println!(
+            "{}",
+            serde_json::to_string(&koushi_diagnostics::snapshot())
+                .expect("diagnostic snapshot should serialize")
+        );
+    }
+
+    #[test]
+    fn sas_verification_tokens_are_closed_and_private_safe() {
+        use koushi_sdk::MatrixSasState as SasState;
+        use koushi_sdk::MatrixVerificationCancelKind as CancelKind;
+        use koushi_sdk::MatrixVerificationRequestState as RequestState;
+
+        assert_eq!(
+            verification_request_state_token(&RequestState::Created),
+            "created"
+        );
+        assert_eq!(
+            verification_request_state_token(&RequestState::Requested),
+            "requested"
+        );
+        assert_eq!(
+            verification_request_state_token(&RequestState::Ready),
+            "ready"
+        );
+        assert_eq!(
+            verification_request_state_token(&RequestState::Done),
+            "done"
+        );
+        assert_eq!(
+            verification_request_state_token(&RequestState::Cancelled {
+                kind: CancelKind::Timeout,
+                cancelled_by_us: false,
+            }),
+            "cancelled"
+        );
+        assert_eq!(
+            verification_request_state_token(&RequestState::UnsupportedMethod),
+            "unsupported_method"
+        );
+
+        let cancel_kinds = [
+            (CancelKind::UnknownMethod, "unknown_method"),
+            (CancelKind::KeyMismatch, "key_mismatch"),
+            (CancelKind::User, "user"),
+            (CancelKind::Timeout, "timeout"),
+            (CancelKind::AcceptedElsewhere, "accepted_elsewhere"),
+            (CancelKind::Other, "other"),
+        ];
+        for (kind, token) in cancel_kinds {
+            assert_eq!(verification_cancel_kind_token(kind), token);
+        }
+
+        let sas_states = [
+            (SasState::Created, "created"),
+            (SasState::Started, "started"),
+            (SasState::Accepted, "accepted"),
+            (
+                SasState::SasPresented { emojis: Vec::new() },
+                "sas_presented",
+            ),
+            (SasState::Confirmed, "confirmed"),
+            (SasState::Done, "done"),
+            (SasState::Cancelled, "cancelled"),
+            (SasState::UnsupportedShortAuth, "unsupported_short_auth"),
+        ];
+        for (state, token) in sas_states {
+            assert_eq!(sas_state_token(&state), token);
+        }
+
+        let failure_kinds = [
+            (TrustOperationFailureKind::Cancelled, "cancelled"),
+            (TrustOperationFailureKind::Mismatch, "mismatch"),
+            (
+                TrustOperationFailureKind::InvalidPassphrase,
+                "invalid_passphrase",
+            ),
+            (TrustOperationFailureKind::Network, "network"),
+            (TrustOperationFailureKind::Forbidden, "forbidden"),
+            (TrustOperationFailureKind::Timeout, "timeout"),
+            (TrustOperationFailureKind::Sdk, "sdk"),
+        ];
+        for (kind, token) in failure_kinds {
+            assert_eq!(trust_failure_token(kind), token);
+        }
+
+        assert_eq!(
+            verification_terminal_token(VerificationTerminal::Success),
+            "success"
+        );
+        assert_eq!(
+            verification_terminal_token(VerificationTerminal::Cancelled(
+                VerificationCancelReason::User,
+            )),
+            "cancelled"
+        );
+        assert_eq!(
+            verification_terminal_token(VerificationTerminal::Failed(
+                TrustOperationFailureKind::Timeout,
+            )),
+            "failed"
+        );
+    }
+
+    #[test]
+    fn sas_verification_diagnostic_records_and_writes_stderr() {
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("current test executable should be available"),
+        )
+        .args([
+            "--exact",
+            "account::tests::sas_verification_diagnostic_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .output()
+        .expect("SAS verification diagnostic child should run");
+        assert!(output.status.success(), "child failed: {output:?}");
+
+        let stderr = String::from_utf8(output.stderr).expect("child stderr should be utf8");
+        assert!(stderr.contains(
+            "[koushi] core.sas_verification stage=request_state_changed flow_id=41 state=cancelled cancel_kind=timeout cancelled_by_us=false"
+        ));
+
+        let stdout = String::from_utf8(output.stdout).expect("child stdout should be utf8");
+        let snapshot: serde_json::Value = serde_json::from_str(
+            stdout
+                .lines()
+                .find(|line| line.starts_with('{'))
+                .expect("child should print one JSON snapshot"),
+        )
+        .expect("child output should be a JSON snapshot");
+        assert!(snapshot["records"].as_array().is_some_and(|records| {
+            records.iter().any(|record| {
+                record["event"]["source"] == "core.sas_verification"
+                    && record["event"]["stage"] == "request_state_changed"
+            })
+        }));
+    }
+
+    #[test]
+    #[ignore]
+    fn sas_verification_diagnostic_child() {
+        record_sas_verification_event(
+            sas_verification_event("request_state_changed", 41)
+                .field(DiagnosticField::token("state", "cancelled"))
+                .field(DiagnosticField::token("cancel_kind", "timeout"))
+                .field(DiagnosticField::boolean("cancelled_by_us", false)),
         );
         println!(
             "{}",
