@@ -44,6 +44,28 @@ describe("BrowserFakeApi settings preview", () => {
         gate: { failureKind: null }
       });
     }
+
+    const api = createBrowserFakeApi();
+    const mutable = api as unknown as { snapshot: DesktopSnapshot };
+    mutable.snapshot.state.domain.session = {
+      kind: "awaitingVerification",
+      homeserver: "https://example.invalid",
+      user_id: "@gate:example.invalid",
+      device_id: "DEVICE",
+      gate: {
+        methods: ["bootstrap"],
+        account_kind: "newIdentity",
+        failureKind: "timeout"
+      }
+    };
+    const bootstrapped = await api.startSessionBootstrap(
+      "synthetic-passphrase",
+      "/tmp/synthetic-recovery-key.txt"
+    );
+    expect(bootstrapped.state.domain.session).toMatchObject({
+      kind: "awaitingBootstrapConfirmation",
+      gate: { failureKind: null }
+    });
   });
 
   test("gate SAS confirm rechecks trust only for the matching flow", async () => {

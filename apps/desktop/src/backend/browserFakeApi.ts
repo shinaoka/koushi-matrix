@@ -940,7 +940,7 @@ class BrowserFakeApi implements DesktopApi {
     const flowId = this.nextRequestId();
     const session = this.snapshot.state.domain.session;
     void passphrase;
-    if (session.gate && recoveryKeyDestinationPath.trim()) this.snapshot.state.domain.session = { ...session, kind: "awaitingBootstrapConfirmation", flow_id: flowId, destination_written: true };
+    if (session.gate && recoveryKeyDestinationPath.trim()) this.snapshot.state.domain.session = { ...session, kind: "awaitingBootstrapConfirmation", flow_id: flowId, destination_written: true, gate: { ...session.gate, failureKind: null } };
     return this.getSnapshot();
   }
   async confirmSessionBootstrapSaved(flowId: number): Promise<DesktopSnapshot> {

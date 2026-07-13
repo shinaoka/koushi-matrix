@@ -27,13 +27,16 @@ if (args.has("--print-command")) {
   process.exit(0);
 }
 
-if (!args.has("--skip-preflight")) {
+if (args.has("--signed")) {
   run(
     "node",
-    [
-      "scripts/desktop-release-preflight.mjs",
-      args.has("--signed") ? "--macos-signing" : "--check-config"
-    ],
+    ["scripts/desktop-release-preflight.mjs", "--macos-signing"],
+    repoRoot
+  );
+} else if (!args.has("--skip-preflight")) {
+  run(
+    "node",
+    ["scripts/desktop-release-preflight.mjs", "--check-config"],
     repoRoot
   );
 }

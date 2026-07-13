@@ -255,6 +255,38 @@ test("completed verification failures disappear when a new attempt starts", asyn
   await expect.poll(() => page.evaluate(
     () => window.__harness.currentSnapshot().state.domain.session.gate?.failureKind
   )).toBeNull();
+
+  await page.goto("/appHarness.html");
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          session: {
+            kind: "awaitingVerification",
+            homeserver: "https://example.invalid",
+            user_id: "@gate:example.invalid",
+            device_id: "DEVICE",
+            gate: {
+              methods: ["bootstrap"],
+              account_kind: "newIdentity",
+              failureKind: "timeout"
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+  await page.getByLabel("Recovery key destination").fill("/tmp/synthetic-recovery-key.txt");
+  await page.getByRole("button", { name: "Create secure backup" }).click();
+  await expect(page.getByText("Timeout")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(
+    () => window.__harness.currentSnapshot().state.domain.session.gate?.failureKind
+  )).toBeNull();
 });
 
 test("saved confirmation and sign out use matching gate commands", async ({ page }) => {
