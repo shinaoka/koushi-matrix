@@ -521,6 +521,22 @@ fn take_acknowledged_focused_navigation(
     })
 }
 
+fn anchored_action_after_projection_ack(
+    pending: &mut Option<PendingFocusedNavigation>,
+    projection_request_id: RequestId,
+    key: &TimelineKey,
+    actor_accepted: bool,
+) -> Option<AppAction> {
+    if !actor_accepted {
+        return None;
+    }
+    let accepted = take_acknowledged_focused_navigation(pending, projection_request_id, key)?;
+    Some(AppAction::EnterAnchoredTimeline {
+        room_id: accepted.room_id,
+        event_id: accepted.event_id,
+    })
+}
+
 struct PendingComposerDraftPersist {
     key_id: koushi_key::SessionKeyId,
     drafts: ComposerDraftStore,
@@ -2013,19 +2029,16 @@ impl AppActor {
                             response,
                         })
                         .await;
-                    if routed && accepted.await.unwrap_or(false) && pending_matches {
-                        let pending = take_acknowledged_focused_navigation(
+                    let actor_accepted = routed && accepted.await.unwrap_or(false);
+                    if pending_matches
+                        && let Some(action) = anchored_action_after_projection_ack(
                             &mut self.pending_focused_navigation,
                             projection_request_id,
                             &key,
+                            actor_accepted,
                         )
-                        .expect("matching focused navigation remains pending");
-                        let effects = self
-                            .reduce_app_action(AppAction::EnterAnchoredTimeline {
-                                room_id: pending.room_id,
-                                event_id: pending.event_id,
-                            })
-                            .await;
+                    {
+                        let effects = self.reduce_app_action(action).await;
                         self.handle_app_effects(request_id, effects).await;
                     }
                     true
@@ -3734,6 +3747,53 @@ mod tests {
                 &mut pending,
                 expected.projection_request_id,
                 &expected.key,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn focused_anchor_action_is_impossible_before_actor_acceptance() {
+        let expected = focused_projection_fixture(12);
+        let mut pending = Some(expected.clone());
+        assert!(
+            anchored_action_after_projection_ack(
+                &mut pending,
+                expected.projection_request_id,
+                &expected.key,
+                false,
+            )
+            .is_none()
+        );
+        assert_eq!(pending, Some(expected.clone()));
+
+        let action = anchored_action_after_projection_ack(
+            &mut pending,
+            expected.projection_request_id,
+            &expected.key,
+            true,
+        )
+        .expect("accepted exact projection advances the anchor");
+        assert!(matches!(
+            action,
+            AppAction::EnterAnchoredTimeline { room_id, event_id }
+                if room_id == expected.room_id && event_id == expected.event_id
+        ));
+        assert!(pending.is_none());
+
+        let thread_key = TimelineKey {
+            account_key: expected.key.account_key.clone(),
+            kind: TimelineKind::Thread {
+                room_id: expected.room_id,
+                root_event_id: "$thread-root".to_owned(),
+            },
+        };
+        assert!(
+            anchored_action_after_projection_ack(
+                &mut pending,
+                expected.projection_request_id,
+                &thread_key,
+                true,
             )
             .is_none()
         );

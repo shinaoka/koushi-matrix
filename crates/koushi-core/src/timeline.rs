@@ -50,7 +50,10 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel};
@@ -307,8 +310,12 @@ struct ReplayKnownThreadRootProjectionUpdate {
 #[derive(Default)]
 struct TimelineActorGenerationGateState {
     entries: HashMap<TimelineKey, TimelineActorGenerationGateEntry>,
-    next_generation: u64,
 }
+
+/// Process-global owner epoch. TimelineManagerActor may be recreated during
+/// sync/account lifecycle repair while the WebView canonical store survives;
+/// therefore per-manager counters are not a valid replacement fence.
+static NEXT_TIMELINE_ACTOR_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 struct TimelineActorGenerationGateEntry {
     generation: u64,
@@ -529,10 +536,8 @@ impl Drop for TimelineActorGenerationLease {
     }
 }
 
-fn next_timeline_actor_generation(state: &mut TimelineActorGenerationGateState) -> u64 {
-    let generation = state.next_generation.max(1);
-    state.next_generation = generation.wrapping_add(1).max(1);
-    generation
+fn next_timeline_actor_generation(_state: &mut TimelineActorGenerationGateState) -> u64 {
+    NEXT_TIMELINE_ACTOR_GENERATION.fetch_add(1, Ordering::Relaxed)
 }
 
 fn accept_projection_ack_for_active_actor(
@@ -13530,6 +13535,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn actor_owner_generation_remains_monotonic_across_manager_gate_recreation() {
+        let key = focused_key();
+        let first_gate = TimelineActorGenerationGate::default();
+        let first = first_gate.activate_after_quiescence(&key).await.generation;
+        drop(first_gate);
+
+        let replacement_gate = TimelineActorGenerationGate::default();
+        let replacement = replacement_gate
+            .activate_after_quiescence(&key)
+            .await
+            .generation;
+        assert!(replacement > first);
+    }
+
+    #[tokio::test]
     async fn lost_projection_delivery_replays_same_identity_until_actor_accepts_ack() {
         let key = focused_key();
         let generations = Arc::new(TimelineActorGenerationGate::default());
@@ -13616,7 +13636,20 @@ mod tests {
             .recv()
             .await
             .expect("actor reprojection broadcasts");
-        assert_eq!(replay, CoreEvent::Timeline(projection));
+        assert!(matches!(
+            replay,
+            CoreEvent::Timeline(TimelineEvent::InitialItems {
+                request_id: Some(found_request_id),
+                key: found_key,
+                actor_generation: found_actor_generation,
+                generation: found_generation,
+                items,
+            }) if found_request_id == projection_request_id
+                && found_key == key
+                && found_actor_generation == actor_generation
+                && found_generation == projection_generation
+                && items.len() == 1
+        ));
 
         let mut acknowledged = false;
         assert!(accept_projection_ack_for_active_actor(
