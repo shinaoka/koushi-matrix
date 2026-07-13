@@ -31,6 +31,59 @@ When an operational note here hardens into a durable rule, promote it to
 `REPOSITORY_RULES.md` or `docs/policies/engineering-rules.md` and keep only the
 local how-to detail here.
 
+## Signed macOS DMG
+
+Build signed, notarized macOS artifacts only in an attended `zsh` session on a
+Mac that has the project's Developer ID Application certificate and private key
+installed. Never commit, paste into logs, or store in a repository file any of
+the four values entered below. `APPLE_PASSWORD` is an Apple app-specific
+password, not the normal Apple Account password.
+
+From the repository root, list the available signing identities, then enter the
+matching identity and notarization credentials into session-only environment
+variables:
+
+```zsh
+security find-identity -v -p codesigning
+read -r "APPLE_SIGNING_IDENTITY?Developer ID Application identity: "
+read -r "APPLE_ID?Apple ID: "
+read -r "APPLE_TEAM_ID?Apple Team ID: "
+read -rs "APPLE_PASSWORD?App-specific password: "; echo
+export APPLE_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_PASSWORD
+```
+
+Run the macOS configuration preflight and the repository DMG entry point. With
+those variables present, Tauri signs the app and installer, submits them for
+Apple notarization, and staples the notarization result during the build:
+
+```zsh
+npm --prefix apps/desktop run release:preflight
+npm --prefix apps/desktop run build:dmg
+```
+
+Do not treat a zero build exit as sufficient release evidence. Resolve the
+generated artifacts and require `codesign`, `stapler`, and Gatekeeper to accept
+both the application and DMG before opening the installer:
+
+```zsh
+APP="$(find apps/desktop/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+DMG="$(find apps/desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+test -n "$APP" && test -n "$DMG"
+codesign --verify --deep --strict --verbose=2 "$APP"
+xcrun stapler validate "$APP"
+spctl --assess --type execute --verbose=4 "$APP"
+codesign --verify --verbose=2 "$DMG"
+xcrun stapler validate "$DMG"
+spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
+open "$DMG"
+```
+
+After verification, remove the credentials from the current shell:
+
+```zsh
+unset APPLE_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_PASSWORD
+```
+
 ## Current Implementation Plans
 
 All agents implementing the headless core runtime follow
