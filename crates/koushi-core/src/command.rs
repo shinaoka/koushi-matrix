@@ -584,26 +584,22 @@ impl fmt::Debug for AppCommand {
                 .field("room_id", room_id)
                 .field("event_id", &"EventId(..)")
                 .finish(),
-            Self::OpenAnchoredTimeline {
-                request_id,
-                room_id,
-                ..
-            } => formatter
+            Self::OpenAnchoredTimeline { request_id, .. } => formatter
                 .debug_struct("OpenAnchoredTimeline")
                 .field("request_id", request_id)
-                .field("room_id", room_id)
+                .field("room_id", &"RoomId(..)")
                 .field("event_id", &"EventId(..)")
                 .finish(),
             Self::AcknowledgeTimelineProjection {
                 request_id,
                 projection_request_id,
-                key,
                 generation,
+                ..
             } => formatter
                 .debug_struct("AcknowledgeTimelineProjection")
                 .field("request_id", request_id)
                 .field("projection_request_id", projection_request_id)
-                .field("key", key)
+                .field("key", &"TimelineKey(..)")
                 .field("generation", generation)
                 .finish(),
             Self::EnterAnchoredTimeline {
@@ -3351,6 +3347,41 @@ mod tests {
         assert!(debug.contains("Timestamp(..)"), "{debug}");
         assert!(!debug.contains("!private-room:example.invalid"), "{debug}");
         assert!(!debug.contains("1718000000000"), "{debug}");
+    }
+
+    #[test]
+    fn focused_projection_commands_redact_matrix_identifiers() {
+        let request_id = fake_rid(29);
+        let key = TimelineKey {
+            account_key: AccountKey("@private:example.invalid".to_owned()),
+            kind: crate::ids::TimelineKind::Focused {
+                room_id: "!private-room:example.invalid".to_owned(),
+                event_id: "$private-event:example.invalid".to_owned(),
+            },
+        };
+        let debug = format!(
+            "{:?} {:?}",
+            AppCommand::OpenAnchoredTimeline {
+                request_id,
+                room_id: "!private-room:example.invalid".to_owned(),
+                event_id: "$private-event:example.invalid".to_owned(),
+            },
+            AppCommand::AcknowledgeTimelineProjection {
+                request_id,
+                projection_request_id: fake_rid(28),
+                key,
+                generation: TimelineGeneration(3),
+            }
+        );
+        assert!(debug.contains("RoomId(..)"), "{debug}");
+        assert!(debug.contains("TimelineKey(..)"), "{debug}");
+        for private in [
+            "@private:example.invalid",
+            "!private-room:example.invalid",
+            "$private-event:example.invalid",
+        ] {
+            assert!(!debug.contains(private), "{debug}");
+        }
     }
 
     #[test]

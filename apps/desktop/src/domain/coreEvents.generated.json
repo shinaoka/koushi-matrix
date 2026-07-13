@@ -685,6 +685,7 @@
   "timelineInitialItems": {
     "event": {
       "InitialItems": {
+        "actor_generation": 1,
         "generation": 1,
         "items": [
           {
@@ -889,6 +890,7 @@
   "timelineLinkPreviewInitialItems": {
     "event": {
       "InitialItems": {
+        "actor_generation": 5,
         "generation": 5,
         "items": [
           {
@@ -1035,6 +1037,7 @@
   "timelineMediaInitialItems": {
     "event": {
       "InitialItems": {
+        "actor_generation": 2,
         "generation": 2,
         "items": [
           {
@@ -1235,6 +1238,7 @@
   "timelineReplyQuoteInitialItems": {
     "event": {
       "InitialItems": {
+        "actor_generation": 4,
         "generation": 4,
         "items": [
           {
@@ -1310,6 +1314,7 @@
   "timelineSendStateInitialItems": {
     "event": {
       "InitialItems": {
+        "actor_generation": 3,
         "generation": 3,
         "items": [
           {

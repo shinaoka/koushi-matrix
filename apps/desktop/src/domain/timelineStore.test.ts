@@ -123,6 +123,7 @@ describe("timeline store — diff application", () => {
       InitialItems: {
         request_id: requestId,
         key,
+        actor_generation: 4,
         generation: 4,
         items: [makeMsg("$target", "target")]
       }
@@ -140,12 +141,37 @@ describe("timeline store — diff application", () => {
       InitialItems: {
         request_id: { connection_id: 7, sequence: 10 },
         key,
+        actor_generation: 3,
         generation: 3,
         items: []
       }
     });
     expect(stale.projection).toEqual({ kind: "rejectedStale" });
     expect(stale.store).toBe(applied.store);
+
+    const delayedOldOwner = applyTimelineEventWithProjectionResult(applied.store, {
+      InitialItems: {
+        request_id: { connection_id: 8, sequence: 1 },
+        key,
+        actor_generation: 4,
+        generation: 4,
+        items: []
+      }
+    });
+    expect(delayedOldOwner.projection).toEqual({ kind: "rejectedStale" });
+    expect(delayedOldOwner.store).toBe(applied.store);
+
+    const replacement = applyTimelineEventWithProjectionResult(applied.store, {
+      InitialItems: {
+        request_id: { connection_id: 8, sequence: 2 },
+        key,
+        actor_generation: 5,
+        generation: 0,
+        items: [makeMsg("$target", "replacement")]
+      }
+    });
+    expect(replacement.projection.kind).toBe("applied");
+    expect(getKeyState(replacement.store, key)?.actorGeneration).toBe(5);
   });
 
   test("ignores InitialItems without an acknowledgement-bearing request identity", () => {

@@ -787,6 +787,7 @@ where
         vec![TimelineEvent::InitialItems {
             request_id,
             key: key.clone(),
+            actor_generation,
             generation,
             items,
         }],
@@ -13575,6 +13576,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lost_delivery_reprojection_emits_same_core_event_under_active_actor_lease() {
+        let key = focused_key();
+        let generations = Arc::new(TimelineActorGenerationGate::default());
+        let actor_generation = generations.activate_after_quiescence(&key).await.generation;
+        let projection_request_id = fake_rid(96);
+        let projection_generation = TimelineGeneration(6);
+        let (event_tx, mut event_rx) = broadcast::channel(4);
+        let projection = TimelineEvent::InitialItems {
+            request_id: Some(projection_request_id),
+            key: key.clone(),
+            actor_generation,
+            generation: projection_generation,
+            items: vec![timeline_item(
+                "$focused-target:test",
+                Some("synthetic"),
+                "@sender:test",
+                false,
+            )],
+        };
+
+        assert!(emit_timeline_events_for_generation(
+            &event_tx,
+            &generations,
+            &key,
+            actor_generation,
+            vec![projection.clone()],
+        ));
+        let _lost_first_delivery = event_rx.recv().await.expect("first projection broadcasts");
+
+        assert!(emit_timeline_events_for_generation(
+            &event_tx,
+            &generations,
+            &key,
+            actor_generation,
+            vec![projection.clone()],
+        ));
+        let replay = event_rx
+            .recv()
+            .await
+            .expect("actor reprojection broadcasts");
+        assert_eq!(replay, CoreEvent::Timeline(projection));
+
+        let mut acknowledged = false;
+        assert!(accept_projection_ack_for_active_actor(
+            &generations,
+            &key,
+            actor_generation,
+            projection_request_id,
+            projection_generation,
+            projection_request_id,
+            projection_generation,
+            &mut acknowledged,
+        ));
+        assert!(acknowledged);
+    }
+
+    #[tokio::test]
     async fn stale_actor_generation_cannot_emit_any_timeline_event_after_replacement() {
         let key = room_key();
         let actor_generations = Arc::new(TimelineActorGenerationGate::default());
@@ -13632,6 +13690,7 @@ mod tests {
             vec![TimelineEvent::InitialItems {
                 request_id: None,
                 key: key.clone(),
+                actor_generation: old_generation,
                 generation: TimelineGeneration(0),
                 items: vec![timeline_item(
                     "$old-initial:test",
@@ -13654,6 +13713,7 @@ mod tests {
             vec![TimelineEvent::InitialItems {
                 request_id: None,
                 key: key.clone(),
+                actor_generation: new_generation,
                 generation: TimelineGeneration(0),
                 items: vec![timeline_item(
                     "$new-initial:test",

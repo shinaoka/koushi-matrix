@@ -51,6 +51,8 @@ import { timelineItemDomId, timelineKeyEquals } from "./coreEvents";
 export interface TimelineKeyState {
   /** Current known Core timeline generation. 0 is a valid first generation. */
   generation: number;
+  /** Monotonic Core actor owner generation for replacement fencing. */
+  actorGeneration: number;
   /** Stable actor-owned projection identity, preserved across replay. */
   projectionRequestId: RequestId | null;
   /** Render list maintained by applying diffs. */
@@ -85,6 +87,10 @@ function keyStr(key: TimelineKey): string {
   return JSON.stringify(key);
 }
 
+function requestIdsEqual(left: RequestId, right: RequestId): boolean {
+  return left.connection_id === right.connection_id && left.sequence === right.sequence;
+}
+
 export function timelineStoreKeyId(key: TimelineKey): string {
   return keyStr(key);
 }
@@ -92,6 +98,7 @@ export function timelineStoreKeyId(key: TimelineKey): string {
 function emptyKeyState(): TimelineKeyState {
   return {
     generation: 0,
+    actorGeneration: 0,
     projectionRequestId: null,
     items: [],
     itemIndexById: new Map(),
@@ -270,12 +277,23 @@ export function applyTimelineEventWithProjectionResult(
     return { store: applyTimelineEvent(store, event), projection: { kind: "ignored" } };
   }
   const payload = event.InitialItems;
+  const actorGeneration = payload.actor_generation ?? 0;
   const requestId = payload.request_id;
   if (requestId === null) {
     return { store: applyInitialItems(store, payload), projection: { kind: "ignored" } };
   }
   const existing = store.keys.get(keyStr(payload.key));
-  if (existing && payload.generation < existing.generation) {
+  if (
+    existing &&
+    (actorGeneration < existing.actorGeneration ||
+      (actorGeneration === existing.actorGeneration &&
+        payload.generation < existing.generation) ||
+      (actorGeneration === existing.actorGeneration &&
+        payload.generation === existing.generation &&
+        payload.request_id !== null &&
+        existing.projectionRequestId !== null &&
+        !requestIdsEqual(payload.request_id, existing.projectionRequestId)))
+  ) {
     return { store, projection: { kind: "rejectedStale" } };
   }
   return {
@@ -470,6 +488,7 @@ function applyInitialItems(
   next.set(k, {
     ...existing,
     generation: payload.generation,
+    actorGeneration: payload.actor_generation ?? 0,
     projectionRequestId: payload.request_id,
     items: indexed.items,
     itemIndexById: indexed.itemIndexById,

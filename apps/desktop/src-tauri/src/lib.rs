@@ -2048,6 +2048,7 @@ mod tests {
         let initial = serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
             request_id: Some(request_id),
             key: key.clone(),
+            actor_generation: 1,
             generation: TimelineGeneration(1),
             items: vec![item.clone()],
         }))
@@ -2167,6 +2168,7 @@ mod tests {
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
                 request_id: Some(request_id),
                 key: key.clone(),
+                actor_generation: 2,
                 generation: TimelineGeneration(2),
                 items: vec![media_item],
             }))
@@ -2203,6 +2205,7 @@ mod tests {
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
                 request_id: Some(request_id),
                 key: key.clone(),
+                actor_generation: 3,
                 generation: TimelineGeneration(3),
                 items: vec![send_state_item],
             }))
@@ -2219,6 +2222,7 @@ mod tests {
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
                 request_id: Some(request_id),
                 key: key.clone(),
+                actor_generation: 4,
                 generation: TimelineGeneration(4),
                 items: vec![reply_quote_item],
             }))
@@ -2238,6 +2242,7 @@ mod tests {
             serialize_core_event(&CoreEvent::Timeline(TimelineEvent::InitialItems {
                 request_id: Some(request_id),
                 key: key.clone(),
+                actor_generation: 5,
                 generation: TimelineGeneration(5),
                 items: vec![link_preview_item],
             }))

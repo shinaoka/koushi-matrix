@@ -887,6 +887,8 @@ pub enum TimelineEvent {
     InitialItems {
         request_id: Option<RequestId>,
         key: TimelineKey,
+        /// Monotonic owner generation for actor replacement fencing.
+        actor_generation: u64,
         generation: TimelineGeneration,
         items: Vec<TimelineItem>,
     },
@@ -2898,6 +2900,7 @@ mod tests {
         let mut event = TimelineEvent::InitialItems {
             request_id: None,
             key,
+            actor_generation: 0,
             generation: TimelineGeneration(0),
             items: vec![
                 timeline_item_fixture("$redacted:example.invalid", true),
