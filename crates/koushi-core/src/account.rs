@@ -2725,17 +2725,18 @@ impl AccountActor {
             return;
         };
         self.cancel_verification_handles().await;
-        let own_handle = match koushi_sdk::request_own_user_sas_verification(&session).await {
-            Ok(handle) => handle,
-            Err(error) => {
-                self.send_actions(vec![AppAction::VerificationFailed {
-                    request_id: flow_id,
-                    kind: classify_e2ee_trust_error(&error),
-                }])
-                .await;
-                return;
-            }
-        };
+        let own_handle =
+            match koushi_sdk::request_own_user_sas_verification(&session, flow_id).await {
+                Ok(handle) => handle,
+                Err(error) => {
+                    self.send_actions(vec![AppAction::VerificationFailed {
+                        request_id: flow_id,
+                        kind: classify_e2ee_trust_error(&error),
+                    }])
+                    .await;
+                    return;
+                }
+            };
         let sas = match koushi_sdk::start_own_user_sas_verification(&own_handle).await {
             Ok(Some(sas)) => sas,
             Ok(None) => {
