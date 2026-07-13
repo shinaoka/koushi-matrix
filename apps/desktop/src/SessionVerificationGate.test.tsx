@@ -34,6 +34,7 @@ describe("SessionVerificationGate interactions", () => {
     const button = screen.getByRole("button", { name: "Verify with another device" });
     fireEvent.click(button);
     await vi.waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.getByRole("alert").textContent).toContain("Verification command failed");
     fireEvent.click(button);
     await vi.waitFor(() => expect(startOwnUserSas).toHaveBeenCalledTimes(2));
   });

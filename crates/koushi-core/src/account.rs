@@ -498,6 +498,12 @@ struct PendingTrustTransition {
     decision: TrustLifecycleDecision,
 }
 
+struct OwnedPromotionTask {
+    generation: u64,
+    transition_id: u64,
+    task: crate::executor::JoinHandle<()>,
+}
+
 fn trust_projection_ack_matches(
     pending: &PendingTrustTransition,
     generation: u64,
@@ -567,7 +573,7 @@ pub struct AccountActor {
     pending_ready_events: Vec<CoreEvent>,
     pending_trust_transition: Option<PendingTrustTransition>,
     next_trust_transition_id: u64,
-    promotion_full_state_task: Option<crate::executor::JoinHandle<()>>,
+    promotion_full_state_task: Option<OwnedPromotionTask>,
     pending_session_teardown: Option<PendingSessionTeardown>,
     next_teardown_generation: u64,
     teardown_retry_task: Option<crate::executor::JoinHandle<()>>,
@@ -6290,7 +6296,7 @@ impl AccountActor {
             .lock()
             .expect("promotion override lock")
             .take();
-        self.promotion_full_state_task = Some(executor::spawn(async move {
+        let task = executor::spawn(async move {
             #[cfg(test)]
             let succeeded = if let Some(completion) = preparation_override {
                 completion.await.unwrap_or(false)
@@ -6310,7 +6316,12 @@ impl AccountActor {
                     succeeded,
                 })
                 .await;
-        }));
+        });
+        self.promotion_full_state_task = Some(OwnedPromotionTask {
+            generation,
+            transition_id,
+            task,
+        });
     }
 
     async fn cancel_pending_trust_promotion(&mut self) {
@@ -6323,9 +6334,9 @@ impl AccountActor {
         ) {
             self.pending_trust_transition = None;
         }
-        if let Some(task) = self.promotion_full_state_task.take() {
-            task.abort();
-            let _ = task.await;
+        if let Some(owned) = self.promotion_full_state_task.take() {
+            owned.task.abort();
+            let _ = owned.task.await;
             self.record_lifecycle_probe("promotion_full_state_terminated");
         }
     }
@@ -6341,9 +6352,6 @@ impl AccountActor {
         transition_id: u64,
         succeeded: bool,
     ) {
-        if let Some(task) = self.promotion_full_state_task.take() {
-            let _ = task.await;
-        }
         let Some(pending) = self.pending_trust_transition.as_ref() else {
             return;
         };
@@ -6354,6 +6362,17 @@ impl AccountActor {
         {
             return;
         }
+        let Some(owned) = self.promotion_full_state_task.as_ref() else {
+            return;
+        };
+        if owned.generation != generation || owned.transition_id != transition_id {
+            return;
+        }
+        let owned = self
+            .promotion_full_state_task
+            .take()
+            .expect("correlated promotion task");
+        let _ = owned.task.await;
         if !succeeded {
             self.pending_trust_transition = None;
             self.send_actions(vec![AppAction::VerificationAdmissionPreparationFailed {
@@ -8759,6 +8778,64 @@ mod tests {
         assert_eq!(
             inspect_session_runtime(&handle).await,
             (true, false, false, true)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn stale_completion_cannot_take_or_block_new_owned_promotion_task() {
+        let (handle, mut action_rx) = login_gated_actor().await;
+        let (_old_release, old_preparation) = oneshot::channel();
+        handle
+            .send(AccountMessage::ConfigurePromotionFullState {
+                completion: old_preparation,
+            })
+            .await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Verified,
+            })
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Unverified,
+            })
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+
+        let (new_release, new_preparation) = oneshot::channel();
+        handle
+            .send(AccountMessage::ConfigurePromotionFullState {
+                completion: new_preparation,
+            })
+            .await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Verified,
+            })
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+        handle
+            .send(AccountMessage::PromotionFullStateSyncFinished {
+                generation: 2,
+                transition_id: 2,
+                succeeded: true,
+            })
+            .await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, false, false, true)
+        );
+
+        new_release.send(true).expect("new task must remain owned");
+        acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, true, true, true)
         );
         let _ = handle.send(AccountMessage::Shutdown).await;
     }

@@ -1116,12 +1116,14 @@ export function SessionVerificationGate({ snapshot, onSnapshot, onSignOut, opera
   const preparing = session.kind === "ready" && snapshot.state.domain.sync !== "running";
   const activelyVerifying = session.kind === "verifying";
   const [gateOperation, setGateOperation] = useState<"recovery" | "sas" | null>(null);
+  const [operationError, setOperationError] = useState<string | null>(null);
   const gateOperationRef = useRef<"recovery" | "sas" | null>(null);
   const run = async (kind: "recovery" | "sas", operation: () => Promise<DesktopSnapshot>) => {
     if (gateOperationRef.current === kind) return;
     gateOperationRef.current = kind;
+    setOperationError(null);
     setGateOperation(kind);
-    try { onSnapshot(await operation()); } catch { /* command failure is projected by the Rust-owned gate */ } finally { gateOperationRef.current = null; setGateOperation(null); }
+    try { onSnapshot(await operation()); } catch { setOperationError("Verification command failed. Please try again."); } finally { gateOperationRef.current = null; setGateOperation(null); }
   };
   const heading = preparing ? t("gate.preparing") : rechecking ? t("gate.finishing") : activelyVerifying ? t("gate.verifying") : t("gate.title");
   return <main className="session-verification-gate" aria-label={heading}>
@@ -1131,6 +1133,7 @@ export function SessionVerificationGate({ snapshot, onSnapshot, onSignOut, opera
     {session.kind === "locked" && <p>{t("gate.locked")}</p>}
     {session.gate?.failureKind && <p role="alert">{gateFailureLabel(session.gate.failureKind)}</p>}
     {preparationFailure && <p role="alert">{gateFailureLabel(preparationFailure)}</p>}
+    {operationError && !session.gate?.failureKind && !preparationFailure && <p role="alert">{operationError}</p>}
     {session.kind === "rejecting" && session.reason && <p role="alert">{gateRejectLabel(session.reason)}</p>}
     {awaiting && methods.includes("existingDeviceSas") && <button disabled={gateOperation === "sas"} onClick={() => void run("sas", operations.startOwnUserSas)}>{t("gate.otherDevice")}</button>}
     {sasVerifying && session.sas_emojis?.length === 7 && <div className="session-verification-emojis">{session.sas_emojis.map((emoji, index) => <span key={index}>{emoji.symbol} {emoji.description}</span>)}</div>}
@@ -1156,14 +1159,19 @@ export async function settleLoginTransport(
   login: Promise<DesktopSnapshot>,
   refresh: () => Promise<DesktopSnapshot>,
   apply: (snapshot: DesktopSnapshot) => void
-): Promise<void> {
+): Promise<string | null> {
   try {
     apply(await login);
+    return null;
   } catch {
     try {
-      apply(await refresh());
+      const snapshot = await refresh();
+      apply(snapshot);
+      return snapshot.state.ui.errors.length > 0 || snapshot.state.domain.session.gate?.failureKind || snapshot.state.domain.session.kind === "rejecting"
+        ? null
+        : "Sign-in failed. Please try again.";
     } catch {
-      // The next pushed core state remains authoritative if refresh also fails.
+      return "Sign-in failed. Please try again.";
     }
   }
 }
@@ -1227,6 +1235,7 @@ export function App() {
   const [savedSessions, setSavedSessions] = useState<SavedSessionInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<ActiveContextMenu | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  const [loginTransportError, setLoginTransportError] = useState<string | null>(null);
   const [primaryView, setPrimaryView] = useState<PrimaryView>("timeline");
   // #161: while the main pane is anchored to a jump-to-date event, the focused
   // timeline renders in the MAIN pane, so a focused-context right panel must be
@@ -2133,6 +2142,7 @@ export function App() {
     const password = loginPasswordRef.current?.value ?? "";
     const sessionKind = snapshot?.state.domain.session.kind;
     setIsBusy(true);
+    setLoginTransportError(null);
     try {
       const login =
         sessionKind === "locked"
@@ -2143,7 +2153,7 @@ export function App() {
               password,
               loginDeviceName
             );
-      await settleLoginTransport(login, () => api.getSnapshot(), setSnapshot);
+      setLoginTransportError(await settleLoginTransport(login, () => api.getSnapshot(), setSnapshot));
     } finally {
       if (loginPasswordRef.current) {
         loginPasswordRef.current.value = "";
@@ -3623,7 +3633,7 @@ export function App() {
 
   if (sessionKind !== "ready") {
     return (
-      <AuthScreen
+      <><AuthScreen
         deviceName={loginDeviceName}
         homeserver={loginHomeserver}
         isBusy={isBusy || sessionKind === "authenticating"}
@@ -3638,7 +3648,7 @@ export function App() {
         onStartOidcLogin={startOidcLogin}
         onSubmit={submitLogin}
         onUsernameChange={setLoginUsername}
-      />
+      />{loginTransportError && <p role="alert">{loginTransportError}</p>}</>
     );
   }
 

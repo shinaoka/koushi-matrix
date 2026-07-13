@@ -2317,8 +2317,16 @@ describe("Timeline item row rendering", () => {
     const apply = vi.fn();
     await expect(
       settleLoginTransport(Promise.reject(new Error("login timeout")), async () => gate, apply)
-    ).resolves.toBeUndefined();
+    ).resolves.toBe("Sign-in failed. Please try again.");
     expect(apply).toHaveBeenCalledWith(gate);
+  });
+
+  test("login transport does not duplicate an authoritative projected failure", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { settleLoginTransport } = await import("./App");
+    const failed = await createBrowserFakeApi({ session: "needsRecovery" }).getSnapshot();
+    failed.state.ui.errors.push({ code: "login_failed", message: "Login failed", recoverable: true });
+    await expect(settleLoginTransport(Promise.reject(new Error("ipc")), async () => failed, () => undefined)).resolves.toBeNull();
   });
 
   test("ready with non-running sync remains behind room preparation gate", () => {
