@@ -32,7 +32,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use futures_util::StreamExt;
@@ -137,6 +137,25 @@ fn trace_restore_simple(stage: &'static str, action: &'static str) {
         DiagnosticEvent::new(DiagnosticLevel::Debug, "core.account", stage)
             .field(DiagnosticField::token("action", action)),
     );
+}
+
+fn record_verification_admission_event(event: DiagnosticEvent) {
+    eprintln!(
+        "[koushi] {} {}",
+        event.source,
+        koushi_diagnostics::format_event(&event)
+    );
+    record(event);
+}
+
+fn verification_admission_event(
+    stage: &'static str,
+    generation: u64,
+    transition_id: u64,
+) -> DiagnosticEvent {
+    DiagnosticEvent::new(DiagnosticLevel::Info, "core.verification_admission", stage)
+        .field(DiagnosticField::count("generation", generation))
+        .field(DiagnosticField::count("transition_id", transition_id))
 }
 
 fn trace_account_request(stage: &'static str, request_id: RequestId, action: &'static str) {
@@ -6289,6 +6308,11 @@ impl AccountActor {
             transition_id,
             decision: TrustLifecycleDecision::Promote,
         });
+        record_verification_admission_event(verification_admission_event(
+            "preparation_started",
+            generation,
+            transition_id,
+        ));
         let tx = self.self_tx.clone();
         #[cfg(test)]
         let preparation_override = self
@@ -6297,6 +6321,12 @@ impl AccountActor {
             .expect("promotion override lock")
             .take();
         let task = executor::spawn(async move {
+            record_verification_admission_event(verification_admission_event(
+                "full_state_sync_started",
+                generation,
+                transition_id,
+            ));
+            let started_at = Instant::now();
             #[cfg(test)]
             let succeeded = if let Some(completion) = preparation_override {
                 completion.await.unwrap_or(false)
@@ -6309,6 +6339,14 @@ impl AccountActor {
             let succeeded = koushi_sdk::promotion_full_state_sync_once(&session)
                 .await
                 .is_ok();
+            record_verification_admission_event(
+                verification_admission_event("full_state_sync_finished", generation, transition_id)
+                    .field(DiagnosticField::boolean("success", succeeded))
+                    .field(DiagnosticField::milliseconds(
+                        "elapsed_ms",
+                        started_at.elapsed().as_millis(),
+                    )),
+            );
             let _ = tx
                 .send(AccountMessage::PromotionFullStateSyncFinished {
                     generation,
@@ -6335,6 +6373,11 @@ impl AccountActor {
             self.pending_trust_transition = None;
         }
         if let Some(owned) = self.promotion_full_state_task.take() {
+            record_verification_admission_event(verification_admission_event(
+                "preparation_cancelled",
+                owned.generation,
+                owned.transition_id,
+            ));
             owned.task.abort();
             let _ = owned.task.await;
             self.record_lifecycle_probe("promotion_full_state_terminated");
@@ -6352,7 +6395,16 @@ impl AccountActor {
         transition_id: u64,
         succeeded: bool,
     ) {
+        record_verification_admission_event(
+            verification_admission_event("completion_received", generation, transition_id)
+                .field(DiagnosticField::boolean("success", succeeded)),
+        );
         let Some(pending) = self.pending_trust_transition.as_ref() else {
+            record_verification_admission_event(verification_admission_event(
+                "completion_ignored",
+                generation,
+                transition_id,
+            ));
             return;
         };
         if pending.generation != generation
@@ -6360,12 +6412,27 @@ impl AccountActor {
             || pending.decision != TrustLifecycleDecision::Promote
             || generation != self.trust_generation
         {
+            record_verification_admission_event(verification_admission_event(
+                "completion_ignored",
+                generation,
+                transition_id,
+            ));
             return;
         }
         let Some(owned) = self.promotion_full_state_task.as_ref() else {
+            record_verification_admission_event(verification_admission_event(
+                "completion_ignored",
+                generation,
+                transition_id,
+            ));
             return;
         };
         if owned.generation != generation || owned.transition_id != transition_id {
+            record_verification_admission_event(verification_admission_event(
+                "completion_ignored",
+                generation,
+                transition_id,
+            ));
             return;
         }
         let owned = self
@@ -6382,6 +6449,11 @@ impl AccountActor {
             .await;
             return;
         }
+        record_verification_admission_event(verification_admission_event(
+            "ready_projection_dispatched",
+            generation,
+            transition_id,
+        ));
         self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
             generation,
             transition_id,
@@ -7824,6 +7896,63 @@ mod tests {
     }
 
     #[test]
+    fn verification_admission_diagnostic_records_and_writes_stderr() {
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("current test executable should be available"),
+        )
+        .args([
+            "--exact",
+            "account::tests::verification_admission_diagnostic_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .output()
+        .expect("verification admission diagnostic child should run");
+        assert!(output.status.success(), "child failed: {output:?}");
+
+        let stderr = String::from_utf8(output.stderr).expect("child stderr should be utf8");
+        assert!(stderr.contains(
+            "[koushi] core.verification_admission stage=full_state_sync_finished generation=7 transition_id=11 success=false elapsed_ms=42"
+        ));
+
+        let stdout = String::from_utf8(output.stdout).expect("child stdout should be utf8");
+        let snapshot: serde_json::Value = serde_json::from_str(
+            stdout
+                .lines()
+                .find(|line| line.starts_with('{'))
+                .expect("child should print one JSON snapshot"),
+        )
+        .expect("child output should be a JSON snapshot");
+        assert!(snapshot["records"].as_array().is_some_and(|records| {
+            records.iter().any(|record| {
+                record["event"]["source"] == "core.verification_admission"
+                    && record["event"]["stage"] == "full_state_sync_finished"
+            })
+        }));
+    }
+
+    #[test]
+    #[ignore]
+    fn verification_admission_diagnostic_child() {
+        record_verification_admission_event(
+            DiagnosticEvent::new(
+                DiagnosticLevel::Info,
+                "core.verification_admission",
+                "full_state_sync_finished",
+            )
+            .field(DiagnosticField::count("generation", 7))
+            .field(DiagnosticField::count("transition_id", 11))
+            .field(DiagnosticField::boolean("success", false))
+            .field(DiagnosticField::milliseconds("elapsed_ms", 42)),
+        );
+        println!(
+            "{}",
+            serde_json::to_string(&koushi_diagnostics::snapshot())
+                .expect("diagnostic snapshot should serialize")
+        );
+    }
+
+    #[test]
     fn event_cache_repair_diagnostic_runs_without_trace_environment() {
         let child = std::process::Command::new(
             std::env::current_exe().expect("current test executable should be available"),
@@ -8542,6 +8671,7 @@ mod tests {
 
     #[tokio::test]
     async fn promotion_preparation_keeps_mailbox_live_and_stale_ack_cannot_consume_promotion() {
+        let diagnostic_start = koushi_diagnostics::snapshot().records.len();
         let homeserver = spawn_quarantine_password_server();
         let cred_dir = tempdir().expect("tempdir");
         let data_dir = tempdir().expect("tempdir");
@@ -8587,6 +8717,22 @@ mod tests {
             inspect_session_runtime(&handle).await,
             (true, true, true, true)
         );
+        let snapshot = koushi_diagnostics::snapshot();
+        let stages = snapshot.records[diagnostic_start..]
+            .iter()
+            .filter(|record| record.event.source == "core.verification_admission")
+            .map(|record| record.event.stage)
+            .collect::<Vec<_>>();
+        assert!(stages.windows(5).any(|window| {
+            window
+                == [
+                    "preparation_started",
+                    "full_state_sync_started",
+                    "full_state_sync_finished",
+                    "completion_received",
+                    "ready_projection_dispatched",
+                ]
+        }));
         let _ = handle.send(AccountMessage::Shutdown).await;
     }
 
