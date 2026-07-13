@@ -277,6 +277,11 @@ pub enum AccountMessage {
     #[cfg(test)]
     ConfigureSyntheticRecoveryTask {
         flow_id: u64,
+        pending: bool,
+    },
+    #[cfg(test)]
+    ConfigureRecoveryDownload {
+        completion: oneshot::Receiver<bool>,
     },
     #[cfg(test)]
     InspectRecoveryTask {
@@ -573,6 +578,8 @@ pub struct AccountActor {
     #[cfg(test)]
     promotion_full_state_override: std::sync::Mutex<Option<oneshot::Receiver<bool>>>,
     #[cfg(test)]
+    recovery_download_override: std::sync::Mutex<Option<oneshot::Receiver<bool>>>,
+    #[cfg(test)]
     close_store_results: std::collections::VecDeque<bool>,
     /// Store actor — owns the credential store backend and per-account paths.
     store: StoreActor,
@@ -732,6 +739,8 @@ impl AccountActor {
             trust_observation_override: std::sync::Mutex::new(None),
             #[cfg(test)]
             promotion_full_state_override: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            recovery_download_override: std::sync::Mutex::new(None),
             #[cfg(test)]
             close_store_results: std::collections::VecDeque::new(),
             store: store_actor,
@@ -1049,15 +1058,26 @@ impl AccountActor {
                     ));
                 }
                 #[cfg(test)]
-                AccountMessage::ConfigureSyntheticRecoveryTask { flow_id } => {
+                AccountMessage::ConfigureSyntheticRecoveryTask { flow_id, pending } => {
                     self.stop_recovery_task().await;
                     let request_id = incoming_verification_request_id(flow_id);
                     self.recovery_task = Some(PendingRecoveryTask {
                         generation: self.trust_generation,
                         flow_id,
                         request_id,
-                        task: crate::executor::spawn(std::future::pending()),
+                        task: if pending {
+                            crate::executor::spawn(std::future::pending())
+                        } else {
+                            crate::executor::spawn(async {})
+                        },
                     });
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureRecoveryDownload { completion } => {
+                    *self
+                        .recovery_download_override
+                        .lock()
+                        .expect("recovery download lock") = Some(completion);
                 }
                 #[cfg(test)]
                 AccountMessage::InspectRecoveryTask { response } => {
@@ -5788,6 +5808,30 @@ impl AccountActor {
                     version: None,
                 }])
                 .await;
+                #[cfg(test)]
+                let recovery_download_override = self
+                    .recovery_download_override
+                    .lock()
+                    .expect("recovery download lock")
+                    .take();
+                #[cfg(test)]
+                let restore_result = if let Some(completion) = recovery_download_override {
+                    if completion.await.unwrap_or(false) {
+                        Ok(koushi_sdk::KeyBackupRestoreSummary {
+                            scope: koushi_sdk::KeyBackupRestoreScope::JoinedRooms,
+                            version: None,
+                            restored_rooms: 0,
+                            total_rooms: Some(0),
+                        })
+                    } else {
+                        Err(koushi_sdk::E2eeTrustError::Sdk(
+                            "controlled recovery download failure".to_owned(),
+                        ))
+                    }
+                } else {
+                    koushi_sdk::download_joined_room_keys_from_backup(&session, None).await
+                };
+                #[cfg(not(test))]
                 let restore_result =
                     koushi_sdk::download_joined_room_keys_from_backup(&session, None).await;
                 let (actions, events) = project_restore_key_backup_result(
@@ -8507,7 +8551,7 @@ mod tests {
 
         handle
             .send(AccountMessage::TrustProjectionApplied {
-                generation: 1,
+                generation: 2,
                 transition_id: 0,
                 ready: false,
                 locked: false,
@@ -8523,6 +8567,238 @@ mod tests {
         assert_eq!(
             inspect_session_runtime(&handle).await,
             (true, true, true, true)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    async fn login_gated_actor() -> (AccountActorHandle, mpsc::Receiver<Vec<AppAction>>) {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir").keep();
+        let data_dir = tempdir().expect("tempdir").keep();
+        let (handle, mut action_rx, _event_rx) = spawn_actor_with_dirs(&cred_dir, &data_dir);
+        let updates = futures_util::stream::pending();
+        handle
+            .send(AccountMessage::ConfigureTrustObservation {
+                observation: koushi_sdk::CurrentDeviceTrustObservation {
+                    current: koushi_state::CurrentDeviceTrustState::Unknown,
+                    updates: Box::pin(updates),
+                },
+            })
+            .await;
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: test_request_id(),
+                request: LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ) {}
+        (handle, action_rx)
+    }
+
+    #[tokio::test]
+    async fn recovery_proof_success_enters_shared_authoritative_promotion_path() {
+        let (handle, mut action_rx) = login_gated_actor().await;
+        let flow_id = 81;
+        let request_id = incoming_verification_request_id(flow_id);
+        handle
+            .send(AccountMessage::ConfigureSyntheticRecoveryTask {
+                flow_id,
+                pending: false,
+            })
+            .await;
+        let (download_release, download) = oneshot::channel();
+        handle
+            .send(AccountMessage::ConfigureRecoveryDownload {
+                completion: download,
+            })
+            .await;
+        download_release
+            .send(true)
+            .expect("release recovery download");
+        handle
+            .send(AccountMessage::RecoveryFinished {
+                generation: 2,
+                flow_id,
+                request_id,
+                result: Ok(()),
+            })
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+        let _ = inspect_session_runtime(&handle).await;
+        let (preparation_release, preparation) = oneshot::channel();
+        handle
+            .send(AccountMessage::ConfigurePromotionFullState {
+                completion: preparation,
+            })
+            .await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Verified,
+            })
+            .await;
+        preparation_release.send(true).expect("release preparation");
+        acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, true, true, true)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn invalid_recovery_terminal_stays_gated_without_normal_runtime() {
+        let (handle, mut action_rx) = login_gated_actor().await;
+        let flow_id = 82;
+        let request_id = incoming_verification_request_id(flow_id);
+        handle
+            .send(AccountMessage::ConfigureSyntheticRecoveryTask {
+                flow_id,
+                pending: false,
+            })
+            .await;
+        handle
+            .send(AccountMessage::RecoveryFinished {
+                generation: 2,
+                flow_id,
+                request_id,
+                result: Err(koushi_sdk::E2eeRecoveryError::Sdk(
+                    "invalid fixture secret".to_owned(),
+                )),
+            })
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::E2eeRecoveryFailed { .. }])
+        ) {}
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, false, false, true)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn own_user_sas_proof_success_enters_shared_authoritative_promotion_path() {
+        let (handle, mut action_rx) = login_gated_actor().await;
+        let flow_id = 83;
+        handle
+            .send(AccountMessage::ConfigureSyntheticVerification { flow_id })
+            .await;
+        handle
+            .send(AccountMessage::SettleSyntheticVerification {
+                flow_id,
+                terminal: SyntheticVerificationTerminal::Success,
+            })
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+        let _ = inspect_session_runtime(&handle).await;
+        let (release, preparation) = oneshot::channel();
+        handle
+            .send(AccountMessage::ConfigurePromotionFullState {
+                completion: preparation,
+            })
+            .await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Verified,
+            })
+            .await;
+        release.send(true).expect("release preparation");
+        acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, true, true, true)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn trust_regression_cancels_preparation_and_late_result_is_ignored() {
+        let (handle, _action_rx) = login_gated_actor().await;
+        let (release, preparation) = oneshot::channel();
+        handle
+            .send(AccountMessage::ConfigurePromotionFullState {
+                completion: preparation,
+            })
+            .await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Verified,
+            })
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Unverified,
+            })
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+        assert!(
+            release.send(true).is_err(),
+            "regression must abort and join preparation"
+        );
+        handle
+            .send(AccountMessage::PromotionFullStateSyncFinished {
+                generation: 2,
+                transition_id: 2,
+                succeeded: true,
+            })
+            .await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, false, false, true)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn logout_cancels_preparation_and_late_result_cannot_activate_runtime() {
+        let (handle, _action_rx) = login_gated_actor().await;
+        let (release, preparation) = oneshot::channel();
+        handle
+            .send(AccountMessage::ConfigurePromotionFullState {
+                completion: preparation,
+            })
+            .await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Verified,
+            })
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+        handle
+            .send(AccountMessage::Command(AccountCommand::Logout {
+                request_id: test_request_id(),
+            }))
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+        assert!(
+            release.send(true).is_err(),
+            "logout must abort and join preparation"
+        );
+        handle
+            .send(AccountMessage::PromotionFullStateSyncFinished {
+                generation: 2,
+                transition_id: 2,
+                succeeded: true,
+            })
+            .await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (false, false, false, false)
         );
         let _ = handle.send(AccountMessage::Shutdown).await;
     }
@@ -9594,7 +9870,10 @@ mod tests {
         let flow_id = 71;
         assert!(
             handle
-                .send(AccountMessage::ConfigureSyntheticRecoveryTask { flow_id })
+                .send(AccountMessage::ConfigureSyntheticRecoveryTask {
+                    flow_id,
+                    pending: true
+                })
                 .await
         );
         assert!(
@@ -9909,6 +10188,7 @@ mod tests {
             lifecycle_probe: None,
             trust_observation_override: std::sync::Mutex::new(None),
             promotion_full_state_override: std::sync::Mutex::new(None),
+            recovery_download_override: std::sync::Mutex::new(None),
             close_store_results: std::collections::VecDeque::new(),
             store,
             action_tx,
