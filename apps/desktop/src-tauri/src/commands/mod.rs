@@ -365,7 +365,7 @@ async fn wait_for_logged_in_authenticated(
     let deadline = tokio::time::Instant::now() + timeout;
 
     loop {
-        if snapshot_has_authenticated_session(&event_conn.snapshot()) {
+        if snapshot_has_login_transport_terminal(&event_conn.snapshot()) {
             return Ok(());
         }
 
@@ -376,7 +376,7 @@ async fn wait_for_logged_in_authenticated(
             Ok(CoreEvent::Account(AccountEvent::LoggedIn { request_id, .. }))
                 if request_id == login_request_id =>
             {
-                if snapshot_has_authenticated_session(&event_conn.snapshot()) {
+                if snapshot_has_login_transport_terminal(&event_conn.snapshot()) {
                     return Ok(());
                 }
             }
@@ -428,6 +428,16 @@ fn snapshot_has_auth_discovery_answer(snapshot: &koushi_state::AppState) -> bool
 
 fn snapshot_has_authenticated_session(snapshot: &koushi_state::AppState) -> bool {
     matches!(snapshot.session, koushi_state::SessionState::Ready(_))
+}
+
+fn snapshot_has_login_transport_terminal(snapshot: &koushi_state::AppState) -> bool {
+    matches!(
+        snapshot.session,
+        koushi_state::SessionState::Provisional { .. }
+            | koushi_state::SessionState::AwaitingVerification { .. }
+            | koushi_state::SessionState::Verifying { .. }
+            | koushi_state::SessionState::AwaitingBootstrapConfirmation { .. }
+    ) || snapshot_has_authenticated_session(snapshot)
 }
 
 fn snapshot_has_focused_context(snapshot: &koushi_state::AppState, room_id: &str) -> bool {
@@ -3256,6 +3266,7 @@ mod tests {
 
     use crate::commands::{
         TIMELINE_BACKWARDS_PAGE_EVENT_COUNT, TIMELINE_RESTORE_ANCHOR_MAX_BATCHES,
+        snapshot_has_login_transport_terminal,
     };
     use koushi_core::AccountKey;
     use koushi_core::{
@@ -6967,6 +6978,24 @@ mod tests {
         assert!(wait_helper_source.contains(logged_in_token));
         assert!(wait_helper_source.contains(failed_token));
         assert!(wait_helper_source.contains("timeout_at"));
+    }
+
+    #[test]
+    fn login_transport_completes_at_interactive_verification_gate() {
+        let mut state = koushi_state::AppState::default();
+        state.session = koushi_state::SessionState::AwaitingVerification {
+            info: koushi_state::SessionInfo {
+                homeserver: "https://example.invalid".into(),
+                user_id: "@u:example.invalid".into(),
+                device_id: "D".into(),
+            },
+            gate: koushi_state::VerificationGateState {
+                methods: vec![],
+                account_kind: koushi_state::VerificationAccountKind::ExistingIdentity,
+                failure: None,
+            },
+        };
+        assert!(snapshot_has_login_transport_terminal(&state));
     }
 
     #[test]

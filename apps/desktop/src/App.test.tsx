@@ -2288,4 +2288,59 @@ describe("Timeline item row rendering", () => {
       contextualRightPanelSource.indexOf('setRightPanelModeClosingFocusedContext("people")')
     );
   });
+
+  test("renders verification admission phases and an actionable preparation failure", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { SessionVerificationGate } = await import("./App");
+    const base = await createBrowserFakeApi({ session: "needsRecovery" }).getSnapshot();
+    const renderGate = (snapshot: DesktopSnapshot) => renderToStaticMarkup(
+      <SessionVerificationGate snapshot={snapshot} onSnapshot={() => undefined} onSignOut={() => undefined} />
+    );
+    expect(renderGate(base)).toContain("Verify this session");
+
+    const verifying = structuredClone(base);
+    verifying.state.domain.session = { ...base.state.domain.session, kind: "verifying", method: "recoveryKey", flow_id: 7 } as typeof base.state.domain.session;
+    expect(renderGate(verifying)).toContain("Verifying this session…");
+
+    const failed = structuredClone(base);
+    failed.state.domain.session = { ...base.state.domain.session, kind: "provisional", phase: { recheckingTrust: { failureKind: "sdk" } } } as typeof base.state.domain.session;
+    const failedMarkup = renderGate(failed);
+    expect(failedMarkup).toContain("Finishing sign-in…");
+    expect(failedMarkup).toContain('role="alert"');
+    expect(failedMarkup).toContain("Retry");
+  });
+
+  test("rejected login transport refreshes authoritative gate state without rejecting", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { settleLoginTransport } = await import("./App");
+    const gate = await createBrowserFakeApi({ session: "needsRecovery" }).getSnapshot();
+    const apply = vi.fn();
+    await expect(
+      settleLoginTransport(Promise.reject(new Error("login timeout")), async () => gate, apply)
+    ).resolves.toBe("Sign-in failed. Please try again.");
+    expect(apply).toHaveBeenCalledWith(gate);
+  });
+
+  test("login transport does not duplicate an authoritative projected failure", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { settleLoginTransport } = await import("./App");
+    const failed = await createBrowserFakeApi({ session: "needsRecovery" }).getSnapshot();
+    failed.state.ui.errors.push({ code: "login_failed", message: "Login failed", recoverable: true });
+    await expect(settleLoginTransport(Promise.reject(new Error("ipc")), async () => failed, () => undefined)).resolves.toBeNull();
+  });
+
+  test("unrelated projected errors do not hide a rejected login transport", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { settleLoginTransport } = await import("./App");
+    const snapshot = await createBrowserFakeApi({ session: "needsRecovery" }).getSnapshot();
+    snapshot.state.ui.errors.push({ code: "media_download_failed", message: "Old media error", recoverable: true });
+    await expect(
+      settleLoginTransport(Promise.reject(new Error("ipc")), async () => snapshot, () => undefined)
+    ).resolves.toBe("Sign-in failed. Please try again.");
+  });
+
+  test("ready with non-running sync remains behind room preparation gate", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    expect(source).toContain('(sessionKind === "ready" && snapshot.state.domain.sync !== "running")');
+  });
 });

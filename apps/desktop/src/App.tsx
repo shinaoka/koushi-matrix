@@ -1100,7 +1100,7 @@ function useUiLatencyDiagnostics(): UiLatencyDiagnostics {
   return diagnostics;
 }
 
-function SessionVerificationGate({ snapshot, busy, onSnapshot, onSignOut }: { snapshot: DesktopSnapshot; busy: boolean; onSnapshot: (snapshot: DesktopSnapshot) => void; onSignOut: () => void }) {
+export function SessionVerificationGate({ snapshot, onSnapshot, onSignOut, operations = { startOwnUserSas: () => api.startOwnUserSas(), submitRecovery: (secret) => api.submitRecovery(secret) } }: { snapshot: DesktopSnapshot; onSnapshot: (snapshot: DesktopSnapshot) => void; onSignOut: () => void; operations?: { startOwnUserSas: () => Promise<DesktopSnapshot>; submitRecovery: (secret: string) => Promise<DesktopSnapshot> } }) {
   const session = snapshot.state.domain.session;
   const recoveryRef = useRef<HTMLInputElement>(null);
   const passphraseRef = useRef<HTMLInputElement>(null);
@@ -1110,22 +1110,39 @@ function SessionVerificationGate({ snapshot, busy, onSnapshot, onSignOut }: { sn
   const awaiting = session.kind === "awaitingVerification";
   const sasVerifying = session.kind === "verifying" && session.method === "existingDeviceSas";
   const rechecking = session.kind === "provisional" && typeof session.phase === "object" && "recheckingTrust" in session.phase;
-  const run = async (operation: Promise<DesktopSnapshot>) => onSnapshot(await operation);
-  return <main className="session-verification-gate" aria-label={t("gate.title")}>
-    <h1>{t("gate.title")}</h1>
+  const preparationFailure = session.kind === "provisional" && typeof session.phase === "object" && "recheckingTrust" in session.phase
+    ? session.phase.recheckingTrust.failureKind
+    : null;
+  const preparing = session.kind === "ready" && snapshot.state.domain.sync !== "running";
+  const activelyVerifying = session.kind === "verifying";
+  const [gateOperation, setGateOperation] = useState<"recovery" | "sas" | null>(null);
+  const [operationError, setOperationError] = useState<string | null>(null);
+  const gateOperationRef = useRef<"recovery" | "sas" | null>(null);
+  const run = async (kind: "recovery" | "sas", operation: () => Promise<DesktopSnapshot>) => {
+    if (gateOperationRef.current === kind) return;
+    gateOperationRef.current = kind;
+    setOperationError(null);
+    setGateOperation(kind);
+    try { onSnapshot(await operation()); } catch { setOperationError("Verification command failed. Please try again."); } finally { gateOperationRef.current = null; setGateOperation(null); }
+  };
+  const heading = preparing ? t("gate.preparing") : rechecking ? t("gate.finishing") : activelyVerifying ? t("gate.verifying") : t("gate.title");
+  return <main className="session-verification-gate" aria-label={heading}>
+    <h1>{heading}</h1>
     {session.kind === "provisional" && <p>{t("gate.checking")}</p>}
     {session.kind === "rejecting" && <p>{t("gate.rejecting")}</p>}
     {session.kind === "locked" && <p>{t("gate.locked")}</p>}
     {session.gate?.failureKind && <p role="alert">{gateFailureLabel(session.gate.failureKind)}</p>}
+    {preparationFailure && <p role="alert">{gateFailureLabel(preparationFailure)}</p>}
+    {operationError && !session.gate?.failureKind && !preparationFailure && <p role="alert">{operationError}</p>}
     {session.kind === "rejecting" && session.reason && <p role="alert">{gateRejectLabel(session.reason)}</p>}
-    {awaiting && methods.includes("existingDeviceSas") && <button disabled={busy} onClick={() => void run(api.startOwnUserSas())}>{t("gate.otherDevice")}</button>}
+    {awaiting && methods.includes("existingDeviceSas") && <button disabled={gateOperation === "sas"} onClick={() => void run("sas", operations.startOwnUserSas)}>{t("gate.otherDevice")}</button>}
     {sasVerifying && session.sas_emojis?.length === 7 && <div className="session-verification-emojis">{session.sas_emojis.map((emoji, index) => <span key={index}>{emoji.symbol} {emoji.description}</span>)}</div>}
-    {sasVerifying && session.sas_emojis?.length === 7 && flowId !== undefined && <><button onClick={() => void run(api.confirmSasVerification(flowId))}>{t("gate.match")}</button><button onClick={() => void run(api.mismatchSasVerification(flowId))}>{t("gate.mismatch")}</button></>}
-    {awaiting && (methods.includes("recoveryKey") || methods.includes("securityPhrase")) && <form onSubmit={(event) => { event.preventDefault(); const secret = recoveryRef.current?.value.trim() ?? ""; if (secret) void run(api.submitRecovery(secret)); if (recoveryRef.current) recoveryRef.current.value = ""; }}><input ref={recoveryRef} type="password" aria-label={t("gate.recoverySecret")} autoComplete="off"/><button type="submit">{t("gate.recover")}</button></form>}
-    {awaiting && methods.includes("bootstrap") && <form onSubmit={(event) => { event.preventDefault(); const destination = destinationRef.current?.value.trim() ?? ""; const passphrase = passphraseRef.current?.value || null; if (destinationRef.current) destinationRef.current.value = ""; if (passphraseRef.current) passphraseRef.current.value = ""; if (destination) void run(api.startSessionBootstrap(passphrase, destination)); }}><input ref={destinationRef} aria-label={t("gate.destination")}/><input ref={passphraseRef} type="password" aria-label={t("gate.passphrase")} autoComplete="new-password"/><button type="submit">{t("gate.bootstrap")}</button></form>}
-    {session.kind === "awaitingBootstrapConfirmation" && flowId !== undefined && <button onClick={() => void run(api.confirmSessionBootstrapSaved(flowId))}>{t("gate.saved")}</button>}
-    {(awaiting || rechecking) && <button onClick={() => void run(api.retryCurrentDeviceTrustDiscovery())}>{t("gate.retry")}</button>}
-    {sasVerifying && flowId !== undefined && <button onClick={() => void run(api.cancelVerification(flowId))}>{t("action.cancel")}</button>}
+    {sasVerifying && session.sas_emojis?.length === 7 && flowId !== undefined && <><button onClick={() => void run("sas", () => api.confirmSasVerification(flowId))}>{t("gate.match")}</button><button onClick={() => void run("sas", () => api.mismatchSasVerification(flowId))}>{t("gate.mismatch")}</button></>}
+    {awaiting && (methods.includes("recoveryKey") || methods.includes("securityPhrase")) && <form onSubmit={(event) => { event.preventDefault(); const secret = recoveryRef.current?.value.trim() ?? ""; if (secret) void run("recovery", () => operations.submitRecovery(secret)); if (recoveryRef.current) recoveryRef.current.value = ""; }}><input ref={recoveryRef} type="password" aria-label={t("gate.recoverySecret")} autoComplete="off"/><button disabled={gateOperation === "recovery"} type="submit">{t("gate.recover")}</button></form>}
+    {awaiting && methods.includes("bootstrap") && <form onSubmit={(event) => { event.preventDefault(); const destination = destinationRef.current?.value.trim() ?? ""; const passphrase = passphraseRef.current?.value || null; if (destinationRef.current) destinationRef.current.value = ""; if (passphraseRef.current) passphraseRef.current.value = ""; if (destination) void run("recovery", () => api.startSessionBootstrap(passphrase, destination)); }}><input ref={destinationRef} aria-label={t("gate.destination")}/><input ref={passphraseRef} type="password" aria-label={t("gate.passphrase")} autoComplete="new-password"/><button type="submit">{t("gate.bootstrap")}</button></form>}
+    {session.kind === "awaitingBootstrapConfirmation" && flowId !== undefined && <button onClick={() => void run("recovery", () => api.confirmSessionBootstrapSaved(flowId))}>{t("gate.saved")}</button>}
+    {(awaiting || rechecking) && <button onClick={() => void run("recovery", () => api.retryCurrentDeviceTrustDiscovery())}>{t("gate.retry")}</button>}
+    {sasVerifying && flowId !== undefined && <button onClick={() => void run("sas", () => api.cancelVerification(flowId))}>{t("action.cancel")}</button>}
     <button onClick={onSignOut}>{t("gate.signOut")}</button>
   </main>;
 }
@@ -1136,6 +1153,30 @@ function gateFailureLabel(kind: import("./domain/types").VerificationGateFailure
 
 function gateRejectLabel(reason: NonNullable<import("./domain/types").SessionState["reason"]>): string {
   return t(reason === "existingIdentityWithoutProof" ? "gate.rejectNoProof" : "gate.rejectUser");
+}
+
+export async function settleLoginTransport(
+  login: Promise<DesktopSnapshot>,
+  refresh: () => Promise<DesktopSnapshot>,
+  apply: (snapshot: DesktopSnapshot) => void
+): Promise<string | null> {
+  try {
+    apply(await login);
+    return null;
+  } catch {
+    try {
+      const snapshot = await refresh();
+      apply(snapshot);
+      const hasProjectedLoginFailure = snapshot.state.ui.errors.some((error) =>
+        error.code === "login_failed" || error.code === "sync_auth_required"
+      );
+      return hasProjectedLoginFailure || snapshot.state.domain.session.gate?.failureKind || snapshot.state.domain.session.kind === "rejecting"
+        ? null
+        : "Sign-in failed. Please try again.";
+    } catch {
+      return "Sign-in failed. Please try again.";
+    }
+  }
 }
 
 export function App() {
@@ -1197,6 +1238,7 @@ export function App() {
   const [savedSessions, setSavedSessions] = useState<SavedSessionInfo[]>([]);
   const [contextMenu, setContextMenu] = useState<ActiveContextMenu | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  const [loginTransportError, setLoginTransportError] = useState<string | null>(null);
   const [primaryView, setPrimaryView] = useState<PrimaryView>("timeline");
   // #161: while the main pane is anchored to a jump-to-date event, the focused
   // timeline renders in the MAIN pane, so a focused-context right panel must be
@@ -2103,17 +2145,18 @@ export function App() {
     const password = loginPasswordRef.current?.value ?? "";
     const sessionKind = snapshot?.state.domain.session.kind;
     setIsBusy(true);
+    setLoginTransportError(null);
     try {
-      const nextSnapshot =
+      const login =
         sessionKind === "locked"
-          ? await api.submitSoftLogoutReauth(password)
-          : await api.submitLogin(
+          ? api.submitSoftLogoutReauth(password)
+          : api.submitLogin(
               loginHomeserver,
               loginUsername,
               password,
               loginDeviceName
             );
-      setSnapshot(nextSnapshot);
+      setLoginTransportError(await settleLoginTransport(login, () => api.getSnapshot(), setSnapshot));
     } finally {
       if (loginPasswordRef.current) {
         loginPasswordRef.current.value = "";
@@ -3585,14 +3628,15 @@ export function App() {
     snapshot.state.domain.locale_profile.pseudo_locale
   );
 
-  const verificationGate = ["provisional", "awaitingVerification", "verifying", "awaitingBootstrapConfirmation", "rejecting", "locked"].includes(sessionKind);
+  const verificationGate = ["provisional", "awaitingVerification", "verifying", "awaitingBootstrapConfirmation", "rejecting", "locked"].includes(sessionKind)
+    || (sessionKind === "ready" && snapshot.state.domain.sync !== "running");
   if (verificationGate) {
-    return <SessionVerificationGate snapshot={snapshot} busy={isBusy} onSnapshot={setSnapshot} onSignOut={() => void logout()} />;
+    return <SessionVerificationGate snapshot={snapshot} onSnapshot={setSnapshot} onSignOut={() => void logout()} />;
   }
 
   if (sessionKind !== "ready") {
     return (
-      <AuthScreen
+      <><AuthScreen
         deviceName={loginDeviceName}
         homeserver={loginHomeserver}
         isBusy={isBusy || sessionKind === "authenticating"}
@@ -3607,7 +3651,7 @@ export function App() {
         onStartOidcLogin={startOidcLogin}
         onSubmit={submitLogin}
         onUsernameChange={setLoginUsername}
-      />
+      />{loginTransportError && <p role="alert">{loginTransportError}</p>}</>
     );
   }
 

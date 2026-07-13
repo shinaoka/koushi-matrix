@@ -562,6 +562,34 @@ fn only_authoritative_verified_promotes_and_trust_loss_locks_and_clears() {
 }
 
 #[test]
+fn authoritative_verified_promotion_requests_sync_after_actor_ack() {
+    let mut gated = AppState {
+        session: SessionState::Verifying {
+            info: session_info(),
+            gate: recovery_gate(),
+            method: VerificationMethod::RecoveryKey,
+            flow_id: 17,
+            sas_emojis: vec![],
+        },
+        ..AppState::default()
+    };
+
+    let effects = reduce(
+        &mut gated,
+        AppAction::AuthoritativeDeviceTrustChanged {
+            generation: 2,
+            transition_id: 7,
+            trust: CurrentDeviceTrustState::Verified,
+        },
+    );
+
+    assert_eq!(gated.session, SessionState::Ready(session_info()));
+    assert_eq!(gated.sync, SyncState::Starting);
+    assert!(effects.contains(&AppEffect::StartSync));
+    assert!(!effects.contains(&AppEffect::PersistSession(session_info())));
+}
+
+#[test]
 fn authoritative_verified_repromotes_locked_session_without_replaying_actor_owned_effects() {
     let info = session_info();
     let mut state = AppState {
@@ -574,6 +602,7 @@ fn authoritative_verified_repromotes_locked_session_without_replaying_actor_owne
         &mut state,
         AppAction::AuthoritativeDeviceTrustChanged {
             generation: 17,
+            transition_id: 1,
             trust: CurrentDeviceTrustState::Verified,
         },
     );
@@ -581,10 +610,11 @@ fn authoritative_verified_repromotes_locked_session_without_replaying_actor_owne
     assert_eq!(state.session, SessionState::Ready(info));
     assert_eq!(state.sync, SyncState::Starting);
     assert!(effects.contains(&AppEffect::EmitUiEvent(UiEvent::SessionChanged)));
+    assert!(effects.contains(&AppEffect::StartSync));
     assert!(
         !effects
             .iter()
-            .any(|effect| matches!(effect, AppEffect::PersistSession(_) | AppEffect::StartSync))
+            .any(|effect| matches!(effect, AppEffect::PersistSession(_)))
     );
 }
 
@@ -860,6 +890,7 @@ fn active_verification_survives_unknown_and_unverified_trust_observations() {
             &mut state,
             AppAction::AuthoritativeDeviceTrustChanged {
                 generation: 7,
+                transition_id: 1,
                 trust,
             },
         );
@@ -2350,4 +2381,33 @@ fn sync_stopped_is_a_completion_signal() {
         effects,
         vec![AppEffect::EmitUiEvent(UiEvent::RoomListChanged)]
     );
+}
+
+#[test]
+fn admission_preparation_failure_remains_gated_and_retryable() {
+    let info = session_info();
+    let mut state = AppState {
+        session: SessionState::Provisional {
+            info: info.clone(),
+            phase: ProvisionalPhase::RecheckingTrust { failure: None },
+        },
+        ..AppState::default()
+    };
+    reduce(
+        &mut state,
+        AppAction::VerificationAdmissionPreparationFailed {
+            generation: 3,
+            kind: VerificationGateFailureKind::Sdk,
+        },
+    );
+    assert_eq!(
+        state.session,
+        SessionState::Provisional {
+            info,
+            phase: ProvisionalPhase::RecheckingTrust {
+                failure: Some(VerificationGateFailureKind::Sdk),
+            },
+        }
+    );
+    assert_eq!(state.sync, SyncState::Stopped);
 }

@@ -31,8 +31,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
-    sync::Arc,
-    time::Duration,
+    sync::{Arc, atomic::AtomicU64},
+    time::{Duration, Instant},
 };
 
 use futures_util::StreamExt;
@@ -139,6 +139,20 @@ fn trace_restore_simple(stage: &'static str, action: &'static str) {
     );
 }
 
+fn record_verification_admission_event(event: DiagnosticEvent) {
+    koushi_diagnostics::record_and_stderr(event);
+}
+
+fn verification_admission_event(
+    stage: &'static str,
+    generation: u64,
+    transition_id: u64,
+) -> DiagnosticEvent {
+    DiagnosticEvent::new(DiagnosticLevel::Info, "core.verification_admission", stage)
+        .field(DiagnosticField::count("generation", generation))
+        .field(DiagnosticField::count("transition_id", transition_id))
+}
+
 fn trace_account_request(stage: &'static str, request_id: RequestId, action: &'static str) {
     trace_restore!(
         stage,
@@ -230,6 +244,9 @@ pub enum AccountMessage {
     RestrictedSyncSucceeded {
         generation: u64,
     },
+    RestrictedSyncFailed {
+        generation: u64,
+    },
     VerificationMethodsDiscovered {
         generation: u64,
         serial: u64,
@@ -243,8 +260,14 @@ pub enum AccountMessage {
     },
     TrustProjectionApplied {
         generation: u64,
+        transition_id: u64,
         ready: bool,
         locked: bool,
+    },
+    PromotionFullStateSyncFinished {
+        generation: u64,
+        transition_id: u64,
+        succeeded: bool,
     },
     RejectProvisionalSession {
         request_id: RequestId,
@@ -261,12 +284,21 @@ pub enum AccountMessage {
         observation: koushi_sdk::CurrentDeviceTrustObservation,
     },
     #[cfg(test)]
+    ConfigurePromotionFullState {
+        completion: oneshot::Receiver<bool>,
+    },
+    #[cfg(test)]
     InspectSessionRuntime {
         response: oneshot::Sender<(bool, bool, bool, bool)>,
     },
     #[cfg(test)]
     ConfigureSyntheticRecoveryTask {
         flow_id: u64,
+        pending: bool,
+    },
+    #[cfg(test)]
+    ConfigureRecoveryDownload {
+        completion: oneshot::Receiver<bool>,
     },
     #[cfg(test)]
     InspectRecoveryTask {
@@ -476,11 +508,158 @@ enum TrustLifecycleDecision {
     AlreadyReady,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PendingTrustTransition {
+    generation: u64,
+    transition_id: u64,
+    decision: TrustLifecycleDecision,
+}
+
+struct OwnedPromotionTask {
+    generation: u64,
+    transition_id: u64,
+    task: crate::executor::JoinHandle<()>,
+}
+
+fn trust_projection_ack_matches(
+    pending: &PendingTrustTransition,
+    generation: u64,
+    transition_id: u64,
+    ready: bool,
+    locked: bool,
+) -> bool {
+    pending.generation == generation
+        && pending.transition_id == transition_id
+        && match pending.decision {
+            TrustLifecycleDecision::Promote => ready && !locked,
+            TrustLifecycleDecision::Lock => locked && !ready,
+            _ => false,
+        }
+}
+
 #[derive(Clone, Copy)]
 enum VerificationTerminal {
     Success,
     Cancelled(VerificationCancelReason),
     Failed(TrustOperationFailureKind),
+}
+
+fn sas_verification_event(stage: &'static str, flow_id: u64) -> DiagnosticEvent {
+    DiagnosticEvent::new(DiagnosticLevel::Info, "core.sas_verification", stage)
+        .field(DiagnosticField::count("flow_id", flow_id))
+}
+
+fn record_sas_verification_event(event: DiagnosticEvent) {
+    koushi_diagnostics::record_and_stderr(event);
+}
+
+fn verification_request_state_token(
+    state: &koushi_sdk::MatrixVerificationRequestState,
+) -> &'static str {
+    match state {
+        koushi_sdk::MatrixVerificationRequestState::Created => "created",
+        koushi_sdk::MatrixVerificationRequestState::Requested => "requested",
+        koushi_sdk::MatrixVerificationRequestState::Ready => "ready",
+        koushi_sdk::MatrixVerificationRequestState::SasStarted(_) => "sas_started",
+        koushi_sdk::MatrixVerificationRequestState::Done => "done",
+        koushi_sdk::MatrixVerificationRequestState::Cancelled { .. } => "cancelled",
+        koushi_sdk::MatrixVerificationRequestState::UnsupportedMethod => "unsupported_method",
+    }
+}
+
+fn verification_cancel_kind_token(kind: koushi_sdk::MatrixVerificationCancelKind) -> &'static str {
+    match kind {
+        koushi_sdk::MatrixVerificationCancelKind::UnknownMethod => "unknown_method",
+        koushi_sdk::MatrixVerificationCancelKind::KeyMismatch => "key_mismatch",
+        koushi_sdk::MatrixVerificationCancelKind::User => "user",
+        koushi_sdk::MatrixVerificationCancelKind::Timeout => "timeout",
+        koushi_sdk::MatrixVerificationCancelKind::AcceptedElsewhere => "accepted_elsewhere",
+        koushi_sdk::MatrixVerificationCancelKind::Other => "other",
+    }
+}
+
+fn sas_state_token(state: &koushi_sdk::MatrixSasState) -> &'static str {
+    match state {
+        koushi_sdk::MatrixSasState::Created => "created",
+        koushi_sdk::MatrixSasState::Started => "started",
+        koushi_sdk::MatrixSasState::Accepted => "accepted",
+        koushi_sdk::MatrixSasState::SasPresented { .. } => "sas_presented",
+        koushi_sdk::MatrixSasState::Confirmed => "confirmed",
+        koushi_sdk::MatrixSasState::Done => "done",
+        koushi_sdk::MatrixSasState::Cancelled => "cancelled",
+        koushi_sdk::MatrixSasState::UnsupportedShortAuth => "unsupported_short_auth",
+    }
+}
+
+fn trust_failure_token(kind: TrustOperationFailureKind) -> &'static str {
+    match kind {
+        TrustOperationFailureKind::Cancelled => "cancelled",
+        TrustOperationFailureKind::Mismatch => "mismatch",
+        TrustOperationFailureKind::InvalidPassphrase => "invalid_passphrase",
+        TrustOperationFailureKind::Network => "network",
+        TrustOperationFailureKind::Forbidden => "forbidden",
+        TrustOperationFailureKind::Timeout => "timeout",
+        TrustOperationFailureKind::Sdk => "sdk",
+    }
+}
+
+fn verification_terminal_token(terminal: VerificationTerminal) -> &'static str {
+    match terminal {
+        VerificationTerminal::Success => "success",
+        VerificationTerminal::Cancelled(_) => "cancelled",
+        VerificationTerminal::Failed(_) => "failed",
+    }
+}
+
+fn verification_cancel_reason_token(reason: VerificationCancelReason) -> &'static str {
+    match reason {
+        VerificationCancelReason::User => "user",
+        VerificationCancelReason::Mismatch => "mismatch",
+    }
+}
+
+async fn run_own_user_sas_start<T, F>(
+    flow_id: u64,
+    source: &'static str,
+    start: F,
+) -> Result<Option<T>, koushi_sdk::E2eeTrustError>
+where
+    F: Future<Output = Result<Option<T>, koushi_sdk::E2eeTrustError>>,
+{
+    record_sas_verification_event(
+        sas_verification_event("sas_start_attempted", flow_id)
+            .field(DiagnosticField::token("source", source)),
+    );
+    let result = start.await;
+    let mut event = sas_verification_event("sas_start_finished", flow_id)
+        .field(DiagnosticField::token("source", source));
+    event = match &result {
+        Ok(Some(_)) => event.field(DiagnosticField::token("outcome", "started")),
+        Ok(None) => event.field(DiagnosticField::token("outcome", "pending")),
+        Err(error) => {
+            let kind = classify_e2ee_trust_error(error);
+            event
+                .field(DiagnosticField::token("outcome", "failed"))
+                .field(DiagnosticField::token(
+                    "failure_kind",
+                    trust_failure_token(kind),
+                ))
+        }
+    };
+    record_sas_verification_event(event);
+    result
+}
+
+fn should_report_restricted_sync_failure(failure_reported: &mut bool, succeeded: bool) -> bool {
+    if succeeded {
+        *failure_reported = false;
+        false
+    } else if *failure_reported {
+        false
+    } else {
+        *failure_reported = true;
+        true
+    }
 }
 
 #[cfg(test)]
@@ -527,7 +706,9 @@ pub struct AccountActor {
     recovery_task: Option<PendingRecoveryTask>,
     restricted_sync: Option<crate::executor::JoinHandle<()>>,
     pending_ready_events: Vec<CoreEvent>,
-    pending_trust_transition: Option<(u64, TrustLifecycleDecision)>,
+    pending_trust_transition: Option<PendingTrustTransition>,
+    next_trust_transition_id: u64,
+    promotion_full_state_task: Option<OwnedPromotionTask>,
     pending_session_teardown: Option<PendingSessionTeardown>,
     next_teardown_generation: u64,
     teardown_retry_task: Option<crate::executor::JoinHandle<()>>,
@@ -535,6 +716,10 @@ pub struct AccountActor {
     lifecycle_probe: Option<mpsc::UnboundedSender<&'static str>>,
     #[cfg(test)]
     trust_observation_override: std::sync::Mutex<Option<koushi_sdk::CurrentDeviceTrustObservation>>,
+    #[cfg(test)]
+    promotion_full_state_override: std::sync::Mutex<Option<oneshot::Receiver<bool>>>,
+    #[cfg(test)]
+    recovery_download_override: std::sync::Mutex<Option<oneshot::Receiver<bool>>>,
     #[cfg(test)]
     close_store_results: std::collections::VecDeque<bool>,
     /// Store actor — owns the credential store backend and per-account paths.
@@ -552,6 +737,9 @@ pub struct AccountActor {
     /// session exists. Created on first login/restore; destroyed on logout /
     /// account switch.
     sync_actor: Option<SyncActorHandle>,
+    /// Monotonic across SyncActor replacement so lifecycle projections from a
+    /// restarted actor cannot be rejected behind the previous actor's fence.
+    sync_generation: Arc<AtomicU64>,
     /// RoomActor child handle (Phase 4). Spawned once at actor creation and
     /// kept alive for the lifetime of the AccountActor. Session is provided
     /// via `RoomMessage::SyncStarted` when sync begins.
@@ -684,6 +872,8 @@ impl AccountActor {
             restricted_sync: None,
             pending_ready_events: Vec::new(),
             pending_trust_transition: None,
+            next_trust_transition_id: 0,
+            promotion_full_state_task: None,
             pending_session_teardown: None,
             next_teardown_generation: 0,
             teardown_retry_task: None,
@@ -692,6 +882,10 @@ impl AccountActor {
             #[cfg(test)]
             trust_observation_override: std::sync::Mutex::new(None),
             #[cfg(test)]
+            promotion_full_state_override: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            recovery_download_override: std::sync::Mutex::new(None),
+            #[cfg(test)]
             close_store_results: std::collections::VecDeque::new(),
             store: store_actor,
             action_tx,
@@ -699,6 +893,7 @@ impl AccountActor {
             command_rx,
             self_tx: tx.clone(),
             sync_actor: None,
+            sync_generation: Arc::new(AtomicU64::new(0)),
             room_actor,
             timeline_manager,
             messages_backpressure,
@@ -907,6 +1102,22 @@ impl AccountActor {
                     }
                 }
                 AccountMessage::RestrictedSyncSucceeded { generation } => {
+                    let own_flow_id = self
+                        .own_user_verification
+                        .as_ref()
+                        .map(|(flow_id, _)| *flow_id);
+                    if let Some(flow_id) = active_own_user_sas_flow_for_restricted_sync(
+                        generation,
+                        self.trust_generation,
+                        self.session.is_some(),
+                        self.session_promoted,
+                        own_flow_id,
+                    ) {
+                        record_sas_verification_event(sas_verification_event(
+                            "restricted_sync_succeeded",
+                            flow_id,
+                        ));
+                    }
                     if promoted_trust_refresh_is_current(
                         generation,
                         self.trust_generation,
@@ -926,6 +1137,24 @@ impl AccountActor {
                     );
                     if eligible {
                         self.recheck_own_user_sas_after_sync().await;
+                    }
+                }
+                AccountMessage::RestrictedSyncFailed { generation } => {
+                    let own_flow_id = self
+                        .own_user_verification
+                        .as_ref()
+                        .map(|(flow_id, _)| *flow_id);
+                    if let Some(flow_id) = active_own_user_sas_flow_for_restricted_sync(
+                        generation,
+                        self.trust_generation,
+                        self.session.is_some(),
+                        self.session_promoted,
+                        own_flow_id,
+                    ) {
+                        record_sas_verification_event(sas_verification_event(
+                            "restricted_sync_failed",
+                            flow_id,
+                        ));
                     }
                 }
                 AccountMessage::VerificationMethodsDiscovered {
@@ -955,11 +1184,24 @@ impl AccountActor {
                 }
                 AccountMessage::TrustProjectionApplied {
                     generation,
+                    transition_id,
                     ready,
                     locked,
                 } => {
-                    self.handle_trust_projection_applied(generation, ready, locked)
+                    self.handle_trust_projection_applied(generation, transition_id, ready, locked)
                         .await;
+                }
+                AccountMessage::PromotionFullStateSyncFinished {
+                    generation,
+                    transition_id,
+                    succeeded,
+                } => {
+                    self.handle_promotion_full_state_sync_finished(
+                        generation,
+                        transition_id,
+                        succeeded,
+                    )
+                    .await;
                 }
                 AccountMessage::RejectProvisionalSession { request_id } => {
                     self.perform_logout(request_id, true).await;
@@ -979,6 +1221,13 @@ impl AccountActor {
                         .expect("trust observation override lock") = Some(observation);
                 }
                 #[cfg(test)]
+                AccountMessage::ConfigurePromotionFullState { completion } => {
+                    *self
+                        .promotion_full_state_override
+                        .lock()
+                        .expect("promotion override lock") = Some(completion);
+                }
+                #[cfg(test)]
                 AccountMessage::InspectSessionRuntime { response } => {
                     let _ = response.send((
                         self.session.is_some(),
@@ -988,15 +1237,26 @@ impl AccountActor {
                     ));
                 }
                 #[cfg(test)]
-                AccountMessage::ConfigureSyntheticRecoveryTask { flow_id } => {
+                AccountMessage::ConfigureSyntheticRecoveryTask { flow_id, pending } => {
                     self.stop_recovery_task().await;
                     let request_id = incoming_verification_request_id(flow_id);
                     self.recovery_task = Some(PendingRecoveryTask {
                         generation: self.trust_generation,
                         flow_id,
                         request_id,
-                        task: crate::executor::spawn(std::future::pending()),
+                        task: if pending {
+                            crate::executor::spawn(std::future::pending())
+                        } else {
+                            crate::executor::spawn(async {})
+                        },
                     });
+                }
+                #[cfg(test)]
+                AccountMessage::ConfigureRecoveryDownload { completion } => {
+                    *self
+                        .recovery_download_override
+                        .lock()
+                        .expect("recovery download lock") = Some(completion);
                 }
                 #[cfg(test)]
                 AccountMessage::InspectRecoveryTask { response } => {
@@ -1101,9 +1361,25 @@ impl AccountActor {
                 AccountMessage::SasVerificationTimedOut { flow_id } => {
                     self.handle_sas_verification_timeout(flow_id).await;
                 }
-                AccountMessage::VerificationRequestObserverEnded { flow_id }
-                | AccountMessage::SasVerificationObserverEnded { flow_id } => {
+                AccountMessage::VerificationRequestObserverEnded { flow_id } => {
                     if self.active_verification_target(flow_id).is_some() {
+                        record_sas_verification_event(
+                            sas_verification_event("observer_ended", flow_id)
+                                .field(DiagnosticField::token("observer", "request")),
+                        );
+                        self.settle_verification(
+                            flow_id,
+                            VerificationTerminal::Failed(TrustOperationFailureKind::Sdk),
+                        )
+                        .await;
+                    }
+                }
+                AccountMessage::SasVerificationObserverEnded { flow_id } => {
+                    if self.active_verification_target(flow_id).is_some() {
+                        record_sas_verification_event(
+                            sas_verification_event("observer_ended", flow_id)
+                                .field(DiagnosticField::token("observer", "sas")),
+                        );
                         self.settle_verification(
                             flow_id,
                             VerificationTerminal::Failed(TrustOperationFailureKind::Sdk),
@@ -2046,6 +2322,7 @@ impl AccountActor {
             self.event_tx.clone(),
             self.room_actor.tx.clone(),
             self.timeline_manager.sender(),
+            self.sync_generation.clone(),
         );
         self.sync_actor = Some(handle);
         trace_restore_simple("spawn_sync_actor", "done");
@@ -2619,18 +2896,25 @@ impl AccountActor {
             return;
         };
         self.cancel_verification_handles().await;
-        let own_handle = match koushi_sdk::request_own_user_sas_verification(&session).await {
-            Ok(handle) => handle,
-            Err(error) => {
-                self.send_actions(vec![AppAction::VerificationFailed {
-                    request_id: flow_id,
-                    kind: classify_e2ee_trust_error(&error),
-                }])
-                .await;
-                return;
-            }
-        };
-        let sas = match koushi_sdk::start_own_user_sas_verification(&own_handle).await {
+        let own_handle =
+            match koushi_sdk::request_own_user_sas_verification(&session, flow_id).await {
+                Ok(handle) => handle,
+                Err(error) => {
+                    self.send_actions(vec![AppAction::VerificationFailed {
+                        request_id: flow_id,
+                        kind: classify_e2ee_trust_error(&error),
+                    }])
+                    .await;
+                    return;
+                }
+            };
+        let sas = match run_own_user_sas_start(
+            flow_id,
+            "initial",
+            koushi_sdk::start_own_user_sas_verification(&own_handle),
+        )
+        .await
+        {
             Ok(Some(sas)) => sas,
             Ok(None) => {
                 self.own_user_verification = Some((flow_id, own_handle));
@@ -2639,9 +2923,10 @@ impl AccountActor {
                 return;
             }
             Err(error) => {
+                let kind = classify_e2ee_trust_error(&error);
                 self.send_actions(vec![AppAction::VerificationFailed {
                     request_id: flow_id,
-                    kind: classify_e2ee_trust_error(&error),
+                    kind,
                 }])
                 .await;
                 return;
@@ -2675,7 +2960,13 @@ impl AccountActor {
         }
         let flow_id = *flow_id;
         let handle = handle.clone();
-        match koushi_sdk::start_own_user_sas_verification(&handle).await {
+        match run_own_user_sas_start(
+            flow_id,
+            "restricted_sync",
+            koushi_sdk::start_own_user_sas_verification(&handle),
+        )
+        .await
+        {
             Ok(Some(sas)) => {
                 self.store_sas_verification(
                     RequestId {
@@ -2692,9 +2983,10 @@ impl AccountActor {
             }
             Ok(None) => {}
             Err(error) => {
+                let kind = classify_e2ee_trust_error(&error);
                 self.send_actions(vec![AppAction::VerificationFailed {
                     request_id: flow_id,
-                    kind: classify_e2ee_trust_error(&error),
+                    kind,
                 }])
                 .await;
             }
@@ -2733,6 +3025,7 @@ impl AccountActor {
         if !active {
             return;
         }
+        record_sas_verification_event(sas_verification_event("timeout_fired", flow_id));
         self.settle_verification(
             flow_id,
             VerificationTerminal::Failed(TrustOperationFailureKind::Timeout),
@@ -3647,6 +3940,25 @@ impl AccountActor {
         {
             return;
         }
+        let mut event = sas_verification_event("request_state_changed", request_id.sequence).field(
+            DiagnosticField::token("state", verification_request_state_token(&state)),
+        );
+        if let koushi_sdk::MatrixVerificationRequestState::Cancelled {
+            kind,
+            cancelled_by_us,
+        } = &state
+        {
+            event = event
+                .field(DiagnosticField::token(
+                    "cancel_kind",
+                    verification_cancel_kind_token(*kind),
+                ))
+                .field(DiagnosticField::boolean(
+                    "cancelled_by_us",
+                    *cancelled_by_us,
+                ));
+        }
+        record_sas_verification_event(event);
         self.project_verification_request_state(request_id, state)
             .await;
     }
@@ -3664,6 +3976,10 @@ impl AccountActor {
         {
             return;
         }
+        record_sas_verification_event(
+            sas_verification_event("sas_state_changed", request_id.sequence)
+                .field(DiagnosticField::token("state", sas_state_token(&state))),
+        );
         self.project_sas_state(request_id, target, state).await;
     }
 
@@ -3685,7 +4001,13 @@ impl AccountActor {
                     && self.sas_verification.is_none()
                 {
                     let handle = handle.clone();
-                    match koushi_sdk::start_own_user_sas_verification(&handle).await {
+                    match run_own_user_sas_start(
+                        request_id.sequence,
+                        "request_ready",
+                        koushi_sdk::start_own_user_sas_verification(&handle),
+                    )
+                    .await
+                    {
                         Ok(Some(sas)) => {
                             self.store_sas_verification(
                                 request_id,
@@ -3768,7 +4090,13 @@ impl AccountActor {
         });
         self.start_sas_timeout(request_id.sequence);
         self.observe_sas_verification(request_id, target.clone(), handle.clone());
-        if matches!(handle.state(), koushi_sdk::MatrixSasState::Started)
+        let initial_state = handle.state();
+        record_sas_verification_event(
+            sas_verification_event("sas_state_changed", request_id.sequence).field(
+                DiagnosticField::token("state", sas_state_token(&initial_state)),
+            ),
+        );
+        if matches!(initial_state, koushi_sdk::MatrixSasState::Started)
             && let Err(error) = koushi_sdk::accept_sas_verification(&handle).await
         {
             self.project_verification_failure(
@@ -3878,6 +4206,26 @@ impl AccountActor {
         let Some(target) = self.active_verification_target(flow_id) else {
             return;
         };
+        let mut event = sas_verification_event("settled", flow_id).field(DiagnosticField::token(
+            "terminal",
+            verification_terminal_token(terminal),
+        ));
+        match terminal {
+            VerificationTerminal::Success => {}
+            VerificationTerminal::Cancelled(reason) => {
+                event = event.field(DiagnosticField::token(
+                    "reason",
+                    verification_cancel_reason_token(reason),
+                ));
+            }
+            VerificationTerminal::Failed(kind) => {
+                event = event.field(DiagnosticField::token(
+                    "failure_kind",
+                    trust_failure_token(kind),
+                ));
+            }
+        }
+        record_sas_verification_event(event);
         self.stop_sas_timeout().await;
         self.stop_verification_request_observer().await;
         self.stop_sas_verification_observer().await;
@@ -5727,6 +6075,30 @@ impl AccountActor {
                     version: None,
                 }])
                 .await;
+                #[cfg(test)]
+                let recovery_download_override = self
+                    .recovery_download_override
+                    .lock()
+                    .expect("recovery download lock")
+                    .take();
+                #[cfg(test)]
+                let restore_result = if let Some(completion) = recovery_download_override {
+                    if completion.await.unwrap_or(false) {
+                        Ok(koushi_sdk::KeyBackupRestoreSummary {
+                            scope: koushi_sdk::KeyBackupRestoreScope::JoinedRooms,
+                            version: None,
+                            restored_rooms: 0,
+                            total_rooms: Some(0),
+                        })
+                    } else {
+                        Err(koushi_sdk::E2eeTrustError::Sdk(
+                            "controlled recovery download failure".to_owned(),
+                        ))
+                    }
+                } else {
+                    koushi_sdk::download_joined_room_keys_from_backup(&session, None).await
+                };
+                #[cfg(not(test))]
                 let restore_result =
                     koushi_sdk::download_joined_room_keys_from_backup(&session, None).await;
                 let (actions, events) = project_restore_key_backup_result(
@@ -6021,6 +6393,7 @@ impl AccountActor {
             {
                 return;
             }
+            let mut failure_reported = false;
             loop {
                 match koushi_sdk::restricted_verification_sync_once_with_token(
                     &session,
@@ -6029,6 +6402,7 @@ impl AccountActor {
                 .await
                 {
                     Ok(next_token) => {
+                        should_report_restricted_sync_failure(&mut failure_reported, true);
                         token = Some(next_token);
                         if tx
                             .send(AccountMessage::RestrictedSyncSucceeded { generation })
@@ -6038,7 +6412,17 @@ impl AccountActor {
                             break;
                         }
                     }
-                    Err(_) => {}
+                    Err(_) => {
+                        if should_report_restricted_sync_failure(&mut failure_reported, false) {
+                            if tx
+                                .send(AccountMessage::RestrictedSyncFailed { generation })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
                 }
                 executor::sleep(Duration::from_millis(250)).await;
             }
@@ -6047,6 +6431,7 @@ impl AccountActor {
 
     async fn stop_provisional_runtime(&mut self) {
         self.trust_generation = self.trust_generation.wrapping_add(1);
+        self.cancel_pending_trust_promotion().await;
         if let Some(task) = self.trust_observer.take() {
             task.abort();
             let _ = task.await;
@@ -6118,17 +6503,26 @@ impl AccountActor {
         ) {
             TrustLifecycleDecision::IgnoreStale | TrustLifecycleDecision::AlreadyReady => return,
             TrustLifecycleDecision::StayGated => {
+                self.cancel_pending_trust_promotion().await;
+                let transition_id = self.next_trust_transition_id();
                 self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
                     generation,
+                    transition_id,
                     trust,
                 }])
                 .await;
                 return;
             }
             TrustLifecycleDecision::Lock => {
-                self.pending_trust_transition = Some((generation, TrustLifecycleDecision::Lock));
+                let transition_id = self.next_trust_transition_id();
+                self.pending_trust_transition = Some(PendingTrustTransition {
+                    generation,
+                    transition_id,
+                    decision: TrustLifecycleDecision::Lock,
+                });
                 self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
                     generation,
+                    transition_id,
                     trust,
                 }])
                 .await;
@@ -6158,11 +6552,166 @@ impl AccountActor {
         // it alive after promotion for event-driven current-device trust
         // refreshes; it never projects rooms/presence into normal consumers.
         // Before exposing Ready, catch up full room state once.
-        let _ = koushi_sdk::promotion_full_state_sync_once(&session).await;
-        self.pending_trust_transition = Some((generation, TrustLifecycleDecision::Promote));
+        if matches!(self.pending_trust_transition, Some(PendingTrustTransition { generation: pending_generation, decision: TrustLifecycleDecision::Promote, .. }) if pending_generation == generation)
+        {
+            return;
+        }
+        let transition_id = self.next_trust_transition_id();
+        self.pending_trust_transition = Some(PendingTrustTransition {
+            generation,
+            transition_id,
+            decision: TrustLifecycleDecision::Promote,
+        });
+        record_verification_admission_event(verification_admission_event(
+            "preparation_started",
+            generation,
+            transition_id,
+        ));
+        let tx = self.self_tx.clone();
+        #[cfg(test)]
+        let preparation_override = self
+            .promotion_full_state_override
+            .lock()
+            .expect("promotion override lock")
+            .take();
+        let task = executor::spawn(async move {
+            record_verification_admission_event(verification_admission_event(
+                "full_state_sync_started",
+                generation,
+                transition_id,
+            ));
+            let started_at = Instant::now();
+            #[cfg(test)]
+            let succeeded = if let Some(completion) = preparation_override {
+                completion.await.unwrap_or(false)
+            } else {
+                koushi_sdk::promotion_full_state_sync_once(&session)
+                    .await
+                    .is_ok()
+            };
+            #[cfg(not(test))]
+            let succeeded = koushi_sdk::promotion_full_state_sync_once(&session)
+                .await
+                .is_ok();
+            record_verification_admission_event(
+                verification_admission_event("full_state_sync_finished", generation, transition_id)
+                    .field(DiagnosticField::boolean("success", succeeded))
+                    .field(DiagnosticField::milliseconds(
+                        "elapsed_ms",
+                        started_at.elapsed().as_millis(),
+                    )),
+            );
+            let _ = tx
+                .send(AccountMessage::PromotionFullStateSyncFinished {
+                    generation,
+                    transition_id,
+                    succeeded,
+                })
+                .await;
+        });
+        self.promotion_full_state_task = Some(OwnedPromotionTask {
+            generation,
+            transition_id,
+            task,
+        });
+    }
+
+    async fn cancel_pending_trust_promotion(&mut self) {
+        if matches!(
+            self.pending_trust_transition,
+            Some(PendingTrustTransition {
+                decision: TrustLifecycleDecision::Promote,
+                ..
+            })
+        ) {
+            self.pending_trust_transition = None;
+        }
+        if let Some(owned) = self.promotion_full_state_task.take() {
+            record_verification_admission_event(verification_admission_event(
+                "preparation_cancelled",
+                owned.generation,
+                owned.transition_id,
+            ));
+            owned.task.abort();
+            let _ = owned.task.await;
+            self.record_lifecycle_probe("promotion_full_state_terminated");
+        }
+    }
+
+    fn next_trust_transition_id(&mut self) -> u64 {
+        self.next_trust_transition_id = self.next_trust_transition_id.wrapping_add(1);
+        self.next_trust_transition_id
+    }
+
+    async fn handle_promotion_full_state_sync_finished(
+        &mut self,
+        generation: u64,
+        transition_id: u64,
+        succeeded: bool,
+    ) {
+        record_verification_admission_event(
+            verification_admission_event("completion_received", generation, transition_id)
+                .field(DiagnosticField::boolean("success", succeeded)),
+        );
+        let Some(pending) = self.pending_trust_transition.as_ref() else {
+            record_verification_admission_event(verification_admission_event(
+                "completion_ignored",
+                generation,
+                transition_id,
+            ));
+            return;
+        };
+        if pending.generation != generation
+            || pending.transition_id != transition_id
+            || pending.decision != TrustLifecycleDecision::Promote
+            || generation != self.trust_generation
+        {
+            record_verification_admission_event(verification_admission_event(
+                "completion_ignored",
+                generation,
+                transition_id,
+            ));
+            return;
+        }
+        let Some(owned) = self.promotion_full_state_task.as_ref() else {
+            record_verification_admission_event(verification_admission_event(
+                "completion_ignored",
+                generation,
+                transition_id,
+            ));
+            return;
+        };
+        if owned.generation != generation || owned.transition_id != transition_id {
+            record_verification_admission_event(verification_admission_event(
+                "completion_ignored",
+                generation,
+                transition_id,
+            ));
+            return;
+        }
+        let owned = self
+            .promotion_full_state_task
+            .take()
+            .expect("correlated promotion task");
+        let _ = owned.task.await;
+        if !succeeded {
+            self.pending_trust_transition = None;
+            self.send_actions(vec![AppAction::VerificationAdmissionPreparationFailed {
+                generation,
+                kind: koushi_state::VerificationGateFailureKind::Sdk,
+            }])
+            .await;
+            return;
+        }
+        record_verification_admission_event(verification_admission_event(
+            "ready_projection_dispatched",
+            generation,
+            transition_id,
+        ));
         self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
             generation,
-            trust,
+            transition_id,
+            trust: koushi_state::CurrentDeviceTrustState::Verified,
         }])
         .await;
     }
@@ -6194,25 +6743,25 @@ impl AccountActor {
     async fn handle_trust_projection_applied(
         &mut self,
         generation: u64,
+        transition_id: u64,
         ready: bool,
         locked: bool,
     ) {
-        let Some((pending_generation, decision)) = self.pending_trust_transition.take() else {
+        let Some(pending) = self.pending_trust_transition.as_ref() else {
             return;
         };
-        if generation != pending_generation || generation != self.trust_generation {
+        if generation != self.trust_generation
+            || !trust_projection_ack_matches(pending, generation, transition_id, ready, locked)
+        {
             return;
         }
+        let decision = pending.decision;
+        self.pending_trust_transition = None;
         if decision == TrustLifecycleDecision::Lock {
-            if locked {
-                self.record_lifecycle_probe("lock_projection_ack");
-                self.stop_restricted_sync().await;
-                self.stop_normal_runtime_children().await;
-                self.session_promoted = false;
-            }
-            return;
-        }
-        if decision != TrustLifecycleDecision::Promote || !ready {
+            self.record_lifecycle_probe("lock_projection_ack");
+            self.stop_restricted_sync().await;
+            self.stop_normal_runtime_children().await;
+            self.session_promoted = false;
             return;
         }
         self.record_lifecycle_probe("ready_projection_ack");
@@ -6562,6 +7111,18 @@ fn own_user_sas_recheck_is_current(
         && !session_promoted
         && has_own_user_flow
         && !has_sas
+}
+
+fn active_own_user_sas_flow_for_restricted_sync(
+    generation: u64,
+    current_generation: u64,
+    has_session: bool,
+    session_promoted: bool,
+    own_flow_id: Option<u64>,
+) -> Option<u64> {
+    (generation == current_generation && has_session && !session_promoted)
+        .then_some(own_flow_id)
+        .flatten()
 }
 
 fn promoted_trust_refresh_is_current(
@@ -7369,6 +7930,30 @@ mod tests {
     }
 
     #[test]
+    fn restricted_sync_diagnostics_require_current_own_user_flow() {
+        assert_eq!(
+            active_own_user_sas_flow_for_restricted_sync(4, 4, true, false, Some(73)),
+            Some(73)
+        );
+        assert_eq!(
+            active_own_user_sas_flow_for_restricted_sync(3, 4, true, false, Some(73)),
+            None
+        );
+        assert_eq!(
+            active_own_user_sas_flow_for_restricted_sync(4, 4, false, false, Some(73)),
+            None
+        );
+        assert_eq!(
+            active_own_user_sas_flow_for_restricted_sync(4, 4, true, true, Some(73)),
+            None
+        );
+        assert_eq!(
+            active_own_user_sas_flow_for_restricted_sync(4, 4, true, false, None),
+            None
+        );
+    }
+
+    #[test]
     fn unknown_trust_discovers_methods_without_becoming_verified() {
         assert!(should_discover_verification_methods(
             koushi_state::CurrentDeviceTrustState::Unknown
@@ -7383,6 +7968,7 @@ mod tests {
 
     #[tokio::test]
     async fn actor_sas_settlement_emits_exactly_one_terminal_and_clears_runtime() {
+        let diagnostic_start = koushi_diagnostics::snapshot().records.len();
         let cred_dir = tempdir().expect("credential tempdir");
         let data_dir = tempdir().expect("data tempdir");
         let store = StoreActor::with_backend(
@@ -7460,6 +8046,24 @@ mod tests {
                 "stale terminal duplicated flow {flow_id}"
             );
         }
+        let settled_flow_ids = koushi_diagnostics::snapshot().records[diagnostic_start..]
+            .iter()
+            .filter(|record| {
+                record.event.source == "core.sas_verification" && record.event.stage == "settled"
+            })
+            .filter_map(|record| {
+                record
+                    .event
+                    .fields
+                    .iter()
+                    .find_map(|field| (field.key == "flow_id").then_some(&field.value))
+            })
+            .filter_map(|value| match value {
+                koushi_diagnostics::DiagnosticValue::Count(flow_id) => Some(*flow_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(settled_flow_ids, vec![100, 101, 102, 103, 104]);
         shutdown_and_ack(&handle).await;
     }
 
@@ -7597,6 +8201,287 @@ mod tests {
                 .fields
                 .iter()
                 .any(|field| field.key == "action")
+        );
+    }
+
+    #[test]
+    fn verification_admission_diagnostic_records_and_writes_stderr() {
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("current test executable should be available"),
+        )
+        .args([
+            "--exact",
+            "account::tests::verification_admission_diagnostic_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .output()
+        .expect("verification admission diagnostic child should run");
+        assert!(output.status.success(), "child failed: {output:?}");
+
+        let stderr = String::from_utf8(output.stderr).expect("child stderr should be utf8");
+        assert!(stderr.contains(
+            "[koushi] core.verification_admission stage=full_state_sync_finished generation=7 transition_id=11 success=false elapsed_ms=42"
+        ));
+
+        let stdout = String::from_utf8(output.stdout).expect("child stdout should be utf8");
+        let snapshot: serde_json::Value = serde_json::from_str(
+            stdout
+                .lines()
+                .find(|line| line.starts_with('{'))
+                .expect("child should print one JSON snapshot"),
+        )
+        .expect("child output should be a JSON snapshot");
+        assert!(snapshot["records"].as_array().is_some_and(|records| {
+            records.iter().any(|record| {
+                record["event"]["source"] == "core.verification_admission"
+                    && record["event"]["stage"] == "full_state_sync_finished"
+            })
+        }));
+    }
+
+    #[test]
+    #[ignore]
+    fn verification_admission_diagnostic_child() {
+        record_verification_admission_event(
+            DiagnosticEvent::new(
+                DiagnosticLevel::Info,
+                "core.verification_admission",
+                "full_state_sync_finished",
+            )
+            .field(DiagnosticField::count("generation", 7))
+            .field(DiagnosticField::count("transition_id", 11))
+            .field(DiagnosticField::boolean("success", false))
+            .field(DiagnosticField::milliseconds("elapsed_ms", 42)),
+        );
+        println!(
+            "{}",
+            serde_json::to_string(&koushi_diagnostics::snapshot())
+                .expect("diagnostic snapshot should serialize")
+        );
+    }
+
+    #[test]
+    fn sas_verification_tokens_are_closed_and_private_safe() {
+        use koushi_sdk::MatrixSasState as SasState;
+        use koushi_sdk::MatrixVerificationCancelKind as CancelKind;
+        use koushi_sdk::MatrixVerificationRequestState as RequestState;
+
+        assert_eq!(
+            verification_request_state_token(&RequestState::Created),
+            "created"
+        );
+        assert_eq!(
+            verification_request_state_token(&RequestState::Requested),
+            "requested"
+        );
+        assert_eq!(
+            verification_request_state_token(&RequestState::Ready),
+            "ready"
+        );
+        assert_eq!(
+            verification_request_state_token(&RequestState::Done),
+            "done"
+        );
+        assert_eq!(
+            verification_request_state_token(&RequestState::Cancelled {
+                kind: CancelKind::Timeout,
+                cancelled_by_us: false,
+            }),
+            "cancelled"
+        );
+        assert_eq!(
+            verification_request_state_token(&RequestState::UnsupportedMethod),
+            "unsupported_method"
+        );
+
+        let cancel_kinds = [
+            (CancelKind::UnknownMethod, "unknown_method"),
+            (CancelKind::KeyMismatch, "key_mismatch"),
+            (CancelKind::User, "user"),
+            (CancelKind::Timeout, "timeout"),
+            (CancelKind::AcceptedElsewhere, "accepted_elsewhere"),
+            (CancelKind::Other, "other"),
+        ];
+        for (kind, token) in cancel_kinds {
+            assert_eq!(verification_cancel_kind_token(kind), token);
+        }
+
+        let sas_states = [
+            (SasState::Created, "created"),
+            (SasState::Started, "started"),
+            (SasState::Accepted, "accepted"),
+            (
+                SasState::SasPresented { emojis: Vec::new() },
+                "sas_presented",
+            ),
+            (SasState::Confirmed, "confirmed"),
+            (SasState::Done, "done"),
+            (SasState::Cancelled, "cancelled"),
+            (SasState::UnsupportedShortAuth, "unsupported_short_auth"),
+        ];
+        for (state, token) in sas_states {
+            assert_eq!(sas_state_token(&state), token);
+        }
+
+        let failure_kinds = [
+            (TrustOperationFailureKind::Cancelled, "cancelled"),
+            (TrustOperationFailureKind::Mismatch, "mismatch"),
+            (
+                TrustOperationFailureKind::InvalidPassphrase,
+                "invalid_passphrase",
+            ),
+            (TrustOperationFailureKind::Network, "network"),
+            (TrustOperationFailureKind::Forbidden, "forbidden"),
+            (TrustOperationFailureKind::Timeout, "timeout"),
+            (TrustOperationFailureKind::Sdk, "sdk"),
+        ];
+        for (kind, token) in failure_kinds {
+            assert_eq!(trust_failure_token(kind), token);
+        }
+
+        assert_eq!(
+            verification_terminal_token(VerificationTerminal::Success),
+            "success"
+        );
+        assert_eq!(
+            verification_terminal_token(VerificationTerminal::Cancelled(
+                VerificationCancelReason::User,
+            )),
+            "cancelled"
+        );
+        assert_eq!(
+            verification_terminal_token(VerificationTerminal::Failed(
+                TrustOperationFailureKind::Timeout,
+            )),
+            "failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn own_user_sas_start_helper_traces_started_pending_and_failed_results() {
+        let diagnostic_start = koushi_diagnostics::snapshot().records.len();
+
+        assert_eq!(
+            run_own_user_sas_start(211, "request_ready", async {
+                Ok::<_, koushi_sdk::E2eeTrustError>(Some(7_u8))
+            })
+            .await
+            .expect("started result"),
+            Some(7)
+        );
+        assert_eq!(
+            run_own_user_sas_start(212, "initial", async {
+                Ok::<Option<u8>, koushi_sdk::E2eeTrustError>(None)
+            })
+            .await
+            .expect("pending result"),
+            None
+        );
+        assert!(
+            run_own_user_sas_start(213, "restricted_sync", async {
+                Err::<Option<u8>, _>(koushi_sdk::E2eeTrustError::Sdk(
+                    "private SDK detail".to_owned(),
+                ))
+            })
+            .await
+            .is_err()
+        );
+
+        let records = koushi_diagnostics::snapshot().records;
+        let events = records[diagnostic_start..]
+            .iter()
+            .filter(|record| record.event.source == "core.sas_verification")
+            .map(|record| koushi_diagnostics::format_event(&record.event))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            events,
+            vec![
+                "stage=sas_start_attempted flow_id=211 source=request_ready",
+                "stage=sas_start_finished flow_id=211 source=request_ready outcome=started",
+                "stage=sas_start_attempted flow_id=212 source=initial",
+                "stage=sas_start_finished flow_id=212 source=initial outcome=pending",
+                "stage=sas_start_attempted flow_id=213 source=restricted_sync",
+                "stage=sas_start_finished flow_id=213 source=restricted_sync outcome=failed failure_kind=sdk",
+            ]
+        );
+        assert!(!events.join(" ").contains("private SDK detail"));
+    }
+
+    #[test]
+    fn restricted_sync_failure_streak_reports_once_and_resets_after_success() {
+        let mut failure_reported = false;
+        assert!(should_report_restricted_sync_failure(
+            &mut failure_reported,
+            false
+        ));
+        assert!(!should_report_restricted_sync_failure(
+            &mut failure_reported,
+            false
+        ));
+        assert!(!should_report_restricted_sync_failure(
+            &mut failure_reported,
+            true
+        ));
+        assert!(should_report_restricted_sync_failure(
+            &mut failure_reported,
+            false
+        ));
+        assert!(!should_report_restricted_sync_failure(
+            &mut failure_reported,
+            false
+        ));
+    }
+
+    #[test]
+    fn sas_verification_diagnostic_records_and_writes_stderr() {
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("current test executable should be available"),
+        )
+        .args([
+            "--exact",
+            "account::tests::sas_verification_diagnostic_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .output()
+        .expect("SAS verification diagnostic child should run");
+        assert!(output.status.success(), "child failed: {output:?}");
+
+        let stderr = String::from_utf8(output.stderr).expect("child stderr should be utf8");
+        assert!(stderr.contains(
+            "[koushi] core.sas_verification stage=request_state_changed flow_id=41 state=cancelled cancel_kind=timeout cancelled_by_us=false"
+        ));
+
+        let stdout = String::from_utf8(output.stdout).expect("child stdout should be utf8");
+        let snapshot: serde_json::Value = serde_json::from_str(
+            stdout
+                .lines()
+                .find(|line| line.starts_with('{'))
+                .expect("child should print one JSON snapshot"),
+        )
+        .expect("child output should be a JSON snapshot");
+        assert!(snapshot["records"].as_array().is_some_and(|records| {
+            records.iter().any(|record| {
+                record["event"]["source"] == "core.sas_verification"
+                    && record["event"]["stage"] == "request_state_changed"
+            })
+        }));
+    }
+
+    #[test]
+    #[ignore]
+    fn sas_verification_diagnostic_child() {
+        record_sas_verification_event(
+            sas_verification_event("request_state_changed", 41)
+                .field(DiagnosticField::token("state", "cancelled"))
+                .field(DiagnosticField::token("cancel_kind", "timeout"))
+                .field(DiagnosticField::boolean("cancelled_by_us", false)),
+        );
+        println!(
+            "{}",
+            serde_json::to_string(&koushi_diagnostics::snapshot())
+                .expect("diagnostic snapshot should serialize")
         );
     }
 
@@ -8318,6 +9203,363 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn promotion_preparation_keeps_mailbox_live_and_stale_ack_cannot_consume_promotion() {
+        let diagnostic_start = koushi_diagnostics::snapshot().records.len();
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir");
+        let data_dir = tempdir().expect("tempdir");
+        let (handle, mut action_rx, _event_rx) =
+            spawn_actor_with_dirs(cred_dir.path(), data_dir.path());
+        configure_verified_trust(&handle).await;
+        let (release, completion) = oneshot::channel();
+        handle
+            .send(AccountMessage::ConfigurePromotionFullState { completion })
+            .await;
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: test_request_id(),
+                request: LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ) {}
+
+        handle
+            .send(AccountMessage::TrustProjectionApplied {
+                generation: 2,
+                transition_id: 0,
+                ready: false,
+                locked: false,
+            })
+            .await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, false, false, true)
+        );
+
+        release.send(true).expect("release preparation");
+        acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, true, true, true)
+        );
+        let snapshot = koushi_diagnostics::snapshot();
+        let stages = snapshot.records[diagnostic_start..]
+            .iter()
+            .filter(|record| record.event.source == "core.verification_admission")
+            .map(|record| record.event.stage)
+            .collect::<Vec<_>>();
+        assert!(stages.windows(5).any(|window| {
+            window
+                == [
+                    "preparation_started",
+                    "full_state_sync_started",
+                    "full_state_sync_finished",
+                    "completion_received",
+                    "ready_projection_dispatched",
+                ]
+        }));
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    async fn login_gated_actor() -> (AccountActorHandle, mpsc::Receiver<Vec<AppAction>>) {
+        let homeserver = spawn_quarantine_password_server();
+        let cred_dir = tempdir().expect("tempdir").keep();
+        let data_dir = tempdir().expect("tempdir").keep();
+        let (handle, mut action_rx, _event_rx) = spawn_actor_with_dirs(&cred_dir, &data_dir);
+        let updates = futures_util::stream::pending();
+        handle
+            .send(AccountMessage::ConfigureTrustObservation {
+                observation: koushi_sdk::CurrentDeviceTrustObservation {
+                    current: koushi_state::CurrentDeviceTrustState::Unknown,
+                    updates: Box::pin(updates),
+                },
+            })
+            .await;
+        handle
+            .send(AccountMessage::Command(AccountCommand::LoginPassword {
+                request_id: test_request_id(),
+                request: LoginRequest {
+                    homeserver,
+                    username: "fixture-user".to_owned(),
+                    password: koushi_state::AuthSecret::new("synthetic-password"),
+                    device_display_name: None,
+                },
+            }))
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::LoginSucceeded { .. }])
+        ) {}
+        (handle, action_rx)
+    }
+
+    #[tokio::test]
+    async fn recovery_proof_success_enters_shared_authoritative_promotion_path() {
+        let (handle, mut action_rx) = login_gated_actor().await;
+        let flow_id = 81;
+        let request_id = incoming_verification_request_id(flow_id);
+        handle
+            .send(AccountMessage::ConfigureSyntheticRecoveryTask {
+                flow_id,
+                pending: false,
+            })
+            .await;
+        let (download_release, download) = oneshot::channel();
+        handle
+            .send(AccountMessage::ConfigureRecoveryDownload {
+                completion: download,
+            })
+            .await;
+        download_release
+            .send(true)
+            .expect("release recovery download");
+        handle
+            .send(AccountMessage::RecoveryFinished {
+                generation: 2,
+                flow_id,
+                request_id,
+                result: Ok(()),
+            })
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+        let _ = inspect_session_runtime(&handle).await;
+        let (preparation_release, preparation) = oneshot::channel();
+        handle
+            .send(AccountMessage::ConfigurePromotionFullState {
+                completion: preparation,
+            })
+            .await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Verified,
+            })
+            .await;
+        preparation_release.send(true).expect("release preparation");
+        acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, true, true, true)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn invalid_recovery_terminal_stays_gated_without_normal_runtime() {
+        let (handle, mut action_rx) = login_gated_actor().await;
+        let flow_id = 82;
+        let request_id = incoming_verification_request_id(flow_id);
+        handle
+            .send(AccountMessage::ConfigureSyntheticRecoveryTask {
+                flow_id,
+                pending: false,
+            })
+            .await;
+        handle
+            .send(AccountMessage::RecoveryFinished {
+                generation: 2,
+                flow_id,
+                request_id,
+                result: Err(koushi_sdk::E2eeRecoveryError::Sdk(
+                    "invalid fixture secret".to_owned(),
+                )),
+            })
+            .await;
+        while !matches!(
+            action_rx.recv().await.as_deref(),
+            Some([AppAction::E2eeRecoveryFailed { .. }])
+        ) {}
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, false, false, true)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn own_user_sas_proof_success_enters_shared_authoritative_promotion_path() {
+        let (handle, mut action_rx) = login_gated_actor().await;
+        let flow_id = 83;
+        handle
+            .send(AccountMessage::ConfigureSyntheticVerification { flow_id })
+            .await;
+        handle
+            .send(AccountMessage::SettleSyntheticVerification {
+                flow_id,
+                terminal: SyntheticVerificationTerminal::Success,
+            })
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+        let _ = inspect_session_runtime(&handle).await;
+        let (release, preparation) = oneshot::channel();
+        handle
+            .send(AccountMessage::ConfigurePromotionFullState {
+                completion: preparation,
+            })
+            .await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Verified,
+            })
+            .await;
+        release.send(true).expect("release preparation");
+        acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, true, true, true)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn trust_regression_cancels_preparation_and_late_result_is_ignored() {
+        let (handle, _action_rx) = login_gated_actor().await;
+        let (release, preparation) = oneshot::channel();
+        handle
+            .send(AccountMessage::ConfigurePromotionFullState {
+                completion: preparation,
+            })
+            .await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Verified,
+            })
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Unverified,
+            })
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+        assert!(
+            release.send(true).is_err(),
+            "regression must abort and join preparation"
+        );
+        handle
+            .send(AccountMessage::PromotionFullStateSyncFinished {
+                generation: 2,
+                transition_id: 2,
+                succeeded: true,
+            })
+            .await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, false, false, true)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn stale_completion_cannot_take_or_block_new_owned_promotion_task() {
+        let (handle, mut action_rx) = login_gated_actor().await;
+        let (_old_release, old_preparation) = oneshot::channel();
+        handle
+            .send(AccountMessage::ConfigurePromotionFullState {
+                completion: old_preparation,
+            })
+            .await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Verified,
+            })
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Unverified,
+            })
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+
+        let (new_release, new_preparation) = oneshot::channel();
+        handle
+            .send(AccountMessage::ConfigurePromotionFullState {
+                completion: new_preparation,
+            })
+            .await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Verified,
+            })
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+        handle
+            .send(AccountMessage::PromotionFullStateSyncFinished {
+                generation: 2,
+                transition_id: 2,
+                succeeded: true,
+            })
+            .await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, false, false, true)
+        );
+
+        new_release.send(true).expect("new task must remain owned");
+        acknowledge_next_verified_projection(&handle, &mut action_rx).await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (true, true, true, true)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn logout_cancels_preparation_and_late_result_cannot_activate_runtime() {
+        let (handle, _action_rx) = login_gated_actor().await;
+        let (release, preparation) = oneshot::channel();
+        handle
+            .send(AccountMessage::ConfigurePromotionFullState {
+                completion: preparation,
+            })
+            .await;
+        handle
+            .send(AccountMessage::CurrentDeviceTrustChanged {
+                generation: 2,
+                trust: koushi_state::CurrentDeviceTrustState::Verified,
+            })
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+        handle
+            .send(AccountMessage::Command(AccountCommand::Logout {
+                request_id: test_request_id(),
+            }))
+            .await;
+        let _ = inspect_session_runtime(&handle).await;
+        assert!(
+            release.send(true).is_err(),
+            "logout must abort and join preparation"
+        );
+        handle
+            .send(AccountMessage::PromotionFullStateSyncFinished {
+                generation: 2,
+                transition_id: 2,
+                succeeded: true,
+            })
+            .await;
+        assert_eq!(
+            inspect_session_runtime(&handle).await,
+            (false, false, false, false)
+        );
+        let _ = handle.send(AccountMessage::Shutdown).await;
+    }
+
+    #[tokio::test]
     async fn provisional_rejection_deletes_keyed_store_before_signed_out_ack() {
         let homeserver = spawn_quarantine_password_server();
         let cred_dir = tempdir().expect("tempdir");
@@ -8867,17 +10109,20 @@ mod tests {
             if let [
                 AppAction::AuthoritativeDeviceTrustChanged {
                     generation,
+                    transition_id,
                     trust: koushi_state::CurrentDeviceTrustState::Verified,
                 },
             ] = actions.as_slice()
             {
-                break *generation;
+                break (*generation, *transition_id);
             }
         };
+        let (generation, transition_id) = generation;
         assert!(
             handle
                 .send(AccountMessage::TrustProjectionApplied {
                     generation,
+                    transition_id,
                     ready: true,
                     locked: false,
                 })
@@ -9141,6 +10386,38 @@ mod tests {
     }
 
     #[test]
+    fn stale_projection_ack_does_not_consume_pending_promotion() {
+        let pending = PendingTrustTransition {
+            generation: 7,
+            transition_id: 42,
+            decision: TrustLifecycleDecision::Promote,
+        };
+        assert!(!trust_projection_ack_matches(&pending, 7, 41, false, false));
+        assert!(trust_projection_ack_matches(&pending, 7, 42, true, false));
+    }
+
+    #[test]
+    fn promotion_full_state_sync_runs_outside_account_mailbox() {
+        let source = include_str!("account.rs");
+        let handler = source
+            .split("async fn handle_current_device_trust")
+            .nth(1)
+            .and_then(|body| body.split("async fn discover_verification_methods").next())
+            .expect("trust handler");
+        let spawn = handler
+            .find("executor::spawn(async move")
+            .expect("background task");
+        let full_state = handler
+            .find("promotion_full_state_sync_once(&session)")
+            .expect("full-state sync");
+        assert!(
+            spawn < full_state,
+            "full-state sync must run in a spawned task"
+        );
+        assert!(handler.contains("PromotionFullStateSyncFinished"));
+    }
+
+    #[test]
     fn async_account_hydration_is_generation_gated() {
         let source = include_str!("account.rs");
         let production_source = source
@@ -9349,7 +10626,10 @@ mod tests {
         let flow_id = 71;
         assert!(
             handle
-                .send(AccountMessage::ConfigureSyntheticRecoveryTask { flow_id })
+                .send(AccountMessage::ConfigureSyntheticRecoveryTask {
+                    flow_id,
+                    pending: true
+                })
                 .await
         );
         assert!(
@@ -9656,11 +10936,15 @@ mod tests {
             restricted_sync: None,
             pending_ready_events: Vec::new(),
             pending_trust_transition: None,
+            next_trust_transition_id: 0,
+            promotion_full_state_task: None,
             pending_session_teardown: None,
             next_teardown_generation: 0,
             teardown_retry_task: None,
             lifecycle_probe: None,
             trust_observation_override: std::sync::Mutex::new(None),
+            promotion_full_state_override: std::sync::Mutex::new(None),
+            recovery_download_override: std::sync::Mutex::new(None),
             close_store_results: std::collections::VecDeque::new(),
             store,
             action_tx,
@@ -9668,6 +10952,7 @@ mod tests {
             command_rx,
             self_tx,
             sync_actor: None,
+            sync_generation: Arc::new(AtomicU64::new(0)),
             room_actor,
             timeline_manager,
             messages_backpressure,

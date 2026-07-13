@@ -87,7 +87,119 @@ fn is_eligible_own_user_proof_device(
     cross_signed_by_owner: bool,
     blocked: bool,
 ) -> bool {
-    candidate_device_id != current_device_id && cross_signed_by_owner && !blocked
+    is_own_user_verification_recipient(
+        current_device_id,
+        candidate_device_id,
+        cross_signed_by_owner,
+    ) && !blocked
+}
+
+fn is_own_user_verification_recipient(
+    current_device_id: &str,
+    candidate_device_id: &str,
+    cross_signed_by_owner: bool,
+) -> bool {
+    candidate_device_id != current_device_id && cross_signed_by_owner
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OwnUserSasDeviceFact {
+    is_current: bool,
+    cross_signed_by_owner: bool,
+    blocked: bool,
+    dehydrated: bool,
+    curve_key_present: bool,
+    ed25519_key_present: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct OwnUserSasRecipientDiagnostics {
+    other_device_count: u64,
+    recipient_count: u64,
+    eligible_device_count: u64,
+    sender_device_query_visible: bool,
+    sender_curve_key_present: bool,
+    sender_ed25519_key_present: bool,
+    interactive_recipient_count: u64,
+    dehydrated_recipient_count: u64,
+}
+
+fn own_user_sas_recipient_diagnostics(
+    devices: impl IntoIterator<Item = OwnUserSasDeviceFact>,
+) -> OwnUserSasRecipientDiagnostics {
+    let mut diagnostics = OwnUserSasRecipientDiagnostics::default();
+    for device in devices {
+        if device.is_current {
+            diagnostics.sender_device_query_visible = true;
+            diagnostics.sender_curve_key_present |= device.curve_key_present;
+            diagnostics.sender_ed25519_key_present |= device.ed25519_key_present;
+            continue;
+        }
+
+        diagnostics.other_device_count += 1;
+        if !device.cross_signed_by_owner {
+            continue;
+        }
+
+        diagnostics.recipient_count += 1;
+        if !device.blocked {
+            diagnostics.eligible_device_count += 1;
+        }
+        if device.dehydrated {
+            diagnostics.dehydrated_recipient_count += 1;
+        } else if device.curve_key_present && device.ed25519_key_present {
+            diagnostics.interactive_recipient_count += 1;
+        }
+    }
+    diagnostics
+}
+
+fn sas_delivery_event(stage: &'static str, flow_id: u64) -> DiagnosticEvent {
+    DiagnosticEvent::new(DiagnosticLevel::Info, "core.sas_verification", stage)
+        .field(DiagnosticField::count("flow_id", flow_id))
+}
+
+fn sas_recipients_resolved_event(
+    flow_id: u64,
+    diagnostics: OwnUserSasRecipientDiagnostics,
+) -> DiagnosticEvent {
+    sas_delivery_event("recipients_resolved", flow_id)
+        .field(DiagnosticField::count(
+            "other_device_count",
+            diagnostics.other_device_count,
+        ))
+        .field(DiagnosticField::count(
+            "recipient_count",
+            diagnostics.recipient_count,
+        ))
+        .field(DiagnosticField::count(
+            "eligible_device_count",
+            diagnostics.eligible_device_count,
+        ))
+        .field(DiagnosticField::boolean(
+            "sender_device_query_visible",
+            diagnostics.sender_device_query_visible,
+        ))
+        .field(DiagnosticField::boolean(
+            "sender_curve_key_present",
+            diagnostics.sender_curve_key_present,
+        ))
+        .field(DiagnosticField::boolean(
+            "sender_ed25519_key_present",
+            diagnostics.sender_ed25519_key_present,
+        ))
+        .field(DiagnosticField::count(
+            "interactive_recipient_count",
+            diagnostics.interactive_recipient_count,
+        ))
+        .field(DiagnosticField::count(
+            "dehydrated_recipient_count",
+            diagnostics.dehydrated_recipient_count,
+        ))
+}
+
+fn record_sas_delivery_event(event: DiagnosticEvent) {
+    koushi_diagnostics::record_and_stderr(event);
 }
 use matrix_sdk::{
     authentication::{
@@ -497,6 +609,18 @@ pub enum MatrixVerificationRequestState {
         cancelled_by_us: bool,
     },
     UnsupportedMethod,
+}
+
+fn verification_request_state_token(state: &MatrixVerificationRequestState) -> &'static str {
+    match state {
+        MatrixVerificationRequestState::Created => "created",
+        MatrixVerificationRequestState::Requested => "requested",
+        MatrixVerificationRequestState::Ready => "ready",
+        MatrixVerificationRequestState::SasStarted(_) => "sas_started",
+        MatrixVerificationRequestState::Done => "done",
+        MatrixVerificationRequestState::Cancelled { .. } => "cancelled",
+        MatrixVerificationRequestState::UnsupportedMethod => "unsupported_method",
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1305,43 +1429,115 @@ pub async fn discover_current_session_verification_methods(
 
 pub async fn request_own_user_sas_verification(
     session: &MatrixClientSession,
+    flow_id: u64,
 ) -> Result<MatrixOwnUserVerificationHandle, E2eeTrustError> {
-    let user_id = matrix_sdk::ruma::OwnedUserId::try_from(session.info.user_id.as_str())
-        .map_err(|_| E2eeTrustError::Sdk("invalid verification user id".to_owned()))?;
+    record_sas_delivery_event(sas_delivery_event("request_started", flow_id));
+    let user_id = match matrix_sdk::ruma::OwnedUserId::try_from(session.info.user_id.as_str()) {
+        Ok(user_id) => user_id,
+        Err(_) => {
+            record_sas_delivery_event(
+                sas_delivery_event("request_send_finished", flow_id)
+                    .field(DiagnosticField::token("outcome", "failed"))
+                    .field(DiagnosticField::token("failure_stage", "invalid_user_id")),
+            );
+            return Err(E2eeTrustError::Sdk(
+                "invalid verification user id".to_owned(),
+            ));
+        }
+    };
     let encryption = session.client().encryption();
-    let identity = encryption
-        .request_user_identity(&user_id)
-        .await
-        .map_err(|_| E2eeTrustError::Sdk("verification identity unavailable".to_owned()))?
-        .ok_or_else(|| E2eeTrustError::Sdk("verification identity unavailable".to_owned()))?;
-    let devices = encryption
-        .get_user_devices(&user_id)
-        .await
-        .map_err(|_| E2eeTrustError::Sdk("verification devices unavailable".to_owned()))?;
-    let eligible_device_count = devices
-        .devices()
-        .filter(|device| {
-            is_eligible_own_user_proof_device(
-                &session.info.device_id,
-                device.device_id().as_str(),
-                device.is_cross_signed_by_owner(),
-                device.is_blacklisted(),
-            )
-        })
-        .count() as u64;
+    let identity = match encryption.request_user_identity(&user_id).await {
+        Ok(Some(identity)) => identity,
+        Ok(None) => {
+            record_sas_delivery_event(
+                sas_delivery_event("request_send_finished", flow_id)
+                    .field(DiagnosticField::token("outcome", "failed"))
+                    .field(DiagnosticField::token("failure_stage", "identity_missing")),
+            );
+            return Err(E2eeTrustError::Sdk(
+                "verification identity unavailable".to_owned(),
+            ));
+        }
+        Err(_) => {
+            record_sas_delivery_event(
+                sas_delivery_event("request_send_finished", flow_id)
+                    .field(DiagnosticField::token("outcome", "failed"))
+                    .field(DiagnosticField::token("failure_stage", "identity_query")),
+            );
+            return Err(E2eeTrustError::Sdk(
+                "verification identity unavailable".to_owned(),
+            ));
+        }
+    };
+    let devices = match encryption.get_user_devices(&user_id).await {
+        Ok(devices) => devices,
+        Err(_) => {
+            record_sas_delivery_event(
+                sas_delivery_event("request_send_finished", flow_id)
+                    .field(DiagnosticField::token("outcome", "failed"))
+                    .field(DiagnosticField::token("failure_stage", "device_query")),
+            );
+            return Err(E2eeTrustError::Sdk(
+                "verification devices unavailable".to_owned(),
+            ));
+        }
+    };
+    let recipient_diagnostics =
+        own_user_sas_recipient_diagnostics(devices.devices().map(|device| OwnUserSasDeviceFact {
+            is_current: device.device_id().as_str() == session.info.device_id,
+            cross_signed_by_owner: device.is_cross_signed_by_owner(),
+            blocked: device.is_blacklisted(),
+            dehydrated: device.is_dehydrated(),
+            curve_key_present: device.curve25519_key().is_some(),
+            ed25519_key_present: device.ed25519_key().is_some(),
+        }));
+    let eligible_device_count = recipient_diagnostics.eligible_device_count;
+    record_sas_delivery_event(sas_recipients_resolved_event(
+        flow_id,
+        recipient_diagnostics,
+    ));
     if eligible_device_count == 0 {
+        record_sas_delivery_event(
+            sas_delivery_event("request_send_finished", flow_id)
+                .field(DiagnosticField::token("outcome", "failed"))
+                .field(DiagnosticField::token(
+                    "failure_stage",
+                    "no_eligible_device",
+                )),
+        );
         return Err(E2eeTrustError::Sdk(
             "verification device unavailable".to_owned(),
         ));
     }
-    let inner = identity
+    let inner = match identity
         .request_verification_with_methods(vec![
             matrix_sdk::ruma::events::key::verification::VerificationMethod::SasV1,
         ])
         .await
-        .map_err(|_| E2eeTrustError::Sdk("verification request failed".to_owned()))?;
+    {
+        Ok(inner) => inner,
+        Err(_) => {
+            record_sas_delivery_event(
+                sas_delivery_event("request_send_finished", flow_id)
+                    .field(DiagnosticField::token("outcome", "failed"))
+                    .field(DiagnosticField::token("failure_stage", "send")),
+            );
+            return Err(E2eeTrustError::Sdk(
+                "verification request failed".to_owned(),
+            ));
+        }
+    };
+    let request = MatrixVerificationRequestHandle { inner };
+    record_sas_delivery_event(
+        sas_delivery_event("request_send_finished", flow_id)
+            .field(DiagnosticField::token("outcome", "success"))
+            .field(DiagnosticField::token(
+                "initial_state",
+                verification_request_state_token(&request.state()),
+            )),
+    );
     Ok(MatrixOwnUserVerificationHandle {
-        request: MatrixVerificationRequestHandle { inner },
+        request,
         eligible_device_count,
     })
 }
@@ -1703,6 +1899,116 @@ GYW19pdjg0qdXNk/eqZsQTsNWVo6A\n\
         assert!(!super::is_eligible_own_user_proof_device(
             "CURRENT", "OTHER", true, true
         ));
+    }
+
+    #[test]
+    fn own_user_request_recipient_requires_a_distinct_owner_signed_device() {
+        assert!(super::is_own_user_verification_recipient(
+            "CURRENT", "OTHER", true
+        ));
+        assert!(!super::is_own_user_verification_recipient(
+            "CURRENT", "CURRENT", true
+        ));
+        assert!(!super::is_own_user_verification_recipient(
+            "CURRENT", "OTHER", false
+        ));
+    }
+
+    #[test]
+    fn own_user_sas_recipient_diagnostics_distinguish_sender_and_interactive_targets() {
+        use super::OwnUserSasDeviceFact as Fact;
+
+        let diagnostics = super::own_user_sas_recipient_diagnostics([
+            Fact {
+                is_current: true,
+                cross_signed_by_owner: false,
+                blocked: false,
+                dehydrated: false,
+                curve_key_present: true,
+                ed25519_key_present: true,
+            },
+            Fact {
+                is_current: false,
+                cross_signed_by_owner: true,
+                blocked: false,
+                dehydrated: false,
+                curve_key_present: true,
+                ed25519_key_present: true,
+            },
+            Fact {
+                is_current: false,
+                cross_signed_by_owner: true,
+                blocked: false,
+                dehydrated: true,
+                curve_key_present: true,
+                ed25519_key_present: true,
+            },
+            Fact {
+                is_current: false,
+                cross_signed_by_owner: true,
+                blocked: true,
+                dehydrated: false,
+                curve_key_present: false,
+                ed25519_key_present: true,
+            },
+            Fact {
+                is_current: false,
+                cross_signed_by_owner: false,
+                blocked: false,
+                dehydrated: false,
+                curve_key_present: true,
+                ed25519_key_present: true,
+            },
+        ]);
+
+        assert!(diagnostics.sender_device_query_visible);
+        assert!(diagnostics.sender_curve_key_present);
+        assert!(diagnostics.sender_ed25519_key_present);
+        assert_eq!(diagnostics.other_device_count, 4);
+        assert_eq!(diagnostics.recipient_count, 3);
+        assert_eq!(diagnostics.eligible_device_count, 2);
+        assert_eq!(diagnostics.interactive_recipient_count, 1);
+        assert_eq!(diagnostics.dehydrated_recipient_count, 1);
+    }
+
+    #[test]
+    fn sas_delivery_event_contains_only_closed_private_safe_fields() {
+        let event = super::sas_delivery_event("recipients_resolved", 41)
+            .field(koushi_diagnostics::DiagnosticField::count(
+                "other_device_count",
+                3,
+            ))
+            .field(koushi_diagnostics::DiagnosticField::count(
+                "recipient_count",
+                1,
+            ));
+        assert_eq!(event.source, "core.sas_verification");
+        assert_eq!(
+            koushi_diagnostics::format_event(&event),
+            "stage=recipients_resolved flow_id=41 other_device_count=3 recipient_count=1"
+        );
+    }
+
+    #[test]
+    fn sas_recipients_resolved_event_includes_sender_readiness_without_identifiers() {
+        let event = super::sas_recipients_resolved_event(
+            42,
+            super::OwnUserSasRecipientDiagnostics {
+                other_device_count: 9,
+                recipient_count: 6,
+                eligible_device_count: 6,
+                sender_device_query_visible: true,
+                sender_curve_key_present: true,
+                sender_ed25519_key_present: true,
+                interactive_recipient_count: 5,
+                dehydrated_recipient_count: 1,
+            },
+        );
+
+        assert_eq!(
+            koushi_diagnostics::format_event(&event),
+            "stage=recipients_resolved flow_id=42 other_device_count=9 recipient_count=6 eligible_device_count=6 sender_device_query_visible=true sender_curve_key_present=true sender_ed25519_key_present=true interactive_recipient_count=5 dehydrated_recipient_count=1"
+        );
     }
 
     #[test]

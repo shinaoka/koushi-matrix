@@ -155,14 +155,15 @@ pub(crate) fn handle_authoritative_device_trust_changed(
         let info = info.clone();
         state.session = SessionState::Ready(info);
         state.sync = SyncState::Starting;
-        return vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)];
+        return vec![
+            AppEffect::StartSync,
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+        ];
     }
 
     let mut effects = handle_current_device_trust_changed(state, trust);
     if trust == CurrentDeviceTrustState::Verified {
-        effects.retain(|effect| {
-            !matches!(effect, AppEffect::PersistSession(_) | AppEffect::StartSync)
-        });
+        effects.retain(|effect| !matches!(effect, AppEffect::PersistSession(_)));
     }
     effects
 }
@@ -511,6 +512,22 @@ pub(crate) fn handle_session_persistence_failed(
         recoverable: true,
     });
     vec![AppEffect::EmitUiEvent(UiEvent::ErrorChanged)]
+}
+
+pub(crate) fn handle_verification_admission_preparation_failed(
+    state: &mut AppState,
+    kind: crate::state::VerificationGateFailureKind,
+) -> Vec<AppEffect> {
+    let SessionState::Provisional { info, .. } = &state.session else {
+        return Vec::new();
+    };
+    state.session = SessionState::Provisional {
+        info: info.clone(),
+        phase: crate::state::ProvisionalPhase::RecheckingTrust {
+            failure: Some(kind),
+        },
+    };
+    vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)]
 }
 
 pub(crate) fn handle_session_locked(state: &mut AppState) -> Vec<AppEffect> {
