@@ -243,8 +243,14 @@ pub enum AccountMessage {
     },
     TrustProjectionApplied {
         generation: u64,
+        transition_id: u64,
         ready: bool,
         locked: bool,
+    },
+    PromotionFullStateSyncFinished {
+        generation: u64,
+        transition_id: u64,
+        succeeded: bool,
     },
     RejectProvisionalSession {
         request_id: RequestId,
@@ -476,6 +482,29 @@ enum TrustLifecycleDecision {
     AlreadyReady,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PendingTrustTransition {
+    generation: u64,
+    transition_id: u64,
+    decision: TrustLifecycleDecision,
+}
+
+fn trust_projection_ack_matches(
+    pending: &PendingTrustTransition,
+    generation: u64,
+    transition_id: u64,
+    ready: bool,
+    locked: bool,
+) -> bool {
+    pending.generation == generation
+        && pending.transition_id == transition_id
+        && match pending.decision {
+            TrustLifecycleDecision::Promote => ready && !locked,
+            TrustLifecycleDecision::Lock => locked && !ready,
+            _ => false,
+        }
+}
+
 #[derive(Clone, Copy)]
 enum VerificationTerminal {
     Success,
@@ -527,7 +556,8 @@ pub struct AccountActor {
     recovery_task: Option<PendingRecoveryTask>,
     restricted_sync: Option<crate::executor::JoinHandle<()>>,
     pending_ready_events: Vec<CoreEvent>,
-    pending_trust_transition: Option<(u64, TrustLifecycleDecision)>,
+    pending_trust_transition: Option<PendingTrustTransition>,
+    next_trust_transition_id: u64,
     pending_session_teardown: Option<PendingSessionTeardown>,
     next_teardown_generation: u64,
     teardown_retry_task: Option<crate::executor::JoinHandle<()>>,
@@ -684,6 +714,7 @@ impl AccountActor {
             restricted_sync: None,
             pending_ready_events: Vec::new(),
             pending_trust_transition: None,
+            next_trust_transition_id: 0,
             pending_session_teardown: None,
             next_teardown_generation: 0,
             teardown_retry_task: None,
@@ -955,11 +986,24 @@ impl AccountActor {
                 }
                 AccountMessage::TrustProjectionApplied {
                     generation,
+                    transition_id,
                     ready,
                     locked,
                 } => {
-                    self.handle_trust_projection_applied(generation, ready, locked)
+                    self.handle_trust_projection_applied(generation, transition_id, ready, locked)
                         .await;
+                }
+                AccountMessage::PromotionFullStateSyncFinished {
+                    generation,
+                    transition_id,
+                    succeeded,
+                } => {
+                    self.handle_promotion_full_state_sync_finished(
+                        generation,
+                        transition_id,
+                        succeeded,
+                    )
+                    .await;
                 }
                 AccountMessage::RejectProvisionalSession { request_id } => {
                     self.perform_logout(request_id, true).await;
@@ -6118,17 +6162,25 @@ impl AccountActor {
         ) {
             TrustLifecycleDecision::IgnoreStale | TrustLifecycleDecision::AlreadyReady => return,
             TrustLifecycleDecision::StayGated => {
+                let transition_id = self.next_trust_transition_id();
                 self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
                     generation,
+                    transition_id,
                     trust,
                 }])
                 .await;
                 return;
             }
             TrustLifecycleDecision::Lock => {
-                self.pending_trust_transition = Some((generation, TrustLifecycleDecision::Lock));
+                let transition_id = self.next_trust_transition_id();
+                self.pending_trust_transition = Some(PendingTrustTransition {
+                    generation,
+                    transition_id,
+                    decision: TrustLifecycleDecision::Lock,
+                });
                 self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
                     generation,
+                    transition_id,
                     trust,
                 }])
                 .await;
@@ -6158,11 +6210,64 @@ impl AccountActor {
         // it alive after promotion for event-driven current-device trust
         // refreshes; it never projects rooms/presence into normal consumers.
         // Before exposing Ready, catch up full room state once.
-        let _ = koushi_sdk::promotion_full_state_sync_once(&session).await;
-        self.pending_trust_transition = Some((generation, TrustLifecycleDecision::Promote));
+        if matches!(self.pending_trust_transition, Some(PendingTrustTransition { generation: pending_generation, decision: TrustLifecycleDecision::Promote, .. }) if pending_generation == generation)
+        {
+            return;
+        }
+        let transition_id = self.next_trust_transition_id();
+        self.pending_trust_transition = Some(PendingTrustTransition {
+            generation,
+            transition_id,
+            decision: TrustLifecycleDecision::Promote,
+        });
+        let tx = self.self_tx.clone();
+        executor::spawn(async move {
+            let succeeded = koushi_sdk::promotion_full_state_sync_once(&session)
+                .await
+                .is_ok();
+            let _ = tx
+                .send(AccountMessage::PromotionFullStateSyncFinished {
+                    generation,
+                    transition_id,
+                    succeeded,
+                })
+                .await;
+        });
+    }
+
+    fn next_trust_transition_id(&mut self) -> u64 {
+        self.next_trust_transition_id = self.next_trust_transition_id.wrapping_add(1);
+        self.next_trust_transition_id
+    }
+
+    async fn handle_promotion_full_state_sync_finished(
+        &mut self,
+        generation: u64,
+        transition_id: u64,
+        succeeded: bool,
+    ) {
+        let Some(pending) = self.pending_trust_transition.as_ref() else {
+            return;
+        };
+        if pending.generation != generation
+            || pending.transition_id != transition_id
+            || pending.decision != TrustLifecycleDecision::Promote
+            || generation != self.trust_generation
+        {
+            return;
+        }
+        if !succeeded {
+            self.pending_trust_transition = None;
+            self.send_actions(vec![AppAction::SessionPersistenceFailed {
+                message: "room preparation failed".to_owned(),
+            }])
+            .await;
+            return;
+        }
         self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
             generation,
-            trust,
+            transition_id,
+            trust: koushi_state::CurrentDeviceTrustState::Verified,
         }])
         .await;
     }
@@ -6194,25 +6299,25 @@ impl AccountActor {
     async fn handle_trust_projection_applied(
         &mut self,
         generation: u64,
+        transition_id: u64,
         ready: bool,
         locked: bool,
     ) {
-        let Some((pending_generation, decision)) = self.pending_trust_transition.take() else {
+        let Some(pending) = self.pending_trust_transition.as_ref() else {
             return;
         };
-        if generation != pending_generation || generation != self.trust_generation {
+        if generation != self.trust_generation
+            || !trust_projection_ack_matches(pending, generation, transition_id, ready, locked)
+        {
             return;
         }
+        let decision = pending.decision;
+        self.pending_trust_transition = None;
         if decision == TrustLifecycleDecision::Lock {
-            if locked {
-                self.record_lifecycle_probe("lock_projection_ack");
-                self.stop_restricted_sync().await;
-                self.stop_normal_runtime_children().await;
-                self.session_promoted = false;
-            }
-            return;
-        }
-        if decision != TrustLifecycleDecision::Promote || !ready {
+            self.record_lifecycle_probe("lock_projection_ack");
+            self.stop_restricted_sync().await;
+            self.stop_normal_runtime_children().await;
+            self.session_promoted = false;
             return;
         }
         self.record_lifecycle_probe("ready_projection_ack");
@@ -8867,17 +8972,20 @@ mod tests {
             if let [
                 AppAction::AuthoritativeDeviceTrustChanged {
                     generation,
+                    transition_id,
                     trust: koushi_state::CurrentDeviceTrustState::Verified,
                 },
             ] = actions.as_slice()
             {
-                break *generation;
+                break (*generation, *transition_id);
             }
         };
+        let (generation, transition_id) = generation;
         assert!(
             handle
                 .send(AccountMessage::TrustProjectionApplied {
                     generation,
+                    transition_id,
                     ready: true,
                     locked: false,
                 })
@@ -9138,6 +9246,38 @@ mod tests {
             .and_then(|body| body.split("async fn persist_session").next())
             .expect("trust promotion handler");
         assert!(promotion.contains("spawn_account_hydration"));
+    }
+
+    #[test]
+    fn stale_projection_ack_does_not_consume_pending_promotion() {
+        let pending = PendingTrustTransition {
+            generation: 7,
+            transition_id: 42,
+            decision: TrustLifecycleDecision::Promote,
+        };
+        assert!(!trust_projection_ack_matches(&pending, 7, 41, false, false));
+        assert!(trust_projection_ack_matches(&pending, 7, 42, true, false));
+    }
+
+    #[test]
+    fn promotion_full_state_sync_runs_outside_account_mailbox() {
+        let source = include_str!("account.rs");
+        let handler = source
+            .split("async fn handle_current_device_trust")
+            .nth(1)
+            .and_then(|body| body.split("async fn discover_verification_methods").next())
+            .expect("trust handler");
+        let spawn = handler
+            .find("executor::spawn(async move")
+            .expect("background task");
+        let full_state = handler
+            .find("promotion_full_state_sync_once(&session)")
+            .expect("full-state sync");
+        assert!(
+            spawn < full_state,
+            "full-state sync must run in a spawned task"
+        );
+        assert!(handler.contains("PromotionFullStateSyncFinished"));
     }
 
     #[test]
@@ -9656,6 +9796,7 @@ mod tests {
             restricted_sync: None,
             pending_ready_events: Vec::new(),
             pending_trust_transition: None,
+            next_trust_transition_id: 0,
             pending_session_teardown: None,
             next_teardown_generation: 0,
             teardown_retry_task: None,

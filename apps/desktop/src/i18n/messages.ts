@@ -598,6 +598,9 @@ export type MessageId =
   | "trust.userVerified"
   | "trust.verification"
   | "gate.title"
+  | "gate.verifying"
+  | "gate.finishing"
+  | "gate.preparing"
   | "gate.checking"
   | "gate.rejecting"
   | "gate.locked"
@@ -1596,6 +1599,9 @@ const en: Catalog = {
   "trust.userVerified": "Verified",
   "trust.verification": "Device verification",
   "gate.title": "Verify this session",
+  "gate.verifying": "Verifying this session…",
+  "gate.finishing": "Finishing sign-in…",
+  "gate.preparing": "Preparing your rooms…",
   "gate.checking": "Checking device trust…",
   "gate.rejecting": "Rejecting unverified session…",
   "gate.locked": "This session must be verified again.",
@@ -2480,6 +2486,9 @@ const ja: Catalog = {
   "trust.userVerified": "検証済み",
   "trust.verification": "デバイス検証",
   "gate.title": "このセッションを検証",
+  "gate.verifying": "このセッションを検証中…",
+  "gate.finishing": "サインインを完了しています…",
+  "gate.preparing": "ルームを準備しています…",
   "gate.checking": "デバイスの信頼状態を確認中…",
   "gate.rejecting": "未検証セッションを拒否中…",
   "gate.locked": "このセッションは再検証が必要です。",

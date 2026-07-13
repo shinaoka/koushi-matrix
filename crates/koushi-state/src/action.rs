@@ -201,6 +201,7 @@ pub enum AppAction {
     CurrentDeviceTrustChanged(CurrentDeviceTrustState),
     AuthoritativeDeviceTrustChanged {
         generation: u64,
+        transition_id: u64,
         trust: CurrentDeviceTrustState,
     },
     VerificationMethodsDiscovered(VerificationGateState),

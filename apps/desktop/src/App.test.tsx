@@ -2288,4 +2288,25 @@ describe("Timeline item row rendering", () => {
       contextualRightPanelSource.indexOf('setRightPanelModeClosingFocusedContext("people")')
     );
   });
+
+  test("verification admission owns independent operations and phase-specific progress", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const start = source.indexOf("function SessionVerificationGate");
+    const end = source.indexOf("function gateFailureLabel", start);
+    const gate = source.slice(start, end);
+
+    expect(gate).toContain('useState<"recovery" | "sas" | null>');
+    expect(gate).toContain('disabled={gateOperation === "sas"}');
+    expect(gate).toContain('disabled={gateOperation === "recovery"}');
+    expect(gate).toContain('t("gate.verifying")');
+    expect(gate).toContain('t("gate.finishing")');
+    expect(gate).toContain('t("gate.preparing")');
+    expect(gate).not.toContain("disabled={busy}");
+    expect(gate).toContain("catch {");
+  });
+
+  test("ready with non-running sync remains behind room preparation gate", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    expect(source).toContain('(sessionKind === "ready" && snapshot.state.domain.sync !== "running")');
+  });
 });

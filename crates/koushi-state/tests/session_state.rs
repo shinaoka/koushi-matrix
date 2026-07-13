@@ -574,6 +574,7 @@ fn authoritative_verified_repromotes_locked_session_without_replaying_actor_owne
         &mut state,
         AppAction::AuthoritativeDeviceTrustChanged {
             generation: 17,
+            transition_id: 1,
             trust: CurrentDeviceTrustState::Verified,
         },
     );
@@ -860,6 +861,7 @@ fn active_verification_survives_unknown_and_unverified_trust_observations() {
             &mut state,
             AppAction::AuthoritativeDeviceTrustChanged {
                 generation: 7,
+                transition_id: 1,
                 trust,
             },
         );
