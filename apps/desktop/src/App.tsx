@@ -1167,7 +1167,10 @@ export async function settleLoginTransport(
     try {
       const snapshot = await refresh();
       apply(snapshot);
-      return snapshot.state.ui.errors.length > 0 || snapshot.state.domain.session.gate?.failureKind || snapshot.state.domain.session.kind === "rejecting"
+      const hasProjectedLoginFailure = snapshot.state.ui.errors.some((error) =>
+        error.code === "login_failed" || error.code === "sync_auth_required"
+      );
+      return hasProjectedLoginFailure || snapshot.state.domain.session.gate?.failureKind || snapshot.state.domain.session.kind === "rejecting"
         ? null
         : "Sign-in failed. Please try again.";
     } catch {

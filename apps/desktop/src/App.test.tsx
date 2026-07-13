@@ -2329,6 +2329,16 @@ describe("Timeline item row rendering", () => {
     await expect(settleLoginTransport(Promise.reject(new Error("ipc")), async () => failed, () => undefined)).resolves.toBeNull();
   });
 
+  test("unrelated projected errors do not hide a rejected login transport", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { settleLoginTransport } = await import("./App");
+    const snapshot = await createBrowserFakeApi({ session: "needsRecovery" }).getSnapshot();
+    snapshot.state.ui.errors.push({ code: "media_download_failed", message: "Old media error", recoverable: true });
+    await expect(
+      settleLoginTransport(Promise.reject(new Error("ipc")), async () => snapshot, () => undefined)
+    ).resolves.toBe("Sign-in failed. Please try again.");
+  });
+
   test("ready with non-running sync remains behind room preparation gate", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
     expect(source).toContain('(sessionKind === "ready" && snapshot.state.domain.sync !== "running")');
