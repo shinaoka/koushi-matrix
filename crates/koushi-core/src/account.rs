@@ -244,6 +244,9 @@ pub enum AccountMessage {
     RestrictedSyncSucceeded {
         generation: u64,
     },
+    RestrictedSyncFailed {
+        generation: u64,
+    },
     VerificationMethodsDiscovered {
         generation: u64,
         serial: u64,
@@ -1055,6 +1058,22 @@ impl AccountActor {
                     }
                 }
                 AccountMessage::RestrictedSyncSucceeded { generation } => {
+                    let own_flow_id = self
+                        .own_user_verification
+                        .as_ref()
+                        .map(|(flow_id, _)| *flow_id);
+                    if let Some(flow_id) = active_own_user_sas_flow_for_restricted_sync(
+                        generation,
+                        self.trust_generation,
+                        self.session.is_some(),
+                        self.session_promoted,
+                        own_flow_id,
+                    ) {
+                        record_sas_verification_event(sas_verification_event(
+                            "restricted_sync_succeeded",
+                            flow_id,
+                        ));
+                    }
                     if promoted_trust_refresh_is_current(
                         generation,
                         self.trust_generation,
@@ -1074,6 +1093,24 @@ impl AccountActor {
                     );
                     if eligible {
                         self.recheck_own_user_sas_after_sync().await;
+                    }
+                }
+                AccountMessage::RestrictedSyncFailed { generation } => {
+                    let own_flow_id = self
+                        .own_user_verification
+                        .as_ref()
+                        .map(|(flow_id, _)| *flow_id);
+                    if let Some(flow_id) = active_own_user_sas_flow_for_restricted_sync(
+                        generation,
+                        self.trust_generation,
+                        self.session.is_some(),
+                        self.session_promoted,
+                        own_flow_id,
+                    ) {
+                        record_sas_verification_event(sas_verification_event(
+                            "restricted_sync_failed",
+                            flow_id,
+                        ));
                     }
                 }
                 AccountMessage::VerificationMethodsDiscovered {
@@ -6343,6 +6380,7 @@ impl AccountActor {
             {
                 return;
             }
+            let mut failure_reported = false;
             loop {
                 match koushi_sdk::restricted_verification_sync_once_with_token(
                     &session,
@@ -6351,6 +6389,7 @@ impl AccountActor {
                 .await
                 {
                     Ok(next_token) => {
+                        failure_reported = false;
                         token = Some(next_token);
                         if tx
                             .send(AccountMessage::RestrictedSyncSucceeded { generation })
@@ -6360,7 +6399,18 @@ impl AccountActor {
                             break;
                         }
                     }
-                    Err(_) => {}
+                    Err(_) => {
+                        if !failure_reported {
+                            if tx
+                                .send(AccountMessage::RestrictedSyncFailed { generation })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                            failure_reported = true;
+                        }
+                    }
                 }
                 executor::sleep(Duration::from_millis(250)).await;
             }
@@ -7049,6 +7099,18 @@ fn own_user_sas_recheck_is_current(
         && !session_promoted
         && has_own_user_flow
         && !has_sas
+}
+
+fn active_own_user_sas_flow_for_restricted_sync(
+    generation: u64,
+    current_generation: u64,
+    has_session: bool,
+    session_promoted: bool,
+    own_flow_id: Option<u64>,
+) -> Option<u64> {
+    (generation == current_generation && has_session && !session_promoted)
+        .then_some(own_flow_id)
+        .flatten()
 }
 
 fn promoted_trust_refresh_is_current(
@@ -7853,6 +7915,30 @@ mod tests {
         assert!(!own_user_sas_recheck_is_current(
             4, 4, true, false, true, true
         ));
+    }
+
+    #[test]
+    fn restricted_sync_diagnostics_require_current_own_user_flow() {
+        assert_eq!(
+            active_own_user_sas_flow_for_restricted_sync(4, 4, true, false, Some(73)),
+            Some(73)
+        );
+        assert_eq!(
+            active_own_user_sas_flow_for_restricted_sync(3, 4, true, false, Some(73)),
+            None
+        );
+        assert_eq!(
+            active_own_user_sas_flow_for_restricted_sync(4, 4, false, false, Some(73)),
+            None
+        );
+        assert_eq!(
+            active_own_user_sas_flow_for_restricted_sync(4, 4, true, true, Some(73)),
+            None
+        );
+        assert_eq!(
+            active_own_user_sas_flow_for_restricted_sync(4, 4, true, false, None),
+            None
+        );
     }
 
     #[test]
