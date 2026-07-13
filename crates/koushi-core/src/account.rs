@@ -558,6 +558,7 @@ pub struct AccountActor {
     pending_ready_events: Vec<CoreEvent>,
     pending_trust_transition: Option<PendingTrustTransition>,
     next_trust_transition_id: u64,
+    promotion_full_state_task: Option<crate::executor::JoinHandle<()>>,
     pending_session_teardown: Option<PendingSessionTeardown>,
     next_teardown_generation: u64,
     teardown_retry_task: Option<crate::executor::JoinHandle<()>>,
@@ -715,6 +716,7 @@ impl AccountActor {
             pending_ready_events: Vec::new(),
             pending_trust_transition: None,
             next_trust_transition_id: 0,
+            promotion_full_state_task: None,
             pending_session_teardown: None,
             next_teardown_generation: 0,
             teardown_retry_task: None,
@@ -6091,6 +6093,7 @@ impl AccountActor {
 
     async fn stop_provisional_runtime(&mut self) {
         self.trust_generation = self.trust_generation.wrapping_add(1);
+        self.cancel_pending_trust_promotion().await;
         if let Some(task) = self.trust_observer.take() {
             task.abort();
             let _ = task.await;
@@ -6162,6 +6165,7 @@ impl AccountActor {
         ) {
             TrustLifecycleDecision::IgnoreStale | TrustLifecycleDecision::AlreadyReady => return,
             TrustLifecycleDecision::StayGated => {
+                self.cancel_pending_trust_promotion().await;
                 let transition_id = self.next_trust_transition_id();
                 self.send_actions(vec![AppAction::AuthoritativeDeviceTrustChanged {
                     generation,
@@ -6221,7 +6225,7 @@ impl AccountActor {
             decision: TrustLifecycleDecision::Promote,
         });
         let tx = self.self_tx.clone();
-        executor::spawn(async move {
+        self.promotion_full_state_task = Some(executor::spawn(async move {
             let succeeded = koushi_sdk::promotion_full_state_sync_once(&session)
                 .await
                 .is_ok();
@@ -6232,7 +6236,24 @@ impl AccountActor {
                     succeeded,
                 })
                 .await;
-        });
+        }));
+    }
+
+    async fn cancel_pending_trust_promotion(&mut self) {
+        if matches!(
+            self.pending_trust_transition,
+            Some(PendingTrustTransition {
+                decision: TrustLifecycleDecision::Promote,
+                ..
+            })
+        ) {
+            self.pending_trust_transition = None;
+        }
+        if let Some(task) = self.promotion_full_state_task.take() {
+            task.abort();
+            let _ = task.await;
+            self.record_lifecycle_probe("promotion_full_state_terminated");
+        }
     }
 
     fn next_trust_transition_id(&mut self) -> u64 {
@@ -6246,6 +6267,9 @@ impl AccountActor {
         transition_id: u64,
         succeeded: bool,
     ) {
+        if let Some(task) = self.promotion_full_state_task.take() {
+            let _ = task.await;
+        }
         let Some(pending) = self.pending_trust_transition.as_ref() else {
             return;
         };
@@ -6258,8 +6282,9 @@ impl AccountActor {
         }
         if !succeeded {
             self.pending_trust_transition = None;
-            self.send_actions(vec![AppAction::SessionPersistenceFailed {
-                message: "room preparation failed".to_owned(),
+            self.send_actions(vec![AppAction::VerificationAdmissionPreparationFailed {
+                generation,
+                kind: koushi_state::VerificationGateFailureKind::Sdk,
             }])
             .await;
             return;
@@ -9797,6 +9822,7 @@ mod tests {
             pending_ready_events: Vec::new(),
             pending_trust_transition: None,
             next_trust_transition_id: 0,
+            promotion_full_state_task: None,
             pending_session_teardown: None,
             next_teardown_generation: 0,
             teardown_retry_task: None,

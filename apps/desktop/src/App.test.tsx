@@ -2289,20 +2289,36 @@ describe("Timeline item row rendering", () => {
     );
   });
 
-  test("verification admission owns independent operations and phase-specific progress", () => {
-    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
-    const start = source.indexOf("function SessionVerificationGate");
-    const end = source.indexOf("function gateFailureLabel", start);
-    const gate = source.slice(start, end);
+  test("renders verification admission phases and an actionable preparation failure", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { SessionVerificationGate } = await import("./App");
+    const base = await createBrowserFakeApi({ session: "needsRecovery" }).getSnapshot();
+    const renderGate = (snapshot: DesktopSnapshot) => renderToStaticMarkup(
+      <SessionVerificationGate snapshot={snapshot} onSnapshot={() => undefined} onSignOut={() => undefined} />
+    );
+    expect(renderGate(base)).toContain("Verify this session");
 
-    expect(gate).toContain('useState<"recovery" | "sas" | null>');
-    expect(gate).toContain('disabled={gateOperation === "sas"}');
-    expect(gate).toContain('disabled={gateOperation === "recovery"}');
-    expect(gate).toContain('t("gate.verifying")');
-    expect(gate).toContain('t("gate.finishing")');
-    expect(gate).toContain('t("gate.preparing")');
-    expect(gate).not.toContain("disabled={busy}");
-    expect(gate).toContain("catch {");
+    const verifying = structuredClone(base);
+    verifying.state.domain.session = { ...base.state.domain.session, kind: "verifying", method: "recoveryKey", flow_id: 7 } as typeof base.state.domain.session;
+    expect(renderGate(verifying)).toContain("Verifying this session…");
+
+    const failed = structuredClone(base);
+    failed.state.domain.session = { ...base.state.domain.session, kind: "provisional", phase: { recheckingTrust: { failureKind: "sdk" } } } as typeof base.state.domain.session;
+    const failedMarkup = renderGate(failed);
+    expect(failedMarkup).toContain("Finishing sign-in…");
+    expect(failedMarkup).toContain('role="alert"');
+    expect(failedMarkup).toContain("Retry");
+  });
+
+  test("rejected login transport refreshes authoritative gate state without rejecting", async () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    const { settleLoginTransport } = await import("./App");
+    const gate = await createBrowserFakeApi({ session: "needsRecovery" }).getSnapshot();
+    const apply = vi.fn();
+    await expect(
+      settleLoginTransport(Promise.reject(new Error("login timeout")), async () => gate, apply)
+    ).resolves.toBeUndefined();
+    expect(apply).toHaveBeenCalledWith(gate);
   });
 
   test("ready with non-running sync remains behind room preparation gate", () => {

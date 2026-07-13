@@ -1100,7 +1100,7 @@ function useUiLatencyDiagnostics(): UiLatencyDiagnostics {
   return diagnostics;
 }
 
-function SessionVerificationGate({ snapshot, busy: _busy, onSnapshot, onSignOut }: { snapshot: DesktopSnapshot; busy: boolean; onSnapshot: (snapshot: DesktopSnapshot) => void; onSignOut: () => void }) {
+export function SessionVerificationGate({ snapshot, onSnapshot, onSignOut }: { snapshot: DesktopSnapshot; onSnapshot: (snapshot: DesktopSnapshot) => void; onSignOut: () => void }) {
   const session = snapshot.state.domain.session;
   const recoveryRef = useRef<HTMLInputElement>(null);
   const passphraseRef = useRef<HTMLInputElement>(null);
@@ -1110,6 +1110,9 @@ function SessionVerificationGate({ snapshot, busy: _busy, onSnapshot, onSignOut 
   const awaiting = session.kind === "awaitingVerification";
   const sasVerifying = session.kind === "verifying" && session.method === "existingDeviceSas";
   const rechecking = session.kind === "provisional" && typeof session.phase === "object" && "recheckingTrust" in session.phase;
+  const preparationFailure = session.kind === "provisional" && typeof session.phase === "object" && "recheckingTrust" in session.phase
+    ? session.phase.recheckingTrust.failureKind
+    : null;
   const preparing = session.kind === "ready" && snapshot.state.domain.sync !== "running";
   const activelyVerifying = session.kind === "verifying";
   const [gateOperation, setGateOperation] = useState<"recovery" | "sas" | null>(null);
@@ -1124,6 +1127,7 @@ function SessionVerificationGate({ snapshot, busy: _busy, onSnapshot, onSignOut 
     {session.kind === "rejecting" && <p>{t("gate.rejecting")}</p>}
     {session.kind === "locked" && <p>{t("gate.locked")}</p>}
     {session.gate?.failureKind && <p role="alert">{gateFailureLabel(session.gate.failureKind)}</p>}
+    {preparationFailure && <p role="alert">{gateFailureLabel(preparationFailure)}</p>}
     {session.kind === "rejecting" && session.reason && <p role="alert">{gateRejectLabel(session.reason)}</p>}
     {awaiting && methods.includes("existingDeviceSas") && <button disabled={gateOperation === "sas"} onClick={() => void run("sas", api.startOwnUserSas())}>{t("gate.otherDevice")}</button>}
     {sasVerifying && session.sas_emojis?.length === 7 && <div className="session-verification-emojis">{session.sas_emojis.map((emoji, index) => <span key={index}>{emoji.symbol} {emoji.description}</span>)}</div>}
@@ -1143,6 +1147,22 @@ function gateFailureLabel(kind: import("./domain/types").VerificationGateFailure
 
 function gateRejectLabel(reason: NonNullable<import("./domain/types").SessionState["reason"]>): string {
   return t(reason === "existingIdentityWithoutProof" ? "gate.rejectNoProof" : "gate.rejectUser");
+}
+
+export async function settleLoginTransport(
+  login: Promise<DesktopSnapshot>,
+  refresh: () => Promise<DesktopSnapshot>,
+  apply: (snapshot: DesktopSnapshot) => void
+): Promise<void> {
+  try {
+    apply(await login);
+  } catch {
+    try {
+      apply(await refresh());
+    } catch {
+      // The next pushed core state remains authoritative if refresh also fails.
+    }
+  }
 }
 
 export function App() {
@@ -2111,16 +2131,16 @@ export function App() {
     const sessionKind = snapshot?.state.domain.session.kind;
     setIsBusy(true);
     try {
-      const nextSnapshot =
+      const login =
         sessionKind === "locked"
-          ? await api.submitSoftLogoutReauth(password)
-          : await api.submitLogin(
+          ? api.submitSoftLogoutReauth(password)
+          : api.submitLogin(
               loginHomeserver,
               loginUsername,
               password,
               loginDeviceName
             );
-      setSnapshot(nextSnapshot);
+      await settleLoginTransport(login, () => api.getSnapshot(), setSnapshot);
     } finally {
       if (loginPasswordRef.current) {
         loginPasswordRef.current.value = "";
@@ -3595,7 +3615,7 @@ export function App() {
   const verificationGate = ["provisional", "awaitingVerification", "verifying", "awaitingBootstrapConfirmation", "rejecting", "locked"].includes(sessionKind)
     || (sessionKind === "ready" && snapshot.state.domain.sync !== "running");
   if (verificationGate) {
-    return <SessionVerificationGate snapshot={snapshot} busy={isBusy} onSnapshot={setSnapshot} onSignOut={() => void logout()} />;
+    return <SessionVerificationGate snapshot={snapshot} onSnapshot={setSnapshot} onSignOut={() => void logout()} />;
   }
 
   if (sessionKind !== "ready") {

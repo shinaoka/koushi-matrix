@@ -18,7 +18,8 @@ use crate::state::{
     SessionInfo, SettingsPatch, SettingsValues, SpaceSummary, StagedUploadCompressionChoice,
     StagedUploadItem, SyncLifecycleStatus, SyncMode, TimelineMediaDownloadState,
     TimelineMediaGalleryItem, TimelineScrollAnchor, TrustOperationFailureKind, UserProfile,
-    VerificationCancelReason, VerificationGateState, VerificationMethod, VerificationTarget,
+    VerificationCancelReason, VerificationGateFailureKind, VerificationGateState,
+    VerificationMethod, VerificationTarget,
 };
 
 #[derive(Clone, Eq, PartialEq)]
@@ -401,6 +402,10 @@ pub enum AppAction {
     },
     SessionPersistenceFailed {
         message: String,
+    },
+    VerificationAdmissionPreparationFailed {
+        generation: u64,
+        kind: VerificationGateFailureKind,
     },
     SessionLocked,
     LogoutRequested,
