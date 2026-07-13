@@ -602,6 +602,7 @@ export type MessageId =
   | "gate.finishing"
   | "gate.preparing"
   | "gate.checking"
+  | "gate.discovering"
   | "gate.rejecting"
   | "gate.locked"
   | "gate.otherDevice"
@@ -1603,6 +1604,7 @@ const en: Catalog = {
   "gate.finishing": "Finishing sign-in…",
   "gate.preparing": "Preparing your rooms…",
   "gate.checking": "Checking device trust…",
+  "gate.discovering": "Discovering verification methods…",
   "gate.rejecting": "Rejecting unverified session…",
   "gate.locked": "This session must be verified again.",
   "gate.otherDevice": "Verify with another device",
@@ -2490,6 +2492,7 @@ const ja: Catalog = {
   "gate.finishing": "サインインを完了しています…",
   "gate.preparing": "ルームを準備しています…",
   "gate.checking": "デバイスの信頼状態を確認中…",
+  "gate.discovering": "認証方法を確認中…",
   "gate.rejecting": "未検証セッションを拒否中…",
   "gate.locked": "このセッションは再検証が必要です。",
   "gate.otherDevice": "別のデバイスで検証",

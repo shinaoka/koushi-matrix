@@ -206,6 +206,13 @@ pub enum AppAction {
         trust: CurrentDeviceTrustState,
     },
     VerificationMethodsDiscovered(VerificationGateState),
+    VerificationMethodDiscoveryFailed {
+        generation: u64,
+        kind: VerificationGateFailureKind,
+    },
+    VerificationMethodDiscoveryRetryStarted {
+        generation: u64,
+    },
     VerificationMethodSubmitted {
         method: VerificationMethod,
         flow_id: u64,

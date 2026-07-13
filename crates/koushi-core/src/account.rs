@@ -91,6 +91,7 @@ const AVATAR_DOWNLOAD_CONCURRENCY: usize = 6;
 const SEARCH_UNAVAILABLE_MESSAGE: &str = "search unavailable";
 const SERVER_LOGOUT_TIMEOUT: Duration = Duration::from_secs(10);
 const ACCOUNT_HYDRATION_TIMEOUT: Duration = Duration::from_secs(10);
+const VERIFICATION_METHOD_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 const IDENTITY_RESET_AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 const OIDC_REDIRECT_URI: &str = "koushi-desktop://auth/callback";
 /// Redacted message used in reducer error projections (never raw SDK text).
@@ -151,6 +152,24 @@ fn verification_admission_event(
     DiagnosticEvent::new(DiagnosticLevel::Info, "core.verification_admission", stage)
         .field(DiagnosticField::count("generation", generation))
         .field(DiagnosticField::count("transition_id", transition_id))
+}
+
+fn record_verification_method_discovery_event(event: DiagnosticEvent) {
+    koushi_diagnostics::record_and_stderr(event);
+}
+
+fn verification_method_discovery_event(
+    stage: &'static str,
+    generation: u64,
+    serial: u64,
+) -> DiagnosticEvent {
+    DiagnosticEvent::new(
+        DiagnosticLevel::Info,
+        "core.verification_method_discovery",
+        stage,
+    )
+    .field(DiagnosticField::count("generation", generation))
+    .field(DiagnosticField::count("serial", serial))
 }
 
 fn trace_account_request(stage: &'static str, request_id: RequestId, action: &'static str) {
@@ -250,7 +269,7 @@ pub enum AccountMessage {
     VerificationMethodsDiscovered {
         generation: u64,
         serial: u64,
-        gate: koushi_state::VerificationGateState,
+        result: VerificationMethodDiscoveryResult,
     },
     RecoveryFinished {
         generation: u64,
@@ -521,6 +540,18 @@ struct OwnedPromotionTask {
     task: crate::executor::JoinHandle<()>,
 }
 
+struct OwnedVerificationMethodDiscoveryTask {
+    generation: u64,
+    serial: u64,
+    task: crate::executor::JoinHandle<()>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VerificationMethodDiscoveryResult {
+    Discovered(koushi_state::VerificationGateState),
+    Failed(koushi_state::VerificationGateFailureKind),
+}
+
 fn trust_projection_ack_matches(
     pending: &PendingTrustTransition,
     generation: u64,
@@ -600,6 +631,20 @@ fn trust_failure_token(kind: TrustOperationFailureKind) -> &'static str {
         TrustOperationFailureKind::Forbidden => "forbidden",
         TrustOperationFailureKind::Timeout => "timeout",
         TrustOperationFailureKind::Sdk => "sdk",
+    }
+}
+
+fn verification_gate_failure_token(
+    kind: koushi_state::VerificationGateFailureKind,
+) -> &'static str {
+    match kind {
+        koushi_state::VerificationGateFailureKind::Network => "network",
+        koushi_state::VerificationGateFailureKind::Cancelled => "cancelled",
+        koushi_state::VerificationGateFailureKind::Mismatch => "mismatch",
+        koushi_state::VerificationGateFailureKind::Forbidden => "forbidden",
+        koushi_state::VerificationGateFailureKind::Timeout => "timeout",
+        koushi_state::VerificationGateFailureKind::Sdk => "sdk",
+        koushi_state::VerificationGateFailureKind::NoProofMethod => "no_proof_method",
     }
 }
 
@@ -701,8 +746,9 @@ pub struct AccountActor {
     session_promoted: bool,
     trust_generation: u64,
     trust_observer: Option<crate::executor::JoinHandle<()>>,
-    verification_method_discovery_task: Option<crate::executor::JoinHandle<()>>,
+    verification_method_discovery_task: Option<OwnedVerificationMethodDiscoveryTask>,
     verification_method_discovery_serial: u64,
+    verification_method_discovery_failed: bool,
     recovery_task: Option<PendingRecoveryTask>,
     restricted_sync: Option<crate::executor::JoinHandle<()>>,
     pending_ready_events: Vec<CoreEvent>,
@@ -868,6 +914,7 @@ impl AccountActor {
             trust_observer: None,
             verification_method_discovery_task: None,
             verification_method_discovery_serial: 0,
+            verification_method_discovery_failed: false,
             recovery_task: None,
             restricted_sync: None,
             pending_ready_events: Vec::new(),
@@ -1160,17 +1207,77 @@ impl AccountActor {
                 AccountMessage::VerificationMethodsDiscovered {
                     generation,
                     serial,
-                    gate,
+                    result,
                 } => {
+                    let outcome = match &result {
+                        VerificationMethodDiscoveryResult::Discovered(_) => "success",
+                        VerificationMethodDiscoveryResult::Failed(_) => "failed",
+                    };
+                    record_verification_method_discovery_event(
+                        verification_method_discovery_event(
+                            "completion_received",
+                            generation,
+                            serial,
+                        )
+                        .field(DiagnosticField::token("outcome", outcome)),
+                    );
+                    let owned_matches = self
+                        .verification_method_discovery_task
+                        .as_ref()
+                        .is_some_and(|owned| {
+                            owned.generation == generation && owned.serial == serial
+                        });
                     if method_discovery_is_current(
                         generation,
                         self.trust_generation,
                         serial,
                         self.verification_method_discovery_serial,
                         self.session.is_some(),
-                    ) {
-                        self.send_actions(vec![AppAction::VerificationMethodsDiscovered(gate)])
-                            .await;
+                    ) && owned_matches
+                    {
+                        if let Some(owned) = self.verification_method_discovery_task.take() {
+                            let _ = owned.task.await;
+                        }
+                        match result {
+                            VerificationMethodDiscoveryResult::Discovered(gate) => {
+                                self.verification_method_discovery_failed = false;
+                                self.send_actions(vec![AppAction::VerificationMethodsDiscovered(
+                                    gate,
+                                )])
+                                .await;
+                            }
+                            VerificationMethodDiscoveryResult::Failed(kind) => {
+                                self.verification_method_discovery_failed = true;
+                                record_verification_method_discovery_event(
+                                    verification_method_discovery_event(
+                                        "failure_projected",
+                                        generation,
+                                        serial,
+                                    )
+                                    .field(
+                                        DiagnosticField::token(
+                                            "failure_kind",
+                                            verification_gate_failure_token(kind),
+                                        ),
+                                    ),
+                                );
+                                self.send_actions(vec![
+                                    AppAction::VerificationMethodDiscoveryFailed {
+                                        generation,
+                                        kind,
+                                    },
+                                ])
+                                .await;
+                            }
+                        }
+                    } else {
+                        record_verification_method_discovery_event(
+                            verification_method_discovery_event(
+                                "completion_ignored",
+                                generation,
+                                serial,
+                            ),
+                        );
                     }
                 }
                 AccountMessage::RecoveryFinished {
@@ -2814,7 +2921,30 @@ impl AccountActor {
                 self.handle_start_own_user_sas(request_id, flow_id).await;
             }
             AccountCommand::RetryCurrentDeviceTrustDiscovery { request_id: _ } => {
-                self.request_authoritative_trust_recheck().await;
+                let current_trust = self
+                    .session
+                    .as_ref()
+                    .map(|session| session.current_device_trust());
+                let discovery_task_active = self.verification_method_discovery_task.is_some();
+                if retry_should_restart_method_discovery(
+                    self.session_promoted,
+                    current_trust,
+                    discovery_task_active,
+                    self.verification_method_discovery_failed,
+                ) {
+                    if self.verification_method_discovery_failed {
+                        self.send_actions(vec![
+                            AppAction::VerificationMethodDiscoveryRetryStarted {
+                                generation: self.trust_generation,
+                            },
+                        ])
+                        .await;
+                    }
+                    self.discover_verification_methods(self.trust_generation)
+                        .await;
+                } else {
+                    self.request_authoritative_trust_recheck().await;
+                }
             }
             AccountCommand::AcceptVerification {
                 request_id,
@@ -6437,10 +6567,16 @@ impl AccountActor {
             let _ = task.await;
             self.record_lifecycle_probe("trust_observer_terminated");
         }
-        if let Some(task) = self.verification_method_discovery_task.take() {
-            task.abort();
-            let _ = task.await;
+        if let Some(owned) = self.verification_method_discovery_task.take() {
+            owned.task.abort();
+            let _ = owned.task.await;
+            record_verification_method_discovery_event(verification_method_discovery_event(
+                "cancelled",
+                owned.generation,
+                owned.serial,
+            ));
         }
+        self.verification_method_discovery_failed = false;
         self.stop_restricted_sync().await;
     }
 
@@ -6717,27 +6853,58 @@ impl AccountActor {
     }
 
     async fn discover_verification_methods(&mut self, generation: u64) {
-        if let Some(task) = self.verification_method_discovery_task.take() {
-            task.abort();
-            let _ = task.await;
+        if let Some(owned) = self.verification_method_discovery_task.take() {
+            owned.task.abort();
+            let _ = owned.task.await;
+            record_verification_method_discovery_event(verification_method_discovery_event(
+                "cancelled",
+                owned.generation,
+                owned.serial,
+            ));
         }
         let Some(session) = self.session.clone() else {
             return;
         };
+        self.verification_method_discovery_failed = false;
         self.verification_method_discovery_serial =
             self.verification_method_discovery_serial.wrapping_add(1);
         let serial = self.verification_method_discovery_serial;
         let tx = self.self_tx.clone();
-        self.verification_method_discovery_task = Some(executor::spawn(async move {
-            let gate = koushi_sdk::discover_current_session_verification_methods(&session).await;
+        record_verification_method_discovery_event(verification_method_discovery_event(
+            "started", generation, serial,
+        ));
+        let task = executor::spawn(async move {
+            let started_at = Instant::now();
+            let result = wait_for_verification_method_discovery(
+                VERIFICATION_METHOD_DISCOVERY_TIMEOUT,
+                koushi_sdk::discover_current_session_verification_methods(&session),
+            )
+            .await;
+            let outcome = match &result {
+                VerificationMethodDiscoveryResult::Discovered(_) => "success",
+                VerificationMethodDiscoveryResult::Failed(_) => "failed",
+            };
+            record_verification_method_discovery_event(
+                verification_method_discovery_event("finished", generation, serial)
+                    .field(DiagnosticField::token("outcome", outcome))
+                    .field(DiagnosticField::milliseconds(
+                        "elapsed_ms",
+                        started_at.elapsed().as_millis(),
+                    )),
+            );
             let _ = tx
                 .send(AccountMessage::VerificationMethodsDiscovered {
                     generation,
                     serial,
-                    gate,
+                    result,
                 })
                 .await;
-        }));
+        });
+        self.verification_method_discovery_task = Some(OwnedVerificationMethodDiscoveryTask {
+            generation,
+            serial,
+            task,
+        });
     }
 
     async fn handle_trust_projection_applied(
@@ -7072,6 +7239,40 @@ fn method_discovery_is_current(
     has_session: bool,
 ) -> bool {
     has_session && generation == current_generation && serial == current_serial
+}
+
+fn retry_should_restart_method_discovery(
+    session_promoted: bool,
+    trust: Option<koushi_state::CurrentDeviceTrustState>,
+    discovery_task_active: bool,
+    discovery_failed: bool,
+) -> bool {
+    !session_promoted
+        && (discovery_task_active || discovery_failed)
+        && matches!(
+            trust,
+            Some(koushi_state::CurrentDeviceTrustState::Unverified)
+        )
+}
+
+async fn wait_for_verification_method_discovery<F>(
+    timeout: Duration,
+    future: F,
+) -> VerificationMethodDiscoveryResult
+where
+    F: Future<Output = koushi_state::VerificationGateState>,
+{
+    match executor::timeout(timeout, future).await {
+        Err(_) => VerificationMethodDiscoveryResult::Failed(
+            koushi_state::VerificationGateFailureKind::Timeout,
+        ),
+        Ok(gate) if gate.account_kind == koushi_state::VerificationAccountKind::Unknown => {
+            VerificationMethodDiscoveryResult::Failed(
+                koushi_state::VerificationGateFailureKind::Sdk,
+            )
+        }
+        Ok(gate) => VerificationMethodDiscoveryResult::Discovered(gate),
+    }
 }
 
 fn recovery_result_is_current(
@@ -7861,6 +8062,92 @@ mod tests {
         assert!(!method_discovery_is_current(4, 4, 9, 9, false));
     }
 
+    #[tokio::test]
+    async fn verification_method_discovery_times_out_pending_sdk_work() {
+        let result = wait_for_verification_method_discovery(
+            Duration::from_millis(1),
+            std::future::pending(),
+        )
+        .await;
+
+        assert_eq!(
+            result,
+            VerificationMethodDiscoveryResult::Failed(
+                koushi_state::VerificationGateFailureKind::Timeout
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn verification_method_discovery_maps_known_and_unknown_gate_results() {
+        let known = koushi_state::VerificationGateState {
+            methods: vec![koushi_state::VerificationMethodCapability::RecoveryKey],
+            account_kind: koushi_state::VerificationAccountKind::ExistingIdentity,
+            failure: None,
+        };
+        assert_eq!(
+            wait_for_verification_method_discovery(
+                Duration::from_secs(1),
+                std::future::ready(known.clone()),
+            )
+            .await,
+            VerificationMethodDiscoveryResult::Discovered(known)
+        );
+        assert_eq!(
+            wait_for_verification_method_discovery(
+                Duration::from_secs(1),
+                std::future::ready(unknown_verification_gate()),
+            )
+            .await,
+            VerificationMethodDiscoveryResult::Failed(
+                koushi_state::VerificationGateFailureKind::Sdk
+            )
+        );
+    }
+
+    #[test]
+    fn verification_method_discovery_retry_restarts_only_for_unverified_provisional_session() {
+        assert!(retry_should_restart_method_discovery(
+            false,
+            Some(koushi_state::CurrentDeviceTrustState::Unverified),
+            true,
+            false,
+        ));
+        assert!(retry_should_restart_method_discovery(
+            false,
+            Some(koushi_state::CurrentDeviceTrustState::Unverified),
+            false,
+            true,
+        ));
+        assert!(!retry_should_restart_method_discovery(
+            true,
+            Some(koushi_state::CurrentDeviceTrustState::Unverified),
+            true,
+            false,
+        ));
+        assert!(!retry_should_restart_method_discovery(
+            false,
+            Some(koushi_state::CurrentDeviceTrustState::Unknown),
+            true,
+            false,
+        ));
+        assert!(!retry_should_restart_method_discovery(
+            false,
+            Some(koushi_state::CurrentDeviceTrustState::Verified),
+            true,
+            false,
+        ));
+        assert!(!retry_should_restart_method_discovery(
+            false,
+            Some(koushi_state::CurrentDeviceTrustState::Unverified),
+            false,
+            false,
+        ));
+        assert!(!retry_should_restart_method_discovery(
+            false, None, true, true,
+        ));
+    }
+
     #[test]
     fn recovery_result_requires_current_generation_flow_request_and_session() {
         let current = test_request_id();
@@ -8253,6 +8540,57 @@ mod tests {
             .field(DiagnosticField::count("transition_id", 11))
             .field(DiagnosticField::boolean("success", false))
             .field(DiagnosticField::milliseconds("elapsed_ms", 42)),
+        );
+        println!(
+            "{}",
+            serde_json::to_string(&koushi_diagnostics::snapshot())
+                .expect("diagnostic snapshot should serialize")
+        );
+    }
+
+    #[test]
+    fn verification_method_discovery_diagnostic_records_and_writes_stderr() {
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("current test executable should be available"),
+        )
+        .args([
+            "--exact",
+            "account::tests::verification_method_discovery_diagnostic_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .output()
+        .expect("verification method discovery diagnostic child should run");
+        assert!(output.status.success(), "child failed: {output:?}");
+
+        let stderr = String::from_utf8(output.stderr).expect("child stderr should be utf8");
+        assert!(stderr.contains(
+            "[koushi] core.verification_method_discovery stage=finished generation=7 serial=11 outcome=failed elapsed_ms=42"
+        ));
+
+        let stdout = String::from_utf8(output.stdout).expect("child stdout should be utf8");
+        let snapshot: serde_json::Value = serde_json::from_str(
+            stdout
+                .lines()
+                .find(|line| line.starts_with('{'))
+                .expect("child should print one JSON snapshot"),
+        )
+        .expect("child output should be a JSON snapshot");
+        assert!(snapshot["records"].as_array().is_some_and(|records| {
+            records.iter().any(|record| {
+                record["event"]["source"] == "core.verification_method_discovery"
+                    && record["event"]["stage"] == "finished"
+            })
+        }));
+    }
+
+    #[test]
+    #[ignore]
+    fn verification_method_discovery_diagnostic_child() {
+        record_verification_method_discovery_event(
+            verification_method_discovery_event("finished", 7, 11)
+                .field(DiagnosticField::token("outcome", "failed"))
+                .field(DiagnosticField::milliseconds("elapsed_ms", 42)),
         );
         println!(
             "{}",
@@ -10932,6 +11270,7 @@ mod tests {
             trust_observer: None,
             verification_method_discovery_task: None,
             verification_method_discovery_serial: 0,
+            verification_method_discovery_failed: false,
             recovery_task: None,
             restricted_sync: None,
             pending_ready_events: Vec::new(),
