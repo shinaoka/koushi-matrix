@@ -320,3 +320,67 @@ Expected: issue #244 admission fixes plus the SAS observability design, plan, an
 - [ ] **Step 4: Real-device run instructions**
 
 Ask the user to restart the newly built Koushi with the same clean-data environment, press “Verify with another device,” and return all lines beginning with `[koushi] core.sas_verification`. Do not claim delivery is fixed until those logs show the failure boundary or Element X receives the request.
+
+---
+
+### Task 5: Sender visibility and interactive-recipient evidence
+
+**Files:**
+- Modify: `crates/koushi-sdk/src/lib.rs`
+
+**Interfaces:**
+- Produces: private `OwnUserSasRecipientDiagnostics` containing only booleans and counts.
+- Extends: `core.sas_verification stage=recipients_resolved` without changing request construction or send ordering.
+
+- [x] **Step 1: Write a failing pure classification test**
+
+Add a table-driven test for a helper that consumes private-safe device facts and
+proves that the current sender is classified separately, dehydrated recipients
+are not interactive, and a normal owner-signed recipient with both public keys
+is interactive.
+
+- [x] **Step 2: Run the focused test and verify RED**
+
+```bash
+cargo test -p koushi-sdk --lib e2ee_trust_tests::own_user_sas_recipient_diagnostics_distinguish_sender_and_interactive_targets -- --exact
+```
+
+Expected: compilation fails because `own_user_sas_recipient_diagnostics` and
+its private fact type do not exist.
+
+- [x] **Step 3: Implement the pure classifier**
+
+Add private `OwnUserSasDeviceFact` and `OwnUserSasRecipientDiagnostics` types
+plus `own_user_sas_recipient_diagnostics`. The classifier must use the same
+distinct + owner-cross-signed predicate as the Matrix SDK for actual recipients.
+An interactive recipient additionally requires `!is_dehydrated` and both
+Curve25519 and Ed25519 public keys.
+
+- [x] **Step 4: Classify the post-query SDK devices and extend the event**
+
+Map `UserDevices::devices()` into private facts without retaining IDs. Add
+`sender_device_query_visible`, `sender_curve_key_present`,
+`sender_ed25519_key_present`, `interactive_recipient_count`, and
+`dehydrated_recipient_count` to `recipients_resolved`. Do not add network calls
+or change the existing send path.
+
+- [x] **Step 5: Verify focused and SDK tests**
+
+```bash
+cargo test -p koushi-sdk --lib e2ee_trust_tests::own_user_sas_recipient_diagnostics_distinguish_sender_and_interactive_targets -- --exact
+cargo test -p koushi-sdk --lib e2ee_trust_tests::sas_delivery_event_contains_only_closed_private_safe_fields -- --exact
+cargo test -p koushi-sdk
+cargo fmt --all -- --check
+git diff --check
+```
+
+Expected: all tests pass and formatting/hygiene checks are silent.
+
+- [x] **Step 6: Commit the evidence extension**
+
+```bash
+git add docs/superpowers/specs/2026-07-13-sas-delivery-observability-design.md \
+  docs/superpowers/plans/2026-07-13-sas-delivery-observability.md \
+  crates/koushi-sdk/src/lib.rs
+git commit -m "Trace SAS sender readiness"
+```

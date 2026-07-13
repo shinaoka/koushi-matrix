@@ -46,3 +46,25 @@ Tests must first fail for the missing observations, then prove:
 7. Existing verification admission, recovery, SAS, frontend, diagnostics, and release-gate tests remain green.
 
 The next real-device run should be sufficient to classify the failure as recipient selection, send failure, missing remote response, missing restricted-sync delivery, remote cancellation, or local timeout.
+
+## Sender Readiness Extension
+
+The first field run proved that the homeserver accepts the request and that the
+request remains in `created`, but it did not prove that receiving clients can
+resolve the new Koushi sender device or that the counted recipients are normal
+interactive devices. Extend `recipients_resolved` with a snapshot derived from
+the same post-`/keys/query` `UserDevices` collection used by the Matrix SDK:
+
+- `sender_device_query_visible`: the current Koushi device is present in that
+  collection.
+- `sender_curve_key_present` and `sender_ed25519_key_present`: the visible
+  sender device contains both public device-key types required by Matrix E2EE.
+- `interactive_recipient_count`: actual owner-cross-signed recipients that are
+  not dehydrated and contain both public device-key types.
+- `dehydrated_recipient_count`: actual recipients represented by dehydrated
+  devices, which cannot provide an interactive Element X response.
+
+These fields are observations, not a new admission gate. They must not add a
+query, retry, upload, delay, identifier, display-name heuristic, or behavioral
+branch. The existing `request_user_identity` call already performs the fresh
+keys query; the extension only classifies its resulting device collection.
