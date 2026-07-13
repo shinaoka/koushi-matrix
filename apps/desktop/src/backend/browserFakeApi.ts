@@ -133,6 +133,11 @@ export interface DesktopApi {
   selectRoom(roomId: string): Promise<DesktopSnapshot>;
   openActivityEvent(roomId: string, eventId: string): Promise<DesktopSnapshot>;
   selectSearchResult(roomId: string, eventId: string): Promise<DesktopSnapshot>;
+  acknowledgeTimelineProjection(
+    projectionRequestId: import("../domain/coreEvents").RequestId,
+    key: import("../domain/coreEvents").TimelineKey,
+    generation: number
+  ): Promise<void>;
   openTimelineAtTimestamp(roomId: string, timestampMs: number): Promise<DesktopSnapshot>;
   closeFocusedContext(): Promise<DesktopSnapshot>;
   closeSearch(): Promise<DesktopSnapshot>;
@@ -1123,6 +1128,10 @@ class BrowserFakeApi implements DesktopApi {
     this.snapshot.state.ui.navigation.main_timeline_anchor = { event_id: eventId };
     this.snapshot.state.ui.focused_context = { kind: "closed" };
     return this.getSnapshot();
+  }
+
+  async acknowledgeTimelineProjection(): Promise<void> {
+    // Browser fakes apply snapshots synchronously and have no Core actor lease.
   }
 
   async openTimelineAtTimestamp(

@@ -39,6 +39,7 @@ import type {
   TimelineEvent,
   TimelineItem,
   TimelineKey,
+  RequestId,
   ThreadRootProjectionDto
 } from "./coreEvents";
 import { timelineItemDomId, timelineKeyEquals } from "./coreEvents";
@@ -50,6 +51,8 @@ import { timelineItemDomId, timelineKeyEquals } from "./coreEvents";
 export interface TimelineKeyState {
   /** Current known Core timeline generation. 0 is a valid first generation. */
   generation: number;
+  /** Stable actor-owned projection identity, preserved across replay. */
+  projectionRequestId: RequestId | null;
   /** Render list maintained by applying diffs. */
   items: TimelineItem[];
   /** Stable item id -> render-list index for O(1) duplicate checks. */
@@ -89,6 +92,7 @@ export function timelineStoreKeyId(key: TimelineKey): string {
 function emptyKeyState(): TimelineKeyState {
   return {
     generation: 0,
+    projectionRequestId: null,
     items: [],
     itemIndexById: new Map(),
     itemIdsByTimestamp: new Map(),
@@ -253,6 +257,38 @@ export function applyTimelineEvent(
   return store;
 }
 
+export type TimelineProjectionApplication =
+  | { kind: "applied"; requestId: RequestId; key: TimelineKey; generation: number }
+  | { kind: "rejectedStale" }
+  | { kind: "ignored" };
+
+export function applyTimelineEventWithProjectionResult(
+  store: TimelineStoreState,
+  event: TimelineEvent
+): { store: TimelineStoreState; projection: TimelineProjectionApplication } {
+  if (!("InitialItems" in event) || event.InitialItems.request_id === null) {
+    return { store: applyTimelineEvent(store, event), projection: { kind: "ignored" } };
+  }
+  const payload = event.InitialItems;
+  const requestId = payload.request_id;
+  if (requestId === null) {
+    return { store: applyInitialItems(store, payload), projection: { kind: "ignored" } };
+  }
+  const existing = store.keys.get(keyStr(payload.key));
+  if (existing && payload.generation < existing.generation) {
+    return { store, projection: { kind: "rejectedStale" } };
+  }
+  return {
+    store: applyInitialItems(store, payload),
+    projection: {
+      kind: "applied",
+      requestId,
+      key: payload.key,
+      generation: payload.generation
+    }
+  };
+}
+
 export function applyTimelineEventWithRetention(
   store: TimelineStoreState,
   event: TimelineEvent,
@@ -261,6 +297,24 @@ export function applyTimelineEventWithRetention(
 ): TimelineStoreState {
   const next = applyTimelineEvent(store, event);
   return pruneTimelineStore(next, retainedKeyIds, timelineEventKeyId(event), inactiveLimit);
+}
+
+export function applyTimelineEventWithProjectionResultAndRetention(
+  store: TimelineStoreState,
+  event: TimelineEvent,
+  retainedKeyIds: ReadonlySet<string>,
+  inactiveLimit = TIMELINE_STORE_INACTIVE_RETAIN_LIMIT
+): { store: TimelineStoreState; projection: TimelineProjectionApplication } {
+  const applied = applyTimelineEventWithProjectionResult(store, event);
+  return {
+    ...applied,
+    store: pruneTimelineStore(
+      applied.store,
+      retainedKeyIds,
+      timelineEventKeyId(event),
+      inactiveLimit
+    )
+  };
 }
 
 /** Called on EventStreamLag (ResyncMarker): clear all keys. */
@@ -416,6 +470,7 @@ function applyInitialItems(
   next.set(k, {
     ...existing,
     generation: payload.generation,
+    projectionRequestId: payload.request_id,
     items: indexed.items,
     itemIndexById: indexed.itemIndexById,
     itemIdsByTimestamp: indexed.itemIdsByTimestamp,

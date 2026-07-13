@@ -289,6 +289,8 @@ impl CoreRuntime {
             activity_projection: ActivityProjection::default(),
             next_internal_request_sequence: 1,
             pending_select: HashMap::new(),
+            pending_focused_navigation: None,
+            pending_date_navigation_request_id: None,
         };
         let actor = executor::spawn(actor.run());
 
@@ -490,6 +492,33 @@ struct AppActor {
     /// every submitted command receives a terminal `IntentLifecycle` outcome.
     /// Private-data-free: stores opaque ids only, never room names or content.
     pending_select: HashMap<String, std::collections::VecDeque<RequestId>>,
+    /// Main-pane Focused navigation awaiting proof that the WebView canonical
+    /// store applied the actor-owned InitialItems projection.
+    pending_focused_navigation: Option<PendingFocusedNavigation>,
+    pending_date_navigation_request_id: Option<RequestId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PendingFocusedNavigation {
+    projection_request_id: RequestId,
+    key: TimelineKey,
+    room_id: String,
+    event_id: String,
+}
+
+fn take_acknowledged_focused_navigation(
+    pending: &mut Option<PendingFocusedNavigation>,
+    projection_request_id: RequestId,
+    key: &TimelineKey,
+) -> Option<PendingFocusedNavigation> {
+    let matches = pending.as_ref().is_some_and(|candidate| {
+        candidate.projection_request_id == projection_request_id && candidate.key == *key
+    });
+    matches.then(|| {
+        pending
+            .take()
+            .expect("matching pending navigation must exist")
+    })
 }
 
 struct PendingComposerDraftPersist {
@@ -1063,6 +1092,34 @@ impl AppActor {
                         };
                         if let AppAction::ActivityRowsObserved { rows } = &action {
                             self.activity_projection.ingest(rows.clone());
+                        }
+                        if let (
+                            Some(projection_request_id),
+                            AppAction::OpenFocusedContext { room_id, event_id },
+                        ) = (self.pending_date_navigation_request_id, &action)
+                        {
+                            if let Some(account_key) = self.current_account_key() {
+                                self.pending_focused_navigation = Some(PendingFocusedNavigation {
+                                    projection_request_id,
+                                    key: TimelineKey {
+                                        account_key,
+                                        kind: TimelineKind::Focused {
+                                            room_id: room_id.clone(),
+                                            event_id: event_id.clone(),
+                                        },
+                                    },
+                                    room_id: room_id.clone(),
+                                    event_id: event_id.clone(),
+                                });
+                            }
+                        }
+                        if self.pending_date_navigation_request_id.is_some()
+                            && matches!(&action, AppAction::EnterAnchoredTimeline { .. })
+                        {
+                            // The account actor emits the legacy pair atomically;
+                            // retain only Open and wait for the WebView projection ACK.
+                            self.pending_date_navigation_request_id = None;
+                            continue;
                         }
                         // For SelectRoom: capture observable facts BEFORE reduce so
                         // we can classify the outcome afterwards and emit the
@@ -1865,6 +1922,7 @@ impl AppActor {
                     room_id,
                     event_id,
                 } => {
+                    self.pending_focused_navigation = None;
                     self.ensure_room_event_cached(request_id, &room_id, &event_id)
                         .await;
                     let replaced_focused_key =
@@ -1880,8 +1938,96 @@ impl AppActor {
                             )
                             .await;
                         }
+                    } else {
+                        self.pending_focused_navigation = None;
                     }
                     self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::OpenAnchoredTimeline {
+                    request_id,
+                    room_id,
+                    event_id,
+                } => {
+                    self.ensure_room_event_cached(request_id, &room_id, &event_id)
+                        .await;
+                    let replaced_focused_key =
+                        self.unsubscribe_replaced_focused_context_timeline(&room_id, &event_id);
+                    let Some(account_key) = self.current_account_key() else {
+                        self.emit(CoreEvent::OperationFailed {
+                            request_id,
+                            failure: CoreFailure::SessionRequired,
+                        });
+                        return true;
+                    };
+                    let key = TimelineKey {
+                        account_key,
+                        kind: TimelineKind::Focused {
+                            room_id: room_id.clone(),
+                            event_id: event_id.clone(),
+                        },
+                    };
+                    self.pending_focused_navigation = Some(PendingFocusedNavigation {
+                        projection_request_id: request_id,
+                        key,
+                        room_id: room_id.clone(),
+                        event_id: event_id.clone(),
+                    });
+                    let effects = self
+                        .reduce_app_action(AppAction::OpenFocusedContext { room_id, event_id })
+                        .await;
+                    if effects_open_focused_timeline(&effects) {
+                        if let Some(key) = replaced_focused_key {
+                            self.send_timeline_command_or_fail(
+                                request_id,
+                                TimelineCommand::Unsubscribe { request_id, key },
+                            )
+                            .await;
+                        }
+                    } else {
+                        self.pending_focused_navigation = None;
+                    }
+                    self.handle_app_effects(request_id, effects).await;
+                    true
+                }
+                AppCommand::AcknowledgeTimelineProjection {
+                    request_id,
+                    projection_request_id,
+                    key,
+                    generation,
+                } => {
+                    let pending_matches =
+                        self.pending_focused_navigation
+                            .as_ref()
+                            .is_some_and(|pending| {
+                                pending.projection_request_id == projection_request_id
+                                    && pending.key == key
+                            });
+                    let (response, accepted) = oneshot::channel();
+                    let routed = self
+                        .account_actor
+                        .send(AccountMessage::AcknowledgeTimelineProjection {
+                            projection_request_id,
+                            key: key.clone(),
+                            generation,
+                            response,
+                        })
+                        .await;
+                    if routed && accepted.await.unwrap_or(false) && pending_matches {
+                        let pending = take_acknowledged_focused_navigation(
+                            &mut self.pending_focused_navigation,
+                            projection_request_id,
+                            &key,
+                        )
+                        .expect("matching focused navigation remains pending");
+                        let effects = self
+                            .reduce_app_action(AppAction::EnterAnchoredTimeline {
+                                room_id: pending.room_id,
+                                event_id: pending.event_id,
+                            })
+                            .await;
+                        self.handle_app_effects(request_id, effects).await;
+                    }
                     true
                 }
                 AppCommand::EnterAnchoredTimeline {
@@ -1941,6 +2087,25 @@ impl AppActor {
                         // #161: jump-to-date reuses the focused-context timeline
                         // subscription lifecycle but renders it in the MAIN pane
                         // (marked by `main_timeline_anchor`), not the right panel.
+                        let Some(account_key) = self.current_account_key() else {
+                            self.emit(CoreEvent::OperationFailed {
+                                request_id,
+                                failure: CoreFailure::SessionRequired,
+                            });
+                            return true;
+                        };
+                        self.pending_focused_navigation = Some(PendingFocusedNavigation {
+                            projection_request_id: request_id,
+                            key: TimelineKey {
+                                account_key,
+                                kind: TimelineKind::Focused {
+                                    room_id: room_id.clone(),
+                                    event_id: event_id.clone(),
+                                },
+                            },
+                            room_id: room_id.clone(),
+                            event_id: event_id.clone(),
+                        });
                         let effects = self
                             .reduce_app_action(AppAction::OpenFocusedContext {
                                 room_id: room_id.clone(),
@@ -1948,15 +2113,9 @@ impl AppActor {
                             })
                             .await;
                         self.handle_app_effects(request_id, effects).await;
-                        let anchor_effects = self
-                            .reduce_app_action(AppAction::EnterAnchoredTimeline {
-                                room_id,
-                                event_id,
-                            })
-                            .await;
-                        self.handle_app_effects(request_id, anchor_effects).await;
                         return true;
                     }
+                    self.pending_date_navigation_request_id = Some(request_id);
                     let _ = self
                         .account_actor
                         .send(AccountMessage::OpenTimelineAtTimestamp {
@@ -1982,6 +2141,7 @@ impl AppActor {
                     true
                 }
                 AppCommand::CloseFocusedContext { request_id } => {
+                    self.pending_focused_navigation = None;
                     let focused_key = self.current_focused_context_timeline_key();
                     let effects = self.reduce_app_action(AppAction::CloseFocusedContext).await;
                     if let Some(key) = focused_key {
@@ -3514,6 +3674,70 @@ mod tests {
         RoomLatestEventSummary, RoomNotificationModeOperation, RoomNotificationSettings,
         RoomSummary, RoomTags, SessionInfo, SettingsPatch, UserProfile, reduce,
     };
+
+    fn focused_projection_fixture(sequence: u64) -> PendingFocusedNavigation {
+        PendingFocusedNavigation {
+            projection_request_id: RequestId {
+                connection_id: RuntimeConnectionId(3),
+                sequence,
+            },
+            key: TimelineKey {
+                account_key: AccountKey("@qa:example.invalid".to_owned()),
+                kind: TimelineKind::Focused {
+                    room_id: "!room:example.invalid".to_owned(),
+                    event_id: "$target".to_owned(),
+                },
+            },
+            room_id: "!room:example.invalid".to_owned(),
+            event_id: "$target".to_owned(),
+        }
+    }
+
+    #[test]
+    fn focused_projection_ack_requires_same_owner_and_key_and_is_idempotent() {
+        let expected = focused_projection_fixture(9);
+        let mut pending = Some(expected.clone());
+        let stale_id = RequestId {
+            connection_id: RuntimeConnectionId(3),
+            sequence: 8,
+        };
+        assert!(
+            take_acknowledged_focused_navigation(&mut pending, stale_id, &expected.key).is_none()
+        );
+        assert_eq!(pending, Some(expected.clone()));
+
+        let wrong_key = TimelineKey::room(
+            AccountKey("@qa:example.invalid".to_owned()),
+            "!room:example.invalid",
+        );
+        assert!(
+            take_acknowledged_focused_navigation(
+                &mut pending,
+                expected.projection_request_id,
+                &wrong_key,
+            )
+            .is_none()
+        );
+        assert_eq!(pending, Some(expected.clone()));
+
+        assert_eq!(
+            take_acknowledged_focused_navigation(
+                &mut pending,
+                expected.projection_request_id,
+                &expected.key,
+            ),
+            Some(expected.clone())
+        );
+        assert!(pending.is_none());
+        assert!(
+            take_acknowledged_focused_navigation(
+                &mut pending,
+                expected.projection_request_id,
+                &expected.key,
+            )
+            .is_none()
+        );
+    }
 
     fn unread_diagnostic_room(room_id: &str) -> RoomSummary {
         RoomSummary {

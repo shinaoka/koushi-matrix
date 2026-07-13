@@ -31,6 +31,7 @@ import type {
   ,SubmissionResponse
 } from "../domain/types";
 import type { DiagnosticLogSnapshot } from "../domain/diagnostics";
+import type { RequestId, TimelineKey } from "../domain/coreEvents";
 
 export function createDesktopApi(): DesktopApi {
   if (isTauriRuntime()) {
@@ -618,6 +619,18 @@ class TauriDesktopApi implements DesktopApi {
 
   async openActivityEvent(roomId: string, eventId: string): Promise<DesktopSnapshot> {
     return invoke<DesktopSnapshot>("open_activity_event", { roomId, eventId });
+  }
+
+  async acknowledgeTimelineProjection(
+    projectionRequestId: RequestId,
+    key: TimelineKey,
+    generation: number
+  ): Promise<void> {
+    return invoke<void>("acknowledge_timeline_projection", {
+      projectionRequestId,
+      key,
+      generation
+    });
   }
 
   async openTimelineAtTimestamp(

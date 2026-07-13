@@ -30,6 +30,7 @@ use koushi_core::{
     AccountCommand, CoreCommand, CoreCommandHandle, CoreConnection, CoreEvent, CoreRuntime,
     SearchEvent, TimelineCommand, TimelineEvent, event::AppStateSnapshot,
 };
+use koushi_diagnostics::{DiagnosticEvent, DiagnosticField, DiagnosticLevel, record};
 
 const MENU_EVENT_NAME: &str = "koushi-desktop://menu";
 /// Tauri event for serialized CoreEvent payloads (discrete events + diff batches).
@@ -762,8 +763,24 @@ fn emit_forwarded_webview_events(
     app: &tauri::AppHandle,
     forwarded_events: Vec<ForwardedWebviewEvent>,
 ) {
+    let mut failed = 0_u64;
     for forwarded_event in forwarded_events {
-        let _ = app.emit(forwarded_event.event_name, forwarded_event.payload);
+        if app
+            .emit(forwarded_event.event_name, forwarded_event.payload)
+            .is_err()
+        {
+            failed = failed.saturating_add(1);
+        }
+    }
+    if failed > 0 {
+        record(
+            DiagnosticEvent::new(
+                DiagnosticLevel::Warn,
+                "tauri.transport",
+                "webview_emit_failed",
+            )
+            .field(DiagnosticField::count("events", failed)),
+        );
     }
 }
 
@@ -1063,6 +1080,7 @@ pub fn run() {
             commands::navigation::select_room,
             commands::navigation::open_activity_event,
             commands::navigation::select_search_result,
+            commands::navigation::acknowledge_timeline_projection,
             commands::navigation::close_focused_context,
             commands::navigation::open_timeline_at_timestamp,
             commands::navigation::update_navigation_scroll_anchor,

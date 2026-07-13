@@ -702,6 +702,12 @@ UI responsibilities:
   `ItemsUpdated` batch and no resync is pending, initialize that key from an
   empty render list and apply the diff. After `ResyncRequired` or
   `ResyncMarker`, continue to require a fresh `InitialItems`.
+- A Focused main-pane anchor is not display success by itself. For Activity,
+  search, and date navigation, Core publishes the anchor only after the
+  app-level timeline store applies and acknowledges the exact actor-owned
+  InitialItems key/generation. Until then the actor retains that projection
+  identity and `EnsureSubscribed` reprojects it after consumer remount or lost
+  delivery. Tauri transports this handshake but does not own its state.
 - Before a backward pagination request can affect the viewport, capture an
   anchor item (first visible stable item ID plus pixel offset, or an equivalent
   bottom-aligned strategy). After applying the diff and after React commits the

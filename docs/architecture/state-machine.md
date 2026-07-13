@@ -649,18 +649,25 @@ event. It is only ever set for the active, known room.
 ```mermaid
 stateDiagram-v2
     [*] --> Live
-    Live --> Anchored: EnterAnchoredTimeline [Ready, active known room]
-    Anchored --> Anchored: EnterAnchoredTimeline [other event, active room]
+    Live --> Projecting: OpenAnchoredTimeline [Ready, active known room]
+    Projecting --> Projecting: InitialItems lost / EnsureSubscribed replay
+    Projecting --> Anchored: AcknowledgeTimelineProjection [same owner/key/generation, active actor lease]
+    Projecting --> Live: CloseFocusedContext / replacement / room change
+    Anchored --> Projecting: OpenAnchoredTimeline [other event, active room]
     Anchored --> Live: CloseFocusedContext (live-edge return)
     Anchored --> Live: SelectRoom / room change
     Anchored --> Live: LogoutRequested/SessionCleared
 ```
 
-- Both timestamp-jump paths (the runtime local-activity projection and the
-  `AccountActor` server `timestamp_to_event` fallback) dispatch
-  `EnterAnchoredTimeline` alongside the existing `OpenFocusedContext`, so the
-  focused timeline is subscribed once through the shared focused-context
-  lifecycle and rendered in the main pane. They do not open the right panel.
+- Activity Recent/Unread, search results, and both timestamp-jump paths use one
+  Focused navigation contract. Core retains the pending navigation owner while
+  the actor emits `InitialItems`; the app-level WebView store acknowledges only
+  after applying the exact key/generation projection. Core acquires the active
+  actor-generation lease and only then dispatches `EnterAnchoredTimeline`.
+  They do not open the right panel.
+- `EnsureSubscribed` reprojects the actor-owned InitialItems identity while it
+  remains unacknowledged. There is no sleep, fixed retry count, visibility
+  heuristic, or command-side event observer in this success contract.
 - `EnterAnchoredTimeline` is accepted only for a Ready session when `room_id` is
   the active, known room; otherwise it is ignored.
 - `CloseFocusedContext` is the live-edge return: it clears

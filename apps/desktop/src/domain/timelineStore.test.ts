@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 import type { TimelineItem, TimelineKey } from "./coreEvents";
-import { roomTimelineKey, timelineItemDomId } from "./coreEvents";
+import { focusedTimelineKey, roomTimelineKey, timelineItemDomId } from "./coreEvents";
 import { projectTimelineDisplayRows } from "./timelineDisplayProjection";
 import type { TimelineThreadRootOrder } from "./types";
 import {
@@ -38,6 +38,7 @@ import {
   getPaginationState,
   isAwaitingResync,
   applyTimelineEventWithRetention,
+  applyTimelineEventWithProjectionResult,
   pruneTimelineStore,
   shouldSuppressAutoBackfill,
   timelineStoreKeyId,
@@ -115,6 +116,45 @@ function itemId(item: TimelineItem): string {
 // ---------------------------------------------------------------------------
 
 describe("timeline store — diff application", () => {
+  test("acknowledges only the exact InitialItems projection applied to the canonical store", () => {
+    const key = focusedTimelineKey(ACCOUNT_KEY, "!room:example.invalid", "$target");
+    const requestId = { connection_id: 7, sequence: 11 };
+    const applied = applyTimelineEventWithProjectionResult(createTimelineStore(), {
+      InitialItems: {
+        request_id: requestId,
+        key,
+        generation: 4,
+        items: [makeMsg("$target", "target")]
+      }
+    });
+
+    expect(applied.projection).toEqual({
+      kind: "applied",
+      requestId,
+      key,
+      generation: 4
+    });
+    expect(getItems(applied.store, key).map(itemId)).toEqual(["$target"]);
+
+    const stale = applyTimelineEventWithProjectionResult(applied.store, {
+      InitialItems: {
+        request_id: { connection_id: 7, sequence: 10 },
+        key,
+        generation: 3,
+        items: []
+      }
+    });
+    expect(stale.projection).toEqual({ kind: "rejectedStale" });
+    expect(stale.store).toBe(applied.store);
+  });
+
+  test("ignores InitialItems without an acknowledgement-bearing request identity", () => {
+    const result = applyTimelineEventWithProjectionResult(createTimelineStore(), {
+      InitialItems: { request_id: null, key: KEY, generation: 1, items: [] }
+    });
+    expect(result.projection).toEqual({ kind: "ignored" });
+  });
+
   test("preserves an unchanged thread-root projection map identity across canonical-only updates", () => {
     let store = createTimelineStore();
     const emptyProjections = store.threadRootProjections;

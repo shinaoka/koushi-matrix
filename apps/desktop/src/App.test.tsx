@@ -1534,18 +1534,16 @@ describe("Tauri state refresh wiring", () => {
       "utf8"
     );
     const openActivityStart = source.indexOf("pub async fn open_activity_event");
-    const openActivityEnd = source.indexOf("#[tauri::command]", openActivityStart + 1);
-    const openActivitySource = source.slice(openActivityStart, openActivityEnd);
-    const openFocusedContextIndex = openActivitySource.indexOf("AppCommand::OpenFocusedContext");
-    const enterAnchoredTimelineIndex = openActivitySource.indexOf("AppCommand::EnterAnchoredTimeline");
+    const helperStart = source.indexOf("async fn open_anchored_timeline");
+    const helperEnd = source.indexOf("pub async fn acknowledge_timeline_projection", helperStart);
+    const helperSource = source.slice(helperStart, helperEnd);
 
     expect(openActivityStart).toBeGreaterThanOrEqual(0);
-    expect(openActivitySource).toContain("wait_for_focused_context");
-    expect(openActivitySource).toContain("wait_for_focused_timeline_event");
-    expect(openActivitySource).toContain("wait_for_main_timeline_anchor");
-    expect(openFocusedContextIndex).toBeGreaterThanOrEqual(0);
-    expect(enterAnchoredTimelineIndex).toBeGreaterThan(openFocusedContextIndex);
-    expect(openActivitySource).not.toContain("build_update_navigation_scroll_anchor_command");
+    expect(helperSource).toContain("AppCommand::OpenAnchoredTimeline");
+    expect(helperSource).toContain("wait_for_main_timeline_anchor");
+    expect(helperSource).not.toContain("wait_for_focused_timeline_event");
+    expect(helperSource).not.toContain("AppCommand::EnterAnchoredTimeline");
+    expect(source).toContain("AppCommand::AcknowledgeTimelineProjection");
   });
 
   test("home rail button resets Home to Activity Recent instead of restoring the saved Home pane", () => {
