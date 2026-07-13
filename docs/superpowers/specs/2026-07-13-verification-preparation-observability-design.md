@@ -25,4 +25,3 @@ The SDK error remains mapped to the existing closed `sdk` failure kind. This cha
 ## Testing
 
 Tests must prove that the dual sink receives identical structured events, that formatting contains no private strings, and that promotion success, failure, stale completion, and cancellation produce the expected stages. Existing admission-ordering and diagnostics tests must remain green.
-
