@@ -18,6 +18,34 @@ function receipt(
 }
 
 describe("BrowserFakeApi settings preview", () => {
+  test("verification retries clear the completed attempt failure", async () => {
+    for (const method of ["existingDeviceSas", "recoveryKey"] as const) {
+      const api = createBrowserFakeApi();
+      const mutable = api as unknown as { snapshot: DesktopSnapshot };
+      mutable.snapshot.state.domain.session = {
+        kind: "awaitingVerification",
+        homeserver: "https://example.invalid",
+        user_id: "@gate:example.invalid",
+        device_id: "DEVICE",
+        gate: {
+          methods: [method],
+          account_kind: "existingIdentity",
+          failureKind: "timeout"
+        }
+      };
+
+      const retried = method === "existingDeviceSas"
+        ? await api.startOwnUserSas()
+        : await api.submitRecovery("synthetic-recovery-key");
+
+      expect(retried.state.domain.session).toMatchObject({
+        kind: "verifying",
+        method,
+        gate: { failureKind: null }
+      });
+    }
+  });
+
   test("gate SAS confirm rechecks trust only for the matching flow", async () => {
     const api = createBrowserFakeApi();
     const mutable = api as unknown as { snapshot: DesktopSnapshot };

@@ -28,7 +28,14 @@ if (args.has("--print-command")) {
 }
 
 if (!args.has("--skip-preflight")) {
-  run("node", ["scripts/desktop-release-preflight.mjs", "--check-config"], repoRoot);
+  run(
+    "node",
+    [
+      "scripts/desktop-release-preflight.mjs",
+      args.has("--signed") ? "--macos-signing" : "--check-config"
+    ],
+    repoRoot
+  );
 }
 
 run("npm", buildCommand, desktopDir);
@@ -73,7 +80,7 @@ function printStorageNotice() {
 }
 
 function printUsage() {
-  console.log("Usage: npm --prefix apps/desktop run build:dmg [-- --skip-preflight]");
+  console.log("Usage: npm --prefix apps/desktop run build:dmg [-- --signed|--skip-preflight]");
   console.log("Builds the local macOS DMG via Tauri: tauri build --bundles dmg");
   printStorageNotice();
 }

@@ -52,30 +52,50 @@ read -rs "APPLE_PASSWORD?App-specific password: "; echo
 export APPLE_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_PASSWORD
 ```
 
-Run the macOS configuration preflight and the repository DMG entry point. With
-those variables present, Tauri signs the app and installer, submits them for
+Run the signed repository DMG entry point. It invokes the macOS signing
+credential preflight itself and stops before packaging if that gate fails. With
+the variables present, Tauri signs the app and installer, submits them for
 Apple notarization, and staples the notarization result during the build:
 
 ```zsh
-npm --prefix apps/desktop run release:preflight:macos-signing
-npm --prefix apps/desktop run build:dmg
+npm --prefix apps/desktop run build:dmg:signed
 ```
 
 Do not treat a zero build exit as sufficient release evidence. Resolve the
 generated artifacts and require `codesign`, `stapler`, and Gatekeeper to accept
 both the application and DMG before opening the installer:
 
+Create a timestamp marker immediately before the build, then validate exactly
+one application and one DMG newer than that marker. Run the whole sequence in a
+function so every failed command returns before `open`:
+
 ```zsh
-APP="$(find apps/desktop/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
-DMG="$(find apps/desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
-test -n "$APP" && test -n "$DMG"
-codesign --verify --deep --strict --verbose=2 "$APP"
-xcrun stapler validate "$APP"
-spctl --assess --type execute --verbose=4 "$APP"
-codesign --verify --verbose=2 "$DMG"
-xcrun stapler validate "$DMG"
-spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
-open "$DMG"
+build_and_verify_signed_dmg() {
+  local marker app dmg
+  local -a apps dmgs
+  setopt localtraps
+  marker="$(mktemp)" || return
+  trap 'rm -f "$marker"' EXIT
+
+  npm --prefix apps/desktop run build:dmg:signed || return
+  apps=("${(@f)$(find apps/desktop/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -newer "$marker" -print)}")
+  dmgs=("${(@f)$(find apps/desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -newer "$marker" -print)}")
+  (( ${#apps[@]} == 1 && ${#dmgs[@]} == 1 )) || {
+    print -u2 "Expected exactly one current app and DMG artifact"
+    return 1
+  }
+  app="$apps[1]"
+  dmg="$dmgs[1]"
+
+  codesign --verify --deep --strict --verbose=2 "$app" &&
+    xcrun stapler validate "$app" &&
+    spctl --assess --type execute --verbose=4 "$app" &&
+    codesign --verify --verbose=2 "$dmg" &&
+    xcrun stapler validate "$dmg" &&
+    spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg" &&
+    open "$dmg"
+}
+build_and_verify_signed_dmg
 ```
 
 After verification, remove the credentials from the current shell:

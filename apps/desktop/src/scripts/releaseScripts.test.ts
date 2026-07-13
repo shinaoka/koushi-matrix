@@ -4267,10 +4267,14 @@ fn test_only() {
     const source = readFileSync(scriptPath, "utf8");
 
     expect(packageJson.scripts["build:dmg"]).toBe("node ../../scripts/desktop-build-dmg.mjs");
+    expect(packageJson.scripts["build:dmg:signed"]).toBe(
+      "node ../../scripts/desktop-build-dmg.mjs --signed"
+    );
     expect(source).toContain("tauri");
     expect(source).toContain("build");
     expect(source).toContain("--bundles");
     expect(source).toContain("dmg");
+    expect(source).toContain("--macos-signing");
     expect(source).toContain("Application Support/koushi-desktop");
     expect(source).toContain("koushi-desktop");
     expect(source).not.toContain("Application Support/matrix-desktop");

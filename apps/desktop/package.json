@@ -10,6 +10,7 @@
     "dev:tauri": "vite --host 127.0.0.1 --mode tauri",
     "build": "tsc --noEmit && vite build",
     "build:dmg": "node ../../scripts/desktop-build-dmg.mjs",
+    "build:dmg:signed": "node ../../scripts/desktop-build-dmg.mjs --signed",
     "preview": "vite preview --host 127.0.0.1",
     "qa:mac-gui": "node ../../scripts/desktop-mac-gui-smoke.mjs --run",
     "qa:linux-gui": "node ../../scripts/desktop-linux-gui-qa.mjs --run",
