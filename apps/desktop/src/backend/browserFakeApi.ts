@@ -480,7 +480,15 @@ class BrowserFakeApi implements DesktopApi {
       ...this.snapshot.state.domain.session,
       kind: "verifying",
       method: "recoveryKey",
-      flow_id: this.snapshot.state.domain.session.flow_id ?? this.nextRequestId()
+      flow_id: this.snapshot.state.domain.session.flow_id ?? this.nextRequestId(),
+      ...("gate" in this.snapshot.state.domain.session && this.snapshot.state.domain.session.gate
+        ? {
+            gate: {
+              ...this.snapshot.state.domain.session.gate,
+              failureKind: null
+            }
+          }
+        : {})
     };
     this.snapshot.state.ui.errors = this.snapshot.state.ui.errors.filter(
       (error) => error.code !== "e2ee_recovery_failed"
@@ -915,7 +923,7 @@ class BrowserFakeApi implements DesktopApi {
   async startOwnUserSas(): Promise<DesktopSnapshot> {
     const flowId = this.nextRequestId();
     const session = this.snapshot.state.domain.session;
-    if (session.kind === "awaitingVerification") this.snapshot.state.domain.session = { ...session, kind: "verifying", method: "existingDeviceSas", flow_id: flowId, sas_emojis: [] };
+    if (session.kind === "awaitingVerification") this.snapshot.state.domain.session = { ...session, kind: "verifying", method: "existingDeviceSas", flow_id: flowId, sas_emojis: [], ...(session.gate ? { gate: { ...session.gate, failureKind: null } } : {}) };
     return this.getSnapshot();
   }
   async retryCurrentDeviceTrustDiscovery(): Promise<DesktopSnapshot> {
@@ -932,7 +940,7 @@ class BrowserFakeApi implements DesktopApi {
     const flowId = this.nextRequestId();
     const session = this.snapshot.state.domain.session;
     void passphrase;
-    if (session.gate && recoveryKeyDestinationPath.trim()) this.snapshot.state.domain.session = { ...session, kind: "awaitingBootstrapConfirmation", flow_id: flowId, destination_written: true };
+    if (session.gate && recoveryKeyDestinationPath.trim()) this.snapshot.state.domain.session = { ...session, kind: "awaitingBootstrapConfirmation", flow_id: flowId, destination_written: true, gate: { ...session.gate, failureKind: null } };
     return this.getSnapshot();
   }
   async confirmSessionBootstrapSaved(flowId: number): Promise<DesktopSnapshot> {

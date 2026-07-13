@@ -1100,7 +1100,12 @@ function useUiLatencyDiagnostics(): UiLatencyDiagnostics {
   return diagnostics;
 }
 
-export function SessionVerificationGate({ snapshot, onSnapshot, onSignOut, operations = { startOwnUserSas: () => api.startOwnUserSas(), submitRecovery: (secret) => api.submitRecovery(secret), retryCurrentDeviceTrustDiscovery: () => api.retryCurrentDeviceTrustDiscovery() } }: { snapshot: DesktopSnapshot; onSnapshot: (snapshot: DesktopSnapshot) => void; onSignOut: () => void; operations?: { startOwnUserSas: () => Promise<DesktopSnapshot>; submitRecovery: (secret: string) => Promise<DesktopSnapshot>; retryCurrentDeviceTrustDiscovery: () => Promise<DesktopSnapshot> } }) {
+function startSessionVerificationWindowDrag(): void {
+  if (!isTauriRuntime()) return;
+  void getCurrentWindow().startDragging().catch(() => undefined);
+}
+
+export function SessionVerificationGate({ snapshot, onSnapshot, onSignOut, onStartWindowDrag = startSessionVerificationWindowDrag, operations = { startOwnUserSas: () => api.startOwnUserSas(), submitRecovery: (secret) => api.submitRecovery(secret), retryCurrentDeviceTrustDiscovery: () => api.retryCurrentDeviceTrustDiscovery() } }: { snapshot: DesktopSnapshot; onSnapshot: (snapshot: DesktopSnapshot) => void; onSignOut: () => void; onStartWindowDrag?: () => void; operations?: { startOwnUserSas: () => Promise<DesktopSnapshot>; submitRecovery: (secret: string) => Promise<DesktopSnapshot>; retryCurrentDeviceTrustDiscovery: () => Promise<DesktopSnapshot> } }) {
   const session = snapshot.state.domain.session;
   const recoveryRef = useRef<HTMLInputElement>(null);
   const passphraseRef = useRef<HTMLInputElement>(null);
@@ -1129,6 +1134,16 @@ export function SessionVerificationGate({ snapshot, onSnapshot, onSignOut, opera
   };
   const heading = preparing ? t("gate.preparing") : rechecking ? t("gate.finishing") : activelyVerifying ? t("gate.verifying") : t("gate.title");
   return <main className="session-verification-gate" aria-label={heading}>
+    <div
+      className="session-verification-drag-region"
+      data-tauri-drag-region=""
+      aria-hidden="true"
+      onMouseDown={(event) => {
+        if (event.buttons !== 1) return;
+        event.preventDefault();
+        onStartWindowDrag();
+      }}
+    />
     <h1>{heading}</h1>
     {checking && <p>{t("gate.checking")}</p>}
     {discovering && <p>{t("gate.discovering")}</p>}

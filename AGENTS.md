@@ -31,6 +31,79 @@ When an operational note here hardens into a durable rule, promote it to
 `REPOSITORY_RULES.md` or `docs/policies/engineering-rules.md` and keep only the
 local how-to detail here.
 
+## Signed macOS DMG
+
+Build signed, notarized macOS artifacts only in an attended `zsh` session on a
+Mac that has the project's Developer ID Application certificate and private key
+installed. Never commit, paste into logs, or store in a repository file any of
+the four values entered below. `APPLE_PASSWORD` is an Apple app-specific
+password, not the normal Apple Account password.
+
+From the repository root, list the available signing identities, then enter the
+matching identity and notarization credentials into session-only environment
+variables:
+
+```zsh
+security find-identity -v -p codesigning
+read -r "APPLE_SIGNING_IDENTITY?Developer ID Application identity: "
+read -r "APPLE_ID?Apple ID: "
+read -r "APPLE_TEAM_ID?Apple Team ID: "
+read -rs "APPLE_PASSWORD?App-specific password: "; echo
+export APPLE_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_PASSWORD
+```
+
+Run the signed repository DMG entry point. It invokes the macOS signing
+credential preflight itself and stops before packaging if that gate fails. With
+the variables present, Tauri signs the app and installer, submits them for
+Apple notarization, and staples the notarization result during the build:
+
+```zsh
+npm --prefix apps/desktop run build:dmg:signed
+```
+
+Do not treat a zero build exit as sufficient release evidence. Resolve the
+generated artifacts and require `codesign`, `stapler`, and Gatekeeper to accept
+both the application and DMG before opening the installer:
+
+Remove only the two generated bundle output directories before building, then
+validate exactly one newly generated application and DMG. Run the whole
+sequence in a function so every failed command returns before `open`:
+
+```zsh
+build_and_verify_signed_dmg() {
+  local bundle_root app dmg
+  local -a apps dmgs
+  bundle_root="apps/desktop/src-tauri/target/release/bundle"
+
+  rm -rf -- "$bundle_root/macos" "$bundle_root/dmg" || return
+  npm --prefix apps/desktop run build:dmg:signed || return
+  apps=("${(@f)$(find "$bundle_root/macos" -maxdepth 1 -name '*.app' -print)}")
+  dmgs=("${(@f)$(find "$bundle_root/dmg" -maxdepth 1 -name '*.dmg' -print)}")
+  (( ${#apps[@]} == 1 && ${#dmgs[@]} == 1 )) &&
+    [[ -n "$apps[1]" && -n "$dmgs[1]" ]] || {
+    print -u2 "Expected exactly one current app and DMG artifact"
+    return 1
+  }
+  app="$apps[1]"
+  dmg="$dmgs[1]"
+
+  codesign --verify --deep --strict --verbose=2 "$app" &&
+    xcrun stapler validate "$app" &&
+    spctl --assess --type execute --verbose=4 "$app" &&
+    codesign --verify --verbose=2 "$dmg" &&
+    xcrun stapler validate "$dmg" &&
+    spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg" &&
+    open "$dmg"
+}
+build_and_verify_signed_dmg
+```
+
+After verification, remove the credentials from the current shell:
+
+```zsh
+unset APPLE_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_PASSWORD
+```
+
 ## Current Implementation Plans
 
 All agents implementing the headless core runtime follow

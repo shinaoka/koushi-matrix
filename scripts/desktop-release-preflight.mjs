@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const strictSigning = process.argv.includes("--strict-signing");
-const checkConfig = process.argv.includes("--check-config") || strictSigning;
+const macosSigning = process.argv.includes("--macos-signing") || strictSigning;
+const checkConfig = process.argv.includes("--check-config") || macosSigning;
 
 if (!checkConfig) {
   printUsage();
@@ -143,7 +144,7 @@ requireCheck(
   "npm real homeserver QA entry exists (run manually: npm --prefix apps/desktop run qa:real-homeserver)"
 );
 
-if (strictSigning) {
+if (macosSigning) {
   requireCheck(
     Boolean(process.env.APPLE_SIGNING_IDENTITY),
     "env.APPLE_SIGNING_IDENTITY",
@@ -154,6 +155,8 @@ if (strictSigning) {
     "env.appleNotarization",
     "APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID required for notarization"
   );
+}
+if (strictSigning) {
   requireCheck(
     Boolean(process.env.WINDOWS_CERTIFICATE_THUMBPRINT || process.env.WINDOWS_SIGN_COMMAND),
     "env.windowsSigning",
@@ -176,5 +179,5 @@ if (failures.length) {
 console.log("release preflight passed");
 
 function printUsage() {
-  console.log("Usage: node scripts/desktop-release-preflight.mjs --check-config [--strict-signing]");
+  console.log("Usage: node scripts/desktop-release-preflight.mjs --check-config [--macos-signing | --strict-signing]");
 }

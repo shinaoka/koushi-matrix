@@ -167,7 +167,7 @@ test("SAS actions stay flow-correlated through retry and cancellation", async ({
   await expect(page.locator(".session-verification-emojis span")).toHaveCount(7);
   await page.getByRole("button", { name: "They match" }).click();
   await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("confirm_sas_verification")[0]?.args.flowId)).toBeGreaterThan(0);
-  await expect(page.getByText("Checking device trust…")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Finishing sign-in…" })).toBeVisible();
 
   await page.evaluate(() => {
     const snapshot = window.__harness.currentSnapshot();
@@ -192,6 +192,103 @@ test("SAS actions stay flow-correlated through retry and cancellation", async ({
   expect(recorder).not.toMatch(/secret|passphrase|destination/i);
 });
 
+test("completed verification failures disappear when a new attempt starts", async ({ page }) => {
+  await page.goto("/appHarness.html");
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          session: {
+            kind: "awaitingVerification",
+            homeserver: "https://example.invalid",
+            user_id: "@gate:example.invalid",
+            device_id: "DEVICE",
+            gate: {
+              methods: ["existingDeviceSas"],
+              account_kind: "existingIdentity",
+              failureKind: "timeout"
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+
+  await expect(page.getByText("Timeout")).toBeVisible();
+  await page.getByRole("button", { name: "Verify with another device" }).click();
+  await expect(page.getByText("Timeout")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(
+    () => window.__harness.currentSnapshot().state.domain.session.gate?.failureKind
+  )).toBeNull();
+
+  await page.goto("/appHarness.html");
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          session: {
+            ...snapshot.state.domain.session,
+            kind: "awaitingVerification",
+            gate: {
+              methods: ["recoveryKey"],
+              account_kind: "existingIdentity",
+              failureKind: "timeout"
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+  await page.getByLabel("Recovery secret").fill("synthetic-recovery-key");
+  await page.getByRole("button", { name: "Recover" }).click();
+  await expect(page.getByText("Timeout")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(
+    () => window.__harness.currentSnapshot().state.domain.session.gate?.failureKind
+  )).toBeNull();
+
+  await page.goto("/appHarness.html");
+  await page.evaluate(() => {
+    const snapshot = window.__harness.currentSnapshot();
+    window.__harness.setSnapshot({
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        domain: {
+          ...snapshot.state.domain,
+          session: {
+            kind: "awaitingVerification",
+            homeserver: "https://example.invalid",
+            user_id: "@gate:example.invalid",
+            device_id: "DEVICE",
+            gate: {
+              methods: ["bootstrap"],
+              account_kind: "newIdentity",
+              failureKind: "timeout"
+            }
+          }
+        }
+      }
+    });
+    window.__harness.pushStateChanged();
+  });
+  await page.getByLabel("Recovery key destination").fill("/tmp/synthetic-recovery-key.txt");
+  await page.getByRole("button", { name: "Create secure backup" }).click();
+  await expect(page.getByText("Timeout")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(
+    () => window.__harness.currentSnapshot().state.domain.session.gate?.failureKind
+  )).toBeNull();
+});
+
 test("saved confirmation and sign out use matching gate commands", async ({ page }) => {
   await page.goto("/appHarness.html");
   await page.evaluate(() => {
@@ -202,7 +299,7 @@ test("saved confirmation and sign out use matching gate commands", async ({ page
   });
   await page.getByRole("button", { name: "I saved the recovery key" }).click();
   await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("confirm_session_bootstrap_saved")[0]?.args)).toEqual({ flowId: 91 });
-  await expect(page.getByText("Checking device trust…")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Finishing sign-in…" })).toBeVisible();
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect.poll(() => page.evaluate(() => window.__harness.invocationsOf("logout").length)).toBe(1);
   await expect(page.getByTestId("auth-screen")).toBeVisible();

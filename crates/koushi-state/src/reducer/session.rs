@@ -256,7 +256,8 @@ pub(crate) fn handle_verification_method_submitted(
         return Vec::new();
     }
     let info = info.clone();
-    let gate = gate.clone();
+    let mut gate = gate.clone();
+    gate.failure = None;
     state.session = SessionState::Verifying {
         info,
         gate,

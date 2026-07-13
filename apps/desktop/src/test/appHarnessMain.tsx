@@ -687,7 +687,7 @@ mock.setCommandResponse("logout", () => {
 mock.setCommandResponse("submit_recovery", () => {
   const next = structuredClone(currentSnapshot);
   const session = next.state.domain.session;
-  if (session.kind === "awaitingVerification" || session.kind === "verifying") next.state.domain.session = { ...session, kind: "verifying", method: "recoveryKey", flow_id: session.flow_id ?? 72 };
+  if (session.kind === "awaitingVerification" || session.kind === "verifying") next.state.domain.session = { ...session, kind: "verifying", method: "recoveryKey", flow_id: session.flow_id ?? 72, ...(session.gate ? { gate: { ...session.gate, failureKind: null } } : {}) };
   return setCurrentSnapshot(next);
 });
 mock.setCommandResponse("select_space", ({ spaceId }: { spaceId: string | null }) => {
@@ -1380,7 +1380,7 @@ mock.setCommandResponse("start_own_user_sas", () => {
   const flowId = nextGateFlowId++;
   const next = structuredClone(currentSnapshot);
   const session = next.state.domain.session;
-  if (session.kind === "awaitingVerification") next.state.domain.session = { ...session, kind: "verifying", method: "existingDeviceSas", flow_id: flowId, sas_emojis: [] };
+  if (session.kind === "awaitingVerification") next.state.domain.session = { ...session, kind: "verifying", method: "existingDeviceSas", flow_id: flowId, sas_emojis: [], ...(session.gate ? { gate: { ...session.gate, failureKind: null } } : {}) };
   return setCurrentSnapshot(next);
 });
 mock.setCommandResponse("retry_current_device_trust_discovery", () => {
@@ -1399,7 +1399,7 @@ mock.setCommandResponse("start_session_bootstrap", ({ recoveryKeyDestinationPath
   const flowId = nextGateFlowId++;
   const next = structuredClone(currentSnapshot);
   const session = next.state.domain.session;
-  if (session.gate && recoveryKeyDestinationPath.trim()) next.state.domain.session = { ...session, kind: "awaitingBootstrapConfirmation", flow_id: flowId, destination_written: true };
+  if (session.gate && recoveryKeyDestinationPath.trim()) next.state.domain.session = { ...session, kind: "awaitingBootstrapConfirmation", flow_id: flowId, destination_written: true, gate: { ...session.gate, failureKind: null } };
   return setCurrentSnapshot(next);
 });
 mock.setCommandResponse("confirm_session_bootstrap_saved", ({ flowId }: { flowId: number }) => {
