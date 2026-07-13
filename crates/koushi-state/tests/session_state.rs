@@ -1077,6 +1077,46 @@ fn gate_sas_start_mismatch_cancel_and_retry_remain_correlated() {
 }
 
 #[test]
+fn verification_retry_clears_the_completed_attempt_failure() {
+    let info = session_info();
+    let gate = VerificationGateState {
+        methods: vec![VerificationMethodCapability::ExistingDeviceSas],
+        account_kind: VerificationAccountKind::ExistingIdentity,
+        failure: Some(VerificationGateFailureKind::Timeout),
+    };
+    let mut state = AppState {
+        session: SessionState::AwaitingVerification {
+            info: info.clone(),
+            gate,
+        },
+        ..AppState::default()
+    };
+
+    reduce(
+        &mut state,
+        AppAction::VerificationMethodSubmitted {
+            method: VerificationMethod::ExistingDeviceSas,
+            flow_id: 78,
+        },
+    );
+
+    assert_eq!(
+        state.session,
+        SessionState::Verifying {
+            info,
+            gate: VerificationGateState {
+                methods: vec![VerificationMethodCapability::ExistingDeviceSas],
+                account_kind: VerificationAccountKind::ExistingIdentity,
+                failure: None,
+            },
+            method: VerificationMethod::ExistingDeviceSas,
+            flow_id: 78,
+            sas_emojis: Vec::new(),
+        }
+    );
+}
+
+#[test]
 fn recovery_cancel_and_retry_never_escape_the_gate() {
     let info = session_info();
     let gate = recovery_gate();
