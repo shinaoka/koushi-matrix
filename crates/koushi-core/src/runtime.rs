@@ -5471,44 +5471,46 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let homeserver = format!("http://{}", listener.local_addr().expect("address"));
         std::thread::spawn(move || {
-            for _ in 0..32 {
+            for _ in 0..128 {
                 let Ok((mut stream, _)) = listener.accept() else {
                     return;
                 };
-                let mut request = Vec::new();
-                let mut buffer = [0_u8; 4096];
-                loop {
-                    let count = stream.read(&mut buffer).expect("read");
-                    request.extend_from_slice(&buffer[..count]);
-                    let text = String::from_utf8_lossy(&request);
-                    let Some(end) = text.find("\r\n\r\n") else {
-                        continue;
-                    };
-                    let length = text
-                        .lines()
-                        .find_map(|line| line.strip_prefix("Content-Length: "))
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(0);
-                    if request.len() >= end + 4 + length {
-                        break;
+                std::thread::spawn(move || {
+                    let mut request = Vec::new();
+                    let mut buffer = [0_u8; 4096];
+                    loop {
+                        let count = stream.read(&mut buffer).expect("read");
+                        request.extend_from_slice(&buffer[..count]);
+                        let text = String::from_utf8_lossy(&request);
+                        let Some(end) = text.find("\r\n\r\n") else {
+                            continue;
+                        };
+                        let length = text
+                            .lines()
+                            .find_map(|line| line.strip_prefix("Content-Length: "))
+                            .and_then(|value| value.parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
                     }
-                }
-                let text = String::from_utf8_lossy(&request);
-                let body = if text.starts_with("GET /_matrix/client/versions ") {
-                    r#"{"versions":["v1.7"]}"#
-                } else if text.contains("/_matrix/client/") && text.contains("login") {
-                    r#"{"access_token":"fixture-token","device_id":"FIXTUREDEVICE","user_id":"@fixture-user:example.invalid"}"#
-                } else if text.contains("/_matrix/client/") && text.contains("/sync") {
-                    r#"{"next_batch":"batch","device_lists":{"changed":[],"left":[]},"rooms":{"invite":{},"join":{},"leave":{},"knock":{}},"to_device":{"events":[]},"presence":{"events":[]},"account_data":{"events":[]},"device_one_time_keys_count":{}}"#
-                } else {
-                    r#"{"errcode":"M_NOT_FOUND","error":"not found"}"#
-                };
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                stream.write_all(response.as_bytes()).expect("write");
+                    let text = String::from_utf8_lossy(&request);
+                    let body = if text.starts_with("GET /_matrix/client/versions ") {
+                        r#"{"versions":["v1.7"]}"#
+                    } else if text.contains("/_matrix/client/") && text.contains("login") {
+                        r#"{"access_token":"fixture-token","device_id":"FIXTUREDEVICE","user_id":"@fixture-user:example.invalid"}"#
+                    } else if text.contains("/_matrix/client/") && text.contains("/sync") {
+                        r#"{"next_batch":"batch","device_lists":{"changed":[],"left":[]},"rooms":{"invite":{},"join":{},"leave":{},"knock":{}},"to_device":{"events":[]},"presence":{"events":[]},"account_data":{"events":[]},"device_one_time_keys_count":{}}"#
+                    } else {
+                        r#"{"errcode":"M_NOT_FOUND","error":"not found"}"#
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream.write_all(response.as_bytes()).expect("write");
+                });
             }
         });
 
@@ -5559,6 +5561,7 @@ mod tests {
             matches!(session, SessionState::Ready(_))
         })
         .await;
+        wait_for_runtime_sync_running(&runtime, "initial promotion").await;
         assert_eq!(
             inspect_runtime_children(&runtime).await,
             (true, true, true, true)
@@ -5598,6 +5601,7 @@ mod tests {
             matches!(session, SessionState::Ready(_))
         })
         .await;
+        wait_for_runtime_sync_running(&runtime, "verified repromotion").await;
         assert_eq!(
             inspect_runtime_children(&runtime).await,
             (true, true, true, true)
@@ -5671,5 +5675,30 @@ mod tests {
         })
         .await
         .unwrap_or_else(|_| panic!("session transition timed out during {stage}"));
+    }
+
+    async fn wait_for_runtime_sync_running(runtime: &CoreRuntime, stage: &'static str) {
+        let mut snapshot_rx = runtime.snapshot_rx.clone();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if matches!(
+                    snapshot_rx.borrow().state.sync,
+                    koushi_state::SyncState::Running
+                ) {
+                    return;
+                }
+                snapshot_rx
+                    .changed()
+                    .await
+                    .unwrap_or_else(|_| panic!("snapshot channel closed during {stage}"));
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "sync start timed out during {stage}: {:?}",
+                runtime.snapshot_rx.borrow().state.sync
+            )
+        });
     }
 }

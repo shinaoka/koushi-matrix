@@ -31,7 +31,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicU64},
     time::{Duration, Instant},
 };
 
@@ -140,12 +140,7 @@ fn trace_restore_simple(stage: &'static str, action: &'static str) {
 }
 
 fn record_verification_admission_event(event: DiagnosticEvent) {
-    eprintln!(
-        "[koushi] {} {}",
-        event.source,
-        koushi_diagnostics::format_event(&event)
-    );
-    record(event);
+    koushi_diagnostics::record_and_stderr(event);
 }
 
 fn verification_admission_event(
@@ -621,6 +616,9 @@ pub struct AccountActor {
     /// session exists. Created on first login/restore; destroyed on logout /
     /// account switch.
     sync_actor: Option<SyncActorHandle>,
+    /// Monotonic across SyncActor replacement so lifecycle projections from a
+    /// restarted actor cannot be rejected behind the previous actor's fence.
+    sync_generation: Arc<AtomicU64>,
     /// RoomActor child handle (Phase 4). Spawned once at actor creation and
     /// kept alive for the lifetime of the AccountActor. Session is provided
     /// via `RoomMessage::SyncStarted` when sync begins.
@@ -774,6 +772,7 @@ impl AccountActor {
             command_rx,
             self_tx: tx.clone(),
             sync_actor: None,
+            sync_generation: Arc::new(AtomicU64::new(0)),
             room_actor,
             timeline_manager,
             messages_backpressure,
@@ -2152,6 +2151,7 @@ impl AccountActor {
             self.event_tx.clone(),
             self.room_actor.tx.clone(),
             self.timeline_manager.sender(),
+            self.sync_generation.clone(),
         );
         self.sync_actor = Some(handle);
         trace_restore_simple("spawn_sync_actor", "done");
@@ -10419,6 +10419,7 @@ mod tests {
             command_rx,
             self_tx,
             sync_actor: None,
+            sync_generation: Arc::new(AtomicU64::new(0)),
             room_actor,
             timeline_manager,
             messages_backpressure,

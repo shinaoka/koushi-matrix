@@ -155,14 +155,15 @@ pub(crate) fn handle_authoritative_device_trust_changed(
         let info = info.clone();
         state.session = SessionState::Ready(info);
         state.sync = SyncState::Starting;
-        return vec![AppEffect::EmitUiEvent(UiEvent::SessionChanged)];
+        return vec![
+            AppEffect::StartSync,
+            AppEffect::EmitUiEvent(UiEvent::SessionChanged),
+        ];
     }
 
     let mut effects = handle_current_device_trust_changed(state, trust);
     if trust == CurrentDeviceTrustState::Verified {
-        effects.retain(|effect| {
-            !matches!(effect, AppEffect::PersistSession(_) | AppEffect::StartSync)
-        });
+        effects.retain(|effect| !matches!(effect, AppEffect::PersistSession(_)));
     }
     effects
 }

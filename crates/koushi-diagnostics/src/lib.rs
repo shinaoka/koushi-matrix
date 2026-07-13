@@ -189,6 +189,13 @@ pub fn record(event: DiagnosticEvent) {
         .record(event);
 }
 
+/// Records a structured event and mirrors the same private-data-free format
+/// to stderr for startup paths whose UI diagnostics may not yet be reachable.
+pub fn record_and_stderr(event: DiagnosticEvent) {
+    eprintln!("[koushi] {} {}", event.source, format_event(&event));
+    record(event);
+}
+
 pub fn record_batch(events: impl IntoIterator<Item = DiagnosticEvent>) {
     GLOBAL_BUFFER
         .get_or_init(|| DiagnosticBuffer::new(DEFAULT_DIAGNOSTIC_CAPACITY))

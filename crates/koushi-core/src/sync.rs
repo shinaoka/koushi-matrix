@@ -405,6 +405,7 @@ impl SyncActor {
         event_tx: broadcast::Sender<CoreEvent>,
         room_tx: mpsc::Sender<RoomMessage>,
         timeline_tx: mpsc::Sender<crate::timeline::TimelineMessage>,
+        sync_generation: Arc<AtomicU64>,
     ) -> SyncActorHandle {
         let (tx, command_rx) = mpsc::channel(16);
         let actor = SyncActor {
@@ -415,7 +416,7 @@ impl SyncActor {
             room_tx,
             timeline_tx,
             lifecycle: SyncLifecycle::Stopped,
-            sync_generation: Arc::new(AtomicU64::new(0)),
+            sync_generation,
             active_backend: ActiveBackend::None,
             sync_task: None,
             legacy_stop_tx: None,
