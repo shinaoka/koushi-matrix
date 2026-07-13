@@ -101,4 +101,36 @@ describe("SessionVerificationGate interactions", () => {
     fireEvent.click(button);
     await vi.waitFor(() => expect(startOwnUserSas).toHaveBeenCalledTimes(2));
   });
+
+  test("provides a primary-button-only verification window drag region", async () => {
+    const snapshot = await createBrowserFakeApi({ session: "needsRecovery" }).getSnapshot();
+    snapshot.state.domain.session = {
+      kind: "awaitingVerification",
+      user_id: "@u:example.invalid",
+      homeserver: "https://example.invalid",
+      device_id: "D",
+      gate: { methods: ["existingDeviceSas"], account_kind: "existingIdentity" },
+    };
+    const onStartWindowDrag = vi.fn();
+    const { container } = render(
+      <SessionVerificationGate
+        snapshot={snapshot}
+        onSnapshot={() => undefined}
+        onSignOut={() => undefined}
+        onStartWindowDrag={onStartWindowDrag}
+        operations={{
+          startOwnUserSas: async () => snapshot,
+          submitRecovery: async () => snapshot,
+          retryCurrentDeviceTrustDiscovery: async () => snapshot,
+        }}
+      />
+    );
+
+    const dragRegion = container.querySelector(".session-verification-drag-region");
+    expect(dragRegion?.getAttribute("data-tauri-drag-region")).toBe("");
+    fireEvent.mouseDown(dragRegion!, { button: 2, buttons: 2 });
+    expect(onStartWindowDrag).not.toHaveBeenCalled();
+    fireEvent.mouseDown(dragRegion!, { button: 0, buttons: 1 });
+    expect(onStartWindowDrag).toHaveBeenCalledTimes(1);
+  });
 });
