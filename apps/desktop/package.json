@@ -21,6 +21,7 @@
     "qa:real-account": "cargo run -p koushi-sdk --features smoke --bin password-login-smoke -- --real-account-qa",
     "qa:real-homeserver": "node ../../scripts/desktop-real-homeserver-qa.mjs --run",
     "release:preflight": "node ../../scripts/desktop-release-preflight.mjs --check-config",
+    "release:preflight:macos-signing": "node ../../scripts/desktop-release-preflight.mjs --macos-signing",
     "release:preflight:strict": "node ../../scripts/desktop-release-preflight.mjs --strict-signing",
     "lint": "eslint src",
     "lint:tauri-boundary": "node ../../scripts/check-tauri-adapter-boundary.mjs",

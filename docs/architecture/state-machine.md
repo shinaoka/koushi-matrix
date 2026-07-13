@@ -81,7 +81,7 @@ stateDiagram-v2
     Provisional --> AwaitingVerification: TrustUnverified / methods discovered
     Provisional --> Ready: CurrentDeviceTrustChanged(Verified)
     Provisional --> Rejecting: ExistingIdentityWithoutProof
-    AwaitingVerification --> Verifying: VerificationMethodSubmitted
+    AwaitingVerification --> Verifying: VerificationMethodSubmitted / clear prior failure
     AwaitingVerification --> Rejecting: RejectSession / no proof
     Verifying --> AwaitingVerification: Cancelled / failed / timeout
     Verifying --> Ready: CurrentDeviceTrustChanged(Verified)
@@ -101,6 +101,10 @@ stateDiagram-v2
 - Recovery completion, SAS `Done`, cross-signing bootstrap, or save confirmation
   requests a fresh current-device trust probe; none directly transitions to
   `Ready`.
+- A verification failure is scoped to the completed attempt. It remains on
+  `AwaitingVerification` for user feedback, and an accepted
+  `VerificationMethodSubmitted` clears it while preserving the gate's methods
+  and account kind before entering the new `Verifying` flow.
 - Restricted crypto sync is AccountActor-internal and cannot publish normal
   projections or active saved-session state. Unknown trust remains fail closed.
 - A genuine missing cross-signing identity may enter mandatory bootstrap. An

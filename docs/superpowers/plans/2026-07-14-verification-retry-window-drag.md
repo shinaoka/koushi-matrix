@@ -77,7 +77,7 @@ fn verification_retry_clears_the_completed_attempt_failure() {
 Run:
 
 ```bash
-cargo test -p koushi-state verification_retry_clears_the_completed_attempt_failure -- --exact
+cargo test -p koushi-state --test session_state verification_retry_clears_the_completed_attempt_failure -- --exact
 ```
 
 Expected: FAIL because the actual `Verifying.gate.failure` is `Some(Timeout)`.
@@ -104,7 +104,7 @@ state.session = SessionState::Verifying {
 Run:
 
 ```bash
-cargo test -p koushi-state verification_retry_clears_the_completed_attempt_failure -- --exact
+cargo test -p koushi-state --test session_state verification_retry_clears_the_completed_attempt_failure -- --exact
 cargo test -p koushi-state
 ```
 
@@ -288,7 +288,7 @@ read -r "APPLE_TEAM_ID?Apple Team ID: "
 read -rs "APPLE_PASSWORD?App-specific password: "; echo
 export APPLE_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_PASSWORD
 
-npm --prefix apps/desktop run release:preflight
+npm --prefix apps/desktop run release:preflight:macos-signing
 npm --prefix apps/desktop run build:dmg
 
 APP="$(find apps/desktop/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"

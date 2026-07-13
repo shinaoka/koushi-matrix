@@ -2704,6 +2704,48 @@ fn test_only() {
     expect(output).toContain("security.csp.img-src.koushiThumbnail");
   });
 
+  test("macOS signing preflight requires Apple credentials without Windows credentials", () => {
+    const script = "scripts/desktop-release-preflight.mjs";
+    const packageJson = JSON.parse(
+      readFileSync(new URL("../../../../apps/desktop/package.json", import.meta.url), "utf8")
+    );
+    expect(packageJson.scripts["release:preflight:macos-signing"]).toBe(
+      "node ../../scripts/desktop-release-preflight.mjs --macos-signing"
+    );
+    const missingEnvironment = { ...process.env };
+    delete missingEnvironment.APPLE_SIGNING_IDENTITY;
+    delete missingEnvironment.APPLE_ID;
+    delete missingEnvironment.APPLE_PASSWORD;
+    delete missingEnvironment.APPLE_TEAM_ID;
+    delete missingEnvironment.WINDOWS_CERTIFICATE_THUMBPRINT;
+    delete missingEnvironment.WINDOWS_SIGN_COMMAND;
+
+    const missing = spawnSync(process.execPath, [script, "--macos-signing"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: missingEnvironment,
+    });
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain("env.APPLE_SIGNING_IDENTITY");
+    expect(missing.stderr).toContain("env.appleNotarization");
+
+    const configured = spawnSync(process.execPath, [script, "--macos-signing"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: {
+        ...missingEnvironment,
+        APPLE_SIGNING_IDENTITY: "Developer ID Application: Synthetic",
+        APPLE_ID: "synthetic@example.invalid",
+        APPLE_PASSWORD: "synthetic-app-password",
+        APPLE_TEAM_ID: "SYNTHETIC",
+      },
+    });
+    expect(configured.status).toBe(0);
+    expect(configured.stdout).toContain("ok env.APPLE_SIGNING_IDENTITY");
+    expect(configured.stdout).toContain("ok env.appleNotarization");
+    expect(configured.stderr).not.toContain("env.windowsSigning");
+  });
+
   test("manual QA script lists every Milestone 9 flow", () => {
     const output = runScript("scripts/desktop-manual-qa.mjs", ["--list"]);
 

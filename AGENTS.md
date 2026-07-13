@@ -57,7 +57,7 @@ those variables present, Tauri signs the app and installer, submits them for
 Apple notarization, and staples the notarization result during the build:
 
 ```zsh
-npm --prefix apps/desktop run release:preflight
+npm --prefix apps/desktop run release:preflight:macos-signing
 npm --prefix apps/desktop run build:dmg
 ```
 

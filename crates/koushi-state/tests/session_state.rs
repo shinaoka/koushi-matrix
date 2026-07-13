@@ -1082,7 +1082,7 @@ fn verification_retry_clears_the_completed_attempt_failure() {
     let gate = VerificationGateState {
         methods: vec![VerificationMethodCapability::ExistingDeviceSas],
         account_kind: VerificationAccountKind::ExistingIdentity,
-        failure: Some(VerificationGateFailureKind::Timeout),
+        failure: None,
     };
     let mut state = AppState {
         session: SessionState::AwaitingVerification {
@@ -1091,6 +1091,31 @@ fn verification_retry_clears_the_completed_attempt_failure() {
         },
         ..AppState::default()
     };
+
+    reduce(
+        &mut state,
+        AppAction::VerificationMethodSubmitted {
+            method: VerificationMethod::ExistingDeviceSas,
+            flow_id: 77,
+        },
+    );
+    reduce(
+        &mut state,
+        AppAction::VerificationFailed {
+            request_id: 77,
+            kind: TrustOperationFailureKind::Timeout,
+        },
+    );
+    assert!(matches!(
+        state.session,
+        SessionState::AwaitingVerification {
+            gate: VerificationGateState {
+                failure: Some(VerificationGateFailureKind::Timeout),
+                ..
+            },
+            ..
+        }
+    ));
 
     reduce(
         &mut state,

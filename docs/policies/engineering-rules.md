@@ -576,6 +576,11 @@ PTY handling, prompt line order) is documented in `AGENTS.md`.
    reviewed CSS contracts for strict line breaking, normal word breaking,
    disabled hyphenation, logical spacing, wrapping, and ellipsis instead of
    JavaScript text rewriting.
+9. Signed distribution builds must run the platform-specific credential gate
+   before packaging. A macOS signed-DMG build validates the signing identity
+   and all notarization credentials without requiring unrelated Windows
+   credentials; post-build signature, notarization-ticket, and platform trust
+   checks remain mandatory release evidence.
 
 ## Documentation
 
